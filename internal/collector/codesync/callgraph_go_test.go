@@ -3,6 +3,7 @@
 package codesync
 
 import (
+	"os"
 	"path/filepath"
 	"runtime"
 	"slices"
@@ -14,18 +15,28 @@ import (
 // verifies that at least 3 known caller→callee pairs are present.
 //
 // This test is intentionally slow (SSA + RTA on the full repo) — run with
-// -timeout 300s to allow sufficient time.
+// -timeout 300s to allow sufficient time. Skipped in CI (no build cache
+// makes SSA take 15+ minutes on a fresh runner).
 func TestBuildGoCallGraph(t *testing.T) {
-	// Locate the repo root relative to this test file.
+	if os.Getenv("CI") != "" {
+		t.Skip("SSA/RTA too slow on fresh CI runners without build cache")
+	}
+	// Locate the repo root by walking up from the test file until we find go.mod.
 	_, testFile, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("runtime.Caller failed")
 	}
-	// testFile is .../collector/codegraph/callgraph_go_test.go — repo root
-	// is two levels up. Post-BCN9 the parser/cicd/web/cloud/etc. subtrees
-	// live under cmd/knowledge/internal/collector/, so the call-graph scan
-	// must be repo-wide to surface their edges (parser.Populate etc.).
-	rootDir := filepath.Dir(filepath.Dir(filepath.Dir(testFile)))
+	rootDir := testFile
+	for {
+		parent := filepath.Dir(rootDir)
+		if parent == rootDir {
+			t.Fatal("could not locate go.mod above test file")
+		}
+		rootDir = parent
+		if _, err := os.Stat(filepath.Join(rootDir, "go.mod")); err == nil {
+			break
+		}
+	}
 
 	t.Logf("running BuildGoCallGraph on %s", rootDir)
 
