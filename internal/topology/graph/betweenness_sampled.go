@@ -200,8 +200,8 @@ func singleSourceBrandes(g *foundation.GonumGraph, s int32, cb []float64, sc *br
 		}
 	}
 
-	for i := len(sc.stack) - 1; i >= 0; i-- {
-		w := sc.stack[i]
+	for _, v := range slices.Backward(sc.stack) {
+		w := v
 		sigmaW := sc.sigma[w]
 		if sigmaW == 0 {
 			continue

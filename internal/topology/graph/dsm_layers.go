@@ -200,13 +200,13 @@ func heuristicLayersFromSort(sorted []graph.Node, unorderable topo.Unorderable, 
 		sccIdx++
 	}
 	out := make([]Layer, 0, len(groups))
-	for i := len(groups) - 1; i >= 0; i-- {
+	for i, v := range slices.Backward(groups) {
 		idx := len(groups) - 1 - i
 		name := fmt.Sprintf("layer-%d", idx)
-		if len(groups[i]) > 1 {
+		if len(v) > 1 {
 			name = fmt.Sprintf("scc-%d", idx)
 		}
-		out = append(out, Layer{Name: name, Index: idx, Packages: groups[i]})
+		out = append(out, Layer{Name: name, Index: idx, Packages: v})
 	}
 	return out
 }

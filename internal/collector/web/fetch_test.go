@@ -120,11 +120,11 @@ func TestFetchRedirectFollow(t *testing.T) {
 
 func TestFetchRedirectLoopHalts(t *testing.T) {
 	t.Parallel()
-	var hits int32
+	var hits atomic.Int32
 	mux := http.NewServeMux()
 	// /loop redirects to /loop — unbounded unless capped.
 	mux.HandleFunc("/loop", func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&hits, 1)
+		hits.Add(1)
 		http.Redirect(w, r, "/loop", http.StatusFound)
 	})
 	srv := httptest.NewServer(mux)
@@ -145,7 +145,7 @@ func TestFetchRedirectLoopHalts(t *testing.T) {
 	}
 	// Guard against runaway: must be <= maxRedirects + 1 (the original
 	// request counts as hit #1, then up to maxRedirects more).
-	total := atomic.LoadInt32(&hits)
+	total := hits.Load()
 	if int(total) > maxRedirects+1 {
 		t.Fatalf("redirect loop not halted: got %d hits (max allowed %d)",
 			total, maxRedirects+1)

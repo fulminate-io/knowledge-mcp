@@ -12,7 +12,11 @@
 
 package classify
 
-import "github.com/fulminate-io/knowledge-mcp/internal/collector/pdf/layout"
+import (
+	"slices"
+
+	"github.com/fulminate-io/knowledge-mcp/internal/collector/pdf/layout"
+)
 
 // monospaceFraction returns the glyph-weighted fraction of monospace
 // glyphs in block. Returns 0 for empty blocks.
@@ -248,8 +252,8 @@ func distinctIndentColumns(block layout.Block) int {
 // hasNonMonoCodeShape to reject prose paragraphs that incidentally
 // score high on the punctuation/indent axes.
 func endsInProseTerminator(block layout.Block) bool {
-	for i := len(block.Lines) - 1; i >= 0; i-- {
-		for j := len(block.Lines[i].Runs) - 1; j >= 0; j-- {
+	for i := range slices.Backward(block.Lines) {
+		for j := range slices.Backward(block.Lines[i].Runs) {
 			t := block.Lines[i].Runs[j].Text
 			for len(t) > 0 {
 				last := t[len(t)-1]

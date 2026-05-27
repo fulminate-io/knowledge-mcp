@@ -27,6 +27,7 @@
 package chunk
 
 import (
+	"slices"
 	"strings"
 	"unicode"
 
@@ -180,8 +181,8 @@ func isTerminator(r rune) bool {
 // empty block (the zero rune fails isTerminator and isLower checks
 // — defensive in either direction).
 func blockTrailingChar(b layout.Block) rune {
-	for i := len(b.Lines) - 1; i >= 0; i-- {
-		for j := len(b.Lines[i].Runs) - 1; j >= 0; j-- {
+	for i := range slices.Backward(b.Lines) {
+		for j := range slices.Backward(b.Lines[i].Runs) {
 			t := strings.TrimRight(b.Lines[i].Runs[j].Text, " \t\n")
 			if t == "" {
 				continue
