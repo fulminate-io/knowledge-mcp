@@ -20,7 +20,7 @@ repo_root="$(cd "${script_dir}/.." && pwd)"
 
 src_agents="${repo_root}/.claude/agents"
 src_skills="${repo_root}/.claude/skills"
-dst_root="${repo_root}/cmd/knowledge/internal/claudeassets"
+dst_root="${repo_root}/internal/claudeassets"
 dst_agents="${dst_root}/agents"
 dst_skills="${dst_root}/skills"
 

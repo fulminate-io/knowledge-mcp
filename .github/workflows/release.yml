@@ -111,6 +111,10 @@ jobs:
         with:
           go-version: "1.26.3"
 
+      - name: Sync embedded Claude assets
+        run: bash scripts/sync-claude-assets.sh
+        shell: bash
+
       - name: Build
         env:
           CGO_ENABLED: "1"

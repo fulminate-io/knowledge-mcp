@@ -22,6 +22,10 @@ jobs:
         with:
           go-version: "1.26.3"
 
+      - name: Sync embedded Claude assets
+        run: bash scripts/sync-claude-assets.sh
+        shell: bash
+
       - name: Build
         run: CGO_ENABLED=1 go build .
 
@@ -37,10 +41,13 @@ jobs:
         with:
           go-version: "1.26.3"
 
+      - name: Sync embedded Claude assets
+        run: bash scripts/sync-claude-assets.sh
+
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v6
         with:
-          version: latest
+          version: v2.1.6
 
       - name: go vet
         run: CGO_ENABLED=1 go vet ./...
