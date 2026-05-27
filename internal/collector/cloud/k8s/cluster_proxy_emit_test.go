@@ -9,10 +9,10 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/cloud"
 	"github.com/fulminate-io/knowledge-mcp/internal/collectorwire"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 )
 
 func TestEmitClusterLinkageClientSide_EKS(t *testing.T) {

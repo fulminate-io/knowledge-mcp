@@ -10,9 +10,9 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/collectorwire"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 )
 
 // v1Snapshot caches every node produced for the v1 fixture, keyed by

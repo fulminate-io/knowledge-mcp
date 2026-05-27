@@ -37,9 +37,9 @@ import (
 	"sort"
 	"time"
 
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/topology/foundation"
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 )
 
 // timeNow is a seam for testing — tests replace it to control "now".

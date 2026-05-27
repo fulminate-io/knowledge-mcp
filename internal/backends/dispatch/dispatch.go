@@ -20,9 +20,9 @@ package dispatch
 import (
 	"context"
 
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/backends"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 )
 
 // UpdateArgs carries the partial-update payload routed through the backend.

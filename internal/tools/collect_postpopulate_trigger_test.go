@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 	"github.com/fulminate-io/knowledge-mcp/internal/collectorwire"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
@@ -18,7 +19,6 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/postpopulate"
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 )
 
 // ppTriggerStubName is the unique collector name used by ppTriggerStubCollector.

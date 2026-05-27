@@ -10,8 +10,8 @@ import (
 
 	"connectrpc.com/connect"
 
-	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 )
 
 // ExecuteFn issues one Engine.Execute RPC. Satisfied by GraphClient.Execute.

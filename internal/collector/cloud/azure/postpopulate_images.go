@@ -9,10 +9,10 @@ import (
 	"log/slog"
 	"strings"
 
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/cloud"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/postpopulate"
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 )
 
 // resolveAzureImageLineage creates USES_IMAGE edges from Azure App Service

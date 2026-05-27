@@ -10,10 +10,10 @@ import (
 
 	"connectrpc.com/connect"
 
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	workers "github.com/fulminate-io/knowledge-mcp/internal/workers"
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 )
 
 // workerCRUDClient is the minimal slice of *server.GraphClient that the

@@ -9,9 +9,9 @@ import (
 	"log/slog"
 	"math"
 
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 )
 
 // TrustMatrix is a row-stochastic matrix encoding how much each thought

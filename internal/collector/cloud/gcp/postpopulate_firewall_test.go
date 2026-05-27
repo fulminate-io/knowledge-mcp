@@ -9,8 +9,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
 func buildFirewallNode(t *testing.T, id string, spec firewallContent) *knowledgev1.Node { //nolint:unparam // id varies in future tests

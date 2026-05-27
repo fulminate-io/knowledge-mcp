@@ -15,8 +15,8 @@ import (
 
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 
-	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
 // nanosToTime converts an int64 unix-nanos value (the value-embed proto

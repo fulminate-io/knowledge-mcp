@@ -656,7 +656,7 @@ const file_knowledge_v1_ingest_proto_rawDesc = "" +
 	"\rIngestService\x12D\n" +
 	"\fUploadChunks\x12\x18.knowledge.v1.ChunkBatch\x1a\x16.knowledge.v1.ChunkAck(\x010\x01\x12R\n" +
 	"\vWriteResult\x12 .knowledge.v1.WriteResultRequest\x1a!.knowledge.v1.WriteResultResponse\x12g\n" +
-	"\x12FetchCloudSubgraph\x12'.knowledge.v1.FetchCloudSubgraphRequest\x1a(.knowledge.v1.FetchCloudSubgraphResponseB@Z>github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1;knowledgev1b\x06proto3"
+	"\x12FetchCloudSubgraph\x12'.knowledge.v1.FetchCloudSubgraphRequest\x1a(.knowledge.v1.FetchCloudSubgraphResponseB@Z>github.com/fulminate-io/knowledge/gen/knowledge/v1;knowledgev1b\x06proto3"
 
 var (
 	file_knowledge_v1_ingest_proto_rawDescOnce sync.Once

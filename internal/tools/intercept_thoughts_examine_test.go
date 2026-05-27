@@ -9,9 +9,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	clientthought "github.com/fulminate-io/knowledge-mcp/internal/thought"
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 )
 
 // TestRenderExamine_Golden builds a ThoughtExamination fixture and

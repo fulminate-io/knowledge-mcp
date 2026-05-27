@@ -8,9 +8,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/logs"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 )
 
 // seedDepCheckerCloudGraph returns one cloud-graph GraphSlice shaped like the

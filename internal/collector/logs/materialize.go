@@ -6,11 +6,11 @@ import (
 	"fmt"
 	"strconv"
 
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/crossgraph"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgwire"
 	wirelogs "github.com/fulminate-io/knowledge-mcp/internal/logwire"
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 )
 
 // MaterializeLogGraph is a pure transform that converts a client-produced

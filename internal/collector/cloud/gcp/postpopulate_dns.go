@@ -11,9 +11,9 @@ import (
 	"slices"
 	"strings"
 
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/postpopulate"
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 )
 
 // resolveDNSRecordTargets emits ROUTES_TO edges from DNS record nodes to the

@@ -3,8 +3,8 @@
 package kgwire
 
 import (
-	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
 // IsProxy reports whether n is a proxy node (a lightweight reference to a node

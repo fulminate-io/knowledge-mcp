@@ -9,9 +9,9 @@ import (
 	"sync"
 	"time"
 
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/topology/graph"
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 )
 
 // PropagationInterval is the period at which the client-side

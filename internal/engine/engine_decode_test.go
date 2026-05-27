@@ -8,8 +8,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/fulminate-io/knowledge-mcp/internal/enginetest"
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/enginetest"
 )
 
 // decodeResult is the typed-wire shape the round-trip drives: each return mode

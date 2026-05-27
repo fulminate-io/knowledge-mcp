@@ -5,8 +5,8 @@ package tools
 import (
 	"context"
 
-	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 )
 
 // graphClientHydratorBackend implements ast.HydratorBackend by issuing a

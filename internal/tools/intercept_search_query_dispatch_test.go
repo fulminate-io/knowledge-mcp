@@ -16,14 +16,14 @@ import (
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
 
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1/knowledgev1connect"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
-	"github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1/knowledgev1connect"
 )
 
 // dispatchEngineHandler serves Health (so gc.Healthy passes) + Engine (counting

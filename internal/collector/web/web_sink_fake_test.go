@@ -7,9 +7,9 @@ import (
 	"sync"
 	"testing"
 
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 	"github.com/fulminate-io/knowledge-mcp/internal/collectorwire"
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 )
 
 // webCapturingSink is a collector.Sink that records the *collectorwire.CollectResult

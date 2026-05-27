@@ -3,8 +3,8 @@
 package k8s
 
 import (
-	"github.com/fulminate-io/knowledge-mcp/internal/crossgraph"
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/crossgraph"
 )
 
 // proxyAccumulator collects the cross-graph proxy nodes a K8s resolver

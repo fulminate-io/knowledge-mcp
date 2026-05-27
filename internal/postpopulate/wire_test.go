@@ -6,8 +6,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
 // captureCaller records every Execute request so the wire helpers can be

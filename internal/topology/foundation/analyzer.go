@@ -5,8 +5,8 @@ package foundation
 import (
 	"context"
 
-	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
 // GraphCaller is the narrow wire seam every analyzer reads through: a single

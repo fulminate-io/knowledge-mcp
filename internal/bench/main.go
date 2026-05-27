@@ -25,9 +25,9 @@ import (
 	"strings"
 	"time"
 
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/pdf/pdfcollector"
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 )
 
 func main() {
@@ -71,6 +71,12 @@ func main() {
 		defer pprof.StopCPUProfile()
 	}
 
+	runBenchmark(*pdfPath, *iterations)
+	runInspection(*pdfPath, *dumpNodeType, *dumpLimit, *dumpRepeats, *dumpAround)
+	writeMemProfile(*memProfile)
+}
+
+func runBenchmark(pdfPath string, iterations int) {
 	c := &pdfcollector.PDFCollector{}
 	ctx := context.Background()
 	opts := collector.CollectOptions{}
@@ -81,9 +87,9 @@ func main() {
 
 	var totalDuration time.Duration
 	var nodes, edges int
-	for i := 0; i < *iterations; i++ {
+	for i := range iterations {
 		start := time.Now()
-		result, err := c.Collect(ctx, *pdfPath, opts)
+		result, err := c.Collect(ctx, pdfPath, opts)
 		elapsed := time.Since(start)
 		if err != nil {
 			log.Fatalf("iter %d: collect: %v", i, err)
@@ -96,43 +102,49 @@ func main() {
 
 	runtime.ReadMemStats(&memAfter)
 
-	avg := totalDuration / time.Duration(*iterations)
+	avg := totalDuration / time.Duration(iterations)
 	fmt.Println()
 	fmt.Println("--- summary ---")
-	fmt.Printf("pdf=%s\n", *pdfPath)
-	fmt.Printf("iterations=%d\n", *iterations)
+	fmt.Printf("pdf=%s\n", pdfPath)
+	fmt.Printf("iterations=%d\n", iterations)
 	fmt.Printf("avg_duration=%s\n", avg)
 	fmt.Printf("nodes=%d\n", nodes)
 	fmt.Printf("edges=%d\n", edges)
 	fmt.Printf("heap_alloc_delta=%d bytes\n", int64(memAfter.HeapAlloc)-int64(memBefore.HeapAlloc))
 	fmt.Printf("total_alloc_delta=%d bytes\n", memAfter.TotalAlloc-memBefore.TotalAlloc)
 	fmt.Printf("mallocs_delta=%d\n", memAfter.Mallocs-memBefore.Mallocs)
+}
 
-	lastResult, lastErr := c.Collect(ctx, *pdfPath, opts)
-	if lastErr != nil {
-		log.Fatalf("final collect for inspection: %v", lastErr)
+func runInspection(pdfPath, dumpNodeType string, dumpLimit int, dumpRepeats bool, dumpAround string) {
+	c := &pdfcollector.PDFCollector{}
+	result, err := c.Collect(context.Background(), pdfPath, collector.CollectOptions{})
+	if err != nil {
+		log.Fatalf("final collect for inspection: %v", err)
 	}
-	printTypeBreakdown(lastResult.Nodes)
-	if *dumpRepeats {
-		printRepeatedFingerprints(lastResult.Nodes)
+	printTypeBreakdown(result.Nodes)
+	if dumpRepeats {
+		printRepeatedFingerprints(result.Nodes)
 	}
-	if *dumpNodeType != "" {
-		printNodesOfType(lastResult.Nodes, *dumpNodeType, *dumpLimit)
+	if dumpNodeType != "" {
+		printNodesOfType(result.Nodes, dumpNodeType, dumpLimit)
 	}
-	if *dumpAround != "" {
-		printNodesAround(lastResult.Nodes, *dumpAround)
+	if dumpAround != "" {
+		printNodesAround(result.Nodes, dumpAround)
 	}
+}
 
-	if *memProfile != "" {
-		f, err := os.Create(*memProfile)
-		if err != nil {
-			log.Fatalf("create mem profile: %v", err)
-		}
-		defer f.Close()
-		runtime.GC()
-		if err := pprof.WriteHeapProfile(f); err != nil {
-			log.Fatalf("write heap profile: %v", err)
-		}
+func writeMemProfile(path string) {
+	if path == "" {
+		return
+	}
+	f, err := os.Create(path)
+	if err != nil {
+		log.Fatalf("create mem profile: %v", err)
+	}
+	defer f.Close()
+	runtime.GC()
+	if err := pprof.WriteHeapProfile(f); err != nil {
+		log.Fatalf("write heap profile: %v", err)
 	}
 }
 

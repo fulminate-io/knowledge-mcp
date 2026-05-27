@@ -72,9 +72,9 @@ func newOAuthSourceForTest(store Store, tokenEndpoint string) *OAuthTokenSource 
 // token with a far-future expiry returns immediately without contacting
 // the server.
 func TestOAuthTokenSource_CacheHitNoNetwork(t *testing.T) {
-	var calls int32
+	var calls atomic.Int32
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		atomic.AddInt32(&calls, 1)
+		calls.Add(1)
 		w.WriteHeader(http.StatusInternalServerError)
 	}))
 	defer srv.Close()
@@ -94,7 +94,7 @@ func TestOAuthTokenSource_CacheHitNoNetwork(t *testing.T) {
 	if tok == "" || !perms.Has(PermMCPKnowledgeRead) {
 		t.Errorf("unexpected return: tok=%q perms=%v", tok, perms.List())
 	}
-	if got := atomic.LoadInt32(&calls); got != 0 {
+	if got := calls.Load(); got != 0 {
 		t.Errorf("expected 0 network calls, got %d", got)
 	}
 }
@@ -103,10 +103,10 @@ func TestOAuthTokenSource_CacheHitNoNetwork(t *testing.T) {
 // accessCacheMargin triggers a refresh call that rotates the stored
 // refresh token and caches the new access token.
 func TestOAuthTokenSource_PreExpiryRefresh(t *testing.T) {
-	var calls int32
+	var calls atomic.Int32
 	newAccess := signTestJWT(t, []string{PermMCPKnowledgeRead, PermMCPKnowledgeWrite, PermDeployBYOC}, time.Now().Add(1*time.Hour).Unix())
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		atomic.AddInt32(&calls, 1)
+		calls.Add(1)
 		if err := r.ParseForm(); err != nil { //nolint:gosec // test fixture: httptest.Server with trusted local input
 			t.Fatalf("parse form: %v", err)
 		}
@@ -154,7 +154,7 @@ func TestOAuthTokenSource_PreExpiryRefresh(t *testing.T) {
 	}
 
 	// Second call hits the cache — no additional network.
-	atomic.StoreInt32(&calls, 0)
+	calls.Store(0)
 	tok2, _, err := src.Token(context.Background())
 	if err != nil {
 		t.Fatalf("Token (cached): %v", err)
@@ -162,7 +162,7 @@ func TestOAuthTokenSource_PreExpiryRefresh(t *testing.T) {
 	if tok2 != newAccess {
 		t.Errorf("second call returned different token")
 	}
-	if got := atomic.LoadInt32(&calls); got != 0 {
+	if got := calls.Load(); got != 0 {
 		t.Errorf("expected cache hit on 2nd call, got %d network calls", got)
 	}
 }

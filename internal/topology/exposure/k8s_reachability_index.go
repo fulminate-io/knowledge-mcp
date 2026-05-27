@@ -10,8 +10,8 @@ import (
 
 	"golang.org/x/sync/errgroup"
 
-	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
 // k8s_reachability_index.go builds and queries the per-account reachability

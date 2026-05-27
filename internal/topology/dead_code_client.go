@@ -14,9 +14,9 @@ import (
 	"encoding/json"
 	"fmt"
 
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 	"github.com/fulminate-io/knowledge-mcp/internal/topology/foundation"
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 )
 
 // graphCaller is the narrow interface needed to fetch the code-graph

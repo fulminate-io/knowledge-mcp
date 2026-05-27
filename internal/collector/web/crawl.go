@@ -11,8 +11,8 @@ import (
 	"runtime/debug"
 	"sync"
 
-	"github.com/fulminate-io/knowledge-mcp/internal/kgwire"
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgwire"
 )
 
 // crawl performs a breadth-first web crawl starting from opts.SeedURLs,

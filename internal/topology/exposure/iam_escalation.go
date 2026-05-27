@@ -49,9 +49,9 @@ import (
 	"sort"
 	"sync"
 
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/topology/foundation"
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 )
 
 // maxEscalationDepth caps BFS hops. Six hops is plenty for any realistic

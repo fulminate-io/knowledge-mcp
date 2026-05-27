@@ -11,8 +11,8 @@ import (
 	"context"
 	"strings"
 
-	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
 // awsManagedPolicyPrefix identifies AWS-managed policies. Customers cannot

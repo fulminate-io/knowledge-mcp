@@ -6,10 +6,10 @@ import (
 	"context"
 	"encoding/json"
 
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/enginetest"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	workers "github.com/fulminate-io/knowledge-mcp/internal/workers"
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 )
 
 // fakeCRUDClient is a workerCRUDClient (the production interface at

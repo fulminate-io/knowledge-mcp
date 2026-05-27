@@ -15,11 +15,11 @@ package tools
 import (
 	"context"
 
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/backends"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 )
 
 // BackendResolver routes between configured external project/ticket

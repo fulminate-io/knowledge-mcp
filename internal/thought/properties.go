@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
 // ThoughtProperties holds computed properties derived from a thought's
