@@ -10,7 +10,7 @@
 //
 // Usage:
 //
-//	go build -o bin/knowledge .
+//	go build -o bin/knowledge ./cmd/knowledge
 //	./bin/knowledge --root .
 package main
 
