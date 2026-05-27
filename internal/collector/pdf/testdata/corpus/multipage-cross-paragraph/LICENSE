@@ -1,0 +1,5 @@
+multipage-cross-paragraph synthetic fixture
+Authors: knowledge T9 fixturelib (collector/pdf/testdata/gen_t9.go)
+Date: 2026
+License: Apache-2.0 (project license; synthesized fixture)
+Source: collector/pdf/testdata/gen_t9.go (writeMultipageCrossParagraph)

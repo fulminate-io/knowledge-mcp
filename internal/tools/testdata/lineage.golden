@@ -1,0 +1,23 @@
+Lineage for: lin-step (step)
+  ls sum
+  ID: <ID>
+
+  ↑ contains
+  lin-phase (phase) [pending]
+    lp psum
+    ID: <ID>
+
+    ↑ contains
+    lin-plan (plan) [active]
+      lp sum
+      ID: <ID>
+
+      ↑ contains
+      lin-ticket (ticket) [open]
+        lt sum
+        ID: <ID>
+
+        ↑ contains
+        lin-project (project) [active]
+          lp sum
+          ID: <ID>

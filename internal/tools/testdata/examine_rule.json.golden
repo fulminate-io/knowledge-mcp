@@ -1,0 +1,1 @@
+{"ancestry":null,"created_at":1767268800000000000,"description":"rule desc","edges":null,"id":"<ID>","metadata":{"enforcement":"lint","scope":"*.go"},"name":"ex-rule","source":"llm:claude","status":"","type":"rule","updated_at":1767268800000000000}

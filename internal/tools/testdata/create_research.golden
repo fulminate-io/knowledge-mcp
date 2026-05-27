@@ -1,0 +1,8 @@
+Research created: fixture-research → ID: <ID>
+
+fixture-research (research) [active]
+  ID: <ID>
+  What is the answer? (question) [open]
+    What is the answer?
+    ID: <ID>
+ [graph: knowledge/default]

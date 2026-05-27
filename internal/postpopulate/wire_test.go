@@ -1,0 +1,206 @@
+// SPDX-License-Identifier: Apache-2.0
+
+package postpopulate
+
+import (
+	"context"
+	"testing"
+
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+)
+
+// captureCaller records every Execute request so the wire helpers can be
+// asserted: exactly-one-mutation, correct selector FIELD (Account vs Repo vs
+// Name), and the create_batch nodes[]+edges[] payload.
+type captureCaller struct {
+	reqs []*knowledgev1.ExecuteRequest
+}
+
+func (c *captureCaller) Execute(_ context.Context, req *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error) {
+	c.reqs = append(c.reqs, req)
+	return &knowledgev1.ExecuteResponse{}, nil
+}
+
+// mutations returns only the requests carrying a MutationPlan.
+func (c *captureCaller) mutations() []*knowledgev1.ExecuteRequest {
+	var out []*knowledgev1.ExecuteRequest
+	for _, r := range c.reqs {
+		if r.GetMutation() != nil {
+			out = append(out, r)
+		}
+	}
+	return out
+}
+
+func TestLinkEdgesBatch_OneMutationCloudAccount(t *testing.T) {
+	cc := &captureCaller{}
+	edges := []knowledgev1.Edge{
+		{FromId: "a", ToId: "b", Type: string(kgtypes.EdgeTrusts), Method: "m"},
+		{FromId: "c", ToId: "d", Type: string(kgtypes.EdgeTrusts), Method: "m"},
+	}
+	if err := LinkEdgesBatch(context.Background(), cc, kgtypes.GraphCloud, "aws-123", edges); err != nil {
+		t.Fatalf("LinkEdgesBatch: %v", err)
+	}
+	muts := cc.mutations()
+	if len(muts) != 1 {
+		t.Fatalf("expected exactly 1 Execute mutation (no per-edge loop), got %d", len(muts))
+	}
+	tgt := muts[0].GetTarget()
+	if tgt.GetGraph() != "cloud" {
+		t.Errorf("Target.Graph = %q, want cloud", tgt.GetGraph())
+	}
+	if tgt.GetAccount() != "aws-123" {
+		t.Errorf("Target.Account = %q, want aws-123 (cloud routes by Account, NOT Name)", tgt.GetAccount())
+	}
+	if tgt.GetName() != "" {
+		t.Errorf("Target.Name = %q, want empty (cloud must NOT route by Name)", tgt.GetName())
+	}
+	plan := muts[0].GetMutation()
+	if got := len(plan.GetEdges()); got != 2 {
+		t.Errorf("plan edges = %d, want 2", got)
+	}
+	if len(plan.GetNodeBodies()) != 0 {
+		t.Errorf("LinkEdgesBatch must carry no node bodies, got %d", len(plan.GetNodeBodies()))
+	}
+}
+
+func TestLinkEdgesBatch_CodeRoutesByRepo(t *testing.T) {
+	cc := &captureCaller{}
+	edges := []knowledgev1.Edge{{FromId: "x", ToId: "y", Type: string(kgtypes.EdgeContains)}}
+	if err := LinkEdgesBatch(context.Background(), cc, kgtypes.GraphCode, "myrepo", edges); err != nil {
+		t.Fatalf("LinkEdgesBatch: %v", err)
+	}
+	muts := cc.mutations()
+	if len(muts) != 1 {
+		t.Fatalf("expected 1 mutation, got %d", len(muts))
+	}
+	tgt := muts[0].GetTarget()
+	if tgt.GetRepo() != "myrepo" {
+		t.Errorf("Target.Repo = %q, want myrepo (code routes by Repo)", tgt.GetRepo())
+	}
+	if tgt.GetAccount() != "" || tgt.GetName() != "" {
+		t.Errorf("code write leaked Account=%q Name=%q", tgt.GetAccount(), tgt.GetName())
+	}
+}
+
+func TestLinkNodesAndEdgesBatch_NodesAndEdgesOneMutation(t *testing.T) {
+	cc := &captureCaller{}
+	nodes := []*knowledgev1.Node{
+		{Id: "n1", Type: string(kgtypes.NodeCloudResource), SymbolName: "sentinel-1"},
+	}
+	edges := []knowledgev1.Edge{{FromId: "src", ToId: "n1", Type: string(kgtypes.EdgeAllowsIngressFrom), Method: "m"}}
+	if err := LinkNodesAndEdgesBatch(context.Background(), cc, kgtypes.GraphCloud, "aws-123", nodes, edges); err != nil {
+		t.Fatalf("LinkNodesAndEdgesBatch: %v", err)
+	}
+	muts := cc.mutations()
+	if len(muts) != 1 {
+		t.Fatalf("expected exactly 1 Execute mutation carrying BOTH nodes+edges, got %d", len(muts))
+	}
+	plan := muts[0].GetMutation()
+	if len(plan.GetNodeBodies()) != 1 {
+		t.Errorf("plan node bodies = %d, want 1", len(plan.GetNodeBodies()))
+	}
+	if plan.GetNodeBodies()[0].GetName() != "sentinel-1" {
+		t.Errorf("node name = %q, want sentinel-1", plan.GetNodeBodies()[0].GetName())
+	}
+	if len(plan.GetEdges()) != 1 {
+		t.Errorf("plan edges = %d, want 1", len(plan.GetEdges()))
+	}
+	if muts[0].GetTarget().GetAccount() != "aws-123" {
+		t.Errorf("Target.Account = %q, want aws-123", muts[0].GetTarget().GetAccount())
+	}
+}
+
+func TestLinkEdgesBatch_EmptyNoRPC(t *testing.T) {
+	cc := &captureCaller{}
+	if err := LinkEdgesBatch(context.Background(), cc, kgtypes.GraphCloud, "aws-123", nil); err != nil {
+		t.Fatalf("LinkEdgesBatch empty: %v", err)
+	}
+	if len(cc.reqs) != 0 {
+		t.Errorf("empty edges must fire no RPC, got %d", len(cc.reqs))
+	}
+}
+
+func TestBrowseEdges_ReadCloudByAccount(t *testing.T) {
+	cc := &captureCaller{}
+	if _, err := BrowseEdges(context.Background(), cc, kgtypes.GraphCloud, "aws-123", "zone-1", OutgoingEdges, []kgtypes.EdgeType{kgtypes.EdgeTargets}); err != nil {
+		t.Fatalf("BrowseEdges: %v", err)
+	}
+	if len(cc.reqs) != 1 {
+		t.Fatalf("expected 1 Execute query, got %d", len(cc.reqs))
+	}
+	req := cc.reqs[0]
+	tgt := req.GetTarget()
+	if tgt.GetGraph() != "cloud" || tgt.GetAccount() != "aws-123" {
+		t.Errorf("edge read routed to graph=%q account=%q, want cloud/aws-123", tgt.GetGraph(), tgt.GetAccount())
+	}
+	if tgt.GetName() != "" {
+		t.Errorf("edge read must NOT route cloud by Name, got Name=%q", tgt.GetName())
+	}
+	q := req.GetQuery()
+	if q.GetReturnMode() != knowledgev1.ReturnMode_RETURN_MODE_EDGES {
+		t.Errorf("edge read must use RETURN_MODE_EDGES, got %v", q.GetReturnMode())
+	}
+	if len(q.GetIds()) != 1 || q.GetIds()[0] != "zone-1" {
+		t.Errorf("edge read must key on Ids=[zone-1], got %v", q.GetIds())
+	}
+	if !q.GetForward() {
+		t.Errorf("edge read must be Forward=true (outgoing)")
+	}
+	if et := q.GetSelection().GetEdgeTypes(); len(et) != 1 || et[0] != "TARGETS" {
+		t.Errorf("edge read must filter EdgeTypes=[TARGETS], got %v", et)
+	}
+}
+
+func TestBrowseEdges_EmptyFromIDNoRPC(t *testing.T) {
+	cc := &captureCaller{}
+	if _, err := BrowseEdges(context.Background(), cc, kgtypes.GraphCloud, "aws-123", "", OutgoingEdges, nil); err != nil {
+		t.Fatalf("BrowseEdges empty: %v", err)
+	}
+	if len(cc.reqs) != 0 {
+		t.Errorf("empty fromID must fire no RPC, got %d", len(cc.reqs))
+	}
+}
+
+func TestUnlinkEdge_CloudByAccount(t *testing.T) {
+	cc := &captureCaller{}
+	if err := UnlinkEdge(context.Background(), cc, kgtypes.GraphCloud, "aws-123", "zone-1", "dangling.elb.amazonaws.com", kgtypes.EdgeTargets); err != nil {
+		t.Fatalf("UnlinkEdge: %v", err)
+	}
+	muts := cc.mutations()
+	if len(muts) != 1 {
+		t.Fatalf("expected exactly 1 unlink mutation, got %d", len(muts))
+	}
+	tgt := muts[0].GetTarget()
+	if tgt.GetGraph() != "cloud" || tgt.GetAccount() != "aws-123" {
+		t.Errorf("unlink routed to graph=%q account=%q, want cloud/aws-123", tgt.GetGraph(), tgt.GetAccount())
+	}
+	if tgt.GetName() != "" {
+		t.Errorf("unlink must NOT route cloud by Name, got Name=%q", tgt.GetName())
+	}
+	plan := muts[0].GetMutation()
+	if plan.GetKind() != knowledgev1.MutationPlan_MUTATION_KIND_UNLINK {
+		t.Errorf("expected UNLINK kind, got %v", plan.GetKind())
+	}
+}
+
+func TestBrowseNodes_QueryCloudByAccount(t *testing.T) {
+	cc := &captureCaller{}
+	if _, err := BrowseNodes(context.Background(), cc, kgtypes.GraphCloud, "aws-123", map[string]any{
+		"type":  string(kgtypes.NodeCloudResource),
+		"limit": 0,
+	}); err != nil {
+		t.Fatalf("BrowseNodes: %v", err)
+	}
+	if len(cc.reqs) != 1 {
+		t.Fatalf("expected 1 Execute query, got %d", len(cc.reqs))
+	}
+	tgt := cc.reqs[0].GetTarget()
+	if tgt.GetGraph() != "cloud" || tgt.GetAccount() != "aws-123" {
+		t.Errorf("browse routed to graph=%q account=%q, want cloud/aws-123", tgt.GetGraph(), tgt.GetAccount())
+	}
+	if tgt.GetName() != "" {
+		t.Errorf("browse must NOT route cloud by Name, got Name=%q", tgt.GetName())
+	}
+}

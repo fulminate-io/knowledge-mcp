@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Channels in Go - Go 101</title>
+  <meta name="author" content="Tapir Liu">
+  <meta property="og:site_name" content="Go 101">
+</head>
+<body>
+  <nav class="topnav">
+    <a href="/">Home</a> | <a href="/article/index.html">Articles</a> | <a href="/book/">Book</a>
+  </nav>
+  <div class="wrapper">
+    <article>
+      <h1>Channels in Go</h1>
+      <p>In Go, channels are a typed conduit through which you can send and receive
+      values with the channel operator, <code>&lt;-</code>. Unbuffered channels
+      synchronize sender and receiver.</p>
+      <h2>Declaring Channels</h2>
+      <pre><code>ch := make(chan int)
+go func() {
+    ch &lt;- 42
+}()
+val := &lt;-ch</code></pre>
+      <p>Closing a channel signals to receivers that no more values will be sent:</p>
+      <pre><code>close(ch)
+for v := range ch {
+    fmt.Println(v)
+}</code></pre>
+      <h2>Select</h2>
+      <p>The <code>select</code> statement multiplexes over multiple channel operations,
+      blocking until one can proceed.</p>
+      <ul>
+        <li>A channel send on a full buffered channel blocks.</li>
+        <li>A receive from an empty channel blocks.</li>
+        <li><code>default</code> makes a select non-blocking.</li>
+      </ul>
+    </article>
+  </div>
+  <footer class="site-footer">
+    <p>&copy; 2016-2024 Go 101. All rights reserved.</p>
+  </footer>
+</body>
+</html>

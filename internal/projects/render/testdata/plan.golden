@@ -1,0 +1,17 @@
+# Plan: fixture-plan
+
+fixture-plan (plan) [active]
+  ID: <ID>
+  phase-1 (phase) [pending]
+    p1 overview
+    ID: <ID>
+    step-1 (step) [pending]
+      step 1 desc
+      ID: <ID>
+    step-2 (step) [pending]
+      step 2 desc
+      ID: <ID>
+
+## Language patterns
+
+*No language patterns attached.*

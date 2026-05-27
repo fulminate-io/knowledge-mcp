@@ -1,0 +1,21 @@
+# Inspect: ex-criterion
+
+## Composite View
+- **ID:** <ID>
+- **Type:** criterion
+- **Status:** active
+- **Source:** test
+- **Created:** <TIME>
+- **Updated:** <TIME>
+
+## Ancestry
+← [step] ex-cstep (status: pending, id: <SHORTID>)
+  ← [phase] ex-cphase (status: pending, id: <SHORTID>)
+    ← [plan] ex-cplan (status: active, id: <SHORTID>)
+      ← [ticket] ex-cticket (status: open, id: <SHORTID>)
+        ← [project] ex-cproj (status: active, id: <SHORTID>)
+
+## Edges
+  → [verifies] [step] ex-cstep
+  ← [contains] [step] ex-cstep
+

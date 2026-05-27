@@ -1,0 +1,13 @@
+Decisions (2):
+
+■ cap-dec-beta
+  Choice: choice cap-dec-beta
+  Rationale: rationale cap-dec-beta
+  ID: <ID>
+
+■ cap-dec-alpha
+  Choice: choice cap-dec-alpha
+  Rationale: rationale cap-dec-alpha
+  Alternatives: alt-1, alt-2
+  ID: <ID>
+

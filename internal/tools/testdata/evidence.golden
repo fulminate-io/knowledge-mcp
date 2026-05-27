@@ -1,0 +1,12 @@
+Decision: cap-evidence-decision
+Choice: evidence choice
+Rationale: evidence rationale
+Alternatives: alt-x, alt-y
+
+Evidence:
+  • [finding] finding-1
+    fsum finding-1
+    → ref for finding-1: https://example.invalid/finding-1
+  • [finding] finding-2
+    fsum finding-2
+    → ref for finding-2: https://example.invalid/finding-2

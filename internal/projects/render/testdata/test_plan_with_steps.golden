@@ -1,0 +1,13 @@
+# Test Plan: fixture-test-plan
+
+fixture-test-plan (test_plan)
+  ID: <ID>
+  tp-step-1 (test_step)
+    tp step 1
+    ID: <ID>
+  tp-step-2 (test_step)
+    tp step 2
+    ID: <ID>
+
+## Test Runs
+

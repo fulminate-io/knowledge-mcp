@@ -1,0 +1,8 @@
+Test plan created: fixture-test-plan → ID: <ID>
+
+fixture-test-plan (test_plan)
+  ID: <ID>
+  tp-step-1 (test_step)
+    tp step 1 description
+    ID: <ID>
+ [graph: knowledge/default]

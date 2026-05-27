@@ -1,0 +1,19 @@
+# Ticket: t-with-lang
+
+**Status:** open
+
+lang desc
+
+ID: <ID>
+
+## Patterns
+
+**No patterns reason:** fixture
+
+## Language patterns
+
+- <ID> — lang-pattern-fixture
+
+### Warnings
+
+⚠ **Unresolved language patterns:** <ID>

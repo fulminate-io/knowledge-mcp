@@ -1,0 +1,266 @@
+// SPDX-License-Identifier: Apache-2.0
+
+package tools
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
+	clientlinker "github.com/fulminate-io/knowledge-mcp/internal/linker"
+	"github.com/fulminate-io/knowledge-mcp/internal/pipeline"
+	"github.com/fulminate-io/knowledge-mcp/internal/profiling"
+)
+
+// pipelineMetricser is the local view of ClientDeps that manage(status)
+// uses to overlay live LLM-pipeline counters onto the server's response.
+// Declared here (not on ClientDeps) so test fakes don't have to grow a
+// pipeline import just to compile — production *client satisfies this
+// structurally, fakes don't, and the type-assert below degrades to "no
+// overlay" when the assertion misses.
+type pipelineMetricser interface {
+	PipelineMetrics() (pipeline.Metrics, bool)
+}
+
+// pipelineResetter resets the session-lifetime failed counters after
+// clear_llm_failures removes on-disk markers. Same structural-typing
+// discipline as pipelineMetricser.
+type pipelineResetter interface {
+	ResetPipelineFailedCounters()
+}
+
+// InterceptManage dispatches manage operations that run client-side:
+//   - status: liveness + server stats.
+//   - pprof_start / pprof_stop: bracket a CPU profile of the stdio client
+//     (collector work runs here), retrievable from the loopback pprof
+//     endpoint. See package profiling.
+//
+// There is no manage(reindex) operation — the per-graph collector + global
+// pipeline drains naturally. Code collect runs via the dedicated `collect` MCP
+// tool (or `make collect`) which calls codegraph.Sync / SyncBranch against
+// RemoteUploadSink.
+func InterceptManage(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
+	if params.Name != "manage" {
+		return false, kgtools.ToolResult{}
+	}
+	var a manageArgs
+	if err := json.Unmarshal(params.Arguments, &a); err != nil {
+		return false, kgtools.ToolResult{}
+	}
+	switch a.Operation {
+	case "status":
+		return true, handleServerStatus(deps, a.Format)
+	case "pprof_start":
+		return true, handlePprofStart()
+	case "pprof_stop":
+		return true, handlePprofStop()
+	case "link":
+		return true, handleClientLinker(deps, a)
+	case "promote_metadata":
+		return true, handleManagePromoteMetadata(context.Background(), deps, a, params.Arguments)
+	case "clear_llm_failures":
+		return true, handleClientClearLLMFailures(context.Background(), deps, a)
+	case "set_metadata_overrides":
+		return true, handleClientSetMetadataOverrides(context.Background(), deps, a)
+	case "delete_branch":
+		return true, handleClientDeleteBranch(context.Background(), deps, a)
+	case "list_branches":
+		return true, handleClientListBranches(context.Background(), deps, a)
+	case "rebuild_bm25":
+		return true, handleClientRebuildBM25(context.Background(), deps, a)
+	case "rebuild_hnsw":
+		return true, handleClientRebuildHNSW(context.Background(), deps, a)
+	case "prune":
+		return true, handleClientPrune(context.Background(), deps, a)
+	}
+	return false, kgtools.ToolResult{}
+}
+
+// handleClientLinker dispatches manage(link) to the client-side cross-
+// graph linker (cmd/knowledge/internal/linker). FUL-255: the server's
+// handleLinker is now stubbed to a client-intercept-required sentinel — the
+// linker body lives client-side because it walks the graphs via gc.Call
+// and emits derived edges through mutate(link, link_graph:"linkage").
+func handleClientLinker(deps ClientDeps, a manageArgs) kgtools.ToolResult {
+	gc := deps.GraphCaller()
+	if gc == nil {
+		return errorResult("manage(link): GraphCaller is unavailable — the client is running in degraded mode")
+	}
+	res, err := clientlinker.RunAll(context.Background(), gc, clientlinker.LinkOptions{})
+	if err != nil {
+		return errorResult("manage(link): " + err.Error())
+	}
+	if a.Format == "json" {
+		payload := map[string]any{
+			"image_links":             res.ImageLinks,
+			"helm_links":              res.HelmLinks,
+			"dockerfile_links":        res.DockerfileLinks,
+			"workload_identity_links": res.WorkloadIdentityLinks,
+		}
+		errs := make([]string, 0, len(res.Errors))
+		for _, e := range res.Errors {
+			errs = append(errs, e.Error())
+		}
+		if len(errs) > 0 {
+			payload["errors"] = errs
+		}
+		return jsonResult(payload)
+	}
+	total := res.ImageLinks + res.HelmLinks + res.DockerfileLinks + res.WorkloadIdentityLinks
+	return textResult(fmt.Sprintf(
+		"Linker complete: %d total links (image=%d, helm=%d, dockerfile=%d, workload_identity=%d), errors=%d",
+		total, res.ImageLinks, res.HelmLinks, res.DockerfileLinks, res.WorkloadIdentityLinks, len(res.Errors)))
+}
+
+// handlePprofStart begins a CPU profile of the client process and lazily
+// brings up the loopback pprof endpoint so the result is fetchable.
+func handlePprofStart() kgtools.ToolResult {
+	addr, err := profiling.StartCPU()
+	if err != nil {
+		return errorResult("pprof_start: " + err.Error())
+	}
+	return textResult(fmt.Sprintf(
+		"CPU profile started. Reproduce the slow operation now, then call manage(operation:\"pprof_stop\"). pprof endpoint: http://%s/debug/pprof/",
+		addr))
+}
+
+// handlePprofStop stops the CPU profile and reports where to pull it.
+func handlePprofStop() kgtools.ToolResult {
+	url, size, err := profiling.StopCPU()
+	if err != nil {
+		return errorResult("pprof_stop: " + err.Error())
+	}
+	return textResult(fmt.Sprintf(
+		"CPU profile stopped (%d bytes). Fetch + open it:\n  go tool pprof %s\nor save a copy:\n  curl -s %s -o cpu.pprof",
+		size, url, url))
+}
+
+// manageArgs covers the fields the client-side manage intercepts read,
+// including the log-backend + log-graph management fields. The
+// configure_log_backend / list_log_backends / list_logs / discard_logs
+// dispatchers (tools_logs_manage_backend.go, tools_logs_manage_graphs.go) reach
+// for these same field names.
+type manageArgs struct {
+	Operation   string `json:"operation"`
+	Graph       string `json:"graph"`
+	Name        string `json:"name"`
+	Branch      string `json:"branch"`
+	Root        string `json:"root"`
+	Format      string `json:"format"`
+	Provider    string `json:"provider"`
+	URL         string `json:"url"`
+	AuthType    string `json:"auth_type"`
+	Credential  string `json:"credential"`
+	KubeContext string `json:"kube_context"`
+	// FUL-247 Phase 7: promote_metadata flags read by the client-side
+	// intercept to gate batch-narrative emission and re-marshal the
+	// payload with format=json forced.
+	DryRun bool `json:"dry_run"`
+	Force  bool `json:"force"`
+
+	// T-GTB3 Phase 7: set_metadata_overrides force-lists, read by the client
+	// intercept and lowered onto the Index RPC params payload. Mirror the
+	// server manageArgs fields handleSetMetadataOverrides reads.
+	ForceScalar []string `json:"force_scalar"`
+	ForceEdge   []string `json:"force_edge"`
+
+	// prune cutoff: a relative window ("24h"/"2d") or an absolute RFC3339
+	// timestamp. Tombstones tombstoned BEFORE it are hard-deleted; empty
+	// prunes ALL tombstoned nodes.
+	Before string `json:"before"`
+}
+
+// handleServerStatus reports liveness (and, when the server is up, basic
+// graph stats). Rendered either as text or JSON per the format arg.
+//
+// Pipeline counters (summary_*/embed_*) come from the CLIENT-side
+// pipeline via overlayPipelineMetrics. The server's response always
+// returns zero for those fields — the LLM pipeline moved to the stdio
+// client (post-BCN5) so its live counts only exist here. When the
+// pipeline is disabled (--no-llm-pipeline, or neither summarizer nor
+// embedder configured), the counters render as "(pipeline disabled)"
+// instead of zeros so the operator can tell the difference between
+// "queue empty" and "pipeline never wired."
+func handleServerStatus(deps ClientDeps, format string) kgtools.ToolResult {
+	gc := deps.GraphClient()
+	if !gc.Healthy() {
+		if format == "json" {
+			return jsonResult(map[string]any{"status": "not_running"})
+		}
+		return textResult("Graph server: NOT RUNNING")
+	}
+	status, err := gc.Status()
+	if err != nil {
+		return errorResult("status failed: " + err.Error())
+	}
+	metrics, pipelineOK := overlayPipelineMetrics(deps, status)
+	if format == "json" {
+		status["status"] = "running"
+		status["pipeline_enabled"] = pipelineOK
+		return jsonResult(status)
+	}
+	pipelineLine := "  Summarization: (pipeline disabled)\n  Embedding: (pipeline disabled)"
+	if pipelineOK {
+		pipelineLine = fmt.Sprintf(
+			"  Summarization: %d queued, %d running, %d succeeded, %d failed\n  Embedding: %d queued, %d running, %d succeeded, %d failed",
+			metrics.SummaryQueued, metrics.SummaryRunning, metrics.SummarySucceeded, metrics.SummaryFailed,
+			metrics.EmbedQueued, metrics.EmbedRunning, metrics.EmbedSucceeded, metrics.EmbedFailed)
+	}
+	return textResult(fmt.Sprintf(
+		"Graph server: RUNNING\n  PID: %.0f\n  Nodes: %.0f\n  Edges: %.0f\n  Vectors: %.0f\n  BM25 docs: %.0f\n  Path: %s\n%s",
+		status["pid"], status["nodes"], status["edges"], status["binary_vectors"], status["bm25_docs"], status["graph_path"],
+		pipelineLine))
+}
+
+// overlayPipelineMetrics reads the client-side LLM pipeline counters and
+// merges them into the status map (so format=json carriers the live
+// values too). Returns (Metrics, true) when the deps satisfy the
+// optional pipelineMetricser interface AND the pipeline was wired;
+// (zero, false) when either the type assert misses (test fakes) or the
+// pipeline is disabled (--no-llm-pipeline). Callers render the disabled
+// case visibly so it doesn't look like the pipeline silently failed.
+func overlayPipelineMetrics(deps ClientDeps, status map[string]any) (pipeline.Metrics, bool) {
+	pm, ok := deps.(pipelineMetricser)
+	if !ok {
+		return pipeline.Metrics{}, false
+	}
+	m, wired := pm.PipelineMetrics()
+	if !wired {
+		return pipeline.Metrics{}, false
+	}
+	status["summary_queued"] = float64(m.SummaryQueued)
+	status["summary_running"] = float64(m.SummaryRunning)
+	status["summary_succeeded"] = float64(m.SummarySucceeded)
+	status["summary_failed"] = float64(m.SummaryFailed)
+	status["embed_queued"] = float64(m.EmbedQueued)
+	status["embed_running"] = float64(m.EmbedRunning)
+	status["embed_succeeded"] = float64(m.EmbedSucceeded)
+	status["embed_failed"] = float64(m.EmbedFailed)
+	return m, true
+}
+
+// textResult and errorResult mirror the repo-root helpers byte-for-byte.
+// We replicate them here (rather than calling kgtools.TextResult /
+// kgtools.ErrorResult) because kgtools.ErrorResult prepends "Error: " to
+// every message, and the MCP output shape for these client-intercepted
+// paths matches the prefix-free repo-root errorResult. Preserving output
+// shape is worth 5 lines of duplication.
+
+func textResult(text string) kgtools.ToolResult {
+	return kgtools.ToolResult{Content: []kgtools.ContentBlock{{Type: "text", Text: text}}}
+}
+
+func errorResult(msg string) kgtools.ToolResult {
+	return kgtools.ToolResult{Content: []kgtools.ContentBlock{{Type: "text", Text: msg}}, IsError: true}
+}
+
+// jsonResult marshals data as JSON and returns a text result carrying the
+// JSON body. Errors fall through to errorResult.
+func jsonResult(data any) kgtools.ToolResult {
+	b, err := json.Marshal(data)
+	if err != nil {
+		return errorResult("json marshal: " + err.Error())
+	}
+	return textResult(string(b))
+}

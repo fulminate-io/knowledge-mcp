@@ -1,0 +1,15 @@
+bin/
+!bin/.gitkeep
+*.bin
+.knowledge-events.jsonl
+.DS_Store
+.mcp.json
+.claude/.mcp.json
+.claude/settings.json
+.envrc
+
+# Embedded Claude assets — populated at build time by
+# scripts/sync-claude-assets.sh from .claude/agents and .claude/skills.
+# Source of truth lives at the repo root; these are build-time copies.
+internal/claudeassets/agents/
+internal/claudeassets/skills/

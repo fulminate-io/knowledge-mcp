@@ -1,0 +1,26 @@
+capture-plan (plan) [active]
+  ID: <ID>
+  phase-1 (phase) [pending]
+    p1 over
+    ID: <ID>
+    step-1a (step) [pending]
+      desc 1a
+      ID: <ID>
+    step-1b (step) [pending]
+      desc 1b
+      ID: <ID>
+    step-1c (step) [pending]
+      desc 1c
+      ID: <ID>
+  phase-2 (phase) [pending]
+    p2 over
+    ID: <ID>
+    step-2a (step) [pending]
+      desc 2a
+      ID: <ID>
+    step-2b (step) [pending]
+      desc 2b
+      ID: <ID>
+    step-2c (step) [pending]
+      desc 2c
+      ID: <ID>

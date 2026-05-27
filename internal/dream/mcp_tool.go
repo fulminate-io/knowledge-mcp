@@ -1,0 +1,238 @@
+// SPDX-License-Identifier: Apache-2.0
+
+package dream
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"strings"
+
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
+	"github.com/fulminate-io/knowledge-mcp/internal/session"
+
+	einotool "github.com/cloudwego/eino/components/tool"
+	"github.com/cloudwego/eino/schema"
+)
+
+// DispatchFunc runs ONE full standard client tool call: the SAME path
+// MCPClient.handleMCPToolCall takes (run the client intercept chain; if
+// intercepted return its result, else engine.Dispatch the rewritten args
+// through the single Execute/Call passthrough). The dream worker's eino tools
+// wrap this so worker tool calls ride the IDENTICAL dispatch upstream MCP
+// traffic uses — no worker-specific tool plumbing, no second raw-to-legacy
+// passthrough (decision 620137ea). cmd/knowledge wires it to dispatchForRunner;
+// the CLI-subcommand callers wire a degraded dispatch that still routes through
+// engine.Dispatch (the single passthrough), never a bespoke one.
+type DispatchFunc func(ctx context.Context, name string, args json.RawMessage) (kgtools.ToolResult, error)
+
+// mcpTool wraps one MCP tool name behind eino's InvokableTool interface.
+// Every InvokableRun call routes through the standard client dispatch (intercept
+// chain then engine.Dispatch) with the worker's session_id stamped onto the
+// outgoing context so the chokepoint in cmd/knowledge-server's tools_dispatch
+// emits Origin="worker:<name>" on tool-started / tool-completed events.
+//
+// The substrate keeps no per-call cache. mcpTool instances are constructed
+// once per worker invocation by BuildAllowedTools and discarded when ReAct
+// returns; sharing across goroutines is safe because the only mutable state
+// (sessionID, schema, dispatch) is set at construction time.
+type mcpTool struct {
+	name        string
+	description string
+	schemaInfo  *schema.ToolInfo
+	sessionID   string
+	dispatch    DispatchFunc
+}
+
+// Compile-time guarantee: mcpTool satisfies eino's InvokableTool. ReAct's
+// ToolsNode rejects mismatched implementations at runtime; this fails the
+// build instead.
+var _ einotool.InvokableTool = (*mcpTool)(nil)
+
+// Info returns the eino schema describing this tool. The pointer is shared
+// across calls — eino treats *schema.ToolInfo as read-only.
+func (t *mcpTool) Info(_ context.Context) (*schema.ToolInfo, error) {
+	return t.schemaInfo, nil
+}
+
+// InvokableRun dispatches one tool call through the standard client path
+// (t.dispatch = intercept chain then engine.Dispatch) and packs the resulting
+// Content blocks into the single string the eino model expects as a tool message.
+// The worker session_id is stamped onto the ctx so the chokepoint emits
+// Origin="worker:<name>" on the tool-started/completed events.
+//
+// Error policy:
+//   - dispatch transport / RPC error → return wrapped Go error.
+//   - ToolResult{IsError: true} → return Go error containing the concatenated
+//     text. The model sees "tool failed" rather than a tool message carrying an
+//     error string and continuing as if all was well.
+//   - Successful ToolResult → concatenate Content text blocks and return.
+func (t *mcpTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ ...einotool.Option) (string, error) {
+	ctx = session.ContextWithSessionID(ctx, t.sessionID)
+	res, err := t.dispatch(ctx, t.name, json.RawMessage(argumentsInJSON))
+	if err != nil {
+		return "", fmt.Errorf("mcp tool %s: %w", t.name, err)
+	}
+	if res.IsError {
+		return "", fmt.Errorf("mcp tool %s: %s", t.name, joinTextBlocks(res.Content))
+	}
+	return joinTextBlocks(res.Content), nil
+}
+
+// joinTextBlocks concatenates the Text fields of every text-type ContentBlock
+// in res.Content, ignoring any non-text blocks (the substrate currently emits
+// only "text" but the proto allows other types). Blocks separate with a
+// single newline so the model sees a coherent multi-line tool output.
+func joinTextBlocks(blocks []kgtools.ContentBlock) string {
+	var sb strings.Builder
+	for i, b := range blocks {
+		if b.Type != "" && b.Type != "text" {
+			continue
+		}
+		if i > 0 && sb.Len() > 0 {
+			sb.WriteByte('\n')
+		}
+		sb.WriteString(b.Text)
+	}
+	return sb.String()
+}
+
+// BuildAllowedTools filters the client-owned tool catalog by allowlist and
+// returns one InvokableTool per allowlist entry, in declaration order. Every
+// returned tool stamps workerSessionID onto its outgoing context so the
+// chokepoint can emit Origin="worker:<name>" on tool events.
+//
+// catalog (required) is the client-owned MCP tool catalog
+// (tools.AllToolSchemas). The Runner carries it (wired at bootstrap from
+// tools.AllToolSchemas, which cannot be imported here directly because tools
+// imports dream); BuildAllowedTools just filters the value.
+//
+// dispatch (required) is the standard client tool-call path each returned tool
+// routes through — the SAME intercept-chain → engine.Dispatch sequence upstream
+// MCP traffic uses (no worker-specific plumbing).
+//
+// Errors:
+//   - Empty allowlist → empty slice + nil error (caller's responsibility to
+//     reject; Worker.Validate already does so but the substrate is defensive).
+//   - Allowlist name not in the catalog → wrapped "unknown tool"
+//     error. ReAct cannot recover from a misspelled tool name; surfacing it
+//     at construction time is faster than letting the model emit one and
+//     fail the call.
+func BuildAllowedTools(catalog []kgtools.MCPTool, allowlist []string, workerSessionID string, dispatch DispatchFunc) ([]einotool.InvokableTool, error) {
+	if dispatch == nil {
+		return nil, fmt.Errorf("dream: BuildAllowedTools: nil DispatchFunc")
+	}
+	if workerSessionID == "" {
+		return nil, fmt.Errorf("dream: BuildAllowedTools: empty workerSessionID")
+	}
+	if len(allowlist) == 0 {
+		return []einotool.InvokableTool{}, nil
+	}
+
+	byName := make(map[string]kgtools.MCPTool, len(catalog))
+	for _, t := range catalog {
+		byName[t.Name] = t
+	}
+
+	out := make([]einotool.InvokableTool, 0, len(allowlist))
+	for _, name := range allowlist {
+		t, ok := byName[name]
+		if !ok {
+			return nil, fmt.Errorf("dream: BuildAllowedTools: tool %q not in client catalog", name)
+		}
+		info, err := mcpToolToToolInfo(t)
+		if err != nil {
+			return nil, fmt.Errorf("dream: BuildAllowedTools: convert schema for %q: %w", name, err)
+		}
+		out = append(out, &mcpTool{
+			name:        t.Name,
+			description: t.Description,
+			schemaInfo:  info,
+			sessionID:   workerSessionID,
+			dispatch:    dispatch,
+		})
+	}
+	return out, nil
+}
+
+// mcpToolToToolInfo converts a client-owned kgtools.MCPTool (Name, Description,
+// InputSchema as a typed struct) into the eino schema.ToolInfo shape expected
+// by ToolCallingChatModel.WithTools. The InputSchema is marshaled to JSON
+// bytes and decoded into the local mcpInputSchema tree so the conversion logic
+// is shared regardless of how the schema arrived. The eino jsonschema package
+// re-uses the standard JSON Schema 2020-12 shape; the catalog emits
+// draft-07-compatible bytes that round-trip cleanly when the relevant
+// keywords stay common (type, properties, required, items, enum, description).
+func mcpToolToToolInfo(t kgtools.MCPTool) (*schema.ToolInfo, error) {
+	info := &schema.ToolInfo{
+		Name: t.Name,
+		Desc: t.Description,
+	}
+	// A no-properties object schema means a no-args tool — leave ParamsOneOf
+	// nil so eino correctly reports it.
+	if len(t.InputSchema.Properties) == 0 {
+		return info, nil
+	}
+	raw, err := json.Marshal(t.InputSchema)
+	if err != nil {
+		return nil, fmt.Errorf("marshal input_schema: %w", err)
+	}
+	// Decode the server's MCP-style {"type":"object","properties":...} shape
+	// directly into the eino ParameterInfo tree. We avoid pulling in the
+	// eino-contrib/jsonschema dependency because the substrate's tool
+	// schemas are well-bounded: object roots with simple-typed properties.
+	var sm mcpInputSchema
+	if err := json.Unmarshal(raw, &sm); err != nil {
+		return nil, fmt.Errorf("unmarshal input_schema: %w", err)
+	}
+	if sm.Type != "" && sm.Type != "object" {
+		return nil, fmt.Errorf("input_schema root type %q: only \"object\" supported", sm.Type)
+	}
+	params := make(map[string]*schema.ParameterInfo, len(sm.Properties))
+	required := make(map[string]bool, len(sm.Required))
+	for _, r := range sm.Required {
+		required[r] = true
+	}
+	for name, prop := range sm.Properties {
+		params[name] = mcpPropertyToParameterInfo(prop, required[name])
+	}
+	info.ParamsOneOf = schema.NewParamsOneOfByParams(params)
+	return info, nil
+}
+
+// mcpInputSchema mirrors domains/tools.InputSchema, decoded from JSON. We
+// keep a local copy instead of importing domains/tools so domains/dream
+// stays decoupled from the kgtools tool-catalog package.
+type mcpInputSchema struct {
+	Type       string                 `json:"type"`
+	Properties map[string]mcpProperty `json:"properties"`
+	Required   []string               `json:"required"`
+}
+
+// mcpProperty mirrors domains/tools.Property.
+type mcpProperty struct {
+	Type        string       `json:"type"`
+	Description string       `json:"description"`
+	Items       *mcpProperty `json:"items"`
+	Enum        []string     `json:"enum"`
+}
+
+// mcpPropertyToParameterInfo recursively translates the MCP Property shape
+// to eino's ParameterInfo. The substrate's tool schemas use a small subset
+// of JSON Schema (string/integer/number/boolean/array/object); unknown
+// types pass through verbatim and the chat model surfaces the type to the
+// downstream provider.
+func mcpPropertyToParameterInfo(prop mcpProperty, required bool) *schema.ParameterInfo {
+	pi := &schema.ParameterInfo{
+		Type:     schema.DataType(prop.Type),
+		Desc:     prop.Description,
+		Required: required,
+	}
+	if len(prop.Enum) > 0 {
+		pi.Enum = append(pi.Enum, prop.Enum...)
+	}
+	if prop.Items != nil {
+		pi.ElemInfo = mcpPropertyToParameterInfo(*prop.Items, false)
+	}
+	return pi
+}

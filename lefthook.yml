@@ -1,0 +1,105 @@
+# Lefthook configuration for knowledge-graph
+# NOTE: parallel disabled because go-fmt and go-imports both use 'git add'
+# which creates index.lock conflicts when running concurrently
+pre-commit:
+  parallel: false
+  commands:      
+    go-fmt:
+      glob: "*.go"
+      exclude:
+        - "vendor/**"
+        - "gen/**"
+      run: gofmt -l -w {staged_files} && git add {staged_files}
+      stage_fixed: true
+
+    go-imports:
+      glob: "*.go"
+      exclude:
+        - "vendor/**"
+        - "gen/**"
+      run: goimports -w {staged_files} && git add {staged_files}
+      stage_fixed: true
+
+    golangci-lint:
+      glob: "*.go"
+      exclude:
+        - "vendor/**"
+        - "gen/**"
+      run: |
+        set -e
+        golangci-lint run --fix
+        (cd cmd/knowledge && golangci-lint run --fix)
+      stage_fixed: true
+
+    go-vet:
+      glob: "*.go"
+      exclude: "vendor/**"
+      run: |
+        set -e
+        go vet ./...
+        (cd cmd/knowledge && go vet ./...)
+
+    pdfcpu-confinement:                                                                                
+      glob: "cmd/knowledge/internal/collector/pdf/**/*.go"
+      run: |                                                                                           
+        # Verify github.com/pdfcpu/pdfcpu is imported ONLY by packages under
+        # cmd/knowledge/internal/collector/pdf/internal/pdfcpu/. The wrapper boundary lets us swap
+        # pdfcpu out without touching every sub-package; a stray import                                
+        # outside the wrapper undoes that.
+        bash cmd/knowledge/internal/collector/pdf/internal/pdfcpu/confinement_check.sh                                        
+      fail_text: "pdfcpu/pdfcpu imported outside cmd/knowledge/internal/collector/pdf/internal/pdfcpu/ — confinement boundary violated."
+
+    file-length:
+      glob: "*.go"
+      exclude:
+        - "vendor/**"
+        - "gen/**"
+      run: |
+        has_warning=0
+        has_error=0
+        for f in {staged_files}; do
+          lines=$(wc -l < "$f")
+          if [ "$lines" -gt 500 ]; then
+            echo "ERROR: $f has $lines lines (max: 500) - MUST be split"
+            has_error=1
+          elif [ "$lines" -gt 300 ]; then
+            echo "WARNING: $f has $lines lines (recommended max: 300)"
+            has_warning=1
+          fi
+        done
+        if [ "$has_error" -eq 1 ]; then
+          exit 1
+        fi
+      fail_text: "Some files exceed 500 lines and MUST be split."
+
+pre-push:
+  parallel: false
+  commands: 
+    go-tests:
+      glob: "*.go"
+      exclude: "vendor/**"
+      # `make test` runs all three workspace modules (contract / client /
+      # server -tags internal) with -p 4. A bare `go test ./...` here is
+      # module-scoped even under go.work and would only cover the contract
+      # module — leaving client + server untested before push.
+      run: make test
+      fail_text: "Go tests failed!"
+      
+skip:
+  - merge
+  - rebase
+
+commit-msg:
+  commands:
+    no-ai-attribution:
+      # Commit messages are the author's voice — no AI/LLM provenance lines.
+      # Blocks Co-Authored-By trailers, anthropic.com emails, "Generated with Claude",
+      # and the robot footer. {1} is the path to the commit message file.
+      run: |
+        if grep -iqE 'co-authored-by|@anthropic\.com|generated with .*claude|🤖' {1}; then
+          echo "ERROR: commit message contains AI attribution:"
+          grep -inE 'co-authored-by|@anthropic\.com|generated with .*claude|🤖' {1}
+          echo "Remove the attribution line(s) — commit messages are the author's voice."
+          exit 1
+        fi
+      fail_text: "AI attribution in commit message (Co-Authored-By / @anthropic.com / 'Generated with Claude' / robot footer) — remove it."

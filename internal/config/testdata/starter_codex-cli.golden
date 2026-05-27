@@ -1,0 +1,75 @@
+# ~/.knowledge/config — auto-generated starter
+#
+# This file was written on first run because no config existed yet.
+# Edit freely; knowledge-server only reads it at startup.
+#
+# Secrets MAY be set in [credentials] below (chmod the file 600); otherwise
+# each key falls back to its env var:
+#   anthropic → ANTHROPIC_API_KEY
+#   openai    → OPENAI_API_KEY
+#   gemini    → GEMINI_API_KEY
+#   voyage    → VOYAGE_API_KEY  (embeddings + rerank; unset → BM25-only)
+#   linear    → LINEAR_API_KEY  (Linear backend; unset → disabled)
+#
+# CLI providers (claude-cli, codex-cli) REQUIRE an explicit `cli_bin`
+# field — there is no PATH fallback. The auto-detector resolved the
+# path below at first-run via exec.LookPath; edit it if you ever move
+# the CLI binary. Required-cli_bin makes launchd/systemd-managed
+# servers (which run with a sanitized PATH) work the same as
+# interactive shells.
+
+# schema_version pins the format this file was written under. Bumped
+# when knowledge introduces a breaking change to the TOML shape so
+# old configs surface a clear "upgrade knowledge" error instead of
+# a confusing parse failure. Absent = treated as version 1 (pre-
+# versioning configs are accepted as-is).
+schema_version = 1
+
+[default]
+provider = "codex-cli"
+model    = "o4-mini-codex"
+
+# Per-consumer overrides inherit unset fields from [default]. Summarizers
+# do simple text extraction (haiku-class is plenty); dream phases run
+# multi-step reasoning and benefit from an opus-class model. Uncomment
+# and edit any block below to point a single consumer at a different
+# provider or model. All three fields (provider, model, cli_bin) are
+# optional inside a per-consumer section — anything you set here
+# overrides [default]; anything you leave out inherits.
+#
+# [summarizer]
+# provider = "anthropic"
+# model    = "claude-haiku-4-5-20251001"
+#
+# [dream]
+# provider = "anthropic"
+# model    = "claude-opus-4-7"
+
+# Optional. API keys for the embedder, the Linear backend, and the HTTP
+# LLM providers. Each key falls back to the matching env var when unset
+# here (VOYAGE_API_KEY, LINEAR_API_KEY, ANTHROPIC_API_KEY, OPENAI_API_KEY,
+# GEMINI_API_KEY). Storing them here makes the daemon launch-method-
+# agnostic (brew services / systemd / k8s all read this file) — chmod the
+# file 600 if you do. The default provider="claude-cli" needs none of the
+# LLM keys (it auths via your `claude` login).
+#
+# [credentials]
+# voyage_api_key    = "..."
+# linear_api_key    = "..."
+# anthropic_api_key = "..."
+# openai_api_key    = "..."
+# gemini_api_key    = "..."
+
+# Optional. Client-side auto-prune policy applied at MCP startup. The
+# stdio client (bin/knowledge) issues delete(older_than:..., type:...)
+# RPCs against the local knowledge-server when these fields are set;
+# missing section or empty field = no prune for that type (strictly
+# opt-in, no built-in defaults). Unlike [credentials] there is NO
+# env-var fallback — retention policy is a deliberate per-machine
+# choice that belongs in this file.
+#
+# Durations accept the same shapes as the delete tool: '24h', '7d',
+# '30m', etc.
+#
+# [retention]
+# sessions = "7d"

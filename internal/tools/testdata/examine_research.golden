@@ -1,0 +1,16 @@
+# Inspect: ex-research-topic
+
+## Composite View
+- **ID:** <ID>
+- **Type:** research
+- **Status:** active
+- **Source:** llm:claude
+- **Created:** <TIME>
+- **Updated:** <TIME>
+
+## Ancestry
+(no parent — orphan node)
+
+## Edges
+  → [contains] [question] What is the answer?
+

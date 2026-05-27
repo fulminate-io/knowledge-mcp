@@ -1,0 +1,13 @@
+# Research: fixture-research
+
+fixture-research (research) [active]
+  ID: <ID>
+  What is the answer? (question) [open]
+    question desc
+    ID: <ID>
+
+## Findings
+
+### Q: What is the answer?
+  - [finding] fixture-finding — ID: <ID>
+    finding desc fixture-finding

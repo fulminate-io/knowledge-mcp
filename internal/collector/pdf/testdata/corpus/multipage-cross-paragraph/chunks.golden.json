@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "chunks": [
+    {
+      "kind": "paragraph",
+      "text": "This document spans three pages and exercises the chunker's cross-page paragraph continuity logic. The next page begins mid-sentence, continuing this paragraph without an intervening blank line.",
+      "page_range": [
+        0,
+        0
+      ],
+      "bbox": [
+        100,
+        678,
+        377.08000000000004,
+        732
+      ]
+    },
+    {
+      "kind": "paragraph",
+      "text": "The chunker should recognize this run as the same paragraph that began on page 1, joining the spans across the page boundary into one logical chunk.",
+      "page_range": [
+        1,
+        1
+      ],
+      "bbox": [
+        100,
+        692,
+        372.124,
+        732
+      ]
+    },
+    {
+      "kind": "paragraph",
+      "text": "And the final continuation here on page 3 closes the cross-page paragraph fixture.",
+      "page_range": [
+        2,
+        2
+      ],
+      "bbox": [
+        100,
+        706,
+        356.15200000000004,
+        732
+      ]
+    }
+  ]
+}

@@ -1,0 +1,19 @@
+Plan created: fixture-plan → ID: <ID>
+
+fixture-plan (plan) [active]
+  ID: <ID>
+  phase-1 (phase) [pending]
+    phase 1 overview
+    ID: <ID>
+    step-1 (step) [pending]
+      step 1 description body
+      ID: <ID>
+    step-2 (step) [pending]
+      step 2 description body
+      ID: <ID>
+
+
+## Pattern Auto-Suggest
+Cross-practice fan-out found no hits above 0.40 for query `"fixture-plan fixture plan goal"`. If you suspect a pattern applies, run
+`search({"graph": "practice", "query": "<refined terms>"})` and retry the create call with `pattern_ids` set.
+ [graph: knowledge/default]

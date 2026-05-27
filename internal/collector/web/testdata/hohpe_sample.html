@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Messaging Patterns: Message Channel</title>
+  <meta name="author" content="Gregor Hohpe">
+  <meta property="og:site_name" content="Enterprise Integration Patterns">
+  <meta property="article:published_time" content="2003-06-15T00:00:00Z">
+</head>
+<body>
+  <nav id="site-nav">
+    <ul><li><a href="/">Home</a></li><li><a href="/patterns/">Patterns</a></li></ul>
+  </nav>
+  <header class="page-header">
+    <h1>Enterprise Integration Patterns</h1>
+  </header>
+  <main>
+    <article>
+      <h1>Message Channel</h1>
+      <p class="byline">by Gregor Hohpe</p>
+      <p>When two applications need to exchange information, they connect via a
+      <em>Message Channel</em>. The sending application places information into the
+      channel; the receiving application reads it from the channel.</p>
+      <p>A Message Channel is a logical pathway — often implemented over a message
+      broker — that decouples the sender from the receiver in time and space.</p>
+      <h2>Problem</h2>
+      <p>How can two applications communicate reliably without requiring that both
+      be available at the same time?</p>
+      <h2>Solution</h2>
+      <p>Use a Message Channel. The sending application puts the message on the
+      channel and continues; the receiving application consumes it when ready.</p>
+      <figure>
+        <img src="/img/message-channel.png" alt="Message Channel diagram">
+        <figcaption>A producer and consumer decoupled by a Message Channel.</figcaption>
+      </figure>
+    </article>
+  </main>
+  <aside class="sidebar">
+    <h3>Related Patterns</h3>
+    <ul><li><a href="/publish-subscribe/">Publish-Subscribe Channel</a></li></ul>
+  </aside>
+  <footer>
+    <p>Copyright 2003-2024. All rights reserved.</p>
+    <script>console.log("analytics");</script>
+  </footer>
+</body>
+</html>

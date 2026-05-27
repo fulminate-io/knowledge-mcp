@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "chunks": [
+    {
+      "kind": "list_item",
+      "text": "* first bullet item * second bullet item * third bullet item * fourth bullet item",
+      "page_range": [
+        0,
+        0
+      ],
+      "bbox": [
+        100,
+        698,
+        204.712,
+        752
+      ]
+    },
+    {
+      "kind": "list_item",
+      "text": "1. ordered item one 2. ordered item two 3. ordered item three",
+      "page_range": [
+        0,
+        0
+      ],
+      "bbox": [
+        100,
+        642,
+        211.38399999999996,
+        682
+      ]
+    },
+    {
+      "kind": "paragraph",
+      "text": "- outer item - inner one - inner two - second outer item",
+      "page_range": [
+        0,
+        0
+      ],
+      "bbox": [
+        100,
+        572,
+        202.70799999999997,
+        626
+      ]
+    }
+  ]
+}

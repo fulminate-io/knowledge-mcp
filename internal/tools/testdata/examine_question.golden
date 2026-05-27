@@ -1,0 +1,16 @@
+# Inspect: ex question text
+
+## Composite View
+- **ID:** <ID>
+- **Type:** question
+- **Status:** open
+- **Source:** llm:claude
+- **Created:** <TIME>
+- **Updated:** <TIME>
+
+## Ancestry
+← [research] ex-qresearch (status: active, id: <SHORTID>)
+
+## Edges
+  ← [contains] [research] ex-qresearch
+

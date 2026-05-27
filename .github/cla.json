@@ -1,0 +1,21 @@
+{
+  "name": "Knowledge Contributor License Agreement",
+  "custom-prefix": "cla",
+  "preventSignatureLoss": true,
+  "allowed-branches": ["main"],
+  "cla-assistant-url": "https://cla-assistant.io",
+  "individual-cla": {
+    "name": "Knowledge Individual Contributor License Agreement (ICLA)",
+    "url": "https://github.com/fulminate-io/knowledge-mcp/blob/main/docs/cla/ICLA.md"
+  },
+  "corporate-cla": {
+    "name": "Knowledge Corporate Contributor License Agreement (CCLA)",
+    "url": "https://github.com/fulminate-io/knowledge-mcp/blob/main/docs/cla/CCLA.md",
+    "contact": "legal@fulminate.io"
+  },
+  "signatures": {
+    "location": "managed-by-cla-assistant"
+  },
+  "contact": "legal@fulminate.io",
+  "comment-template": "Thanks for opening a pull request. Before we can merge, please sign the [Knowledge Contributor License Agreement](https://github.com/fulminate-io/knowledge-mcp/blob/main/docs/cla/ICLA.md) by following the link from the `cla-assistant` bot comment. If you are contributing on behalf of a company, see the [Corporate CLA](https://github.com/fulminate-io/knowledge-mcp/blob/main/docs/cla/CCLA.md). Questions: legal@fulminate.io."
+}

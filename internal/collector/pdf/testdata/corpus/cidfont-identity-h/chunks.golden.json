@@ -1,0 +1,19 @@
+{
+  "schema_version": 1,
+  "chunks": [
+    {
+      "kind": "paragraph",
+      "text": "AB",
+      "page_range": [
+        0,
+        0
+      ],
+      "bbox": [
+        100,
+        700,
+        112,
+        712
+      ]
+    }
+  ]
+}

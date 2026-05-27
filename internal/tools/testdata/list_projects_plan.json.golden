@@ -1,0 +1,1 @@
+{"nodes":[{"id":"<ID>","type":"plan","symbol_name":"ls-plan","summary":"ls plan sum","description":"ls plan goal","source":"llm:claude","status":"active","metadata":{"no_patterns_reason":"fixture"},"created_at":1767268800000000000,"updated_at":1767268800000000000}],"total":1}

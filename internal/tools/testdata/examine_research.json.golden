@@ -1,0 +1,1 @@
+{"ancestry":null,"created_at":"<TIMENANO>","description":"research context body","edges":[{"direction":"out","type":"contains","peer":"<ID>","peer_type":"question","peer_name":"What is the answer?"}],"id":"<ID>","name":"ex-research-topic","source":"llm:claude","status":"active","type":"research","updated_at":"<TIMENANO>"}

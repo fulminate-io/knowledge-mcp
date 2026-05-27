@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: mailto:legal@fulminate.io
+    about: Report security issues privately via email. Do not open a public issue.
+  - name: Commercial / Fulminate Cloud inquiries
+    url: https://fulminate.io
+    about: Questions about Fulminate Cloud features, pricing, or enterprise support.

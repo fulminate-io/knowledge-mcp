@@ -1,0 +1,5535 @@
+{
+  "schema_version": 1,
+  "chunks": [
+    {
+      "kind": "code_block",
+      "text": "Internet Engineering Task Force (IETF) R. Fielding, Ed.\nRequest for Comments: 7234 Adobe\nObsoletes: 2616 M. Nottingham, Ed.\nCategory: Standards Track Akamai\nISSN: 2070-1721 J. Reschke, Ed.\n                                                              greenbytes\n                                                               June 2014",
+      "page_range": [
+        0,
+        0
+      ],
+      "bbox": [
+        80,
+        623,
+        512,
+        699
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "            Hypertext Transfer Protocol (HTTP/1.1): Caching",
+      "page_range": [
+        0,
+        0
+      ],
+      "bbox": [
+        80,
+        590,
+        434,
+        600
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "Abstract",
+      "page_range": [
+        0,
+        0
+      ],
+      "bbox": [
+        80,
+        568,
+        128,
+        578
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The Hypertext Transfer Protocol (HTTP) is a stateless application\n   level protocol for distributed, collaborative, hypertext information\n   systems. This document defines HTTP caches and the associated header\n   fields that control cache behavior or indicate cacheable response\n   messages.",
+      "page_range": [
+        0,
+        0
+      ],
+      "bbox": [
+        80,
+        502,
+        512,
+        556
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "Status of This Memo",
+      "page_range": [
+        0,
+        0
+      ],
+      "bbox": [
+        80,
+        480,
+        194,
+        490
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   This is an Internet Standards Track document.",
+      "page_range": [
+        0,
+        0
+      ],
+      "bbox": [
+        80,
+        458,
+        368,
+        468
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   This document is a product of the Internet Engineering Task Force\n   (IETF). It represents the consensus of the IETF community. It has\n   received public review and has been approved for publication by the\n   Internet Engineering Steering Group (IESG). Further information on\n   Internet Standards is available in Section 2 of RFC 5741.",
+      "page_range": [
+        0,
+        0
+      ],
+      "bbox": [
+        80,
+        392,
+        500,
+        446
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   Information about the current status of this document, any errata,\n   and how to provide feedback on it may be obtained at\n   http://www.rfc-editor.org/info/rfc7234.",
+      "page_range": [
+        0,
+        0
+      ],
+      "bbox": [
+        80,
+        348,
+        494,
+        380
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "Copyright Notice",
+      "page_range": [
+        1,
+        1
+      ],
+      "bbox": [
+        80,
+        711,
+        176,
+        721
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   Copyright (c) 2014 IETF Trust and the persons identified as the\n   document authors. All rights reserved.",
+      "page_range": [
+        1,
+        1
+      ],
+      "bbox": [
+        80,
+        678,
+        476,
+        699
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   This document is subject to BCP 78 and the IETF Trust’s Legal\n   Provisions Relating to IETF Documents\n   (http://trustee.ietf.org/license-info) in effect on the date of\n   publication of this document. Please review these documents\n   carefully, as they describe your rights and restrictions with respect\n   to this document. Code Components extracted from this document must\n   include Simplified BSD License text as described in Section 4.e of\n   the Trust Legal Provisions and are provided without warranty as\n   described in the Simplified BSD License.",
+      "page_range": [
+        1,
+        1
+      ],
+      "bbox": [
+        80,
+        568,
+        512,
+        666
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   This document may contain material from IETF Documents or IETF\n   Contributions published or made publicly available before November\n   10, 2008. The person(s) controlling the copyright in some of this\n   material may not have granted the IETF Trust the right to allow\n   modifications of such material outside the IETF Standards Process.\n   Without obtaining an adequate license from the person(s) controlling\n   the copyright in such materials, this document may not be modified\n   outside the IETF Standards Process, and derivative works of it may\n   not be created outside the IETF Standards Process, except to format\n   it for publication as an RFC or to translate it into languages other\n   than English.",
+      "page_range": [
+        1,
+        1
+      ],
+      "bbox": [
+        80,
+        436,
+        506,
+        556
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "Table of Contents",
+      "page_range": [
+        1,
+        1
+      ],
+      "bbox": [
+        80,
+        414,
+        182,
+        424
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   1. Introduction ....................................................4\n      1.1. Conformance and Error Handling .............................4\n      1.2. Syntax Notation ............................................4\n           1.2.1. Delta Seconds .......................................5\n   2. Overview of Cache Operation .....................................5\n   3. Storing Responses in Caches .....................................6\n      3.1. Storing Incomplete Responses ...............................7\n      3.2. Storing Responses to Authenticated Requests ................7\n      3.3. Combining Partial Content ..................................8\n   4. Constructing Responses from Caches ..............................8\n      4.1. Calculating Secondary Keys with Vary .......................9\n      4.2. Freshness .................................................11\n           4.2.1. Calculating Freshness Lifetime .....................12\n           4.2.2. Calculating Heuristic Freshness ....................13\n           4.2.3. Calculating Age ....................................13\n           4.2.4. Serving Stale Responses ............................15\n      4.3. Validation ................................................16\n           4.3.1. Sending a Validation Request .......................16\n           4.3.2. Handling a Received Validation Request .............16",
+      "page_range": [
+        1,
+        1
+      ],
+      "bbox": [
+        80,
+        194,
+        512,
+        402
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "           4.3.3. Handling a Validation Response .....................18\n           4.3.4. Freshening Stored Responses upon Validation ........18\n           4.3.5. Freshening Responses via HEAD ......................19\n      4.4. Invalidation ..............................................20\n   5. Header Field Definitions .......................................21\n      5.1. Age .......................................................21\n      5.2. Cache-Control .............................................21\n           5.2.1. Request Cache-Control Directives ...................22\n           5.2.2. Response Cache-Control Directives ..................24\n           5.2.3. Cache Control Extensions ...........................27\n      5.3. Expires ...................................................28\n      5.4. Pragma ....................................................29\n      5.5. Warning ...................................................29\n           5.5.1. Warning: 110 - \"Response is Stale\" .................31\n           5.5.2. Warning: 111 - \"Revalidation Failed\" ...............31\n           5.5.3. Warning: 112 - \"Disconnected Operation\" ............31\n           5.5.4. Warning: 113 - \"Heuristic Expiration\" ..............31\n           5.5.5. Warning: 199 - \"Miscellaneous Warning\" .............32\n           5.5.6. Warning: 214 - \"Transformation Applied\" ............32\n           5.5.7. Warning: 299 - \"Miscellaneous Persistent Warning\" ..32\n   6. History Lists ..................................................32\n   7. IANA Considerations ............................................32\n      7.1. Cache Directive Registry ..................................32\n           7.1.1. Procedure ..........................................32\n           7.1.2. Considerations for New Cache Control Directives ....33\n           7.1.3. Registrations ......................................33\n      7.2. Warn Code Registry ........................................34\n           7.2.1. Procedure ..........................................34\n           7.2.2. Registrations ......................................34\n      7.3. Header Field Registration .................................34\n   8. Security Considerations ........................................35\n   9. Acknowledgments ................................................36\n   10. References ....................................................36\n      10.1. Normative References .....................................36\n      10.2. Informative References ...................................37\n   Appendix A. Changes from RFC 2616 .................................38\n   Appendix B. Imported ABNF .........................................39\n   Appendix C. Collected ABNF ........................................39\n   Index .............................................................41",
+      "page_range": [
+        2,
+        2
+      ],
+      "bbox": [
+        80,
+        293,
+        512,
+        721
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "1. Introduction",
+      "page_range": [
+        3,
+        3
+      ],
+      "bbox": [
+        80,
+        711,
+        176,
+        721
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   HTTP is typically used for distributed information systems, where\n   performance can be improved by the use of response caches. This\n   document defines aspects of HTTP/1.1 related to caching and reusing\n   response messages.",
+      "page_range": [
+        3,
+        3
+      ],
+      "bbox": [
+        80,
+        656,
+        500,
+        699
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   An HTTP cache is a local store of response messages and the subsystem\n   that controls storage, retrieval, and deletion of messages in it. A\n   cache stores cacheable responses in order to reduce the response time\n   and network bandwidth consumption on future, equivalent requests.\n   Any client or server MAY employ a cache, though a cache cannot be\n   used by a server that is acting as a tunnel.",
+      "page_range": [
+        3,
+        3
+      ],
+      "bbox": [
+        80,
+        579,
+        512,
+        644
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   A shared cache is a cache that stores responses to be reused by more\n   than one user; shared caches are usually (but not always) deployed as\n   a part of an intermediary. A private cache, in contrast, is\n   dedicated to a single user; often, they are deployed as a component\n   of a user agent.",
+      "page_range": [
+        3,
+        3
+      ],
+      "bbox": [
+        80,
+        513,
+        512,
+        567
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The goal of caching in HTTP/1.1 is to significantly improve\n   performance by reusing a prior response message to satisfy a current\n   request. A stored response is considered \"fresh\", as defined in\n   Section 4.2, if the response can be reused without \"validation\"\n   (checking with the origin server to see if the cached response\n   remains valid for this request). A fresh response can therefore\n   reduce both latency and network overhead each time it is reused.\n   When a cached response is not fresh, it might still be reusable if it\n   can be freshened by validation (Section 4.3) or if the origin is\n   unavailable (Section 4.2.4).",
+      "page_range": [
+        3,
+        3
+      ],
+      "bbox": [
+        80,
+        392,
+        512,
+        501
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "1.1. Conformance and Error Handling",
+      "page_range": [
+        3,
+        3
+      ],
+      "bbox": [
+        80,
+        370,
+        296,
+        380
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The key words \"MUST\", \"MUST NOT\", \"REQUIRED\", \"SHALL\", \"SHALL NOT\",\n   \"SHOULD\", \"SHOULD NOT\", \"RECOMMENDED\", \"MAY\", and \"OPTIONAL\" in this\n   document are to be interpreted as described in [RFC2119].",
+      "page_range": [
+        3,
+        3
+      ],
+      "bbox": [
+        80,
+        326,
+        506,
+        358
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   Conformance criteria and considerations regarding error handling are\n   defined in Section 2.5 of [RFC7230].",
+      "page_range": [
+        3,
+        3
+      ],
+      "bbox": [
+        80,
+        293,
+        506,
+        314
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "1.2. Syntax Notation",
+      "page_range": [
+        3,
+        3
+      ],
+      "bbox": [
+        80,
+        271,
+        206,
+        281
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   This specification uses the Augmented Backus-Naur Form (ABNF)\n   notation of [RFC5234] with a list extension, defined in Section 7 of\n   [RFC7230], that allows for compact definition of comma-separated\n   lists using a ’#’ operator (similar to how the ’*’ operator indicates\n   repetition). Appendix B describes rules imported from other\n   documents. Appendix C shows the collected grammar with all list\n   operators expanded to standard ABNF notation.",
+      "page_range": [
+        3,
+        4
+      ],
+      "bbox": [
+        80,
+        216,
+        512,
+        259
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "1.2.1. Delta Seconds",
+      "page_range": [
+        4,
+        4
+      ],
+      "bbox": [
+        80,
+        667,
+        206,
+        677
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The delta-seconds rule specifies a non-negative integer, representing\n   time in seconds.",
+      "page_range": [
+        4,
+        4
+      ],
+      "bbox": [
+        80,
+        634,
+        512,
+        655
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "     delta-seconds = 1*DIGIT",
+      "page_range": [
+        4,
+        4
+      ],
+      "bbox": [
+        80,
+        612,
+        254,
+        622
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   A recipient parsing a delta-seconds value and converting it to binary\n   form ought to use an arithmetic type of at least 31 bits of\n   non-negative integer range. If a cache receives a delta-seconds\n   value greater than the greatest integer it can represent, or if any\n   of its subsequent calculations overflows, the cache MUST consider the\n   value to be either 2147483648 (2^31) or the greatest positive integer\n   it can conveniently represent.",
+      "page_range": [
+        4,
+        4
+      ],
+      "bbox": [
+        80,
+        524,
+        512,
+        600
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "      Note: The value 2147483648 is here for historical reasons,\n      effectively represents infinity (over 68 years), and does not need\n      to be stored in binary form; an implementation could produce it as\n      a canned string if any overflow occurs, even if the calculations\n      are performed with an arithmetic type incapable of directly\n      representing that number. What matters here is that an overflow\n      be detected and not treated as a negative value in later\n      calculations.",
+      "page_range": [
+        4,
+        4
+      ],
+      "bbox": [
+        80,
+        425,
+        512,
+        512
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "2. Overview of Cache Operation",
+      "page_range": [
+        4,
+        4
+      ],
+      "bbox": [
+        80,
+        403,
+        266,
+        413
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   Proper cache operation preserves the semantics of HTTP transfers\n   ([RFC7231]) while eliminating the transfer of information already\n   held in the cache. Although caching is an entirely OPTIONAL feature\n   of HTTP, it can be assumed that reusing a cached response is\n   desirable and that such reuse is the default behavior when no\n   requirement or local configuration prevents it. Therefore, HTTP\n   cache requirements are focused on preventing a cache from either\n   storing a non-reusable response or reusing a stored response\n   inappropriately, rather than mandating that caches always store and\n   reuse particular responses.",
+      "page_range": [
+        4,
+        4
+      ],
+      "bbox": [
+        80,
+        282,
+        506,
+        391
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   Each cache entry consists of a cache key and one or more HTTP\n   responses corresponding to prior requests that used the same key.\n   The most common form of cache entry is a successful result of a\n   retrieval request: i.e., a 200 (OK) response to a GET request, which\n   contains a representation of the resource identified by the request\n   target (Section 4.3.1 of [RFC7231]). However, it is also possible to\n   cache permanent redirects, negative results (e.g., 404 (Not Found)),",
+      "page_range": [
+        4,
+        4
+      ],
+      "bbox": [
+        80,
+        194,
+        512,
+        270
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "RFC 7234 HTTP/1.1 Caching June 2014\n   incomplete results (e.g., 206 (Partial Content)), and responses to\n   methods other than GET if the method’s definition allows such caching\n   and defines something suitable for use as a cache key.\n   The primary cache key consists of the request method and target URI.\n   However, since HTTP caches in common use today are typically limited\n   to caching responses to GET, many caches simply decline other methods\n   and use only the URI as the primary cache key.\n   If a request target is subject to content negotiation, its cache\n   entry might consist of multiple stored responses, each differentiated\n   by a secondary key for the values of the original request’s selecting\n   header fields (Section 4.1).\n3. Storing Responses in Caches\n   A cache MUST NOT store a response to any request, unless:\n   o The request method is understood by the cache and defined as being\n      cacheable, and\n   o the response status code is understood by the cache, and\n   o the \"no-store\" cache directive (see Section 5.2) does not appear\n      in request or response header fields, and\n   o the \"private\" response directive (see Section 5.2.2.6) does not\n      appear in the response, if the cache is shared, and\n   o the Authorization header field (see Section 4.2 of [RFC7235]) does\n      not appear in the request, if the cache is shared, unless the\n      response explicitly allows it (see Section 3.2), and\n   o the response either:\n      * contains an Expires header field (see Section 5.3), or\n      * contains a max-age response directive (see Section 5.2.2.8), or\n      * contains a s-maxage response directive (see Section 5.2.2.9)\n         and the cache is shared, or\n      * contains a Cache Control Extension (see Section 5.2.3) that\n         allows it to be cached, or\n      * has a status code that is defined as cacheable by default (see\n         Section 4.2.2), or",
+      "page_range": [
+        5,
+        5
+      ],
+      "bbox": [
+        80,
+        205,
+        512,
+        754
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "      * contains a public response directive (see Section 5.2.2.5).",
+      "page_range": [
+        6,
+        6
+      ],
+      "bbox": [
+        80,
+        711,
+        488,
+        721
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   Note that any of the requirements listed above can be overridden by a\n   cache-control extension; see Section 5.2.3.",
+      "page_range": [
+        6,
+        6
+      ],
+      "bbox": [
+        80,
+        678,
+        512,
+        699
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   In this context, a cache has \"understood\" a request method or a\n   response status code if it recognizes it and implements all specified\n   caching-related behavior.",
+      "page_range": [
+        6,
+        6
+      ],
+      "bbox": [
+        80,
+        634,
+        512,
+        666
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   Note that, in normal operation, some caches will not store a response\n   that has neither a cache validator nor an explicit expiration time,\n   as such responses are not usually useful to store. However, caches\n   are not prohibited from storing such responses.",
+      "page_range": [
+        6,
+        6
+      ],
+      "bbox": [
+        80,
+        579,
+        512,
+        622
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "3.1. Storing Incomplete Responses",
+      "page_range": [
+        6,
+        6
+      ],
+      "bbox": [
+        80,
+        557,
+        284,
+        567
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   A response message is considered complete when all of the octets\n   indicated by the message framing ([RFC7230]) are received prior to\n   the connection being closed. If the request method is GET, the\n   response status code is 200 (OK), and the entire response header\n   section has been received, a cache MAY store an incomplete response\n   message body if the cache entry is recorded as incomplete. Likewise,\n   a 206 (Partial Content) response MAY be stored as if it were an\n   incomplete 200 (OK) cache entry. However, a cache MUST NOT store\n   incomplete or partial-content responses if it does not support the\n   Range and Content-Range header fields or if it does not understand\n   the range units used in those fields.",
+      "page_range": [
+        6,
+        6
+      ],
+      "bbox": [
+        80,
+        425,
+        512,
+        545
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   A cache MAY complete a stored incomplete response by making a\n   subsequent range request ([RFC7233]) and combining the successful\n   response with the stored entry, as defined in Section 3.3. A cache\n   MUST NOT use an incomplete response to answer requests unless the\n   response has been made complete or the request is partial and\n   specifies a range that is wholly within the incomplete response. A\n   cache MUST NOT send a partial response to a client without explicitly\n   marking it as such using the 206 (Partial Content) status code.",
+      "page_range": [
+        6,
+        6
+      ],
+      "bbox": [
+        80,
+        326,
+        512,
+        413
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "3.2. Storing Responses to Authenticated Requests",
+      "page_range": [
+        6,
+        6
+      ],
+      "bbox": [
+        80,
+        304,
+        374,
+        314
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   A shared cache MUST NOT use a cached response to a request with an\n   Authorization header field (Section 4.2 of [RFC7235]) to satisfy any\n   subsequent request unless a cache directive that allows such\n   responses to be stored is present in the response.",
+      "page_range": [
+        6,
+        6
+      ],
+      "bbox": [
+        80,
+        249,
+        506,
+        292
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   In this specification, the following Cache-Control response\n   directives (Section 5.2.2) have such an effect: must-revalidate,\n   public, and s-maxage.",
+      "page_range": [
+        6,
+        6
+      ],
+      "bbox": [
+        80,
+        205,
+        482,
+        237
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   Note that cached responses that contain the \"must-revalidate\" and/or\n   \"s-maxage\" response directives are not allowed to be served stale\n   (Section 4.2.4) by shared caches. In particular, a response with\n   either \"max-age=0, must-revalidate\" or \"s-maxage=0\" cannot be used to\n   satisfy a subsequent request without revalidating it on the origin\n   server.",
+      "page_range": [
+        7,
+        7
+      ],
+      "bbox": [
+        80,
+        656,
+        512,
+        721
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "3.3. Combining Partial Content",
+      "page_range": [
+        7,
+        7
+      ],
+      "bbox": [
+        80,
+        634,
+        266,
+        644
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   A response might transfer only a partial representation if the\n   connection closed prematurely or if the request used one or more\n   Range specifiers ([RFC7233]). After several such transfers, a cache\n   might have received several ranges of the same representation. A\n   cache MAY combine these ranges into a single stored response, and\n   reuse that response to satisfy later requests, if they all share the\n   same strong validator and the cache complies with the client\n   requirements in Section 4.3 of [RFC7233].",
+      "page_range": [
+        7,
+        7
+      ],
+      "bbox": [
+        80,
+        535,
+        506,
+        622
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   When combining the new response with one or more stored responses, a\n   cache MUST:",
+      "page_range": [
+        7,
+        7
+      ],
+      "bbox": [
+        80,
+        502,
+        506,
+        523
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   o use other header fields provided in the new response, aside from\n      Content-Range, to replace all instances of the corresponding\n      header fields in the stored response.",
+      "page_range": [
+        7,
+        7
+      ],
+      "bbox": [
+        80,
+        392,
+        500,
+        424
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "4. Constructing Responses from Caches",
+      "page_range": [
+        7,
+        7
+      ],
+      "bbox": [
+        80,
+        370,
+        308,
+        380
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   When presented with a request, a cache MUST NOT reuse a stored\n   response, unless:",
+      "page_range": [
+        7,
+        7
+      ],
+      "bbox": [
+        80,
+        337,
+        470,
+        358
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   o The presented effective request URI (Section 5.5 of [RFC7230]) and\n      that of the stored response match, and",
+      "page_range": [
+        7,
+        7
+      ],
+      "bbox": [
+        80,
+        304,
+        512,
+        325
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   o the request method associated with the stored response allows it\n      to be used for the presented request, and",
+      "page_range": [
+        7,
+        7
+      ],
+      "bbox": [
+        80,
+        271,
+        500,
+        292
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   o selecting header fields nominated by the stored response (if any)\n      match those presented (see Section 4.1), and\n   o the presented request does not contain the no-cache pragma\n      (Section 5.4), nor the no-cache cache directive (Section 5.2.1),\n      unless the stored response is successfully validated\n      (Section 4.3), and",
+      "page_range": [
+        7,
+        8
+      ],
+      "bbox": [
+        80,
+        238,
+        506,
+        259
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   o the stored response does not contain the no-cache cache directive\n      (Section 5.2.2.2), unless it is successfully validated\n      (Section 4.3), and",
+      "page_range": [
+        8,
+        8
+      ],
+      "bbox": [
+        80,
+        634,
+        506,
+        666
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   o the stored response is either:",
+      "page_range": [
+        8,
+        8
+      ],
+      "bbox": [
+        80,
+        612,
+        296,
+        622
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "      * fresh (see Section 4.2), or",
+      "page_range": [
+        8,
+        8
+      ],
+      "bbox": [
+        80,
+        590,
+        296,
+        600
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "      * allowed to be served stale (see Section 4.2.4), or",
+      "page_range": [
+        8,
+        8
+      ],
+      "bbox": [
+        80,
+        568,
+        434,
+        578
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "      * successfully validated (see Section 4.3).",
+      "page_range": [
+        8,
+        8
+      ],
+      "bbox": [
+        80,
+        546,
+        380,
+        556
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   Note that any of the requirements listed above can be overridden by a\n   cache-control extension; see Section 5.2.3.",
+      "page_range": [
+        8,
+        8
+      ],
+      "bbox": [
+        80,
+        513,
+        512,
+        534
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   When a stored response is used to satisfy a request without\n   validation, a cache MUST generate an Age header field (Section 5.1),\n   replacing any present in the response with a value equal to the\n   stored response’s current_age; see Section 4.2.3.",
+      "page_range": [
+        8,
+        8
+      ],
+      "bbox": [
+        80,
+        458,
+        506,
+        501
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   A cache MUST write through requests with methods that are unsafe\n   (Section 4.2.1 of [RFC7231]) to the origin server; i.e., a cache is\n   not allowed to generate a reply to such a request before having\n   forwarded the request and having received a corresponding response.",
+      "page_range": [
+        8,
+        8
+      ],
+      "bbox": [
+        80,
+        403,
+        500,
+        446
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   Also, note that unsafe requests might invalidate already-stored\n   responses; see Section 4.4.",
+      "page_range": [
+        8,
+        8
+      ],
+      "bbox": [
+        80,
+        370,
+        476,
+        391
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   When more than one suitable response is stored, a cache MUST use the\n   most recent response (as determined by the Date header field). It\n   can also forward the request with \"Cache-Control: max-age=0\" or\n   \"Cache-Control: no-cache\" to disambiguate which response to use.",
+      "page_range": [
+        8,
+        8
+      ],
+      "bbox": [
+        80,
+        315,
+        506,
+        358
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   A cache that does not have a clock available MUST NOT use stored\n   responses without revalidating them upon every use.",
+      "page_range": [
+        8,
+        8
+      ],
+      "bbox": [
+        80,
+        282,
+        482,
+        303
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "4.1. Calculating Secondary Keys with Vary",
+      "page_range": [
+        8,
+        8
+      ],
+      "bbox": [
+        80,
+        260,
+        332,
+        270
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   When a cache receives a request that can be satisfied by a stored\n   response that has a Vary header field (Section 7.1.4 of [RFC7231]),\n   it MUST NOT use that response unless all of the selecting header\n   fields nominated by the Vary header field match in both the original\n   request (i.e., that associated with the stored response), and the\n   presented request.",
+      "page_range": [
+        8,
+        9
+      ],
+      "bbox": [
+        80,
+        216,
+        500,
+        248
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The selecting header fields from two requests are defined to match if\n   and only if those in the first request can be transformed to those in\n   the second request by applying any of the following:",
+      "page_range": [
+        9,
+        9
+      ],
+      "bbox": [
+        80,
+        645,
+        512,
+        677
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   o adding or removing whitespace, where allowed in the header field’s\n      syntax",
+      "page_range": [
+        9,
+        9
+      ],
+      "bbox": [
+        80,
+        612,
+        512,
+        633
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   o combining multiple header fields with the same field name (see\n      Section 3.2 of [RFC7230])",
+      "page_range": [
+        9,
+        9
+      ],
+      "bbox": [
+        80,
+        579,
+        488,
+        600
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   o normalizing both header field values in a way that is known to\n      have identical semantics, according to the header field’s\n      specification (e.g., reordering field values when order is not\n      significant; case-normalization, where values are defined to be\n      case-insensitive)",
+      "page_range": [
+        9,
+        9
+      ],
+      "bbox": [
+        80,
+        513,
+        494,
+        567
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   If (after any normalization that might take place) a header field is\n   absent from a request, it can only match another request if it is\n   also absent there.",
+      "page_range": [
+        9,
+        9
+      ],
+      "bbox": [
+        80,
+        469,
+        506,
+        501
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   A Vary header field-value of \"*\" always fails to match.",
+      "page_range": [
+        9,
+        9
+      ],
+      "bbox": [
+        80,
+        447,
+        428,
+        457
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The stored response with matching selecting header fields is known as\n   the selected response.",
+      "page_range": [
+        9,
+        9
+      ],
+      "bbox": [
+        80,
+        414,
+        512,
+        435
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   If multiple selected responses are available (potentially including\n   responses without a Vary header field), the cache will need to choose\n   one to use. When a selecting header field has a known mechanism for\n   doing so (e.g., qvalues on Accept and similar request header fields),\n   that mechanism MAY be used to select preferred responses; of the\n   remainder, the most recent response (as determined by the Date header\n   field) is used, as per Section 4.",
+      "page_range": [
+        9,
+        9
+      ],
+      "bbox": [
+        80,
+        326,
+        512,
+        402
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   If no selected response is available, the cache cannot satisfy the\n   presented request. Typically, it is forwarded to the origin server\n   in a (possibly conditional; see Section 4.3) request.",
+      "page_range": [
+        9,
+        9
+      ],
+      "bbox": [
+        80,
+        282,
+        500,
+        314
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "4.2. Freshness",
+      "page_range": [
+        10,
+        10
+      ],
+      "bbox": [
+        80,
+        711,
+        170,
+        721
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   A fresh response is one whose age has not yet exceeded its freshness\n   lifetime. Conversely, a stale response is one where it has.",
+      "page_range": [
+        10,
+        10
+      ],
+      "bbox": [
+        80,
+        678,
+        506,
+        699
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   A response’s freshness lifetime is the length of time between its\n   generation by the origin server and its expiration time. An explicit\n   expiration time is the time at which the origin server intends that a\n   stored response can no longer be used by a cache without further\n   validation, whereas a heuristic expiration time is assigned by a\n   cache when no explicit expiration time is available.",
+      "page_range": [
+        10,
+        10
+      ],
+      "bbox": [
+        80,
+        601,
+        512,
+        666
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   A response’s age is the time that has passed since it was generated\n   by, or successfully validated with, the origin server.",
+      "page_range": [
+        10,
+        10
+      ],
+      "bbox": [
+        80,
+        568,
+        500,
+        589
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   When a response is \"fresh\" in the cache, it can be used to satisfy\n   subsequent requests without contacting the origin server, thereby\n   improving efficiency.",
+      "page_range": [
+        10,
+        10
+      ],
+      "bbox": [
+        80,
+        524,
+        494,
+        556
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The primary mechanism for determining freshness is for an origin\n   server to provide an explicit expiration time in the future, using\n   either the Expires header field (Section 5.3) or the max-age response\n   directive (Section 5.2.2.8). Generally, origin servers will assign\n   future explicit expiration times to responses in the belief that the\n   representation is not likely to change in a semantically significant\n   way before the expiration time is reached.",
+      "page_range": [
+        10,
+        10
+      ],
+      "bbox": [
+        80,
+        436,
+        512,
+        512
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   If an origin server wishes to force a cache to validate every\n   request, it can assign an explicit expiration time in the past to\n   indicate that the response is already stale. Compliant caches will\n   normally validate a stale cached response before reusing it for\n   subsequent requests (see Section 4.2.4).",
+      "page_range": [
+        10,
+        10
+      ],
+      "bbox": [
+        80,
+        370,
+        500,
+        424
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   Since origin servers do not always provide explicit expiration times,\n   caches are also allowed to use a heuristic to determine an expiration\n   time under certain circumstances (see Section 4.2.2).",
+      "page_range": [
+        10,
+        10
+      ],
+      "bbox": [
+        80,
+        326,
+        512,
+        358
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The calculation to determine if a response is fresh is:",
+      "page_range": [
+        10,
+        10
+      ],
+      "bbox": [
+        80,
+        304,
+        428,
+        314
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "      response_is_fresh = (freshness_lifetime \u003e current_age)",
+      "page_range": [
+        10,
+        10
+      ],
+      "bbox": [
+        80,
+        282,
+        440,
+        292
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   freshness_lifetime is defined in Section 4.2.1; current_age is\n   defined in Section 4.2.3.",
+      "page_range": [
+        10,
+        10
+      ],
+      "bbox": [
+        80,
+        249,
+        470,
+        270
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   Clients can send the max-age or min-fresh cache directives in a\n   request to constrain or relax freshness calculations for the\n   corresponding response (Section 5.2.1).",
+      "page_range": [
+        10,
+        10
+      ],
+      "bbox": [
+        80,
+        205,
+        476,
+        237
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   When calculating freshness, to avoid common problems in date parsing:",
+      "page_range": [
+        11,
+        11
+      ],
+      "bbox": [
+        80,
+        711,
+        512,
+        721
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   o Although all date formats are specified to be case-sensitive, a\n      cache recipient SHOULD match day, week, and time-zone names\n      case-insensitively.",
+      "page_range": [
+        11,
+        11
+      ],
+      "bbox": [
+        80,
+        667,
+        494,
+        699
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   o If a cache recipient’s internal implementation of time has less\n      resolution than the value of an HTTP-date, the recipient MUST\n      internally represent a parsed Expires date as the nearest time\n      equal to or earlier than the received value.",
+      "page_range": [
+        11,
+        11
+      ],
+      "bbox": [
+        80,
+        612,
+        494,
+        655
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   o A cache recipient MUST NOT allow local time zones to influence the\n      calculation or comparison of an age or expiration time.",
+      "page_range": [
+        11,
+        11
+      ],
+      "bbox": [
+        80,
+        579,
+        512,
+        600
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   o A cache recipient SHOULD consider a date with a zone abbreviation\n      other than GMT or UTC to be invalid for calculating expiration.",
+      "page_range": [
+        11,
+        11
+      ],
+      "bbox": [
+        80,
+        546,
+        506,
+        567
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   Note that freshness applies only to cache operation; it cannot be\n   used to force a user agent to refresh its display or reload a\n   resource. See Section 6 for an explanation of the difference between\n   caches and history mechanisms.",
+      "page_range": [
+        11,
+        11
+      ],
+      "bbox": [
+        80,
+        491,
+        512,
+        534
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "4.2.1. Calculating Freshness Lifetime",
+      "page_range": [
+        11,
+        11
+      ],
+      "bbox": [
+        80,
+        469,
+        308,
+        479
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   A cache can calculate the freshness lifetime (denoted as\n   freshness_lifetime) of a response by using the first match of the\n   following:",
+      "page_range": [
+        11,
+        11
+      ],
+      "bbox": [
+        80,
+        425,
+        488,
+        457
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   o If the cache is shared and the s-maxage response directive\n      (Section 5.2.2.9) is present, use its value, or",
+      "page_range": [
+        11,
+        11
+      ],
+      "bbox": [
+        80,
+        392,
+        464,
+        413
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   o If the max-age response directive (Section 5.2.2.8) is present,\n      use its value, or",
+      "page_range": [
+        11,
+        11
+      ],
+      "bbox": [
+        80,
+        359,
+        494,
+        380
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   o If the Expires response header field (Section 5.3) is present, use\n      its value minus the value of the Date response header field, or",
+      "page_range": [
+        11,
+        11
+      ],
+      "bbox": [
+        80,
+        326,
+        512,
+        347
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   o Otherwise, no explicit expiration time is present in the response.\n      A heuristic freshness lifetime might be applicable; see\n      Section 4.2.2.",
+      "page_range": [
+        11,
+        11
+      ],
+      "bbox": [
+        80,
+        282,
+        512,
+        314
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   Note that this calculation is not vulnerable to clock skew, since all\n   of the information comes from the origin server.",
+      "page_range": [
+        11,
+        11
+      ],
+      "bbox": [
+        80,
+        249,
+        512,
+        270
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   When there is more than one value present for a given directive\n   (e.g., two Expires header fields, multiple Cache-Control: max-age\n   directives), the directive’s value is considered invalid. Caches are\n   encouraged to consider responses that have invalid freshness\n   information to be stale.",
+      "page_range": [
+        12,
+        12
+      ],
+      "bbox": [
+        80,
+        667,
+        512,
+        721
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "4.2.2. Calculating Heuristic Freshness",
+      "page_range": [
+        12,
+        12
+      ],
+      "bbox": [
+        80,
+        645,
+        314,
+        655
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   Since origin servers do not always provide explicit expiration times,\n   a cache MAY assign a heuristic expiration time when an explicit time\n   is not specified, employing algorithms that use other header field\n   values (such as the Last-Modified time) to estimate a plausible\n   expiration time. This specification does not provide specific\n   algorithms, but does impose worst-case constraints on their results.",
+      "page_range": [
+        12,
+        12
+      ],
+      "bbox": [
+        80,
+        568,
+        512,
+        633
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   A cache MUST NOT use heuristics to determine freshness when an\n   explicit expiration time is present in the stored response. Because\n   of the requirements in Section 3, this means that, effectively,\n   heuristics can only be used on responses without explicit freshness\n   whose status codes are defined as cacheable by default (see Section\n   6.1 of [RFC7231]), and those responses without explicit freshness\n   that have been marked as explicitly cacheable (e.g., with a \"public\"\n   response directive).",
+      "page_range": [
+        12,
+        12
+      ],
+      "bbox": [
+        80,
+        469,
+        506,
+        556
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   If the response has a Last-Modified header field (Section 2.2 of\n   [RFC7232]), caches are encouraged to use a heuristic expiration value\n   that is no more than some fraction of the interval since that time.\n   A typical setting of this fraction might be 10%.",
+      "page_range": [
+        12,
+        12
+      ],
+      "bbox": [
+        80,
+        414,
+        512,
+        457
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   When a heuristic is used to calculate freshness lifetime, a cache\n   SHOULD generate a Warning header field with a 113 warn-code (see\n   Section 5.5.4) in the response if its current_age is more than 24\n   hours and such a warning is not already present.",
+      "page_range": [
+        12,
+        12
+      ],
+      "bbox": [
+        80,
+        359,
+        488,
+        402
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "      Note: Section 13.9 of [RFC2616] prohibited caches from calculating\n      heuristic freshness for URIs with query components (i.e., those\n      containing ’?’). In practice, this has not been widely\n      implemented. Therefore, origin servers are encouraged to send\n      explicit directives (e.g., Cache-Control: no-cache) if they wish\n      to preclude caching.",
+      "page_range": [
+        12,
+        12
+      ],
+      "bbox": [
+        80,
+        282,
+        512,
+        347
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "4.2.3. Calculating Age",
+      "page_range": [
+        12,
+        12
+      ],
+      "bbox": [
+        80,
+        260,
+        218,
+        270
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The Age header field is used to convey an estimated age of the\n   response message when obtained from a cache. The Age field value is\n   the cache’s estimate of the number of seconds since the response was\n   generated or validated by the origin server. In essence, the Age\n   value is the sum of the time that the response has been resident in\n   each of the caches along the path from the origin server, plus the\n   amount of time it has been in transit along network paths.",
+      "page_range": [
+        12,
+        13
+      ],
+      "bbox": [
+        80,
+        205,
+        506,
+        248
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The following data is used for the age calculation:",
+      "page_range": [
+        13,
+        13
+      ],
+      "bbox": [
+        80,
+        667,
+        404,
+        677
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   age_value",
+      "page_range": [
+        13,
+        13
+      ],
+      "bbox": [
+        80,
+        645,
+        152,
+        655
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "      The term \"age_value\" denotes the value of the Age header field\n      (Section 5.1), in a form appropriate for arithmetic operation; or\n      0, if not available.",
+      "page_range": [
+        13,
+        13
+      ],
+      "bbox": [
+        80,
+        601,
+        506,
+        633
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   date_value",
+      "page_range": [
+        13,
+        13
+      ],
+      "bbox": [
+        80,
+        579,
+        158,
+        589
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "      The term \"date_value\" denotes the value of the Date header field,\n      in a form appropriate for arithmetic operations. See Section\n      7.1.1.2 of [RFC7231] for the definition of the Date header field,\n      and for requirements regarding responses without it.",
+      "page_range": [
+        13,
+        13
+      ],
+      "bbox": [
+        80,
+        524,
+        506,
+        567
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   now",
+      "page_range": [
+        13,
+        13
+      ],
+      "bbox": [
+        80,
+        502,
+        116,
+        512
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "      The term \"now\" means \"the current value of the clock at the host\n      performing the calculation\". A host ought to use NTP ([RFC5905])\n      or some similar protocol to synchronize its clocks to Coordinated\n      Universal Time.",
+      "page_range": [
+        13,
+        13
+      ],
+      "bbox": [
+        80,
+        447,
+        506,
+        490
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   request_time",
+      "page_range": [
+        13,
+        13
+      ],
+      "bbox": [
+        80,
+        425,
+        170,
+        435
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "      The current value of the clock at the host at the time the request\n      resulting in the stored response was made.",
+      "page_range": [
+        13,
+        13
+      ],
+      "bbox": [
+        80,
+        392,
+        512,
+        413
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   response_time",
+      "page_range": [
+        13,
+        13
+      ],
+      "bbox": [
+        80,
+        370,
+        176,
+        380
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "      The current value of the clock at the host at the time the\n      response was received.",
+      "page_range": [
+        13,
+        13
+      ],
+      "bbox": [
+        80,
+        337,
+        464,
+        358
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   A response’s age can be calculated in two entirely independent ways:",
+      "page_range": [
+        13,
+        13
+      ],
+      "bbox": [
+        80,
+        315,
+        506,
+        325
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   1. the \"apparent_age\": response_time minus date_value, if the local\n       clock is reasonably well synchronized to the origin server’s\n       clock. If the result is negative, the result is replaced by\n       zero.",
+      "page_range": [
+        13,
+        13
+      ],
+      "bbox": [
+        80,
+        260,
+        506,
+        303
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   2. the \"corrected_age_value\", if all of the caches along the\n       response path implement HTTP/1.1. A cache MUST interpret this\n       value relative to the time the request was initiated, not the\n       time that the response was received.",
+      "page_range": [
+        13,
+        13
+      ],
+      "bbox": [
+        80,
+        205,
+        494,
+        248
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "     apparent_age = max(0, response_time - date_value);",
+      "page_range": [
+        14,
+        14
+      ],
+      "bbox": [
+        80,
+        711,
+        410,
+        721
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "     response_delay = response_time - request_time;\n     corrected_age_value = age_value + response_delay;",
+      "page_range": [
+        14,
+        14
+      ],
+      "bbox": [
+        80,
+        678,
+        404,
+        699
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   These are combined as",
+      "page_range": [
+        14,
+        14
+      ],
+      "bbox": [
+        80,
+        656,
+        224,
+        666
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "     corrected_initial_age = max(apparent_age, corrected_age_value);",
+      "page_range": [
+        14,
+        14
+      ],
+      "bbox": [
+        80,
+        634,
+        488,
+        644
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   unless the cache is confident in the value of the Age header field\n   (e.g., because there are no HTTP/1.0 hops in the Via header field),\n   in which case the corrected_age_value MAY be used as the\n   corrected_initial_age.",
+      "page_range": [
+        14,
+        14
+      ],
+      "bbox": [
+        80,
+        579,
+        500,
+        622
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The current_age of a stored response can then be calculated by adding\n   the amount of time (in seconds) since the stored response was last\n   validated by the origin server to the corrected_initial_age.",
+      "page_range": [
+        14,
+        14
+      ],
+      "bbox": [
+        80,
+        535,
+        512,
+        567
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "     resident_time = now - response_time;\n     current_age = corrected_initial_age + resident_time;",
+      "page_range": [
+        14,
+        14
+      ],
+      "bbox": [
+        80,
+        502,
+        422,
+        523
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "4.2.4. Serving Stale Responses",
+      "page_range": [
+        14,
+        14
+      ],
+      "bbox": [
+        80,
+        480,
+        266,
+        490
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   A \"stale\" response is one that either has explicit expiry information\n   or is allowed to have heuristic expiry calculated, but is not fresh\n   according to the calculations in Section 4.2.",
+      "page_range": [
+        14,
+        14
+      ],
+      "bbox": [
+        80,
+        436,
+        512,
+        468
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   A cache MUST NOT generate a stale response if it is prohibited by an\n   explicit in-protocol directive (e.g., by a \"no-store\" or \"no-cache\"\n   cache directive, a \"must-revalidate\" cache-response-directive, or an\n   applicable \"s-maxage\" or \"proxy-revalidate\" cache-response-directive;\n   see Section 5.2.2).",
+      "page_range": [
+        14,
+        14
+      ],
+      "bbox": [
+        80,
+        370,
+        512,
+        424
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   A cache MUST NOT send stale responses unless it is disconnected\n   (i.e., it cannot contact the origin server or otherwise find a\n   forward path) or doing so is explicitly allowed (e.g., by the\n   max-stale request directive; see Section 5.2.1).",
+      "page_range": [
+        14,
+        14
+      ],
+      "bbox": [
+        80,
+        315,
+        476,
+        358
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   A cache SHOULD generate a Warning header field with the 110 warn-code\n   (see Section 5.5.1) in stale responses. Likewise, a cache SHOULD\n   generate a 112 warn-code (see Section 5.5.3) in stale responses if\n   the cache is disconnected.",
+      "page_range": [
+        14,
+        14
+      ],
+      "bbox": [
+        80,
+        260,
+        512,
+        303
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   A cache SHOULD NOT generate a new Warning header field when\n   forwarding a response that does not have an Age header field, even if\n   the response is already stale. A cache need not validate a response\n   that merely became stale in transit.",
+      "page_range": [
+        14,
+        14
+      ],
+      "bbox": [
+        80,
+        205,
+        512,
+        248
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "4.3. Validation",
+      "page_range": [
+        15,
+        15
+      ],
+      "bbox": [
+        80,
+        711,
+        176,
+        721
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   When a cache has one or more stored responses for a requested URI,\n   but cannot serve any of them (e.g., because they are not fresh, or\n   one cannot be selected; see Section 4.1), it can use the conditional\n   request mechanism [RFC7232] in the forwarded request to give the next\n   inbound server an opportunity to select a valid stored response to\n   use, updating the stored metadata in the process, or to replace the\n   stored response(s) with a new response. This process is known as\n   \"validating\" or \"revalidating\" the stored response.",
+      "page_range": [
+        15,
+        15
+      ],
+      "bbox": [
+        80,
+        612,
+        512,
+        699
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "4.3.1. Sending a Validation Request",
+      "page_range": [
+        15,
+        15
+      ],
+      "bbox": [
+        80,
+        590,
+        296,
+        600
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   When sending a conditional request for cache validation, a cache\n   sends one or more precondition header fields containing validator\n   metadata from its stored response(s), which is then compared by\n   recipients to determine whether a stored response is equivalent to a\n   current representation of the resource.",
+      "page_range": [
+        15,
+        15
+      ],
+      "bbox": [
+        80,
+        524,
+        506,
+        578
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   One such validator is the timestamp given in a Last-Modified header\n   field (Section 2.2 of [RFC7232]), which can be used in an\n   If-Modified-Since header field for response validation, or in an\n   If-Unmodified-Since or If-Range header field for representation\n   selection (i.e., the client is referring specifically to a previously\n   obtained representation with that timestamp).",
+      "page_range": [
+        15,
+        15
+      ],
+      "bbox": [
+        80,
+        447,
+        512,
+        512
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   Another validator is the entity-tag given in an ETag header field\n   (Section 2.3 of [RFC7232]). One or more entity-tags, indicating one\n   or more stored responses, can be used in an If-None-Match header\n   field for response validation, or in an If-Match or If-Range header\n   field for representation selection (i.e., the client is referring\n   specifically to one or more previously obtained representations with\n   the listed entity-tags).",
+      "page_range": [
+        15,
+        15
+      ],
+      "bbox": [
+        80,
+        359,
+        506,
+        435
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "4.3.2. Handling a Received Validation Request",
+      "page_range": [
+        15,
+        15
+      ],
+      "bbox": [
+        80,
+        337,
+        356,
+        347
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   Each client in the request chain may have its own cache, so it is\n   common for a cache at an intermediary to receive conditional requests\n   from other (outbound) caches. Likewise, some user agents make use of\n   conditional requests to limit data transfers to recently modified\n   representations or to complete the transfer of a partially retrieved\n   representation.",
+      "page_range": [
+        15,
+        15
+      ],
+      "bbox": [
+        80,
+        260,
+        512,
+        325
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   If a cache receives a request that can be satisfied by reusing one of\n   its stored 200 (OK) or 206 (Partial Content) responses, the cache\n   SHOULD evaluate any applicable conditional header field preconditions\n   received in that request with respect to the corresponding validators\n   contained within the selected response. A cache MUST NOT evaluate\n   conditional header fields that are only applicable to an origin\n   server, found in a request with semantics that cannot be satisfied\n   with a cached response, or applied to a target resource for which it\n   has no stored responses; such preconditions are likely intended for\n   some other (inbound) server.",
+      "page_range": [
+        15,
+        16
+      ],
+      "bbox": [
+        80,
+        194,
+        512,
+        248
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The proper evaluation of conditional requests by a cache depends on\n   the received precondition header fields and their precedence, as\n   defined in Section 6 of [RFC7232]. The If-Match and\n   If-Unmodified-Since conditional header fields are not applicable to a\n   cache.",
+      "page_range": [
+        16,
+        16
+      ],
+      "bbox": [
+        80,
+        601,
+        512,
+        655
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   A request containing an If-None-Match header field (Section 3.2 of\n   [RFC7232]) indicates that the client wants to validate one or more of\n   its own stored responses in comparison to whichever stored response\n   is selected by the cache. If the field-value is \"*\", or if the\n   field-value is a list of entity-tags and at least one of them matches\n   the entity-tag of the selected stored response, a cache recipient\n   SHOULD generate a 304 (Not Modified) response (using the metadata of\n   the selected stored response) instead of sending that stored\n   response.",
+      "page_range": [
+        16,
+        16
+      ],
+      "bbox": [
+        80,
+        491,
+        512,
+        589
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   When a cache decides to revalidate its own stored responses for a\n   request that contains an If-None-Match list of entity-tags, the cache\n   MAY combine the received list with a list of entity-tags from its own\n   stored set of responses (fresh or stale) and send the union of the\n   two lists as a replacement If-None-Match header field value in the\n   forwarded request. If a stored response contains only partial\n   content, the cache MUST NOT include its entity-tag in the union\n   unless the request is for a range that would be fully satisfied by\n   that partial stored response. If the response to the forwarded\n   request is 304 (Not Modified) and has an ETag header field value with\n   an entity-tag that is not in the client’s list, the cache MUST\n   generate a 200 (OK) response for the client by reusing its\n   corresponding stored response, as updated by the 304 response\n   metadata (Section 4.3.4).",
+      "page_range": [
+        16,
+        16
+      ],
+      "bbox": [
+        80,
+        326,
+        512,
+        479
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   If an If-None-Match header field is not present, a request containing\n   an If-Modified-Since header field (Section 3.3 of [RFC7232])\n   indicates that the client wants to validate one or more of its own\n   stored responses by modification date. A cache recipient SHOULD\n   generate a 304 (Not Modified) response (using the metadata of the\n   selected stored response) if one of the following cases is true: 1)\n   the selected stored response has a Last-Modified field-value that is\n   earlier than or equal to the conditional timestamp; 2) no\n   Last-Modified field is present in the selected stored response, but\n   it has a Date field-value that is earlier than or equal to the\n   conditional timestamp; or, 3) neither Last-Modified nor Date is\n   present in the selected stored response, but the cache recorded it as\n   having been received at a time earlier than or equal to the\n   conditional timestamp.",
+      "page_range": [
+        16,
+        17
+      ],
+      "bbox": [
+        80,
+        194,
+        512,
+        314
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   A cache that implements partial responses to range requests, as\n   defined in [RFC7233], also needs to evaluate a received If-Range\n   header field (Section 3.2 of [RFC7233]) with respect to its selected\n   stored response.",
+      "page_range": [
+        17,
+        17
+      ],
+      "bbox": [
+        80,
+        634,
+        506,
+        677
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "4.3.3. Handling a Validation Response",
+      "page_range": [
+        17,
+        17
+      ],
+      "bbox": [
+        80,
+        612,
+        308,
+        622
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   Cache handling of a response to a conditional request is dependent\n   upon its status code:",
+      "page_range": [
+        17,
+        17
+      ],
+      "bbox": [
+        80,
+        579,
+        494,
+        600
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   o A 304 (Not Modified) response status code indicates that the\n      stored response can be updated and reused; see Section 4.3.4.",
+      "page_range": [
+        17,
+        17
+      ],
+      "bbox": [
+        80,
+        546,
+        482,
+        567
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   o A full response (i.e., one with a payload body) indicates that\n      none of the stored responses nominated in the conditional request\n      is suitable. Instead, the cache MUST use the full response to\n      satisfy the request and MAY replace the stored response(s).",
+      "page_range": [
+        17,
+        17
+      ],
+      "bbox": [
+        80,
+        491,
+        506,
+        534
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   o However, if a cache receives a 5xx (Server Error) response while\n      attempting to validate a response, it can either forward this\n      response to the requesting client, or act as if the server failed\n      to respond. In the latter case, the cache MAY send a previously\n      stored response (see Section 4.2.4).",
+      "page_range": [
+        17,
+        17
+      ],
+      "bbox": [
+        80,
+        425,
+        506,
+        479
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "4.3.4. Freshening Stored Responses upon Validation",
+      "page_range": [
+        17,
+        17
+      ],
+      "bbox": [
+        80,
+        403,
+        386,
+        413
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   When a cache receives a 304 (Not Modified) response and already has\n   one or more stored 200 (OK) responses for the same cache key, the\n   cache needs to identify which of the stored responses are updated by\n   this new response and then update the stored response(s) with the new\n   information provided in the 304 response.",
+      "page_range": [
+        17,
+        17
+      ],
+      "bbox": [
+        80,
+        337,
+        512,
+        391
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The stored response to update is identified by using the first match\n   (if any) of the following:",
+      "page_range": [
+        17,
+        17
+      ],
+      "bbox": [
+        80,
+        304,
+        506,
+        325
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   o If the new response contains a strong validator (see Section 2.1\n      of [RFC7232]), then that strong validator identifies the selected\n      representation for update. All of the stored responses with the\n      same strong validator are selected. If none of the stored\n      responses contain the same strong validator, then the cache MUST\n      NOT use the new response to update any stored responses.",
+      "page_range": [
+        17,
+        17
+      ],
+      "bbox": [
+        80,
+        227,
+        506,
+        292
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   o If the new response contains a weak validator and that validator\n      corresponds to one of the cache’s stored responses, then the most\n      recent of those matching stored responses is selected for update.",
+      "page_range": [
+        18,
+        18
+      ],
+      "bbox": [
+        80,
+        689,
+        506,
+        721
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   o If the new response does not include any form of validator (such\n      as in the case where a client generates an If-Modified-Since\n      request from a source other than the Last-Modified response header\n      field), and there is only one stored response, and that stored\n      response also lacks a validator, then that stored response is\n      selected for update.",
+      "page_range": [
+        18,
+        18
+      ],
+      "bbox": [
+        80,
+        612,
+        512,
+        677
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   If a stored response is selected for update, the cache MUST:",
+      "page_range": [
+        18,
+        18
+      ],
+      "bbox": [
+        80,
+        590,
+        458,
+        600
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   o use other header fields provided in the 304 (Not Modified)\n      response to replace all instances of the corresponding header\n      fields in the stored response.",
+      "page_range": [
+        18,
+        18
+      ],
+      "bbox": [
+        80,
+        480,
+        482,
+        512
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "4.3.5. Freshening Responses via HEAD",
+      "page_range": [
+        18,
+        18
+      ],
+      "bbox": [
+        80,
+        458,
+        302,
+        468
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   A response to the HEAD method is identical to what an equivalent\n   request made with a GET would have been, except it lacks a body.\n   This property of HEAD responses can be used to invalidate or update a\n   cached GET response if the more efficient conditional GET request\n   mechanism is not available (due to no validators being present in the\n   stored response) or if transmission of the representation body is not\n   desired even if it has changed.",
+      "page_range": [
+        18,
+        18
+      ],
+      "bbox": [
+        80,
+        370,
+        512,
+        446
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   When a cache makes an inbound HEAD request for a given request target\n   and receives a 200 (OK) response, the cache SHOULD update or\n   invalidate each of its stored GET responses that could have been\n   selected for that request (see Section 4.1).",
+      "page_range": [
+        18,
+        18
+      ],
+      "bbox": [
+        80,
+        315,
+        512,
+        358
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   For each of the stored responses that could have been selected, if\n   the stored response and HEAD response have matching values for any\n   received validator fields (ETag and Last-Modified) and, if the HEAD\n   response has a Content-Length header field, the value of\n   Content-Length matches that of the stored response, the cache SHOULD\n   update the stored response as described below; otherwise, the cache\n   SHOULD consider the stored response to be stale.",
+      "page_range": [
+        18,
+        18
+      ],
+      "bbox": [
+        80,
+        227,
+        506,
+        303
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   If a cache updates a stored response with the metadata provided in a\n   HEAD response, the cache MUST:",
+      "page_range": [
+        19,
+        19
+      ],
+      "bbox": [
+        80,
+        700,
+        506,
+        721
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   o use other header fields provided in the HEAD response to replace\n      all instances of the corresponding header fields in the stored\n      response and append new header fields to the stored response’s\n      header section unless otherwise restricted by the Cache-Control\n      header field.",
+      "page_range": [
+        19,
+        19
+      ],
+      "bbox": [
+        80,
+        568,
+        500,
+        622
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "4.4. Invalidation",
+      "page_range": [
+        19,
+        19
+      ],
+      "bbox": [
+        80,
+        546,
+        188,
+        556
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   Because unsafe request methods (Section 4.2.1 of [RFC7231]) such as\n   PUT, POST or DELETE have the potential for changing state on the\n   origin server, intervening caches can use them to keep their contents\n   up to date.",
+      "page_range": [
+        19,
+        19
+      ],
+      "bbox": [
+        80,
+        491,
+        512,
+        534
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   A cache MUST invalidate the effective Request URI (Section 5.5 of\n   [RFC7230]) as well as the URI(s) in the Location and Content-Location\n   response header fields (if present) when a non-error status code is\n   received in response to an unsafe request method.",
+      "page_range": [
+        19,
+        19
+      ],
+      "bbox": [
+        80,
+        436,
+        512,
+        479
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   However, a cache MUST NOT invalidate a URI from a Location or\n   Content-Location response header field if the host part of that URI\n   differs from the host part in the effective request URI (Section 5.5\n   of [RFC7230]). This helps prevent denial-of-service attacks.",
+      "page_range": [
+        19,
+        19
+      ],
+      "bbox": [
+        80,
+        381,
+        506,
+        424
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   A cache MUST invalidate the effective request URI (Section 5.5 of\n   [RFC7230]) when it receives a non-error response to a request with a\n   method whose safety is unknown.",
+      "page_range": [
+        19,
+        19
+      ],
+      "bbox": [
+        80,
+        337,
+        506,
+        369
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   Here, a \"non-error response\" is one with a 2xx (Successful) or 3xx\n   (Redirection) status code. \"Invalidate\" means that the cache will\n   either remove all stored responses related to the effective request\n   URI or will mark these as \"invalid\" and in need of a mandatory\n   validation before they can be sent in response to a subsequent\n   request.",
+      "page_range": [
+        19,
+        19
+      ],
+      "bbox": [
+        80,
+        260,
+        500,
+        325
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   Note that this does not guarantee that all appropriate responses are\n   invalidated. For example, a state-changing request might invalidate\n   responses in the caches it travels through, but relevant responses\n   still might be stored in other caches that it has not.",
+      "page_range": [
+        19,
+        19
+      ],
+      "bbox": [
+        80,
+        205,
+        506,
+        248
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "5. Header Field Definitions",
+      "page_range": [
+        20,
+        20
+      ],
+      "bbox": [
+        80,
+        711,
+        248,
+        721
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   This section defines the syntax and semantics of HTTP/1.1 header\n   fields related to caching.",
+      "page_range": [
+        20,
+        20
+      ],
+      "bbox": [
+        80,
+        678,
+        482,
+        699
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "5.1. Age",
+      "page_range": [
+        20,
+        20
+      ],
+      "bbox": [
+        80,
+        656,
+        134,
+        666
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The \"Age\" header field conveys the sender’s estimate of the amount of\n   time since the response was generated or successfully validated at\n   the origin server. Age values are calculated as specified in\n   Section 4.2.3.",
+      "page_range": [
+        20,
+        20
+      ],
+      "bbox": [
+        80,
+        601,
+        512,
+        644
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "     Age = delta-seconds",
+      "page_range": [
+        20,
+        20
+      ],
+      "bbox": [
+        80,
+        579,
+        224,
+        589
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The Age field-value is a non-negative integer, representing time in\n   seconds (see Section 1.2.1).",
+      "page_range": [
+        20,
+        20
+      ],
+      "bbox": [
+        80,
+        546,
+        500,
+        567
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The presence of an Age header field implies that the response was not\n   generated or validated by the origin server for this request.\n   However, lack of an Age header field does not imply the origin was\n   contacted, since the response might have been received from an\n   HTTP/1.0 cache that does not implement Age.",
+      "page_range": [
+        20,
+        20
+      ],
+      "bbox": [
+        80,
+        480,
+        512,
+        534
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "5.2. Cache-Control",
+      "page_range": [
+        20,
+        20
+      ],
+      "bbox": [
+        80,
+        458,
+        194,
+        468
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The \"Cache-Control\" header field is used to specify directives for\n   caches along the request/response chain. Such cache directives are\n   unidirectional in that the presence of a directive in a request does\n   not imply that the same directive is to be given in the response.",
+      "page_range": [
+        20,
+        20
+      ],
+      "bbox": [
+        80,
+        403,
+        506,
+        446
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   A cache MUST obey the requirements of the Cache-Control directives\n   defined in this section. See Section 5.2.3 for information about how\n   Cache-Control directives defined elsewhere are handled.",
+      "page_range": [
+        20,
+        20
+      ],
+      "bbox": [
+        80,
+        359,
+        512,
+        391
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "      Note: Some HTTP/1.0 caches might not implement Cache-Control.",
+      "page_range": [
+        20,
+        20
+      ],
+      "bbox": [
+        80,
+        337,
+        482,
+        347
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   A proxy, whether or not it implements a cache, MUST pass cache\n   directives through in forwarded messages, regardless of their\n   significance to that application, since the directives might be\n   applicable to all recipients along the request/response chain. It is\n   not possible to target a directive to a specific cache.",
+      "page_range": [
+        20,
+        20
+      ],
+      "bbox": [
+        80,
+        271,
+        512,
+        325
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   Cache directives are identified by a token, to be compared\n   case-insensitively, and have an optional argument, that can use both\n   token and quoted-string syntax. For the directives defined below\n   that define arguments, recipients ought to accept both forms, even if\n   one is documented to be preferred. For any directive not defined by\n   this specification, a recipient MUST accept both forms.",
+      "page_range": [
+        20,
+        20
+      ],
+      "bbox": [
+        80,
+        194,
+        512,
+        259
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "RFC 7234 HTTP/1.1 Caching June 2014\n     Cache-Control = 1#cache-directive\n     cache-directive = token [ \"=\" ( token / quoted-string ) ]\n   For the cache directives defined below, no argument is defined (nor\n   allowed) unless stated otherwise.\n5.2.1. Request Cache-Control Directives\n5.2.1.1. max-age\n   Argument syntax:\n      delta-seconds (see Section 1.2.1)\n   The \"max-age\" request directive indicates that the client is\n   unwilling to accept a response whose age is greater than the\n   specified number of seconds. Unless the max-stale request directive\n   is also present, the client is not willing to accept a stale\n   response.\n   This directive uses the token form of the argument syntax: e.g.,\n   ’max-age=5’ not ’max-age=\"5\"’. A sender SHOULD NOT generate the\n   quoted-string form.\n5.2.1.2. max-stale\n   Argument syntax:\n      delta-seconds (see Section 1.2.1)\n   The \"max-stale\" request directive indicates that the client is\n   willing to accept a response that has exceeded its freshness\n   lifetime. If max-stale is assigned a value, then the client is\n   willing to accept a response that has exceeded its freshness lifetime\n   by no more than the specified number of seconds. If no value is\n   assigned to max-stale, then the client is willing to accept a stale\n   response of any age.\n   This directive uses the token form of the argument syntax: e.g.,\n   ’max-stale=10’ not ’max-stale=\"10\"’. A sender SHOULD NOT generate\n   the quoted-string form.\n5.2.1.3. min-fresh\n   Argument syntax:\n      delta-seconds (see Section 1.2.1)",
+      "page_range": [
+        21,
+        21
+      ],
+      "bbox": [
+        80,
+        194,
+        512,
+        754
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The \"min-fresh\" request directive indicates that the client is\n   willing to accept a response whose freshness lifetime is no less than\n   its current age plus the specified time in seconds. That is, the\n   client wants a response that will still be fresh for at least the\n   specified number of seconds.",
+      "page_range": [
+        22,
+        22
+      ],
+      "bbox": [
+        80,
+        667,
+        512,
+        721
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   This directive uses the token form of the argument syntax: e.g.,\n   ’min-fresh=20’ not ’min-fresh=\"20\"’. A sender SHOULD NOT generate\n   the quoted-string form.",
+      "page_range": [
+        22,
+        22
+      ],
+      "bbox": [
+        80,
+        623,
+        494,
+        655
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "5.2.1.4. no-cache",
+      "page_range": [
+        22,
+        22
+      ],
+      "bbox": [
+        80,
+        601,
+        188,
+        611
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The \"no-cache\" request directive indicates that a cache MUST NOT use\n   a stored response to satisfy the request without successful\n   validation on the origin server.",
+      "page_range": [
+        22,
+        22
+      ],
+      "bbox": [
+        80,
+        557,
+        506,
+        589
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "5.2.1.5. no-store",
+      "page_range": [
+        22,
+        22
+      ],
+      "bbox": [
+        80,
+        535,
+        188,
+        545
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The \"no-store\" request directive indicates that a cache MUST NOT\n   store any part of either this request or any response to it. This\n   directive applies to both private and shared caches. \"MUST NOT\n   store\" in this context means that the cache MUST NOT intentionally\n   store the information in non-volatile storage, and MUST make a\n   best-effort attempt to remove the information from volatile storage\n   as promptly as possible after forwarding it.",
+      "page_range": [
+        22,
+        22
+      ],
+      "bbox": [
+        80,
+        447,
+        500,
+        523
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   This directive is NOT a reliable or sufficient mechanism for ensuring\n   privacy. In particular, malicious or compromised caches might not\n   recognize or obey this directive, and communications networks might\n   be vulnerable to eavesdropping.",
+      "page_range": [
+        22,
+        22
+      ],
+      "bbox": [
+        80,
+        392,
+        512,
+        435
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   Note that if a request containing this directive is satisfied from a\n   cache, the no-store request directive does not apply to the already\n   stored response.",
+      "page_range": [
+        22,
+        22
+      ],
+      "bbox": [
+        80,
+        348,
+        506,
+        380
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "5.2.1.6. no-transform",
+      "page_range": [
+        22,
+        22
+      ],
+      "bbox": [
+        80,
+        326,
+        212,
+        336
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The \"no-transform\" request directive indicates that an intermediary\n   (whether or not it implements a cache) MUST NOT transform the\n   payload, as defined in Section 5.7.2 of [RFC7230].",
+      "page_range": [
+        22,
+        22
+      ],
+      "bbox": [
+        80,
+        282,
+        500,
+        314
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "5.2.1.7. only-if-cached",
+      "page_range": [
+        22,
+        22
+      ],
+      "bbox": [
+        80,
+        260,
+        224,
+        270
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The \"only-if-cached\" request directive indicates that the client only\n   wishes to obtain a stored response. If it receives this directive, a\n   cache SHOULD either respond using a stored response that is\n   consistent with the other constraints of the request, or respond with\n   a 504 (Gateway Timeout) status code. If a group of caches is being\n   operated as a unified system with good internal connectivity, a\n   member cache MAY forward such a request within that group of caches.",
+      "page_range": [
+        22,
+        23
+      ],
+      "bbox": [
+        80,
+        205,
+        512,
+        248
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "5.2.2. Response Cache-Control Directives",
+      "page_range": [
+        23,
+        23
+      ],
+      "bbox": [
+        80,
+        667,
+        326,
+        677
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "5.2.2.1. must-revalidate",
+      "page_range": [
+        23,
+        23
+      ],
+      "bbox": [
+        80,
+        645,
+        230,
+        655
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The \"must-revalidate\" response directive indicates that once it has\n   become stale, a cache MUST NOT use the response to satisfy subsequent\n   requests without successful validation on the origin server.",
+      "page_range": [
+        23,
+        23
+      ],
+      "bbox": [
+        80,
+        601,
+        512,
+        633
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The must-revalidate directive is necessary to support reliable\n   operation for certain protocol features. In all circumstances a\n   cache MUST obey the must-revalidate directive; in particular, if a\n   cache cannot reach the origin server for any reason, it MUST generate\n   a 504 (Gateway Timeout) response.",
+      "page_range": [
+        23,
+        23
+      ],
+      "bbox": [
+        80,
+        535,
+        512,
+        589
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The must-revalidate directive ought to be used by servers if and only\n   if failure to validate a request on the representation could result\n   in incorrect operation, such as a silently unexecuted financial\n   transaction.",
+      "page_range": [
+        23,
+        23
+      ],
+      "bbox": [
+        80,
+        480,
+        512,
+        523
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "5.2.2.2. no-cache",
+      "page_range": [
+        23,
+        23
+      ],
+      "bbox": [
+        80,
+        458,
+        188,
+        468
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "      #field-name",
+      "page_range": [
+        23,
+        23
+      ],
+      "bbox": [
+        80,
+        414,
+        182,
+        424
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The \"no-cache\" response directive indicates that the response MUST\n   NOT be used to satisfy a subsequent request without successful\n   validation on the origin server. This allows an origin server to\n   prevent a cache from using it to satisfy a request without contacting\n   it, even by caches that have been configured to send stale responses.",
+      "page_range": [
+        23,
+        23
+      ],
+      "bbox": [
+        80,
+        348,
+        512,
+        402
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   If the no-cache response directive specifies one or more field-names,\n   then a cache MAY use the response to satisfy a subsequent request,\n   subject to any other restrictions on caching. However, any header\n   fields in the response that have the field-name(s) listed MUST NOT be\n   sent in the response to a subsequent request without successful\n   revalidation with the origin server. This allows an origin server to\n   prevent the re-use of certain header fields in a response, while\n   still allowing caching of the rest of the response.",
+      "page_range": [
+        23,
+        23
+      ],
+      "bbox": [
+        80,
+        249,
+        512,
+        336
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The field-names given are not limited to the set of header fields\n   defined by this specification. Field names are case-insensitive.",
+      "page_range": [
+        23,
+        23
+      ],
+      "bbox": [
+        80,
+        216,
+        488,
+        237
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   This directive uses the quoted-string form of the argument syntax. A\n   sender SHOULD NOT generate the token form (even if quoting appears\n   not to be needed for single-entry lists).",
+      "page_range": [
+        24,
+        24
+      ],
+      "bbox": [
+        80,
+        689,
+        512,
+        721
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   Note: Although it has been back-ported to many implementations, some\n   HTTP/1.0 caches will not recognize or obey this directive. Also,\n   no-cache response directives with field-names are often handled by\n   caches as if an unqualified no-cache directive was received; i.e.,\n   the special handling for the qualified form is not widely\n   implemented.",
+      "page_range": [
+        24,
+        24
+      ],
+      "bbox": [
+        80,
+        612,
+        506,
+        677
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "5.2.2.3. no-store",
+      "page_range": [
+        24,
+        24
+      ],
+      "bbox": [
+        80,
+        590,
+        188,
+        600
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The \"no-store\" response directive indicates that a cache MUST NOT\n   store any part of either the immediate request or response. This\n   directive applies to both private and shared caches. \"MUST NOT\n   store\" in this context means that the cache MUST NOT intentionally\n   store the information in non-volatile storage, and MUST make a\n   best-effort attempt to remove the information from volatile storage\n   as promptly as possible after forwarding it.",
+      "page_range": [
+        24,
+        24
+      ],
+      "bbox": [
+        80,
+        502,
+        500,
+        578
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   This directive is NOT a reliable or sufficient mechanism for ensuring\n   privacy. In particular, malicious or compromised caches might not\n   recognize or obey this directive, and communications networks might\n   be vulnerable to eavesdropping.",
+      "page_range": [
+        24,
+        24
+      ],
+      "bbox": [
+        80,
+        447,
+        512,
+        490
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "5.2.2.4. no-transform",
+      "page_range": [
+        24,
+        24
+      ],
+      "bbox": [
+        80,
+        425,
+        212,
+        435
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The \"no-transform\" response directive indicates that an intermediary\n   (regardless of whether it implements a cache) MUST NOT transform the\n   payload, as defined in Section 5.7.2 of [RFC7230].",
+      "page_range": [
+        24,
+        24
+      ],
+      "bbox": [
+        80,
+        381,
+        506,
+        413
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "5.2.2.5. public",
+      "page_range": [
+        24,
+        24
+      ],
+      "bbox": [
+        80,
+        359,
+        176,
+        369
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The \"public\" response directive indicates that any cache MAY store\n   the response, even if the response would normally be non-cacheable or\n   cacheable only within a private cache. (See Section 3.2 for\n   additional details related to the use of public in response to a\n   request containing Authorization, and Section 3 for details of how\n   public affects responses that would normally not be stored, due to\n   their status codes not being defined as cacheable by default; see\n   Section 4.2.2.)",
+      "page_range": [
+        24,
+        24
+      ],
+      "bbox": [
+        80,
+        260,
+        512,
+        347
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "5.2.2.6. private",
+      "page_range": [
+        24,
+        24
+      ],
+      "bbox": [
+        80,
+        238,
+        182,
+        248
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "      #field-name",
+      "page_range": [
+        24,
+        24
+      ],
+      "bbox": [
+        80,
+        194,
+        182,
+        204
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The \"private\" response directive indicates that the response message\n   is intended for a single user and MUST NOT be stored by a shared\n   cache. A private cache MAY store the response and reuse it for later\n   requests, even if the response would normally be non-cacheable.",
+      "page_range": [
+        25,
+        25
+      ],
+      "bbox": [
+        80,
+        678,
+        512,
+        721
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   If the private response directive specifies one or more field-names,\n   this requirement is limited to the field-values associated with the\n   listed response header fields. That is, a shared cache MUST NOT\n   store the specified field-names(s), whereas it MAY store the\n   remainder of the response message.",
+      "page_range": [
+        25,
+        25
+      ],
+      "bbox": [
+        80,
+        612,
+        506,
+        666
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The field-names given are not limited to the set of header fields\n   defined by this specification. Field names are case-insensitive.",
+      "page_range": [
+        25,
+        25
+      ],
+      "bbox": [
+        80,
+        579,
+        488,
+        600
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   This directive uses the quoted-string form of the argument syntax. A\n   sender SHOULD NOT generate the token form (even if quoting appears\n   not to be needed for single-entry lists).",
+      "page_range": [
+        25,
+        25
+      ],
+      "bbox": [
+        80,
+        535,
+        512,
+        567
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   Note: This usage of the word \"private\" only controls where the\n   response can be stored; it cannot ensure the privacy of the message\n   content. Also, private response directives with field-names are\n   often handled by caches as if an unqualified private directive was\n   received; i.e., the special handling for the qualified form is not\n   widely implemented.",
+      "page_range": [
+        25,
+        25
+      ],
+      "bbox": [
+        80,
+        458,
+        500,
+        523
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "5.2.2.7. proxy-revalidate",
+      "page_range": [
+        25,
+        25
+      ],
+      "bbox": [
+        80,
+        436,
+        236,
+        446
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The \"proxy-revalidate\" response directive has the same meaning as the\n   must-revalidate response directive, except that it does not apply to\n   private caches.",
+      "page_range": [
+        25,
+        25
+      ],
+      "bbox": [
+        80,
+        392,
+        512,
+        424
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "5.2.2.8. max-age",
+      "page_range": [
+        25,
+        25
+      ],
+      "bbox": [
+        80,
+        370,
+        182,
+        380
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "      delta-seconds (see Section 1.2.1)",
+      "page_range": [
+        25,
+        25
+      ],
+      "bbox": [
+        80,
+        326,
+        314,
+        336
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The \"max-age\" response directive indicates that the response is to be\n   considered stale after its age is greater than the specified number\n   of seconds.",
+      "page_range": [
+        25,
+        25
+      ],
+      "bbox": [
+        80,
+        282,
+        512,
+        314
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   This directive uses the token form of the argument syntax: e.g.,\n   ’max-age=5’ not ’max-age=\"5\"’. A sender SHOULD NOT generate the\n   quoted-string form.",
+      "page_range": [
+        25,
+        25
+      ],
+      "bbox": [
+        80,
+        238,
+        482,
+        270
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "5.2.2.9. s-maxage",
+      "page_range": [
+        26,
+        26
+      ],
+      "bbox": [
+        80,
+        711,
+        188,
+        721
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "      delta-seconds (see Section 1.2.1)",
+      "page_range": [
+        26,
+        26
+      ],
+      "bbox": [
+        80,
+        667,
+        314,
+        677
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The \"s-maxage\" response directive indicates that, in shared caches,\n   the maximum age specified by this directive overrides the maximum age\n   specified by either the max-age directive or the Expires header\n   field. The s-maxage directive also implies the semantics of the\n   proxy-revalidate response directive.",
+      "page_range": [
+        26,
+        26
+      ],
+      "bbox": [
+        80,
+        601,
+        512,
+        655
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   This directive uses the token form of the argument syntax: e.g.,\n   ’s-maxage=10’ not ’s-maxage=\"10\"’. A sender SHOULD NOT generate the\n   quoted-string form.",
+      "page_range": [
+        26,
+        26
+      ],
+      "bbox": [
+        80,
+        557,
+        506,
+        589
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "5.2.3. Cache Control Extensions",
+      "page_range": [
+        26,
+        26
+      ],
+      "bbox": [
+        80,
+        535,
+        272,
+        545
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The Cache-Control header field can be extended through the use of one\n   or more cache-extension tokens, each with an optional value. A cache\n   MUST ignore unrecognized cache directives.",
+      "page_range": [
+        26,
+        26
+      ],
+      "bbox": [
+        80,
+        491,
+        512,
+        523
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   Informational extensions (those that do not require a change in cache\n   behavior) can be added without changing the semantics of other\n   directives.",
+      "page_range": [
+        26,
+        26
+      ],
+      "bbox": [
+        80,
+        447,
+        512,
+        479
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   Behavioral extensions are designed to work by acting as modifiers to\n   the existing base of cache directives. Both the new directive and\n   the old directive are supplied, such that applications that do not\n   understand the new directive will default to the behavior specified\n   by the old directive, and those that understand the new directive\n   will recognize it as modifying the requirements associated with the\n   old directive. In this way, extensions to the existing cache-control\n   directives can be made without breaking deployed caches.",
+      "page_range": [
+        26,
+        26
+      ],
+      "bbox": [
+        80,
+        348,
+        512,
+        435
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   For example, consider a hypothetical new response directive called\n   \"community\" that acts as a modifier to the private directive: in\n   addition to private caches, any cache that is shared only by members\n   of the named community is allowed to cache the response. An origin\n   server wishing to allow the UCI community to use an otherwise private\n   response in their shared cache(s) could do so by including",
+      "page_range": [
+        26,
+        26
+      ],
+      "bbox": [
+        80,
+        271,
+        512,
+        336
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "     Cache-Control: private, community=\"UCI\"",
+      "page_range": [
+        26,
+        26
+      ],
+      "bbox": [
+        80,
+        249,
+        344,
+        259
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   A cache that recognizes such a community cache-extension could\n   broaden its behavior in accordance with that extension. A cache that\n   does not recognize the community cache-extension would ignore it and\n   adhere to the private directive.",
+      "page_range": [
+        26,
+        26
+      ],
+      "bbox": [
+        80,
+        194,
+        512,
+        237
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "5.3. Expires",
+      "page_range": [
+        27,
+        27
+      ],
+      "bbox": [
+        80,
+        711,
+        158,
+        721
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The \"Expires\" header field gives the date/time after which the\n   response is considered stale. See Section 4.2 for further discussion\n   of the freshness model.",
+      "page_range": [
+        27,
+        27
+      ],
+      "bbox": [
+        80,
+        667,
+        512,
+        699
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The presence of an Expires field does not imply that the original\n   resource will change or cease to exist at, before, or after that\n   time.",
+      "page_range": [
+        27,
+        27
+      ],
+      "bbox": [
+        80,
+        623,
+        488,
+        655
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The Expires value is an HTTP-date timestamp, as defined in Section\n   7.1.1.1 of [RFC7231].",
+      "page_range": [
+        27,
+        27
+      ],
+      "bbox": [
+        80,
+        590,
+        494,
+        611
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "     Expires = HTTP-date",
+      "page_range": [
+        27,
+        27
+      ],
+      "bbox": [
+        80,
+        568,
+        224,
+        578
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   For example",
+      "page_range": [
+        27,
+        27
+      ],
+      "bbox": [
+        80,
+        546,
+        164,
+        556
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "     Expires: Thu, 01 Dec 1994 16:00:00 GMT",
+      "page_range": [
+        27,
+        27
+      ],
+      "bbox": [
+        80,
+        524,
+        338,
+        534
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   A cache recipient MUST interpret invalid date formats, especially the\n   value \"0\", as representing a time in the past (i.e., \"already\n   expired\").",
+      "page_range": [
+        27,
+        27
+      ],
+      "bbox": [
+        80,
+        480,
+        512,
+        512
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   If a response includes a Cache-Control field with the max-age\n   directive (Section 5.2.2.8), a recipient MUST ignore the Expires\n   field. Likewise, if a response includes the s-maxage directive\n   (Section 5.2.2.9), a shared cache recipient MUST ignore the Expires\n   field. In both these cases, the value in Expires is only intended\n   for recipients that have not yet implemented the Cache-Control field.",
+      "page_range": [
+        27,
+        27
+      ],
+      "bbox": [
+        80,
+        403,
+        512,
+        468
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   An origin server without a clock MUST NOT generate an Expires field\n   unless its value represents a fixed time in the past (always expired)\n   or its value has been associated with the resource by a system or\n   user with a reliable clock.",
+      "page_range": [
+        27,
+        27
+      ],
+      "bbox": [
+        80,
+        348,
+        512,
+        391
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   Historically, HTTP required the Expires field-value to be no more\n   than a year in the future. While longer freshness lifetimes are no\n   longer prohibited, extremely large values have been demonstrated to\n   cause problems (e.g., clock overflows due to use of 32-bit integers\n   for time values), and many caches will evict a response far sooner\n   than that.",
+      "page_range": [
+        27,
+        27
+      ],
+      "bbox": [
+        80,
+        271,
+        500,
+        336
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "5.4. Pragma",
+      "page_range": [
+        28,
+        28
+      ],
+      "bbox": [
+        80,
+        711,
+        152,
+        721
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The \"Pragma\" header field allows backwards compatibility with\n   HTTP/1.0 caches, so that clients can specify a \"no-cache\" request\n   that they will understand (as Cache-Control was not defined until\n   HTTP/1.1). When the Cache-Control header field is also present and\n   understood in a request, Pragma is ignored.",
+      "page_range": [
+        28,
+        28
+      ],
+      "bbox": [
+        80,
+        645,
+        500,
+        699
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   In HTTP/1.0, Pragma was defined as an extensible field for\n   implementation-specified directives for recipients. This\n   specification deprecates such extensions to improve interoperability.",
+      "page_range": [
+        28,
+        28
+      ],
+      "bbox": [
+        80,
+        601,
+        512,
+        633
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "     Pragma = 1#pragma-directive\n     pragma-directive = \"no-cache\" / extension-pragma\n     extension-pragma = token [ \"=\" ( token / quoted-string ) ]",
+      "page_range": [
+        28,
+        28
+      ],
+      "bbox": [
+        80,
+        557,
+        458,
+        589
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   When the Cache-Control header field is not present in a request,\n   caches MUST consider the no-cache request pragma-directive as having\n   the same effect as if \"Cache-Control: no-cache\" were present (see\n   Section 5.2.1).",
+      "page_range": [
+        28,
+        28
+      ],
+      "bbox": [
+        80,
+        502,
+        506,
+        545
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   When sending a no-cache request, a client ought to include both the\n   pragma and cache-control directives, unless Cache-Control: no-cache\n   is purposefully omitted to target other Cache-Control response\n   directives at HTTP/1.1 caches. For example:",
+      "page_range": [
+        28,
+        28
+      ],
+      "bbox": [
+        80,
+        447,
+        500,
+        490
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "     GET / HTTP/1.1\n     Host: www.example.com\n     Cache-Control: max-age=30\n     Pragma: no-cache",
+      "page_range": [
+        28,
+        28
+      ],
+      "bbox": [
+        80,
+        392,
+        260,
+        435
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   will constrain HTTP/1.1 caches to serve a response no older than 30\n   seconds, while precluding implementations that do not understand\n   Cache-Control from serving a cached response.",
+      "page_range": [
+        28,
+        28
+      ],
+      "bbox": [
+        80,
+        348,
+        500,
+        380
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "      Note: Because the meaning of \"Pragma: no-cache\" in responses is\n      not specified, it does not provide a reliable replacement for\n      \"Cache-Control: no-cache\" in them.",
+      "page_range": [
+        28,
+        28
+      ],
+      "bbox": [
+        80,
+        304,
+        494,
+        336
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "5.5. Warning",
+      "page_range": [
+        28,
+        28
+      ],
+      "bbox": [
+        80,
+        282,
+        158,
+        292
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The \"Warning\" header field is used to carry additional information\n   about the status or transformation of a message that might not be\n   reflected in the status code. This information is typically used to\n   warn about possible incorrectness introduced by caching operations or\n   transformations applied to the payload of the message.",
+      "page_range": [
+        28,
+        28
+      ],
+      "bbox": [
+        80,
+        216,
+        512,
+        270
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   Warnings can be used for other purposes, both cache-related and\n   otherwise. The use of a warning, rather than an error status code,\n   distinguishes these responses from true failures.",
+      "page_range": [
+        29,
+        29
+      ],
+      "bbox": [
+        80,
+        689,
+        500,
+        721
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   Warning header fields can in general be applied to any message,\n   however some warn-codes are specific to caches and can only be\n   applied to response messages.",
+      "page_range": [
+        29,
+        29
+      ],
+      "bbox": [
+        80,
+        645,
+        476,
+        677
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "     Warning = 1#warning-value",
+      "page_range": [
+        29,
+        29
+      ],
+      "bbox": [
+        80,
+        623,
+        296,
+        633
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "     warning-value = warn-code SP warn-agent SP warn-text\n                                           [ SP warn-date ]",
+      "page_range": [
+        29,
+        29
+      ],
+      "bbox": [
+        80,
+        590,
+        434,
+        611
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "     warn-code = 3DIGIT\n     warn-agent = ( uri-host [ \":\" port ] ) / pseudonym\n                     ; the name or pseudonym of the server adding\n                     ; the Warning header field, for use in debugging\n                     ; a single \"-\" is recommended when agent unknown\n     warn-text = quoted-string\n     warn-date = DQUOTE HTTP-date DQUOTE",
+      "page_range": [
+        29,
+        29
+      ],
+      "bbox": [
+        80,
+        502,
+        494,
+        578
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   Multiple warnings can be generated in a response (either by the\n   origin server or by a cache), including multiple warnings with the\n   same warn-code number that only differ in warn-text.",
+      "page_range": [
+        29,
+        29
+      ],
+      "bbox": [
+        80,
+        458,
+        494,
+        490
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   A user agent that receives one or more Warning header fields SHOULD\n   inform the user of as many of them as possible, in the order that\n   they appear in the response. Senders that generate multiple Warning\n   header fields are encouraged to order them with this user agent\n   behavior in mind. A sender that generates new Warning header fields\n   MUST append them after any existing Warning header fields.",
+      "page_range": [
+        29,
+        29
+      ],
+      "bbox": [
+        80,
+        381,
+        506,
+        446
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   Warnings are assigned three digit warn-codes. The first digit\n   indicates whether the Warning is required to be deleted from a stored\n   response after validation:",
+      "page_range": [
+        29,
+        29
+      ],
+      "bbox": [
+        80,
+        337,
+        512,
+        369
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   o 1xx warn-codes describe the freshness or validation status of the\n      response, and so they MUST be deleted by a cache after validation.\n      They can only be generated by a cache when validating a cached\n      entry, and MUST NOT be generated in any other situation.",
+      "page_range": [
+        29,
+        29
+      ],
+      "bbox": [
+        80,
+        282,
+        512,
+        325
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   o 2xx warn-codes describe some aspect of the representation that is\n      not rectified by a validation (for example, a lossy compression of\n      the representation) and they MUST NOT be deleted by a cache after\n      validation, unless a full response is sent, in which case they\n      MUST be.",
+      "page_range": [
+        29,
+        29
+      ],
+      "bbox": [
+        80,
+        216,
+        512,
+        270
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   If a sender generates one or more 1xx warn-codes in a message to be\n   sent to a recipient known to implement only HTTP/1.0, the sender MUST\n   include in each corresponding warning-value a warn-date that matches\n   the Date header field in the message. For example:",
+      "page_range": [
+        30,
+        30
+      ],
+      "bbox": [
+        80,
+        678,
+        512,
+        721
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "     HTTP/1.1 200 OK\n     Date: Sat, 25 Aug 2012 23:34:45 GMT\n     Warning: 112 - \"network down\" \"Sat, 25 Aug 2012 23:34:45 GMT\"",
+      "page_range": [
+        30,
+        30
+      ],
+      "bbox": [
+        80,
+        634,
+        476,
+        666
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   Warnings have accompanying warn-text that describes the error, e.g.,\n   for logging. It is advisory only, and its content does not affect\n   interpretation of the warn-code.",
+      "page_range": [
+        30,
+        30
+      ],
+      "bbox": [
+        80,
+        579,
+        506,
+        611
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   If a recipient that uses, evaluates, or displays Warning header\n   fields receives a warn-date that is different from the Date value in\n   the same message, the recipient MUST exclude the warning-value\n   containing that warn-date before storing, forwarding, or using the\n   message. This allows recipients to exclude warning-values that were\n   improperly retained after a cache validation. If all of the\n   warning-values are excluded, the recipient MUST exclude the Warning\n   header field as well.",
+      "page_range": [
+        30,
+        30
+      ],
+      "bbox": [
+        80,
+        480,
+        506,
+        567
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The following warn-codes are defined by this specification, each with\n   a recommended warn-text in English, and a description of its meaning.\n   The procedure for defining additional warn codes is described in\n   Section 7.2.1.",
+      "page_range": [
+        30,
+        30
+      ],
+      "bbox": [
+        80,
+        425,
+        512,
+        468
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "5.5.1. Warning: 110 - \"Response is Stale\"",
+      "page_range": [
+        30,
+        30
+      ],
+      "bbox": [
+        80,
+        403,
+        332,
+        413
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   A cache SHOULD generate this whenever the sent response is stale.",
+      "page_range": [
+        30,
+        30
+      ],
+      "bbox": [
+        80,
+        381,
+        488,
+        391
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "5.5.2. Warning: 111 - \"Revalidation Failed\"",
+      "page_range": [
+        30,
+        30
+      ],
+      "bbox": [
+        80,
+        359,
+        344,
+        369
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   A cache SHOULD generate this when sending a stale response because an\n   attempt to validate the response failed, due to an inability to reach\n   the server.",
+      "page_range": [
+        30,
+        30
+      ],
+      "bbox": [
+        80,
+        315,
+        512,
+        347
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "5.5.3. Warning: 112 - \"Disconnected Operation\"",
+      "page_range": [
+        30,
+        30
+      ],
+      "bbox": [
+        80,
+        293,
+        362,
+        303
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   A cache SHOULD generate this if it is intentionally disconnected from\n   the rest of the network for a period of time.",
+      "page_range": [
+        30,
+        30
+      ],
+      "bbox": [
+        80,
+        260,
+        512,
+        281
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "5.5.4. Warning: 113 - \"Heuristic Expiration\"",
+      "page_range": [
+        30,
+        30
+      ],
+      "bbox": [
+        80,
+        238,
+        350,
+        248
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   A cache SHOULD generate this if it heuristically chose a freshness\n   lifetime greater than 24 hours and the response’s age is greater than\n   24 hours.",
+      "page_range": [
+        30,
+        30
+      ],
+      "bbox": [
+        80,
+        194,
+        512,
+        226
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "5.5.5. Warning: 199 - \"Miscellaneous Warning\"\n   The warning text can include arbitrary information to be presented to\n   a human user or logged. A system receiving this warning MUST NOT\n   take any automated action, besides presenting the warning to the\n   user.\n5.5.6. Warning: 214 - \"Transformation Applied\"\n   This Warning code MUST be added by a proxy if it applies any\n   transformation to the representation, such as changing the\n   content-coding, media-type, or modifying the representation data,\n   unless this Warning code already appears in the response.\n5.5.7. Warning: 299 - \"Miscellaneous Persistent Warning\"\n   The warning text can include arbitrary information to be presented to\n   a human user or logged. A system receiving this warning MUST NOT\n   take any automated action.\n6. History Lists\n   User agents often have history mechanisms, such as \"Back\" buttons and\n   history lists, that can be used to redisplay a representation\n   retrieved earlier in a session.\n   The freshness model (Section 4.2) does not necessarily apply to\n   history mechanisms. That is, a history mechanism can display a\n   previous representation even if it has expired.\n   This does not prohibit the history mechanism from telling the user\n   that a view might be stale or from honoring cache directives (e.g.,\n   Cache-Control: no-store).\n7. IANA Considerations\n7.1. Cache Directive Registry\n   The \"Hypertext Transfer Protocol (HTTP) Cache Directive Registry\"\n   defines the namespace for the cache directives. It has been created\n   and is now maintained at\n   \u003chttp://www.iana.org/assignments/http-cache-directives\u003e.\n7.1.1. Procedure\n   A registration MUST include the following fields:\n   o Cache Directive Name\n   o Pointer to specification text",
+      "page_range": [
+        31,
+        32
+      ],
+      "bbox": [
+        80,
+        194,
+        512,
+        721
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   Values to be added to this namespace require IETF Review (see\n   [RFC5226], Section 4.1).",
+      "page_range": [
+        32,
+        32
+      ],
+      "bbox": [
+        80,
+        678,
+        464,
+        699
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "7.1.2. Considerations for New Cache Control Directives",
+      "page_range": [
+        32,
+        32
+      ],
+      "bbox": [
+        80,
+        656,
+        410,
+        666
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   New extension directives ought to consider defining:",
+      "page_range": [
+        32,
+        32
+      ],
+      "bbox": [
+        80,
+        634,
+        410,
+        644
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   o What it means for a directive to be specified multiple times,",
+      "page_range": [
+        32,
+        32
+      ],
+      "bbox": [
+        80,
+        612,
+        482,
+        622
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   o When the directive does not take an argument, what it means when\n      an argument is present,",
+      "page_range": [
+        32,
+        32
+      ],
+      "bbox": [
+        80,
+        579,
+        500,
+        600
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   o When the directive requires an argument, what it means when it is\n      missing,",
+      "page_range": [
+        32,
+        32
+      ],
+      "bbox": [
+        80,
+        546,
+        506,
+        567
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   o Whether the directive is specific to requests, responses, or able\n      to be used in either.",
+      "page_range": [
+        32,
+        32
+      ],
+      "bbox": [
+        80,
+        513,
+        506,
+        534
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   See also Section 5.2.3.",
+      "page_range": [
+        32,
+        32
+      ],
+      "bbox": [
+        80,
+        491,
+        236,
+        501
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "7.1.3. Registrations",
+      "page_range": [
+        32,
+        32
+      ],
+      "bbox": [
+        80,
+        469,
+        206,
+        479
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The registry has been populated with the registrations below:",
+      "page_range": [
+        32,
+        32
+      ],
+      "bbox": [
+        80,
+        447,
+        464,
+        457
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   +------------------------+----------------------------------+\n   | Cache Directive | Reference |\n   +------------------------+----------------------------------+\n   | max-age | Section 5.2.1.1, Section 5.2.2.8 |\n   | max-stale | Section 5.2.1.2 |\n   | min-fresh | Section 5.2.1.3 |\n   | must-revalidate | Section 5.2.2.1 |\n   | no-cache | Section 5.2.1.4, Section 5.2.2.2 |\n   | no-store | Section 5.2.1.5, Section 5.2.2.3 |\n   | no-transform | Section 5.2.1.6, Section 5.2.2.4 |\n   | only-if-cached | Section 5.2.1.7 |\n   | private | Section 5.2.2.6 |\n   | proxy-revalidate | Section 5.2.2.7 |\n   | public | Section 5.2.2.5 |\n   | s-maxage | Section 5.2.2.9 |\n   | stale-if-error | [RFC5861], Section 4 |\n   | stale-while-revalidate | [RFC5861], Section 3 |\n   +------------------------+----------------------------------+",
+      "page_range": [
+        32,
+        32
+      ],
+      "bbox": [
+        80,
+        238,
+        464,
+        435
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "7.2. Warn Code Registry",
+      "page_range": [
+        33,
+        33
+      ],
+      "bbox": [
+        80,
+        711,
+        224,
+        721
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The \"Hypertext Transfer Protocol (HTTP) Warn Codes\" registry defines\n   the namespace for warn codes. It has been created and is now\n   maintained at \u003chttp://www.iana.org/assignments/http-warn-codes\u003e.",
+      "page_range": [
+        33,
+        33
+      ],
+      "bbox": [
+        80,
+        667,
+        506,
+        699
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "7.2.1. Procedure",
+      "page_range": [
+        33,
+        33
+      ],
+      "bbox": [
+        80,
+        645,
+        182,
+        655
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   A registration MUST include the following fields:",
+      "page_range": [
+        33,
+        33
+      ],
+      "bbox": [
+        80,
+        623,
+        392,
+        633
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   o Warn Code (3 digits)",
+      "page_range": [
+        33,
+        33
+      ],
+      "bbox": [
+        80,
+        601,
+        236,
+        611
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   o Short Description",
+      "page_range": [
+        33,
+        33
+      ],
+      "bbox": [
+        80,
+        579,
+        218,
+        589
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   o Pointer to specification text",
+      "page_range": [
+        33,
+        33
+      ],
+      "bbox": [
+        80,
+        557,
+        290,
+        567
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   Values to be added to this namespace require IETF Review (see\n   [RFC5226], Section 4.1).",
+      "page_range": [
+        33,
+        33
+      ],
+      "bbox": [
+        80,
+        524,
+        464,
+        545
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "7.2.2. Registrations",
+      "page_range": [
+        33,
+        33
+      ],
+      "bbox": [
+        80,
+        502,
+        206,
+        512
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The registry has been populated with the registrations below:",
+      "page_range": [
+        33,
+        33
+      ],
+      "bbox": [
+        80,
+        480,
+        464,
+        490
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   +-----------+----------------------------------+---------------+\n   | Warn Code | Short Description | Reference |\n   +-----------+----------------------------------+---------------+\n   | 110 | Response is Stale | Section 5.5.1 |\n   | 111 | Revalidation Failed | Section 5.5.2 |\n   | 112 | Disconnected Operation | Section 5.5.3 |\n   | 113 | Heuristic Expiration | Section 5.5.4 |\n   | 199 | Miscellaneous Warning | Section 5.5.5 |\n   | 214 | Transformation Applied | Section 5.5.6 |\n   | 299 | Miscellaneous Persistent Warning | Section 5.5.7 |\n   +-----------+----------------------------------+---------------+",
+      "page_range": [
+        33,
+        33
+      ],
+      "bbox": [
+        80,
+        348,
+        482,
+        468
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "7.3. Header Field Registration",
+      "page_range": [
+        33,
+        33
+      ],
+      "bbox": [
+        80,
+        326,
+        266,
+        336
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   HTTP header fields are registered within the \"Message Headers\"\n   registry maintained at\n   \u003chttp://www.iana.org/assignments/message-headers/\u003e.",
+      "page_range": [
+        33,
+        33
+      ],
+      "bbox": [
+        80,
+        282,
+        470,
+        314
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   This document defines the following HTTP header fields, so the\n   \"Permanent Message Header Field Names\" registry has been updated\n   accordingly (see [BCP90]).",
+      "page_range": [
+        34,
+        34
+      ],
+      "bbox": [
+        80,
+        689,
+        482,
+        721
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   +-------------------+----------+----------+-------------+\n   | Header Field Name | Protocol | Status | Reference |\n   +-------------------+----------+----------+-------------+\n   | Age | http | standard | Section 5.1 |\n   | Cache-Control | http | standard | Section 5.2 |\n   | Expires | http | standard | Section 5.3 |\n   | Pragma | http | standard | Section 5.4 |\n   | Warning | http | standard | Section 5.5 |\n   +-------------------+----------+----------+-------------+",
+      "page_range": [
+        34,
+        34
+      ],
+      "bbox": [
+        80,
+        579,
+        440,
+        677
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The change controller is: \"IETF (iesg@ietf.org) - Internet\n   Engineering Task Force\".",
+      "page_range": [
+        34,
+        34
+      ],
+      "bbox": [
+        80,
+        546,
+        446,
+        567
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "8. Security Considerations",
+      "page_range": [
+        34,
+        34
+      ],
+      "bbox": [
+        80,
+        524,
+        242,
+        534
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   This section is meant to inform developers, information providers,\n   and users of known security concerns specific to HTTP caching. More\n   general security considerations are addressed in HTTP messaging\n   [RFC7230] and semantics [RFC7231].",
+      "page_range": [
+        34,
+        34
+      ],
+      "bbox": [
+        80,
+        469,
+        506,
+        512
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   Caches expose additional potential vulnerabilities, since the\n   contents of the cache represent an attractive target for malicious\n   exploitation. Because cache contents persist after an HTTP request\n   is complete, an attack on the cache can reveal information long after\n   a user believes that the information has been removed from the\n   network. Therefore, cache contents need to be protected as sensitive\n   information.",
+      "page_range": [
+        34,
+        34
+      ],
+      "bbox": [
+        80,
+        381,
+        512,
+        457
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   In particular, various attacks might be amplified by being stored in\n   a shared cache; such \"cache poisoning\" attacks use the cache to\n   distribute a malicious payload to many clients, and are especially\n   effective when an attacker can use implementation flaws, elevated\n   privileges, or other techniques to insert such a response into a\n   cache. One common attack vector for cache poisoning is to exploit\n   differences in message parsing on proxies and in user agents; see\n   Section 3.3.3 of [RFC7230] for the relevant requirements.",
+      "page_range": [
+        34,
+        34
+      ],
+      "bbox": [
+        80,
+        282,
+        506,
+        369
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   Likewise, implementation flaws (as well as misunderstanding of cache\n   operation) might lead to caching of sensitive information (e.g.,\n   authentication credentials) that is thought to be private, exposing\n   it to unauthorized parties.",
+      "page_range": [
+        34,
+        34
+      ],
+      "bbox": [
+        80,
+        227,
+        506,
+        270
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   Furthermore, the very use of a cache can bring about privacy\n   concerns. For example, if two users share a cache, and the first one\n   browses to a site, the second may be able to detect that the other\n   has been to that site, because the resources from it load more\n   quickly, thanks to the cache.",
+      "page_range": [
+        35,
+        35
+      ],
+      "bbox": [
+        80,
+        667,
+        512,
+        721
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   Note that the Set-Cookie response header field [RFC6265] does not\n   inhibit caching; a cacheable response with a Set-Cookie header field\n   can be (and often is) used to satisfy subsequent requests to caches.\n   Servers who wish to control caching of these responses are encouraged\n   to emit appropriate Cache-Control response header fields.",
+      "page_range": [
+        35,
+        35
+      ],
+      "bbox": [
+        80,
+        601,
+        512,
+        655
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "9. Acknowledgments",
+      "page_range": [
+        35,
+        35
+      ],
+      "bbox": [
+        80,
+        579,
+        194,
+        589
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   See Section 10 of [RFC7230].",
+      "page_range": [
+        35,
+        35
+      ],
+      "bbox": [
+        80,
+        557,
+        266,
+        567
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "10. References",
+      "page_range": [
+        35,
+        35
+      ],
+      "bbox": [
+        80,
+        535,
+        170,
+        545
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "10.1. Normative References",
+      "page_range": [
+        35,
+        35
+      ],
+      "bbox": [
+        80,
+        513,
+        242,
+        523
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   [RFC2119] Bradner, S., \"Key words for use in RFCs to Indicate\n              Requirement Levels\", BCP 14, RFC 2119, March 1997.",
+      "page_range": [
+        35,
+        35
+      ],
+      "bbox": [
+        80,
+        480,
+        470,
+        501
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   [RFC5234] Crocker, D., Ed. and P. Overell, \"Augmented BNF for Syntax\n              Specifications: ABNF\", STD 68, RFC 5234, January 2008.",
+      "page_range": [
+        35,
+        35
+      ],
+      "bbox": [
+        80,
+        447,
+        512,
+        468
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   [RFC7230] Fielding, R., Ed. and J. Reschke, Ed., \"Hypertext Transfer\n              Protocol (HTTP/1.1): Message Syntax and Routing\",\n              RFC 7230, June 2014.",
+      "page_range": [
+        35,
+        35
+      ],
+      "bbox": [
+        80,
+        403,
+        512,
+        435
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   [RFC7231] Fielding, R., Ed. and J. Reschke, Ed., \"Hypertext Transfer\n              Protocol (HTTP/1.1): Semantics and Content\", RFC 7231,\n              June 2014.",
+      "page_range": [
+        35,
+        35
+      ],
+      "bbox": [
+        80,
+        359,
+        512,
+        391
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   [RFC7232] Fielding, R., Ed. and J. Reschke, Ed., \"Hypertext Transfer\n              Protocol (HTTP/1.1): Conditional Requests\", RFC 7232,\n              June 2014.",
+      "page_range": [
+        35,
+        35
+      ],
+      "bbox": [
+        80,
+        315,
+        512,
+        347
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   [RFC7233] Fielding, R., Ed., Lafon, Y., Ed., and J. Reschke, Ed.,\n              \"Hypertext Transfer Protocol (HTTP/1.1): Range Requests\",\n              RFC 7233, June 2014.",
+      "page_range": [
+        35,
+        35
+      ],
+      "bbox": [
+        80,
+        271,
+        506,
+        303
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   [RFC7235] Fielding, R., Ed. and J. Reschke, Ed., \"Hypertext Transfer\n              Protocol (HTTP/1.1): Authentication\", RFC 7235, June 2014.",
+      "page_range": [
+        35,
+        35
+      ],
+      "bbox": [
+        80,
+        238,
+        512,
+        259
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "10.2. Informative References",
+      "page_range": [
+        36,
+        36
+      ],
+      "bbox": [
+        80,
+        711,
+        254,
+        721
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   [BCP90] Klyne, G., Nottingham, M., and J. Mogul, \"Registration\n              Procedures for Message Header Fields\", BCP 90, RFC 3864,\n              September 2004.",
+      "page_range": [
+        36,
+        36
+      ],
+      "bbox": [
+        80,
+        667,
+        500,
+        699
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   [RFC2616] Fielding, R., Gettys, J., Mogul, J., Frystyk, H.,\n              Masinter, L., Leach, P., and T. Berners-Lee, \"Hypertext\n              Transfer Protocol -- HTTP/1.1\", RFC 2616, June 1999.",
+      "page_range": [
+        36,
+        36
+      ],
+      "bbox": [
+        80,
+        623,
+        494,
+        655
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   [RFC5226] Narten, T. and H. Alvestrand, \"Guidelines for Writing an\n              IANA Considerations Section in RFCs\", BCP 26, RFC 5226,\n              May 2008.",
+      "page_range": [
+        36,
+        36
+      ],
+      "bbox": [
+        80,
+        579,
+        500,
+        611
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   [RFC5861] Nottingham, M., \"HTTP Cache-Control Extensions for Stale\n              Content\", RFC 5861, April 2010.",
+      "page_range": [
+        36,
+        36
+      ],
+      "bbox": [
+        80,
+        546,
+        500,
+        567
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   [RFC5905] Mills, D., Martin, J., Ed., Burbank, J., and W. Kasch,\n              \"Network Time Protocol Version 4: Protocol and Algorithms\n              Specification\", RFC 5905, June 2010.",
+      "page_range": [
+        36,
+        36
+      ],
+      "bbox": [
+        80,
+        502,
+        506,
+        534
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   [RFC6265] Barth, A., \"HTTP State Management Mechanism\", RFC 6265,\n              April 2011.",
+      "page_range": [
+        36,
+        36
+      ],
+      "bbox": [
+        80,
+        469,
+        494,
+        490
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "Appendix A. Changes from RFC 2616",
+      "page_range": [
+        37,
+        37
+      ],
+      "bbox": [
+        80,
+        711,
+        284,
+        721
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The specification has been substantially rewritten for clarity.",
+      "page_range": [
+        37,
+        37
+      ],
+      "bbox": [
+        80,
+        689,
+        476,
+        699
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The conditions under which an authenticated response can be cached\n   have been clarified. (Section 3.2)",
+      "page_range": [
+        37,
+        37
+      ],
+      "bbox": [
+        80,
+        656,
+        494,
+        677
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   New status codes can now define that caches are allowed to use\n   heuristic freshness with them. Caches are now allowed to calculate\n   heuristic freshness for URIs with query components. (Section 4.2.2)",
+      "page_range": [
+        37,
+        37
+      ],
+      "bbox": [
+        80,
+        612,
+        506,
+        644
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The algorithm for calculating age is now less conservative. Caches\n   are now required to handle dates with time zones as if they’re\n   invalid, because it’s not possible to accurately guess.\n   (Section 4.2.3)",
+      "page_range": [
+        37,
+        37
+      ],
+      "bbox": [
+        80,
+        557,
+        500,
+        600
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The Content-Location response header field is no longer used to\n   determine the appropriate response to use when validating.\n   (Section 4.3)",
+      "page_range": [
+        37,
+        37
+      ],
+      "bbox": [
+        80,
+        513,
+        476,
+        545
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The algorithm for selecting a cached negotiated response to use has\n   been clarified in several ways. In particular, it now explicitly\n   allows header-specific canonicalization when processing selecting\n   header fields. (Section 4.1)",
+      "page_range": [
+        37,
+        37
+      ],
+      "bbox": [
+        80,
+        458,
+        500,
+        501
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   Requirements regarding denial-of-service attack avoidance when\n   performing invalidation have been clarified. (Section 4.4)",
+      "page_range": [
+        37,
+        37
+      ],
+      "bbox": [
+        80,
+        425,
+        470,
+        446
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   Cache invalidation only occurs when a successful response is\n   received. (Section 4.4)",
+      "page_range": [
+        37,
+        37
+      ],
+      "bbox": [
+        80,
+        392,
+        458,
+        413
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   Cache directives are explicitly defined to be case-insensitive.\n   Handling of multiple instances of cache directives when only one is\n   expected is now defined. (Section 5.2)",
+      "page_range": [
+        37,
+        37
+      ],
+      "bbox": [
+        80,
+        348,
+        500,
+        380
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The \"no-store\" request directive doesn’t apply to responses; i.e., a\n   cache can satisfy a request with no-store on it and does not\n   invalidate it. (Section 5.2.1.5)",
+      "page_range": [
+        37,
+        37
+      ],
+      "bbox": [
+        80,
+        304,
+        506,
+        336
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The qualified forms of the private and no-cache cache directives are\n   noted to not be widely implemented; for example, \"private=foo\" is\n   interpreted by many caches as simply \"private\". Additionally, the\n   meaning of the qualified form of no-cache has been clarified.\n   (Section 5.2.2)",
+      "page_range": [
+        37,
+        37
+      ],
+      "bbox": [
+        80,
+        238,
+        506,
+        292
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The \"no-cache\" response directive’s meaning has been clarified.\n   (Section 5.2.2.2)",
+      "page_range": [
+        37,
+        37
+      ],
+      "bbox": [
+        80,
+        205,
+        476,
+        226
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The one-year limit on Expires header field values has been removed;\n   instead, the reasoning for using a sensible value is given.\n   (Section 5.3)",
+      "page_range": [
+        38,
+        38
+      ],
+      "bbox": [
+        80,
+        689,
+        500,
+        721
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The Pragma header field is now only defined for backwards\n   compatibility; future pragmas are deprecated. (Section 5.4)",
+      "page_range": [
+        38,
+        38
+      ],
+      "bbox": [
+        80,
+        656,
+        458,
+        677
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   Some requirements regarding production and processing of the Warning\n   header fields have been relaxed, as it is not widely implemented.\n   Furthermore, the Warning header field no longer uses RFC 2047\n   encoding, nor does it allow multiple languages, as these aspects were\n   not implemented. (Section 5.5)",
+      "page_range": [
+        38,
+        38
+      ],
+      "bbox": [
+        80,
+        590,
+        512,
+        644
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   This specification introduces the Cache Directive and Warn Code\n   Registries, and defines considerations for new cache directives.\n   (Section 7.1 and Section 7.2)",
+      "page_range": [
+        38,
+        38
+      ],
+      "bbox": [
+        80,
+        546,
+        482,
+        578
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "Appendix B. Imported ABNF",
+      "page_range": [
+        38,
+        38
+      ],
+      "bbox": [
+        80,
+        524,
+        236,
+        534
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The following core rules are included by reference, as defined in\n   Appendix B.1 of [RFC5234]: ALPHA (letters), CR (carriage return),\n   CRLF (CR LF), CTL (controls), DIGIT (decimal 0-9), DQUOTE (double\n   quote), HEXDIG (hexadecimal 0-9/A-F/a-f), LF (line feed), OCTET (any\n   8-bit sequence of data), SP (space), and VCHAR (any visible US-ASCII\n   character).",
+      "page_range": [
+        38,
+        38
+      ],
+      "bbox": [
+        80,
+        447,
+        506,
+        512
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The rules below are defined in [RFC7230]:",
+      "page_range": [
+        38,
+        38
+      ],
+      "bbox": [
+        80,
+        425,
+        344,
+        435
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "     OWS = \u003cOWS, see [RFC7230], Section 3.2.3\u003e\n     field-name = \u003cfield-name, see [RFC7230], Section 3.2\u003e\n     quoted-string = \u003cquoted-string, see [RFC7230], Section 3.2.6\u003e\n     token = \u003ctoken, see [RFC7230], Section 3.2.6\u003e",
+      "page_range": [
+        38,
+        38
+      ],
+      "bbox": [
+        80,
+        370,
+        476,
+        413
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "     port = \u003cport, see [RFC7230], Section 2.7\u003e\n     pseudonym = \u003cpseudonym, see [RFC7230], Section 5.7.1\u003e\n     uri-host = \u003curi-host, see [RFC7230], Section 2.7\u003e",
+      "page_range": [
+        38,
+        38
+      ],
+      "bbox": [
+        80,
+        326,
+        452,
+        358
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   The rules below are defined in other parts:",
+      "page_range": [
+        38,
+        38
+      ],
+      "bbox": [
+        80,
+        304,
+        356,
+        314
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "     HTTP-date = \u003cHTTP-date, see [RFC7231], Section 7.1.1.1\u003e",
+      "page_range": [
+        38,
+        38
+      ],
+      "bbox": [
+        80,
+        282,
+        464,
+        292
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "RFC 7234 HTTP/1.1 Caching June 2014\nAppendix C. Collected ABNF\n   In the collected ABNF below, list rules are expanded as per Section\n   1.2 of [RFC7230].\n   Age = delta-seconds\n   Cache-Control = *( \",\" OWS ) cache-directive *( OWS \",\" [ OWS\n    cache-directive ] )\n   Expires = HTTP-date\n   HTTP-date = \u003cHTTP-date, see [RFC7231], Section 7.1.1.1\u003e\n   OWS = \u003cOWS, see [RFC7230], Section 3.2.3\u003e\n   Pragma = *( \",\" OWS ) pragma-directive *( OWS \",\" [ OWS\n    pragma-directive ] )\n   Warning = *( \",\" OWS ) warning-value *( OWS \",\" [ OWS warning-value ]\n    )\n   cache-directive = token [ \"=\" ( token / quoted-string ) ]\n   delta-seconds = 1*DIGIT\n   extension-pragma = token [ \"=\" ( token / quoted-string ) ]\n   field-name = \u003cfield-name, see [RFC7230], Section 3.2\u003e\n   port = \u003cport, see [RFC7230], Section 2.7\u003e\n   pragma-directive = \"no-cache\" / extension-pragma\n   pseudonym = \u003cpseudonym, see [RFC7230], Section 5.7.1\u003e\n   quoted-string = \u003cquoted-string, see [RFC7230], Section 3.2.6\u003e\n   token = \u003ctoken, see [RFC7230], Section 3.2.6\u003e\n   uri-host = \u003curi-host, see [RFC7230], Section 2.7\u003e\n   warn-agent = ( uri-host [ \":\" port ] ) / pseudonym\n   warn-code = 3DIGIT\n   warn-date = DQUOTE HTTP-date DQUOTE\n   warn-text = quoted-string\n   warning-value = warn-code SP warn-agent SP warn-text [ SP warn-date\n    ]",
+      "page_range": [
+        39,
+        39
+      ],
+      "bbox": [
+        80,
+        216,
+        512,
+        754
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "Index",
+      "page_range": [
+        40,
+        40
+      ],
+      "bbox": [
+        80,
+        711,
+        110,
+        721
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   1\n      110 (warn-code) 31\n      111 (warn-code) 31\n      112 (warn-code) 31\n      113 (warn-code) 31\n      199 (warn-code) 32",
+      "page_range": [
+        40,
+        40
+      ],
+      "bbox": [
+        80,
+        634,
+        230,
+        699
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   2\n      214 (warn-code) 32\n      299 (warn-code) 32",
+      "page_range": [
+        40,
+        40
+      ],
+      "bbox": [
+        80,
+        590,
+        230,
+        622
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   A\n      age 11\n      Age header field 21",
+      "page_range": [
+        40,
+        40
+      ],
+      "bbox": [
+        80,
+        546,
+        236,
+        578
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   C\n      cache 4\n      cache entry 5\n      cache key 5-6\n      Cache-Control header field 21",
+      "page_range": [
+        40,
+        40
+      ],
+      "bbox": [
+        80,
+        480,
+        296,
+        534
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   D\n      Disconnected Operation (warn-text) 31",
+      "page_range": [
+        40,
+        40
+      ],
+      "bbox": [
+        80,
+        447,
+        344,
+        468
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   E\n      Expires header field 28\n      explicit expiration time 11",
+      "page_range": [
+        40,
+        40
+      ],
+      "bbox": [
+        80,
+        403,
+        284,
+        435
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   F\n      fresh 11\n      freshness lifetime 11",
+      "page_range": [
+        40,
+        40
+      ],
+      "bbox": [
+        80,
+        359,
+        248,
+        391
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   G\n      Grammar\n         Age 21\n         Cache-Control 22\n         cache-directive 22\n         delta-seconds 5\n         Expires 28\n         extension-pragma 29\n         Pragma 29\n         pragma-directive 29\n         warn-agent 29\n         warn-code 29\n         warn-date 29\n         warn-text 29",
+      "page_range": [
+        40,
+        40
+      ],
+      "bbox": [
+        80,
+        194,
+        254,
+        347
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "         Warning 29\n         warning-value 29",
+      "page_range": [
+        41,
+        41
+      ],
+      "bbox": [
+        80,
+        700,
+        236,
+        721
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   H\n      Heuristic Expiration (warn-text) 31\n      heuristic expiration time 11\n   M\n      max-age (cache directive) 22, 26\n      max-stale (cache directive) 22\n      min-fresh (cache directive) 22\n      Miscellaneous Persistent Warning (warn-text) 32\n      Miscellaneous Warning (warn-text) 32\n      must-revalidate (cache directive) 24",
+      "page_range": [
+        41,
+        41
+      ],
+      "bbox": [
+        80,
+        579,
+        404,
+        688
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   N\n      no-cache (cache directive) 23, 25\n      no-store (cache directive) 23, 24\n      no-transform (cache directive) 23, 25",
+      "page_range": [
+        41,
+        41
+      ],
+      "bbox": [
+        80,
+        524,
+        344,
+        567
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   O\n      only-if-cached (cache directive) 23",
+      "page_range": [
+        41,
+        41
+      ],
+      "bbox": [
+        80,
+        491,
+        332,
+        512
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   P\n      Pragma header field 29\n      private (cache directive) 25\n      private cache 4\n      proxy-revalidate (cache directive) 26\n      public (cache directive) 25",
+      "page_range": [
+        41,
+        41
+      ],
+      "bbox": [
+        80,
+        414,
+        344,
+        479
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   R\n      Response is Stale (warn-text) 30\n      Revalidation Failed (warn-text) 31",
+      "page_range": [
+        41,
+        41
+      ],
+      "bbox": [
+        80,
+        370,
+        326,
+        402
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   S\n      s-maxage (cache directive) 27\n      shared cache 4\n      stale 11\n      strong validator 18",
+      "page_range": [
+        41,
+        41
+      ],
+      "bbox": [
+        80,
+        304,
+        296,
+        358
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   T\n      Transformation Applied (warn-text) 32",
+      "page_range": [
+        41,
+        41
+      ],
+      "bbox": [
+        80,
+        271,
+        344,
+        292
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   V\n      validator 16",
+      "page_range": [
+        41,
+        41
+      ],
+      "bbox": [
+        80,
+        238,
+        194,
+        259
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   W\n      Warning header field 29",
+      "page_range": [
+        41,
+        41
+      ],
+      "bbox": [
+        80,
+        205,
+        260,
+        226
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "Authors’ Addresses",
+      "page_range": [
+        42,
+        42
+      ],
+      "bbox": [
+        80,
+        711,
+        188,
+        721
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   Roy T. Fielding (editor)\n   Adobe Systems Incorporated\n   345 Park Ave\n   San Jose, CA 95110\n   USA",
+      "page_range": [
+        42,
+        42
+      ],
+      "bbox": [
+        80,
+        645,
+        254,
+        699
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   EMail: fielding@gbiv.com\n   URI: http://roy.gbiv.com/",
+      "page_range": [
+        42,
+        42
+      ],
+      "bbox": [
+        80,
+        612,
+        260,
+        633
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   Mark Nottingham (editor)\n   Akamai",
+      "page_range": [
+        42,
+        42
+      ],
+      "bbox": [
+        80,
+        568,
+        242,
+        589
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   EMail: mnot@mnot.net\n   URI: http://www.mnot.net/",
+      "page_range": [
+        42,
+        42
+      ],
+      "bbox": [
+        80,
+        535,
+        260,
+        556
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   Julian F. Reschke (editor)\n   greenbytes GmbH\n   Hafenweg 16\n   Muenster, NW 48155\n   Germany",
+      "page_range": [
+        42,
+        42
+      ],
+      "bbox": [
+        80,
+        458,
+        254,
+        512
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "   EMail: julian.reschke@greenbytes.de\n   URI: http://greenbytes.de/tech/webdav/",
+      "page_range": [
+        42,
+        42
+      ],
+      "bbox": [
+        80,
+        425,
+        338,
+        446
+      ]
+    }
+  ]
+}

@@ -1,0 +1,20 @@
+Rules (3):
+
+- **rule-gamma**
+  rule c desc
+  Scope: commits
+  Enforcement: policy
+  ID: <ID>
+
+- **rule-beta**
+  rule b desc
+  Scope: pkg/
+  Enforcement: review
+  ID: <ID>
+
+- **rule-alpha**
+  rule a desc
+  Scope: *.go
+  Enforcement: lint
+  ID: <ID>
+

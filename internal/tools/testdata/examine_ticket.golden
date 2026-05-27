@@ -1,0 +1,16 @@
+# Inspect: ex-ticket
+
+## Composite View
+- **ID:** <ID>
+- **Type:** ticket
+- **Status:** open
+- **Source:** llm:claude
+- **Created:** <TIME>
+- **Updated:** <TIME>
+
+## Ancestry
+← [project] ex-tproj (status: active, id: <SHORTID>)
+
+## Edges
+  ← [contains] [project] ex-tproj
+

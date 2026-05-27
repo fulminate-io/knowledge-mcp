@@ -1,0 +1,1 @@
+{"nodes":[{"id":"<ID>","type":"ticket","symbol_name":"ls-ticket","summary":"ls t sum","description":"ls t desc","source":"llm:claude","status":"open","metadata":{"no_patterns_reason":"fixture"},"created_at":1767268800000000000,"updated_at":1767268800000000000}],"total":1}

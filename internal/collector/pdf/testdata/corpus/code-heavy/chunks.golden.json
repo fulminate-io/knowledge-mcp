@@ -1,0 +1,47 @@
+{
+  "schema_version": 1,
+  "chunks": [
+    {
+      "kind": "paragraph",
+      "text": "Below is a Go function example demonstrating the standard error-handling pattern in idiomatic Go.",
+      "page_range": [
+        0,
+        0
+      ],
+      "bbox": [
+        100,
+        726,
+        371.452,
+        752
+      ]
+    },
+    {
+      "kind": "code_block",
+      "text": "func Example()\n    if err != nil {\n        return fmt.Errorf\n    }",
+      "page_range": [
+        0,
+        0
+      ],
+      "bbox": [
+        100,
+        641,
+        264.9999999999999,
+        691
+      ]
+    },
+    {
+      "kind": "paragraph",
+      "text": "After the code block, prose resumes with a closing remark on the example above.",
+      "page_range": [
+        0,
+        0
+      ],
+      "bbox": [
+        100,
+        586,
+        316.756,
+        612
+      ]
+    }
+  ]
+}

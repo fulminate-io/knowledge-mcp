@@ -1,0 +1,18 @@
+# Inspect: ex-plan
+
+## Composite View
+- **ID:** <ID>
+- **Type:** plan
+- **Status:** active
+- **Source:** llm:claude
+- **Created:** <TIME>
+- **Updated:** <TIME>
+
+## Ancestry
+← [ticket] ex-pticket (status: open, id: <SHORTID>)
+  ← [project] ex-pproj (status: active, id: <SHORTID>)
+
+## Edges
+  → [contains] [phase] ex-phase
+  ← [contains] [ticket] ex-pticket
+

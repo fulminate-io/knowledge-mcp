@@ -1,0 +1,6 @@
+Ticket created: fixture-ticket → ID: <ID>
+
+## Pattern Auto-Suggest
+Cross-practice fan-out found no hits above 0.40 for query `"fixture-ticket fixture ticket description"`. If you suspect a pattern applies, run
+`search({"graph": "practice", "query": "<refined terms>"})` and retry the create call with `pattern_ids` set.
+ [graph: knowledge/default]

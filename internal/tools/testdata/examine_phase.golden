@@ -1,0 +1,19 @@
+# Inspect: ex-phase
+
+## Composite View
+- **ID:** <ID>
+- **Type:** phase
+- **Status:** pending
+- **Source:** llm:claude
+- **Created:** <TIME>
+- **Updated:** <TIME>
+
+## Ancestry
+← [plan] ex-plan (status: active, id: <SHORTID>)
+  ← [ticket] ex-pticket (status: open, id: <SHORTID>)
+    ← [project] ex-pproj (status: active, id: <SHORTID>)
+
+## Edges
+  → [contains] [step] ex-step
+  ← [contains] [plan] ex-plan
+
