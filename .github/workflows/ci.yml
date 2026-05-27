@@ -11,10 +11,34 @@ permissions:
 
 jobs:
   test:
+    runs-on: ubuntu-latest
+    env:
+      CGO_ENABLED: "1"
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.3"
+
+      - name: Sync embedded Claude assets
+        run: bash scripts/sync-claude-assets.sh
+
+      - name: Build
+        run: go build .
+
+      - name: Test
+        run: go test ./...
+
+  build:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, macos-latest, windows-latest]
+        include:
+          - os: macos-latest
+            name: darwin-arm64
+          - os: windows-latest
+            name: windows-amd64
     runs-on: ${{ matrix.os }}
     env:
       CGO_ENABLED: "1"
@@ -31,9 +55,6 @@ jobs:
 
       - name: Build
         run: go build .
-
-      - name: Test
-        run: go test ./...
 
   lint:
     runs-on: ubuntu-latest
