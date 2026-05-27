@@ -1,5 +1,6 @@
 bin/
 !bin/.gitkeep
+/knowledge-mcp
 *.bin
 .knowledge-events.jsonl
 .DS_Store
