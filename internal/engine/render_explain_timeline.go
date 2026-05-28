@@ -10,8 +10,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
 // render_explain_timeline.go ports the GENERIC (graph-neutral) explain and

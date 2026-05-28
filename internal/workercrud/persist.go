@@ -21,10 +21,10 @@ import (
 	"strconv"
 	"strings"
 
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/config"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	workers "github.com/fulminate-io/knowledge-mcp/internal/workers"
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 )
 
 // Metadata keys persisted on a NodeWorker. Centralized so producers

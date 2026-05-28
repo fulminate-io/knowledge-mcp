@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"sort"
 
-	"github.com/fulminate-io/knowledge-mcp/internal/topology/foundation"
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/topology/foundation"
 )
 
 // event_chain_helpers.go implements the BFS walk and finding construction

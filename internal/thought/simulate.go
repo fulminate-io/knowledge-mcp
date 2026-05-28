@@ -10,8 +10,8 @@ import (
 
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 
-	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
 // SimulatedChange shows the before/after properties for a thought.

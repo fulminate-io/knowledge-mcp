@@ -3947,7 +3947,7 @@ const file_knowledge_v1_engine_proto_rawDesc = "" +
 	"\rMetadataStats\x12\".knowledge.v1.MetadataStatsRequest\x1a#.knowledge.v1.MetadataStatsResponse\x12@\n" +
 	"\x05Index\x12\x1a.knowledge.v1.IndexRequest\x1a\x1b.knowledge.v1.IndexResponse\x12U\n" +
 	"\fPipelineScan\x12!.knowledge.v1.PipelineScanRequest\x1a\".knowledge.v1.PipelineScanResponse\x12R\n" +
-	"\vExportGraph\x12 .knowledge.v1.ExportGraphRequest\x1a!.knowledge.v1.ExportGraphResponseB@Z>github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1;knowledgev1b\x06proto3"
+	"\vExportGraph\x12 .knowledge.v1.ExportGraphRequest\x1a!.knowledge.v1.ExportGraphResponseB@Z>github.com/fulminate-io/knowledge/gen/knowledge/v1;knowledgev1b\x06proto3"
 
 var (
 	file_knowledge_v1_engine_proto_rawDescOnce sync.Once

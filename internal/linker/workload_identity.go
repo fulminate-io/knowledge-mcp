@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
 // LinkWorkloadIdentity scans cloud graphs for Kubernetes ServiceAccounts with

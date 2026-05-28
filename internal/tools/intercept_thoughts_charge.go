@@ -21,12 +21,12 @@ import (
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/crossgraph"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgwire"
 	"github.com/fulminate-io/knowledge-mcp/internal/projects/render"
 	clientthought "github.com/fulminate-io/knowledge-mcp/internal/thought"
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 )
 
 // chargeArgs is the parsed thoughts(operation:charge) shape. Mirrors

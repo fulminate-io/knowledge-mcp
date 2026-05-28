@@ -37,6 +37,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"slices"
 	"time"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
@@ -329,9 +330,9 @@ func runProjectDomainIntercepts(c *client, params kgtools.CallToolParams) (bool,
 // ran locally vs traveled to the server.
 func appendClientDurationFooter(result kgtools.ToolResult, d time.Duration) kgtools.ToolResult {
 	footer := "\n_took " + formatClientDuration(d) + " (client)_"
-	for i := len(result.Content) - 1; i >= 0; i-- {
-		if result.Content[i].Type == "text" {
-			result.Content[i].Text += footer
+	for _, v := range slices.Backward(result.Content) {
+		if v.Type == "text" {
+			v.Text += footer
 			return result
 		}
 	}

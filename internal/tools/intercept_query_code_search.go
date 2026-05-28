@@ -10,8 +10,8 @@ import (
 	"strings"
 	"sync"
 
-	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 )

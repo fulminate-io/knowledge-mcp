@@ -190,7 +190,7 @@ func writeJSON(path string, v any) error {
 		return fmt.Errorf("marshal %s: %w", path, err)
 	}
 	buf = append(buf, '\n')
-	if err := os.WriteFile(path, buf, 0644); err != nil {
+	if err := os.WriteFile(path, buf, 0600); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 	return nil

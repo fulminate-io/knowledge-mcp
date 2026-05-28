@@ -16,9 +16,9 @@ import (
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
 
-	"github.com/fulminate-io/knowledge-mcp/internal/enginetest"
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1/knowledgev1connect"
+	"github.com/fulminate-io/knowledge-mcp/internal/enginetest"
 )
 
 // stubEngine is an EngineService handler whose Execute behavior is driven by a

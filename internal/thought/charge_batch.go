@@ -5,8 +5,8 @@ package thought
 import (
 	"context"
 
-	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 )
 
 // chargeMapForThoughts wraps fetchChargesFor as a single source of

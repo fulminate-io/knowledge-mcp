@@ -7,9 +7,9 @@ import (
 
 	"github.com/stretchr/testify/assert"
 
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgwire"
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 )
 
 // TestLogState_NodeByID_RoundTrips seeds a logState with 3 templates /

@@ -14,8 +14,8 @@ import (
 	"net/url"
 	"strings"
 
-	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
 // iterPrincipalPolicies returns every IAM policy attached to the given

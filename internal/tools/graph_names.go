@@ -15,8 +15,8 @@ import (
 	"encoding/json"
 	"fmt"
 
-	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 )
 
 // fetchGraphNamesOfType enumerates every loaded graph of graphType via the

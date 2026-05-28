@@ -36,6 +36,7 @@ package content
 import (
 	"context"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -263,8 +264,8 @@ func joinCommaSpace(parts []string) string {
 // primary-evidence dedup.
 func pickHistogramEvidence(rows []degreeRow, total map[string]int) []string {
 	topLabel := ""
-	for i := len(defaultDegreeBuckets) - 1; i >= 0; i-- {
-		label := defaultDegreeBuckets[i].Label
+	for _, v := range slices.Backward(defaultDegreeBuckets) {
+		label := v.Label
 		if total[label] > 0 {
 			topLabel = label
 			break

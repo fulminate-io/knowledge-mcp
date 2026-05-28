@@ -5,8 +5,8 @@ package cloudresolver
 import (
 	"context"
 
-	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
 // bfsReaches performs a bounded breadth-first walk starting at `start`

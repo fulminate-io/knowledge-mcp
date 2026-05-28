@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"sync"
 
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/backends"
 	"github.com/fulminate-io/knowledge-mcp/internal/backends/provider"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
@@ -19,7 +20,6 @@ import (
 	clientthought "github.com/fulminate-io/knowledge-mcp/internal/thought"
 	"github.com/fulminate-io/knowledge-mcp/internal/tools"
 	"github.com/fulminate-io/knowledge-mcp/internal/workercrud"
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 )
 
 // toolSchema is the client-local wire shape built from the client-owned tool

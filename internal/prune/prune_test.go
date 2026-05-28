@@ -10,9 +10,9 @@ import (
 	"testing"
 	"time"
 
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/config"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 )
 
 // fakeCaller is a pure-Go GraphCaller stand-in — no httptest, no grpctest (per

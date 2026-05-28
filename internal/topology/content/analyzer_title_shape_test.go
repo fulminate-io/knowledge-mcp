@@ -8,8 +8,8 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/fulminate-io/knowledge-mcp/internal/topology/foundation"
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/topology/foundation"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"

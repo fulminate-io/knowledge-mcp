@@ -56,9 +56,12 @@ func TestCrossCutting_GithubMaterializer_Constraints(t *testing.T) {
 		// where the files do. The server keeps only the schema definition
 		// (tools_ast.go::AstToolDef) so tools/list still advertises the
 		// tool — the schema is metadata-only and pulls no tree-sitter dep.
-		repoRoot := repoRoot(t)
+		root := repoRoot(t)
+		if _, err := os.Stat(filepath.Join(root, "cmd", "knowledge-server")); err != nil {
+			t.Skip("cmd/knowledge-server not present (OSS repo layout)")
+		}
 		cmd := exec.Command("go", "list", "-deps", "./cmd/knowledge-server/...")
-		cmd.Dir = repoRoot
+		cmd.Dir = root
 		cmd.Env = append(os.Environ(), "CGO_ENABLED=1")
 		out, err := cmd.CombinedOutput()
 		if err != nil {
@@ -81,8 +84,11 @@ func TestCrossCutting_GithubMaterializer_Constraints(t *testing.T) {
 		// inspect pageRecord.InternalLinks or call parsePage. Link
 		// discovery on materialized chunks would re-enter the BFS and
 		// break the recursion bound.
-		repoRoot := repoRoot(t)
-		dir := filepath.Join(repoRoot, "cmd", "knowledge", "internal", "collector", "web")
+		cwd, err := os.Getwd()
+		if err != nil {
+			t.Fatalf("getwd: %v", err)
+		}
+		dir := cwd
 		entries, err := os.ReadDir(dir)
 		if err != nil {
 			t.Fatalf("read dir: %v", err)
@@ -110,20 +116,20 @@ func TestCrossCutting_GithubMaterializer_Constraints(t *testing.T) {
 	})
 }
 
-// materializerPath returns the absolute path to
-// cmd/knowledge/internal/collector/web/github_materializer.go from the repo
-// root.
+// materializerPath returns the absolute path to github_materializer.go
+// in this package's directory.
 func materializerPath(t *testing.T) string {
 	t.Helper()
-	return filepath.Join(repoRoot(t), "cmd", "knowledge", "internal", "collector", "web", "github_materializer.go")
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	return filepath.Join(cwd, "github_materializer.go")
 }
 
-// repoRoot walks upward from the test cwd until it finds the workspace
-// root, identified by go.work. It must anchor on go.work (not go.mod):
-// since the 3-module split, the nearest go.mod above this package is the
-// nested cmd/knowledge/go.mod, so a go.mod search would return the client
-// module dir rather than the repo root — doubling paths and breaking the
-// `go list -deps ./cmd/knowledge-server/...` dep guard.
+// repoRoot walks upward from the test cwd until it finds the repo root.
+// Prefers go.work (multi-module workspace) but falls back to go.mod
+// (single-module repo, e.g. the OSS public repo).
 func repoRoot(t *testing.T) string {
 	t.Helper()
 	cwd, err := os.Getwd()
@@ -131,9 +137,15 @@ func repoRoot(t *testing.T) string {
 		t.Fatalf("getwd: %v", err)
 	}
 	dir := cwd
+	fallback := ""
 	for range 8 {
 		if _, err := os.Stat(filepath.Join(dir, "go.work")); err == nil {
 			return dir
+		}
+		if fallback == "" {
+			if _, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil {
+				fallback = dir
+			}
 		}
 		parent := filepath.Dir(dir)
 		if parent == dir {
@@ -141,7 +153,10 @@ func repoRoot(t *testing.T) string {
 		}
 		dir = parent
 	}
-	t.Fatalf("could not locate workspace root (go.work) from %q", cwd)
+	if fallback != "" {
+		return fallback
+	}
+	t.Fatalf("could not locate repo root (go.work or go.mod) from %q", cwd)
 	return ""
 }
 

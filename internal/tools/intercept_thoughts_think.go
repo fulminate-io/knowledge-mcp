@@ -20,12 +20,12 @@ import (
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/crossgraph"
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgwire"
 	"github.com/fulminate-io/knowledge-mcp/internal/validate"
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 )
 
 // thinkArgs is the parsed thoughts(operation:think) shape. Mirrors the

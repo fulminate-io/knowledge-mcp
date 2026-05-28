@@ -33,8 +33,8 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/fulminate-io/knowledge-mcp/internal/topology/foundation"
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/topology/foundation"
 )
 
 // SensitiveRule evaluates whether a given node is a sensitive terminal and

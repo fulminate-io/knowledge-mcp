@@ -23,6 +23,7 @@
 package layout
 
 import (
+	"slices"
 	"sort"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/pdf/text"
@@ -109,11 +110,11 @@ func newLine(r text.TextRun) Line {
 // Y-sorted input.
 func findJoinableLine(lines []Line, r text.TextRun, yTolerance float64) int {
 	rCenterY := r.Y + r.Height/2.0
-	for i := len(lines) - 1; i >= 0; i-- {
-		if !sizeRatioOK(lines[i], r) {
+	for i, v := range slices.Backward(lines) {
+		if !sizeRatioOK(v, r) {
 			continue
 		}
-		dy := rCenterY - lineCenterY(lines[i])
+		dy := rCenterY - lineCenterY(v)
 		if dy < 0 {
 			dy = -dy
 		}

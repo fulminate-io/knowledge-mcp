@@ -21,12 +21,12 @@ import (
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
 
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1/knowledgev1connect"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/remote"
 	"github.com/fulminate-io/knowledge-mcp/internal/collectorwire"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgwire"
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
-	"github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1/knowledgev1connect"
 )
 
 // capturingSink is a collector.Sink that records the *collectorwire.CollectResult

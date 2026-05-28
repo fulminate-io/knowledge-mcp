@@ -8,8 +8,8 @@ import (
 
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 
-	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
 // TraceStep is one node in a traced reasoning chain.

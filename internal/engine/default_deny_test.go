@@ -5,7 +5,9 @@ package engine
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -147,12 +149,12 @@ func TestDefaultDeny_SpecializedShapes(t *testing.T) {
 // fall-through. So dream is no longer a raw-client-only package; this guard no
 // longer applies to it.
 var specializedRawClientPackages = []string{
-	"cmd/knowledge/internal/thought",
-	"cmd/knowledge/internal/workercrud",
-	"cmd/knowledge/internal/linker",
-	"cmd/knowledge/internal/prune",
-	"cmd/knowledge/internal/pipeline",
-	"cmd/knowledge/internal/topology",
+	"thought",
+	"workercrud",
+	"linker",
+	"prune",
+	"pipeline",
+	"topology",
 }
 
 // TestDefaultDeny_SpecializedRawClientPackagesNotRerouted asserts the SPECIALIZED
@@ -165,10 +167,14 @@ func TestDefaultDeny_SpecializedRawClientPackagesNotRerouted(t *testing.T) {
 	if err != nil {
 		t.Skipf("repo root unavailable: %v", err)
 	}
+	internalDir := filepath.Join(root, "cmd", "knowledge", "internal")
+	if _, err := os.Stat(internalDir); err != nil {
+		internalDir = filepath.Join(root, "internal")
+	}
 	for _, pkg := range specializedRawClientPackages {
 		t.Run(pkg, func(t *testing.T) {
-			// grep for an engine.Dispatch reference under the package dir.
-			out, _ := exec.Command("grep", "-rl", "engine.Dispatch", root+"/"+pkg).CombinedOutput() //nolint:gosec // fixed args, test-only.
+			pkgDir := filepath.Join(internalDir, pkg)
+			out, _ := exec.Command("grep", "-rl", "engine.Dispatch", pkgDir).CombinedOutput() //nolint:gosec // fixed args, test-only.
 			hits := strings.TrimSpace(string(out))
 			assert.Empty(t, hits, "%s must NOT route through engine.Dispatch (raw-client gc.Call only); found in:\n%s", pkg, hits)
 		})

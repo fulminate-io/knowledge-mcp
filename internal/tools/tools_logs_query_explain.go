@@ -20,9 +20,9 @@ import (
 	"strings"
 	"time"
 
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgwire"
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/logs"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"

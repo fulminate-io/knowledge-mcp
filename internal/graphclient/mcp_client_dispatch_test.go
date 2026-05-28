@@ -16,9 +16,9 @@ import (
 	"golang.org/x/net/http2"
 	"golang.org/x/net/http2/h2c"
 
-	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1/knowledgev1connect"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 )
 
 // healthyToolHandler serves Health (so EnsureServer passes) for the bare-forwarder

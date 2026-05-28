@@ -5,8 +5,8 @@ package parser
 import (
 	"strings"
 
-	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
 // resolveEdges resolves raw edge IDs (pkg.Symbol or pkg.Receiver.Method format)

@@ -7,8 +7,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/fulminate-io/knowledge-mcp/internal/topology/foundation"
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/topology/foundation"
 )
 
 // serverless_depth_bfs.go implements the per-function forward BFS used by

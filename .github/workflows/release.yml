@@ -1,0 +1,172 @@
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      new_version: ${{ steps.bump.outputs.new_version }}
+      skip: ${{ steps.bump.outputs.skip }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine version bump
+        id: bump
+        run: |
+          # Get the latest tag (or v0.0.0 if none exist).
+          LATEST=$(git describe --tags --abbrev=0 2>/dev/null || echo "v0.0.0")
+          echo "latest=$LATEST"
+
+          # Parse semver components.
+          VERSION="${LATEST#v}"
+          MAJOR=$(echo "$VERSION" | cut -d. -f1)
+          MINOR=$(echo "$VERSION" | cut -d. -f2)
+          PATCH=$(echo "$VERSION" | cut -d. -f3)
+
+          # Scan commit messages since last tag for bump signals.
+          # feat: or feat(...): → minor bump
+          # fix: or fix(...): → patch bump
+          # BREAKING CHANGE or !: → major bump
+          # Default: patch bump
+          COMMITS=$(git log "$LATEST"..HEAD --pretty=format:"%s" 2>/dev/null || git log --pretty=format:"%s")
+
+          if echo "$COMMITS" | grep -qiE 'BREAKING CHANGE|^[a-z]+(\(.+\))?!:'; then
+            MAJOR=$((MAJOR + 1))
+            MINOR=0
+            PATCH=0
+          elif echo "$COMMITS" | grep -qiE '^feat(\(.+\))?:'; then
+            MINOR=$((MINOR + 1))
+            PATCH=0
+          elif echo "$COMMITS" | grep -qiE '^fix(\(.+\))?:|^perf(\(.+\))?:|^refactor(\(.+\))?:'; then
+            PATCH=$((PATCH + 1))
+          else
+            # No conventional commit signals — still bump patch.
+            PATCH=$((PATCH + 1))
+          fi
+
+          NEW_VERSION="v${MAJOR}.${MINOR}.${PATCH}"
+
+          # Skip if this commit is already tagged.
+          if [ "$NEW_VERSION" = "$LATEST" ]; then
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+            echo "skipping: $NEW_VERSION already tagged"
+            exit 0
+          fi
+
+          echo "new_version=$NEW_VERSION" >> "$GITHUB_OUTPUT"
+          echo "skip=false" >> "$GITHUB_OUTPUT"
+          echo "bump: $LATEST → $NEW_VERSION"
+
+  tag:
+    needs: version
+    if: needs.version.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create tag
+        run: |
+          git tag ${{ needs.version.outputs.new_version }}
+          git push origin ${{ needs.version.outputs.new_version }}
+
+  build:
+    needs: [version, tag]
+    if: needs.version.outputs.skip != 'true'
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            goos: linux
+            goarch: amd64
+            artifact: knowledge-linux-amd64
+          - os: ubuntu-24.04-arm
+            goos: linux
+            goarch: arm64
+            artifact: knowledge-linux-arm64
+          - os: macos-13
+            goos: darwin
+            goarch: amd64
+            artifact: knowledge-darwin-amd64
+          - os: macos-latest
+            goos: darwin
+            goarch: arm64
+            artifact: knowledge-darwin-arm64
+          - os: windows-latest
+            goos: windows
+            goarch: amd64
+            artifact: knowledge-windows-amd64
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.3"
+
+      - name: Sync embedded Claude assets
+        run: bash scripts/sync-claude-assets.sh
+        shell: bash
+
+      - name: Build
+        env:
+          CGO_ENABLED: "1"
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+        run: |
+          BINARY="knowledge"
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            BINARY="knowledge.exe"
+          fi
+          go build -ldflags="-s -w -X main.version=${{ needs.version.outputs.new_version }}" \
+            -trimpath -o "$BINARY" .
+        shell: bash
+
+      - name: Archive
+        run: |
+          if [ "${{ matrix.goos }}" = "windows" ]; then
+            7z a ${{ matrix.artifact }}.zip knowledge.exe
+          else
+            tar czf ${{ matrix.artifact }}.tar.gz knowledge
+          fi
+        shell: bash
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ matrix.artifact }}.*
+
+  release:
+    needs: [version, build]
+    if: needs.version.outputs.skip != 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Collect release assets
+        run: |
+          mkdir -p release
+          find artifacts -type f \( -name '*.tar.gz' -o -name '*.zip' \) -exec mv {} release/ \;
+          cd release && sha256sum * > checksums.txt
+        shell: bash
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ needs.version.outputs.new_version }}
+          name: ${{ needs.version.outputs.new_version }}
+          generate_release_notes: true
+          files: release/*

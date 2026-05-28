@@ -12,8 +12,8 @@ import (
 	"runtime/debug"
 	"sync"
 
-	"github.com/fulminate-io/knowledge-mcp/internal/collector/treesitter"
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/collector/treesitter"
 )
 
 // withChunkRecover wraps fn with a deferred recover so a tree-sitter panic

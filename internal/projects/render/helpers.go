@@ -29,8 +29,8 @@ package render
 import (
 	"strings"
 
-	"github.com/fulminate-io/knowledge-mcp/internal/kgwire"
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgwire"
 )
 
 // truncate shortens s to n characters, appending "..." if truncated.

@@ -20,7 +20,11 @@
 
 package classify
 
-import "github.com/fulminate-io/knowledge-mcp/internal/collector/pdf/layout"
+import (
+	"slices"
+
+	"github.com/fulminate-io/knowledge-mcp/internal/collector/pdf/layout"
+)
 
 const (
 	// codeXTolPt — first-line X-start tolerance for treating two code
@@ -194,8 +198,8 @@ func isProseTerminator(r rune) bool {
 // Lines + Runs back-to-front. Mirrors the chunk-package helper of the
 // same shape; duplicated to preserve the layering boundary.
 func blockTrailingChar(b layout.Block) rune {
-	for i := len(b.Lines) - 1; i >= 0; i-- {
-		for j := len(b.Lines[i].Runs) - 1; j >= 0; j-- {
+	for i := range slices.Backward(b.Lines) {
+		for j := range slices.Backward(b.Lines[i].Runs) {
 			t := b.Lines[i].Runs[j].Text
 			for len(t) > 0 {
 				last := t[len(t)-1]

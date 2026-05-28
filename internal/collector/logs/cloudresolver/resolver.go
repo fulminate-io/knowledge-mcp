@@ -6,10 +6,10 @@ import (
 	"context"
 	"strings"
 
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/logs"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	logwire "github.com/fulminate-io/knowledge-mcp/internal/logwire"
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 )
 
 // serviceResourceTypePrefixes lists the resource_type prefixes considered

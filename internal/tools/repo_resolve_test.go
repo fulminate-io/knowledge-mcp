@@ -13,8 +13,8 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 )
 
 // listGraphsCaller is a scripted Execute-capable GraphCaller for repo-resolver
@@ -26,7 +26,7 @@ import (
 // makes the old code-only filter implicit).
 type listGraphsCaller struct {
 	mu           sync.Mutex
-	callCount    int32
+	callCount    atomic.Int32
 	graphsByType map[string][]*knowledgev1.GraphInfo
 	callErr      error
 }
@@ -42,7 +42,7 @@ func (l *listGraphsCaller) Call(_ context.Context, tool string, _ json.RawMessag
 }
 
 func (l *listGraphsCaller) Execute(_ context.Context, req *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error) {
-	atomic.AddInt32(&l.callCount, 1)
+	l.callCount.Add(1)
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	if l.callErr != nil {
@@ -127,7 +127,7 @@ func TestResolveCwd_LoadErrorReturnedOnlyOnFirstCall(t *testing.T) {
 	require.Error(t, err2)
 	require.ErrorIs(t, err2, wantErr)
 
-	assert.Equal(t, int32(1), atomic.LoadInt32(&gc.callCount), "Once.Do should fire Execute exactly once")
+	assert.Equal(t, int32(1), gc.callCount.Load(), "Once.Do should fire Execute exactly once")
 }
 
 func TestResolveCwd_EmptyCwd(t *testing.T) {
@@ -179,7 +179,7 @@ func TestResolveCwd_ConcurrentCallsFireOnce(t *testing.T) {
 	for i, ok := range results {
 		assert.True(t, ok, "goroutine %d did not see a match", i)
 	}
-	assert.Equal(t, int32(1), atomic.LoadInt32(&gc.callCount), "sync.Once: Execute must fire exactly once across 100 parallel ResolveCwd calls")
+	assert.Equal(t, int32(1), gc.callCount.Load(), "sync.Once: Execute must fire exactly once across 100 parallel ResolveCwd calls")
 }
 
 func TestResolveCwd_NilGraphCaller(t *testing.T) {

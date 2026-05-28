@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
 // deleteArgs is the compile-local view of the standalone `delete` tool's wire

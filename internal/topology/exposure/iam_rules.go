@@ -17,8 +17,8 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/fulminate-io/knowledge-mcp/internal/topology/foundation"
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/topology/foundation"
 )
 
 // iamInferredEdgeKind classifies what kind of escalation edge a rule emitted.

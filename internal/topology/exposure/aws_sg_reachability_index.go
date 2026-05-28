@@ -6,8 +6,8 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
 // aws_sg_reachability_index.go builds the per-account reachability lookup

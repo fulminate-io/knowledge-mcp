@@ -320,7 +320,7 @@ const file_knowledge_v1_health_proto_rawDesc = "" +
 	"\fembed_failed\x18\x0e \x01(\x03R\vembedFailed2\xa2\x01\n" +
 	"\rHealthService\x12L\n" +
 	"\x05Check\x12 .knowledge.v1.HealthCheckRequest\x1a!.knowledge.v1.HealthCheckResponse\x12C\n" +
-	"\x06Status\x12\x1b.knowledge.v1.StatusRequest\x1a\x1c.knowledge.v1.StatusResponseB@Z>github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1;knowledgev1b\x06proto3"
+	"\x06Status\x12\x1b.knowledge.v1.StatusRequest\x1a\x1c.knowledge.v1.StatusResponseB@Z>github.com/fulminate-io/knowledge/gen/knowledge/v1;knowledgev1b\x06proto3"
 
 var (
 	file_knowledge_v1_health_proto_rawDescOnce sync.Once

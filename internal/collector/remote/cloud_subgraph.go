@@ -9,8 +9,8 @@ import (
 
 	"connectrpc.com/connect"
 
-	"github.com/fulminate-io/knowledge-mcp/internal/collector/logs/cloudresolver"
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/collector/logs/cloudresolver"
 )
 
 // FetchCloudSubgraph asks the server for an in-memory slice of cloud

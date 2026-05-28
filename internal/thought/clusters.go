@@ -17,8 +17,8 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 )
 
 // ThoughtCluster represents an emergent subject — a group of densely

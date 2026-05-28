@@ -8,8 +8,8 @@ import (
 
 	"gonum.org/v1/gonum/graph/simple"
 
-	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
 // adapter.go builds the in-memory GonumGraph from the wire. The struct and its

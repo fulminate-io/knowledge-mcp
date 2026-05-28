@@ -7,9 +7,9 @@ import (
 	"encoding/json"
 	"log/slog"
 
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/postpopulate"
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 )
 
 // resolveGatewayCloudLBLinkage emits EdgeExposedBy edges from K8s Gateway

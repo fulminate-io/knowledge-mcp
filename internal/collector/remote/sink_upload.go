@@ -12,8 +12,8 @@ import (
 
 	"connectrpc.com/connect"
 
-	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 )
 
 // uploadChunks sends every batch to the server and returns the
