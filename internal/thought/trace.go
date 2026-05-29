@@ -6,8 +6,6 @@ import (
 	"context"
 	"errors"
 
-	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
-
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
@@ -37,7 +35,7 @@ type traceQueueItem struct {
 // client-side: takes a graph client; expandTraceNeighbors issues bulk
 // fetchNodesByIDs + chargeMapForThoughts round-trips (one of each per
 // fan-out level) instead of the original per-neighbor singleton query.
-func TraceThoughts(ctx context.Context, gc *graphclient.GraphClient, startID, direction string, depth int, includeCharges, includeArtifacts bool) ([]TraceStep, error) {
+func TraceThoughts(ctx context.Context, gc Caller, startID, direction string, depth int, includeCharges, includeArtifacts bool) ([]TraceStep, error) {
 	if gc == nil {
 		return nil, errors.New("thought: TraceThoughts: graph client unavailable")
 	}
@@ -110,7 +108,7 @@ func traceDirections(direction string) []bool {
 // thought-typed subset (BCN4 v2 perf invariant).
 func expandTraceNeighbors(
 	ctx context.Context,
-	gc *graphclient.GraphClient,
+	gc Caller,
 	currID string,
 	currDepth int,
 	et kgtypes.EdgeType,

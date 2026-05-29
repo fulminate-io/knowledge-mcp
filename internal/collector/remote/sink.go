@@ -45,6 +45,8 @@ func (s *UploadSink) WriteResult(ctx context.Context, collectorName string, resu
 		GraphType:     string(result.GraphType),
 		GraphName:     result.GraphName,
 		CurrentBranch: result.CurrentBranch,
+		SyncCommit:    result.SyncCommit,
+		SyncTime:      result.SyncTime,
 		NodeHashes:    hashes,
 		Edges:         kgwire.BatchEdgesToProto(result.Edges),
 	})

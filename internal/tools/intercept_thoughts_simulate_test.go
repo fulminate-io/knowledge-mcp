@@ -14,7 +14,8 @@ import (
 )
 
 func TestHandleSimulateClient_NoGraphClient_Errors(t *testing.T) {
-	deps := interceptTestDeps{gc: &fakeGraphCaller{}}
+	// FUL-323: leave gc nil so GraphCaller() returns nil → unavailable.
+	deps := interceptTestDeps{gc: nil}
 	res := handleSimulateClient(context.Background(), deps, kgtools.CallToolParams{
 		Name:      "query",
 		Arguments: json.RawMessage(`{"mode":"simulate","action":"add_charge","target":"t-1","polarity":"positive","weight":2}`),

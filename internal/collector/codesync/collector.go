@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/coderun"
@@ -95,6 +96,13 @@ func (c *CodeCollector) Collect(ctx context.Context, id string, opts collector.C
 	// it as a full-replace.
 	branch, _ := coderun.DetectBranch(ctx, rootDir)
 
+	// Record the collected HEAD SHA + collection time so the server can
+	// persist them onto code-graph metadata. headSHA is soft-errored like
+	// DetectBranch — empty on a non-git repo, which the consumers degrade
+	// past gracefully.
+	headSHA, _ := coderun.HeadCommit(ctx, rootDir)
+	syncTime := time.Now().UnixNano()
+
 	// FUL-241 Phase 5: read go.mod and the optional layer-config YAML
 	// CLIENT-SIDE and ship them over the wire. The server pod never
 	// opens these files — topology analyzers read both from graph
@@ -110,6 +118,8 @@ func (c *CodeCollector) Collect(ctx context.Context, id string, opts collector.C
 		Nodes:         pop.Nodes,
 		Edges:         batchEdges,
 		CurrentBranch: branch,
+		SyncCommit:    headSHA,
+		SyncTime:      syncTime,
 		ModulePath:    modulePath,
 		LayerConfig:   layerConfig,
 	}, nil

@@ -299,8 +299,7 @@ func (c *s3Collector) collectReplicationEdges(ctx context.Context, bucketARN, bu
 // isNoSuchBucketReplication detects the "no replication" sentinel. The S3 SDK
 // returns ReplicationConfigurationNotFoundError as a smithy APIError code.
 func isNoSuchBucketReplication(err error) bool {
-	var apiErr smithy.APIError
-	if errors.As(err, &apiErr) {
+	if apiErr, ok := errors.AsType[smithy.APIError](err); ok {
 		return apiErr.ErrorCode() == "ReplicationConfigurationNotFoundError"
 	}
 	return false
@@ -310,8 +309,7 @@ func isNoSuchBucketReplication(err error) bool {
 // not expose this as a typed error in aws-sdk-go-v2, so we match on the
 // smithy APIError code.
 func isNoSuchPublicAccessBlock(err error) bool {
-	var apiErr smithy.APIError
-	if errors.As(err, &apiErr) {
+	if apiErr, ok := errors.AsType[smithy.APIError](err); ok {
 		return apiErr.ErrorCode() == "NoSuchPublicAccessBlockConfiguration"
 	}
 	return false
@@ -320,8 +318,7 @@ func isNoSuchPublicAccessBlock(err error) bool {
 // isNoSuchBucketPolicy detects the "no policy attached" error. Like PAB this
 // is a string-coded smithy error.
 func isNoSuchBucketPolicy(err error) bool {
-	var apiErr smithy.APIError
-	if errors.As(err, &apiErr) {
+	if apiErr, ok := errors.AsType[smithy.APIError](err); ok {
 		return apiErr.ErrorCode() == "NoSuchBucketPolicy"
 	}
 	return false

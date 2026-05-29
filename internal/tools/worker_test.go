@@ -137,6 +137,7 @@ func (d workerTestDeps) WorkerCRUD() WorkerCRUDAPI             { return d.crud }
 func (d workerTestDeps) Embedder() embed.BinaryEmbedder        { return nil }
 func (d workerTestDeps) BackendResolver() BackendResolver      { return nil }
 func (d workerTestDeps) GraphCaller() GraphCaller              { return nil }
+func (d workerTestDeps) LocalGraphCaller() GraphCaller         { return nil }
 func (d workerTestDeps) RepoResolver() *RepoResolver           { return nil }
 
 // callWorker invokes InterceptWorker with the given JSON args and

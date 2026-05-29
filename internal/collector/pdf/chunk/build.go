@@ -169,7 +169,7 @@ func Build(d Document, opts Options) ([]Chunk, error) {
 			}
 		}
 	}()
-	for i := 0; i < pageCount; i++ {
+	for i := range pageCount {
 		if hasBlockProvider {
 			blocks, err := bp.PageBlocks(i)
 			if err != nil {
@@ -216,7 +216,7 @@ func Build(d Document, opts Options) ([]Chunk, error) {
 	}
 	jobs := make(chan int, pageCount)
 	var wg sync.WaitGroup
-	for w := 0; w < workers; w++ {
+	for range workers {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
@@ -242,7 +242,7 @@ func Build(d Document, opts Options) ([]Chunk, error) {
 			}
 		}()
 	}
-	for i := 0; i < pageCount; i++ {
+	for i := range pageCount {
 		jobs <- i
 	}
 	close(jobs)

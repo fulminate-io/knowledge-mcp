@@ -52,7 +52,7 @@ func handleExamineClient(ctx context.Context, deps ClientDeps, params kgtools.Ca
 		return errorResult("examine: 'thought' (or 'id') is required")
 	}
 
-	gc := deps.GraphClient()
+	gc := deps.GraphCaller()
 	if gc == nil {
 		return errorResult("examine: graph client unavailable")
 	}

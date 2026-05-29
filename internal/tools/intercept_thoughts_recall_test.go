@@ -31,7 +31,10 @@ func TestValidateRecallClientArgs_SwappedBounds(t *testing.T) {
 }
 
 func TestHandleRecallClient_GraphClientUnavailable(t *testing.T) {
-	deps := interceptTestDeps{gc: &fakeGraphCaller{}}
+	// FUL-323: GraphCaller() (was GraphClient()) returns nil → unavailable.
+	// interceptTestDeps.GraphCaller() reads d.gc; leaving it unset / nil
+	// triggers the nil-guard.
+	deps := interceptTestDeps{gc: nil}
 	res := handleRecallClient(context.Background(), deps, kgtools.CallToolParams{
 		Name:      "thoughts",
 		Arguments: json.RawMessage(`{"operation":"recall","query":"q"}`),

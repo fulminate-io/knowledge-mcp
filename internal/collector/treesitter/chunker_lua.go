@@ -101,7 +101,7 @@ func luaFunctionStatementParts(declNode *sitter.Node, src []byte) (string, strin
 	}
 	// function_name has multiple children: identifier, separator, identifier.
 	var ids []string
-	for i := 0; i < int(nameNode.NamedChildCount()); i++ {
+	for i := range int(nameNode.NamedChildCount()) {
 		child := nameNode.NamedChild(i)
 		if child.Type() == "identifier" {
 			ids = append(ids, child.Content(src))

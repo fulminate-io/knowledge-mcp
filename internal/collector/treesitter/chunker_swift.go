@@ -46,7 +46,7 @@ func swiftEnclosingXCTestCase(node *sitter.Node, src []byte) bool {
 			continue
 		}
 		// Walk class_declaration's NamedChildren for inheritance_specifier(s).
-		for i := 0; i < int(p.NamedChildCount()); i++ {
+		for i := range int(p.NamedChildCount()) {
 			child := p.NamedChild(i)
 			if child.Type() != "inheritance_specifier" {
 				continue
@@ -69,7 +69,7 @@ func findInheritanceMatch(node *sitter.Node, src []byte, want string) bool {
 	if node.Type() == "type_identifier" && node.Content(src) == want {
 		return true
 	}
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i := range int(node.NamedChildCount()) {
 		if findInheritanceMatch(node.NamedChild(i), src, want) {
 			return true
 		}
@@ -127,7 +127,7 @@ func swiftHasTestMacro(declNode *sitter.Node, src []byte) bool {
 	if declNode == nil {
 		return false
 	}
-	for i := 0; i < int(declNode.NamedChildCount()); i++ {
+	for i := range int(declNode.NamedChildCount()) {
 		child := declNode.NamedChild(i)
 		t := child.Type()
 		if t != "modifiers" && t != "attribute" {

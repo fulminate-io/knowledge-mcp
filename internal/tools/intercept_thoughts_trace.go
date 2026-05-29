@@ -41,7 +41,7 @@ func handleTraceClient(ctx context.Context, deps ClientDeps, params kgtools.Call
 		return errorResult("trace: 'thought' (starting thought node ID) is required")
 	}
 
-	gc := deps.GraphClient()
+	gc := deps.GraphCaller()
 	if gc == nil {
 		return errorResult("trace: graph client unavailable")
 	}

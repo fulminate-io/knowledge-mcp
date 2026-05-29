@@ -461,7 +461,21 @@ Use `file:` prefix. Relative paths. Link every file step creates/modifies. For m
     - Argument-order inversion in TranslatedFromEdge
     - buildGraph cited at pipeline.go:180 when actually at pipeline_graph.go:27 (sibling file)
     - collector/logs/k8sevents when actual package is collector/logs/k8s
+    - Citing MemoryStore from storage_memory.go because a NEIGHBORING file's docstring promised it — file never existed. Docstrings rot; the only authoritative source is the file system + the actual source. Never cite a file/type/symbol that you saw mentioned only in another file's prose.
   </recurring-failures>
+
+  <doc-strings-are-not-evidence>
+    A docstring saying "see X in y.go" is a CLAIM, not a citation. Treat it
+    as a hypothesis to test, not a fact to repeat. Before citing X, open y.go
+    and read X. If the file doesn't exist or X isn't in it, the docstring is
+    stale and the planner is responsible for either (a) citing the real
+    location or (b) adding a step to create the missing artifact.
+
+    The same applies to: README references, code comments mentioning files,
+    error messages referencing types, log lines naming functions, test
+    expectations describing helpers. None of these substitute for opening
+    the referenced file. Trust but verify means VERIFY — every time.
+  </doc-strings-are-not-evidence>
 
   <plan-reviewer-verifies>
     Your transcript (file opens + edits) is audited. Fabricated citations are

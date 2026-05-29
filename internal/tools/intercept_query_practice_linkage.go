@@ -44,18 +44,26 @@ func InterceptQueryPracticeLinkage(deps ClientDeps, params kgtools.CallToolParam
 	if err := json.Unmarshal(params.Arguments, &a); err != nil {
 		return false, kgtools.ToolResult{}
 	}
-	gc := deps.GraphClient()
+	gc := deps.GraphCaller()
 	switch a.Graph {
 	case "practice":
 		if gc == nil {
 			return true, errorResult("practice: graph client unavailable")
 		}
-		return true, routePracticeClient(context.Background(), deps, gc, a)
+		sc, ok := gc.(statsRPC)
+		if !ok {
+			return true, errorResult("practice: stats seam unavailable")
+		}
+		return true, routePracticeClient(context.Background(), deps, sc, a)
 	case "linkage":
 		if gc == nil {
 			return true, errorResult("linkage: graph client unavailable")
 		}
-		return true, routeLinkageClient(context.Background(), gc, a)
+		sc, ok := gc.(statsRPC)
+		if !ok {
+			return true, errorResult("linkage: stats seam unavailable")
+		}
+		return true, routeLinkageClient(context.Background(), sc, a)
 	default:
 		return false, kgtools.ToolResult{}
 	}
@@ -227,11 +235,15 @@ func listPracticeGraphs(ctx context.Context, deps ClientDeps) kgtools.ToolResult
 	if len(names) == 0 {
 		return textResult("No practice graphs found.")
 	}
-	gc := deps.GraphClient()
+	gc := deps.GraphCaller()
+	sc, ok := gc.(statsRPC)
+	if !ok {
+		return errorResult("practice list-graphs: stats seam unavailable")
+	}
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Practice graphs (%d):\n\n", len(names))
 	for _, name := range names {
-		nodes, edges := graphCounts(ctx, gc, "practice", name)
+		nodes, edges := graphCounts(ctx, sc, "practice", name)
 		fmt.Fprintf(&sb, "- **%s** — %d nodes, %d edges\n", name, nodes, edges)
 	}
 	sb.WriteString("\nUse `query({ \"graph\": \"practice\", \"language\": \"go\" })` to browse a specific practice graph.")

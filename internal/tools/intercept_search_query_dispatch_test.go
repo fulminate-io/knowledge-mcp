@@ -122,7 +122,8 @@ func (d *interceptDeps) WorkerRuntime() WorkerRuntimeAPI       { return nil }
 func (d *interceptDeps) WorkerCRUD() WorkerCRUDAPI             { return nil }
 func (d *interceptDeps) Embedder() embed.BinaryEmbedder        { return d.emb }
 func (d *interceptDeps) BackendResolver() BackendResolver      { return nil }
-func (d *interceptDeps) GraphCaller() GraphCaller              { return nil }
+func (d *interceptDeps) GraphCaller() GraphCaller              { return d.gc }
+func (d *interceptDeps) LocalGraphCaller() GraphCaller         { return d.gc }
 func (d *interceptDeps) RepoResolver() *RepoResolver           { return nil }
 
 func newInterceptHarness(t *testing.T, execHits *atomic.Int64, resp *knowledgev1.ExecuteResponse) *graphclient.GraphClient {

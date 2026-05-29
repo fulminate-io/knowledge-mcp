@@ -165,12 +165,16 @@ func TestMutateComposers_ClearLLMFailures_SingleGraph(t *testing.T) {
 	assert.True(t, gotKeys[kgtypes.MetaKeySummaryFailureReason], "summary_failure_reason cleared")
 	assert.True(t, gotKeys[kgtypes.MetaKeyEmbedFailureReason], "embed_failure_reason cleared")
 
-	// Each Execute request targets the named graph.
+	// Each Execute request targets the named graph. The code graph routes its
+	// name via Repo (not Name) — the engine's resolveCode rejects sel.Name on a
+	// code selector with "graph=code requires repo: graph selector invalid",
+	// which is the bug clearTarget previously tripped silently.
 	require.Len(t, fc.execRequests, 2)
 	for _, req := range fc.execRequests {
 		require.NotNil(t, req.GetTarget())
 		assert.Equal(t, "code", req.GetTarget().GetGraph())
-		assert.Equal(t, "knowledge", req.GetTarget().GetName())
+		assert.Equal(t, "knowledge", req.GetTarget().GetRepo())
+		assert.Empty(t, req.GetTarget().GetName(), "code selector must NOT also carry Name")
 	}
 	// 2 markers * 3 affected each = "cleared 3 summary marker(s) + 3 embed marker(s)".
 	assert.Contains(t, toolResultText(res), "cleared 3 summary marker(s) + 3 embed marker(s)")
@@ -213,8 +217,9 @@ func TestMutateComposers_ClearLLMFailures_MultiGraphFanOut(t *testing.T) {
 	// 2 resolved graphs * 2 markers = 4 UPDATEs.
 	assert.Len(t, fc.execMutations, 4, "two markers per resolved graph")
 
-	// The practice graph routes its name via Language; code via Name.
-	var sawPracticeLang, sawCodeName bool
+	// The practice graph routes its name via Language; code via Repo (the
+	// engine's resolveCode requires GraphSelector.Repo, not Name).
+	var sawPracticeLang, sawCodeRepo bool
 	for _, req := range fc.execRequests {
 		tgt := req.GetTarget()
 		require.NotNil(t, tgt)
@@ -224,13 +229,13 @@ func TestMutateComposers_ClearLLMFailures_MultiGraphFanOut(t *testing.T) {
 				sawPracticeLang = true
 			}
 		case "code":
-			if tgt.GetName() == "knowledge" {
-				sawCodeName = true
+			if tgt.GetRepo() == "knowledge" {
+				sawCodeRepo = true
 			}
 		}
 	}
 	assert.True(t, sawPracticeLang, "practice target routes name via Language")
-	assert.True(t, sawCodeName, "code target routes name via Name")
+	assert.True(t, sawCodeRepo, "code target routes name via Repo")
 }
 
 // ---------------------------------------------------------------------------

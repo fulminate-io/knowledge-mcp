@@ -61,8 +61,15 @@ func (s *llmSummarizer) SummarizeBatch(ctx context.Context, chunks []BatchChunk)
 	// JSON schema with exact minItems/maxItems pinning the model to one
 	// summary per chunk in order. Any drift in count is a hard parse
 	// failure rather than a silent under/over-fill.
+	//
+	// additionalProperties:false on every object is REQUIRED — the OpenAI
+	// Responses API (which the codex-cli provider's --output-schema flag
+	// drives) rejects strict response-format schemas that omit it with
+	// "'additionalProperties' is required to be supplied and to be false."
+	// Other providers (claude-cli json-schema, openai json_schema mode)
+	// accept the extra constraint as a no-op tightening.
 	schemaJSON := json.RawMessage(fmt.Sprintf(
-		`{"type":"object","properties":{"items":{"type":"array","items":{"type":"object","properties":{"summary":{"type":"string","maxLength":200},"keywords":{"type":"array","items":{"type":"string"},"minItems":3,"maxItems":15}},"required":["summary","keywords"]},"minItems":%d,"maxItems":%d}},"required":["items"]}`,
+		`{"type":"object","properties":{"items":{"type":"array","items":{"type":"object","properties":{"summary":{"type":"string","maxLength":200},"keywords":{"type":"array","items":{"type":"string"},"minItems":3,"maxItems":15}},"required":["summary","keywords"],"additionalProperties":false},"minItems":%d,"maxItems":%d}},"required":["items"],"additionalProperties":false}`,
 		len(chunks), len(chunks),
 	))
 
@@ -146,8 +153,7 @@ func translateLLMError(err error, reasonPrefix string) error {
 	if err == nil {
 		return nil
 	}
-	var le *llm.LLMError
-	if errors.As(err, &le) {
+	if le, ok := errors.AsType[*llm.LLMError](err); ok {
 		if le.Reason == "" {
 			le.Reason = reasonPrefix
 		}

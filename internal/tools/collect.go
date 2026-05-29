@@ -197,9 +197,13 @@ func runPostCollectPostPopulate(ctx context.Context, deps ClientDeps, collectorT
 		slog.Warn("post-collect postpopulate: no graph-type mapping (skipping)", "collector", collectorType)
 		return
 	}
-	gc := deps.GraphCaller()
+	// Post-collect postpopulate runs on the freshly-written LOCAL graph —
+	// route explicitly through LocalGraphCaller so a logged-in user still
+	// re-reads the local graph here (the routing-aware GraphCaller would
+	// land on cloud, which lacks the just-collected data).
+	gc := deps.LocalGraphCaller()
 	if gc == nil {
-		slog.Warn("post-collect postpopulate: GraphCaller unavailable (skipping)", "collector", collectorType)
+		slog.Warn("post-collect postpopulate: LocalGraphCaller unavailable (skipping)", "collector", collectorType)
 		return
 	}
 	names, err := postpopulate.ListGraphNames(ctx, gc, graphType)
@@ -237,9 +241,13 @@ func runPostCollectLinker(ctx context.Context, deps ClientDeps, collectorType st
 	if !postCollectLinkerTypes[collectorType] {
 		return
 	}
-	gc := deps.GraphCaller()
+	// Post-collect linker walks the freshly-written LOCAL graph — route
+	// explicitly through LocalGraphCaller so a logged-in user still re-reads
+	// the local graph here (the routing-aware GraphCaller would land on
+	// cloud, which lacks the just-collected data).
+	gc := deps.LocalGraphCaller()
 	if gc == nil {
-		slog.Warn("post-collect linker: GraphCaller unavailable (skipping)", "collector", collectorType)
+		slog.Warn("post-collect linker: LocalGraphCaller unavailable (skipping)", "collector", collectorType)
 		return
 	}
 	res, err := clientlinker.RunAll(ctx, gc, clientlinker.LinkOptions{})

@@ -29,7 +29,7 @@ func extractJVMAnnotations(declNode *sitter.Node, src []byte) []string {
 		return nil
 	}
 	var modifiers *sitter.Node
-	for i := 0; i < int(declNode.NamedChildCount()); i++ {
+	for i := range int(declNode.NamedChildCount()) {
 		child := declNode.NamedChild(i)
 		if child.Type() == "modifiers" {
 			modifiers = child
@@ -40,7 +40,7 @@ func extractJVMAnnotations(declNode *sitter.Node, src []byte) []string {
 		return nil
 	}
 	var out []string
-	for i := 0; i < int(modifiers.NamedChildCount()); i++ {
+	for i := range int(modifiers.NamedChildCount()) {
 		anno := modifiers.NamedChild(i)
 		t := anno.Type()
 		if t != "marker_annotation" && t != "annotation" {
@@ -93,7 +93,7 @@ func findFirstIdentifier(node *sitter.Node, src []byte) string {
 	if t == "identifier" || t == "type_identifier" || t == "simple_identifier" {
 		return node.Content(src)
 	}
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i := range int(node.NamedChildCount()) {
 		if got := findFirstIdentifier(node.NamedChild(i), src); got != "" {
 			return got
 		}
@@ -117,7 +117,7 @@ func extractScalaAnnotations(declNode *sitter.Node, src []byte) []string {
 	}
 	var out []string
 	// 1) Direct NamedChildren of declNode (Scala inline-annotation shape).
-	for i := 0; i < int(declNode.NamedChildCount()); i++ {
+	for i := range int(declNode.NamedChildCount()) {
 		child := declNode.NamedChild(i)
 		if child.Type() == "annotation" || child.Type() == "marker_annotation" {
 			if name := jvmAnnotationSimpleName(child, src); name != "" {

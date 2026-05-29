@@ -209,8 +209,7 @@ func decodeStringOrList(raw json.RawMessage) []string {
 // v2 does not model this as a typed error for S3, so we match on the
 // smithy APIError code.
 func isNoSuchBucketEncryption(err error) bool {
-	var apiErr smithy.APIError
-	if errors.As(err, &apiErr) {
+	if apiErr, ok := errors.AsType[smithy.APIError](err); ok {
 		return apiErr.ErrorCode() == "ServerSideEncryptionConfigurationNotFoundError"
 	}
 	return false

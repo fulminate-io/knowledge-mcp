@@ -7,8 +7,6 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
-
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
@@ -40,7 +38,7 @@ type ThoughtExamination struct {
 // the original pkg/thought/query.go ExamineThought is translated into one
 // bulk wire round-trip. Per-evidence and per-connection hydration goes
 // through fetchNodesByIDs so the BCN4 v2 perf invariant holds.
-func ExamineThought(ctx context.Context, gc *graphclient.GraphClient, thoughtID string) (ThoughtExamination, error) {
+func ExamineThought(ctx context.Context, gc Caller, thoughtID string) (ThoughtExamination, error) {
 	if gc == nil {
 		return ThoughtExamination{}, errors.New("thought: ExamineThought: graph client unavailable")
 	}

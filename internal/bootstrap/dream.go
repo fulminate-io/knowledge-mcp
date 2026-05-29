@@ -414,7 +414,7 @@ func buildRuntime(gc *graphclient.GraphClient, port int, graphStorage string, di
 // the runtime is still kept (manual triggers — the only invocation path
 // that matters today — work without Start).
 func wireWorkerRuntime(c *client, f Config) error {
-	runner, err := buildRuntime(c.client, f.Port, f.GraphStorage, c.dispatchForRunner())
+	runner, err := buildRuntime(c.local, f.Port, f.GraphStorage, c.dispatchForRunner())
 	if err != nil {
 		return err
 	}

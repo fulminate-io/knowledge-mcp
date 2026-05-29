@@ -43,6 +43,7 @@ func (d astTestDeps) WorkerCRUD() WorkerCRUDAPI             { return nil }
 func (d astTestDeps) Embedder() embed.BinaryEmbedder        { return nil }
 func (d astTestDeps) BackendResolver() BackendResolver      { return nil }
 func (d astTestDeps) GraphCaller() GraphCaller              { return nil }
+func (d astTestDeps) LocalGraphCaller() GraphCaller         { return nil }
 func (d astTestDeps) RepoResolver() *RepoResolver           { return nil }
 
 // astFixtureRepo writes a single Go file with N function declarations under

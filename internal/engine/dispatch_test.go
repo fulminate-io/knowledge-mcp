@@ -6,6 +6,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net"
+	"syscall"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -14,6 +17,7 @@ import (
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/enginetest"
+	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 )
 
 // dispatchCounters records exec invocation counts for the Dispatch contract
@@ -321,6 +325,87 @@ func TestDispatch_PrecheckQueryEmptyTextRequiresText(t *testing.T) {
 			assert.NotContains(t, out.Content[0].Text, "not a recognized engine-reducible shape",
 				"the LEGIBLE requires-text message replaces the generic deny")
 			assert.Equal(t, 0, d.execCalls, "precheck failure issues NO Execute RPC (bounded-constant: 0)")
+		})
+	}
+}
+
+// TestDispatch_RendersNoBackend_AndUnreachable is the FUL-323 Phase 4 guard
+// for the dispatcher's two new render branches in renderEngineError:
+//
+//   - graphclient.ErrNoBackend (bare or wrapped) → "no backend available"
+//     message with the actionable `knowledge install` / `knowledge login` hints.
+//   - Local-server-unreachable transport error (connect CodeUnavailable OR a
+//     wrapped syscall.ECONNREFUSED) → "local server unreachable" message with
+//     the `knowledge start` / `knowledge login` hints.
+//
+// Drives the path END-TO-END through Dispatch so the assertion catches a
+// future regression where the renderEngineError branches stop being invoked.
+// In every row exec runs EXACTLY ONCE (the engine call surfaces the error).
+func TestDispatch_RendersNoBackend_AndUnreachable(t *testing.T) {
+	cases := []struct {
+		name        string
+		err         error
+		wantSubstrs []string
+		notSubstrs  []string
+	}{
+		{
+			name: "bare ErrNoBackend",
+			err:  graphclient.ErrNoBackend,
+			wantSubstrs: []string{
+				"no backend available",
+				"knowledge install",
+				"knowledge login",
+			},
+			notSubstrs: []string{"engine:", "connect:"},
+		},
+		{
+			name: "wrapped ErrNoBackend",
+			err:  fmt.Errorf("router: %w", graphclient.ErrNoBackend),
+			wantSubstrs: []string{
+				"no backend available",
+				"knowledge install",
+				"knowledge login",
+			},
+			notSubstrs: []string{"engine:", "connect:"},
+		},
+		{
+			name: "connect CodeUnavailable",
+			err:  connect.NewError(connect.CodeUnavailable, errors.New("transport: dial 127.0.0.1:15022: connect: connection refused")),
+			wantSubstrs: []string{
+				"local server unreachable",
+				"knowledge start",
+				"knowledge login",
+			},
+			notSubstrs: []string{"engine:", "connect: connection refused"},
+		},
+		{
+			name: "wrapped ECONNREFUSED via net.OpError",
+			err:  &net.OpError{Op: "dial", Err: syscall.ECONNREFUSED},
+			wantSubstrs: []string{
+				"local server unreachable",
+				"knowledge start",
+				"knowledge login",
+			},
+			notSubstrs: []string{"engine:", "dial tcp"},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			d := &dispatchCounters{}
+			out, err := Dispatch(context.Background(),
+				d.exec(nil, tc.err),
+				"search", json.RawMessage(`{"query":"x","graph":"knowledge"}`))
+			require.NoError(t, err, "transport error is rendered, not returned")
+			assert.True(t, out.IsError, "transport error surfaces as an error result")
+			for _, want := range tc.wantSubstrs {
+				assert.Contains(t, out.Content[0].Text, want,
+					"%s: missing substring %q in rendered text %q", tc.name, want, out.Content[0].Text)
+			}
+			for _, notWant := range tc.notSubstrs {
+				assert.NotContains(t, out.Content[0].Text, notWant,
+					"%s: leaked raw text %q in rendered text %q", tc.name, notWant, out.Content[0].Text)
+			}
+			assert.Equal(t, 1, d.execCalls, "exec runs EXACTLY once (the engine call surfaces the error)")
 		})
 	}
 }

@@ -73,8 +73,7 @@ func runCLI(ctx context.Context, cliBin string, args []string, stdin string, inh
 				Cause:     fmt.Errorf("codex: %w (stderr: %s)", ctxErr, trimToLine(stderrBuf.String())),
 			}
 		}
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
+		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 			return nil, &llm.LLMError{
 				Transient: false,
 				Reason:    "subprocess_failed",

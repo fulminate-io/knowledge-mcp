@@ -62,8 +62,7 @@ func IsRetryableTransportError(err error) bool {
 	// abrupt stream termination. We treat only CodeUnavailable as
 	// retryable; other codes map to application errors or user
 	// cancellation.
-	var ce *connect.Error
-	if errors.As(err, &ce) {
+	if ce, ok := errors.AsType[*connect.Error](err); ok {
 		if ce.Code() == connect.CodeUnavailable {
 			return true
 		}
@@ -83,8 +82,7 @@ func IsRetryableTransportError(err error) bool {
 		return true
 	}
 
-	var opErr *net.OpError
-	if errors.As(err, &opErr) {
+	if opErr, ok := errors.AsType[*net.OpError](err); ok {
 		switch opErr.Op {
 		case "dial", "read", "write":
 			return isRetryableOpErr(opErr.Err)

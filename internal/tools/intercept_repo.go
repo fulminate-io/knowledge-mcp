@@ -170,15 +170,15 @@ func resolveRepo(ctx context.Context, deps ClientDeps, cwd string) (string, bool
 	return r.ResolveCwd(ctx, cwd)
 }
 
-// populateStaleness fills current_head / uncommitted_count / commits_behind
-// from coderun helpers when the staleness opt-in is set. Each helper
-// degrades gracefully (returns "" / 0 on non-git cwd) so missing git
-// state never blocks a search — only the rendered staleness line
-// degrades. The sync_commit input for CommitsBehind is unknown to the
-// client; we pass "" and accept that commits_behind reports 0 in
-// practice. The server's StalenessInfoWith would have made this same
-// rev-list call before FUL-241 Phase 3, so behavior is preserved
-// (server now relies on whatever the client passes).
+// populateStaleness fills current_head / uncommitted_count from coderun
+// helpers when the staleness opt-in is set. Each helper degrades gracefully
+// (returns "" / 0 on non-git cwd) so missing git state never blocks a search.
+//
+// commits_behind is deliberately NOT populated here: the real commits-behind
+// signal now rides the code-search staleness footer (codeStalenessFooter),
+// which computes it against the recorded sync_commit read off the GraphInfo
+// catalog. The prior CommitsBehind(cwd, "") call could only ever report 0
+// (empty sync_commit short-circuits), so it was a misleading no-op.
 func populateStaleness(ctx context.Context, args map[string]json.RawMessage, cwd string) {
 	if _, alreadySet := args["current_head"]; !alreadySet {
 		if sha, err := coderun.HeadCommit(ctx, cwd); err == nil && sha != "" {
@@ -191,15 +191,6 @@ func populateStaleness(ctx context.Context, args map[string]json.RawMessage, cwd
 		if n, err := coderun.UncommittedCount(ctx, cwd); err == nil {
 			if b, mErr := json.Marshal(n); mErr == nil {
 				args["uncommitted_count"] = b
-			}
-		}
-	}
-	if _, alreadySet := args["commits_behind"]; !alreadySet {
-		// sync_commit isn't visible client-side; server's
-		// StalenessInfoWith degrades gracefully when commits_behind is 0.
-		if n, err := coderun.CommitsBehind(ctx, cwd, ""); err == nil {
-			if b, mErr := json.Marshal(n); mErr == nil {
-				args["commits_behind"] = b
 			}
 		}
 	}

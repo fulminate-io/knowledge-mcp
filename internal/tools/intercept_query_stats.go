@@ -37,11 +37,15 @@ func InterceptQueryStats(deps ClientDeps, params kgtools.CallToolParams) (bool, 
 	if a.Mode != "stats" || (a.Graph != "" && a.Graph != "knowledge") {
 		return false, kgtools.ToolResult{}
 	}
-	gc := deps.GraphClient()
+	gc := deps.GraphCaller()
 	if gc == nil {
 		return true, errorResult("knowledge: graph client unavailable")
 	}
-	return true, knowledgeStats(context.Background(), gc, a)
+	sc, ok := gc.(statsRPC)
+	if !ok {
+		return true, errorResult("knowledge stats: stats seam unavailable")
+	}
+	return true, knowledgeStats(context.Background(), sc, a)
 }
 
 // knowledgeStats renders the default knowledge graph stats body: Stats RPC →

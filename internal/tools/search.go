@@ -60,7 +60,7 @@ func InterceptSearch(deps ClientDeps, params kgtools.CallToolParams) (bool, kgto
 	// not use). The Query→Text mapping + mergeCodeQueries mirror
 	// InterceptQueryCodeSearch.
 	if sniff.Graph == "code" {
-		gc := deps.GraphClient()
+		gc := deps.GraphCaller()
 		if gc == nil {
 			return true, errorResult("code search: graph client unavailable")
 		}
@@ -108,11 +108,14 @@ func InterceptSearch(deps ClientDeps, params kgtools.CallToolParams) (bool, kgto
 	}
 	args = embedded
 
-	gc := deps.GraphClient()
-	if !gc.Healthy() {
+	gc := deps.GraphCaller()
+	if gc == nil {
 		return true, errorResult("server unreachable; start it with `knowledge-server`")
 	}
 	// Route the tail through the compile-or-DENY dispatcher: a reducible search
+	// — the Router surfaces ErrNoBackend on a missing backend, which
+	// renderEngineError translates into an actionable install-or-login message,
+	// so the pre-flight Healthy() probe (always-local pre-FUL-323) is unnecessary.
 	// compiles to Engine.Execute; an unrecognized shape is denied legibly (there is
 	// no wire fallback). The per-graph search intercepts (code /
 	// cloud / cicd / practice) claim the specialized shapes upstream, so only the

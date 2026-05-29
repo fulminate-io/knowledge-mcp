@@ -46,7 +46,7 @@ func wireAutoPrune(c *client) {
 		if !serverHealthyForAutoPrune(ctx, c) {
 			return
 		}
-		if err := prune.Run(ctx, c.client); err != nil {
+		if err := prune.Run(ctx, c.local); err != nil {
 			slog.Warn("auto-prune partially or fully failed; other tools work", "error", err)
 		}
 	}()
@@ -82,7 +82,7 @@ func loadConfigForAutoPrune(port int) bool {
 func serverHealthyForAutoPrune(parent context.Context, c *client) bool {
 	healthCtx, cancel := context.WithTimeout(parent, 1*time.Second)
 	defer cancel()
-	if !c.client.HealthyCtx(healthCtx) {
+	if !c.local.HealthyCtx(healthCtx) {
 		slog.Debug("auto-prune: server unreachable; skipping")
 		return false
 	}

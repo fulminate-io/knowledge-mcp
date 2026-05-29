@@ -6,7 +6,6 @@ import (
 	"context"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
-	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 )
 
 // chargeMapForThoughts wraps fetchChargesFor as a single source of
@@ -22,7 +21,7 @@ import (
 //
 // Empty thoughtIDs short-circuits — no wire call — to keep callers
 // cheap when a cluster/component has no thoughts (T3-C advisory).
-func chargeMapForThoughts(ctx context.Context, gc *graphclient.GraphClient, thoughtIDs []string) map[string][]*knowledgev1.Node {
+func chargeMapForThoughts(ctx context.Context, gc Caller, thoughtIDs []string) map[string][]*knowledgev1.Node {
 	if len(thoughtIDs) == 0 {
 		return map[string][]*knowledgev1.Node{}
 	}

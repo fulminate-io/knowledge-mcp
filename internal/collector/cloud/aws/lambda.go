@@ -122,8 +122,7 @@ func (c *lambdaCollector) fetchFunctionURLConfig(ctx context.Context, fnARN, fnN
 		FunctionName: awssdk.String(fnName),
 	})
 	if err != nil {
-		var notFound *lambdatypes.ResourceNotFoundException
-		if errors.As(err, &notFound) {
+		if _, ok := errors.AsType[*lambdatypes.ResourceNotFoundException](err); ok {
 			return nil
 		}
 		slog.Warn("lambda: get function url config", "function", fnARN, "error", err)

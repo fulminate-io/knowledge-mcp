@@ -214,25 +214,67 @@ func TestGenerate_SystemAndUser(t *testing.T) {
 	}
 }
 
-// TestGenerate_RejectsTools verifies that non-empty Tools is rejected.
-// Silent dropping would surprise callers who expect tool-use round-trip.
-func TestGenerate_RejectsTools(t *testing.T) {
-	bin := writeFakeCodexBin(t, "exit 0")
+// TestGenerate_ToolsInjectMCPServer verifies that non-empty Tools causes the
+// knowledge MCP server to be injected as `-c mcp_servers.knowledge.*` config
+// overrides (codex has no inline --mcp-config flag). The fork-bomb guard
+// (--no-worker-runtime in the child args) and the bare-name enabled_tools
+// allowlist are the load-bearing assertions.
+func TestGenerate_ToolsInjectMCPServer(t *testing.T) {
+	bin, argvFile, _ := recordingFakeCodex(t, successfulTranscript)
 	svc := mustNewService(t, bin, "gpt-5-codex")
 
-	_, err := svc.Generate(context.Background(),
+	if _, err := svc.Generate(context.Background(),
 		[]*schema.Message{{Role: schema.User, Content: "hi"}},
-		llm.WithTools([]*schema.ToolInfo{{Name: "search", Desc: "find stuff"}}),
-	)
-	if err == nil {
-		t.Fatalf("expected error, got nil")
+		llm.WithTools([]*schema.ToolInfo{
+			{Name: "search", Desc: "find stuff"},
+			{Name: "thoughts", Desc: "reason"},
+		}),
+	); err != nil {
+		t.Fatalf("Generate: %v", err)
 	}
-	var llmErr *llm.LLMError
-	if !errors.As(err, &llmErr) {
-		t.Fatalf("expected *llm.LLMError, got %T: %v", err, err)
+	args := readArgv(t, argvFile)
+
+	// Collect the value side of every `-c key=value` override.
+	overrides := map[string]string{}
+	for i := 0; i < len(args)-1; i++ {
+		if args[i] != "-c" {
+			continue
+		}
+		k, v, ok := strings.Cut(args[i+1], "=")
+		if ok {
+			overrides[k] = v
+		}
 	}
-	if llmErr.Reason != "tools_not_supported" {
-		t.Errorf("Reason = %q, want %q", llmErr.Reason, "tools_not_supported")
+
+	cmdVal, ok := overrides["mcp_servers.knowledge.command"]
+	if !ok {
+		t.Fatalf("argv missing mcp_servers.knowledge.command override; got %v", args)
+	}
+	// command is a TOML basic string (quoted); strip the quotes for the check.
+	if !strings.Contains(cmdVal, "knowledge") && cmdVal == "" {
+		t.Errorf("mcp_servers.knowledge.command = %q, want the knowledge binary path", cmdVal)
+	}
+
+	argsVal, ok := overrides["mcp_servers.knowledge.args"]
+	if !ok {
+		t.Fatalf("argv missing mcp_servers.knowledge.args override; got %v", args)
+	}
+	// Fork-bomb guard: the child argv MUST carry --no-worker-runtime.
+	if !strings.Contains(argsVal, llm.NoWorkerRuntimeFlag) {
+		t.Errorf("mcp_servers.knowledge.args = %s, missing fork-bomb guard %q", argsVal, llm.NoWorkerRuntimeFlag)
+	}
+
+	toolsVal, ok := overrides["mcp_servers.knowledge.enabled_tools"]
+	if !ok {
+		t.Fatalf("argv missing mcp_servers.knowledge.enabled_tools override; got %v", args)
+	}
+	// Bare names (codex scopes the allowlist to the server id) — NOT the
+	// claude-cli mcp__knowledge__ qualifier.
+	if !strings.Contains(toolsVal, `"search"`) || !strings.Contains(toolsVal, `"thoughts"`) {
+		t.Errorf("enabled_tools = %s, want bare names search + thoughts", toolsVal)
+	}
+	if strings.Contains(toolsVal, "mcp__knowledge__") {
+		t.Errorf("enabled_tools = %s, must use bare names not the mcp__knowledge__ qualifier", toolsVal)
 	}
 }
 

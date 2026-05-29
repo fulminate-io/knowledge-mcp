@@ -7,10 +7,12 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"syscall"
 
 	"connectrpc.com/connect"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 )
 
@@ -98,15 +100,35 @@ func (e validationErr) Error() string { return e.msg }
 // validationError wraps a validation message as a validationErr error.
 func validationError(msg string) error { return validationErr{msg: msg} }
 
-// renderEngineError maps a connect error from the engine into an LLM-facing
-// error ToolResult. CodeInvalidArgument (engine validation) and CodeNotFound
-// (missing node) carry the message verbatim; any other code surfaces the
-// message under a generic prefix. The error is rendered (not returned) so the
-// LLM sees the validation/not-found text in the tool output, matching the
-// legacy handlers that return an errorResult rather than an RPC error.
+// renderEngineError maps an error returned by the Engine.Execute transport
+// into an LLM-facing error ToolResult. The mapping ladder, in order:
+//
+//  1. graphclient.ErrNoBackend (FUL-323) — Router.pick returned no backend
+//     (local==nil AND not logged in). Surfaces "no backend available — run
+//     `knowledge install` ... `knowledge login`" so the LLM has an
+//     actionable hint rather than the raw sentinel text.
+//  2. Local-server-unreachable transport failure (FUL-323) — connect-go's
+//     CodeUnavailable, or a wrapped syscall.ECONNREFUSED in a net.OpError
+//     chain. The local server was named (Router.pick chose it) but the
+//     underlying HTTP/2 dial failed. Surfaces "local server unreachable —
+//     run `knowledge start` ... `knowledge login`" so the user sees the
+//     restart hint, not a raw "connect: connection refused" leak.
+//  3. CodeInvalidArgument / CodeNotFound — engine validation / missing-node
+//     errors. Message relayed verbatim (legacy behavior).
+//  4. Any other connect.Error — generic "engine: <message>" fallback.
+//  5. Non-connect errors — generic "engine: <error>" fallback.
+//
+// Ordering matters: branches (1) and (2) MUST fire before the generic connect
+// switch because CodeUnavailable would otherwise land in the default arm with
+// the raw "connect: connection refused" leak.
 func renderEngineError(err error) kgtools.ToolResult {
-	var ce *connect.Error
-	if errors.As(err, &ce) {
+	if errors.Is(err, graphclient.ErrNoBackend) {
+		return errorResult("no backend available — run `knowledge install` to start the local server, or `knowledge login` to use Fulminate Cloud.")
+	}
+	if isLocalServerUnreachable(err) {
+		return errorResult("local server unreachable — run `knowledge start` to restart it, or `knowledge login` to use Fulminate Cloud.")
+	}
+	if ce, ok := errors.AsType[*connect.Error](err); ok {
 		switch ce.Code() {
 		case connect.CodeInvalidArgument, connect.CodeNotFound:
 			return errorResult(ce.Message())
@@ -117,12 +139,28 @@ func renderEngineError(err error) kgtools.ToolResult {
 	return errorResult("engine: " + err.Error())
 }
 
+// isLocalServerUnreachable reports whether err carries the FUL-323
+// local-server-unreachable signature: either a connect.Error with
+// CodeUnavailable (the connect-go transport surfaces this when the underlying
+// HTTP/2 dial fails) OR a wrapped syscall.ECONNREFUSED (the underlying connect
+// error sometimes presents as a net.OpError carrying ECONNREFUSED — errors.Is
+// catches the wrapped case). Mirrors the retryable-transport classification in
+// graphclient/retry.go for the dispatcher's render path.
+func isLocalServerUnreachable(err error) bool {
+	if errors.Is(err, syscall.ECONNREFUSED) {
+		return true
+	}
+	if ce, ok := errors.AsType[*connect.Error](err); ok {
+		return ce.Code() == connect.CodeUnavailable
+	}
+	return false
+}
+
 // isNotFound reports whether err is a connect CodeNotFound error — the by-id
 // result miss the engine returns. dispatchQueryByID treats it as not-found
 // (surfacing the not-found message) rather than a hard error.
 func isNotFound(err error) bool {
-	var ce *connect.Error
-	if errors.As(err, &ce) {
+	if ce, ok := errors.AsType[*connect.Error](err); ok {
 		return ce.Code() == connect.CodeNotFound
 	}
 	return false

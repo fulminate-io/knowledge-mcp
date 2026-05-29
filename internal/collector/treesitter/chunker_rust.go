@@ -168,7 +168,7 @@ func rustHasTestAttribute(node *sitter.Node, src []byte) bool {
 			return true
 		}
 	}
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i := range int(node.NamedChildCount()) {
 		if rustHasTestAttribute(node.NamedChild(i), src) {
 			return true
 		}

@@ -627,6 +627,7 @@ Then suggest next steps:
     <pattern>Recording trivial findings — only things future sessions should know</pattern>
     <pattern>Forcing structure on a freeform conversation — follow the user's energy</pattern>
     <pattern>Forgetting to search code — the codebase is evidence, not just context</pattern>
+    <pattern>Trusting docstrings/comments/READMEs without verifying the file — prose rots; only the file system + actual source are authoritative. When a doc references X in y.go, open y.go and confirm X exists before repeating the claim in research, findings, or the ticket.</pattern>
     <pattern>Making decisions FOR the user — present options and trade-offs (this is peer-facilitator mode, not directive mode)</pattern>
     <pattern>Attaching patterns "just because they fit" — see constraint id="pattern-attachment"</pattern>
     <pattern>Skipping the "out of scope" section in tickets — silent ambiguity becomes plan complexity</pattern>

@@ -72,7 +72,7 @@ func InterceptFileSymbols(deps ClientDeps, params kgtools.CallToolParams) (bool,
 	if len(paths) == 0 {
 		return true, errorResult("file_symbols: file_path or file_paths required")
 	}
-	gc := deps.GraphClient()
+	gc := deps.GraphCaller()
 	if gc == nil {
 		return true, errorResult("file_symbols: graph client unavailable")
 	}

@@ -72,7 +72,7 @@ func sanitizeLabel(s string) string {
 
 // handleReflectInfluence ranks the top-N most influential thoughts.
 func handleReflectInfluence(ctx context.Context, deps ClientDeps, a queryReflectArgs) kgtools.ToolResult {
-	gc := deps.GraphClient()
+	gc := deps.GraphCaller()
 	if gc == nil {
 		return errorResult("influence: graph client unavailable")
 	}
@@ -103,7 +103,7 @@ func handleReflectInfluence(ctx context.Context, deps ClientDeps, a queryReflect
 // handleReflectTensions surfaces pairs of connected thoughts with
 // opposing valence.
 func handleReflectTensions(ctx context.Context, deps ClientDeps, a queryReflectArgs) kgtools.ToolResult {
-	gc := deps.GraphClient()
+	gc := deps.GraphCaller()
 	if gc == nil {
 		return errorResult("tensions: graph client unavailable")
 	}
@@ -129,7 +129,7 @@ func handleReflectTensions(ctx context.Context, deps ClientDeps, a queryReflectA
 
 // handleReflectBlindSpots surfaces clusters with little evidence.
 func handleReflectBlindSpots(ctx context.Context, deps ClientDeps, a queryReflectArgs) kgtools.ToolResult {
-	gc := deps.GraphClient()
+	gc := deps.GraphCaller()
 	if gc == nil {
 		return errorResult("blind_spots: graph client unavailable")
 	}
@@ -175,7 +175,7 @@ func handleReflectBlindSpots(ctx context.Context, deps ClientDeps, a queryReflec
 
 // handleReflectSummary renders the overall thought-graph summary.
 func handleReflectSummary(ctx context.Context, deps ClientDeps, a queryReflectArgs) kgtools.ToolResult {
-	gc := deps.GraphClient()
+	gc := deps.GraphCaller()
 	if gc == nil {
 		return errorResult("summary: graph client unavailable")
 	}
@@ -215,7 +215,7 @@ func handleReflectEvolution(ctx context.Context, deps ClientDeps, a queryReflect
 	if a.ClusterA == "" || a.ClusterB == "" {
 		return errorResult("evolution mode requires cluster_a and cluster_b")
 	}
-	gc := deps.GraphClient()
+	gc := deps.GraphCaller()
 	if gc == nil {
 		return errorResult("evolution: graph client unavailable")
 	}
@@ -244,7 +244,7 @@ func handleReflectEvolution(ctx context.Context, deps ClientDeps, a queryReflect
 
 // handleReflectClusters surfaces all detected clusters (thought-only).
 func handleReflectClusters(ctx context.Context, deps ClientDeps, a queryReflectArgs) kgtools.ToolResult {
-	gc := deps.GraphClient()
+	gc := deps.GraphCaller()
 	if gc == nil {
 		return errorResult("clusters: graph client unavailable")
 	}
@@ -266,7 +266,7 @@ func handleReflectClusters(ctx context.Context, deps ClientDeps, a queryReflectA
 // cluster-only — clients call thoughts(recall) (no mode) for text-mode
 // recall and use cluster IDs from this output to cross-reference.
 func handleRecallClusters(ctx context.Context, deps ClientDeps, allTypes bool, format string) kgtools.ToolResult {
-	gc := deps.GraphClient()
+	gc := deps.GraphCaller()
 	if gc == nil {
 		return errorResult("recall(clusters): graph client unavailable")
 	}

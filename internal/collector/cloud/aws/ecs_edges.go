@@ -75,7 +75,7 @@ func extractECSImageTargets(containers []ecstypes.ContainerDefinition, seen map[
 
 		// ECR: <account>.dkr.ecr.<region>.amazonaws.com/repo
 		if strings.Contains(registry, ".dkr.ecr.") && strings.HasSuffix(registry, ".amazonaws.com") {
-			accountID := strings.SplitN(registry, ".", 2)[0]
+			accountID, _, _ := strings.Cut(registry, ".")
 			key := "aws:" + accountID
 			if _, ok := seen[key]; ok {
 				continue

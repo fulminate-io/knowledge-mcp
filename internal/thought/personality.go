@@ -9,7 +9,6 @@ import (
 	"time"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
-	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
@@ -56,7 +55,7 @@ type thoughtChargeCache struct {
 // if the caller didn't supply it, we skip the evidence resolution and
 // leave every charge's evidenceCluster as "" (degraded — affects
 // personality scalars only).
-func buildChargeCache(ctx context.Context, gc *graphclient.GraphClient, clusters []ThoughtCluster, thoughtToCluster map[string]string, evidenceAdj map[string][]string) thoughtChargeCache {
+func buildChargeCache(ctx context.Context, gc Caller, clusters []ThoughtCluster, thoughtToCluster map[string]string, evidenceAdj map[string][]string) thoughtChargeCache {
 	var allThoughtIDs []string
 	for _, c := range clusters {
 		allThoughtIDs = append(allThoughtIDs, c.ThoughtIDs...)
@@ -85,7 +84,7 @@ func buildChargeCache(ctx context.Context, gc *graphclient.GraphClient, clusters
 // thoughtIDs (typically a single cluster's thoughts during
 // ComputeScalarEvolution), then resolves their evidence-cluster links
 // against the full thoughtToCluster map.
-func buildScopedChargeCache(ctx context.Context, gc *graphclient.GraphClient, thoughtIDs []string, thoughtToCluster map[string]string, evidenceAdj map[string][]string) thoughtChargeCache {
+func buildScopedChargeCache(ctx context.Context, gc Caller, thoughtIDs []string, thoughtToCluster map[string]string, evidenceAdj map[string][]string) thoughtChargeCache {
 	chargeNodeMap := chargeMapForThoughts(ctx, gc, thoughtIDs)
 	evidenceCluster := buildChargeEvidenceMap(chargeNodeMap, thoughtToCluster, evidenceAdj)
 	cache := thoughtChargeCache{charges: make(map[string][]chargeInfo, len(chargeNodeMap))}
@@ -137,7 +136,7 @@ func buildChargeEvidenceMap(chargeMap map[string][]*knowledgev1.Node, thoughtToC
 // evidenceAdj is the optional charge→evidence-target adjacency map
 // (callers may have it from a prior adjacency fetch); pass nil for
 // the degraded mode (zero evidence resolution).
-func ComputePersonalityScalars(ctx context.Context, gc *graphclient.GraphClient, clusters []ThoughtCluster, evidenceAdj map[string][]string) (PersonalityProfile, error) {
+func ComputePersonalityScalars(ctx context.Context, gc Caller, clusters []ThoughtCluster, evidenceAdj map[string][]string) (PersonalityProfile, error) {
 	profile := PersonalityProfile{
 		Scalars:       make(map[string]map[string]float64),
 		ClusterLabels: make(map[string]string),
@@ -226,7 +225,7 @@ const defaultEvolutionSamples = 30
 
 // ComputeScalarEvolution returns a temporal series of personality
 // scalars for clusterA's trust toward clusterB.
-func ComputeScalarEvolution(ctx context.Context, gc *graphclient.GraphClient, clusters []ThoughtCluster, clusterA, clusterB string, n int, evidenceAdj map[string][]string) ([]ScalarSnapshot, error) {
+func ComputeScalarEvolution(ctx context.Context, gc Caller, clusters []ThoughtCluster, clusterA, clusterB string, n int, evidenceAdj map[string][]string) ([]ScalarSnapshot, error) {
 	if n <= 0 {
 		n = defaultEvolutionSamples
 	}
@@ -340,7 +339,7 @@ func externalChargeStats(clusterA ThoughtCluster, clusterB string, cache thought
 // personality scalars applied. The cluster-membership map is read
 // from the prebuilt nodeByID map (one gc.Call("query", {ids:})
 // upstream).
-func BuildTrustMatrixWithPersonality(ctx context.Context, gc *graphclient.GraphClient, thoughtIDs []string, profile PersonalityProfile, nodeByID map[string]*knowledgev1.Node) (TrustMatrix, error) {
+func BuildTrustMatrixWithPersonality(ctx context.Context, gc Caller, thoughtIDs []string, profile PersonalityProfile, nodeByID map[string]*knowledgev1.Node) (TrustMatrix, error) {
 	matrix, err := BuildTrustMatrix(ctx, gc, thoughtIDs)
 	if err != nil {
 		return matrix, err

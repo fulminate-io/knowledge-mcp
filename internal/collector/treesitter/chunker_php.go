@@ -40,7 +40,7 @@ func extractPHPAttributes(declNode *sitter.Node, src []byte) []string {
 		return nil
 	}
 	var out []string
-	for i := 0; i < int(declNode.NamedChildCount()); i++ {
+	for i := range int(declNode.NamedChildCount()) {
 		child := declNode.NamedChild(i)
 		if child.Type() != "attribute_list" {
 			continue
@@ -52,12 +52,12 @@ func extractPHPAttributes(declNode *sitter.Node, src []byte) []string {
 
 func walkPHPAttributeList(list *sitter.Node, src []byte) []string {
 	var out []string
-	for i := 0; i < int(list.NamedChildCount()); i++ {
+	for i := range int(list.NamedChildCount()) {
 		group := list.NamedChild(i)
 		// Some PHP grammars wrap attributes in `attribute_group`; others put
 		// `attribute` directly under `attribute_list`. Handle both.
 		if group.Type() == "attribute_group" {
-			for j := 0; j < int(group.NamedChildCount()); j++ {
+			for j := range int(group.NamedChildCount()) {
 				if name := phpAttributeName(group.NamedChild(j), src); name != "" {
 					out = append(out, name)
 				}
@@ -75,7 +75,7 @@ func phpAttributeName(anno *sitter.Node, src []byte) string {
 	if anno == nil || anno.Type() != "attribute" {
 		return ""
 	}
-	for i := 0; i < int(anno.NamedChildCount()); i++ {
+	for i := range int(anno.NamedChildCount()) {
 		child := anno.NamedChild(i)
 		switch child.Type() {
 		case "name":
@@ -123,7 +123,7 @@ func phpEnclosingClassExtendsTestCase(node *sitter.Node, src []byte) bool {
 		if p.Type() != "class_declaration" {
 			continue
 		}
-		for i := 0; i < int(p.NamedChildCount()); i++ {
+		for i := range int(p.NamedChildCount()) {
 			child := p.NamedChild(i)
 			if child.Type() != "base_clause" {
 				continue

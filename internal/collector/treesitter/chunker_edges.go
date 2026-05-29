@@ -121,7 +121,7 @@ func (c *Chunker) collectOrphans(
 	coveredRanges []byteRange,
 	result *Result,
 ) {
-	for i := 0; i < int(root.NamedChildCount()); i++ {
+	for i := range int(root.NamedChildCount()) {
 		child := root.NamedChild(i)
 		// Skip package clause and import declarations.
 		if child.Type() == "package_clause" || child.Type() == "import_declaration" {
@@ -167,7 +167,7 @@ func (c *Chunker) collectOrphans(
 // extractLexicalName extracts the variable name from a lexical_declaration
 // (const/let/var) node for TypeScript.
 func extractLexicalName(node *sitter.Node, src []byte) string {
-	for i := 0; i < int(node.NamedChildCount()); i++ {
+	for i := range int(node.NamedChildCount()) {
 		child := node.NamedChild(i)
 		if child.Type() == "variable_declarator" {
 			nameNode := child.ChildByFieldName("name")

@@ -34,6 +34,7 @@ func (d *fakeAssembleDeps) WorkerCRUD() WorkerCRUDAPI             { return nil }
 func (d *fakeAssembleDeps) Embedder() embed.BinaryEmbedder        { return nil }
 func (d *fakeAssembleDeps) BackendResolver() BackendResolver      { return nil }
 func (d *fakeAssembleDeps) GraphCaller() GraphCaller              { return d.gc }
+func (d *fakeAssembleDeps) LocalGraphCaller() GraphCaller         { return d.gc }
 func (d *fakeAssembleDeps) RepoResolver() *RepoResolver           { return nil }
 
 // scriptGcAssemble is a tiny GraphCaller that answers query(id:)

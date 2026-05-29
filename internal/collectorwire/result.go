@@ -36,6 +36,13 @@ type CollectResult struct {
 	// server (Sink.WriteResult) decides overlay-vs-full-replace by
 	// comparing against the existing graph's recorded default.
 	CurrentBranch string
+	// SyncCommit is the git HEAD SHA the collector ran against; SyncTime is
+	// the collection wall-clock as unix nanos. The server persists both onto
+	// code-graph metadata (SyncCommitKey / SyncTimeKey) so a later catalog
+	// read can compute commits-behind + last-collected-when. Empty/zero for
+	// a non-git collection.
+	SyncCommit string `json:"sync_commit,omitempty"`
+	SyncTime   int64  `json:"sync_time,omitempty"`
 	// ModulePath is the Go module path declared in <rootDir>/go.mod
 	// (FUL-241 Phase 5). Empty for non-Go repos. Persisted to graph
 	// metadata under kgtypes.ModulePathKey so pkg/topology/dsm.go can read

@@ -37,3 +37,37 @@ func ChildEnv(dropKeys []string, adds ...string) []string {
 	}
 	return append(out, adds...)
 }
+
+// NoWorkerRuntimeFlag is the cmd/knowledge flag that demotes a knowledge
+// process to a pure MCP stdio server: it short-circuits both
+// RunWorkerSubcommand and wireWorkerRuntime so the process never starts the
+// dream Runner. It is the recursion guard for every CLI-backed provider that
+// spawns a child knowledge process as an MCP server.
+const NoWorkerRuntimeFlag = "--no-worker-runtime"
+
+// ChildKnowledgeArgs returns the argv tail a CLI-backed provider passes to a
+// child knowledge process it launches as a stdio MCP server. It is the SOLE
+// owner of the dream-worker fork-bomb guard: it inherits the parent's flags
+// (os.Args[1:] — so the child dials the SAME knowledge-server: --port,
+// --graph-storage, --root, --log-level, …) and guarantees NoWorkerRuntimeFlag
+// is present (deduped).
+//
+// Why the guard is load-bearing: a dream worker drives tool-use by having its
+// LLM CLI (claude-cli / codex-cli) spawn this child as an MCP server. If the
+// child ALSO wired its dream Runner, a worker triggered there would spawn
+// another CLI → another child → … an unbounded fork bomb. NoWorkerRuntimeFlag
+// makes the child a pure receiver of tool calls, terminating the recursion at
+// depth 1. Both providers MUST route through here — duplicating the guard per
+// provider is exactly how a safety invariant drifts out of sync.
+func ChildKnowledgeArgs(parentArgs []string) []string {
+	out := make([]string, 0, len(parentArgs))
+	if len(parentArgs) > 0 {
+		out = append(out, parentArgs[1:]...)
+	}
+	for _, a := range out {
+		if a == NoWorkerRuntimeFlag || a == "-no-worker-runtime" {
+			return out
+		}
+	}
+	return append(out, NoWorkerRuntimeFlag)
+}

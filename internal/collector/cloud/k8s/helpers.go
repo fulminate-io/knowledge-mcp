@@ -187,7 +187,7 @@ func extractImageTargets(containers []corev1.Container) []cloud.CollectTarget {
 		switch {
 		// ECR: <account>.dkr.ecr.<region>.amazonaws.com/repo
 		case strings.Contains(registry, ".dkr.ecr.") && strings.HasSuffix(registry, ".amazonaws.com"):
-			accountID := strings.SplitN(registry, ".", 2)[0]
+			accountID, _, _ := strings.Cut(registry, ".")
 			target = &cloud.CollectTarget{Collector: "aws", ID: accountID}
 
 		// GCR: gcr.io/<project>/image

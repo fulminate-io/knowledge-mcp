@@ -313,6 +313,13 @@ func (x *BatchEdge) GetLastValidated() int64 {
 //
 // Empty/"HEAD" current_branch means "non-git or detached" — treated as
 // matching whatever the recorded default is (full-replace).
+//
+// sync_commit is the git HEAD SHA the client collected at; sync_time is the
+// collection wall-clock as unix nanos (matching the BatchEdge.last_validated
+// timestamp convention). The server persists both onto code-graph metadata
+// (SyncCommitKey / SyncTimeKey) so a later catalog read can compute "N commits
+// behind / last collected <when>". Empty values mean a non-git collection or a
+// client that predates this field.
 type WriteResultRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	CollectorName string                 `protobuf:"bytes,1,opt,name=collector_name,json=collectorName,proto3" json:"collector_name,omitempty"`
@@ -321,6 +328,8 @@ type WriteResultRequest struct {
 	CurrentBranch string                 `protobuf:"bytes,4,opt,name=current_branch,json=currentBranch,proto3" json:"current_branch,omitempty"`
 	NodeHashes    []string               `protobuf:"bytes,5,rep,name=node_hashes,json=nodeHashes,proto3" json:"node_hashes,omitempty"`
 	Edges         []*BatchEdge           `protobuf:"bytes,6,rep,name=edges,proto3" json:"edges,omitempty"`
+	SyncCommit    string                 `protobuf:"bytes,7,opt,name=sync_commit,json=syncCommit,proto3" json:"sync_commit,omitempty"`
+	SyncTime      int64                  `protobuf:"varint,8,opt,name=sync_time,json=syncTime,proto3" json:"sync_time,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -395,6 +404,20 @@ func (x *WriteResultRequest) GetEdges() []*BatchEdge {
 		return x.Edges
 	}
 	return nil
+}
+
+func (x *WriteResultRequest) GetSyncCommit() string {
+	if x != nil {
+		return x.SyncCommit
+	}
+	return ""
+}
+
+func (x *WriteResultRequest) GetSyncTime() int64 {
+	if x != nil {
+		return x.SyncTime
+	}
+	return 0
 }
 
 type WriteResultResponse struct {
@@ -629,7 +652,7 @@ const file_knowledge_v1_ingest_proto_rawDesc = "" +
 	"\x06method\x18\b \x01(\tR\x06method\x12\x1a\n" +
 	"\bevidence\x18\t \x01(\tR\bevidence\x12%\n" +
 	"\x0elast_validated\x18\n" +
-	" \x01(\x03R\rlastValidated\"\xf0\x01\n" +
+	" \x01(\x03R\rlastValidated\"\xae\x02\n" +
 	"\x12WriteResultRequest\x12%\n" +
 	"\x0ecollector_name\x18\x01 \x01(\tR\rcollectorName\x12\x1d\n" +
 	"\n" +
@@ -639,7 +662,10 @@ const file_knowledge_v1_ingest_proto_rawDesc = "" +
 	"\x0ecurrent_branch\x18\x04 \x01(\tR\rcurrentBranch\x12\x1f\n" +
 	"\vnode_hashes\x18\x05 \x03(\tR\n" +
 	"nodeHashes\x12-\n" +
-	"\x05edges\x18\x06 \x03(\v2\x17.knowledge.v1.BatchEdgeR\x05edges\"\x15\n" +
+	"\x05edges\x18\x06 \x03(\v2\x17.knowledge.v1.BatchEdgeR\x05edges\x12\x1f\n" +
+	"\vsync_commit\x18\a \x01(\tR\n" +
+	"syncCommit\x12\x1b\n" +
+	"\tsync_time\x18\b \x01(\x03R\bsyncTime\"\x15\n" +
 	"\x13WriteResultResponse\"a\n" +
 	"\x19FetchCloudSubgraphRequest\x12\x1f\n" +
 	"\vgraph_names\x18\x01 \x03(\tR\n" +

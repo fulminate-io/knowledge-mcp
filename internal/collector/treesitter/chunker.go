@@ -169,10 +169,10 @@ func (c *Chunker) extractFileContext(root *sitter.Node, src []byte, cqs *compile
 	}
 
 	// Extract Go package name.
-	for i := 0; i < int(root.ChildCount()); i++ {
+	for i := range int(root.ChildCount()) {
 		child := root.Child(i)
 		if child.Type() == "package_clause" {
-			for j := 0; j < int(child.ChildCount()); j++ {
+			for j := range int(child.ChildCount()) {
 				gc := child.Child(j)
 				if gc.Type() == "package_identifier" {
 					ctx.PackageName = gc.Content(src)
@@ -280,7 +280,7 @@ func resolveChunkType(declNode *sitter.Node) string {
 	if chunkType != "export_statement" {
 		return chunkType
 	}
-	for i := 0; i < int(declNode.NamedChildCount()); i++ {
+	for i := range int(declNode.NamedChildCount()) {
 		inner := declNode.NamedChild(i)
 		innerType := inner.Type()
 		if innerType != "comment" && innerType != "decorator" {

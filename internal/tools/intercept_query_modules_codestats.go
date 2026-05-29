@@ -45,14 +45,18 @@ func InterceptQueryModulesCodeStats(deps ClientDeps, params kgtools.CallToolPara
 	if a.Graph != "code" || (a.Mode != "modules" && a.Mode != "stats") {
 		return false, kgtools.ToolResult{}
 	}
-	gc := deps.GraphClient()
+	gc := deps.GraphCaller()
 	if gc == nil {
 		return true, errorResult(a.Mode + ": graph client unavailable")
 	}
 	if a.Mode == "modules" {
 		return true, composeListModules(context.Background(), deps, gc.Execute, a)
 	}
-	return true, composeCodeStats(context.Background(), gc, a)
+	sc, ok := gc.(statsRPC)
+	if !ok {
+		return true, errorResult(a.Mode + ": stats seam unavailable")
+	}
+	return true, composeCodeStats(context.Background(), sc, a)
 }
 
 // composeListModules dispatches single-repo vs multi-repo (repos[] / repo=all)

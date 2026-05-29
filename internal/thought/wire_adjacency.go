@@ -8,7 +8,6 @@ import (
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
-	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
@@ -25,7 +24,7 @@ import (
 // adjacency map to drive ReflectBlindSpots' bridge-detection pass
 // without exporting fetchAdjacency itself (which is the lower-level
 // helper the reflective bodies use internally).
-func FetchThoughtAdjacency(ctx context.Context, gc *graphclient.GraphClient) ([]string, map[string][]string, error) {
+func FetchThoughtAdjacency(ctx context.Context, gc Caller) ([]string, map[string][]string, error) {
 	return fetchAdjacency(ctx, gc, "all", nil)
 }
 
@@ -53,7 +52,7 @@ var adjacencyEdgeTypes = []kgtypes.EdgeType{
 // issues store.From(id).IDs() — which with forward==nil walks BOTH directions
 // (store/query.go:83) — for "all_types". Both filter neighbors to the in-scope
 // idSet. subset is the optional post-walk projection.
-func fetchAdjacency(ctx context.Context, gc *graphclient.GraphClient, scope string, subset []string) ([]string, map[string][]string, error) {
+func fetchAdjacency(ctx context.Context, gc Caller, scope string, subset []string) ([]string, map[string][]string, error) {
 	if gc == nil {
 		return nil, nil, nil
 	}
@@ -108,7 +107,7 @@ func fetchAdjacency(ctx context.Context, gc *graphclient.GraphClient, scope stri
 // (scope="all") or every node except NodeProxy (scope="all_types"). The
 // all_types browse enumerates all node types (Match("") via an empty-type
 // browse) and filters out proxies client-side, matching the server NodeFilter.
-func fetchAdjacencyNodeIDs(ctx context.Context, gc *graphclient.GraphClient, scope string) ([]string, error) {
+func fetchAdjacencyNodeIDs(ctx context.Context, gc Caller, scope string) ([]string, error) {
 	if scope == "all" {
 		nodes, err := fetchAllThoughtNodes(ctx, gc)
 		if err != nil {
@@ -165,7 +164,7 @@ func buildAdjacencyFromEdges(edges []knowledgev1.Edge, idSet map[string]bool) ma
 // SiblingExpander (tools_thought_adjacency.go:125): walk EdgeKGContains BACKWARD
 // to the enclosing thought_session, then FORWARD to every sibling thought in the
 // same session, filtered to the in-scope idSet.
-func fetchSessionSiblings(ctx context.Context, gc *graphclient.GraphClient, nodeID string, idSet map[string]bool) []string {
+func fetchSessionSiblings(ctx context.Context, gc Caller, nodeID string, idSet map[string]bool) []string {
 	sessions, err := fetchTraversalPeerIDs(ctx, gc, nodeID, "in", []string{string(kgtypes.EdgeKGContains)})
 	if err != nil {
 		return nil

@@ -53,7 +53,7 @@ func InterceptQueryAnalyzeNode(deps ClientDeps, params kgtools.CallToolParams) (
 	if a.Graph != "code" || a.ID == "" || a.Mode == "stats" {
 		return false, kgtools.ToolResult{}
 	}
-	gc := deps.GraphClient()
+	gc := deps.GraphCaller()
 	if gc == nil {
 		return true, errorResult("analyze: graph client unavailable")
 	}

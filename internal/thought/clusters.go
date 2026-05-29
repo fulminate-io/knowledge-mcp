@@ -18,7 +18,6 @@ import (
 	"strings"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
-	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 )
 
 // ThoughtCluster represents an emergent subject — a group of densely
@@ -39,7 +38,7 @@ type ThoughtCluster struct {
 // by buildClusterObjects.
 //
 // gamma controls boundary sharpness; higher = smaller tighter clusters.
-func DetectThoughtClusters(ctx context.Context, gc *graphclient.GraphClient, gamma float64) ([]ThoughtCluster, error) {
+func DetectThoughtClusters(ctx context.Context, gc Caller, gamma float64) ([]ThoughtCluster, error) {
 	if gamma <= 0 {
 		gamma = 0.5
 	}
@@ -58,7 +57,7 @@ func DetectThoughtClusters(ctx context.Context, gc *graphclient.GraphClient, gam
 // NodeProxy) — same single-adjacency-RPC + single-bulk-metadata-write
 // shape as DetectThoughtClusters. No query+topology fallback (T2-2
 // lock).
-func DetectAllClusters(ctx context.Context, gc *graphclient.GraphClient, gamma float64) ([]ThoughtCluster, error) {
+func DetectAllClusters(ctx context.Context, gc Caller, gamma float64) ([]ThoughtCluster, error) {
 	if gamma <= 0 {
 		gamma = 0.5
 	}
@@ -77,7 +76,7 @@ func DetectAllClusters(ctx context.Context, gc *graphclient.GraphClient, gamma f
 // then sorts by size descending. Aggregates and persistence run inside
 // buildClusterObjects (which issues the locked single bulk_update_metadata
 // write).
-func groupAndBuildClusters(ctx context.Context, gc *graphclient.GraphClient, nodeIDs []string, clusterOf map[string]string) []ThoughtCluster {
+func groupAndBuildClusters(ctx context.Context, gc Caller, nodeIDs []string, clusterOf map[string]string) []ThoughtCluster {
 	groups := make(map[string][]string)
 	for _, id := range nodeIDs {
 		groups[clusterOf[id]] = append(groups[clusterOf[id]], id)
@@ -93,7 +92,7 @@ func groupAndBuildClusters(ctx context.Context, gc *graphclient.GraphClient, nod
 // thought_ids: allMembers}) for charge aggregation, then constructs all
 // clusters from the two prebuilt maps. Persistence is a single
 // gc.Call("mutate", {operation: "bulk_update_metadata"}).
-func buildClusterObjects(ctx context.Context, gc *graphclient.GraphClient, groups map[string][]string) []ThoughtCluster {
+func buildClusterObjects(ctx context.Context, gc Caller, groups map[string][]string) []ThoughtCluster {
 	// Flatten all members for the bulk fetches.
 	var allMembers []string
 	for _, members := range groups {
@@ -153,7 +152,7 @@ func computeClusterAggregatesFromMaps(members []string, nodeByID map[string]*kno
 // Execute carrier seam (executeViaEngine → MUTATION_KIND_UPDATE_ITEMS) to write
 // cluster_id metadata into every member node. Failures are logged-and-dropped —
 // the reflective surface is best-effort and never blocks the caller.
-func persistClusterAssignments(ctx context.Context, gc *graphclient.GraphClient, assignments map[string]string) {
+func persistClusterAssignments(ctx context.Context, gc Caller, assignments map[string]string) {
 	if len(assignments) == 0 || gc == nil {
 		return
 	}

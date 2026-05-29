@@ -40,13 +40,17 @@ func InterceptQueryMetadataStats(deps ClientDeps, params kgtools.CallToolParams)
 	if a.Mode != "metadata_stats" {
 		return false, kgtools.ToolResult{}
 	}
-	gc := deps.GraphClient()
+	gc := deps.GraphCaller()
 	if gc == nil {
 		return true, errorResult("metadata_stats: graph client unavailable")
 	}
+	mc, ok := gc.(metadataStatsCaller)
+	if !ok {
+		return true, errorResult("metadata_stats: stats seam unavailable")
+	}
 	ctx := context.Background()
 
-	resp, err := gc.MetadataStats(ctx, &knowledgev1.MetadataStatsRequest{Target: domainTarget(a)})
+	resp, err := mc.MetadataStats(ctx, &knowledgev1.MetadataStatsRequest{Target: domainTarget(a)})
 	if err != nil {
 		return true, errorResult(fmt.Sprintf("metadata stats load failed: %v", err))
 	}

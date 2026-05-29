@@ -59,6 +59,13 @@ type Config struct {
 	EmbedBatchSize     int
 	EmbedWorkers       int
 	PipelineTick       time.Duration
+
+	// LocalDialer constructs the local *graphclient.GraphClient. Defaults to
+	// graphclient.NewGraphClient when nil. Test seam (FUL-323 Phase 3 step 2)
+	// — tests inject a closure that points the local client at an
+	// httptest.Server URL via graphclient.NewGraphClientForURL. Production
+	// callers leave this nil and constructClient dials 127.0.0.1:Port.
+	LocalDialer func(port int) *graphclient.GraphClient
 }
 
 // ParseFlags parses args into a Config. Caller passes os.Args[1:] from

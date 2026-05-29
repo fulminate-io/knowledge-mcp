@@ -13,8 +13,6 @@ import (
 	"strings"
 	"time"
 
-	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
-
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
@@ -61,7 +59,7 @@ type ThoughtResult struct {
 // FUL-247 client-side: takes a graph client instead of the *Store receiver.
 // Every store.Store().Query call from the original pkg/thought/query.go is
 // translated into a gc.Call("query"|"traverse"|...) wire call.
-func RecallThoughts(ctx context.Context, gc *graphclient.GraphClient, opts RecallOptions) ([]ThoughtResult, error) {
+func RecallThoughts(ctx context.Context, gc Caller, opts RecallOptions) ([]ThoughtResult, error) {
 	if gc == nil {
 		return nil, errors.New("thought: RecallThoughts: graph client unavailable")
 	}
@@ -102,7 +100,7 @@ func RecallThoughts(ctx context.Context, gc *graphclient.GraphClient, opts Recal
 // gatherRecallCandidates returns all thought candidates via semantic search
 // or full iteration. Falls back to iteration on search failure or empty
 // results.
-func gatherRecallCandidates(ctx context.Context, gc *graphclient.GraphClient, opts RecallOptions) []ThoughtResult {
+func gatherRecallCandidates(ctx context.Context, gc Caller, opts RecallOptions) []ThoughtResult {
 	if opts.Query != "" {
 		candidates, err := searchRecallCandidates(ctx, gc, opts)
 		if err == nil && len(candidates) > 0 {
@@ -114,7 +112,7 @@ func gatherRecallCandidates(ctx context.Context, gc *graphclient.GraphClient, op
 
 // searchRecallCandidates returns thought candidates from a semantic search
 // query. One wire round-trip; thought-only filter applied client-side.
-func searchRecallCandidates(ctx context.Context, gc *graphclient.GraphClient, opts RecallOptions) ([]ThoughtResult, error) {
+func searchRecallCandidates(ctx context.Context, gc Caller, opts RecallOptions) ([]ThoughtResult, error) {
 	results, err := fetchQueryBySearch(ctx, gc, opts.Query, opts.Limit*5)
 	if err != nil {
 		return nil, fmt.Errorf("search: %w", err)
@@ -133,7 +131,7 @@ func searchRecallCandidates(ctx context.Context, gc *graphclient.GraphClient, op
 // type=thought ID-only query plus one bulk fetchNodesByIDs hydration. Avoids
 // the N+1 per-node round-trip that the original pkg/thought/query.go was
 // safe to do against the in-process singleton.
-func iterateRecallCandidates(ctx context.Context, gc *graphclient.GraphClient) []ThoughtResult {
+func iterateRecallCandidates(ctx context.Context, gc Caller) []ThoughtResult {
 	nodes, err := fetchAllThoughtNodes(ctx, gc)
 	if err != nil {
 		slog.Warn("thought: iterateRecallCandidates: fetchAllThoughtNodes failed", "err", err)
@@ -149,7 +147,7 @@ func iterateRecallCandidates(ctx context.Context, gc *graphclient.GraphClient) [
 // applyRecallFilters filters candidates using node-level and property-level
 // criteria. Computes thought properties via a single bulk charges-fetch
 // round-trip (BCN4 v2 perf invariant: never per-thought N+1).
-func applyRecallFilters(ctx context.Context, gc *graphclient.GraphClient, candidates []ThoughtResult, opts RecallOptions) []ThoughtResult {
+func applyRecallFilters(ctx context.Context, gc Caller, candidates []ThoughtResult, opts RecallOptions) []ThoughtResult {
 	// Bulk-fetch charges for all candidate IDs in one round-trip.
 	ids := make([]string, len(candidates))
 	for i, c := range candidates {
@@ -206,7 +204,7 @@ func propertyFiltersMatch(props ThoughtProperties, opts RecallOptions, n *knowle
 // thoughtMatchesFilters checks non-property filters (status, session, time,
 // connected_to). The connected_to branch performs a single traverse wire
 // call instead of the original in-process store.From(...).IDs() shape.
-func thoughtMatchesFilters(ctx context.Context, gc *graphclient.GraphClient, n *knowledgev1.Node, opts RecallOptions) bool {
+func thoughtMatchesFilters(ctx context.Context, gc Caller, n *knowledgev1.Node, opts RecallOptions) bool {
 	if opts.Status != "" && n.Status != opts.Status {
 		return false
 	}

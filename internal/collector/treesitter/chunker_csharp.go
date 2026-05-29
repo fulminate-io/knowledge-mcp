@@ -32,12 +32,12 @@ func extractCSharpAttributes(declNode *sitter.Node, src []byte) []string {
 		return nil
 	}
 	var out []string
-	for i := 0; i < int(declNode.NamedChildCount()); i++ {
+	for i := range int(declNode.NamedChildCount()) {
 		child := declNode.NamedChild(i)
 		if child.Type() != "attribute_list" {
 			continue
 		}
-		for j := 0; j < int(child.NamedChildCount()); j++ {
+		for j := range int(child.NamedChildCount()) {
 			anno := child.NamedChild(j)
 			if anno.Type() != "attribute" {
 				continue
@@ -53,7 +53,7 @@ func extractCSharpAttributes(declNode *sitter.Node, src []byte) []string {
 // csharpAttributeSimpleName extracts the trailing simple name from an
 // attribute node, stripping any FQN prefix.
 func csharpAttributeSimpleName(anno *sitter.Node, src []byte) string {
-	for i := 0; i < int(anno.NamedChildCount()); i++ {
+	for i := range int(anno.NamedChildCount()) {
 		child := anno.NamedChild(i)
 		t := child.Type()
 		if t != "identifier" && t != "qualified_name" {

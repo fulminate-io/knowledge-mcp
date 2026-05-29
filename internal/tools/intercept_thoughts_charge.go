@@ -121,7 +121,7 @@ func handleChargeClient(ctx context.Context, deps ClientDeps, params kgtools.Cal
 	// The GraphClient is the concrete *graphclient.GraphClient FetchChargesFor needs;
 	// production always wires it. When it is unavailable (degraded boot), the
 	// charge has already landed — render the bare ID rather than failing the write.
-	graphCli := deps.GraphClient()
+	graphCli := deps.GraphCaller()
 	if graphCli == nil {
 		return textResult(fmt.Sprintf("Charge recorded → ID: %s", chargeID))
 	}

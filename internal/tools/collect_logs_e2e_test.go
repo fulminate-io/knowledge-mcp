@@ -39,6 +39,7 @@ func (d *fakeDeps) WorkerCRUD() WorkerCRUDAPI             { return nil }
 func (d *fakeDeps) Embedder() embed.BinaryEmbedder        { return nil }
 func (d *fakeDeps) BackendResolver() BackendResolver      { return nil }
 func (d *fakeDeps) GraphCaller() GraphCaller              { return nil }
+func (d *fakeDeps) LocalGraphCaller() GraphCaller         { return nil }
 func (d *fakeDeps) RepoResolver() *RepoResolver           { return nil }
 
 // stubLogsProvider returns a fixed entry batch plus zero sources. Each

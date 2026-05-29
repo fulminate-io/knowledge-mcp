@@ -13,9 +13,9 @@
 //   - linux   → storage_linux.go   (SecretService / libsecret via zalando/go-keyring)
 //   - windows → storage_windows.go (stub returning ErrNotImplementedOS)
 //
-// The in-memory [MemoryStore] in storage_memory.go is always available and is
-// intended for tests and dry-run/preview tooling. Production callers must
-// never instantiate it directly — use [NewStore] instead.
+// Tests in this package use the internal `testStore` fixture in
+// teststore_test.go. External packages that need a Store fake must construct
+// one inline (the interface is small: Get / Set / Delete).
 package auth
 
 import (

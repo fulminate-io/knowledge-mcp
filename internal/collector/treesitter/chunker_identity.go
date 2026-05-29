@@ -168,7 +168,7 @@ func firstStringArg(callNode *sitter.Node, src []byte) string {
 	if args == nil {
 		return ""
 	}
-	for i := 0; i < int(args.NamedChildCount()); i++ {
+	for i := range int(args.NamedChildCount()) {
 		arg := args.NamedChild(i)
 		if arg.Type() == "string" || arg.Type() == "template_string" {
 			s := arg.Content(src)
@@ -195,7 +195,7 @@ func astPathHash(node *sitter.Node) string {
 		path.WriteString(n.Type())
 		// Include child index among siblings for uniqueness.
 		if p := n.Parent(); p != nil {
-			for i := 0; i < int(p.NamedChildCount()); i++ {
+			for i := range int(p.NamedChildCount()) {
 				if p.NamedChild(i).StartByte() == n.StartByte() && p.NamedChild(i).EndByte() == n.EndByte() {
 					fmt.Fprintf(&path, "[%d]", i)
 					break

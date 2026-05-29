@@ -867,13 +867,17 @@ func (x *GraphSelector) GetBranch() string {
 // RETURN_MODE_GRAPH_NAMES read collects a []GraphInfo and ExecuteResponse +
 // IndexResponse (list_branches) both carry it as a typed repeated field.
 type GraphInfo struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Name          string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`                          // store.GraphInfo.Name
-	Loaded        bool                   `protobuf:"varint,2,opt,name=loaded,proto3" json:"loaded,omitempty"`                     // store.GraphInfo.Loaded
-	FilePath      string                 `protobuf:"bytes,3,opt,name=file_path,json=filePath,proto3" json:"file_path,omitempty"`  // store.GraphInfo.FilePath
-	FileSize      int64                  `protobuf:"varint,4,opt,name=file_size,json=fileSize,proto3" json:"file_size,omitempty"` // store.GraphInfo.FileSize
-	Nodes         int32                  `protobuf:"varint,5,opt,name=nodes,proto3" json:"nodes,omitempty"`                       // store.GraphInfo.Nodes
-	Edges         int32                  `protobuf:"varint,6,opt,name=edges,proto3" json:"edges,omitempty"`                       // store.GraphInfo.Edges
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Name     string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`                          // store.GraphInfo.Name
+	Loaded   bool                   `protobuf:"varint,2,opt,name=loaded,proto3" json:"loaded,omitempty"`                     // store.GraphInfo.Loaded
+	FilePath string                 `protobuf:"bytes,3,opt,name=file_path,json=filePath,proto3" json:"file_path,omitempty"`  // store.GraphInfo.FilePath
+	FileSize int64                  `protobuf:"varint,4,opt,name=file_size,json=fileSize,proto3" json:"file_size,omitempty"` // store.GraphInfo.FileSize
+	Nodes    int32                  `protobuf:"varint,5,opt,name=nodes,proto3" json:"nodes,omitempty"`                       // store.GraphInfo.Nodes
+	Edges    int32                  `protobuf:"varint,6,opt,name=edges,proto3" json:"edges,omitempty"`                       // store.GraphInfo.Edges
+	// sync_commit / sync_time carry the recorded HEAD SHA + collection time
+	// (unix nanos) for loaded code graphs only; empty/zero otherwise.
+	SyncCommit    string `protobuf:"bytes,7,opt,name=sync_commit,json=syncCommit,proto3" json:"sync_commit,omitempty"` // store.GraphInfo.SyncCommit
+	SyncTime      int64  `protobuf:"varint,8,opt,name=sync_time,json=syncTime,proto3" json:"sync_time,omitempty"`      // store.GraphInfo.SyncTime
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -946,6 +950,20 @@ func (x *GraphInfo) GetNodes() int32 {
 func (x *GraphInfo) GetEdges() int32 {
 	if x != nil {
 		return x.Edges
+	}
+	return 0
+}
+
+func (x *GraphInfo) GetSyncCommit() string {
+	if x != nil {
+		return x.SyncCommit
+	}
+	return ""
+}
+
+func (x *GraphInfo) GetSyncTime() int64 {
+	if x != nil {
+		return x.SyncTime
 	}
 	return 0
 }
@@ -3624,14 +3642,17 @@ const file_knowledge_v1_engine_proto_rawDesc = "" +
 	"\aaccount\x18\x03 \x01(\tR\aaccount\x12\x12\n" +
 	"\x04name\x18\x04 \x01(\tR\x04name\x12\x1a\n" +
 	"\blanguage\x18\x05 \x01(\tR\blanguage\x12\x16\n" +
-	"\x06branch\x18\x06 \x01(\tR\x06branch\"\x9d\x01\n" +
+	"\x06branch\x18\x06 \x01(\tR\x06branch\"\xdb\x01\n" +
 	"\tGraphInfo\x12\x12\n" +
 	"\x04name\x18\x01 \x01(\tR\x04name\x12\x16\n" +
 	"\x06loaded\x18\x02 \x01(\bR\x06loaded\x12\x1b\n" +
 	"\tfile_path\x18\x03 \x01(\tR\bfilePath\x12\x1b\n" +
 	"\tfile_size\x18\x04 \x01(\x03R\bfileSize\x12\x14\n" +
 	"\x05nodes\x18\x05 \x01(\x05R\x05nodes\x12\x14\n" +
-	"\x05edges\x18\x06 \x01(\x05R\x05edges\"\xdb\x01\n" +
+	"\x05edges\x18\x06 \x01(\x05R\x05edges\x12\x1f\n" +
+	"\vsync_commit\x18\a \x01(\tR\n" +
+	"syncCommit\x12\x1b\n" +
+	"\tsync_time\x18\b \x01(\x03R\bsyncTime\"\xdb\x01\n" +
 	"\x04Edge\x12\x17\n" +
 	"\afrom_id\x18\x01 \x01(\tR\x06fromId\x12\x13\n" +
 	"\x05to_id\x18\x02 \x01(\tR\x04toId\x12\x12\n" +

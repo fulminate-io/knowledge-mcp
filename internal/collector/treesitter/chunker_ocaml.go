@@ -42,7 +42,7 @@ func hasInlineTestExtension(declNode *sitter.Node, src []byte) bool {
 	if declNode == nil {
 		return false
 	}
-	for i := 0; i < int(declNode.NamedChildCount()); i++ {
+	for i := range int(declNode.NamedChildCount()) {
 		child := declNode.NamedChild(i)
 		if child.Type() != "attribute_id" {
 			continue

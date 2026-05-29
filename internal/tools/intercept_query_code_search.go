@@ -29,9 +29,11 @@ import (
 // (mergeMultiRepoResults). Per-query lists stay SEPARATE (the engine's
 // multi-query fusion would collapse them) — one Execute per (repo,query).
 //
-// Staleness ("Indexed N ago") is NOT reconstructable client-side (no graph-meta
-// carrier — finding e71f53bb); it degrades to empty (matching StalenessInfoWith's
-// own degrade-on-missing-meta).
+// Staleness is rendered as a footer (appendStalenessFooter → codeStalenessFooter
+// in code_staleness.go): the collect path records the HEAD SHA + collection time
+// onto code-graph metadata, surfaced via the GraphInfo catalog, so the footer
+// shows real commits-behind + last-collected-when. Degrades to no footer when no
+// metadata is recorded (graphs collected before staleness tracking landed).
 
 // excludedCodeSearchTypes are the low-signal node types dropped by default (port
 // of the server excludedCodeTypes).
@@ -78,7 +80,7 @@ func InterceptQueryCodeSearch(deps ClientDeps, params kgtools.CallToolParams) (b
 	if len(queries) == 0 {
 		return false, kgtools.ToolResult{} // no query → not the search shape.
 	}
-	gc := deps.GraphClient()
+	gc := deps.GraphCaller()
 	if gc == nil {
 		return true, errorResult("code search: graph client unavailable")
 	}
@@ -106,12 +108,32 @@ func composeCodeSearch(ctx context.Context, deps ClientDeps, exec engine.Execute
 	if len(a.Repos) > 0 || a.Repo == "all" {
 		return composeCodeSearchMultiRepo(ctx, deps, exec, a, queries, limit, includeSource, groupByFile)
 	}
-	return composeCodeSearchSingleRepo(ctx, exec, a, queries, limit, includeSource, groupByFile)
+	return composeCodeSearchSingleRepo(ctx, deps, exec, a, queries, limit, includeSource, groupByFile)
+}
+
+// appendStalenessFooter appends the code-index staleness footer for the
+// searched repo to a rendered result, when one is available. Degrades to the
+// body unchanged when no metadata is recorded.
+func appendStalenessFooter(ctx context.Context, deps ClientDeps, exec engine.ExecuteFn, repo string, res kgtools.ToolResult) kgtools.ToolResult {
+	if deps == nil {
+		return res
+	}
+	footer := codeStalenessFooter(ctx, exec, deps.RootDir(), repo)
+	if footer == "" {
+		return res
+	}
+	for i := range res.Content {
+		if res.Content[i].Type == "text" {
+			res.Content[i].Text += "\n\n" + footer
+			return res
+		}
+	}
+	return res
 }
 
 // composeCodeSearchSingleRepo runs one RETURN_MODE_SEARCH Execute per query
 // (parallel) against the single repo graph, then renders.
-func composeCodeSearchSingleRepo(ctx context.Context, exec engine.ExecuteFn, a codeSearchArgs, queries []string, limit int, includeSource, groupByFile bool) kgtools.ToolResult {
+func composeCodeSearchSingleRepo(ctx context.Context, deps ClientDeps, exec engine.ExecuteFn, a codeSearchArgs, queries []string, limit int, includeSource, groupByFile bool) kgtools.ToolResult {
 	target := &knowledgev1.GraphSelector{Graph: "code", Repo: a.Repo, Branch: a.Branch}
 	perQuery := searchAllQueries(ctx, exec, target, queries, limit, a.PathPrefix, "")
 	perQuery = applyCodeResultFilters(perQuery, a)
@@ -127,7 +149,8 @@ func composeCodeSearchSingleRepo(ctx context.Context, exec engine.ExecuteFn, a c
 	} else {
 		engine.FormatCodePerQueryResults(&sb, queries, perQuery, includeSource)
 	}
-	return textResult(engine.FormatCodeWithRepo(repoLabelFor(a.Repo, a.Branch), sb.String()))
+	res := textResult(engine.FormatCodeWithRepo(repoLabelFor(a.Repo, a.Branch), sb.String()))
+	return appendStalenessFooter(ctx, deps, exec, a.Repo, res)
 }
 
 // composeCodeSearchMultiRepo resolves the repo set then fans the per-repo

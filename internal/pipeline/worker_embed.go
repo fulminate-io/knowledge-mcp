@@ -196,8 +196,7 @@ func handleEmbedderError(ctx context.Context, p *Pipeline, key graphKey, ids []s
 	}
 
 	reason := err.Error()
-	var llmErr *llm.LLMError
-	if errors.As(err, &llmErr) {
+	if llmErr, ok := errors.AsType[*llm.LLMError](err); ok {
 		reason = llmErr.Error()
 	}
 

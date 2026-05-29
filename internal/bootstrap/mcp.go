@@ -107,8 +107,18 @@ func runMCPMode(f Config) error {
 	// its tolerance — see ticket fb39323b... + the client.startup stage
 	// timings. Caller no longer aborts on precheck failure; the misconfig
 	// trips at first tool use with a clearer per-call error.
-	_ = llmproviders.RunPrecheck(context.Background(), f.SkipLLMPrecheck)
-	stage("llmproviders.RunPrecheck spawned (async)")
+	//
+	// Gated on !NoWorkerRuntime for the SAME reason wireWorkerRuntime is:
+	// config.LoadOrAutoDetect is loaded inside wireWorkerRuntime, so a
+	// --no-worker-runtime child (a CLI provider's MCP tool-server child,
+	// e.g. claude-cli / codex-cli dream workers) never loaded config and
+	// RunPrecheck → config.Active() would panic. The child is a pure
+	// tool-call receiver — it makes no LLM calls of its own, so it has no
+	// consumer to precheck.
+	if !f.NoWorkerRuntime {
+		_ = llmproviders.RunPrecheck(context.Background(), f.SkipLLMPrecheck)
+		stage("llmproviders.RunPrecheck spawned (async)")
+	}
 
 	// Wire the client-side embedder so InterceptSearch / InterceptQuery
 	// can embed query text on the client side (Phase 4.5). nil when no
@@ -151,14 +161,14 @@ func runMCPMode(f Config) error {
 	// skills}/*.md. Server-side projects.Bootstrap call has been
 	// removed; the client owns disk I/O for code-graph + project
 	// assets now (FUL-241). Non-fatal — startup continues on error.
-	if err := runInstructionBootstrap(context.Background(), graphClientCaller{gc: c.client}, f.RootDir); err != nil {
+	if err := runInstructionBootstrap(context.Background(), c.router, f.RootDir); err != nil {
 		slog.Warn("instruction bootstrap failed; agent/skill nodes will not be seeded this session",
 			"error", err)
 	}
 	stage("instruction bootstrap done")
 
 	c.mcpClient = graphclient.NewMCPClient(graphclient.MCPClientConfig{
-		Client:          c.client,
+		Client:          c.local,
 		Port:            c.port,
 		Version:         c.version,
 		HandleToolsList: c.handleToolsList,
@@ -179,7 +189,7 @@ func runMCPMode(f Config) error {
 // higher-level cmd/knowledge/internal tool packages (the func-field injection
 // mirrors InterceptChain).
 func (c *client) engineDispatch(ctx context.Context, tool string, args json.RawMessage) (kgtools.ToolResult, error) {
-	return engine.Dispatch(ctx, c.client.Execute, tool, args)
+	return engine.Dispatch(ctx, c.router.Execute, tool, args)
 }
 
 // handleToolsList answers a tools/list JSON-RPC request from the cached

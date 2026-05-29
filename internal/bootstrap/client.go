@@ -9,8 +9,10 @@ import (
 	"sync"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/auth"
 	"github.com/fulminate-io/knowledge-mcp/internal/backends"
 	"github.com/fulminate-io/knowledge-mcp/internal/backends/provider"
+	"github.com/fulminate-io/knowledge-mcp/internal/cli"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/remote"
 	"github.com/fulminate-io/knowledge-mcp/internal/dream"
@@ -37,12 +39,29 @@ type toolSchema struct {
 // no graph store, no tool handler, no propagation loop (those live in the
 // server binary).
 type client struct {
-	rootDir   string                   // display-only — preserved so existing --root invocations stay accepted
-	port      int                      // TCP port the server listens on
-	version   string                   // binary version (reported in MCP initialize)
-	client    *graphclient.GraphClient // connect-go client to the graph server
-	mcpClient *graphclient.MCPClient   // MCP stdio loop (built in mcp.go)
-	sink      collector.Sink           // remote upload sink for client-side collection
+	rootDir string // display-only — preserved so existing --root invocations stay accepted
+	port    int    // TCP port the server listens on
+	version string // binary version (reported in MCP initialize)
+	// local is the connect-go client to the LOCAL graph server (127.0.0.1).
+	// Replaces the prior `client` field as part of FUL-323. Always-local
+	// callers (sync push, post-collect linker, post-collect postpopulate,
+	// auto-prune, pipeline writeback, propagation loop) read this directly.
+	// May be nil for a cloud-first user with no install — router handles
+	// dispatch for everyone else.
+	local *graphclient.GraphClient
+	// router is the FUL-323 routing layer. Per-call dispatches to local or
+	// cloud based on the live auth state cached in authState. Built by
+	// constructClient; tests that build *client directly leave router nil
+	// (the GraphCaller() accessor returns nil in that case, preserving the
+	// pre-rewrite short-circuit contract).
+	router *graphclient.Router
+	// authState backs the routing decision in router. Held on *client so
+	// the e2e test in Phase 4 can inspect / flip it via auth.NewAuthState
+	// inputs.
+	authState *auth.AuthState
+
+	mcpClient *graphclient.MCPClient // MCP stdio loop (built in mcp.go)
+	sink      collector.Sink         // remote upload sink for client-side collection
 	// runtime is the client-side dream.Runner. Wired in mcp.go::runMCPMode
 	// via wireWorkerRuntime; nil in test harnesses that build *client
 	// directly. Phase H narrows the WorkerRuntime() accessor to a
@@ -107,7 +126,7 @@ type client struct {
 // tools.ClientDeps so the internal/tools package can reach liveness +
 // Status RPCs without importing the concrete *client type (which would
 // create an import cycle back into cmd/knowledge).
-func (c *client) GraphClient() *graphclient.GraphClient { return c.client }
+func (c *client) GraphClient() *graphclient.GraphClient { return c.local }
 
 // PipelineMetrics returns a snapshot of the client-side LLM pipeline
 // counters (summary + embed queue depth, running workers, cumulative
@@ -200,19 +219,56 @@ func (c *client) Embedder() embed.BinaryEmbedder {
 // fall through to local-only).
 func (c *client) BackendResolver() tools.BackendResolver { return providerBackendResolver{} }
 
-// GraphCaller returns the production graph caller — the same
-// *graphclient.GraphClient the rest of the stdio client uses. Intercepts
-// forward the local portion of a backend-backed call through this
-// caller. Returns nil only when the *client was constructed without a
-// GraphClient (degraded headless mode); intercepts fail fast in that
-// case rather than performing the backend write with no way to persist
-// the local-graph mirror.
+// GraphCaller returns the production graph caller — the FUL-323
+// routing layer. The returned *Router dispatches per-call to either the
+// local *GraphClient (default / logged out) or a lazily-built cloud
+// *GraphClient (when AuthState reports IsLoggedIn=true), surfacing
+// ErrNoBackend when neither is reachable. Intercepts forward the local
+// portion of a backend-backed call through this caller. Returns nil
+// only when the *client was constructed without a router (zero-value
+// test fixture); intercepts fail fast in that case rather than
+// performing the backend write with no way to persist the local-graph
+// mirror.
 func (c *client) GraphCaller() tools.GraphCaller {
-	if c.client == nil {
+	if c.router == nil {
 		return nil
 	}
-	return graphClientCaller{gc: c.client}
+	return c.router
 }
+
+// LocalGraphCaller returns a GraphCaller that ALWAYS targets the local
+// server, bypassing the FUL-323 routing layer. Callers that must read
+// and write the local graph regardless of login state — sync push,
+// post-collect linker, post-collect postpopulate — use this accessor.
+// Returns nil only when the *client was constructed without a local
+// GraphClient (cloud-first user with no install); the three local-only
+// callers' existing nil-guards surface the degraded-mode error.
+//
+// Post-step-2 (Router wiring): the underlying field is c.local; this
+// accessor stays a thin wrapper either way. The wrapper continues to
+// satisfy the Indexer / Exporter / metadataStatsCaller / statsRPC seams
+// via the *GraphClient's native method set (mirrors graphClientCaller).
+func (c *client) LocalGraphCaller() tools.GraphCaller {
+	if c.local == nil {
+		return nil
+	}
+	return graphClientCaller{gc: c.local}
+}
+
+// noopAuthStore is a fallback Store implementation used when auth.NewStore()
+// returns ErrNotImplementedOS (Windows) or any other transient construction
+// failure. Get always returns ErrNotFound so AuthState reports
+// IsLoggedIn=false; Set/Delete are silent no-ops. The router falls through
+// to the local *GraphClient unconditionally when this store backs the
+// AuthState, preserving the pre-FUL-323 unauthenticated behavior on those
+// platforms.
+type noopAuthStore struct{}
+
+func (noopAuthStore) Get(context.Context, string) (string, error) {
+	return "", auth.ErrNotFound
+}
+func (noopAuthStore) Set(context.Context, string, string) error { return nil }
+func (noopAuthStore) Delete(context.Context, string) error      { return nil }
 
 // RepoResolver returns the client-side cwd → code-graph-name resolver.
 // Constructed lazily on first call via repoResolverOnce — one resolver
@@ -301,13 +357,44 @@ func (g graphClientCaller) ExportGraph(ctx context.Context, req *knowledgev1.Exp
 // drops to slog between user-triggered tool calls. The unary reconnect
 // interceptor redials transparently when the next real request lands —
 // keepalive is operator visibility, not recovery.
+//
+// Router wiring (FUL-323): builds the auth.AuthState backed by the
+// platform keychain Store (or a no-op stub on platforms where the
+// keychain is not implemented — Windows) and the OAuth TokenSource, then
+// wraps the local *GraphClient + cloud-bearer machinery in a
+// *graphclient.Router. Every routed GraphCaller() call dispatches
+// per-call: cached IsLoggedIn=true → cloud; false → local; neither → ErrNoBackend.
 func constructClient(f Config) *client {
-	tcp := graphclient.NewGraphClient(f.Port)
+	dialLocal := f.LocalDialer
+	if dialLocal == nil {
+		dialLocal = graphclient.NewGraphClient
+	}
+	tcp := dialLocal(f.Port)
+
+	// Build the auth Store. ErrNotImplementedOS (Windows) is non-fatal:
+	// substitute a no-op Store so AuthState always returns false and the
+	// Router falls through to local. Other errors are also non-fatal —
+	// degrade to no-op so the local path still works.
+	authStore, storeErr := auth.NewStore()
+	if storeErr != nil {
+		authStore = noopAuthStore{}
+	}
+	tokenSource := auth.NewOAuthTokenSource(
+		authStore,
+		cli.CloudEndpoint,
+		"knowledge-cli",
+		cli.AllowedAuthHosts(),
+	)
+	authState := auth.NewAuthState(authStore, 0)
+	router := graphclient.NewRouter(tcp, cli.CloudEndpoint, tokenSource, authState)
+
 	c := &client{
-		rootDir: f.RootDir,
-		port:    f.Port,
-		version: Version,
-		client:  tcp,
+		rootDir:   f.RootDir,
+		port:      f.Port,
+		version:   Version,
+		local:     tcp,
+		router:    router,
+		authState: authState,
 	}
 	c.sink = remote.NewUploadSink(tcp.IngestClient())
 	// Wire the worker CRUD client. Same GraphClient as everything else

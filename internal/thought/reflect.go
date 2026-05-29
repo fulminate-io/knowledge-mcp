@@ -10,7 +10,6 @@ import (
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
-	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 )
 
 // ClusterPairScalar holds a scalar between two clusters with labels.
@@ -111,7 +110,7 @@ func ReflectPersonality(clusters []ThoughtCluster, profile *PersonalityProfile, 
 // ReflectInfluence returns the top-N most influential thoughts. Issues
 // ONE gc.Call to list thought IDs, ONE gc.Call("thoughts", {adjacency})
 // inside BuildTrustMatrix, and ONE bulk hydrate for the top-N nodes.
-func ReflectInfluence(ctx context.Context, gc *graphclient.GraphClient, limit int, profile *PersonalityProfile) ([]InfluenceReport, error) {
+func ReflectInfluence(ctx context.Context, gc Caller, limit int, profile *PersonalityProfile) ([]InfluenceReport, error) {
 	if limit <= 0 {
 		limit = 10
 	}
@@ -185,7 +184,7 @@ func ReflectInfluence(ctx context.Context, gc *graphclient.GraphClient, limit in
 // thought subgraph + ONE gc.Call("thoughts", {charges_for}) for
 // property derivation (T2-3 perf lock). NO per-thought wire calls
 // inside the pair loop.
-func ReflectTensions(ctx context.Context, gc *graphclient.GraphClient) ([]TensionReport, error) {
+func ReflectTensions(ctx context.Context, gc Caller) ([]TensionReport, error) {
 	nodeIDs, adj, err := fetchAdjacency(ctx, gc, "all", nil)
 	if err != nil {
 		return nil, err
@@ -245,7 +244,7 @@ func ReflectTensions(ctx context.Context, gc *graphclient.GraphClient) ([]Tensio
 // ALL cluster members before the per-cluster loop (T2-3 perf lock).
 // Bridge thoughts use the prebuilt adjacency map; per-bridge
 // hydration uses fetchNodesByIDs.
-func ReflectBlindSpots(ctx context.Context, gc *graphclient.GraphClient, clusters []ThoughtCluster, adj map[string][]string) []BlindSpotReport {
+func ReflectBlindSpots(ctx context.Context, gc Caller, clusters []ThoughtCluster, adj map[string][]string) []BlindSpotReport {
 	// Flatten members for one bulk fetch.
 	var allMembers []string
 	for _, c := range clusters {
@@ -304,7 +303,7 @@ func ReflectBlindSpots(ctx context.Context, gc *graphclient.GraphClient, cluster
 // Issues a small number of bulk wire calls — list-by-type for the
 // three node-type counters, ONE bulk fetchChargesFor, ONE bulk
 // fetchNodesByIDs for recent thought hydration.
-func ReflectSummary(ctx context.Context, gc *graphclient.GraphClient, clusters []ThoughtCluster) ThoughtGraphSummary {
+func ReflectSummary(ctx context.Context, gc Caller, clusters []ThoughtCluster) ThoughtGraphSummary {
 	var summary ThoughtGraphSummary
 	summary.ClusterCount = len(clusters)
 
@@ -353,7 +352,7 @@ func ReflectSummary(ctx context.Context, gc *graphclient.GraphClient, clusters [
 // mode through the Execute carrier seam: a type=thought browse whose nodes
 // carrier carries the full *knowledgev1.Node payloads, projected to IDs via
 // engine.DecodeNodes (no text-parse of a render envelope).
-func listAllThoughtIDs(ctx context.Context, gc *graphclient.GraphClient) ([]string, error) {
+func listAllThoughtIDs(ctx context.Context, gc Caller) ([]string, error) {
 	if gc == nil {
 		return nil, nil
 	}
@@ -367,7 +366,7 @@ func listAllThoughtIDs(ctx context.Context, gc *graphclient.GraphClient) ([]stri
 // countByType returns the count of nodes of a given type via the same Execute
 // carrier browse listAllThoughtIDs uses (engine.DecodeNodes). A nil gc / error
 // yields 0 (the reflective surface is best-effort).
-func countByType(ctx context.Context, gc *graphclient.GraphClient, nodeType string) int {
+func countByType(ctx context.Context, gc Caller, nodeType string) int {
 	if gc == nil {
 		return 0
 	}
@@ -382,7 +381,7 @@ func countByType(ctx context.Context, gc *graphclient.GraphClient, nodeType stri
 // the decoded *knowledgev1.Node IDs. Shared by listAllThoughtIDs + countByType.
 // limit:0 means "no cap" (the engine's unbounded browse), preserving the prior
 // large-page-size intent without a magic 100000.
-func browseNodeIDs(ctx context.Context, gc *graphclient.GraphClient, nodeType string) ([]string, error) {
+func browseNodeIDs(ctx context.Context, gc Caller, nodeType string) ([]string, error) {
 	raw, err := json.Marshal(queryArgs{Type: nodeType, Limit: 0})
 	if err != nil {
 		return nil, err

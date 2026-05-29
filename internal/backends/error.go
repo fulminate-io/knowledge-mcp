@@ -65,8 +65,7 @@ func (e *Error) Unwrap() error {
 // treats unknown failure modes as terminal so a single bad node never
 // burns infinite worker time. Mirrors llm.IsTransient.
 func IsTransient(err error) bool {
-	var be *Error
-	if errors.As(err, &be) {
+	if be, ok := errors.AsType[*Error](err); ok {
 		return be.Transient
 	}
 	return false

@@ -37,7 +37,7 @@ func handleSimulateClient(ctx context.Context, deps ClientDeps, params kgtools.C
 		return errorResult("invalid arguments: " + err.Error())
 	}
 
-	gc := deps.GraphClient()
+	gc := deps.GraphCaller()
 	if gc == nil {
 		return errorResult("simulate: graph client unavailable")
 	}

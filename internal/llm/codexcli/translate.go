@@ -32,6 +32,15 @@ import (
 //   - "--ephemeral" — don't persist the session to ~/.codex/sessions. The
 //     substrate's Generate is stateless; persistence would just litter the
 //     user's home dir with single-turn artifacts.
+//   - "--ignore-user-config" — skip ~/.codex/config.toml. The substrate
+//     never wants the user's MCP servers loaded (we don't surface codex
+//     tool calls in the Response shape, and a misconfigured MCP entry
+//     would silently slow every Generate). auth still resolves via
+//     $CODEX_HOME, which the substrate inherits.
+//   - "--ignore-rules" — skip .rules files in the cwd. Same reasoning as
+//     --ignore-user-config: per-project rules would only affect Generate
+//     calls in ways callers can't observe through the substrate's
+//     stateless interface.
 //
 // Trailing "-" is the prompt argument; codex reads stdin when the prompt is
 // "-", which is what our subprocess feeds it.
@@ -41,7 +50,41 @@ var baseArgs = []string{
 	"--skip-git-repo-check",
 	"--dangerously-bypass-approvals-and-sandbox",
 	"--ephemeral",
+	"--ignore-user-config",
+	"--ignore-rules",
 }
+
+// leanConfigOverrides are -c key=value pairs codex always honors via the
+// general TOML override mechanism. Disable the default-on tools the
+// substrate never invokes through (codex routes tool use through MCP
+// servers in user config, which we've already stripped via
+// --ignore-user-config) so they don't inflate the request's tool list and
+// reasoning-summary stream is suppressed (we don't surface ReasoningContent
+// in the Response).
+//
+// Note on image_gen: codex bundles an image_gen tool that the responses
+// API rejects under reasoning.effort="minimal" with "The following tools
+// cannot be used with reasoning.effort 'minimal': image_gen." Disabling
+// the documented `tools.image_gen` / `features.image_gen` keys does NOT
+// remove image_gen from the request — codex hard-codes it. "low" is the
+// practical floor for reasoning_effort.
+var leanConfigOverrides = []string{
+	`features.shell_tool=false`,
+	`features.unified_exec=false`,
+	`tools.view_image=false`,
+	`web_search="disabled"`,
+	`project_doc_max_bytes=0`,
+	`model_reasoning_summary="none"`,
+	`hide_agent_reasoning=true`,
+}
+
+// defaultReasoningEffort is the substrate's floor when the caller does
+// not pin ReasoningEffort. codex's per-model default leans medium for
+// frontier models and is wasteful for the substrate's schema-constrained
+// single-shot Generate path (summarizer, precheck). "low" is the
+// cheapest setting compatible with codex's hard-coded image_gen tool;
+// callers needing deeper reasoning supply WithReasoningEffort explicitly.
+const defaultReasoningEffort = "low"
 
 // systemPromptDelimiter separates the system prompt from the user prompt
 // when both are present. Codex has no `--system` flag (verified against
@@ -98,15 +141,16 @@ const systemPromptDelimiter = "\n\n----\n\n"
 //   - ReasoningEffort → -c model_reasoning_effort=<value>. Codex respects
 //     low/medium/high; an empty value falls through (drop, leaving codex
 //     default).
+//   - Tools → -c mcp_servers.knowledge.{command,args,enabled_tools} overrides.
+//     codex has no inline MCP-config flag (claude-cli's --mcp-config), so the
+//     dream-worker tool surface is injected as config: a stdio MCP server
+//     "knowledge" pointing back at this binary (the child runs with the
+//     fork-bomb guard via llm.ChildKnowledgeArgs). enabled_tools is the
+//     bare-name allowlist (codex scopes it to the server id). See
+//     buildMCPOverrides. --ignore-user-config in baseArgs means ONLY this
+//     injected server loads — the codex equivalent of claude's
+//     --strict-mcp-config.
 func buildArgs(model llm.Model, messages []*schema.Message, options *llm.RequestOptions) ([]string, string, func(), error) {
-	if len(options.Tools) > 0 {
-		return nil, "", nil, &llm.LLMError{
-			Transient: false,
-			Reason:    "tools_not_supported",
-			Cause:     fmt.Errorf("codex-cli does not support per-call tools (use the openai provider for tool-use, or configure MCP servers in ~/.codex/config.toml)"),
-		}
-	}
-
 	system, user, err := translateMessages(options.SystemPrompt, messages)
 	if err != nil {
 		return nil, "", nil, &llm.LLMError{
@@ -119,16 +163,35 @@ func buildArgs(model llm.Model, messages []*schema.Message, options *llm.Request
 	stdin := buildPromptBody(system, user)
 
 	args := append([]string{}, baseArgs...)
+	for _, kv := range leanConfigOverrides {
+		args = append(args, "-c", kv)
+	}
+
+	// Tool-use (dream worker) → inject the knowledge MCP server as config.
+	// The summarizer / precheck paths pass no tools and skip this entirely.
+	if len(options.Tools) > 0 {
+		mcpOverrides, err := buildMCPOverrides(options.Tools)
+		if err != nil {
+			return nil, "", nil, err
+		}
+		args = append(args, mcpOverrides...)
+	}
+
 	args = append(args, "-m", string(model))
 
-	if options.ReasoningEffort != "" {
-		// `-c key=value` accepts a TOML literal on the value side; for a
-		// bare identifier we pass it quoted so codex parses it as a string
-		// rather than a bare TOML token (low/medium/high are valid bare
-		// idents but explicit quoting keeps the contract robust if codex
-		// ever adds an effort variant that isn't a bare ident).
-		args = append(args, "-c", fmt.Sprintf("model_reasoning_effort=%q", options.ReasoningEffort))
+	// ReasoningEffort: explicit caller value wins; otherwise apply the
+	// substrate floor so codex's default-medium doesn't quietly inflate
+	// the bill on schema-constrained single-shot calls.
+	effort := options.ReasoningEffort
+	if effort == "" {
+		effort = defaultReasoningEffort
 	}
+	// `-c key=value` accepts a TOML literal on the value side; for a
+	// bare identifier we pass it quoted so codex parses it as a string
+	// rather than a bare TOML token (low/medium/high are valid bare
+	// idents but explicit quoting keeps the contract robust if codex
+	// ever adds an effort variant that isn't a bare ident).
+	args = append(args, "-c", fmt.Sprintf("model_reasoning_effort=%q", effort))
 
 	cleanup := func() {}
 	if options.ResponseFormat != nil && options.ResponseFormat.Type == "json_schema" && options.ResponseFormat.Schema != nil {
@@ -150,6 +213,53 @@ func buildArgs(model llm.Model, messages []*schema.Message, options *llm.Request
 	args = append(args, "-")
 
 	return args, stdin, cleanup, nil
+}
+
+// buildMCPOverrides returns the `-c` config-override flag pairs that register
+// the knowledge MCP server for a tool-using (dream-worker) Generate call.
+// codex has no inline MCP-config flag, so the server is injected as config:
+//
+//	mcp_servers.knowledge.command      = <this binary>
+//	mcp_servers.knowledge.args         = [<parent argv tail> + --no-worker-runtime]
+//	mcp_servers.knowledge.enabled_tools = [<bare tool names>]
+//
+// The child argv comes from llm.ChildKnowledgeArgs — the SOLE owner of the
+// fork-bomb guard, shared with claude-cli's buildMCPConfig. enabled_tools
+// carries BARE tool names (search, thoughts, …): codex scopes the allowlist
+// to the server id, unlike claude-cli's --allowedTools which needs the
+// mcp__knowledge__ qualifier.
+//
+// Encoding: the `-c value` side is parsed as TOML. A JSON array of strings is
+// also a valid TOML array of strings (both use the same double-quote +
+// backslash escape set for ASCII paths/flags), so json.Marshal is the
+// encoder for both array values; %q quotes the command path as a TOML basic
+// string. Mirrors the json.Marshal approach claude-cli uses for its whole
+// --mcp-config blob.
+func buildMCPOverrides(tools []*schema.ToolInfo) ([]string, error) {
+	self, err := os.Executable()
+	if err != nil {
+		return nil, &llm.LLMError{Transient: false, Reason: "config", Cause: fmt.Errorf("codex-cli: resolve self path: %w", err)}
+	}
+	argsJSON, err := json.Marshal(llm.ChildKnowledgeArgs(os.Args))
+	if err != nil {
+		return nil, &llm.LLMError{Transient: false, Reason: "config", Cause: fmt.Errorf("codex-cli: marshal mcp args: %w", err)}
+	}
+	names := make([]string, 0, len(tools))
+	for _, t := range tools {
+		if t == nil || t.Name == "" {
+			continue
+		}
+		names = append(names, t.Name)
+	}
+	namesJSON, err := json.Marshal(names)
+	if err != nil {
+		return nil, &llm.LLMError{Transient: false, Reason: "config", Cause: fmt.Errorf("codex-cli: marshal enabled_tools: %w", err)}
+	}
+	return []string{
+		"-c", fmt.Sprintf("mcp_servers.knowledge.command=%q", self),
+		"-c", "mcp_servers.knowledge.args=" + string(argsJSON),
+		"-c", "mcp_servers.knowledge.enabled_tools=" + string(namesJSON),
+	}, nil
 }
 
 // translateMessages collapses the substrate's message list into a single

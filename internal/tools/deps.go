@@ -97,7 +97,15 @@ type GraphCaller interface {
 //     dispatch. Returns nil only when the client was constructed without
 //     a GraphClient (degraded headless mode) — intercepts fail fast in
 //     that case rather than performing the backend write with no way to
-//     persist the local-graph mirror.
+//     persist the local-graph mirror. Post-FUL-323: returns the routed
+//     *graphclient.Router that dispatches per-call to local or cloud
+//     based on live auth state.
+//   - LocalGraphCaller: returns a GraphCaller that ALWAYS targets the
+//     local server (bypasses routing). The three callers that must read
+//     and write the local graph regardless of login state — sync push,
+//     post-collect linker, post-collect postpopulate — use this accessor.
+//     Returns nil only when no local server is wired (cloud-first user);
+//     those callers' existing nil-guards surface the degraded-mode error.
 //   - RepoResolver: client-side cwd → code-graph-name resolver used by
 //     the FUL-241 Phase 4 InjectRepoIfCodeGraph intercept. One resolver
 //     per MCP session; sync.Once inside the resolver gates the
@@ -116,5 +124,6 @@ type ClientDeps interface {
 	Embedder() embed.BinaryEmbedder
 	BackendResolver() BackendResolver
 	GraphCaller() GraphCaller
+	LocalGraphCaller() GraphCaller
 	RepoResolver() *RepoResolver
 }

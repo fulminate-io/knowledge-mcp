@@ -30,7 +30,7 @@ type SimulationResult struct {
 // SimulateRemoveCharge previews the impact of removing a charge without
 // committing. FUL-247 client-side: takes a graph client; bulk-fetches all
 // affected thought charges in one round-trip via chargeMapForThoughts.
-func SimulateRemoveCharge(ctx context.Context, gc *graphclient.GraphClient, chargeID string) (SimulationResult, error) {
+func SimulateRemoveCharge(ctx context.Context, gc Caller, chargeID string) (SimulationResult, error) {
 	if gc == nil {
 		return SimulationResult{}, errors.New("simulate: SimulateRemoveCharge: graph client unavailable")
 	}
@@ -77,7 +77,7 @@ func SimulateRemoveCharge(ctx context.Context, gc *graphclient.GraphClient, char
 // nodes + charges in two round-trips total (one outgoing-targets, one
 // fetchNodesByIDs, one chargeMapForThoughts over the thought-typed
 // subset).
-func SimulateInvalidateThought(ctx context.Context, gc *graphclient.GraphClient, thoughtID string) (SimulationResult, error) {
+func SimulateInvalidateThought(ctx context.Context, gc Caller, thoughtID string) (SimulationResult, error) {
 	if gc == nil {
 		return SimulationResult{}, errors.New("simulate: SimulateInvalidateThought: graph client unavailable")
 	}
@@ -130,7 +130,7 @@ func SimulateInvalidateThought(ctx context.Context, gc *graphclient.GraphClient,
 
 // SimulateAddCharge previews the impact of adding a hypothetical charge.
 // FUL-247 client-side: one fetchNode + one chargeMapForThoughts round-trip.
-func SimulateAddCharge(ctx context.Context, gc *graphclient.GraphClient, thoughtID, polarity string, weight float64) (SimulationResult, error) {
+func SimulateAddCharge(ctx context.Context, gc Caller, thoughtID, polarity string, weight float64) (SimulationResult, error) {
 	if gc == nil {
 		return SimulationResult{}, errors.New("simulate: SimulateAddCharge: graph client unavailable")
 	}
@@ -178,7 +178,7 @@ func SimulateAddCharge(ctx context.Context, gc *graphclient.GraphClient, thought
 // RunSimulation dispatches to the appropriate simulation based on action
 // type. Mirrors pkg/thought/simulate.go:151-162 with `gc` plumbed through
 // each branch.
-func RunSimulation(ctx context.Context, gc *graphclient.GraphClient, action, target, polarity string, weight float64) (SimulationResult, error) {
+func RunSimulation(ctx context.Context, gc Caller, action, target, polarity string, weight float64) (SimulationResult, error) {
 	switch action {
 	case "remove_charge":
 		return SimulateRemoveCharge(ctx, gc, target)

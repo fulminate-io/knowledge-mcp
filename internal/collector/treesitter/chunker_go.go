@@ -31,7 +31,7 @@ func findTypeIdentifier(node *sitter.Node, src []byte) string {
 	if node.Type() == "type_identifier" {
 		return node.Content(src)
 	}
-	for i := 0; i < int(node.ChildCount()); i++ {
+	for i := range int(node.ChildCount()) {
 		if result := findTypeIdentifier(node.Child(i), src); result != "" {
 			return result
 		}
@@ -54,7 +54,7 @@ func extractGoEmbeds(node *sitter.Node, src []byte) []string {
 	}
 
 	var embeds []string
-	for i := 0; i < int(fieldListNode.NamedChildCount()); i++ {
+	for i := range int(fieldListNode.NamedChildCount()) {
 		field := fieldListNode.NamedChild(i)
 		if field.Type() != "field_declaration" {
 			continue
@@ -106,7 +106,7 @@ func findNodeByType(node *sitter.Node, nodeType string) *sitter.Node {
 	if node.Type() == nodeType {
 		return node
 	}
-	for i := 0; i < int(node.ChildCount()); i++ {
+	for i := range int(node.ChildCount()) {
 		if result := findNodeByType(node.Child(i), nodeType); result != nil {
 			return result
 		}

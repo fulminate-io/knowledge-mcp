@@ -46,7 +46,8 @@ func (d *repoTestDeps) GraphCaller() GraphCaller {
 	}
 	return d.gc
 }
-func (d *repoTestDeps) RepoResolver() *RepoResolver { return d.resolver }
+func (d *repoTestDeps) LocalGraphCaller() GraphCaller { return d.gc }
+func (d *repoTestDeps) RepoResolver() *RepoResolver   { return d.resolver }
 
 // buildResolver returns a RepoResolver pre-loaded with the given graph
 // names. listGraphsCaller backs the resolver; the first ResolveCwd call

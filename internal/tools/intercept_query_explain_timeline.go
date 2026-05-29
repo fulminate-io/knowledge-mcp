@@ -59,7 +59,7 @@ func InterceptQueryExplainTimeline(deps ClientDeps, params kgtools.CallToolParam
 	if a.Mode != "explain" && a.Mode != "timeline" {
 		return false, kgtools.ToolResult{}
 	}
-	gc := deps.GraphClient()
+	gc := deps.GraphCaller()
 	if gc == nil {
 		return true, errorResult(a.Mode + ": graph client unavailable")
 	}

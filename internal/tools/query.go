@@ -54,11 +54,14 @@ func InterceptQuery(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtoo
 	if !didEmbed {
 		return false, kgtools.ToolResult{}
 	}
-	gc := deps.GraphClient()
-	if !gc.Healthy() {
+	gc := deps.GraphCaller()
+	if gc == nil {
 		return true, errorResult("server unreachable; start it with `knowledge-server`")
 	}
 	// Route the tail through the compile-or-DENY dispatcher: a reducible query
+	// — the Router translates an empty-backend dispatch into ErrNoBackend, which
+	// renderEngineError surfaces as an actionable install-or-login message, so
+	// the pre-flight Healthy() probe (always-local pre-FUL-323) is unnecessary.
 	// compiles to Engine.Execute; an unrecognized shape is denied legibly (there is
 	// no wire fallback). The query-domain + query-rendering intercepts already claim
 	// every specialized query mode upstream in the chain,

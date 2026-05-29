@@ -171,6 +171,7 @@ Plan-level defects where revision is cheaper than shipping:
 - `wont_do` status used for work that's actually needed
 - Feature-flag-hidden partial implementations
 - Fabricated `file:line:symbol` citations
+- **Citation laundered through a docstring** — plan cites a file/type/symbol that exists only in another file's prose (docstring, README, code comment). When you see a citation, `ls` / `Read` the cited path. Stale docstrings rot — `MemoryStore in storage_memory.go` was a docstring promise of a file that never existed; the planner repeated the promise verbatim. Treat all prose references as hypotheses requiring file-system verification.
 - Evidence of internal rule violation even if plan text looks clean
 
 ### Tier 2 — HIGH-SEVERITY (blocks /implement until revised or user-overridden)

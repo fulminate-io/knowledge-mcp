@@ -59,7 +59,7 @@ func wirePipelineRuntime(c *client, f Config) error {
 		Tick:               f.PipelineTick,
 	}
 
-	p := pipeline.New(pcfg, c.client, adaptSummarizer(sum), adaptEmbedder(emb))
+	p := pipeline.New(pcfg, c.local, adaptSummarizer(sum), adaptEmbedder(emb))
 	c.pipeline = p
 	if err := p.Start(ctx); err != nil {
 		return err

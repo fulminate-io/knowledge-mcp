@@ -96,7 +96,7 @@ func rubyEnclosingClassSuperclass(node *sitter.Node, src []byte) string {
 		}
 		// Fallback: scan named children for a "superclass" type node, in case
 		// a future tree-sitter-ruby release stops emitting the field name.
-		for i := 0; i < int(p.NamedChildCount()); i++ {
+		for i := range int(p.NamedChildCount()) {
 			c := p.NamedChild(i)
 			if c.Type() == "superclass" {
 				return c.Content(src)

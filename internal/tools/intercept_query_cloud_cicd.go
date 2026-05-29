@@ -82,7 +82,7 @@ func InterceptQueryCloudCICD(deps ClientDeps, params kgtools.CallToolParams) (bo
 	default:
 		return false, kgtools.ToolResult{}
 	}
-	gc := deps.GraphClient()
+	gc := deps.GraphCaller()
 	if gc == nil {
 		return true, errorResult(a.Graph + ": graph client unavailable")
 	}
@@ -104,7 +104,11 @@ func InterceptQueryCloudCICD(deps ClientDeps, params kgtools.CallToolParams) (bo
 
 	// (2) mode=stats.
 	if a.Mode == "stats" {
-		return true, resourceStats(ctx, gc, kind, a)
+		sc, ok := gc.(statsRPC)
+		if !ok {
+			return true, errorResult(a.Graph + " stats: stats seam unavailable")
+		}
+		return true, resourceStats(ctx, sc, kind, a)
 	}
 
 	// (4) browse (optionally resource_type-prefixed).
@@ -123,11 +127,15 @@ func listResourceGraphs(ctx context.Context, deps ClientDeps, kind resourceGraph
 	if len(names) == 0 {
 		return textResult(kind.collectHint)
 	}
-	gc := deps.GraphClient()
+	gc := deps.GraphCaller()
+	sc, ok := gc.(statsRPC)
+	if !ok {
+		return errorResult(kind.graph + " list-graphs: stats seam unavailable")
+	}
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "%s graphs (%d):\n\n", kind.listLabel, len(names))
 	for _, name := range names {
-		nodes, edges := graphCounts(ctx, gc, kind.graph, name)
+		nodes, edges := graphCounts(ctx, sc, kind.graph, name)
 		fmt.Fprintf(&sb, "- **%s** — %d nodes, %d edges\n", name, nodes, edges)
 	}
 	sb.WriteString(kind.browseHint)

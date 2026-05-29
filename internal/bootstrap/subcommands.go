@@ -42,6 +42,8 @@ func RunSubcommand() (handled bool, exitCode int) {
 		err = runStop(rest)
 	case "status":
 		err = runStatus(rest)
+	case "install":
+		err = runInstall(rest)
 	case "install-claude-assets":
 		err = runInstallClaudeAssets(rest)
 	case "doctor":

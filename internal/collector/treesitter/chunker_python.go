@@ -40,7 +40,7 @@ func extractPythonDecoratorNames(declNode *sitter.Node, src []byte) []string {
 		return nil
 	}
 	var out []string
-	for i := 0; i < int(declNode.NamedChildCount()); i++ {
+	for i := range int(declNode.NamedChildCount()) {
 		child := declNode.NamedChild(i)
 		if child.Type() != "decorator" {
 			continue
@@ -59,7 +59,7 @@ func pythonInnerDef(declNode *sitter.Node) *sitter.Node {
 	if declNode == nil || declNode.Type() != "decorated_definition" {
 		return nil
 	}
-	for i := 0; i < int(declNode.NamedChildCount()); i++ {
+	for i := range int(declNode.NamedChildCount()) {
 		child := declNode.NamedChild(i)
 		switch child.Type() {
 		case "function_definition", "class_definition":

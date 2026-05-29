@@ -158,7 +158,7 @@ func interceptQueryReflect(deps ClientDeps, params kgtools.CallToolParams) (bool
 		if a.ID == "" {
 			return false, kgtools.ToolResult{}
 		}
-		gc := deps.GraphClient()
+		gc := deps.GraphCaller()
 		if gc == nil {
 			return false, kgtools.ToolResult{}
 		}
@@ -245,7 +245,7 @@ func marshalOrEmpty(data any) json.RawMessage {
 // handlePropagateClient runs DeGroot propagation client-side. Returns a
 // rendered summary line matching the pre-BCN4 server-side output shape.
 func handlePropagateClient(ctx context.Context, deps ClientDeps) kgtools.ToolResult {
-	gc := deps.GraphClient()
+	gc := deps.GraphCaller()
 	if gc == nil {
 		return errorResult("propagate: graph client unavailable")
 	}
@@ -261,7 +261,7 @@ func handlePropagateClient(ctx context.Context, deps ClientDeps) kgtools.ToolRes
 // clusters or profile state. Returns empty values + a logged warning on
 // failure so the format helpers can still render an "empty" report.
 func fetchClusterContext(ctx context.Context, deps ClientDeps) ([]clientthought.ThoughtCluster, *clientthought.PersonalityProfile) {
-	gc := deps.GraphClient()
+	gc := deps.GraphCaller()
 	if gc == nil {
 		return nil, nil
 	}

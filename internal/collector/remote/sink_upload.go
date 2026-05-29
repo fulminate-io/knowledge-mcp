@@ -121,8 +121,7 @@ func isStreamEOF(err error) bool {
 	}
 	// Connect wraps io.EOF in a connect.Error with CodeUnknown; check for
 	// that by unwrapping.
-	var ce *connect.Error
-	if errors.As(err, &ce) {
+	if ce, ok := errors.AsType[*connect.Error](err); ok {
 		if ce.Unwrap() == io.EOF {
 			return true
 		}

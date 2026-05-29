@@ -137,7 +137,7 @@ func writeTopTemplatesSection(sb *strings.Builder, ranked []rankedTemplate, topN
 		"Score = count × (1 + log(1 + correlations)) × severity_weight × recency_decay.\n\n")
 	sb.WriteString("| score | template | count | corr | severity | last seen |\n")
 	sb.WriteString("|---|---|---|---|---|---|\n")
-	for i := 0; i < topN; i++ {
+	for i := range topN {
 		writeRankedTemplateRow(sb, ranked[i])
 	}
 	sb.WriteString("\n")

@@ -205,8 +205,7 @@ func handleSummarizerError(ctx context.Context, p *Pipeline, key graphKey, items
 	}
 
 	reason := err.Error()
-	var llmErr *llm.LLMError
-	if errors.As(err, &llmErr) {
+	if llmErr, ok := errors.AsType[*llm.LLMError](err); ok {
 		reason = llmErr.Error()
 	}
 

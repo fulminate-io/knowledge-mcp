@@ -95,7 +95,11 @@ func buildArgs(model llm.Model, messages []*schema.Message, opts *llm.RequestOpt
 		// No tool-use (e.g. the summarizer): pin an empty, strict MCP config so
 		// the CLI loads NONE of the user's configured MCP servers. We never use
 		// them on this path, and spawning each per call wastes startup time.
-		args = append(args, "--strict-mcp-config", "--mcp-config", "{}")
+		// claude CLI validates the config shape and rejects a bare "{}" with
+		// `mcpServers: Invalid input: expected record, received undefined`, so
+		// the empty config must still carry the mcpServers key with an empty
+		// record value.
+		args = append(args, "--strict-mcp-config", "--mcp-config", `{"mcpServers":{}}`)
 	}
 
 	return args, prompt, nil
@@ -124,7 +128,7 @@ func buildMCPConfig(tools []*schema.ToolInfo) (string, string, error) {
 	if err != nil {
 		return "", "", &llm.LLMError{Transient: false, Reason: "config", Cause: fmt.Errorf("claude-cli: resolve self path: %w", err)}
 	}
-	args := childArgs(os.Args)
+	args := llm.ChildKnowledgeArgs(os.Args)
 	cfg := map[string]any{
 		"mcpServers": map[string]any{
 			"knowledge": map[string]any{
@@ -145,26 +149,6 @@ func buildMCPConfig(tools []*schema.ToolInfo) (string, string, error) {
 		names = append(names, "mcp__knowledge__"+t.Name)
 	}
 	return string(raw), strings.Join(names, ","), nil
-}
-
-// childArgs returns the argv tail (os.Args[1:]) with --no-worker-runtime
-// guaranteed to be present (deduped). The child knowledge process must NOT
-// wire the dream Runner; otherwise a worker triggered there would spawn
-// another claude-cli with another --mcp-config pointing at another child …
-// the recursion guard is the cmd/knowledge --no-worker-runtime flag, which
-// short-circuits both runWorkerSubcommand and wireWorkerRuntime.
-func childArgs(parentArgs []string) []string {
-	const flagName = "--no-worker-runtime"
-	out := make([]string, 0, len(parentArgs))
-	if len(parentArgs) > 0 {
-		out = append(out, parentArgs[1:]...)
-	}
-	for _, a := range out {
-		if a == flagName || a == "-no-worker-runtime" {
-			return out
-		}
-	}
-	return append(out, flagName)
 }
 
 // extractPrompt walks messages and pulls out (at most) one system + exactly

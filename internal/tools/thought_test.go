@@ -41,6 +41,7 @@ func (thoughtTestDeps) WorkerCRUD() WorkerCRUDAPI             { return nil }
 func (thoughtTestDeps) Embedder() embed.BinaryEmbedder        { return nil }
 func (thoughtTestDeps) BackendResolver() BackendResolver      { return nil }
 func (thoughtTestDeps) GraphCaller() GraphCaller              { return nil }
+func (thoughtTestDeps) LocalGraphCaller() GraphCaller         { return nil }
 func (thoughtTestDeps) RepoResolver() *RepoResolver           { return nil }
 
 // TestInterceptThoughts_NameFiltering pins that non-thoughts /

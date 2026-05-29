@@ -124,7 +124,10 @@ func handleAstMatch(ctx context.Context, deps ClientDeps, a astArgs) kgtools.Too
 		return errorResult("match: " + merr.Error())
 	}
 
-	results, herr := ast.Hydrate(ctx, graphClientHydratorBackend{gc: deps.GraphClient(), repo: a.Repo}, raws, walk)
+	// nil GraphCaller is tolerated — the hydrator's b.gc == nil branch returns
+	// empty hydration without error, matching the pre-FUL-323 behavior where
+	// the bare GraphClient could legitimately be nil in test harnesses.
+	results, herr := ast.Hydrate(ctx, graphClientHydratorBackend{gc: deps.GraphCaller(), repo: a.Repo}, raws, walk)
 	if herr != nil {
 		return errorResult("hydrate: " + herr.Error())
 	}

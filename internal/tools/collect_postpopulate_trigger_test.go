@@ -60,6 +60,7 @@ func (d *ppTriggerDeps) WorkerCRUD() WorkerCRUDAPI             { return nil }
 func (d *ppTriggerDeps) Embedder() embed.BinaryEmbedder        { return nil }
 func (d *ppTriggerDeps) BackendResolver() BackendResolver      { return nil }
 func (d *ppTriggerDeps) GraphCaller() GraphCaller              { return d.gc }
+func (d *ppTriggerDeps) LocalGraphCaller() GraphCaller         { return d.gc }
 func (d *ppTriggerDeps) RepoResolver() *RepoResolver           { return nil }
 
 // TestInterceptCollect_FiresPostPopulateHookOnLivePath proves the FUL-288 Phase 1

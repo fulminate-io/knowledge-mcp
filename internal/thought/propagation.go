@@ -10,7 +10,6 @@ import (
 	"math"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
-	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
@@ -51,7 +50,7 @@ const (
 // fanout + ONE gc.Call("thoughts", {operation:"charges_for"}) for
 // self-trust derivation. fillSparseRows operates entirely from those
 // two prebuilt maps.
-func BuildTrustMatrix(ctx context.Context, gc *graphclient.GraphClient, thoughtIDs []string) (TrustMatrix, error) {
+func BuildTrustMatrix(ctx context.Context, gc Caller, thoughtIDs []string) (TrustMatrix, error) {
 	n := len(thoughtIDs)
 	if n == 0 {
 		return TrustMatrix{}, nil
@@ -307,7 +306,7 @@ func findConnectedComponents(thoughtIDs []string, adj map[string][]string) [][]s
 // chargeMap subset. Writeback is a SINGLE
 // gc.Call("mutate", {operation:"bulk_update_metadata"}) at the end —
 // O(1) RPCs regardless of N.
-func RunPropagation(ctx context.Context, gc *graphclient.GraphClient, profile *PersonalityProfile, nodeByID map[string]*knowledgev1.Node) (PropagationResult, error) {
+func RunPropagation(ctx context.Context, gc Caller, profile *PersonalityProfile, nodeByID map[string]*knowledgev1.Node) (PropagationResult, error) {
 	nodeIDs, adj, err := fetchAdjacency(ctx, gc, "all", nil)
 	if err != nil {
 		return PropagationResult{}, fmt.Errorf("thought: RunPropagation: adjacency: %w", err)
@@ -408,7 +407,7 @@ func buildComponentMatrix(component []string, adj map[string][]string, chargeMap
 // bulkPersistMetadata wraps the mutate(bulk_update_metadata) write, routed
 // through the Execute carrier seam (executeViaEngine → MUTATION_KIND_UPDATE_ITEMS).
 // Empty updates short-circuits; failures are logged-and-dropped.
-func bulkPersistMetadata(ctx context.Context, gc *graphclient.GraphClient, updates []map[string]any) {
+func bulkPersistMetadata(ctx context.Context, gc Caller, updates []map[string]any) {
 	if gc == nil || len(updates) == 0 {
 		return
 	}

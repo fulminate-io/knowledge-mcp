@@ -65,9 +65,9 @@ type ServerBinaryNotFoundError struct {
 
 func (e *ServerBinaryNotFoundError) Error() string {
 	if e.ExecutableErr != nil {
-		return fmt.Sprintf("knowledge-server not found: os.Executable failed (%v) and $PATH lookup failed (%v)", e.ExecutableErr, e.LookPathErr)
+		return fmt.Sprintf("knowledge-server not found: os.Executable failed (%v) and $PATH lookup failed (%v); run `knowledge install` to download it", e.ExecutableErr, e.LookPathErr)
 	}
-	return fmt.Sprintf("knowledge-server not found in same directory as stdio binary (%s) or in $PATH (%v)", e.SearchedDir, e.LookPathErr)
+	return fmt.Sprintf("knowledge-server not found in same directory as stdio binary (%s) or in $PATH (%v); run `knowledge install` to download it", e.SearchedDir, e.LookPathErr)
 }
 
 // getExecutable is a stubbable alias for os.Executable. Tests override
@@ -109,6 +109,16 @@ func findServerBinary() (string, error) {
 		ExecutableErr: exeErr,
 		LookPathErr:   lpErr,
 	}
+}
+
+// serverBinaryInstalled reports whether findServerBinary can resolve the
+// knowledge-server executable (sibling or $PATH). The boolean is all the
+// doctor server-down hint needs to distinguish "not installed" (suggest
+// `knowledge install`) from "installed but not running" (suggest
+// `knowledge start`).
+func serverBinaryInstalled() bool {
+	_, err := findServerBinary()
+	return err == nil
 }
 
 // lookupSibling tries to resolve binName next to the given executable

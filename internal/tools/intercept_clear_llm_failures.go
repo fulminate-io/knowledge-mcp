@@ -5,6 +5,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"log/slog"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
@@ -78,7 +79,12 @@ func handleClientClearLLMFailures(ctx context.Context, deps ClientDeps, a manage
 		if cerr != nil {
 			// Per-graph failures do not abort the sweep — operator usually wants
 			// partial results when one graph is unrecoverable (parity with the
-			// server's continue-on-per-graph-error loop).
+			// server's continue-on-per-graph-error loop). Surface the error via
+			// slog so a misrouted GraphSelector or other systemic issue can't hide
+			// behind a "0 found" summary the way a clearTarget bug did before
+			// the field-discriminant fix.
+			slog.Warn("manage(clear_llm_failures): per-graph clear failed",
+				"graph_type", tgt.graphType, "name", tgt.name, "error", cerr)
 			continue
 		}
 		totalSummaryCleared += sum
@@ -184,8 +190,12 @@ func execClearMarkerUpdate(ctx context.Context, ex render.Executor, tgt clearLLM
 // clearTarget builds the GraphSelector for one clear target. The knowledge
 // root graph (empty graphType, or graph==knowledge with the root name) maps to a
 // nil selector — the engine treats an absent/empty graph as the knowledge root
-// (parity with the server's empty-graph default). Practice routes the name via
-// Language; every other graph via Name (mirrors graphTarget in render).
+// (parity with the server's empty-graph default). Other graph types each carry
+// their name discriminant on a TYPE-SPECIFIC GraphSelector field (Repo for code,
+// Account for cloud/cicd, Language for practice, Name for logs/web/pdf/transformers
+// and the knowledge root). The server-side resolver enforces the right field per
+// graph type and rejects a sel.Name on a code graph with "graph=code requires
+// repo: graph selector invalid", so the discriminant choice here is load-bearing.
 func clearTarget(tgt clearLLMFailureTarget) *knowledgev1.GraphSelector {
 	if tgt.graphType == "" || tgt.graphType == string(kgtypes.GraphKnowledge) {
 		if isKnowledgeRootName(tgt.name) {
@@ -194,9 +204,14 @@ func clearTarget(tgt clearLLMFailureTarget) *knowledgev1.GraphSelector {
 		return &knowledgev1.GraphSelector{Graph: tgt.graphType, Name: tgt.name}
 	}
 	sel := &knowledgev1.GraphSelector{Graph: tgt.graphType}
-	if tgt.graphType == string(kgtypes.GraphPractice) {
+	switch tgt.graphType {
+	case string(kgtypes.GraphCode):
+		sel.Repo = tgt.name
+	case string(kgtypes.GraphCloud), string(kgtypes.GraphCICD):
+		sel.Account = tgt.name
+	case string(kgtypes.GraphPractice):
 		sel.Language = tgt.name
-	} else {
+	default:
 		sel.Name = tgt.name
 	}
 	return sel

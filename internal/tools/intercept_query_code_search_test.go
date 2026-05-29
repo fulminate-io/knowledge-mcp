@@ -44,7 +44,7 @@ func TestInterceptQueryCodeSearch(t *testing.T) {
 				{Score: 0.9, Node: &knowledgev1.Node{Id: "f.go:Foo", SymbolName: "Foo", Type: "function", FilePath: "f.go", StartLine: 1}},
 			},
 		}}
-		res := composeCodeSearchSingleRepo(context.Background(), f.exec,
+		res := composeCodeSearchSingleRepo(context.Background(), nil, f.exec,
 			codeSearchArgs{Graph: "code", Repo: "knowledge", Text: "foo"}, []string{"foo"}, 10, true, false)
 		require.False(t, res.IsError, textBodyTools(res))
 		body := textBodyTools(res)
@@ -61,7 +61,7 @@ func TestInterceptQueryCodeSearch(t *testing.T) {
 				{Score: 0.8, Node: &knowledgev1.Node{Id: "fn", Type: "function", SymbolName: "Fn", FilePath: "a.go"}},
 			},
 		}}
-		res := composeCodeSearchSingleRepo(context.Background(), f.exec,
+		res := composeCodeSearchSingleRepo(context.Background(), nil, f.exec,
 			codeSearchArgs{Graph: "code", Repo: "r", Text: "x"}, []string{"x"}, 10, true, false)
 		body := textBodyTools(res)
 		assert.Contains(t, body, "Found 1 results")
@@ -76,7 +76,7 @@ func TestInterceptQueryCodeSearch(t *testing.T) {
 				{Score: 0.8, Node: &knowledgev1.Node{Id: "b", SymbolName: "B", Type: "function", FilePath: "a.go", StartLine: 7, EndLine: 9}},
 			},
 		}}
-		res := composeCodeSearchSingleRepo(context.Background(), f.exec,
+		res := composeCodeSearchSingleRepo(context.Background(), nil, f.exec,
 			codeSearchArgs{Graph: "code", Repo: "r", Text: "x"}, []string{"x"}, 10, true, true)
 		body := textBodyTools(res)
 		assert.Contains(t, body, "### a.go (2 symbols)")

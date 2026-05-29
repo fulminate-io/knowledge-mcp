@@ -133,8 +133,9 @@ func TestBuildArgs_HappyPath_Defaults(t *testing.T) {
 			mcpVal = args[i+1]
 		}
 	}
-	if mcpVal != "{}" {
-		t.Errorf("no-tools --mcp-config = %q, want %q; args: %s", mcpVal, "{}", strings.Join(args, " "))
+	const wantMCP = `{"mcpServers":{}}`
+	if mcpVal != wantMCP {
+		t.Errorf("no-tools --mcp-config = %q, want %q; args: %s", mcpVal, wantMCP, strings.Join(args, " "))
 	}
 	got := strings.Join(args, " ")
 	for i := range wantContains {

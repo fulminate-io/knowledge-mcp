@@ -110,11 +110,15 @@ func formatBytes(b int64) string {
 // emits. The logs graph is the real persisted graph (Graph:"logs", Name:queryID);
 // the pre-fetched *logState is no longer needed for the counts.
 func (h *Handler) handleLogsStats(ctx context.Context, queryID string, _ *logState, _ bool) kgtools.ToolResult {
-	gc := h.Deps.GraphClient()
+	gc := h.graphCaller()
 	if gc == nil {
 		return kgtools.ErrorResult("logs stats: graph client unavailable")
 	}
-	resp, err := gc.Stats(ctx, &knowledgev1.StatsRequest{
+	sc, ok := gc.(statsRPC)
+	if !ok {
+		return kgtools.ErrorResult("logs stats: stats seam unavailable")
+	}
+	resp, err := sc.Stats(ctx, &knowledgev1.StatsRequest{
 		Target: &knowledgev1.GraphSelector{Graph: "logs", Name: queryID},
 	})
 	if err != nil {

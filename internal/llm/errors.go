@@ -63,8 +63,7 @@ func (e *LLMError) Unwrap() error {
 // treat unknown failure modes as terminal so a single bad request never
 // burns infinite worker time.
 func IsTransient(err error) bool {
-	var le *LLMError
-	if errors.As(err, &le) {
+	if le, ok := errors.AsType[*LLMError](err); ok {
 		return le.Transient
 	}
 	return false

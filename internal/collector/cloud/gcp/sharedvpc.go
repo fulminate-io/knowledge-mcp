@@ -80,8 +80,7 @@ func isXpnNotApplicable(err error) bool {
 	if err == nil {
 		return false
 	}
-	var apiErr *googleapi.Error
-	if errors.As(err, &apiErr) {
+	if apiErr, ok := errors.AsType[*googleapi.Error](err); ok {
 		return apiErr.Code == http.StatusBadRequest ||
 			apiErr.Code == http.StatusForbidden
 	}

@@ -115,13 +115,15 @@ func pushGraph(
 	return textResult(fmt.Sprintf("pushed %s/%s (%d bytes)", graph, name, len(body)))
 }
 
-// exporterSeam upgrades deps.GraphCaller() to the Exporter seam, or returns a
-// typed error so the missing seam is loud (degraded headless mode). Mirrors
-// manageIndexer.
+// exporterSeam upgrades deps.LocalGraphCaller() to the Exporter seam, or
+// returns a typed error so the missing seam is loud (degraded headless mode).
+// Sync push reads bytes from the LOCAL graph (the destination is cloud via
+// the auth.Transport), so the routing-aware GraphCaller would be wrong here —
+// the source must always be local. Mirrors manageIndexer in shape.
 func exporterSeam(deps ClientDeps) (Exporter, error) {
-	gc := deps.GraphCaller()
+	gc := deps.LocalGraphCaller()
 	if gc == nil {
-		return nil, fmt.Errorf("GraphCaller is unavailable — the client is running in degraded mode")
+		return nil, fmt.Errorf("local graph caller unavailable — no local server is wired (cloud-first user without `knowledge install`)")
 	}
 	exp, ok := gc.(Exporter)
 	if !ok {
@@ -141,8 +143,7 @@ func wrapPushErr(graph, name string, err error) string {
 		return fmt.Sprintf("sync push %s/%s: not logged in — run 'knowledge login' to authenticate",
 			graph, name)
 	}
-	var se *auth.SyncHTTPError
-	if errors.As(err, &se) {
+	if se, ok := errors.AsType[*auth.SyncHTTPError](err); ok {
 		switch se.StatusCode {
 		case http.StatusUnauthorized:
 			return fmt.Sprintf("sync push %s/%s: authentication failed — run 'knowledge login' to refresh credentials (HTTP 401)",

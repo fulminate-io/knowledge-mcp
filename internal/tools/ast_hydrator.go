@@ -6,7 +6,6 @@ import (
 	"context"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
-	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 )
 
 // graphClientHydratorBackend implements ast.HydratorBackend by issuing a
@@ -19,8 +18,13 @@ import (
 // repo from the trigger payload) and passes it to ast.Hydrate. Hydrate
 // extracts unique file paths from the raw match set and feeds them in via the
 // files arg.
+//
+// The gc field is the narrow Execute-only GraphCaller interface (post-FUL-323)
+// so the hydrator routes per-call to local or cloud via the same Router every
+// other tool consumes. Narrowing from *graphclient.GraphClient also prevents
+// callers from re-introducing the concrete-type dependency.
 type graphClientHydratorBackend struct {
-	gc   *graphclient.GraphClient
+	gc   GraphCaller
 	repo string
 }
 

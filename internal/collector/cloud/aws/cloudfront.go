@@ -135,7 +135,7 @@ func resolveOriginTarget(domain string) string {
 
 	// S3 bucket origin: <bucket>.s3.amazonaws.com or <bucket>.s3.<region>.amazonaws.com
 	if strings.Contains(domain, ".s3.") || strings.HasSuffix(domain, ".s3.amazonaws.com") {
-		bucket := strings.Split(domain, ".s3")[0]
+		bucket, _, _ := strings.Cut(domain, ".s3")
 		return fmt.Sprintf("arn:aws:s3:::%s", bucket)
 	}
 

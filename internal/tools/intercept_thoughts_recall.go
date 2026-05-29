@@ -78,7 +78,7 @@ func handleRecallClient(ctx context.Context, deps ClientDeps, params kgtools.Cal
 		return handleRecallClusters(ctx, deps, a.AllTypes, a.Format)
 	}
 
-	gc := deps.GraphClient()
+	gc := deps.GraphCaller()
 	if gc == nil {
 		return errorResult("recall: graph client unavailable")
 	}

@@ -170,8 +170,7 @@ func printUnifiedDiff(existingPath string, embedded []byte) error {
 		// diff exits non-zero when files differ — that's the SIGNAL,
 		// not a failure. Only a real exec error (binary missing)
 		// matters here.
-		var exitErr *exec.ExitError
-		if errors.As(err, &exitErr) {
+		if _, ok := errors.AsType[*exec.ExitError](err); ok {
 			return nil
 		}
 		return fmt.Errorf("exec diff: %w", err)

@@ -115,8 +115,9 @@ func (d interceptTestDeps) Embedder() embed.BinaryEmbedder        { return nil }
 func (d interceptTestDeps) BackendResolver() BackendResolver {
 	return fakeResolver{def: d.backend, byName: d.byName}
 }
-func (d interceptTestDeps) GraphCaller() GraphCaller    { return d.gc }
-func (d interceptTestDeps) RepoResolver() *RepoResolver { return nil }
+func (d interceptTestDeps) GraphCaller() GraphCaller      { return d.gc }
+func (d interceptTestDeps) LocalGraphCaller() GraphCaller { return d.gc }
+func (d interceptTestDeps) RepoResolver() *RepoResolver   { return nil }
 
 func TestInterceptCreateProject_NoBackend_ClaimsLocalOnly(t *testing.T) {
 	// FUL-246 Phase 3a: no-backend path is now claimed client-side.

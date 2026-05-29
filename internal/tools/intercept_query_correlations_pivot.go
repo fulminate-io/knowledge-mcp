@@ -45,7 +45,7 @@ func InterceptQueryCorrelationsPivot(deps ClientDeps, params kgtools.CallToolPar
 	if a.Mode != "correlations" && a.Mode != "pivot" {
 		return false, kgtools.ToolResult{}
 	}
-	gc := deps.GraphClient()
+	gc := deps.GraphCaller()
 	if gc == nil {
 		return true, errorResult(a.Mode + ": graph client unavailable")
 	}

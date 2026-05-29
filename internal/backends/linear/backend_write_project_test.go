@@ -225,8 +225,7 @@ func TestUpdateProject_Status_PreservesUnauthorized(t *testing.T) {
 	if !errors.Is(err, ErrUnauthorized) {
 		t.Errorf("errors.Is(err, ErrUnauthorized) = false, want true (auth must propagate). err = %v", err)
 	}
-	var u *ErrUnknownState
-	if errors.As(err, &u) {
+	if _, ok := errors.AsType[*ErrUnknownState](err); ok {
 		t.Errorf("err = %v misclassified as *ErrUnknownState — audit-blocking regression!", err)
 	}
 	// T4 Phase 0 retrofit: same error surfaces as typed *backends.Error.
@@ -258,8 +257,7 @@ func TestUpdateProject_Status_5xxNotMisclassified(t *testing.T) {
 	if !strings.Contains(err.Error(), "503") {
 		t.Errorf("err = %v, want wrapped error containing 503", err)
 	}
-	var u *ErrUnknownState
-	if errors.As(err, &u) {
+	if _, ok := errors.AsType[*ErrUnknownState](err); ok {
 		t.Errorf("err = %v misclassified as *ErrUnknownState", err)
 	}
 }
@@ -279,8 +277,7 @@ func TestUpdateProject_Status_TransportErrorNotMisclassified(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected transport error, got nil")
 	}
-	var u *ErrUnknownState
-	if errors.As(err, &u) {
+	if _, ok := errors.AsType[*ErrUnknownState](err); ok {
 		t.Errorf("err = %v misclassified as *ErrUnknownState", err)
 	}
 }

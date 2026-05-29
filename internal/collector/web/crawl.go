@@ -54,7 +54,7 @@ func crawl(
 	}
 
 	var wg sync.WaitGroup
-	for i := 0; i < workers; i++ {
+	for range workers {
 		wg.Go(func() {
 			defer func() {
 				if r := recover(); r != nil {

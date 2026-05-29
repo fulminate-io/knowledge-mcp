@@ -155,6 +155,30 @@ func TestFindServerBinary_ExecutableErr(t *testing.T) {
 	}
 }
 
+func TestServerBinaryNotFoundError_RecoveryMessage_NamesInstall(t *testing.T) {
+	cases := []struct {
+		name string
+		err  *ServerBinaryNotFoundError
+	}{
+		{
+			name: "executable-err branch",
+			err:  &ServerBinaryNotFoundError{ExecutableErr: errors.New("simulated"), LookPathErr: errors.New("not in $PATH")},
+		},
+		{
+			name: "searched-dir branch",
+			err:  &ServerBinaryNotFoundError{SearchedDir: "/tmp/foo", LookPathErr: errors.New("not in $PATH")},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			msg := tc.err.Error()
+			if !strings.Contains(msg, "knowledge install") {
+				t.Fatalf("error message %q must name `knowledge install`", msg)
+			}
+		})
+	}
+}
+
 func TestWaitForServer_Healthy(t *testing.T) {
 	port := pickFreePort(t)
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))

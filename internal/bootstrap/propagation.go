@@ -27,7 +27,7 @@ import (
 // Construction cannot fail today, but the caller logs any future error
 // modes the same way wireWorkerRuntime does — see runMCPMode in mcp.go.
 func wirePropagationRuntime(c *client) {
-	loop := clientthought.NewPropagationLoop(c.client)
+	loop := clientthought.NewPropagationLoop(c.local)
 	c.propLoop = loop
 	loop.Start()
 }

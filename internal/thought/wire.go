@@ -10,17 +10,26 @@ import (
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
-	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/topology/graph"
 )
+
+// Caller is the narrow Execute-only seam every thought-package wire helper takes.
+// Both *graphclient.GraphClient (always-local) and *graphclient.Router (routing-
+// aware, FUL-323) satisfy this implicitly, so the helpers route per-call without
+// dragging the concrete client type into the function signatures. Mirrors the
+// tools.GraphCaller interface, kept package-local so the thought package stays
+// import-clean of the higher-level tools package.
+type Caller interface {
+	Execute(ctx context.Context, req *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error)
+}
 
 // executeViaEngine compiles a generic tool call (query / traverse / search) to a
 // declarative ExecuteRequest and runs it through the GraphClient.Execute carrier
 // seam (T-GTB3 Phase 6) — the same Compile→Execute path the bootstrap chokepoint
 // and wire_persist use. Returns a typed error when the args are not reducible
 // (should not happen for the fixed internal shapes the thought helpers build).
-func executeViaEngine(ctx context.Context, gc *graphclient.GraphClient, tool string, args json.RawMessage) (*knowledgev1.ExecuteResponse, error) {
+func executeViaEngine(ctx context.Context, gc Caller, tool string, args json.RawMessage) (*knowledgev1.ExecuteResponse, error) {
 	req, ok := engine.Compile(tool, args)
 	if !ok {
 		return nil, fmt.Errorf("thought: %s args not reducible to an ExecuteRequest", tool)
@@ -40,7 +49,7 @@ func executeViaEngine(ctx context.Context, gc *graphclient.GraphClient, tool str
 //
 // Join in caller order, omitting thoughts with no charges (matching
 // handleChargesFor lines 86-97). Empty input → empty map.
-func fetchChargesFor(ctx context.Context, gc *graphclient.GraphClient, thoughtIDs []string) map[string][]*knowledgev1.Node {
+func fetchChargesFor(ctx context.Context, gc Caller, thoughtIDs []string) map[string][]*knowledgev1.Node {
 	out := map[string][]*knowledgev1.Node{}
 	if gc == nil || len(thoughtIDs) == 0 {
 		return out
@@ -93,7 +102,7 @@ func fetchChargesFor(ctx context.Context, gc *graphclient.GraphClient, thoughtID
 
 // fetchNodesByIDs hydrates a slice of node IDs in one Execute round-trip
 // (query{ids:} → the typed Nodes carrier). Returns a map; missing IDs are absent.
-func fetchNodesByIDs(ctx context.Context, gc *graphclient.GraphClient, ids []string) map[string]*knowledgev1.Node {
+func fetchNodesByIDs(ctx context.Context, gc Caller, ids []string) map[string]*knowledgev1.Node {
 	out := map[string]*knowledgev1.Node{}
 	if gc == nil || len(ids) == 0 {
 		return out
@@ -120,7 +129,7 @@ func fetchNodesByIDs(ctx context.Context, gc *graphclient.GraphClient, ids []str
 }
 
 // fetchNode is a single-ID convenience wrapper around fetchNodesByIDs.
-func fetchNode(ctx context.Context, gc *graphclient.GraphClient, id string) (*knowledgev1.Node, bool) {
+func fetchNode(ctx context.Context, gc Caller, id string) (*knowledgev1.Node, bool) {
 	m := fetchNodesByIDs(ctx, gc, []string{id})
 	n, ok := m[id]
 	return n, ok
@@ -129,7 +138,7 @@ func fetchNode(ctx context.Context, gc *graphclient.GraphClient, id string) (*kn
 // FetchNode is the exported single-ID wrapper used by
 // cmd/knowledge/internal/tools/ when an intercept needs to peek at a node
 // without owning the wire helper. Mirrors FetchThoughtAdjacency above.
-func FetchNode(ctx context.Context, gc *graphclient.GraphClient, id string) (*knowledgev1.Node, bool) {
+func FetchNode(ctx context.Context, gc Caller, id string) (*knowledgev1.Node, bool) {
 	return fetchNode(ctx, gc, id)
 }
 
@@ -138,7 +147,7 @@ func FetchNode(ctx context.Context, gc *graphclient.GraphClient, id string) (*kn
 // needs the bulk-charge wire after a mutate(create, type:charge) so it
 // can compute thought properties locally without re-exposing the
 // underlying helper directly.
-func FetchChargesFor(ctx context.Context, gc *graphclient.GraphClient, thoughtIDs []string) map[string][]*knowledgev1.Node {
+func FetchChargesFor(ctx context.Context, gc Caller, thoughtIDs []string) map[string][]*knowledgev1.Node {
 	return fetchChargesFor(ctx, gc, thoughtIDs)
 }
 
@@ -146,7 +155,7 @@ func FetchChargesFor(ctx context.Context, gc *graphclient.GraphClient, thoughtID
 // round-trip: a type=thought browse whose typed Nodes carrier already carries the
 // full node payloads (the carrier path eliminates the old ID-only projection +
 // separate bulk-hydration round-trip).
-func fetchAllThoughtNodes(ctx context.Context, gc *graphclient.GraphClient) ([]*knowledgev1.Node, error) {
+func fetchAllThoughtNodes(ctx context.Context, gc Caller) ([]*knowledgev1.Node, error) {
 	if gc == nil {
 		return nil, nil
 	}
@@ -169,7 +178,7 @@ func fetchAllThoughtNodes(ctx context.Context, gc *graphclient.GraphClient) ([]*
 // search-results carrier ([]engine.SearchResult, each carrying the full
 // Node + Score). The carrier already hydrates the nodes, eliminating the old
 // ID-projection + separate fetchNodesByIDs hydration round-trip.
-func fetchQueryBySearch(ctx context.Context, gc *graphclient.GraphClient, text string, limit int) ([]ThoughtResult, error) {
+func fetchQueryBySearch(ctx context.Context, gc Caller, text string, limit int) ([]ThoughtResult, error) {
 	if gc == nil {
 		return nil, nil
 	}
@@ -202,14 +211,14 @@ func fetchQueryBySearch(ctx context.Context, gc *graphclient.GraphClient, text s
 // outgoing edge at depth 1. One Execute traverse round-trip → the typed
 // traversal-results carrier ([]engine.TraversalResult, each carrying a full
 // Node); we project to the peer IDs (skipping the start node itself).
-func fetchOutgoingTargets(ctx context.Context, gc *graphclient.GraphClient, nodeID string) ([]string, error) {
+func fetchOutgoingTargets(ctx context.Context, gc Caller, nodeID string) ([]string, error) {
 	return fetchTraversalPeerIDs(ctx, gc, nodeID, "out", nil)
 }
 
 // fetchEdgeNeighborsTyped wraps a typed-edge traverse: one Execute round-trip
 // per (edgeType, direction) pair. forward=true walks outgoing edges, false walks
 // incoming. Returns peer IDs only — call fetchNodesByIDs to hydrate.
-func fetchEdgeNeighborsTyped(ctx context.Context, gc *graphclient.GraphClient, fromID string, edgeType kgtypes.EdgeType, forward bool) ([]string, error) {
+func fetchEdgeNeighborsTyped(ctx context.Context, gc Caller, fromID string, edgeType kgtypes.EdgeType, forward bool) ([]string, error) {
 	direction := "out"
 	if !forward {
 		direction = "in"
@@ -221,7 +230,7 @@ func fetchEdgeNeighborsTyped(ctx context.Context, gc *graphclient.GraphClient, f
 // edge-type filter) and returns the discovered peer IDs from the
 // traversal_results_json carrier, skipping the start node. Shared by
 // fetchOutgoingTargets / fetchEdgeNeighborsTyped.
-func fetchTraversalPeerIDs(ctx context.Context, gc *graphclient.GraphClient, startID, direction string, edgeTypes []string) ([]string, error) {
+func fetchTraversalPeerIDs(ctx context.Context, gc Caller, startID, direction string, edgeTypes []string) ([]string, error) {
 	if gc == nil {
 		return nil, nil
 	}
@@ -259,7 +268,7 @@ func fetchTraversalPeerIDs(ctx context.Context, gc *graphclient.GraphClient, sta
 // each as a slice of knowledgev1.Edge with Type/FromID/ToID populated. Two
 // traverse wire calls (one per direction) to keep the parse simple — the
 // caller routinely needs to distinguish the two directions for rendering.
-func fetchEdgesForNode(ctx context.Context, gc *graphclient.GraphClient, nodeID string) (outgoing, incoming []knowledgev1.Edge, err error) {
+func fetchEdgesForNode(ctx context.Context, gc Caller, nodeID string) (outgoing, incoming []knowledgev1.Edge, err error) {
 	if gc == nil {
 		return nil, nil, nil
 	}
@@ -279,7 +288,7 @@ func fetchEdgesForNode(ctx context.Context, gc *graphclient.GraphClient, nodeID 
 // carrier ([]knowledgev1.Edge, both directions) → direction filter client-side. An
 // edge is outgoing when its FromID == nodeID, else incoming (the same relative-
 // direction rule render.filterEdges uses).
-func fetchEdgesOneDirection(ctx context.Context, gc *graphclient.GraphClient, nodeID string, forward bool) ([]knowledgev1.Edge, error) {
+func fetchEdgesOneDirection(ctx context.Context, gc Caller, nodeID string, forward bool) ([]knowledgev1.Edge, error) {
 	if gc == nil {
 		return nil, nil
 	}
@@ -315,7 +324,7 @@ func fetchEdgesOneDirection(ctx context.Context, gc *graphclient.GraphClient, no
 // engine.proto:164-171), optionally filtered to edgeTypes. This is the
 // N+1-avoidance the D1 composition relies on — ONE bulk edges read over the
 // whole node set rather than N per-node traverses. Empty ids → no call.
-func fetchEdgesForNodeSet(ctx context.Context, gc *graphclient.GraphClient, ids []string, edgeTypes []kgtypes.EdgeType) ([]knowledgev1.Edge, error) {
+func fetchEdgesForNodeSet(ctx context.Context, gc Caller, ids []string, edgeTypes []kgtypes.EdgeType) ([]knowledgev1.Edge, error) {
 	if gc == nil || len(ids) == 0 {
 		return nil, nil
 	}
