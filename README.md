@@ -19,10 +19,6 @@ and traverse are the syscalls, thoughts and decisions and plans are the
 persistent state, and brainstorm → ticket → plan → revise → implement
 is the process model.
 
-> **Pre-release.** Apache 2.0 OSS launch in flight. Bring your own LLM
-> key — Anthropic, OpenAI, Gemini, Bedrock, Vertex, or self-hosted. A
-> Fulminate Cloud token is only required for optional cloud features.
-
 ---
 
 ## How it works
