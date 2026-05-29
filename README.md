@@ -208,14 +208,36 @@ context layer; the LLM trusts it because it's traceable end-to-end.
 
 ## Install
 
+### Homebrew
+
+The recommended path on macOS and Linux. The formula installs both the
+`knowledge` MCP client and the `knowledge-server` graph server side by
+side, so lifecycle and auto-spawn work out of the box.
+
+```bash
+brew tap fulminate-io/knowledge
+brew install knowledge
+```
+
+Run the server as a background service (optional — the client also
+auto-spawns it on demand):
+
+```bash
+brew services start knowledge   # launchd-managed knowledge-server
+```
+
 ### From source
 
 Requirements: Go 1.26+, CGO enabled (tree-sitter C bindings). Optional:
 [Voyage AI key](https://voyageai.com) for vector search;
 [Fulminate Cloud account](https://fulminate.io) for paid cloud features.
 
+Building from source produces the `knowledge` client only; the
+`knowledge-server` binary ships via the Homebrew formula or a release
+download.
+
 ```bash
-go install github.com/fulminate-io/knowledge-mcp/cmd/knowledge@latest
+CGO_ENABLED=1 go install github.com/fulminate-io/knowledge-mcp@latest
 ```
 
 Or build from source:
@@ -226,21 +248,30 @@ cd knowledge-mcp
 CGO_ENABLED=1 go build -o bin/knowledge .
 ```
 
+That produces the `knowledge` MCP stdio client. (`make build`
+does the same and also refreshes the embedded Claude Code agents and
+skills.)
+
 ### Server setup
 
-The client needs a graph server. Two options:
+`knowledge` is the MCP stdio client. It proxies tool calls to a
+`knowledge-server` graph server over loopback TCP (`127.0.0.1:15022`
+by default). Two options:
 
-**Local server** (free, file-backed):
+**Local server** (free, file-backed). The client looks for a
+`knowledge-server` binary next to itself or on `$PATH` and spawns it
+automatically the first time a tool call needs it, so the common case
+needs no manual lifecycle. To drive it by hand:
+
 ```bash
-knowledge install    # downloads the server binary for your platform
-knowledge start      # spawns the server on 127.0.0.1:15022
+knowledge start      # spawn knowledge-server on 127.0.0.1:15022
 knowledge status     # confirm running (pid + node/edge counts)
-knowledge stop       # graceful shutdown
+knowledge stop       # graceful drain + shutdown
 ```
 
-`knowledge install` downloads the latest compatible server release
-from fulminate.io and places it alongside the client binary.
-The server stores graphs in `~/.knowledge/`.
+The server stores graphs in `~/.knowledge/`. If `knowledge start`
+reports that `knowledge-server` was not found, install it via Homebrew
+(below), which ships both binaries side by side.
 
 **Fulminate Cloud** (paid, team-shared):
 ```bash
@@ -252,7 +283,7 @@ graph server. No local server installation required.
 
 ### Claude Code integration
 
-After installing, add to your `.mcp.json`:
+Install the curated agents and skills that ship with Knowledge:
 
 ```bash
 knowledge install-claude-assets
@@ -260,6 +291,8 @@ knowledge install-claude-assets
 
 That writes the project's curated agents (`~/.claude/agents/*.md`) and
 skills (`~/.claude/skills/*/SKILL.md`) so Claude Code picks them up.
+Wiring the MCP server itself into `.mcp.json` is covered under
+[Connect](#connect) below.
 
 ## Connect
 
@@ -302,27 +335,34 @@ files, the LLM summarizes each node, Voyage embeds them. Subsequent
 indexes are incremental — only changed files re-summarize. Branch
 overlays and auto-compaction recovery run in the background.
 
-### Optional: OpenAI-compatible backends
+### LLM and embedding providers
 
-Use any OpenAI-compatible endpoint (SGLang, vLLM, Ollama, LiteLLM)
-for summarization or embeddings:
+Bring your own key. On first run the server auto-detects a provider:
+it prefers a logged-in Claude or Codex CLI when one is on `$PATH`,
+then falls back to an API key from the environment —
+`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `GEMINI_API_KEY`. Set
+`VOYAGE_API_KEY` to enable vector search; without it, search runs on
+BM25 alone.
 
-```json
-"args": [
-  "--root", ".",
-  "--summarizer", "openai",
-  "--summarizer-url", "http://localhost:8000",
-  "--summarizer-model", "qwen3.5-4b",
-  "--embedder", "openai",
-  "--embedder-url", "http://localhost:8001",
-  "--embedder-model", "nomic-embed-text",
-  "--embedder-dims", "768"
-]
+To pin providers and models explicitly, edit `~/.knowledge/config`
+(TOML, auto-created on first run):
+
+```toml
+[default]
+provider = "anthropic"        # anthropic | openai | gemini | claude-cli | codex-cli
+model    = "claude-haiku-4-5"
+
+[summarizer]                   # optional — overrides [default] for code summarization
+provider = "openai"
+model    = "gpt-4o-mini"
+
+[credentials]                  # optional — overrides the matching env vars
+voyage_api_key = "..."
 ```
 
 ## Tools
 
-20 MCP tools across the five graph types. The full reference is
+21 MCP tools across the five graph types. The full reference is
 [KNOWLEDGE_TOOLS.md](./KNOWLEDGE_TOOLS.md). The ones you'll touch
 daily: `search`, `ast`, `traverse`, `thoughts`, `record_decision`,
 `create_project` / `create_ticket` / `create_plan`, `assemble`,
@@ -364,8 +404,8 @@ Pre-1.0. Active development toward Apache 2.0 OSS launch.
 
 **Shipping today**: MCP server with five-graph architecture, thought
 reasoning with DeGroot propagation, 25 topology analyzers, branch
-overlays, auto-compaction recovery, tokenless OSS boot, OAuth device
-flow with keychain-backed credentials.
+overlays, auto-compaction recovery, tokenless OSS boot, browser-PKCE
+OAuth login with keychain-backed credentials.
 
 **In flight toward OSS launch**: Apache 2.0 LICENSE + release
 automation, repo rename, bidirectional sync to Fulminate Cloud,
