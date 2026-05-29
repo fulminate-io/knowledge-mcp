@@ -291,8 +291,51 @@ knowledge install-claude-assets
 
 That writes the project's curated agents (`~/.claude/agents/*.md`) and
 skills (`~/.claude/skills/*/SKILL.md`) so Claude Code picks them up.
+
+**Keeping them in sync:** the catalog is embedded in the `knowledge`
+binary, so re-run `install-claude-assets` after every upgrade to refresh
+your installed copies — a startup hint warns when they drift. Preview
+before writing with `--dry-run`, see exactly what would change with
+`--diff`, and list each file with `--verbose`.
+
 Wiring the MCP server itself into `.mcp.json` is covered under
 [Connect](#connect) below.
+
+### Codex CLI integration
+
+Codex consumes the same curated catalog. Install the Codex twin of the
+agents and skills:
+
+```bash
+knowledge install-codex-assets
+```
+
+That writes, using Codex's native layout (split roots):
+
+- skills → `~/.agents/skills/<name>/SKILL.md` (verbatim copies of the
+  Claude skills — Codex interprets the same constructs)
+- agents → `~/.codex/agents/<name>.toml` (the Claude agents converted to
+  Codex subagent TOML: `name`, `description`, `developer_instructions`)
+- a clobber-safe knowledge-priming block in `~/.codex/AGENTS.md`,
+  bounded by managed markers so any prose you keep there is preserved
+
+**Keeping them in sync:** the catalog is embedded in the binary, so
+re-run `install-codex-assets` after every upgrade to refresh your
+installed copies — a startup hint warns when they drift. Preview with
+`--dry-run`, see exactly what would change with `--diff`, list each file
+with `--verbose`. Skills you've added yourself and any non-managed prose
+in `~/.codex/AGENTS.md` are left untouched.
+
+Register the MCP server itself in `~/.codex/config.toml`:
+
+```toml
+[mcp_servers.knowledge]
+command = "knowledge"
+args = ["mcp"]
+```
+
+`knowledge` resolves through `$PATH` after brew install; source-built
+users use the absolute path to `bin/knowledge`.
 
 ## Connect
 

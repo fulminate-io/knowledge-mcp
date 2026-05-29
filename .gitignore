@@ -9,8 +9,9 @@ bin/
 .claude/settings.json
 .envrc
 
-# Embedded Claude assets — populated at build time by
-# scripts/sync-claude-assets.sh from .claude/agents and .claude/skills.
+# Embedded shared assets — populated at build time by
+# scripts/sync-assets.sh from .claude/agents and .claude/skills. This one
+# embed feeds BOTH install-claude-assets and install-codex-assets.
 # Source of truth lives at the repo root; these are build-time copies.
-internal/claudeassets/agents/
-internal/claudeassets/skills/
+internal/assets/agents/
+internal/assets/skills/
