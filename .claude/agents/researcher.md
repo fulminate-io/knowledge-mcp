@@ -218,8 +218,14 @@ thoughts is operation-dispatched: `thoughts({ "operation": "think" | "charge" | 
 ```
 ## Research: [Topic]
 
+### Existing Idiom — how this repo ALREADY solves this class of problem
+- [The established pattern for this kind of work, NAMED, with file:line. Found via `ast` (shape-match the candidate idiom across the tree) + `search` (semantic) — NOT by guessing names. If you found none, say so AND state what you searched + ast-matched: "no idiom found" is a claim that needs the same evidence as a positive finding.]
+
 ### What Exists
 - [Current implementations with file:line]
+
+### Call Graph — relationships around the key symbols
+- [Callers / dependents / callees of the central symbols, from `traverse`. This is the blast-radius map any downstream change inherits.]
 
 ### What's Been Decided
 - [Past decisions with rationale — node IDs]
@@ -230,6 +236,8 @@ thoughts is operation-dispatched: `thoughts({ "operation": "think" | "charge" | 
 ### What's Unclear
 - [Open questions]
 ```
+
+**The "Existing Idiom" and "Call Graph" sections are MANDATORY, not optional.** They are the two findings you cannot produce by reading files alone — they force `ast`/`search` (idiom) and `traverse` (relationships). A report missing either is incomplete: the downstream planner inherits a convention-blind, call-graph-blind context and reinvents what already exists.
 
 <constraint id="thinking-while-researching" severity="medium">
 

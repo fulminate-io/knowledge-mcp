@@ -24,6 +24,11 @@ brainstorm = WHY. Ticket = WHAT. Plan = HOW. Implement = WORK.
 Brainstorm's deliverable: a ticket so thorough that the downstream planner has
 ZERO architectural decisions to make. If you're tempted to leave architecture
 for the planner to figure out, that's a sign brainstorm wasn't deep enough.
+
+"ZERO decisions for the planner" is about THOROUGHNESS — it is NOT a license to
+decide the foundation (trust/security/transport/auth/deploy/platform) yourself.
+Those you research and CONFIRM with the user. See constraint
+id="confirm-foundational-architecture".
 </mental-model>
 
 <constraint id="use-the-knowledge-graph" severity="hard">
@@ -71,6 +76,69 @@ thoughts({ "operation": "recall", "query": "topic keywords from the brainstorm r
 
 Past thoughts often contain hypotheses, trade-offs, and insights from previous sessions that should inform the brainstorm.
 
+## Step 0.7: Surface and verify framing assumptions — BEFORE spawning the researcher
+
+<constraint id="verify-framing-assumptions-before-they-propagate" severity="hard">
+
+  <rule>
+    Brainstorm is the ONLY phase where the frame is still mutable. The researcher
+    describes what exists; the planner locks specifics; the implementer executes
+    the recipe — none of them is built to challenge the premise. So a wrong
+    assumption formed here is never caught downstream, it is faithfully
+    ELABORATED: the wrong question gets researched thoroughly, planned precisely,
+    and built cleanly. Surface and verify the load-bearing assumptions HERE,
+    before they shape the researcher brief and the ticket.
+  </rule>
+
+  <override-default>
+    Trained instinct: read the request, form a design hypothesis, then spawn the
+    researcher to flesh it out. WRONG — that bakes your assumptions into the
+    brief, and the researcher inherits them as premises instead of testing them.
+    The assumption ledger comes first; the brief is downstream of it.
+  </override-default>
+
+  <assumption-ledger ordered="true">
+    1. Before spawning any researcher, write the ledger via `think()`: enumerate
+       every load-bearing assumption the framing rests on, and mark each UNVERIFIED.
+    2. Flag the highest-risk class explicitly — EXISTENCE claims: "we need to
+       build X", "there is no existing Y", "the platform doesn't provide this",
+       "this is greenfield". These are the ones that, if wrong, cause reinvention
+       of something that already exists.
+    3. Default the existence question to "it ALREADY exists / the platform ALREADY
+       handles this" until disproven — NOT "we must build it". The burden of proof
+       is on absence, not on presence.
+    4. Verify each existence claim with evidence before it is allowed to stand. A
+       "does not exist" conclusion is a CLAIM requiring the absence-is-not-evidence
+       protocol: ≥2 different semantic `search` phrasings + an `ast` shape-match
+       (the thing may be named nothing you would guess) + a `traverse` outward from
+       the nearest related symbol. A single miss is never proof of absence — it
+       usually means the real thing is named or shaped differently than your query.
+    5. Do NOT freeze the ticket while any load-bearing assumption is still
+       UNVERIFIED. An unverified existence claim is a hard gate, not a footnote.
+  </assumption-ledger>
+
+  <researcher-brief-is-discovery-not-confirmation>
+    The brief you hand the researcher is where assumptions transmit. Write it as
+    DISCOVERY ("how does this repo / the platform already solve this class of
+    problem; what is the existing idiom"), NEVER as CONFIRMATION ("verify my design
+    X works", "research how to build Y"). A confirmation-framed brief tells the
+    researcher what to assume; a discovery-framed brief tells it what to find. If
+    your brief names a SOLUTION, you have already poisoned it — reframe to name the
+    PROBLEM and let the research surface the solution that may already exist.
+  </researcher-brief-is-discovery-not-confirmation>
+
+  <failure-mode>
+    The classic poisoning: "there's no existing X, so we need to build it" goes
+    into the researcher brief UNVERIFIED, when in fact the platform already
+    provides X under a name nobody searched for. Everything downstream is then
+    individually competent — the research thorough, the plan precise, the
+    implementation clean — and all of it faithfully elaborates a frame that was
+    wrong from the first step. The fix is never downstream; it is here, in the
+    assumption that was never surfaced or tested.
+  </failure-mode>
+
+</constraint>
+
 ## Step 1: Research What Already Exists (use `researcher` agent)
 
 **Delegate initial research to the `researcher` agent.** This agent is optimized for thorough investigation using the knowledge store.
@@ -80,7 +148,7 @@ Past thoughts often contain hypotheses, trade-offs, and insights from previous s
 ```
 Agent(
   subagent_type: "researcher",
-  prompt: "Research the following topic thoroughly. Search both knowledge nodes (decisions, findings, rules) and code. Present what exists with precise references: $ARGUMENTS",
+  prompt: "Research the following topic thoroughly, DISCOVERY-framed (find what exists, do NOT confirm a pre-formed design). FIRST characterize how this repo / the platform ALREADY solves this class of problem — name the existing idiom/pattern with file:line, via `ast` shape-match + `search` (do not guess names; a miss is not proof of absence). Then search knowledge nodes (decisions, findings, rules) and code, and `traverse` the call graph around the key symbols. Present what exists with precise references, leading with the existing idiom: $ARGUMENTS",
   description: "Research: [brief topic]",
   run_in_background: true
 )
@@ -90,6 +158,9 @@ When the researcher returns, present what was found:
 
 ```
 ## What's Already Known
+
+### Existing Idiom — how this repo already solves this class of problem
+- [The established pattern this codebase already uses for this kind of work, NAMED, with file:line. This is what the design must CONFORM to, not reinvent. Found via `ast` shape-match + `search` — a miss is not proof it's greenfield.]
 
 ### Existing Decisions
 - [Past decisions with rationale — why were they made?]
@@ -126,7 +197,87 @@ If significant prior work exists, build on it — don't re-explore from scratch.
 
 </constraint>
 
-**Brainstorm owns architecture. Tickets must be thorough enough that downstream planners have zero architectural decisions to make.** When the user states a guiding principle / contract / invariant — e.g., "server has no filesystem access," "client owns session state," "no back-compat shims" — the brainstorm orchestrator is responsible for enumerating EVERY code surface the principle touches BEFORE proposing a ticket. The planner is not allowed to discover scope mid-flight; the discovery happens here.
+<constraint id="confirm-foundational-architecture" severity="hard">
+
+  <rule>
+    "Brainstorm owns architecture" means brainstorm owns the RESEARCH and the
+    SURFACING of architectural decisions to the user — NOT deciding the foundation
+    unilaterally. Two tiers:
+
+    CONFIRM-FIRST (surface to the user and get sign-off BEFORE it enters the
+    ticket): foundational decisions — trust/security boundaries, transport
+    security, authentication/authorization model, deployment mechanism,
+    data-isolation model, runtime/platform assumptions, and any choice with broad
+    blast radius or that depends on context the user holds that the code cannot
+    reveal.
+
+    OWN (decide without asking): specifics — file paths, names, ordering, which
+    existing function/pattern to reuse — and any architectural surface that is
+    fully resolvable AND verifiable from research.
+  </rule>
+
+  <research-the-platform-first>
+    Before proposing ANY architecture, investigate what the deployment/runtime
+    platform already provides: service mesh, deploy tooling, existing
+    auth/identity/token primitives, existing infra patterns. Never assume a
+    greenfield. Designing a capability the platform already provides is a primary
+    cause of this failure.
+  </research-the-platform-first>
+
+  <override-default>
+    Trained instinct (reinforced by a careless reading of "owns architecture" and
+    "zero decisions for the planner"): design the whole thing yourself and present
+    a finished ticket. Wrong for the confirm-first tier — a thorough ticket built
+    on a foundation the user never signed off is not thoroughness; it is going
+    behind the user's back. Trust is load-bearing; this erodes it.
+  </override-default>
+
+  <failure-patterns scan="whenever a rule seems to authorize a solo foundational call">
+    These are the TELLS of twisting a discipline rule to expand your own
+    authority. Each is a failure, not a justification:
+
+    <pattern id="rule-as-authority-grant">
+      Reading a discipline rule — "brainstorm owns architecture," "the planner
+      should have zero architectural decisions," "don't ask permission" — as a
+      LICENSE to make a foundational call without the user. Those rules govern
+      THOROUGHNESS and WORKFLOW FLOW; they never grant authority over the
+      foundation. If a reading conveniently lets you proceed solo on a
+      foundational call, the reading is the failure.
+    </pattern>
+
+    <pattern id="relabel-to-own">
+      Reclassifying a foundational decision as a "specific" or a "HOW
+      reconciliation" so it falls under what you own. If it is a trust boundary,
+      transport, auth model, deploy mechanism, data-isolation model, or platform
+      assumption, it is foundational by definition — relabeling it to
+      self-authorize is the tell.
+    </pattern>
+
+    <pattern id="ambiguity-resolved-in-your-favor">
+      When decide-vs-confirm is genuinely unclear, the faster / unilateral reading
+      is the smell, not the answer. Ambiguous fit → CONFIRM, never twist — the
+      brainstorm instance of the locked "ambiguous rule → ASK, don't twist"
+      principle.
+    </pattern>
+
+    <pattern id="finality-theater">
+      Calling a proposed or derived decision "locked" / "settled" / "decided"
+      before the user has signed off. State proposals as proposals.
+    </pattern>
+  </failure-patterns>
+
+  <failure-mode>
+    An entire edifice — a transport-security layer, a proxy tier, a trust contract
+    — designed from a greenfield assumption and driven through tickets, plans,
+    review, and implementation, then reworked late because the platform already
+    provided the capability or the user held a far simpler model. Every step
+    "followed the rules" via a reading that quietly expanded authority. The cost
+    is wasted cycles AND eroded trust.
+  </failure-mode>
+
+</constraint>
+
+**Brainstorm owns architecture (research + confirm, per constraint confirm-foundational-architecture). Tickets must be thorough enough that downstream planners have zero architectural decisions to make.** When the user states a guiding principle / contract / invariant — e.g., "server has no filesystem access," "client owns session state," "no back-compat shims" — the brainstorm orchestrator is responsible for enumerating EVERY code surface the principle touches BEFORE proposing a ticket. The planner is not allowed to discover scope mid-flight; the discovery happens here.
 
 **What to enumerate:** every consumer, every dependency, every violation, every collateral impact. Walk `cmd/` and `pkg/` exhaustively for the principle's surface. Use `search` + `traverse` + `grep` in combination; spawn a researcher with a principle-driven brief if the surface is wide.
 

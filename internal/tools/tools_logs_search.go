@@ -273,7 +273,11 @@ func pluralSuffix(n int) string {
 // slice and dedupes, dropping empty entries. Mirrors the server-side
 // helper at cmd/knowledge-server/tools/tools_search_source.go.
 func mergeQueries(query string, queries []string) []string {
-	out := make([]string, 0, 1+len(queries))
+	// Cap on len(queries) alone (plus the single `query`, which append grows
+	// for free). Computing `1+len(queries)` as the allocation size could
+	// overflow int for a pathologically large slice (CWE-190); a bare len()
+	// can't overflow, so use it directly as the hint.
+	out := make([]string, 0, len(queries))
 	seen := map[string]bool{}
 	add := func(q string) {
 		q = strings.TrimSpace(q)

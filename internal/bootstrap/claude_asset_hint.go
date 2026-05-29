@@ -27,7 +27,7 @@ import (
 	"os"
 	"path/filepath"
 
-	"github.com/fulminate-io/knowledge-mcp/internal/claudeassets"
+	"github.com/fulminate-io/knowledge-mcp/internal/assets"
 )
 
 // hintClaudeAssetsIfStale walks the embedded asset tree and compares
@@ -43,11 +43,11 @@ func hintClaudeAssetsIfStale() {
 	dest := filepath.Join(home, ".claude")
 
 	missing, drift := 0, 0
-	walkErr := fs.WalkDir(claudeassets.Files, ".", func(p string, d fs.DirEntry, err error) error {
+	walkErr := fs.WalkDir(assets.Files, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil || d.IsDir() {
 			return err
 		}
-		embedded, err := claudeassets.Files.ReadFile(p)
+		embedded, err := assets.Files.ReadFile(p)
 		if err != nil {
 			return err
 		}

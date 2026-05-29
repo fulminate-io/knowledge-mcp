@@ -19,8 +19,8 @@ import (
 	"sort"
 	"time"
 
+	"github.com/fulminate-io/knowledge-mcp/internal/assets"
 	"github.com/fulminate-io/knowledge-mcp/internal/auth"
-	"github.com/fulminate-io/knowledge-mcp/internal/claudeassets"
 	"github.com/fulminate-io/knowledge-mcp/internal/config"
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 )
@@ -241,11 +241,11 @@ func checkClaudeAssets() checkResult {
 	dest := filepath.Join(home, ".claude")
 
 	var missing, drift []string
-	err = fs.WalkDir(claudeassets.Files, ".", func(p string, d fs.DirEntry, walkErr error) error {
+	err = fs.WalkDir(assets.Files, ".", func(p string, d fs.DirEntry, walkErr error) error {
 		if walkErr != nil || d.IsDir() {
 			return walkErr
 		}
-		embedded, err := claudeassets.Files.ReadFile(p)
+		embedded, err := assets.Files.ReadFile(p)
 		if err != nil {
 			return err
 		}

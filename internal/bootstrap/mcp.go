@@ -71,7 +71,11 @@ func runMCPMode(f Config) error {
 	// their debug log, so users see the hint without having to know
 	// `knowledge doctor` exists. Cheap (~10ms file walk + sha256s).
 	hintClaudeAssetsIfStale()
-	stage("hintClaudeAssetsIfStale done")
+	// Same one-shot drift check for the codex twin: skills under
+	// ~/.agents/skills and agents under ~/.codex/agents. AGENTS.md is
+	// excluded (managed-block merge — a mismatch is expected).
+	hintCodexAssetsIfStale()
+	stage("asset drift hints done")
 
 	c := constructClient(f)
 	stage("constructClient done")

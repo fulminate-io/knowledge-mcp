@@ -51,6 +51,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"unicode/utf8"
 )
 
 //go:embed glyphlist.txt
@@ -98,6 +99,12 @@ func parseAGL() {
 		for _, h := range hexes {
 			n, err := strconv.ParseUint(h, 16, 32)
 			if err != nil {
+				continue
+			}
+			// rune is int32; reject anything outside the valid Unicode range
+			// so the uint32 → int32 conversion can't overflow into a negative
+			// code point (CWE-190/681). utf8.MaxRune is the largest legal point.
+			if n > utf8.MaxRune {
 				continue
 			}
 			runes = append(runes, rune(n))

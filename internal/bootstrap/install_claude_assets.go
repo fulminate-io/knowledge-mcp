@@ -22,7 +22,7 @@ import (
 	"path/filepath"
 	"sort"
 
-	"github.com/fulminate-io/knowledge-mcp/internal/claudeassets"
+	"github.com/fulminate-io/knowledge-mcp/internal/assets"
 )
 
 // installAssetsFlags holds the parsed flags for the subcommand.
@@ -98,7 +98,7 @@ func runInstallClaudeAssets(args []string) error {
 // silently degrading.
 func runDiff(dest string) error {
 	var paths []string
-	err := fs.WalkDir(claudeassets.Files, ".", func(p string, d fs.DirEntry, err error) error {
+	err := fs.WalkDir(assets.Files, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -115,7 +115,7 @@ func runDiff(dest string) error {
 
 	newCount, changedCount, sameCount := 0, 0, 0
 	for _, p := range paths {
-		embedded, err := claudeassets.Files.ReadFile(p)
+		embedded, err := assets.Files.ReadFile(p)
 		if err != nil {
 			return fmt.Errorf("read embedded %s: %w", p, err)
 		}
@@ -203,7 +203,7 @@ func resolveClaudeDest(flagDest string) (string, error) {
 // future caller-side filtering preserves the property.
 func installAssets(dest string, dryRun, verbose bool) (int, error) {
 	var paths []string
-	err := fs.WalkDir(claudeassets.Files, ".", func(p string, d fs.DirEntry, err error) error {
+	err := fs.WalkDir(assets.Files, ".", func(p string, d fs.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -220,7 +220,7 @@ func installAssets(dest string, dryRun, verbose bool) (int, error) {
 
 	written := 0
 	for _, p := range paths {
-		data, err := claudeassets.Files.ReadFile(p)
+		data, err := assets.Files.ReadFile(p)
 		if err != nil {
 			return written, fmt.Errorf("read embedded %s: %w", p, err)
 		}

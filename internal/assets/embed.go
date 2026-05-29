@@ -1,0 +1,33 @@
+// SPDX-License-Identifier: Apache-2.0
+
+// Package assets carries the embedded copy of the project's
+// .claude/agents and .claude/skills tree — the SHARED raw source
+// consumed by BOTH the `install-claude-assets` and the
+// `install-codex-assets` CLI subcommands. The directive lives here
+// rather than at the module root because cmd/knowledge needs a clean
+// internal-package import path; the duplicate files under agents/
+// and skills/ are populated by scripts/sync-assets.sh before any build
+// (Makefile depends on it; the brew formula calls it explicitly). Both
+// directories are gitignored.
+//
+// Files is the raw .claude tree. install-claude-assets writes it under
+// ~/.claude verbatim. install-codex-assets writes skills verbatim and
+// TRANSLATES each agent .md into a codex .toml at install time (see
+// cmd/knowledge/internal/codexassets.TranslateAgent) — there is no
+// second embed for the codex shapes.
+package assets
+
+import "embed"
+
+// Files mirrors .claude/agents/*.md and .claude/skills/*/SKILL.md
+// at build time. Path layout:
+//
+//	agents/<agent-name>.md
+//	skills/<skill-name>/SKILL.md
+//
+// Callers walk the FS via fs.WalkDir(Files, ".", ...) and either write
+// each regular file verbatim (claude install, codex skills) or translate
+// agent .md files to .toml (codex install).
+//
+//go:embed all:agents all:skills
+var Files embed.FS
