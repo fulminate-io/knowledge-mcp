@@ -15,3 +15,4 @@ bin/
 # Source of truth lives at the repo root; these are build-time copies.
 internal/assets/agents/
 internal/assets/skills/
+internal/assets/KNOWLEDGE_TOOLS.md

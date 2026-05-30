@@ -23,14 +23,17 @@ repo_root="$(cd "${script_dir}/.." && pwd)"
 
 src_agents="${repo_root}/.claude/agents"
 src_skills="${repo_root}/.claude/skills"
+src_tools="${repo_root}/.claude/KNOWLEDGE_TOOLS.md"
 dst_root="${repo_root}/internal/assets"
 dst_agents="${dst_root}/agents"
 dst_skills="${dst_root}/skills"
+dst_tools="${dst_root}/KNOWLEDGE_TOOLS.md"
 
-if [[ ! -d "${src_agents}" ]] || [[ ! -d "${src_skills}" ]]; then
-  echo "sync-assets: source directories missing" >&2
+if [[ ! -d "${src_agents}" ]] || [[ ! -d "${src_skills}" ]] || [[ ! -f "${src_tools}" ]]; then
+  echo "sync-assets: source directories/files missing" >&2
   echo "  expected: ${src_agents}" >&2
   echo "  expected: ${src_skills}" >&2
+  echo "  expected: ${src_tools}" >&2
   exit 1
 fi
 
@@ -42,6 +45,11 @@ mkdir -p "${dst_agents}" "${dst_skills}"
 cp -R "${src_agents}/." "${dst_agents}/"
 cp -R "${src_skills}/." "${dst_skills}/"
 
+# KNOWLEDGE_TOOLS.md is embedded as a SEPARATE var (assets.KnowledgeTools),
+# not walked into ~/.claude — it is only the managed-block source. Copy it
+# flat into the assets package root.
+cp "${src_tools}" "${dst_tools}"
+
 # Strip macOS / hidden cruft that cp -R copies but the install
 # subcommands should not write to user homes.
 # .DS_Store especially: macOS auto-creates it in any browsed folder
@@ -51,4 +59,4 @@ find "${dst_agents}" "${dst_skills}" -name ".*" -type f -delete
 
 agent_count=$(find "${dst_agents}" -type f -name '*.md' | wc -l | tr -d ' ')
 skill_count=$(find "${dst_skills}" -type f | wc -l | tr -d ' ')
-echo "sync-assets: ${agent_count} agents, ${skill_count} skill files mirrored to internal/assets/"
+echo "sync-assets: ${agent_count} agents, ${skill_count} skill files, KNOWLEDGE_TOOLS.md mirrored to internal/assets/"
