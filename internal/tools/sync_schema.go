@@ -10,8 +10,9 @@ import "github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 // tools/list. Pure kgtools.MCPTool literal.
 func SyncToolDef() kgtools.MCPTool {
 	return kgtools.MCPTool{
-		Name:        "sync",
-		Description: "Bidirectional knowledge graph sync with Fulminate Cloud (push, pull, promote)",
+		Name: "sync",
+		Description: "Bidirectional knowledge graph sync with Fulminate Cloud (push, pull, promote). " +
+			"Required params: operation only; graph and name are optional (default knowledge/default) for every operation.",
 		InputSchema: kgtools.InputSchema{
 			Type: "object",
 			Properties: map[string]kgtools.Property{

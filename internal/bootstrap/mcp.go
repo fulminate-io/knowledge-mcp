@@ -71,6 +71,9 @@ func runMCPMode(f Config) error {
 	// their debug log, so users see the hint without having to know
 	// `knowledge doctor` exists. Cheap (~10ms file walk + sha256s).
 	hintClaudeAssetsIfStale()
+	// Managed-block drift check for ~/.claude/CLAUDE.md (managed region
+	// only, so user prose never false-positives).
+	hintClaudeMDIfStale()
 	// Same one-shot drift check for the codex twin: skills under
 	// ~/.agents/skills and agents under ~/.codex/agents. AGENTS.md is
 	// excluded (managed-block merge — a mismatch is expected).

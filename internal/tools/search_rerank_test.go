@@ -94,6 +94,10 @@ func TestApplyClientRerank(t *testing.T) {
 		if idxB > idxA {
 			t.Errorf("expected B before A after rerank, got:\n%s", got)
 		}
+		// The success render of a client rerank is unconditionally vector+rerank.
+		if !strings.Contains(got, "_search mode: vector+rerank_") {
+			t.Errorf("expected vector+rerank footer, got:\n%s", got)
+		}
 	})
 
 	t.Run("projection in saved replays fields client-side", func(t *testing.T) {

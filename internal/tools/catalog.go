@@ -4,6 +4,13 @@ package tools
 
 import "github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 
+// falseValue backs the *bool needed to render additionalProperties:false on a
+// closed object schema. kgtools.Property.AdditionalProperties is a *bool (nil =
+// open/omitted, &false = strict-closed); a *bool can't be expressed as an inline
+// composite-literal address, so closed shapes across the schema files take
+// AdditionalProperties: &falseValue. Genuinely-arbitrary maps leave it nil.
+var falseValue = false
+
 // AllToolSchemas returns the complete client-owned MCP tool catalog.
 //
 // The MCP tool catalog is client-owned: the client is the single source of truth

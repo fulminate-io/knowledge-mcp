@@ -163,6 +163,17 @@ func BuildAllowedTools(catalog []kgtools.MCPTool, allowlist []string, workerSess
 // re-uses the standard JSON Schema 2020-12 shape; the catalog emits
 // draft-07-compatible bytes that round-trip cleanly when the relevant
 // keywords stay common (type, properties, required, items, enum, description).
+//
+// EINO SPIKE (verified against github.com/cloudwego/eino@v0.8.13, schema/tool.go):
+//   - The object-children field on schema.ParameterInfo is SubParams
+//     (map[string]*ParameterInfo) — tool.go:93. paramInfoToJSONSchema
+//     (tool.go:171-210) renders SubParams into nested Properties + a derived
+//     nested Required, so nested child keys DO survive the eino/Path-2 render.
+//   - ToJSONSchema does NOT emit additionalProperties, and ParameterInfo has NO
+//     MaxLength field. So additionalProperties:false and maxLength ride Path 1
+//     (the raw tools/list InputSchema marshal — the strict-Codex consumer) ONLY;
+//     Path 2 (worker provider render) omits both. Acceptable: worker providers
+//     are not the strict consumer.
 func mcpToolToToolInfo(t kgtools.MCPTool) (*schema.ToolInfo, error) {
 	info := &schema.ToolInfo{
 		Name: t.Name,
@@ -209,12 +220,24 @@ type mcpInputSchema struct {
 	Required   []string               `json:"required"`
 }
 
-// mcpProperty mirrors domains/tools.Property.
+// mcpProperty mirrors kgtools.Property. Kept as a local mirror (see
+// mcpInputSchema above) so domains/dream stays decoupled from the kgtools
+// tool-catalog package. Properties/AdditionalProperties/MaxLength mirror the
+// fields kgtools.Property now emits; the json.Unmarshal at mcpToolToToolInfo
+// captures the nested object sub-shape so it can recurse into eino's SubParams.
 type mcpProperty struct {
-	Type        string       `json:"type"`
-	Description string       `json:"description"`
-	Items       *mcpProperty `json:"items"`
-	Enum        []string     `json:"enum"`
+	Type        string                 `json:"type"`
+	Description string                 `json:"description"`
+	Items       *mcpProperty           `json:"items"`
+	Properties  map[string]mcpProperty `json:"properties"`
+	Enum        []string               `json:"enum"`
+	// AdditionalProperties and MaxLength are decoded for fidelity with the
+	// kgtools.Property wire shape, but eino's schema.ParameterInfo expresses
+	// NEITHER (see the EINO SPIKE note on mcpToolToToolInfo): both ride Path 1
+	// (the raw tools/list InputSchema marshal) only, so neither is forwarded
+	// into ParameterInfo below.
+	AdditionalProperties *bool `json:"additionalProperties"`
+	MaxLength            int   `json:"maxLength"`
 }
 
 // mcpPropertyToParameterInfo recursively translates the MCP Property shape
@@ -233,6 +256,21 @@ func mcpPropertyToParameterInfo(prop mcpProperty, required bool) *schema.Paramet
 	}
 	if prop.Items != nil {
 		pi.ElemInfo = mcpPropertyToParameterInfo(*prop.Items, false)
+	}
+	// Recurse the nested object sub-shape into eino's SubParams (the confirmed
+	// object-children field — see the EINO SPIKE note above), mirroring the
+	// ElemInfo recursion. A nested key is Required in eino only when it sits in
+	// the nested object's own additionalProperties:false-closed shape; the wire
+	// Property does not carry a per-object Required list, so nested children are
+	// rendered non-required here (Path 1's raw JSON carries the authoritative
+	// closed-object semantics for the strict consumer). prop.MaxLength and
+	// prop.AdditionalProperties are intentionally NOT forwarded: ParameterInfo
+	// expresses neither, so both ride Path 1 only.
+	if len(prop.Properties) > 0 {
+		pi.SubParams = make(map[string]*schema.ParameterInfo, len(prop.Properties))
+		for name, child := range prop.Properties {
+			pi.SubParams[name] = mcpPropertyToParameterInfo(child, false)
+		}
 	}
 	return pi
 }

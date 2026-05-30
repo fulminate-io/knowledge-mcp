@@ -172,7 +172,8 @@ func CollectToolDef() kgtools.MCPTool {
 			"code_block/list_item/table/block nodes into a per-source graph under GraphPDFRaw. " +
 			"Collection runs client-side after the binary split — invoking this tool against the " +
 			"graph server returns an error; the MCP stdio client intercepts and runs the collector " +
-			"locally with a RemoteUploadSink.",
+			"locally with a RemoteUploadSink. " +
+			"Required params: type is always required; id is required for every type except type=\"logs\".",
 		InputSchema: kgtools.InputSchema{
 			Type: "object",
 			Properties: map[string]kgtools.Property{

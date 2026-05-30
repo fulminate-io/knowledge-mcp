@@ -240,6 +240,59 @@ func TestMcpToolToToolInfo_RoundTrip(t *testing.T) {
 	}
 }
 
+// TestMcpToolToToolInfo_NestedObjectRoundTrip is the FUL-342 Path-2 round-trip:
+// a Property carrying a nested object sub-shape (Properties) + a MaxLength bound
+// is fed through mcpToolToToolInfo, and the rendered eino JSON-schema is checked
+// for the nested child keys.
+//
+// Per the EINO SPIKE (mcp_tool.go): eino's schema.ParameterInfo.SubParams holds
+// object children and ToJSONSchema renders them into nested Properties, so the
+// nested keys DO survive Path 2 (the worker-provider render) — asserted here.
+// eino's ParameterInfo has NO MaxLength field, so maxLength rides Path 1 (the
+// raw tools/list InputSchema marshal) ONLY and is intentionally NOT asserted in
+// the eino render. Path 1 strict-validity is covered by the catalog guard in the
+// tools package; this test locks the Path-2 nested-key propagation.
+func TestMcpToolToToolInfo_NestedObjectRoundTrip(t *testing.T) {
+	maxFalse := false
+	info, err := mcpToolToToolInfo(kgtools.MCPTool{
+		Name:        "mutate",
+		Description: "mutate nodes",
+		InputSchema: kgtools.InputSchema{
+			Type: "object",
+			Properties: map[string]kgtools.Property{
+				"summary": {Type: "string", Description: "search summary", MaxLength: 500},
+				"references": {Type: "array", Description: "citations", Items: &kgtools.Property{
+					Type: "object", Description: "reference", AdditionalProperties: &maxFalse,
+					Properties: map[string]kgtools.Property{
+						"url":   {Type: "string", Description: "cited URL"},
+						"title": {Type: "string", Description: "citation title"},
+					},
+				}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("mcpToolToToolInfo: %v", err)
+	}
+	if info.ParamsOneOf == nil {
+		t.Fatalf("ParamsOneOf = nil, want populated")
+	}
+	js, err := info.ParamsOneOf.ToJSONSchema()
+	if err != nil {
+		t.Fatalf("ToJSONSchema: %v", err)
+	}
+	out, err := json.Marshal(js)
+	if err != nil {
+		t.Fatalf("Marshal: %v", err)
+	}
+	// The nested child keys of the array-of-object element survive into the eino
+	// render via SubParams → nested Properties.
+	rendered := string(out)
+	if !strings.Contains(rendered, `"url"`) || !strings.Contains(rendered, `"title"`) {
+		t.Errorf("rendered schema = %s, want nested keys url + title to survive Path 2", rendered)
+	}
+}
+
 // TestMcpToolToToolInfo_NoArgs handles tools that take no parameters.
 // ParamsOneOf must stay nil so eino correctly reports a no-args tool.
 func TestMcpToolToToolInfo_NoArgs(t *testing.T) {

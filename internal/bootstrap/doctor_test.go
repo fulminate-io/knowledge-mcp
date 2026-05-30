@@ -95,6 +95,12 @@ voyage_api_key = "pa-from-config"
 	if res.status != statusOK {
 		t.Fatalf("status = %v, want statusOK (config-only key should enable vector)", res.status)
 	}
+	if !strings.Contains(res.msg, "vector") {
+		t.Errorf("msg %q should mention vector embeddings", res.msg)
+	}
+	if !strings.Contains(res.msg, "rerank") {
+		t.Errorf("msg %q should mention cross-encoder rerank", res.msg)
+	}
 }
 
 func TestCheckVoyage_NeitherSetBM25(t *testing.T) {
@@ -111,6 +117,9 @@ model = "claude-haiku-5"
 	}
 	if !strings.Contains(res.msg, "BM25-only") {
 		t.Errorf("msg %q should mention BM25-only mode", res.msg)
+	}
+	if !strings.Contains(res.msg, "rerank") {
+		t.Errorf("msg %q should mention cross-encoder rerank is absent", res.msg)
 	}
 }
 

@@ -24,6 +24,11 @@ Findings are added later via record_finding with question_id. Use this for compl
 				"ticket_id": {Type: "string", Description: "Ticket node ID to link this research under (optional)"},
 				"questions": {Type: "array", Description: "Ordered list of research questions. Each question REQUIRES a summary (search-optimized rendering of the question itself, distinct from context which is background).", Items: &kgtools.Property{
 					Type: "object", Description: `Question object: {"question":"...","summary":"required search-optimized one-line summary, max 500 chars","context":"why this question matters"}`,
+					AdditionalProperties: &falseValue, Properties: map[string]kgtools.Property{
+						"question": {Type: "string", Description: "The research question (required)"},
+						"summary":  {Type: "string", Description: "Required search-optimized one-line summary, max 500 chars"},
+						"context":  {Type: "string", Description: "Why this question matters (background)"},
+					},
 				}},
 				"format": {Type: "string", Description: "Output format: 'text' (default, walks the tree) or 'json' (structured: {id, name, question_ids})."},
 			},

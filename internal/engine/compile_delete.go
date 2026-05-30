@@ -37,13 +37,24 @@ type deleteArgs struct {
 //     created_at in fieldPredicateAllowlist; engine_mutate_apply.go db.Delete
 //     WithHard() matches legacy handlePruneHistory).
 //
-// dry_run:true returns (nil,false) so the legacy count-only path is preserved
-// (dry-run is OUT OF SCOPE — the engine has no dry-run mode). It is the entry
-// point for BOTH the standalone `delete` tool (compile.go switch) AND the
-// id-less mutate(operation:delete) fall-through (compileMutateByIDDelete).
+// dry_run:true returns (nil,false): a dry-run is NEVER lowered to a DELETE
+// MutationPlan. The dispatcher claims the dry-run BEFORE Compile
+// (dispatchDeletePreview) and renders a read-only "would delete" preview for
+// BOTH the by-ids and prune-by-age shapes — so a dry-run cannot reach the engine
+// as a delete. A dry_run that somehow reached this compiler would deny rather
+// than delete (the ok=false fall-through), which is the safe failure direction.
+// compileDelete is the entry point for BOTH the standalone `delete` tool
+// (compile.go switch) AND the id-less mutate(operation:delete) fall-through
+// (compileMutateByIDDelete).
 func compileDelete(args json.RawMessage) (*knowledgev1.ExecuteRequest, bool) {
 	var a deleteArgs
 	if err := json.Unmarshal(args, &a); err != nil {
+		return nil, false
+	}
+	// Safety: a dry-run must never compile to a real DELETE. The preview seam
+	// (dispatchDeletePreview) claims dry_run upstream; if one slips through here
+	// (e.g. a non-Dispatch caller), deny rather than delete.
+	if a.DryRun {
 		return nil, false
 	}
 	if len(a.IDs) > 0 {
@@ -56,10 +67,23 @@ func compileDelete(args json.RawMessage) (*knowledgev1.ExecuteRequest, bool) {
 		return deleteRequest(plan, a.Graph, a.Language), true
 	}
 
-	// Prune-by-age. dry_run is OUT OF SCOPE — the legacy count-only path keeps it.
-	if a.DryRun {
-		return nil, false
+	sel, ok := pruneSelection(a)
+	if !ok {
+		return nil, false // unknown prune type / unparseable duration → legacy surfaces the error.
 	}
+	plan := &knowledgev1.MutationPlan{
+		Kind:      knowledgev1.MutationPlan_MUTATION_KIND_DELETE,
+		Selection: sel,
+	}
+	return deleteRequest(plan, a.Graph, a.Language), true
+}
+
+// pruneSelection builds the prune-by-age Selection (NodeType=alias + a created_at
+// OP_LT cutoff FieldPredicate, plus an optional session_id == metadata guard).
+// Shared by the real-delete compile path (compileDelete) AND the dry-run preview
+// (dispatchDeletePreview) so both resolve the IDENTICAL node set. Returns
+// ok=false on an unknown prune type or an unparseable older_than duration.
+func pruneSelection(a deleteArgs) (*knowledgev1.Selection, bool) {
 	nodeType, ok := pruneTypeAliases[a.Type]
 	if !ok {
 		return nil, false // unknown prune type → legacy surfaces the error.
@@ -83,11 +107,7 @@ func compileDelete(args json.RawMessage) (*knowledgev1.ExecuteRequest, bool) {
 			{Key: "session_id", Op: knowledgev1.MetadataPredicate_OP_EQ, Value: a.SessionID},
 		}
 	}
-	plan := &knowledgev1.MutationPlan{
-		Kind:      knowledgev1.MutationPlan_MUTATION_KIND_DELETE,
-		Selection: sel,
-	}
-	return deleteRequest(plan, a.Graph, a.Language), true
+	return sel, true
 }
 
 // deleteRequest wraps a DELETE MutationPlan in an ExecuteRequest with the target

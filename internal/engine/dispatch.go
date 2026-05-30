@@ -74,6 +74,18 @@ func Dispatch(ctx context.Context, exec ExecuteFn, tool string, args json.RawMes
 			return out, nil
 		}
 	}
+	// Special-shape pre-Compile seam: a delete(dry_run:true) must NEVER compile to
+	// a MUTATION_KIND_DELETE (the by-ids compile path ignored dry_run and really
+	// deleted — finding f95119710b). dispatchDeletePreview claims the dry-run here
+	// and issues a READ against the same selection the real delete would target,
+	// rendering a "would delete N" preview. It returns handled=false for a non-
+	// dry-run delete so Dispatch proceeds to the generic compile→exec→Render
+	// (real-delete) flow.
+	if tool == "delete" {
+		if out, handled := dispatchDeletePreview(ctx, exec, args); handled {
+			return out, nil
+		}
+	}
 	req, ok := Compile(tool, args)
 	if !ok {
 		// Deny flip (decision 7fc2ff59): a Compile-miss is an explicit deny. Any
@@ -216,7 +228,11 @@ func renderSearchTool(args json.RawMessage, resp *knowledgev1.ExecuteResponse) (
 		return kgtools.ToolResult{}, err
 	}
 	query := firstQueryLabel(a.Query, a.Queries)
-	return renderSearchResponseFiltered(resp, query, a.Format, a.Fields, knowledgev1.SearchMode_SEARCH_MODE_HYBRID, a.ResourceType)
+	// Per-request embed signal: a present query_vector ⟺ a vector search ran
+	// (the server never embeds). rerankRan is always false on this arm —
+	// the rerank branch renders via applyClientRerank, not Dispatch.
+	mode := searchModeLabel(a.QueryVector != "", false)
+	return renderSearchResponseFiltered(resp, query, a.Format, a.Fields, knowledgev1.SearchMode_SEARCH_MODE_HYBRID, a.ResourceType, mode)
 }
 
 // renderQueryTool renders a compiled query response, branching on the same
@@ -229,14 +245,19 @@ func renderQueryTool(args json.RawMessage, resp *knowledgev1.ExecuteResponse) (k
 		return kgtools.ToolResult{}, err
 	}
 	label := queryGraphLabelFor(a)
+	// Per-request embed signal: a present query_vector ⟺ a vector search ran.
+	// InterceptQuery embeds only the "" / "hybrid" modes, so graph_reach /
+	// recent / text and the bare default arrive with no query_vector and are
+	// BM25-only EVEN with a Voyage key — keying off config would mislabel them.
+	mode := searchModeLabel(a.QueryVector != "", false)
 
 	switch a.Mode {
 	case "graph_reach":
-		return renderSearchResponse(resp, a.Text, a.Format, a.Fields, knowledgev1.SearchMode_SEARCH_MODE_PPR)
+		return renderSearchResponse(resp, a.Text, a.Format, a.Fields, knowledgev1.SearchMode_SEARCH_MODE_PPR, mode)
 	case "recent":
-		return renderSearchResponse(resp, a.Text, a.Format, a.Fields, knowledgev1.SearchMode_SEARCH_MODE_TEMPORAL)
+		return renderSearchResponse(resp, a.Text, a.Format, a.Fields, knowledgev1.SearchMode_SEARCH_MODE_TEMPORAL, mode)
 	case "text":
-		return renderSearchResponse(resp, a.Text, a.Format, a.Fields, knowledgev1.SearchMode_SEARCH_MODE_HYBRID)
+		return renderSearchResponse(resp, a.Text, a.Format, a.Fields, knowledgev1.SearchMode_SEARCH_MODE_HYBRID, mode)
 	case "modules":
 		return renderGraphNamesResponse(resp)
 	}
@@ -250,7 +271,7 @@ func renderQueryTool(args json.RawMessage, resp *knowledgev1.ExecuteResponse) (k
 	case a.ID != "":
 		return renderNodeResponse(resp, label, a.ID, a.Graph == "" || a.Graph == "knowledge", a.Fields)
 	case a.Text != "":
-		return renderSearchResponse(resp, a.Text, a.Format, a.Fields, knowledgev1.SearchMode_SEARCH_MODE_HYBRID)
+		return renderSearchResponse(resp, a.Text, a.Format, a.Fields, knowledgev1.SearchMode_SEARCH_MODE_HYBRID, mode)
 	default:
 		// type-browse or meta-only.
 		return renderBrowseResponse(resp, browseContext{

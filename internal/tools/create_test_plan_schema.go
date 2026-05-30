@@ -24,6 +24,12 @@ Returns the full test plan tree.`,
 				"summary": {Type: "string", MaxLength: 500, Description: "Required search-optimized one-line summary, max 500 chars (handler enforces). See docs/node-type-llm-defaults.md for why this is required on embed-only-knowledge types."},
 				"steps": {Type: "array", Description: "Ordered list of test steps. Each step REQUIRES name, description, and summary (handler enforces).", Items: &kgtools.Property{
 					Type: "object", Description: `Step object: {"name":"...","description":"...","summary":"required search-optimized one-line summary, max 500 chars","criteria":[{"description":"...","command":"...","type":"automated|manual"}]}`,
+					AdditionalProperties: &falseValue, Properties: map[string]kgtools.Property{
+						"name":        {Type: "string", Description: "Test step name (required)"},
+						"description": {Type: "string", Description: "Test step description (required)"},
+						"summary":     {Type: "string", Description: "Required search-optimized one-line summary, max 500 chars"},
+						"criteria":    {Type: "array", Description: "Pass/fail criteria for this test step.", Items: criterionItems()},
+					},
 				}},
 				"format": {Type: "string", Description: "Output format: 'text' (default, walks the tree) or 'json' (structured: {id, name, step_ids})."},
 			},

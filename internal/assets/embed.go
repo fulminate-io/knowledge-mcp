@@ -31,3 +31,14 @@ import "embed"
 //
 //go:embed all:agents all:skills
 var Files embed.FS
+
+// KnowledgeTools is the full public tool reference (.claude/KNOWLEDGE_TOOLS.md),
+// embedded as a SEPARATE var — deliberately NOT part of Files. Neither
+// installer walks it into ~/.claude/KNOWLEDGE_TOOLS.md; it is the source
+// content for the knowledge-managed block primed into the global
+// instruction files (~/.claude/CLAUDE.md, ~/.codex/AGENTS.md). Populated
+// by scripts/sync-assets.sh, which copies .claude/KNOWLEDGE_TOOLS.md into
+// this package before any build (the copy is gitignored).
+//
+//go:embed KNOWLEDGE_TOOLS.md
+var KnowledgeTools []byte

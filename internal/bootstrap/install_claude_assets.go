@@ -27,10 +27,12 @@ import (
 
 // installAssetsFlags holds the parsed flags for the subcommand.
 type installAssetsFlags struct {
-	dest    string
-	dryRun  bool
-	verbose bool
-	diff    bool
+	dest         string
+	claudeMDDest string
+	dryRun       bool
+	verbose      bool
+	diff         bool
+	noMCP        bool
 }
 
 // runInstallClaudeAssets walks the embedded FS and copies every
@@ -56,9 +58,11 @@ func runInstallClaudeAssets(args []string) error {
 	fs := flag.NewFlagSet("knowledge install-claude-assets", flag.ContinueOnError)
 	var f installAssetsFlags
 	fs.StringVar(&f.dest, "dest", "", "Destination directory (default ~/.claude)")
+	fs.StringVar(&f.claudeMDDest, "claude-md-dest", "", "CLAUDE.md destination path (default ~/.claude/CLAUDE.md)")
 	fs.BoolVar(&f.dryRun, "dry-run", false, "Print what would be written without touching disk")
 	fs.BoolVar(&f.diff, "diff", false, "Print a unified diff of every file that differs (read-only; implies --dry-run)")
 	fs.BoolVar(&f.verbose, "verbose", false, "Print each file path written (default: summary only)")
+	fs.BoolVar(&f.noMCP, "no-mcp", false, "Skip registering the knowledge MCP server with the client (default: register at user scope)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -67,14 +71,27 @@ func runInstallClaudeAssets(args []string) error {
 	if err != nil {
 		return err
 	}
+	claudeMD, err := resolveClaudeMD(f.claudeMDDest)
+	if err != nil {
+		return err
+	}
 
 	if f.diff {
 		// --diff is strictly preview; run the dedicated path that
-		// prints diffs without writing anything.
-		return runDiff(dest)
+		// prints diffs without writing anything, then report the
+		// CLAUDE.md managed-block state via the shared reporter.
+		if err := runDiff(dest); err != nil {
+			return err
+		}
+		return diffManagedFile(claudeMD, string(assets.KnowledgeTools), "CLAUDE.md")
 	}
 
 	written, err := installAssets(dest, f.dryRun, f.verbose)
+	if err != nil {
+		return err
+	}
+
+	mdChanged, err := writeManagedFile(claudeMD, string(assets.KnowledgeTools), f.dryRun)
 	if err != nil {
 		return err
 	}
@@ -83,8 +100,18 @@ func runInstallClaudeAssets(args []string) error {
 	if f.dryRun {
 		verb = "would write"
 	}
-	fmt.Fprintf(os.Stdout, "knowledge install-claude-assets: %s %d files under %s\n", verb, written, dest)
-	return nil
+	mdNote := "CLAUDE.md in sync"
+	if mdChanged {
+		mdNote = fmt.Sprintf("%s CLAUDE.md managed block in %s", verb, claudeMD)
+	}
+	fmt.Fprintf(os.Stdout, "knowledge install-claude-assets: %s %d files under %s; %s\n", verb, written, dest, mdNote)
+
+	if f.noMCP {
+		fmt.Fprintln(os.Stdout, "  --no-mcp: skipped MCP registration")
+		return nil
+	}
+	// Default-on, non-fatal MCP registration at user scope.
+	return registerKnowledgeMCP("claude", []string{"-s", "user"}, f.dryRun)
 }
 
 // runDiff walks the embedded FS, compares each file against the on-
@@ -191,6 +218,21 @@ func resolveClaudeDest(flagDest string) (string, error) {
 		return "", fmt.Errorf("resolve home directory: %w", err)
 	}
 	return filepath.Join(home, ".claude"), nil
+}
+
+// resolveClaudeMD returns the destination CLAUDE.md path. Empty flag
+// defaults to ~/.claude/CLAUDE.md; a non-empty flag is tilde-expanded.
+// Mirrors resolveCodexAgentsMD (codex_agents_md.go) — the codex one
+// hardcodes ~/.codex/AGENTS.md, so a Claude-specific mirror is needed.
+func resolveClaudeMD(flagDest string) (string, error) {
+	if flagDest != "" {
+		return expandTilde(flagDest), nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home directory: %w", err)
+	}
+	return filepath.Join(home, ".claude", "CLAUDE.md"), nil
 }
 
 // installAssets walks the embedded FS and writes regular files to

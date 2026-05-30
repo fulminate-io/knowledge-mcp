@@ -127,13 +127,23 @@ func TestCompileDelete_SessionID(t *testing.T) {
 	assert.Equal(t, "sess-1", preds[0].GetValue())
 }
 
-// TestCompileDelete_DryRunFallsThrough asserts a dry_run:true prune-by-age delete
-// returns ok=false (the legacy count-only path is preserved — the engine has no
-// dry-run mode).
-func TestCompileDelete_DryRunFallsThrough(t *testing.T) {
-	req, ok := Compile("delete", json.RawMessage(`{"older_than":"7d","type":"session","dry_run":true}`))
-	assert.False(t, ok, "dry_run:true must fall through to the legacy count path")
-	assert.Nil(t, req)
+// TestCompileDelete_DryRunNeverCompilesToDelete asserts a dry_run:true delete
+// NEVER lowers to a MUTATION_KIND_DELETE — Compile returns ok=false for BOTH the
+// by-ids and the prune-by-age shapes. This is the compile-side half of the
+// data-loss footgun fix (finding f95119710b): the dispatcher claims the dry-run
+// upstream (dispatchDeletePreview) and renders a read-only preview; a dry-run
+// that somehow reached the compiler denies rather than deletes (safe direction).
+func TestCompileDelete_DryRunNeverCompilesToDelete(t *testing.T) {
+	t.Run("prune-by-age dry_run → ok=false (no DELETE plan)", func(t *testing.T) {
+		req, ok := Compile("delete", json.RawMessage(`{"older_than":"7d","type":"session","dry_run":true}`))
+		assert.False(t, ok, "dry_run:true must NOT compile to a DELETE")
+		assert.Nil(t, req)
+	})
+	t.Run("by-ids dry_run → ok=false (the footgun: was unconditionally DELETE)", func(t *testing.T) {
+		req, ok := Compile("delete", json.RawMessage(`{"ids":["a","b"],"dry_run":true}`))
+		assert.False(t, ok, "by-ids dry_run:true must NOT compile to a DELETE (the data-loss footgun)")
+		assert.Nil(t, req)
+	})
 }
 
 // TestCompileDelete_UnknownTypeFallsThrough asserts an unknown prune type

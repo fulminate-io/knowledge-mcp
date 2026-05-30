@@ -50,7 +50,20 @@ type Property struct {
 	Type        string    `json:"type"`
 	Description string    `json:"description"`
 	Items       *Property `json:"items,omitempty"`
-	Enum        []string  `json:"enum,omitempty"`
+	// Properties is the nested object sub-shape for a type:object param (and,
+	// via Items, for an array-of-object element). Recursive — same Property
+	// type all the way down. Populating it makes the object strict-describable:
+	// a strict (Codex/OpenAI) client can validate every nested key. Empty/nil =
+	// no declared sub-shape (omitted), which is correct for genuinely-arbitrary
+	// maps that stay open (no AdditionalProperties:false set).
+	Properties map[string]Property `json:"properties,omitempty"`
+	Enum       []string            `json:"enum,omitempty"`
+	// AdditionalProperties is a *bool so the zero value is "absent" (omitted):
+	// an explicit false renders additionalProperties:false, closing the object
+	// for strict clients; leaving it nil keeps the object open. Pointer — not
+	// bool — so unset object params do NOT emit additionalProperties at all
+	// rather than emitting additionalProperties:true.
+	AdditionalProperties *bool `json:"additionalProperties,omitempty"`
 	// MaxLength is the JSONSchema maxLength bound for string params (0 = unset,
 	// omitted). Surfacing the cap structurally — not only in Description prose —
 	// gives the model the limit up front, cutting over-length retries on capped

@@ -195,12 +195,12 @@ func checkVoyage(configFile string) checkResult {
 	if config.VoyageAPIKey() == "" {
 		return checkResult{
 			name: "voyage", status: statusInfo,
-			msg: "VOYAGE_API_KEY unset (BM25-only search mode)",
+			msg: "VOYAGE_API_KEY unset — BM25-only search (no vector embeddings, no cross-encoder rerank)",
 		}
 	}
 	return checkResult{
 		name: "voyage", status: statusOK,
-		msg: "VOYAGE_API_KEY set, vector search enabled",
+		msg: "VOYAGE_API_KEY set — vector embeddings + cross-encoder rerank enabled",
 	}
 }
 
@@ -277,6 +277,40 @@ func checkClaudeAssets() checkResult {
 		msg:    fmt.Sprintf("%d missing, %d out of date", len(missing), len(drift)),
 		detail: "run `knowledge install-claude-assets` to update",
 	}
+}
+
+// checkClaudeMD reports whether the knowledge-managed block in
+// ~/.claude/CLAUDE.md matches the embedded KNOWLEDGE_TOOLS.md reference.
+// statusOK when the managed region equals assets.KnowledgeTools;
+// statusWarn (with the install-claude-assets remediation) when it drifts
+// or the file/markers are absent. Only the managed region is compared
+// (via managedBlockInSync), so a user's own prose around the block never
+// trips the warning.
+func checkClaudeMD() checkResult {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return checkResult{name: "claude-md", status: statusWarn, msg: "cannot resolve home dir: " + err.Error()}
+	}
+	path := filepath.Join(home, ".claude", "CLAUDE.md")
+	inSync, exists, err := managedBlockInSync(path, string(assets.KnowledgeTools))
+	if err != nil {
+		return checkResult{name: "claude-md", status: statusWarn, msg: err.Error()}
+	}
+	if !exists {
+		return checkResult{
+			name: "claude-md", status: statusWarn,
+			msg:    "no knowledge-managed block in ~/.claude/CLAUDE.md",
+			detail: "run `knowledge install-claude-assets` to prime it",
+		}
+	}
+	if !inSync {
+		return checkResult{
+			name: "claude-md", status: statusWarn,
+			msg:    "knowledge-managed block out of date",
+			detail: "run `knowledge install-claude-assets` to update",
+		}
+	}
+	return checkResult{name: "claude-md", status: statusOK, msg: "managed block in sync with embedded reference"}
 }
 
 // hashEqual returns true when the two byte slices have the same

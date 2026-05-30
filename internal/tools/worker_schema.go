@@ -50,6 +50,11 @@ func WorkerToolDef() kgtools.MCPTool {
 			"delete: remove a graph-registered worker. " +
 			"trigger: fire a worker manually with a payload (smoke-test path). Returns immediately; the worker runs in background. " +
 			"status: return recent invocation summaries for a named worker. " +
+			"Required params by operation (in addition to the always-required operation): " +
+			"create requires name + system_prompt + provider + model + a non-empty tool_allowlist; " +
+			"update requires name (every field except name is mutable); " +
+			"trigger / status / delete require name; cancel requires invocation OR name; " +
+			"list / running require nothing further. " +
 			"NOTE: workers require a tool-capable LLM provider (anthropic, openai, gemini). " +
 			"CLI providers (claude-cli, codex-cli) parse cleanly but fail at the first tool call with *llm.LLMError.",
 		InputSchema: kgtools.InputSchema{
@@ -72,8 +77,12 @@ func WorkerToolDef() kgtools.MCPTool {
 					Description: "Allowed MCP tool names — required and non-empty for create. Used by create/update.",
 				},
 				"triggers": {
-					Type:        "array",
-					Items:       &kgtools.Property{Type: "object"},
+					Type: "array",
+					Items: &kgtools.Property{Type: "object", Description: "Trigger entry: {event, filter, schedule}", AdditionalProperties: &falseValue, Properties: map[string]kgtools.Property{
+						"event":    {Type: "string", Description: "Event that fires the trigger", Enum: []string{"tool-started", "tool-completed", "worker-started", "worker-completed", "cron", "manual"}},
+						"filter":   {Type: "object", Description: "AND-of-equality match on event metadata"},
+						"schedule": {Type: "string", Description: "Cron expression (only for event=cron)"},
+					}},
 					Description: "Trigger entries (used by create/update). Each entry: {event, filter, schedule}. Event ∈ {tool-started, tool-completed, worker-started, worker-completed, cron, manual}. Filter is an AND-of-equality match on event metadata; schedule is a cron expression on Event=cron.",
 				},
 				"max_iterations":        {Type: "integer", Description: "Max ReAct loop iterations per invocation (used by create/update). 0 means use the package default."},

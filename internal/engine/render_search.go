@@ -63,24 +63,24 @@ type SearchJSONResponse struct {
 // caller, switching on the originally-requested format. Mirrors the server-side
 // renderer's shape so the engine path is LLM-facing-equivalent to the legacy
 // search path.
-func RenderForCaller(query string, results []SearchResult, format string, fields []string) kgtools.ToolResult {
+func RenderForCaller(query string, results []SearchResult, format string, fields []string, searchMode string) kgtools.ToolResult {
 	switch format {
 	case "json":
 		return renderJSON(query, results, fields)
 	default:
-		return renderText(query, results)
+		return renderText(query, results, searchMode)
 	}
 }
 
 // renderSearchResponse decodes an engine ExecuteResponse's search blob and
 // renders it for the caller with the mode-label suffix applied. It is the
 // search arm of engine.Render.
-func renderSearchResponse(resp *knowledgev1.ExecuteResponse, query, format string, fields []string, mode knowledgev1.SearchMode) (kgtools.ToolResult, error) {
+func renderSearchResponse(resp *knowledgev1.ExecuteResponse, query, format string, fields []string, mode knowledgev1.SearchMode, searchMode string) (kgtools.ToolResult, error) {
 	results, err := decodeSearch(resp)
 	if err != nil {
 		return kgtools.ToolResult{}, err
 	}
-	return RenderForCaller(labelForSearch(query, mode), results, format, fields), nil
+	return RenderForCaller(labelForSearch(query, mode), results, format, fields, searchMode), nil
 }
 
 // renderSearchResponseFiltered is renderSearchResponse plus a client-side
@@ -88,13 +88,13 @@ func renderSearchResponse(resp *knowledgev1.ExecuteResponse, query, format strin
 // resource_type filter does NOT compose with a QSearch post-rank server-side
 // (T-GTB1), so the client trims the decoded SearchList here. An empty prefix is
 // a no-op (RenderForCaller renders the full set).
-func renderSearchResponseFiltered(resp *knowledgev1.ExecuteResponse, query, format string, fields []string, mode knowledgev1.SearchMode, resourceType string) (kgtools.ToolResult, error) {
+func renderSearchResponseFiltered(resp *knowledgev1.ExecuteResponse, query, format string, fields []string, mode knowledgev1.SearchMode, resourceType, searchMode string) (kgtools.ToolResult, error) {
 	results, err := decodeSearch(resp)
 	if err != nil {
 		return kgtools.ToolResult{}, err
 	}
 	results = filterByResourceTypePrefix(results, resourceType)
-	return RenderForCaller(labelForSearch(query, mode), results, format, fields), nil
+	return RenderForCaller(labelForSearch(query, mode), results, format, fields, searchMode), nil
 }
 
 // filterByResourceTypePrefix trims the result set to those whose resource_type
@@ -256,10 +256,31 @@ func projectHydratedResult(r SearchResult, fields []string) map[string]any {
 	return out
 }
 
+// searchModeLabel maps the per-request embed/rerank activation state to the
+// always-on footer label. The first arg is `embedded` — whether a vector
+// embedding was GENUINELY attached to THIS request (a client-supplied
+// query_vector) — NOT whether a Voyage key is configured. This is the truthful
+// signal because the server NEVER embeds (the compositor's CompositorConfig is
+// empty by construction; an absent query_vec yields BM25-only ranking), so a
+// present query_vector ⟺ a vector search actually ran. There is no existing
+// analog: labelForSearch only suffixes the PPR/temporal query HEADER, a
+// different concern.
+func searchModeLabel(embedded, rerankRan bool) string {
+	switch {
+	case embedded && rerankRan:
+		return "vector+rerank"
+	case embedded:
+		return "vector"
+	default:
+		return "BM25-only"
+	}
+}
+
 // renderText emits a compact markdown summary of the result slice. Mirrors the
 // server-side formatSearchResults shape closely enough that a caller in text
-// mode sees a comparable response.
-func renderText(query string, results []SearchResult) kgtools.ToolResult {
+// mode sees a comparable response. The searchMode footer reflects the
+// per-request embed/rerank activation (text-only; the JSON arm is untouched).
+func renderText(query string, results []SearchResult, searchMode string) kgtools.ToolResult {
 	var sb strings.Builder
 	if query != "" {
 		fmt.Fprintf(&sb, "Search: %s (%d results)\n", query, len(results))
@@ -282,6 +303,7 @@ func renderText(query string, results []SearchResult) kgtools.ToolResult {
 			fmt.Fprintf(&sb, "   %s\n", r.Node.Summary)
 		}
 	}
+	fmt.Fprintf(&sb, "\n_search mode: %s_\n", searchMode)
 	return kgtools.TextResult(sb.String())
 }
 

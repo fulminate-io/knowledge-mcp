@@ -33,7 +33,14 @@ func ManageToolDef() kgtools.MCPTool {
 			"Requires graph=<cloud|cicd|practice|logs> and name=<graph identifier>. dry_run=true returns the action report without writing. " +
 			"Use this immediately after the metadata-promotion subsystem ships to backfill existing graphs, or on demand when an operator wants to flip representations without waiting for the dream PROMOTE timer. " +
 			"clear_llm_failures: clear summary_failure_reason and embed_failure_reason metadata on every node across one or all loaded graphs so the LLM pipeline collector re-discovers them on the next tick. Operator recovery path for terminally-failed nodes (4xx-other / context-too-large / config error). With graph= and name= empty, walks every loaded graph; with graph= set, scopes to that graph type; with both set, scopes to one named graph. " +
-			"prune: hard-delete (garbage-collect) tombstoned nodes from a graph. Works generically on ANY graph type (knowledge, code, cloud, cicd, practice, logs, web, pdf, linkage, transformers) — it is 'delete tombstoned nodes,' nothing more, with no graph-type allowlist. Requires a non-empty graph (name it explicitly). before=<relative window like '24h'/'2d' OR absolute RFC3339> deletes only tombstones tombstoned before that cutoff; omit before to prune ALL tombstoned nodes. Returns the pruned count.",
+			"prune: hard-delete (garbage-collect) tombstoned nodes from a graph. Works generically on ANY graph type (knowledge, code, cloud, cicd, practice, logs, web, pdf, linkage, transformers) — it is 'delete tombstoned nodes,' nothing more, with no graph-type allowlist. Requires a non-empty graph (name it explicitly). before=<relative window like '24h'/'2d' OR absolute RFC3339> deletes only tombstones tombstoned before that cutoff; omit before to prune ALL tombstoned nodes. Returns the pruned count. " +
+			"Required params by operation (in addition to the always-required operation): " +
+			"rebuild_hnsw / rebuild_bm25 require graph for non-knowledge graphs; " +
+			"delete_branch / list_branches require name + branch; " +
+			"configure_log_backend requires name + provider + url + auth_type (credential optional for auth_type=kubeconfig); " +
+			"discard_logs requires name (empty name drops all log graphs); " +
+			"set_metadata_overrides / promote_metadata require graph + name; prune requires graph; " +
+			"status / list_log_backends / list_logs / link / topology / clear_llm_failures / pprof_start / pprof_stop require nothing further.",
 		InputSchema: kgtools.InputSchema{
 			Type: "object",
 			Properties: map[string]kgtools.Property{

@@ -69,6 +69,7 @@ func runDoctor(args []string) error {
 		checkVoyage(*configFile),
 		checkFulminateAuth(),
 		checkClaudeAssets(),
+		checkClaudeMD(),
 	)
 	if *deep {
 		checks = append(checks, checkProvidersDeep(*configFile))

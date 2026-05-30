@@ -27,10 +27,8 @@ func CreateTicketToolDef() kgtools.MCPTool {
 					Type: "string", Description: "Pattern node ID",
 				}},
 				"no_patterns_reason": {Type: "string", Description: "Audited escape hatch when no pattern applies (trivial doc edit, scaffolding, etc.). Persisted as ticket-node metadata `no_patterns_reason`. Exactly one of pattern_ids, no_patterns_reason, or proposed_patterns must be supplied."},
-				"proposed_patterns": {Type: "array", Description: "Not-yet-cataloged patterns this ticket introduces. Each entry creates a pattern node with status='emerging' linked via uses. Exactly one of pattern_ids, no_patterns_reason, or proposed_patterns must be supplied.", Items: &kgtools.Property{
-					Type: "object", Description: `Proposed pattern: {"name":"...","sketch":"interface sketch / pseudocode describing the proposed pattern shape (optional)"}`,
-				}},
-				"language_patterns": {Type: "array", Description: "Language-specific defensive patterns/findings (e.g., Go anti-patterns from practice/go with metadata.dsl_pattern set) the ticket should be vigilant of. Wired as ticket→<finding|pattern> EdgeAudits edges. INDEPENDENT of pattern_ids / no_patterns_reason / proposed_patterns — accepts any non-empty subset, including none. Broken/unknown IDs produce a non-fatal warning under the `## Warnings` section.", Items: &kgtools.Property{Type: "string"}},
+				"proposed_patterns":  {Type: "array", Description: "Not-yet-cataloged patterns this ticket introduces. Each entry creates a pattern node with status='emerging' linked via uses. Exactly one of pattern_ids, no_patterns_reason, or proposed_patterns must be supplied.", Items: proposedPatternItems()},
+				"language_patterns":  {Type: "array", Description: "Language-specific defensive patterns/findings (e.g., Go anti-patterns from practice/go with metadata.dsl_pattern set) the ticket should be vigilant of. Wired as ticket→<finding|pattern> EdgeAudits edges. INDEPENDENT of pattern_ids / no_patterns_reason / proposed_patterns — accepts any non-empty subset, including none. Broken/unknown IDs produce a non-fatal warning under the `## Warnings` section.", Items: &kgtools.Property{Type: "string"}},
 
 				// Backend metadata passthrough. Pre-populated by the
 				// client-side intercept after a successful Linear

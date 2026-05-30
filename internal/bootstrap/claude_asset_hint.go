@@ -75,3 +75,29 @@ func hintClaudeAssetsIfStale() {
 	slog.Warn("knowledge: ~/.claude assets out of date; run `knowledge install-claude-assets` to update",
 		"missing", missing, "out_of_date", drift, "dest", dest)
 }
+
+// hintClaudeMDIfStale checks whether the knowledge-managed block in
+// ~/.claude/CLAUDE.md matches the embedded KNOWLEDGE_TOOLS.md reference
+// and emits a slog.Warn when it drifts (or the file/markers are absent).
+// Only the managed region is compared (via managedBlockInSync), so a
+// user's own prose around the block never trips a false "out of date"
+// warning — the same managed-block discipline the AGENTS.md hint relies
+// on (codex_asset_hint.go documents why AGENTS.md is otherwise excluded).
+// No-op when the home dir can't be resolved or the read errors (courtesy
+// hint, not load-bearing).
+func hintClaudeMDIfStale() {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	path := filepath.Join(home, ".claude", "CLAUDE.md")
+	inSync, exists, err := managedBlockInSync(path, string(assets.KnowledgeTools))
+	if err != nil || !exists || inSync {
+		// Swallow read errors (courtesy hint); a missing file is not a
+		// drift signal (install-claude-assets seeds it on first run);
+		// in-sync is the happy path.
+		return
+	}
+	slog.Warn("knowledge: ~/.claude/CLAUDE.md managed block out of date; run `knowledge install-claude-assets` to update",
+		"path", path)
+}

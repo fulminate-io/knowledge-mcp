@@ -47,6 +47,7 @@ type installCodexFlags struct {
 	dryRun       bool
 	verbose      bool
 	diff         bool
+	noMCP        bool
 }
 
 // codexDest pairs the resolved split roots.
@@ -77,6 +78,7 @@ func runInstallCodexAssets(args []string) error {
 	fs.BoolVar(&f.dryRun, "dry-run", false, "Print what would be written without touching disk")
 	fs.BoolVar(&f.diff, "diff", false, "Print a unified diff of every file that differs (read-only; implies --dry-run)")
 	fs.BoolVar(&f.verbose, "verbose", false, "Print each file path written (default: summary only)")
+	fs.BoolVar(&f.noMCP, "no-mcp", false, "Skip registering the knowledge MCP server with the client (default: register)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -94,7 +96,7 @@ func runInstallCodexAssets(args []string) error {
 		if err := runCodexDiff(dest); err != nil {
 			return err
 		}
-		return diffManagedAgentsMD(agentsMD)
+		return diffManagedFile(agentsMD, string(assets.KnowledgeTools), "AGENTS.md")
 	}
 
 	written, err := installCodexAssets(dest, f.dryRun, f.verbose)
@@ -102,7 +104,7 @@ func runInstallCodexAssets(args []string) error {
 		return err
 	}
 
-	mdChanged, err := writeManagedAgentsMD(agentsMD, f.dryRun)
+	mdChanged, err := writeManagedFile(agentsMD, string(assets.KnowledgeTools), f.dryRun)
 	if err != nil {
 		return err
 	}
@@ -117,28 +119,14 @@ func runInstallCodexAssets(args []string) error {
 	}
 	fmt.Fprintf(os.Stdout, "knowledge install-codex-assets: %s %d files (skills→%s, agents→%s); %s\n",
 		verb, written, dest.skills, dest.agents, mdNote)
-	return nil
-}
 
-// diffManagedAgentsMD prints whether the AGENTS.md managed block would
-// change, in the read-only --diff mode. It never writes. A full unified
-// diff is overkill for a single managed region, so it reports NEW /
-// would-update / in-sync.
-func diffManagedAgentsMD(agentsMD string) error {
-	existing, err := os.ReadFile(agentsMD)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			fmt.Fprintf(os.Stdout, "NEW: %s (knowledge-managed AGENTS.md block)\n", agentsMD)
-			return nil
-		}
-		return fmt.Errorf("read %s: %w", agentsMD, err)
-	}
-	if mergeManagedBlock(string(existing)) == string(existing) {
-		fmt.Fprintf(os.Stdout, "AGENTS.md managed block in sync: %s\n", agentsMD)
+	if f.noMCP {
+		fmt.Fprintln(os.Stdout, "  --no-mcp: skipped MCP registration")
 		return nil
 	}
-	fmt.Fprintf(os.Stdout, "WOULD UPDATE: %s (knowledge-managed block)\n", agentsMD)
-	return nil
+	// Default-on, non-fatal MCP registration. Codex has no -s user
+	// scope flag, so scopeArgs is nil.
+	return registerKnowledgeMCP("codex", nil, f.dryRun)
 }
 
 // resolveCodexDest returns the split destination roots. Empty flags

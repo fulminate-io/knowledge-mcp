@@ -61,5 +61,9 @@ func applyClientRerank(ctx context.Context, resp kgtools.ToolResult, saved saved
 	if saved.originalLimit > 0 && len(reranked) > saved.originalLimit {
 		reranked = reranked[:saved.originalLimit]
 	}
-	return engine.RenderForCaller(saved.originalQuery, reranked, saved.originalFormat, saved.originalFields)
+	// Reaching this render means an embedding was attached AND rerank ran, so
+	// the footer label is unconditionally "vector+rerank". The four degrade
+	// branches above early-return the untouched server response (no footer) —
+	// a deliberately-deferred visibility gap, not retrofitted here.
+	return engine.RenderForCaller(saved.originalQuery, reranked, saved.originalFormat, saved.originalFields, "vector+rerank")
 }
