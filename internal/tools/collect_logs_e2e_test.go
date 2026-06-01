@@ -136,28 +136,27 @@ func uniqueProviderName(t *testing.T) string {
 //
 // Post-BCN11.1: runLogsCollect runs MaterializeLogGraph CLIENT-SIDE and
 // ships the resulting ([]knowledgev1.Node, []kgwire.BatchEdge) via the standard
-// UploadSink.WriteResult RPC — same wire as code/cloud/cicd. The test
-// captures the WriteResultRequest and verifies:
+// UploadSink CollectChunk + Finalize flow — same wire as code/cloud/cicd. The
+// test captures the final CollectChunkRequest (which carries the edges) and
+// verifies:
 //
 //   - graph_type == "logs"
-//   - edges_json carries an EMITTED_BY edge into the cloud proxy ID
-//   - edges_json carries a CORRELATES_WITH edge with non-zero Confidence
+//   - edges carry an EMITTED_BY edge into the cloud proxy ID
+//   - edges carry a CORRELATES_WITH edge with non-zero Confidence
 //     (the BatchEdge.Confidence audit guard)
 //
-// We can't directly inspect the chunked node bodies without driving the
-// bidi UploadChunks stream, so the proxy-node presence is asserted via
-// the captured CollectResult: the server-side WriteResult reassembled the
-// uploaded chunks by hash, and the capturing sink recorded the full
-// materialized batch (nodes + edges) — no store engine needed.
+// The proxy-node presence is asserted via the captured CollectResult: the
+// handler accumulated the inline chunk nodes and the capturing sink recorded
+// the full materialized batch (nodes + edges) on Finalize — no store engine.
 func TestRunLogsCollect_E2E(t *testing.T) {
 	provName := uniqueProviderName(t)
 	logwire.Register(provName, func() logwire.Provider {
 		return &stubLogsProvider{entries: e2eEntries(time.Date(2026, 4, 26, 12, 0, 0, 0, time.UTC))}
 	})
 
-	// In-process ingest server: UploadChunks → WriteResult runs end-to-end;
-	// the server-side handler captures both the WriteResultRequest (edge
-	// carrier shape) and the reassembled CollectResult (node bodies).
+	// In-process ingest server: CollectChunk → Finalize runs end-to-end; the
+	// handler captures both the final CollectChunkRequest (edge carrier shape)
+	// and the accumulated CollectResult (node bodies).
 	srv, captured, handler := startInProcessIngestServer(t, buildSubgraphResponse(t), nil)
 	t.Cleanup(srv.close)
 
@@ -169,7 +168,7 @@ func TestRunLogsCollect_E2E(t *testing.T) {
 	})
 	require.False(t, result.IsError, "runLogsCollect returned IsError; content=%q", resultText(result))
 
-	require.NotNil(t, captured.req, "expected WriteResult to be called")
+	require.NotNil(t, captured.req, "expected CollectChunk+Finalize to be called")
 	assert.Equal(t, string(kgtypes.GraphLogs), captured.req.GraphType)
 
 	edges := batchEdgesFromProtoForTest(captured.req.GetEdges())
@@ -203,7 +202,7 @@ func TestRunLogsCollect_E2E(t *testing.T) {
 
 	// (c) The reassembled CollectResult batch carries the materialized proxy
 	// node and its EMITTED_BY edge — the same node+edge set the server-side
-	// WriteResult would have persisted, now asserted on the captured wire
+	// CollectChunk+Finalize landed, now asserted on the captured wire
 	// payload instead of a store readback.
 	batch := handler.sink.last()
 	require.NotNil(t, batch, "expected the server to capture a CollectResult")
@@ -230,7 +229,7 @@ func TestRunLogsCollect_E2E(t *testing.T) {
 // proceed-without-cloud-enrichment path: a transport error from
 // FetchCloudSubgraph must NOT fail the tool — runLogsCollect drops the
 // resolver/dep-checker and still ships the temporal-only pipeline output
-// via WriteResult (no proxy nodes, no resolver-dependent edges).
+// via CollectChunk+Finalize (no proxy nodes, no resolver-dependent edges).
 func TestRunLogsCollect_FetchSubgraphError(t *testing.T) {
 	provName := uniqueProviderName(t)
 	logwire.Register(provName, func() logwire.Provider {
@@ -249,7 +248,7 @@ func TestRunLogsCollect_FetchSubgraphError(t *testing.T) {
 	})
 	require.False(t, result.IsError, "FetchCloudSubgraph error must be non-fatal; content=%q", resultText(result))
 
-	require.NotNil(t, captured.req, "expected WriteResult to be called even after FetchCloudSubgraph failure")
+	require.NotNil(t, captured.req, "expected CollectChunk+Finalize to be called even after FetchCloudSubgraph failure")
 	assert.Equal(t, string(kgtypes.GraphLogs), captured.req.GraphType)
 
 	edges := batchEdgesFromProtoForTest(captured.req.GetEdges())

@@ -35,12 +35,11 @@ const (
 // reflection-formatted method names, remove the leading slash and convert the remaining slash to a
 // period.
 const (
-	// IngestServiceUploadChunksProcedure is the fully-qualified name of the IngestService's
-	// UploadChunks RPC.
-	IngestServiceUploadChunksProcedure = "/knowledge.v1.IngestService/UploadChunks"
-	// IngestServiceWriteResultProcedure is the fully-qualified name of the IngestService's WriteResult
-	// RPC.
-	IngestServiceWriteResultProcedure = "/knowledge.v1.IngestService/WriteResult"
+	// IngestServiceCollectChunkProcedure is the fully-qualified name of the IngestService's
+	// CollectChunk RPC.
+	IngestServiceCollectChunkProcedure = "/knowledge.v1.IngestService/CollectChunk"
+	// IngestServiceFinalizeProcedure is the fully-qualified name of the IngestService's Finalize RPC.
+	IngestServiceFinalizeProcedure = "/knowledge.v1.IngestService/Finalize"
 	// IngestServiceFetchCloudSubgraphProcedure is the fully-qualified name of the IngestService's
 	// FetchCloudSubgraph RPC.
 	IngestServiceFetchCloudSubgraphProcedure = "/knowledge.v1.IngestService/FetchCloudSubgraph"
@@ -48,8 +47,8 @@ const (
 
 // IngestServiceClient is a client for the knowledge.v1.IngestService service.
 type IngestServiceClient interface {
-	UploadChunks(context.Context) *connect.BidiStreamForClient[v1.ChunkBatch, v1.ChunkAck]
-	WriteResult(context.Context, *connect.Request[v1.WriteResultRequest]) (*connect.Response[v1.WriteResultResponse], error)
+	CollectChunk(context.Context, *connect.Request[v1.CollectChunkRequest]) (*connect.Response[v1.CollectChunkResponse], error)
+	Finalize(context.Context, *connect.Request[v1.FinalizeRequest]) (*connect.Response[v1.FinalizeResponse], error)
 	FetchCloudSubgraph(context.Context, *connect.Request[v1.FetchCloudSubgraphRequest]) (*connect.Response[v1.FetchCloudSubgraphResponse], error)
 }
 
@@ -64,16 +63,16 @@ func NewIngestServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 	baseURL = strings.TrimRight(baseURL, "/")
 	ingestServiceMethods := v1.File_knowledge_v1_ingest_proto.Services().ByName("IngestService").Methods()
 	return &ingestServiceClient{
-		uploadChunks: connect.NewClient[v1.ChunkBatch, v1.ChunkAck](
+		collectChunk: connect.NewClient[v1.CollectChunkRequest, v1.CollectChunkResponse](
 			httpClient,
-			baseURL+IngestServiceUploadChunksProcedure,
-			connect.WithSchema(ingestServiceMethods.ByName("UploadChunks")),
+			baseURL+IngestServiceCollectChunkProcedure,
+			connect.WithSchema(ingestServiceMethods.ByName("CollectChunk")),
 			connect.WithClientOptions(opts...),
 		),
-		writeResult: connect.NewClient[v1.WriteResultRequest, v1.WriteResultResponse](
+		finalize: connect.NewClient[v1.FinalizeRequest, v1.FinalizeResponse](
 			httpClient,
-			baseURL+IngestServiceWriteResultProcedure,
-			connect.WithSchema(ingestServiceMethods.ByName("WriteResult")),
+			baseURL+IngestServiceFinalizeProcedure,
+			connect.WithSchema(ingestServiceMethods.ByName("Finalize")),
 			connect.WithClientOptions(opts...),
 		),
 		fetchCloudSubgraph: connect.NewClient[v1.FetchCloudSubgraphRequest, v1.FetchCloudSubgraphResponse](
@@ -87,19 +86,19 @@ func NewIngestServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 
 // ingestServiceClient implements IngestServiceClient.
 type ingestServiceClient struct {
-	uploadChunks       *connect.Client[v1.ChunkBatch, v1.ChunkAck]
-	writeResult        *connect.Client[v1.WriteResultRequest, v1.WriteResultResponse]
+	collectChunk       *connect.Client[v1.CollectChunkRequest, v1.CollectChunkResponse]
+	finalize           *connect.Client[v1.FinalizeRequest, v1.FinalizeResponse]
 	fetchCloudSubgraph *connect.Client[v1.FetchCloudSubgraphRequest, v1.FetchCloudSubgraphResponse]
 }
 
-// UploadChunks calls knowledge.v1.IngestService.UploadChunks.
-func (c *ingestServiceClient) UploadChunks(ctx context.Context) *connect.BidiStreamForClient[v1.ChunkBatch, v1.ChunkAck] {
-	return c.uploadChunks.CallBidiStream(ctx)
+// CollectChunk calls knowledge.v1.IngestService.CollectChunk.
+func (c *ingestServiceClient) CollectChunk(ctx context.Context, req *connect.Request[v1.CollectChunkRequest]) (*connect.Response[v1.CollectChunkResponse], error) {
+	return c.collectChunk.CallUnary(ctx, req)
 }
 
-// WriteResult calls knowledge.v1.IngestService.WriteResult.
-func (c *ingestServiceClient) WriteResult(ctx context.Context, req *connect.Request[v1.WriteResultRequest]) (*connect.Response[v1.WriteResultResponse], error) {
-	return c.writeResult.CallUnary(ctx, req)
+// Finalize calls knowledge.v1.IngestService.Finalize.
+func (c *ingestServiceClient) Finalize(ctx context.Context, req *connect.Request[v1.FinalizeRequest]) (*connect.Response[v1.FinalizeResponse], error) {
+	return c.finalize.CallUnary(ctx, req)
 }
 
 // FetchCloudSubgraph calls knowledge.v1.IngestService.FetchCloudSubgraph.
@@ -109,8 +108,8 @@ func (c *ingestServiceClient) FetchCloudSubgraph(ctx context.Context, req *conne
 
 // IngestServiceHandler is an implementation of the knowledge.v1.IngestService service.
 type IngestServiceHandler interface {
-	UploadChunks(context.Context, *connect.BidiStream[v1.ChunkBatch, v1.ChunkAck]) error
-	WriteResult(context.Context, *connect.Request[v1.WriteResultRequest]) (*connect.Response[v1.WriteResultResponse], error)
+	CollectChunk(context.Context, *connect.Request[v1.CollectChunkRequest]) (*connect.Response[v1.CollectChunkResponse], error)
+	Finalize(context.Context, *connect.Request[v1.FinalizeRequest]) (*connect.Response[v1.FinalizeResponse], error)
 	FetchCloudSubgraph(context.Context, *connect.Request[v1.FetchCloudSubgraphRequest]) (*connect.Response[v1.FetchCloudSubgraphResponse], error)
 }
 
@@ -121,16 +120,16 @@ type IngestServiceHandler interface {
 // and JSON codecs. They also support gzip compression.
 func NewIngestServiceHandler(svc IngestServiceHandler, opts ...connect.HandlerOption) (string, http.Handler) {
 	ingestServiceMethods := v1.File_knowledge_v1_ingest_proto.Services().ByName("IngestService").Methods()
-	ingestServiceUploadChunksHandler := connect.NewBidiStreamHandler(
-		IngestServiceUploadChunksProcedure,
-		svc.UploadChunks,
-		connect.WithSchema(ingestServiceMethods.ByName("UploadChunks")),
+	ingestServiceCollectChunkHandler := connect.NewUnaryHandler(
+		IngestServiceCollectChunkProcedure,
+		svc.CollectChunk,
+		connect.WithSchema(ingestServiceMethods.ByName("CollectChunk")),
 		connect.WithHandlerOptions(opts...),
 	)
-	ingestServiceWriteResultHandler := connect.NewUnaryHandler(
-		IngestServiceWriteResultProcedure,
-		svc.WriteResult,
-		connect.WithSchema(ingestServiceMethods.ByName("WriteResult")),
+	ingestServiceFinalizeHandler := connect.NewUnaryHandler(
+		IngestServiceFinalizeProcedure,
+		svc.Finalize,
+		connect.WithSchema(ingestServiceMethods.ByName("Finalize")),
 		connect.WithHandlerOptions(opts...),
 	)
 	ingestServiceFetchCloudSubgraphHandler := connect.NewUnaryHandler(
@@ -141,10 +140,10 @@ func NewIngestServiceHandler(svc IngestServiceHandler, opts ...connect.HandlerOp
 	)
 	return "/knowledge.v1.IngestService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
-		case IngestServiceUploadChunksProcedure:
-			ingestServiceUploadChunksHandler.ServeHTTP(w, r)
-		case IngestServiceWriteResultProcedure:
-			ingestServiceWriteResultHandler.ServeHTTP(w, r)
+		case IngestServiceCollectChunkProcedure:
+			ingestServiceCollectChunkHandler.ServeHTTP(w, r)
+		case IngestServiceFinalizeProcedure:
+			ingestServiceFinalizeHandler.ServeHTTP(w, r)
 		case IngestServiceFetchCloudSubgraphProcedure:
 			ingestServiceFetchCloudSubgraphHandler.ServeHTTP(w, r)
 		default:
@@ -156,12 +155,12 @@ func NewIngestServiceHandler(svc IngestServiceHandler, opts ...connect.HandlerOp
 // UnimplementedIngestServiceHandler returns CodeUnimplemented from all methods.
 type UnimplementedIngestServiceHandler struct{}
 
-func (UnimplementedIngestServiceHandler) UploadChunks(context.Context, *connect.BidiStream[v1.ChunkBatch, v1.ChunkAck]) error {
-	return connect.NewError(connect.CodeUnimplemented, errors.New("knowledge.v1.IngestService.UploadChunks is not implemented"))
+func (UnimplementedIngestServiceHandler) CollectChunk(context.Context, *connect.Request[v1.CollectChunkRequest]) (*connect.Response[v1.CollectChunkResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("knowledge.v1.IngestService.CollectChunk is not implemented"))
 }
 
-func (UnimplementedIngestServiceHandler) WriteResult(context.Context, *connect.Request[v1.WriteResultRequest]) (*connect.Response[v1.WriteResultResponse], error) {
-	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("knowledge.v1.IngestService.WriteResult is not implemented"))
+func (UnimplementedIngestServiceHandler) Finalize(context.Context, *connect.Request[v1.FinalizeRequest]) (*connect.Response[v1.FinalizeResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("knowledge.v1.IngestService.Finalize is not implemented"))
 }
 
 func (UnimplementedIngestServiceHandler) FetchCloudSubgraph(context.Context, *connect.Request[v1.FetchCloudSubgraphRequest]) (*connect.Response[v1.FetchCloudSubgraphResponse], error) {

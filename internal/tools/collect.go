@@ -134,8 +134,8 @@ func InterceptCollect(deps ClientDeps, params kgtools.CallToolParams) (bool, kgt
 		// survives via the pipeline's wrap.
 		return true, errorResult(err.Error())
 	}
-	// FUL-255: post-collect linker tail-call. Replaces the server-side
-	// runPostCollectLinker (excised from cmd/knowledge-server/internal/storesink/sink.go).
+	// FUL-255: post-collect linker tail-call. Replaces the former server-side
+	// runPostCollectLinker that ran on the collect-write path.
 	// Gated on the same collector types that previously triggered the
 	// server-side path. Best-effort: failures slog.Warn but the
 	// user-facing textResult is unchanged.
@@ -220,7 +220,7 @@ func runPostCollectPostPopulate(ctx context.Context, deps ClientDeps, collectorT
 
 // postCollectLinkerTypes is the set of collector types that trigger the
 // post-collect cross-graph linker. Mirrors the pre-FUL-255 server-side
-// gate at pkg/storesink/sink.go (GraphCloud / GraphCICD) plus the
+// gate (GraphCloud / GraphCICD) plus the
 // collector-type extensions the linker exercises (aws/gcp/azure/k8s
 // land in cloud; github/gitlab/bitbucket land in cicd).
 var postCollectLinkerTypes = map[string]bool{

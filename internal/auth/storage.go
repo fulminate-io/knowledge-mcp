@@ -34,6 +34,15 @@ const ServiceName = "io.fulminate.knowledge"
 // secrets belong in the keychain; short-lived access tokens stay in memory.
 const KeyRefreshToken = "refresh_token"
 
+// KeyClientID is the well-known keychain key for the OAuth client_id issued
+// to this install by Dynamic Client Registration at login time. WorkOS
+// AuthKit honors RFC 8707 resource indicators only for DCR/CIMD clients (a
+// hand-created OAuth Application's tokens are minted with aud=client_id and
+// reject the resource parameter with invalid_target), so the knowledge CLI
+// has no static client_id — it registers a public client during `login` and
+// persists the issued id here so the refresh path can reuse it.
+const KeyClientID = "client_id"
+
 // Sentinel errors returned by Store implementations. Callers should compare
 // via errors.Is — platform backends may wrap these with additional context.
 var (

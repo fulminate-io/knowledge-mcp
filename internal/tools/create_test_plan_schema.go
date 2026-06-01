@@ -27,7 +27,7 @@ Returns the full test plan tree.`,
 					AdditionalProperties: &falseValue, Properties: map[string]kgtools.Property{
 						"name":        {Type: "string", Description: "Test step name (required)"},
 						"description": {Type: "string", Description: "Test step description (required)"},
-						"summary":     {Type: "string", Description: "Required search-optimized one-line summary, max 500 chars"},
+						"summary":     {Type: "string", MaxLength: 500, Description: "Required search-optimized one-line summary, max 500 chars"},
 						"criteria":    {Type: "array", Description: "Pass/fail criteria for this test step.", Items: criterionItems()},
 					},
 				}},

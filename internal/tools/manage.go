@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	clientlinker "github.com/fulminate-io/knowledge-mcp/internal/linker"
 	"github.com/fulminate-io/knowledge-mcp/internal/pipeline"
@@ -28,6 +30,18 @@ type pipelineMetricser interface {
 // discipline as pipelineMetricser.
 type pipelineResetter interface {
 	ResetPipelineFailedCounters()
+}
+
+// cloudStatusInfo is the optional view of ClientDeps that manage(status)
+// uses to learn (a) whether the user is logged in to Fulminate Cloud and
+// (b) the cloud host to surface in the status body. Declared here (not on
+// ClientDeps) for the SAME reason as pipelineMetricser: the 18+ existing
+// test fakes that satisfy ClientDeps must not each grow a new stub method.
+// Production *client satisfies it structurally; handleServerStatus
+// degrades to the existing local-daemon path when the type-assert misses
+// or CloudStatusInfo reports loggedIn=false.
+type cloudStatusInfo interface {
+	CloudStatusInfo() (loggedIn bool, host string)
 }
 
 // InterceptManage dispatches manage operations that run client-side:
@@ -183,6 +197,16 @@ type manageArgs struct {
 // instead of zeros so the operator can tell the difference between
 // "queue empty" and "pipeline never wired."
 func handleServerStatus(deps ClientDeps, format string) kgtools.ToolResult {
+	// Logged-in users target the CLOUD graph: report node/edge/vector/bm25
+	// counts via the already-routed Stats RPC, omitting local-daemon-only
+	// fields (PID, graph_path, pipeline counters). The type-assert + the
+	// loggedIn check degrade to the existing local-daemon path below when
+	// either misses, so the logged-out behavior is unchanged.
+	if csi, ok := deps.(cloudStatusInfo); ok {
+		if loggedIn, host := csi.CloudStatusInfo(); loggedIn {
+			return handleCloudStatus(deps, host, format)
+		}
+	}
 	gc := deps.GraphClient()
 	if !gc.Healthy() {
 		if format == "json" {
@@ -211,6 +235,47 @@ func handleServerStatus(deps ClientDeps, format string) kgtools.ToolResult {
 		"Graph server: RUNNING\n  PID: %.0f\n  Nodes: %.0f\n  Edges: %.0f\n  Vectors: %.0f\n  BM25 docs: %.0f\n  Path: %s\n%s",
 		status["pid"], status["nodes"], status["edges"], status["binary_vectors"], status["bm25_docs"], status["graph_path"],
 		pipelineLine))
+}
+
+// handleCloudStatus reports the CLOUD graph stats for a logged-in user via
+// the already-routed Stats RPC (deps.GraphCaller() is the FUL-323 *Router,
+// which satisfies the statsRPC seam). It renders the shared
+// engine.RenderStatsBreakdown body under a "Backend: cloud (<host>)"
+// preamble — naturally emitting Nodes/Edges/Vectors/BM25 and OMITTING
+// PID/graph_path/summary_*/embed_* because GraphStats carries none of those
+// local-daemon fields. The empty GraphSelector targets the default
+// knowledge graph, identical to intercept_query_stats.go.
+func handleCloudStatus(deps ClientDeps, host, format string) kgtools.ToolResult {
+	gc := deps.GraphCaller()
+	if gc == nil {
+		return errorResult("manage(status): graph client unavailable")
+	}
+	sc, ok := gc.(statsRPC)
+	if !ok {
+		return errorResult("manage(status): stats seam unavailable")
+	}
+	resp, err := sc.Stats(context.Background(), &knowledgev1.StatsRequest{
+		Target: &knowledgev1.GraphSelector{Graph: ""},
+	})
+	if err != nil {
+		return errorResult("manage(status): cloud stats failed: " + err.Error())
+	}
+	stats := resp.GetGraphStats()
+	if format == "json" {
+		return jsonResult(map[string]any{
+			"status":         "running",
+			"backend":        "cloud",
+			"host":           host,
+			"nodes":          stats.GetNodeCount(),
+			"edges":          stats.GetEdgeCount(),
+			"vectors":        stats.GetVectorCount(),
+			"binary_vectors": stats.GetBinaryVectorCount(),
+			"bm25":           stats.GetHasBm25(),
+		})
+	}
+	return textResult(fmt.Sprintf(
+		"## Graph server: cloud\n  Backend: cloud (%s)\n\n%s",
+		host, engine.RenderStatsBreakdown(stats)))
 }
 
 // overlayPipelineMetrics reads the client-side LLM pipeline counters and

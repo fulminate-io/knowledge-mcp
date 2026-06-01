@@ -9,29 +9,24 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
-	"strings"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/auth"
 )
-
-// loginFlags groups the parsed flag values for `knowledge login`.
-type loginFlags struct {
-	permissions string
-}
 
 // loginUsage is printed by `knowledge login --help`. Terse, factual,
 // no flourish. Browser-only by design — no device-flow fallback. No
 // `--fulminate-endpoint` flag: the cloud host is build-tag-pinned
 // (memory: feedback_no_endpoint_override).
+//
+// No `--permissions` flag: WorkOS does not accept the application's
+// permission slugs as OAuth scopes. The authorize request asks for the
+// fixed standard scope set (see auth.oauthScopes); the granted
+// permissions come from the user's assigned WorkOS Role and arrive in
+// the access token's `permissions` claim.
 const loginUsage = `knowledge login — authenticate via WorkOS browser PKCE
 
 Usage:
-  knowledge login [flags]
-
-Flags:
-  --permissions LIST   Comma-separated WorkOS permission slugs to
-                       request (default: mcp:knowledge:read,
-                       mcp:knowledge:write)
+  knowledge login
 
 Requires a working desktop browser. Headless environments (CI runners,
 remote SSH without browser/X-forwarding, container-only) are explicitly
@@ -51,10 +46,6 @@ func LoginCmd(args []string) error {
 	fs.SetOutput(os.Stdout)
 	fs.Usage = func() { fmt.Fprint(os.Stdout, loginUsage) }
 
-	var lf loginFlags
-	fs.StringVar(&lf.permissions, "permissions", "",
-		"comma-separated requested permissions (empty = defaults)")
-
 	if err := fs.Parse(args); err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
@@ -66,35 +57,14 @@ func LoginCmd(args []string) error {
 		os.Interrupt)
 	defer stop()
 
-	return loginBrowserPKCE(ctx, parsePermissions(lf.permissions))
-}
-
-// parsePermissions splits a comma-separated --permissions string into
-// a whitespace-trimmed, de-empty-d slice. Empty input yields the
-// default set (read + write on the knowledge MCP resource), which is
-// what every CLI invocation needs to use sync.
-func parsePermissions(s string) []string {
-	if s == "" {
-		return []string{auth.PermMCPKnowledgeRead, auth.PermMCPKnowledgeWrite}
-	}
-	parts := strings.Split(s, ",")
-	out := make([]string, 0, len(parts))
-	for _, p := range parts {
-		p = strings.TrimSpace(p)
-		if p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
+	return loginBrowserPKCE(ctx)
 }
 
 // loginBrowserPKCE runs the WorkOS AuthKit browser PKCE flow:
 // discovery (RFC 9728 + RFC 8414) → loopback listener → browser
 // authorize → callback → token exchange → persist refresh token.
 // Prints a single-line "Logged in." on success.
-func loginBrowserPKCE(
-	ctx context.Context, permissions []string,
-) error {
+func loginBrowserPKCE(ctx context.Context) error {
 	store, err := openStore()
 	if err != nil {
 		if handleKeychainUnavailable(err) {
@@ -111,9 +81,19 @@ func loginBrowserPKCE(
 	fmt.Fprintln(os.Stdout, "Opening your browser to authenticate…")
 	fmt.Fprintln(os.Stdout, "(Waiting for callback. Press Ctrl-C to cancel.)")
 
-	tr, err := auth.RunBrowserPKCEFlow(ctx, endpoints, OAuthClientID, permissions)
+	clientID, tr, err := auth.RunBrowserPKCEFlow(ctx, endpoints)
 	if err != nil {
 		return err
+	}
+
+	// Persist the dynamically-registered client_id first: the refresh path
+	// (auth.OAuthTokenSource) needs it alongside the refresh token, and a
+	// refresh token without its client_id is unusable.
+	if err := store.Set(ctx, auth.KeyClientID, clientID); err != nil {
+		if handleKeychainUnavailable(err) {
+			return nil
+		}
+		return fmt.Errorf("persist client id: %w", err)
 	}
 
 	if err := store.Set(

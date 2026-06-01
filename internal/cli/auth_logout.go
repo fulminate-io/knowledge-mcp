@@ -60,6 +60,7 @@ func LogoutCmd(args []string) error {
 	revokeIfPresent(ctx, store)
 
 	deleteIgnoringMissing(ctx, store, auth.KeyRefreshToken)
+	deleteIgnoringMissing(ctx, store, auth.KeyClientID)
 
 	fmt.Fprintln(os.Stdout, "Logged out.")
 	return nil

@@ -107,7 +107,7 @@ func mutateBatchProperties() map[string]kgtools.Property {
 		}}},
 		"items": {Type: "array", Description: "For operation=update_batch: per-item array; each entry carries {id, summary, keywords, binary_vector (base64), metadata}. Single store.Txn wraps every item — all-or-nothing. Per-item validation mirrors single-item update (length checks on binary_vector, backend-tagged metadata rejection). Used by the client-side LLM pipeline for high-throughput writeback so per-batch RPC count stays at 1.", Items: &kgtools.Property{Type: "object", Description: "Per-item shape: {id (required), summary?, keywords?, binary_vector? (base64 → 32 bytes), metadata?}", AdditionalProperties: &falseValue, Properties: map[string]kgtools.Property{
 			"id":            {Type: "string", Description: "Target node ID (required)"},
-			"summary":       {Type: "string", Description: "Search-optimized one-line summary"},
+			"summary":       {Type: "string", MaxLength: 500, Description: "Search-optimized one-line summary"},
 			"keywords":      {Type: "string", Description: "BM25 keyword-token boost string"},
 			"binary_vector": {Type: "string", Description: "Base64-encoded binary embedding (32 bytes / 256-bit decoded)"},
 			"metadata":      {Type: "object", Description: "Key-value metadata pairs merged per-key"},
@@ -116,7 +116,7 @@ func mutateBatchProperties() map[string]kgtools.Property {
 			"type":        {Type: "string", Description: "Node type (required)"},
 			"name":        {Type: "string", Description: "Node name or title"},
 			"description": {Type: "string", Description: "Node description"},
-			"summary":     {Type: "string", Description: "Search-optimized one-line summary"},
+			"summary":     {Type: "string", MaxLength: 500, Description: "Search-optimized one-line summary"},
 			"content":     {Type: "string", Description: "Full content body"},
 			"status":      {Type: "string", Description: "Initial status"},
 			"metadata":    {Type: "object", Description: "Initial key-value metadata pairs"},

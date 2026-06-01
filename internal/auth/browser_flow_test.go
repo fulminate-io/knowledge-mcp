@@ -23,12 +23,15 @@ func TestRunBrowserPKCEFlow_HappyPath(t *testing.T) {
 	var seenForm url.Values
 	tokenSrv := newTokenSrv(t, &seenForm, "access.jwt.token", "frt_new", 3600)
 	defer tokenSrv.Close()
+	regSrv := newRegistrationSrv(t, "client_dcr_test")
+	defer regSrv.Close()
 
 	endpoints := &DiscoveredEndpoints{
 		Resource:              "https://fulminate.io/mcp",
 		Issuer:                "https://auth.fulminate.io",
 		AuthorizationEndpoint: "https://auth.fulminate.io/oauth2/authorize",
 		TokenEndpoint:         tokenSrv.URL,
+		RegistrationEndpoint:  regSrv.URL,
 	}
 
 	// Fake openBrowserFn — instead of forking `open`, immediately drive
@@ -43,6 +46,9 @@ func TestRunBrowserPKCEFlow_HappyPath(t *testing.T) {
 			return err
 		}
 		q := u.Query()
+		if got := q.Get("scope"); got != oauthScopes {
+			t.Errorf("authorize scope = %q, want %q", got, oauthScopes)
+		}
 		redirect, err := url.Parse(q.Get("redirect_uri"))
 		if err != nil {
 			t.Errorf("redirect_uri malformed: %v", err)
@@ -66,10 +72,12 @@ func TestRunBrowserPKCEFlow_HappyPath(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 
-	tr, err := RunBrowserPKCEFlow(ctx, endpoints, "knowledge-cli",
-		[]string{PermMCPKnowledgeRead, PermMCPKnowledgeWrite})
+	clientID, tr, err := RunBrowserPKCEFlow(ctx, endpoints)
 	if err != nil {
 		t.Fatalf("RunBrowserPKCEFlow: %v", err)
+	}
+	if clientID != "client_dcr_test" {
+		t.Errorf("returned client_id = %q, want client_dcr_test", clientID)
 	}
 	if tr.AccessToken != "access.jwt.token" {
 		t.Errorf("access_token mismatch: %q", tr.AccessToken)
@@ -93,9 +101,12 @@ func TestRunBrowserPKCEFlow_HappyPath(t *testing.T) {
 func TestRunBrowserPKCEFlow_StateMismatch(t *testing.T) {
 	tokenSrv := newTokenSrv(t, nil, "x", "y", 1)
 	defer tokenSrv.Close()
+	regSrv := newRegistrationSrv(t, "client_dcr_test")
+	defer regSrv.Close()
 	endpoints := &DiscoveredEndpoints{
 		AuthorizationEndpoint: "https://example.test/authorize",
 		TokenEndpoint:         tokenSrv.URL,
+		RegistrationEndpoint:  regSrv.URL,
 	}
 	origOpen := openBrowserFn
 	t.Cleanup(func() { openBrowserFn = origOpen })
@@ -118,7 +129,7 @@ func TestRunBrowserPKCEFlow_StateMismatch(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 
-	_, err := RunBrowserPKCEFlow(ctx, endpoints, "cli", nil)
+	_, _, err := RunBrowserPKCEFlow(ctx, endpoints)
 	if err == nil {
 		t.Fatal("expected state-mismatch error, got nil")
 	}
@@ -131,9 +142,12 @@ func TestRunBrowserPKCEFlow_StateMismatch(t *testing.T) {
 // failure is surfaced as ErrBrowserUnavailable so the CLI prints the
 // "browser required" message.
 func TestRunBrowserPKCEFlow_BrowserUnavailable(t *testing.T) {
+	regSrv := newRegistrationSrv(t, "client_dcr_test")
+	defer regSrv.Close()
 	endpoints := &DiscoveredEndpoints{
 		AuthorizationEndpoint: "https://example.test/authorize",
 		TokenEndpoint:         "https://example.test/token",
+		RegistrationEndpoint:  regSrv.URL,
 	}
 	origOpen := openBrowserFn
 	t.Cleanup(func() { openBrowserFn = origOpen })
@@ -141,10 +155,23 @@ func TestRunBrowserPKCEFlow_BrowserUnavailable(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
-	_, err := RunBrowserPKCEFlow(ctx, endpoints, "cli", nil)
+	_, _, err := RunBrowserPKCEFlow(ctx, endpoints)
 	if !errors.Is(err, ErrBrowserUnavailable) {
 		t.Fatalf("expected ErrBrowserUnavailable, got %v", err)
 	}
+}
+
+// newRegistrationSrv constructs an httptest.Server that answers the RFC
+// 7591 DCR registration POST with the given client_id. RunBrowserPKCEFlow
+// registers a fresh public client before opening the browser, so every
+// flow test needs this stub at endpoints.RegistrationEndpoint.
+func newRegistrationSrv(t *testing.T, clientID string) *httptest.Server {
+	t.Helper()
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		_ = json.NewEncoder(w).Encode(map[string]string{"client_id": clientID}) //nolint:gosec // test fixture
+	}))
 }
 
 // newTokenSrv constructs an httptest.Server that validates the token-

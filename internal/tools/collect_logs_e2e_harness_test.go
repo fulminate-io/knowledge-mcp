@@ -17,23 +17,28 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1/knowledgev1connect"
 )
 
-// capturedRequest is a thread-safe holder for the WriteResultRequest
-// observed by the test ingest server. The struct holds the lock and the
-// req so the test can read the captured payload without racing.
+// capturedRequest is a thread-safe holder for the FINAL CollectChunkRequest
+// observed by the test ingest server — the chunk that carries the collection's
+// edges (collector edges ride the last chunk) and the graph_type/graph_name.
+// The struct holds the lock and the req so the test can read the captured
+// payload without racing.
 type capturedRequest struct {
 	mu  sync.Mutex
-	req *knowledgev1.WriteResultRequest
+	req *knowledgev1.CollectChunkRequest
 }
 
-func (c *capturedRequest) set(r *knowledgev1.WriteResultRequest) {
+func (c *capturedRequest) set(r *knowledgev1.CollectChunkRequest) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.req = r
+	// Keep the chunk carrying edges (the final chunk); fall back to the latest.
+	if c.req == nil || len(r.GetEdges()) > 0 {
+		c.req = r
+	}
 }
 
 // logsIngestHandler wraps testIngestHandler so the logs-e2e test can also
 // drive FetchCloudSubgraph (which the base test handler stubs out as
-// Unimplemented) and capture the WriteResult payload for shape assertions.
+// Unimplemented) and capture the CollectChunk payload for shape assertions.
 type logsIngestHandler struct {
 	*testIngestHandler
 	subgraph *knowledgev1.FetchCloudSubgraphResponse
@@ -41,12 +46,12 @@ type logsIngestHandler struct {
 	captured *capturedRequest
 }
 
-func (h *logsIngestHandler) WriteResult(
+func (h *logsIngestHandler) CollectChunk(
 	ctx context.Context,
-	req *connect.Request[knowledgev1.WriteResultRequest],
-) (*connect.Response[knowledgev1.WriteResultResponse], error) {
+	req *connect.Request[knowledgev1.CollectChunkRequest],
+) (*connect.Response[knowledgev1.CollectChunkResponse], error) {
 	h.captured.set(req.Msg)
-	return h.testIngestHandler.WriteResult(ctx, req)
+	return h.testIngestHandler.CollectChunk(ctx, req)
 }
 
 func (h *logsIngestHandler) FetchCloudSubgraph(
@@ -64,8 +69,7 @@ func (h *logsIngestHandler) FetchCloudSubgraph(
 
 // inProcessIngestServer wires the logs ingest handler + an h2c httptest
 // server + the matching IngestService client. Tests use this so the full
-// UploadChunks → WriteResult flow runs end-to-end without a real TCP
-// connection.
+// CollectChunk → Finalize flow runs end-to-end without a real TCP connection.
 type inProcessIngestServer struct {
 	srv    *httptest.Server
 	client knowledgev1connect.IngestServiceClient
@@ -80,10 +84,10 @@ func (s *inProcessIngestServer) close() {
 // startInProcessIngestServer boots the in-process ingest harness. subgraph is
 // the FetchCloudSubgraph response; fetchErr forces the fetch to fail (subgraph
 // is ignored when fetchErr is non-nil). The embedded testIngestHandler captures
-// the materialized CollectResult on WriteResult instead of persisting it — no
-// real store engine is linked. Tests read the captured batch via
-// handler.sink.last() (the returned handler) and the WriteResultRequest via the
-// returned *capturedRequest.
+// the accumulated CollectResult on Finalize instead of persisting it — no real
+// store engine is linked. Tests read the captured batch via handler.sink.last()
+// (the returned handler) and the final CollectChunkRequest via the returned
+// *capturedRequest.
 func startInProcessIngestServer(
 	t *testing.T,
 	subgraph *knowledgev1.FetchCloudSubgraphResponse,

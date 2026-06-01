@@ -82,6 +82,34 @@ func TestAllToolSchemas(t *testing.T) {
 	}
 }
 
+func TestAllToolSchemas_SummaryMaxLength(t *testing.T) {
+	for _, tool := range AllToolSchemas() {
+		for name, prop := range tool.InputSchema.Properties {
+			assertSummaryMaxLength(t, tool.Name+"."+name, name, prop)
+		}
+	}
+}
+
+func TestCreateProjectSchema_ProjectDescriptionMaxLength(t *testing.T) {
+	schema := CreateProjectToolDef().InputSchema.Properties
+	description := schema["description"]
+	assert.Equal(t, 249, description.MaxLength, "create_project.description must stay under Linear's 250 char cap")
+}
+
+func assertSummaryMaxLength(t *testing.T, path, key string, prop kgtools.Property) {
+	t.Helper()
+
+	if key == "summary" && prop.Type == "string" {
+		assert.Equal(t, 500, prop.MaxLength, "summary property %q must declare maxLength 500", path)
+	}
+	for childName, child := range prop.Properties {
+		assertSummaryMaxLength(t, path+"."+childName, childName, child)
+	}
+	if prop.Items != nil {
+		assertSummaryMaxLength(t, path+"[]", key, *prop.Items)
+	}
+}
+
 // walkProperty recursively checks a single property and its nested children.
 // path is the dotted "<tool>.<...>" location used for the open-map allowlist and
 // in failure messages; key is the immediate property name (used for the

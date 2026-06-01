@@ -50,8 +50,8 @@ func traversalResultsToProtoForTest(results []engine.TraversalResult) []*knowled
 // engine-result wrappers + the proto→kgwire batch-edge decode remain.
 
 // batchEdgesFromProtoForTest is the server-decode inverse — used by fakes that
-// simulate the server's WriteResult decode of the WriteResultRequest.edges
-// carrier back into the client build-carrier []kgwire.BatchEdge.
+// simulate the server's decode of a collect request's edges carrier back into
+// the client build-carrier []kgwire.BatchEdge.
 func batchEdgesFromProtoForTest(in []*knowledgev1.BatchEdge) []kgwire.BatchEdge {
 	out := make([]kgwire.BatchEdge, len(in))
 	for i, e := range in {

@@ -4,7 +4,7 @@
 // of a collection run's output. It is a client-only leaf: the collector tree
 // builds a CollectResult, then the client serializes its pieces onto the wire
 // (node chunks + proto edges + scalars). The server reassembles those pieces
-// into its own server-local storesink.WriteParams — CollectResult itself no
+// from the collect chunk/finalize wire — CollectResult itself no
 // longer crosses to the server as a type.
 package collectorwire
 

@@ -171,7 +171,7 @@ func WithBaseURL(url string) Option {
 
 // WithAPIKey overrides the provider credential for this request only. Prefer
 // configuring APIKey once on the provider Config; per-call overrides are for
-// per-tenant key rotation or tests.
+// key rotation or tests.
 func WithAPIKey(key string) Option {
 	return func(o *RequestOptions) { o.APIKey = key }
 }

@@ -59,33 +59,3 @@ func withMemoryStore(t *testing.T) *fakeAuthStore {
 	t.Cleanup(func() { newStoreFn = orig })
 	return mem
 }
-
-// TestParsePermissions covers the comma-split + trim logic and the
-// default-set fallback when --permissions is empty.
-func TestParsePermissions(t *testing.T) {
-	cases := []struct {
-		name string
-		in   string
-		want []string
-	}{
-		{"empty defaults", "", []string{auth.PermMCPKnowledgeRead, auth.PermMCPKnowledgeWrite}},
-		{"single", "mcp:knowledge:read", []string{"mcp:knowledge:read"}},
-		{"comma-pair", "mcp:knowledge:read,mcp:knowledge:write", []string{"mcp:knowledge:read", "mcp:knowledge:write"}},
-		{"whitespace", " mcp:knowledge:read , mcp:knowledge:write ", []string{"mcp:knowledge:read", "mcp:knowledge:write"}},
-		{"empty entries dropped", ",,mcp:knowledge:read,,", []string{"mcp:knowledge:read"}},
-	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := parsePermissions(tc.in)
-			if len(got) != len(tc.want) {
-				t.Fatalf("parsePermissions(%q): got %v, want %v", tc.in, got, tc.want)
-			}
-			for i := range got {
-				if got[i] != tc.want[i] {
-					t.Errorf("parsePermissions(%q)[%d]: got %q, want %q",
-						tc.in, i, got[i], tc.want[i])
-				}
-			}
-		})
-	}
-}

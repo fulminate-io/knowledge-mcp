@@ -63,9 +63,9 @@ func newVoyageReranker(apiKey string, inputDocs, topK int) *voyageReranker {
 }
 
 // NewVoyage is the exported constructor for callers that need to inject
-// a real Voyage reranker outside the BootstrapConfig path — e.g. the
-// cloud serve subcommand which bypasses kgstore.Init via DBOverride and
-// must wire the reranker manually so cloud search parity matches OSS.
+// a real Voyage reranker outside the BootstrapConfig path — e.g. a serving
+// subcommand that bypasses kgstore.Init via DBOverride and must wire the
+// reranker manually so its search parity matches OSS.
 // Production OSS code goes through bootstrap. Mirrors
 // NewVoyageBinaryEmbedder.
 func NewVoyage(apiKey string, inputDocs, topK int) Reranker {

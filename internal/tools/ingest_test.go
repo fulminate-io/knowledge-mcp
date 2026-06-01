@@ -5,10 +5,7 @@ package tools
 import (
 	"context"
 	"crypto/tls"
-	"encoding/json"
 	"errors"
-	"fmt"
-	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -31,10 +28,9 @@ import (
 
 // capturingSink is a collector.Sink that records the *collectorwire.CollectResult
 // it receives instead of persisting it. It lets the in-process ingest harness
-// verify the client-side remote.UploadSink → server-side WriteResult roundtrip
-// transfers the full node+edge payload over the wire without standing up a real
-// store engine and no real persistence sink. Thread-safe so the bidi
-// UploadChunks goroutine and the terminal WriteResult can race-freely hand off.
+// verify the client-side remote.UploadSink → server-side CollectChunk/Finalize
+// roundtrip transfers the full node+edge payload over the wire without standing
+// up a real store engine. Thread-safe.
 type capturingSink struct {
 	mu      sync.Mutex
 	results []*collectorwire.CollectResult
@@ -59,9 +55,7 @@ func (c *capturingSink) last() *collectorwire.CollectResult {
 }
 
 // h2cClient returns an *http.Client that dials plain TCP and speaks HTTP/2
-// prior-knowledge (h2c) to the httptest server. This is what the
-// real MCP client does: bi-di streaming ingest talks HTTP/2 over
-// cleartext.
+// prior-knowledge (h2c) to the httptest server — what the real MCP client does.
 func h2cClient() *http.Client {
 	return &http.Client{
 		Transport: &http2.Transport{
@@ -74,101 +68,76 @@ func h2cClient() *http.Client {
 }
 
 // testIngestHandler is a minimal in-process implementation of the
-// IngestServiceHandler. It mirrors the production server-side
-// connectAdapter (cmd/knowledge-server/bootstrap/ingest.go) closely
-// enough to exercise the UploadChunks → WriteResult roundtrip end to
-// end: a per-test chunk arena holds hashes between the bidi stream and
-// the terminal materialize+sink call.
+// IngestServiceHandler. It mirrors the production connectAdapter
+// (cmd/knowledge-server/internal/bootstrap/ingest.go) closely enough to exercise
+// the CollectChunk×N → Finalize roundtrip: each CollectChunk accumulates its
+// INLINE nodes + edges (no arena — chunks carry their nodes), and Finalize flushes
+// the accumulated set to the capturing sink keyed by the collection epoch.
 //
 // Lives here (client-side) post-BCN9: the test exercises the client's
-// remote.UploadSink against an in-process server-side fixture, and the
-// production connectAdapter is unreachable from cmd/knowledge/internal/
-// because of Go's internal/ rule.
+// remote.UploadSink against an in-process server-side fixture, and the production
+// connectAdapter is unreachable from cmd/knowledge/internal/ (Go's internal/ rule).
 type testIngestHandler struct {
-	mu     sync.Mutex
-	byHash map[string][]byte
-	// sink captures the materialized CollectResult on WriteResult instead of
-	// persisting it — no real store engine is linked into the test binary.
-	sink *capturingSink
+	mu sync.Mutex
+	// per-epoch accumulation of the inline nodes + edges seen across CollectChunk.
+	nodesByEpoch map[uint64][]*knowledgev1.Node
+	edgesByEpoch map[uint64][]*knowledgev1.BatchEdge
+	metaByEpoch  map[uint64]*knowledgev1.CollectChunkRequest
+	sink         *capturingSink
 }
 
 var _ knowledgev1connect.IngestServiceHandler = (*testIngestHandler)(nil)
 
 func newTestIngestHandler() *testIngestHandler {
-	return &testIngestHandler{byHash: map[string][]byte{}, sink: &capturingSink{}}
-}
-
-func (h *testIngestHandler) UploadChunks(
-	ctx context.Context,
-	stream *connect.BidiStream[knowledgev1.ChunkBatch, knowledgev1.ChunkAck],
-) error {
-	for {
-		batch, err := stream.Receive()
-		if err != nil {
-			if errors.Is(err, io.EOF) {
-				return nil
-			}
-			return connect.NewError(connect.CodeInternal, err)
-		}
-		ack := &knowledgev1.ChunkAck{}
-		h.mu.Lock()
-		for _, c := range batch.Chunks {
-			if _, ok := h.byHash[c.Hash]; ok {
-				ack.AlreadyHaveHashes = append(ack.AlreadyHaveHashes, c.Hash)
-				continue
-			}
-			h.byHash[c.Hash] = c.NodeJson
-			ack.AcceptedHashes = append(ack.AcceptedHashes, c.Hash)
-		}
-		h.mu.Unlock()
-		if err := stream.Send(ack); err != nil {
-			return connect.NewError(connect.CodeInternal, err)
-		}
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
+	return &testIngestHandler{
+		nodesByEpoch: map[uint64][]*knowledgev1.Node{},
+		edgesByEpoch: map[uint64][]*knowledgev1.BatchEdge{},
+		metaByEpoch:  map[uint64]*knowledgev1.CollectChunkRequest{},
+		sink:         &capturingSink{},
 	}
 }
 
-func (h *testIngestHandler) WriteResult(
-	ctx context.Context,
-	req *connect.Request[knowledgev1.WriteResultRequest],
-) (*connect.Response[knowledgev1.WriteResultResponse], error) {
+func (h *testIngestHandler) CollectChunk(
+	_ context.Context,
+	req *connect.Request[knowledgev1.CollectChunkRequest],
+) (*connect.Response[knowledgev1.CollectChunkResponse], error) {
 	m := req.Msg
 	h.mu.Lock()
-	nodes := make([]*knowledgev1.Node, 0, len(m.NodeHashes))
-	for _, hash := range m.NodeHashes {
-		body, ok := h.byHash[hash]
-		if !ok {
-			h.mu.Unlock()
-			return nil, connect.NewError(connect.CodeInvalidArgument,
-				fmt.Errorf("ingest: chunk %q not found in arena", hash))
-		}
-		var n knowledgev1.Node
-		if err := json.Unmarshal(body, &n); err != nil {
-			h.mu.Unlock()
-			return nil, connect.NewError(connect.CodeInvalidArgument,
-				fmt.Errorf("ingest: unmarshal chunk %q: %w", hash, err))
-		}
-		nodes = append(nodes, &n)
-	}
+	h.nodesByEpoch[m.Epoch] = append(h.nodesByEpoch[m.Epoch], m.GetNodes()...)
+	h.edgesByEpoch[m.Epoch] = append(h.edgesByEpoch[m.Epoch], m.GetEdges()...)
+	h.metaByEpoch[m.Epoch] = m
+	h.mu.Unlock()
+	return connect.NewResponse(&knowledgev1.CollectChunkResponse{}), nil
+}
+
+func (h *testIngestHandler) Finalize(
+	ctx context.Context,
+	req *connect.Request[knowledgev1.FinalizeRequest],
+) (*connect.Response[knowledgev1.FinalizeResponse], error) {
+	m := req.Msg
+	h.mu.Lock()
+	nodes := h.nodesByEpoch[m.Epoch]
+	edges := h.edgesByEpoch[m.Epoch]
+	meta := h.metaByEpoch[m.Epoch]
 	h.mu.Unlock()
 
+	gt := kgtypes.GraphType(m.GraphType)
+	name := m.GraphName
+	if meta != nil {
+		gt = kgtypes.GraphType(meta.GraphType)
+		name = meta.GraphName
+	}
 	result := &collectorwire.CollectResult{
-		GraphType:     kgtypes.GraphType(m.GraphType),
-		GraphName:     m.GraphName,
+		GraphType:     gt,
+		GraphName:     name,
 		Nodes:         nodes,
-		Edges:         batchEdgesFromProtoForTest(m.GetEdges()),
+		Edges:         batchEdgesFromProtoForTest(edges),
 		CurrentBranch: m.CurrentBranch,
 	}
-	// Capture the materialized batch instead of persisting it — no real store
-	// engine is linked into the test binary. The roundtrip assertion reads the
-	// captured CollectResult directly.
-	if err := h.sink.WriteResult(ctx, m.CollectorName, result); err != nil {
-		return nil, connect.NewError(connect.CodeInternal,
-			fmt.Errorf("ingest: WriteResult: %w", err))
+	if err := h.sink.WriteResult(ctx, "", result); err != nil {
+		return nil, connect.NewError(connect.CodeInternal, err)
 	}
-	return connect.NewResponse(&knowledgev1.WriteResultResponse{}), nil
+	return connect.NewResponse(&knowledgev1.FinalizeResponse{}), nil
 }
 
 func (h *testIngestHandler) FetchCloudSubgraph(
@@ -178,15 +147,11 @@ func (h *testIngestHandler) FetchCloudSubgraph(
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("FetchCloudSubgraph not exercised by this test"))
 }
 
-// TestIngest_WriteResult_Roundtrip wires a connect-go in-process test
+// TestIngest_CollectChunkFinalize_Roundtrip wires a connect-go in-process test
 // harness: client-side remote.UploadSink → server-side testIngestHandler.
-// Uploads a CollectResult, verifies the server materializes identical
-// nodes + edges in the target graph.
-func TestIngest_WriteResult_Roundtrip(t *testing.T) {
-	// Minimal server: just the IngestService handler, wrapped in h2c so
-	// the bi-di UploadChunks stream works (Connect bi-di requires HTTP/2).
-	// The handler captures the materialized CollectResult instead of
-	// persisting it — no real store engine is linked into the test binary.
+// Drives a CollectResult through CollectChunk×N + Finalize and verifies the full
+// node + edge payload crossed the wire inline.
+func TestIngest_CollectChunkFinalize_Roundtrip(t *testing.T) {
 	handler := newTestIngestHandler()
 	mux := http.NewServeMux()
 	path, h := knowledgev1connect.NewIngestServiceHandler(handler)
@@ -210,12 +175,11 @@ func TestIngest_WriteResult_Roundtrip(t *testing.T) {
 	}
 	require.NoError(t, sink.WriteResult(context.Background(), "test-collector", result))
 
-	// Verify the full node+edge payload crossed the wire by inspecting the
-	// captured CollectResult — the client-side remote.UploadSink chunked the
-	// nodes, the server-side WriteResult reassembled them by hash, and the
-	// capturing sink recorded the materialized batch.
+	// Verify the full node+edge payload crossed the wire inline: the client
+	// chunked the nodes into CollectChunk calls and the handler accumulated them,
+	// flushing to the capturing sink on Finalize.
 	captured := handler.sink.last()
-	require.NotNil(t, captured, "WriteResult must have captured a CollectResult")
+	require.NotNil(t, captured, "Finalize must have captured a CollectResult")
 	assert.Equal(t, kgtypes.GraphCode, captured.GraphType)
 	assert.Equal(t, "ingest-roundtrip-repo", captured.GraphName)
 
@@ -226,13 +190,69 @@ func TestIngest_WriteResult_Roundtrip(t *testing.T) {
 	}
 	require.Contains(t, byID, "rt-1")
 	require.Contains(t, byID, "rt-2")
-	assert.Equal(t, string(kgtypes.NodeFile), byID["rt-1"].Type)
 	assert.Equal(t, "a.go", byID["rt-1"].FilePath)
-	assert.Equal(t, string(kgtypes.NodeFile), byID["rt-2"].Type)
 	assert.Equal(t, "b.go", byID["rt-2"].FilePath)
 
 	require.Len(t, captured.Edges, 1, "the EdgeContains edge must have crossed the wire")
 	assert.Equal(t, kgtypes.EdgeContains, captured.Edges[0].Type)
 	assert.Equal(t, 0, captured.Edges[0].FromIdx)
 	assert.Equal(t, 1, captured.Edges[0].ToIdx)
+}
+
+// TestIngest_MultiChunk_EdgesResolveAcrossChunks proves the cross-chunk edge
+// guarantee: nodes split across more than one CollectChunk still receive their
+// edges (ID-addressed) on the final chunk, and every node lands. Forces N>1
+// chunks with a tiny byte budget via many nodes.
+func TestIngest_MultiChunk_EdgesResolveAcrossChunks(t *testing.T) {
+	handler := newTestIngestHandler()
+	mux := http.NewServeMux()
+	path, h := knowledgev1connect.NewIngestServiceHandler(handler)
+	mux.Handle(path, h)
+	h2s := &http2.Server{}
+	srv := httptest.NewServer(h2c.NewHandler(mux, h2s))
+	t.Cleanup(srv.Close)
+
+	client := knowledgev1connect.NewIngestServiceClient(h2cClient(), srv.URL, connect.WithGRPC())
+	sink := remote.NewUploadSink(client)
+
+	// Many nodes so DefaultBatchBytes is exceeded only if we shrink it; instead
+	// rely on a large content payload to push the count of chunks above 1.
+	const n = 200
+	nodes := make([]*knowledgev1.Node, n)
+	big := make([]byte, 64*1024) // 64 KiB content per node
+	for i := range nodes {
+		nodes[i] = &knowledgev1.Node{
+			Id: "n-" + string(rune('A'+i%26)) + "-" + itoa(i), Type: string(kgtypes.NodeFile),
+			FilePath: "f.go", Content: string(big),
+		}
+	}
+	// An ID-addressed edge between the FIRST and LAST node — they land in
+	// different chunks, so this exercises cross-chunk resolution.
+	edges := []kgwire.BatchEdge{{
+		FromIdx: -1, ToIdx: -1, FromID: nodes[0].Id, ToID: nodes[n-1].Id, Type: kgtypes.EdgeContains,
+	}}
+	result := &collectorwire.CollectResult{
+		GraphType: kgtypes.GraphCode, GraphName: "multichunk-repo", Nodes: nodes, Edges: edges,
+	}
+	require.NoError(t, sink.WriteResult(context.Background(), "test-collector", result))
+
+	captured := handler.sink.last()
+	require.NotNil(t, captured)
+	require.Len(t, captured.Nodes, n, "every node across every chunk must land")
+	require.Len(t, captured.Edges, 1, "the ID-addressed edge must ride the final chunk")
+	assert.Equal(t, nodes[0].Id, captured.Edges[0].FromID)
+	assert.Equal(t, nodes[n-1].Id, captured.Edges[0].ToID)
+}
+
+// itoa is a tiny strconv.Itoa avoiding an import just for the fixture id.
+func itoa(i int) string {
+	if i == 0 {
+		return "0"
+	}
+	var b []byte
+	for i > 0 {
+		b = append([]byte{byte('0' + i%10)}, b...)
+		i /= 10
+	}
+	return string(b)
 }

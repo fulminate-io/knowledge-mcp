@@ -35,18 +35,17 @@ type GraphClient struct {
 }
 
 // NewGraphClient creates a GraphClient that connects to the given TCP
-// port. Uses an h2c transport so bi-di streaming RPCs (IngestService
-// UploadChunks) work over cleartext HTTP/2 — the server listens with
-// h2c.NewHandler so both protocols negotiate on the same port.
+// port. Uses an h2c transport over cleartext HTTP/2 — the server listens
+// with h2c.NewHandler so both protocols negotiate on the same port.
 //
-// All four service clients are wrapped in the unary reconnect
-// interceptor — a unary RPC that hits a transient transport failure
-// (server restart, ECONNREFUSED, io.EOF on the h2c conn) retries on
-// an exponential-backoff schedule (~4.25s total window) instead of
-// surfacing the error to the caller. Streaming RPCs are pass-through
-// at the interceptor layer; streaming resumption lives in
-// collector/remote and is handled via UploadChunks chunk redial
-// (UploadChunks is content-hash idempotent).
+// All service clients are wrapped in the unary reconnect interceptor — a
+// unary RPC that hits a transient transport failure (server restart,
+// ECONNREFUSED, io.EOF on the h2c conn) retries on an exponential-backoff
+// schedule (~4.25s total window) instead of surfacing the error to the
+// caller. The IngestService write path is the unary CollectChunk×N +
+// Finalize flow (no bidi stream); each chunk is content-idempotent under its
+// per-collection epoch, so a redial-and-resend through this interceptor
+// re-lands identically via the server's carry-forward upsert.
 func NewGraphClient(port int) *GraphClient {
 	return NewGraphClientForURL(fmt.Sprintf("http://127.0.0.1:%d", port))
 }
@@ -84,7 +83,7 @@ func NewGraphClientForURL(baseURL string) *GraphClient {
 }
 
 // IngestClient exposes the IngestService client so the collector's
-// RemoteUploadSink can stream chunks + WriteResult calls to the graph
+// RemoteUploadSink can send CollectChunk + Finalize calls to the graph
 // server.
 func (c *GraphClient) IngestClient() knowledgev1connect.IngestServiceClient {
 	return c.ingest

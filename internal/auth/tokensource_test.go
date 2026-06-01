@@ -63,8 +63,11 @@ func testEndpoints(tokenEndpoint string) *DiscoveredEndpoints {
 // newOAuthSourceForTest builds an OAuthTokenSource with the discovery
 // step pre-resolved so tests don't have to mock .well-known endpoints.
 func newOAuthSourceForTest(store Store, tokenEndpoint string) *OAuthTokenSource {
-	src := NewOAuthTokenSource(store, "https://fulminate.io", "cli", map[string]struct{}{"auth.fulminate.io": {}})
+	src := NewOAuthTokenSource(store, "https://fulminate.io", map[string]struct{}{"auth.fulminate.io": {}})
 	src.endpoints = testEndpoints(tokenEndpoint)
+	// The refresh path loads the DCR-issued client_id from the store; seed
+	// it so refresh-exercising tests don't each have to.
+	_ = store.Set(context.Background(), KeyClientID, "cli")
 	return src
 }
 

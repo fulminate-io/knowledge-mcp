@@ -15,10 +15,20 @@ import (
 	"net/url"
 	"os/exec"
 	"runtime"
-	"strings"
 	"sync"
 	"time"
 )
+
+// oauthScopes is the scope set requested on the AuthKit authorize URL.
+// It is the standard OIDC set plus offline_access — NOT the application's
+// custom permission slugs (mcp:knowledge:*). WorkOS does not accept
+// arbitrary application slugs as OAuth scopes; permissions are delivered
+// in the access token's `permissions` claim from the user's assigned
+// WorkOS Role, independent of the scope request (read later via
+// ParsePermissionsFromJWT). offline_access is the scope that makes
+// AuthKit mint the refresh_token this flow persists; openid/profile/email
+// are the conventional AuthKit OIDC scopes.
+const oauthScopes = "openid profile email offline_access"
 
 // browserFlowTimeout is the maximum time RunBrowserPKCEFlow waits for
 // the user to complete the AuthKit hosted-login flow and the browser to
@@ -37,51 +47,61 @@ var ErrBrowserUnavailable = errors.New("auth: knowledge login requires a browser
 
 // RunBrowserPKCEFlow drives the OAuth 2.0 Authorization Code + PKCE
 // flow with a local-loopback callback against the discovered AuthKit
-// authorization server. Returns the token response on success.
+// authorization server. On success it returns the dynamically-registered
+// client_id (which the caller persists so the refresh path can reuse it)
+// and the token response.
 //
 // Steps:
 //  1. Generate a PKCE code_verifier + S256 code_challenge.
 //  2. Bind a TCP listener on 127.0.0.1:<random port> and build the
 //     redirect_uri http://127.0.0.1:<port>/callback.
-//  3. Open the user's browser to the AuthKit authorize URL with PKCE +
+//  3. Dynamically register a fresh public client (RFC 7591) whose
+//     redirect_uri matches this loopback callback. WorkOS honors RFC 8707
+//     resource indicators only for DCR/CIMD clients — a static OAuth
+//     Application would get invalid_target at the token endpoint.
+//  4. Open the user's browser to the AuthKit authorize URL with PKCE +
 //     RFC 8707 `resource` parameter.
-//  4. Wait on the listener for /callback?code=…&state=… and validate
+//  5. Wait on the listener for /callback?code=…&state=… and validate
 //     state.
-//  5. Shut the listener down and POST grant_type=authorization_code to
+//  6. Shut the listener down and POST grant_type=authorization_code to
 //     AuthKit's token endpoint with the code, code_verifier, redirect_uri,
 //     client_id, and resource parameter.
 //
-// permissions is included as a space-separated `scope` parameter on the
-// authorize URL even though AuthKit reads permissions from the user's
-// role catalog — the explicit scope request is what tells AuthKit which
-// resource indicator's permission catalog to mint claims against.
+// The authorize request asks for the standard OIDC + offline_access
+// scope set (oauthScopes). The application's custom permission slugs
+// (mcp:knowledge:*) are NOT requested as scopes — WorkOS delivers them
+// in the access token's `permissions` claim from the user's assigned
+// Role, which the client reads via ParsePermissionsFromJWT.
 func RunBrowserPKCEFlow(
 	ctx context.Context,
 	endpoints *DiscoveredEndpoints,
-	clientID string,
-	permissions []string,
-) (*TokenResponse, error) {
+) (clientID string, tr *TokenResponse, err error) {
 	verifier, challenge, err := newPKCE()
 	if err != nil {
-		return nil, fmt.Errorf("auth: pkce: %w", err)
+		return "", nil, fmt.Errorf("auth: pkce: %w", err)
 	}
 	state, err := randomURLSafe(32)
 	if err != nil {
-		return nil, fmt.Errorf("auth: state: %w", err)
+		return "", nil, fmt.Errorf("auth: state: %w", err)
 	}
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		return nil, fmt.Errorf("auth: bind loopback listener: %w", err)
+		return "", nil, fmt.Errorf("auth: bind loopback listener: %w", err)
 	}
 	defer listener.Close()
 	tcpAddr, ok := listener.Addr().(*net.TCPAddr)
 	if !ok {
-		return nil, fmt.Errorf("auth: loopback listener returned non-TCP addr %T", listener.Addr())
+		return "", nil, fmt.Errorf("auth: loopback listener returned non-TCP addr %T", listener.Addr())
 	}
 	redirectURI := fmt.Sprintf("http://127.0.0.1:%d/callback", tcpAddr.Port)
 
-	authorizeURL := buildAuthorizeURL(endpoints, clientID, redirectURI, challenge, state, permissions)
+	clientID, err = RegisterPublicClient(ctx, endpoints.RegistrationEndpoint, redirectURI)
+	if err != nil {
+		return "", nil, err
+	}
+
+	authorizeURL := buildAuthorizeURL(endpoints, clientID, redirectURI, challenge, state)
 
 	flowCtx, cancel := context.WithTimeout(ctx, browserFlowTimeout)
 	defer cancel()
@@ -91,20 +111,24 @@ func RunBrowserPKCEFlow(
 	defer func() { _ = srv.Shutdown(context.Background()) }()
 
 	if err := openBrowser(authorizeURL); err != nil {
-		return nil, fmt.Errorf("%w (underlying: %v)", ErrBrowserUnavailable, err)
+		return "", nil, fmt.Errorf("%w (underlying: %v)", ErrBrowserUnavailable, err)
 	}
 
 	var cb callbackResult
 	select {
 	case cb = <-resultCh:
 	case <-flowCtx.Done():
-		return nil, fmt.Errorf("auth: timed out waiting for browser callback: %w", flowCtx.Err())
+		return "", nil, fmt.Errorf("auth: timed out waiting for browser callback: %w", flowCtx.Err())
 	}
 	if cb.err != nil {
-		return nil, cb.err
+		return "", nil, cb.err
 	}
 
-	return exchangeCode(flowCtx, endpoints.TokenEndpoint, clientID, cb.code, verifier, redirectURI, endpoints.Resource)
+	tr, err = exchangeCode(flowCtx, endpoints.TokenEndpoint, clientID, cb.code, verifier, redirectURI, endpoints.Resource)
+	if err != nil {
+		return "", nil, err
+	}
+	return clientID, tr, nil
 }
 
 // callbackResult is the typed message the loopback handler sends back
@@ -170,7 +194,7 @@ const callbackHTML = `<!DOCTYPE html>
 // standard OAuth 2.0 + PKCE + RFC 8707 query parameters. The resource
 // parameter ends up in the issued JWT's `aud` claim so the agent's
 // Bearer middleware accepts it.
-func buildAuthorizeURL(endpoints *DiscoveredEndpoints, clientID, redirectURI, challenge, state string, permissions []string) string {
+func buildAuthorizeURL(endpoints *DiscoveredEndpoints, clientID, redirectURI, challenge, state string) string {
 	q := url.Values{}
 	q.Set("response_type", "code")
 	q.Set("client_id", clientID)
@@ -178,11 +202,9 @@ func buildAuthorizeURL(endpoints *DiscoveredEndpoints, clientID, redirectURI, ch
 	q.Set("code_challenge", challenge)
 	q.Set("code_challenge_method", "S256")
 	q.Set("state", state)
+	q.Set("scope", oauthScopes)
 	if endpoints.Resource != "" {
 		q.Set("resource", endpoints.Resource)
-	}
-	if len(permissions) > 0 {
-		q.Set("scope", strings.Join(permissions, " "))
 	}
 	return endpoints.AuthorizationEndpoint + "?" + q.Encode()
 }

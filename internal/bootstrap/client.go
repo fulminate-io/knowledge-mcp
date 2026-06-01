@@ -148,6 +148,21 @@ func (c *client) PipelineMetrics() (pipeline.Metrics, bool) {
 	return c.pipeline.Metrics(), true
 }
 
+// CloudStatusInfo reports whether the user is logged in to Fulminate Cloud
+// and the cloud host to surface in manage(status). Satisfies the optional
+// tools.cloudStatusInfo interface read by handleServerStatus: when logged
+// in, status reports the CLOUD graph via the routed Stats RPC instead of
+// the local daemon. c.authState backs the same routing decision the Router
+// uses; IsLoggedIn is the canonical 5s-TTL login signal. The nil-guard
+// matches the degraded-test-fixture tolerance the other accessors carry
+// (e.g. GraphCaller returns nil when router==nil).
+func (c *client) CloudStatusInfo() (bool, string) {
+	if c.authState == nil {
+		return false, cli.CloudEndpoint
+	}
+	return c.authState.IsLoggedIn(context.Background()), cli.CloudEndpoint
+}
+
 // ResetPipelineFailedCounters zeroes the session-lifetime failed counters.
 // Satisfies the optional tools.pipelineResetter interface called by
 // clear_llm_failures after removing on-disk markers.
@@ -382,7 +397,6 @@ func constructClient(f Config) *client {
 	tokenSource := auth.NewOAuthTokenSource(
 		authStore,
 		cli.CloudEndpoint,
-		"knowledge-cli",
 		cli.AllowedAuthHosts(),
 	)
 	authState := auth.NewAuthState(authStore, 0)

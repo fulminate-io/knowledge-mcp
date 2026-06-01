@@ -23,12 +23,15 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/auth"
 )
 
-// OAuthClientID is the public OAuth client identifier for the knowledge
-// binary. Duplicated from main.go's oauthClientID so the cli/ package
-// is importable without pulling in the server-side wiring. The two
-// must stay in sync with the server's registered client — see the A2
-// wire contract.
-const OAuthClientID = "knowledge-cli"
+// The knowledge CLI has NO static OAuth client_id. WorkOS honors RFC 8707
+// resource indicators only for clients registered via Dynamic Client
+// Registration (or a Client ID Metadata Document); a hand-created OAuth
+// Application's tokens are minted with aud=client_id and reject the
+// resource parameter with invalid_target. So `knowledge login` registers
+// a fresh public client per login (auth.RegisterPublicClient) and persists
+// the issued id (auth.KeyClientID) for the refresh path. Dev vs prod is
+// still the build tag: only the host (CloudEndpoint) and AuthKit allowlist
+// differ — the registration endpoint is discovered from the host.
 
 // The Fulminate API base URL is build-tag-pinned (see allowed_hosts.go
 // and allowed_hosts_dev.go). There is NO runtime override — no

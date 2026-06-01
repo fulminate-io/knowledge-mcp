@@ -774,13 +774,17 @@ func (*ExecuteRequest_Mutation) isExecuteRequest_Plan() {}
 
 // GraphSelector routes Execute to a target graph DB. Mirrors the server-side
 // graphSelector struct (cmd/knowledge-server/tools/tools_graph_routing.go:46)
-// consumed by resolveGraphDB. Empty/absent (graph=="") means the knowledge
-// graph. Routing is an ENVELOPE concern evaluated ONCE per request before any
-// operator compiles — it does NOT affect the per-operator bounded-constant
-// budget (engine_contract.md Section A).
+// consumed by resolveGraphDB. `graph` selects the graph family, not the
+// instance name: empty/absent or "knowledge" means the memory/thought/decision
+// graph, while a code repo named "knowledge" is selected with
+// graph="code", repo="knowledge". Per-family instance identifiers live in
+// typed fields (`repo`, `account`, `language`, or `name`). Routing is an
+// ENVELOPE concern evaluated ONCE per request before any operator compiles —
+// it does NOT affect the per-operator bounded-constant budget
+// (engine_contract.md Section A).
 type GraphSelector struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Graph         string                 `protobuf:"bytes,1,opt,name=graph,proto3" json:"graph,omitempty"`       // "" / "knowledge" | code | cloud | cicd | practice | logs | web | linkage
+	Graph         string                 `protobuf:"bytes,1,opt,name=graph,proto3" json:"graph,omitempty"`       // family/type: "" / "knowledge" | code | cloud | cicd | practice | logs | web | linkage
 	Repo          string                 `protobuf:"bytes,2,opt,name=repo,proto3" json:"repo,omitempty"`         // required for graph=code
 	Account       string                 `protobuf:"bytes,3,opt,name=account,proto3" json:"account,omitempty"`   // required for graph=cloud / cicd
 	Name          string                 `protobuf:"bytes,4,opt,name=name,proto3" json:"name,omitempty"`         // logs query_id / web|pdf source slug / transformers bucket
@@ -1110,6 +1114,7 @@ type Node struct {
 	TombstonedAt  int64                  `protobuf:"varint,19,opt,name=tombstoned_at,json=tombstonedAt,proto3" json:"tombstoned_at,omitempty"`                                              // store.Node.TombstonedAt as unix nanos (0 = unset/live)
 	IsTest        bool                   `protobuf:"varint,20,opt,name=is_test,json=isTest,proto3" json:"is_test,omitempty"`                                                                // store.Node.IsTest
 	TestKind      string                 `protobuf:"bytes,21,opt,name=test_kind,json=testKind,proto3" json:"test_kind,omitempty"`                                                           // store.Node.TestKind
+	CollectEpoch  uint64                 `protobuf:"varint,22,opt,name=collect_epoch,json=collectEpoch,proto3" json:"collect_epoch,omitempty"`                                              // store.Node.CollectEpoch — collect-write-owned, epoch-stamped per collection; EXCLUDED from changedFields (an epoch bump is never a content change)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1289,6 +1294,13 @@ func (x *Node) GetTestKind() string {
 		return x.TestKind
 	}
 	return ""
+}
+
+func (x *Node) GetCollectEpoch() uint64 {
+	if x != nil {
+		return x.CollectEpoch
+	}
+	return 0
 }
 
 // HydratedResult mirrors store.HydratedResult (pkg/store/search_types.go:18-21)
@@ -3663,7 +3675,7 @@ const file_knowledge_v1_engine_proto_rawDesc = "" +
 	"confidence\x12\x16\n" +
 	"\x06method\x18\x06 \x01(\tR\x06method\x12\x1a\n" +
 	"\bevidence\x18\a \x01(\tR\bevidence\x12%\n" +
-	"\x0elast_validated\x18\b \x01(\x03R\rlastValidated\"\xb3\x05\n" +
+	"\x0elast_validated\x18\b \x01(\x03R\rlastValidated\"\xd8\x05\n" +
 	"\x04Node\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12\x1f\n" +
@@ -3691,7 +3703,8 @@ const file_knowledge_v1_engine_proto_rawDesc = "" +
 	"isExported\x12#\n" +
 	"\rtombstoned_at\x18\x13 \x01(\x03R\ftombstonedAt\x12\x17\n" +
 	"\ais_test\x18\x14 \x01(\bR\x06isTest\x12\x1b\n" +
-	"\ttest_kind\x18\x15 \x01(\tR\btestKind\x1a;\n" +
+	"\ttest_kind\x18\x15 \x01(\tR\btestKind\x12#\n" +
+	"\rcollect_epoch\x18\x16 \x01(\x04R\fcollectEpoch\x1a;\n" +
 	"\rMetadataEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\"N\n" +

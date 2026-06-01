@@ -7,14 +7,15 @@ import (
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"google.golang.org/protobuf/proto"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
-func TestBatchNodes_RespectsSizeBound(t *testing.T) {
-	// Each node's JSON is ~100 bytes. maxBytes=250 should produce 2-3
-	// nodes per batch.
+func TestBatchNodes_RespectsSizeBoundAndOrder(t *testing.T) {
+	// Each node serializes to ~50 bytes; maxBytes=200 must produce multiple
+	// chunks, each (bar a lone oversized node) under the bound.
 	nodes := make([]*knowledgev1.Node, 10)
 	for i := range nodes {
 		nodes[i] = &knowledgev1.Node{
@@ -24,28 +25,35 @@ func TestBatchNodes_RespectsSizeBound(t *testing.T) {
 			Content:    "the content goes here for batching",
 		}
 	}
-	batches, hashes, err := BatchNodes(nodes, 250)
-	require.NoError(t, err)
-	require.Len(t, hashes, len(nodes))
-	require.GreaterOrEqual(t, len(batches), 2, "10 nodes at 250-byte bound must produce multiple batches")
+	const maxBytes = 200
+	chunks := BatchNodes(nodes, maxBytes)
+	require.GreaterOrEqual(t, len(chunks), 2, "10 nodes at a 200-byte bound must produce multiple chunks")
 
-	// Reassemble: hash slice ordering must match concatenated batch order.
-	var reassembled []string
-	for _, b := range batches {
-		for _, c := range b.Chunks {
-			reassembled = append(reassembled, c.Hash)
+	// Order is preserved across the flattened chunks, and every multi-node
+	// chunk stays under the byte bound.
+	var flattened []*knowledgev1.Node
+	for _, chunk := range chunks {
+		var chunkBytes int
+		for _, n := range chunk {
+			chunkBytes += proto.Size(n) + 16
 		}
+		if len(chunk) > 1 {
+			assert.LessOrEqual(t, chunkBytes, maxBytes, "multi-node chunk must stay under the byte bound")
+		}
+		flattened = append(flattened, chunk...)
 	}
-	assert.Equal(t, hashes, reassembled, "hashes slice must align with batch envelope order")
+	require.Len(t, flattened, len(nodes))
+	for i := range nodes {
+		assert.Equal(t, nodes[i].Id, flattened[i].Id, "node order must be preserved across chunks")
+	}
 }
 
 func TestBatchNodes_DefaultWhenMaxBytesZero(t *testing.T) {
 	nodes := []*knowledgev1.Node{
 		{Id: "x", SymbolName: "x.go"},
 	}
-	batches, hashes, err := BatchNodes(nodes, 0)
-	require.NoError(t, err)
-	require.Len(t, batches, 1)
-	require.Len(t, hashes, 1)
-	assert.Equal(t, hashes[0], batches[0].Chunks[0].Hash)
+	chunks := BatchNodes(nodes, 0)
+	require.Len(t, chunks, 1)
+	require.Len(t, chunks[0], 1)
+	assert.Equal(t, "x", chunks[0][0].Id)
 }

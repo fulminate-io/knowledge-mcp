@@ -28,7 +28,7 @@ Returns the full plan tree. Use this instead of individual create_project/create
 					AdditionalProperties: &falseValue, Properties: map[string]kgtools.Property{
 						"name":     {Type: "string", Description: "Phase name (required)"},
 						"overview": {Type: "string", Description: "Phase overview"},
-						"summary":  {Type: "string", Description: "Required search-optimized one-line summary, max 500 chars"},
+						"summary":  {Type: "string", MaxLength: 500, Description: "Required search-optimized one-line summary, max 500 chars"},
 						"steps":    {Type: "array", Description: "Ordered list of steps in this phase.", Items: planStepItems()},
 					},
 				}},
@@ -62,7 +62,7 @@ func planStepItems() *kgtools.Property {
 	return &kgtools.Property{Type: "object", Description: "Step object", AdditionalProperties: &falseValue, Properties: map[string]kgtools.Property{
 		"name":        {Type: "string", Description: "Step name (required)"},
 		"description": {Type: "string", Description: "Step description (required)"},
-		"summary":     {Type: "string", Description: "Required search-optimized one-line summary, max 500 chars"},
+		"summary":     {Type: "string", MaxLength: 500, Description: "Required search-optimized one-line summary, max 500 chars"},
 		"file_paths":  {Type: "string", Description: "Comma-separated file paths this step touches"},
 		"criteria":    {Type: "array", Description: "Success criteria for this step.", Items: criterionItems()},
 	}}

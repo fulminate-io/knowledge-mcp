@@ -6,6 +6,7 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -14,7 +15,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1/knowledgev1connect"
 	"github.com/fulminate-io/knowledge-mcp/internal/auth"
+	"github.com/fulminate-io/knowledge-mcp/internal/enginetest"
 )
 
 // cloudCaptureHandler is a minimal HTTP handler that records every
@@ -138,4 +141,84 @@ func TestNewCloudGraphClient_RetriesOn401(t *testing.T) {
 		"ForceRefresh should fire exactly once after the 401")
 	assert.Equal(t, "Bearer tok-stale", got[0], "first request used the original token")
 	assert.Equal(t, "Bearer tok-rotated", got[1], "retry must carry the rotated token")
+}
+
+// protoCapture wraps a downstream handler and records, for the FIRST request it
+// observes, the protocol major version, HTTP method, and Content-Type header —
+// the wire facts the HTTP/1.1-determinism assertions inspect. It is the only new
+// glue this test needs; no existing harness records r.ProtoMajor.
+type protoCapture struct {
+	next        http.Handler
+	mu          sync.Mutex
+	protoMajor  int
+	method      string
+	contentType string
+	seen        bool
+}
+
+func (p *protoCapture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	p.mu.Lock()
+	if !p.seen {
+		p.protoMajor = r.ProtoMajor
+		p.method = r.Method
+		p.contentType = r.Header.Get("Content-Type")
+		p.seen = true
+	}
+	p.mu.Unlock()
+	p.next.ServeHTTP(w, r)
+}
+
+// TestCloudExecute_UnaryPOSTOverHTTP11 pins that NewCloudGraphClient issues
+// EngineService.Execute as a Connect UNARY POST that succeeds over HTTP/1.1 with
+// no gRPC/gRPC-Web option on the client. The backend is the REAL generated
+// EngineService handler (reusing the in-package stubEngine), mounted behind a
+// plain cleartext httptest.NewServer — which is HTTP/1.1-only — so a successful
+// round-trip plus ProtoMajor==1 proves cloud Execute reaches the engine
+// deterministically over h1.1.
+//
+// SCOPE OF THE CLAIM (reviewer T3-1): this is a CLEARTEXT server, so it does NOT
+// exercise the TLS-ALPN h2-negotiate-then-fall-back-to-h1.1 path the ticket
+// rationale names — over cleartext, h2 is never attempted at all. Wiring the
+// client to a TLS test cert is impractical without a production change:
+// NewCloudGraphClient (cloud_auth.go:40) hardcodes its base http.Transport's
+// TLSClientConfig with no RootCAs/CA-injection seam, and adding one is out of
+// scope (tests-only ticket). So this test proves the narrower, still-load-bearing
+// fact — Connect unary POST works over HTTP/1.1 and carries a non-gRPC
+// content-type — NOT that ForceAttemptHTTP2 "fell back via ALPN". GREEN confirms
+// NO production transport change is needed.
+func TestCloudExecute_UnaryPOSTOverHTTP11(t *testing.T) {
+	canned := enginetest.ResponseWithNodes(&knowledgev1.Node{Id: "n1"})
+
+	handler := &stubEngine{respond: func(_ *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error) {
+		return canned, nil
+	}}
+	mux := http.NewServeMux()
+	path, hdlr := knowledgev1connect.NewEngineServiceHandler(handler)
+	mux.Handle(path, hdlr)
+
+	cap := &protoCapture{next: mux}
+	// Plain (non-h2c) httptest server: HTTP/1.1-only front door.
+	srv := httptest.NewServer(cap)
+	t.Cleanup(srv.Close)
+
+	gc := NewCloudGraphClient(srv.URL, auth.StaticTokenSource{AccessToken: "tok"})
+
+	req := &knowledgev1.ExecuteRequest{
+		Plan: &knowledgev1.ExecuteRequest_Query{
+			Query: &knowledgev1.QueryPlan{ById: "x"},
+		},
+	}
+	resp, err := gc.Execute(context.Background(), req)
+	require.NoError(t, err, "cloud Execute must succeed over HTTP/1.1")
+	require.NotNil(t, resp)
+	require.Len(t, resp.GetNodes(), 1, "the canned node round-trips")
+	assert.Equal(t, "n1", resp.GetNodes()[0].GetId())
+
+	cap.mu.Lock()
+	defer cap.mu.Unlock()
+	require.True(t, cap.seen, "the backend must have observed at least one request")
+	assert.Equal(t, 1, cap.protoMajor, "Execute travels over HTTP/1.1 (ProtoMajor==1)")
+	assert.Equal(t, http.MethodPost, cap.method, "Connect unary is a POST")
+	assert.False(t, strings.HasPrefix(cap.contentType, "application/grpc"),
+		"content-type must NOT be gRPC/gRPC-Web (got %q) — no gRPC option on the cloud client", cap.contentType)
 }

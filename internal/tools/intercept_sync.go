@@ -18,6 +18,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"time"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/auth"
@@ -63,10 +64,17 @@ func InterceptSync(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtool
 		return true, errorResult("sync: invalid args: " + err.Error())
 	}
 
+	// list: print the sync-eligibility table. Needs the full ClientDeps (local
+	// + cloud GraphCaller + the cloudStatusInfo login gate), unlike pushGraph
+	// which only needs the Exporter — so the arm passes deps through.
+	if a.Operation == "list" {
+		return true, handleSyncList(deps)
+	}
+
 	// Push-only: pull/promote were dropped by the decision.
 	if a.Operation != "" && a.Operation != "push" {
 		return true, errorResult(fmt.Sprintf(
-			"sync: %q is not supported — sync is now push-only (pull/promote were removed)", a.Operation))
+			"sync: %q is not supported — sync is push/list only (pull/promote were removed)", a.Operation))
 	}
 
 	graph := a.Graph
@@ -102,17 +110,25 @@ func pushGraph(
 	transport *auth.Transport,
 	graph, name string,
 ) kgtools.ToolResult {
+	serializeStart := time.Now()
 	resp, err := exp.ExportGraph(ctx, &knowledgev1.ExportGraphRequest{
 		Target: manageGraphSelector(graph, name),
 	})
 	if err != nil {
 		return errorResult(fmt.Sprintf("sync push: export %s/%s: %v", graph, name, err))
 	}
+	serializeDur := time.Since(serializeStart)
 	body := resp.GetGraphBytes()
+
+	uploadStart := time.Now()
 	if err := transport.PushGraph(ctx, graph, name, body); err != nil {
 		return errorResult(wrapPushErr(graph, name, err))
 	}
-	return textResult(fmt.Sprintf("pushed %s/%s (%d bytes)", graph, name, len(body)))
+	uploadDur := time.Since(uploadStart)
+
+	return textResult(fmt.Sprintf("pushed %s/%s (%d bytes; serialize=%s upload=%s)",
+		graph, name, len(body),
+		serializeDur.Round(time.Millisecond), uploadDur.Round(time.Millisecond)))
 }
 
 // exporterSeam upgrades deps.LocalGraphCaller() to the Exporter seam, or

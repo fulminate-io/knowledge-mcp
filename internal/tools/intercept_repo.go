@@ -16,8 +16,8 @@ import (
 // are not touched by InjectRepoIfCodeGraph except via the dedicated
 // manage subdispatch path below.
 //
-// Note on query / traverse: both accept a `graph` selector and only act
-// on the code graph when graph is "code" or unset. The graph-selector
+// Note on search / query / traverse: these accept a `graph` selector and
+// only act on the code graph when graph is "code" or unset. The graph-selector
 // gate inside InjectRepoIfCodeGraph filters these — see step 2.
 //
 // manage is NOT in this map — its code-graph-targeted operations are
@@ -76,7 +76,7 @@ var manageCodeGraphOps = map[string]bool{
 //  1. Tool-name allowlist: only acts on tools in codeGraphToolNames.
 //     Other tools return (params, false, _).
 //
-//  2. Graph-selector gate (for query / traverse): only proceed when
+//  2. Graph-selector gate (for search / query / traverse): only proceed when
 //     args["graph"] is missing OR equals "code". Knowledge / cloud /
 //     cicd / practice / linkage variants pass through.
 //
@@ -109,10 +109,10 @@ func InjectRepoIfCodeGraph(ctx context.Context, deps ClientDeps, params kgtools.
 
 	args := decodeRepoArgs(params.Arguments)
 
-	// Graph-selector gate: query / traverse are knowledge-graph by default.
+	// Graph-selector gate: search / query / traverse can target non-code graphs.
 	// Only proceed when graph is empty (code-graph default for code-only
 	// tools is enforced server-side) or explicitly "code".
-	if params.Name == "query" || params.Name == "traverse" {
+	if params.Name == "search" || params.Name == "query" || params.Name == "traverse" {
 		graph := decodeStringField(args, "graph")
 		if graph != "" && graph != "code" {
 			return params, false, kgtools.ToolResult{}
@@ -128,7 +128,7 @@ func InjectRepoIfCodeGraph(ctx context.Context, deps ClientDeps, params kgtools.
 			return params, true, errorResult(params.Name + ": resolve repo: " + err.Error())
 		}
 		if !ok {
-			return params, true, errorResult(params.Name + ": repo is required; run from inside an indexed code repo or pass repo:")
+			return params, true, errorResult(params.Name + ": graph=\"code\" requires repo. For the memory/decision/thought graph, use graph=\"knowledge\". For a code repo named \"knowledge\", use graph=\"code\", repo=\"knowledge\".")
 		}
 		setStringField(args, "repo", repo)
 	}

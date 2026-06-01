@@ -26,7 +26,7 @@ Findings are added later via record_finding with question_id. Use this for compl
 					Type: "object", Description: `Question object: {"question":"...","summary":"required search-optimized one-line summary, max 500 chars","context":"why this question matters"}`,
 					AdditionalProperties: &falseValue, Properties: map[string]kgtools.Property{
 						"question": {Type: "string", Description: "The research question (required)"},
-						"summary":  {Type: "string", Description: "Required search-optimized one-line summary, max 500 chars"},
+						"summary":  {Type: "string", MaxLength: 500, Description: "Required search-optimized one-line summary, max 500 chars"},
 						"context":  {Type: "string", Description: "Why this question matters (background)"},
 					},
 				}},

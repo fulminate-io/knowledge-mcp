@@ -87,11 +87,14 @@ func TestInterceptSync_Push_FetchesThenPosts(t *testing.T) {
 	assert.Equal(t, 1, exp.exportCalls, "ExportGraph fetched once")
 	assert.Equal(t, "/v1/sync/push/knowledge/default", gotPath, "POSTed to the push route")
 	assert.Equal(t, want, gotBody, "the exported bytes were uploaded verbatim")
-	assert.Contains(t, textOf(out), "pushed knowledge/default (4 bytes)")
+	// The success line now carries a serialize/upload timing breakdown after the
+	// byte count: "pushed knowledge/default (4 bytes; serialize=<dur> upload=<dur>)".
+	// Assert the stable prefix (graph/name + byte count) so the durations stay free.
+	assert.Contains(t, textOf(out), "pushed knowledge/default (4 bytes;")
 }
 
 // TestInterceptSync_PullPromote_Rejected asserts pull/promote return the
-// push-only error and never touch ExportGraph or the transport.
+// push/list-only error and never touch ExportGraph or the transport.
 func TestInterceptSync_PullPromote_Rejected(t *testing.T) {
 	withTransport(t, func() (*auth.Transport, error) {
 		t.Fatal("transport builder must not be called for pull/promote")
@@ -103,7 +106,7 @@ func TestInterceptSync_PullPromote_Rejected(t *testing.T) {
 		require.True(t, handled)
 		assert.True(t, out.IsError, "%s must be an error result", op)
 		assert.Equal(t, 0, exp.exportCalls, "%s must not fetch bytes", op)
-		assert.Contains(t, textOf(out), "push-only")
+		assert.Contains(t, textOf(out), "push/list only")
 	}
 }
 

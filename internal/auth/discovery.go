@@ -29,6 +29,7 @@ type AuthorizationServerMetadata struct {
 	AuthorizationEndpoint string `json:"authorization_endpoint"`
 	TokenEndpoint         string `json:"token_endpoint"`
 	RevocationEndpoint    string `json:"revocation_endpoint"`
+	RegistrationEndpoint  string `json:"registration_endpoint"`
 }
 
 // DiscoveredEndpoints is the resolved set of URLs the CLI needs to run a
@@ -41,6 +42,7 @@ type DiscoveredEndpoints struct {
 	AuthorizationEndpoint string
 	TokenEndpoint         string
 	RevocationEndpoint    string // may be "" if AuthKit doesn't expose one
+	RegistrationEndpoint  string // RFC 7591 DCR endpoint; "" if not advertised
 }
 
 // Discover walks the two-step RFC 9728 + RFC 8414 chain starting from a
@@ -84,6 +86,7 @@ func Discover(
 		AuthorizationEndpoint: asm.AuthorizationEndpoint,
 		TokenEndpoint:         asm.TokenEndpoint,
 		RevocationEndpoint:    asm.RevocationEndpoint,
+		RegistrationEndpoint:  asm.RegistrationEndpoint,
 	}, nil
 }
 

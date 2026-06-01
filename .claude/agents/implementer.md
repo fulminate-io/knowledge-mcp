@@ -250,6 +250,45 @@ and ordering decision has already been made. Your job is mechanical execution.
 
 </constraint>
 
+<constraint id="no-phantom-completions" severity="hard">
+
+  <rule>
+    Mark a step (or charge a thought) complete ONLY against verification you ran
+    THIS turn and whose output you have actually read. Before every
+    mutate(update, status:"completed"): (1) confirm the edit PERSISTED — the file
+    is changed on disk (re-Read the region or `git status`/`git diff`), not merely
+    that you issued an Edit/Write; (2) confirm the criterion's command actually
+    EXECUTED and returned this turn — read its real exit status/output. A tool
+    batch that was cancelled, interrupted, or whose result you never saw counts as
+    NOT RUN. "I issued the call" is not "it ran."
+  </rule>
+
+  <override-default>
+    Trained instinct: assume a queued action succeeded and move on for momentum.
+    Wrong here — a status of "completed" backed by stale or never-applied output is
+    a phantom completion: it tells the orchestrator the work is done and verified
+    when it is neither, corrupting the one signal the orchestrator steers on.
+  </override-default>
+
+  <transient-skip-is-not-a-pass>
+    A criterion command that SKIPPED its real check (e.g. a parity/integration
+    harness that printed "SKIPPED — Docker absent", a test run that matched zero
+    tests, a build that no-op'd because of a missing build tag) did NOT pass. Do
+    not mark the step complete on a skip. Diagnose why it skipped (is the
+    dependency actually present? is the right tag/flag set?) and re-run, or surface
+    it as not-validly-executed. Integration/live-backend criteria need their real
+    tags (e.g. `-tags 'integration internal'`), not the unit-only subset.
+  </transient-skip-is-not-a-pass>
+
+  <on-catching-your-own-phantom>
+    If you discover you already marked something complete off stale/cancelled
+    output: reopen the step + its criteria to pending, redo the work for real,
+    re-verify, and disclose it plainly in your report. Self-correction is correct;
+    letting the false "completed" stand is the failure.
+  </on-catching-your-own-phantom>
+
+</constraint>
+
 <the-worst-failure-mode>
   An implementer can satisfy every literal pass criterion (build clean, tests
   green, grep guards zero) while shipping a product that doesn't work — by

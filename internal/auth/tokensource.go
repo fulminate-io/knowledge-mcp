@@ -79,7 +79,6 @@ const accessCacheMargin = 5 * time.Minute
 type OAuthTokenSource struct {
 	store             Store
 	fulminateEndpoint string
-	clientID          string
 	allowedAuthHosts  map[string]struct{}
 
 	mu          sync.Mutex
@@ -91,20 +90,22 @@ type OAuthTokenSource struct {
 }
 
 // NewOAuthTokenSource wires a store-backed token source. fulminateEndpoint
-// is the Fulminate API base URL (no trailing slash, e.g. "https://fulminate.io");
-// clientID is the OAuth client identifier ("knowledge-cli" for the
-// knowledge binary). allowedAuthHosts is the closed set of AuthKit
-// hostnames the CLI trusts as authorization servers — discovery refuses
-// to follow a redirect to any host outside this set.
+// is the Fulminate API base URL (no trailing slash, e.g. "https://fulminate.io").
+// allowedAuthHosts is the closed set of AuthKit hostnames the CLI trusts as
+// authorization servers — discovery refuses to follow a redirect to any host
+// outside this set.
+//
+// There is no clientID argument: the knowledge CLI registers a public client
+// dynamically at login (see auth.RegisterPublicClient) and persists the issued
+// id under KeyClientID. The refresh path reads it from the store per call.
 func NewOAuthTokenSource(
 	store Store,
-	fulminateEndpoint, clientID string,
+	fulminateEndpoint string,
 	allowedAuthHosts map[string]struct{},
 ) *OAuthTokenSource {
 	return &OAuthTokenSource{
 		store:             store,
 		fulminateEndpoint: fulminateEndpoint,
-		clientID:          clientID,
 		allowedAuthHosts:  allowedAuthHosts,
 	}
 }
@@ -174,7 +175,15 @@ func (o *OAuthTokenSource) refreshLocked(ctx context.Context) (string, Permissio
 		return "", nil, fmt.Errorf("auth: load refresh token: %w", err)
 	}
 
-	tr, err := RefreshAccessToken(ctx, eps.TokenEndpoint, o.clientID, rt, eps.Resource)
+	// The client_id was issued by Dynamic Client Registration at login and
+	// persisted alongside the refresh token; a refresh token can only be
+	// redeemed by the client it was issued to.
+	clientID, err := o.store.Get(ctx, KeyClientID)
+	if err != nil {
+		return "", nil, fmt.Errorf("auth: load client id: %w", err)
+	}
+
+	tr, err := RefreshAccessToken(ctx, eps.TokenEndpoint, clientID, rt, eps.Resource)
 	if err != nil {
 		o.warnRefreshFailureOnce(err)
 		return "", nil, err

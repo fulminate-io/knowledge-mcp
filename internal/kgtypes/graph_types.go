@@ -52,6 +52,60 @@ const (
 	GraphPDFRaw GraphType = "pdf"
 )
 
+// allGraphTypes is the canonical ordered list of every GraphType. The first
+// seven are sync-eligible; the trailing three (logs/web/pdf) are the raw/
+// LLM-skipped graphs SyncEligible filters out. Ordering is load-bearing:
+// SyncEligibleGraphTypes filters this slice in place, so the eligible-set
+// order is {knowledge, code, cloud, cicd, practice, linkage, transformers}.
+var allGraphTypes = []GraphType{
+	GraphKnowledge,
+	GraphCode,
+	GraphCloud,
+	GraphCICD,
+	GraphPractice,
+	GraphLinkage,
+	GraphTransformers,
+	GraphLogs,
+	GraphWebRaw,
+	GraphPDFRaw,
+}
+
+// SyncEligible reports whether a graph of type gt may be pushed to Fulminate
+// Cloud. It is the complement of the server's store.SkipsLLMProcessing
+// (cmd/knowledge-server/internal/store/db_policy.go:21): every type EXCEPT the
+// raw/LLM-skipped graphs (logs, web, pdf) is sync-eligible — CEO-locked, "raw
+// graphs and logs are the only ones we don't want to sync".
+//
+// This is a DELIBERATE client-side DUPLICATE of the server predicate: the OSS
+// client cannot import the server-internal predicate across the module
+// boundary (and the cloud read happens via the login-routed GraphCaller RPC,
+// not by importing cloud code). Written in complement form (not a hardcoded
+// inclusion list) so it stays correct when a new non-raw type is added — only
+// allGraphTypes needs the new constant.
+//
+// BI-DIRECTIONAL CHANGE-DETECTOR CONTRACT: a new raw/LLM-skipped/sync-ineligible
+// graph type added to store.SkipsLLMProcessing MUST be reflected here too (add
+// it to the exclusion set below AND append it to allGraphTypes after the
+// eligible prefix). No cross-module compiler/test enforces this; the server
+// site carries the reciprocal pointer back to this function.
+func SyncEligible(gt GraphType) bool {
+	return gt != GraphLogs && gt != GraphWebRaw && gt != GraphPDFRaw
+}
+
+// SyncEligibleGraphTypes returns the ordered set of sync-eligible graph types:
+// {knowledge, code, cloud, cicd, practice, linkage, transformers}. Filters the
+// canonical allGraphTypes slice through SyncEligible so the set and the
+// predicate can never drift.
+func SyncEligibleGraphTypes() []GraphType {
+	out := make([]GraphType, 0, len(allGraphTypes))
+	for _, gt := range allGraphTypes {
+		if SyncEligible(gt) {
+			out = append(out, gt)
+		}
+	}
+	return out
+}
+
 // Status values for work nodes. Internal vocabulary, NOT a closed enum —
 // see mutateRequestArgs.Status comment for the open-string contract.
 const (

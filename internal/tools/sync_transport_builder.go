@@ -26,6 +26,6 @@ func buildSyncTransport() (*auth.Transport, error) {
 	if err != nil {
 		return nil, fmt.Errorf("sync requires login — keychain unavailable: %w", err)
 	}
-	ts := auth.NewOAuthTokenSource(store, cli.CloudEndpoint, cli.OAuthClientID, cli.AllowedAuthHosts())
+	ts := auth.NewOAuthTokenSource(store, cli.CloudEndpoint, cli.AllowedAuthHosts())
 	return auth.NewSyncTransport(cli.CloudEndpoint, ts), nil
 }

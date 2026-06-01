@@ -31,7 +31,7 @@ func main() { println("x") }
 
 // TestCodeCollector_Collect_NoGoMod_EmptyModulePath verifies non-Go repos
 // (those without a go.mod at the root) produce an empty ModulePath
-// rather than erroring — the storesink writes an empty value through
+// rather than erroring — the server writes an empty value through
 // and the DSM analyzer skips the graph gracefully.
 func TestCodeCollector_Collect_NoGoMod_EmptyModulePath(t *testing.T) {
 	dir := t.TempDir()

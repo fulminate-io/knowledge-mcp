@@ -23,29 +23,51 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// ChunkBatch is a batch of hashed node bodies uploaded over the
-// UploadChunks bi-di stream.
-type ChunkBatch struct {
+// CollectChunkRequest carries one chunk of a collection. epoch is minted
+// client-side per collection (monotonic local counter, single-process);
+// every chunk of one collection AND its Finalize share the same epoch.
+// nodes ride INLINE as the typed Node from engine.proto (reuse the
+// cross-file import above) — no by-hash arena indirection. edges ride as
+// the typed BatchEdge, ID-addressed so cross-chunk references resolve
+// regardless of which chunk a referenced node arrived in.
+//
+// current_branch is the git branch the client is collecting from. The
+// server compares it against the existing graph's recorded default branch
+// (graph metadata SyncDefaultBranchKey) to decide overlay-vs-base:
+//   - matches recorded default (or empty/"HEAD") → base graph
+//   - differs from recorded                      → overlay keyed by current_branch
+//
+// sync_commit is the git HEAD SHA the client collected at; sync_time is the
+// collection wall-clock as unix nanos. The server persists both onto
+// code-graph metadata (SyncCommitKey / SyncTimeKey).
+type CollectChunkRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Chunks        []*ChunkEnvelope       `protobuf:"bytes,1,rep,name=chunks,proto3" json:"chunks,omitempty"`
+	Epoch         uint64                 `protobuf:"varint,1,opt,name=epoch,proto3" json:"epoch,omitempty"`
+	GraphType     string                 `protobuf:"bytes,2,opt,name=graph_type,json=graphType,proto3" json:"graph_type,omitempty"`
+	GraphName     string                 `protobuf:"bytes,3,opt,name=graph_name,json=graphName,proto3" json:"graph_name,omitempty"`
+	CurrentBranch string                 `protobuf:"bytes,4,opt,name=current_branch,json=currentBranch,proto3" json:"current_branch,omitempty"`
+	SyncCommit    string                 `protobuf:"bytes,5,opt,name=sync_commit,json=syncCommit,proto3" json:"sync_commit,omitempty"`
+	SyncTime      int64                  `protobuf:"varint,6,opt,name=sync_time,json=syncTime,proto3" json:"sync_time,omitempty"`
+	Nodes         []*Node                `protobuf:"bytes,7,rep,name=nodes,proto3" json:"nodes,omitempty"` // INLINE typed Node bodies (engine.proto)
+	Edges         []*BatchEdge           `protobuf:"bytes,8,rep,name=edges,proto3" json:"edges,omitempty"` // ID-addressed edges for this chunk
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
 
-func (x *ChunkBatch) Reset() {
-	*x = ChunkBatch{}
+func (x *CollectChunkRequest) Reset() {
+	*x = CollectChunkRequest{}
 	mi := &file_knowledge_v1_ingest_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *ChunkBatch) String() string {
+func (x *CollectChunkRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*ChunkBatch) ProtoMessage() {}
+func (*CollectChunkRequest) ProtoMessage() {}
 
-func (x *ChunkBatch) ProtoReflect() protoreflect.Message {
+func (x *CollectChunkRequest) ProtoReflect() protoreflect.Message {
 	mi := &file_knowledge_v1_ingest_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -57,96 +79,131 @@ func (x *ChunkBatch) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use ChunkBatch.ProtoReflect.Descriptor instead.
-func (*ChunkBatch) Descriptor() ([]byte, []int) {
+// Deprecated: Use CollectChunkRequest.ProtoReflect.Descriptor instead.
+func (*CollectChunkRequest) Descriptor() ([]byte, []int) {
 	return file_knowledge_v1_ingest_proto_rawDescGZIP(), []int{0}
 }
 
-func (x *ChunkBatch) GetChunks() []*ChunkEnvelope {
+func (x *CollectChunkRequest) GetEpoch() uint64 {
 	if x != nil {
-		return x.Chunks
+		return x.Epoch
 	}
-	return nil
+	return 0
 }
 
-// ChunkEnvelope is a single hashed node body. hash is the SHA-256 hex of
-// node_json. Per-node granularity per decision e3d87eae resolution.
-type ChunkEnvelope struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Hash          string                 `protobuf:"bytes,1,opt,name=hash,proto3" json:"hash,omitempty"`
-	NodeJson      []byte                 `protobuf:"bytes,2,opt,name=node_json,json=nodeJson,proto3" json:"node_json,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *ChunkEnvelope) Reset() {
-	*x = ChunkEnvelope{}
-	mi := &file_knowledge_v1_ingest_proto_msgTypes[1]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *ChunkEnvelope) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*ChunkEnvelope) ProtoMessage() {}
-
-func (x *ChunkEnvelope) ProtoReflect() protoreflect.Message {
-	mi := &file_knowledge_v1_ingest_proto_msgTypes[1]
+func (x *CollectChunkRequest) GetGraphType() string {
 	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use ChunkEnvelope.ProtoReflect.Descriptor instead.
-func (*ChunkEnvelope) Descriptor() ([]byte, []int) {
-	return file_knowledge_v1_ingest_proto_rawDescGZIP(), []int{1}
-}
-
-func (x *ChunkEnvelope) GetHash() string {
-	if x != nil {
-		return x.Hash
+		return x.GraphType
 	}
 	return ""
 }
 
-func (x *ChunkEnvelope) GetNodeJson() []byte {
+func (x *CollectChunkRequest) GetGraphName() string {
 	if x != nil {
-		return x.NodeJson
+		return x.GraphName
+	}
+	return ""
+}
+
+func (x *CollectChunkRequest) GetCurrentBranch() string {
+	if x != nil {
+		return x.CurrentBranch
+	}
+	return ""
+}
+
+func (x *CollectChunkRequest) GetSyncCommit() string {
+	if x != nil {
+		return x.SyncCommit
+	}
+	return ""
+}
+
+func (x *CollectChunkRequest) GetSyncTime() int64 {
+	if x != nil {
+		return x.SyncTime
+	}
+	return 0
+}
+
+func (x *CollectChunkRequest) GetNodes() []*Node {
+	if x != nil {
+		return x.Nodes
 	}
 	return nil
 }
 
-// ChunkAck tells the client which hashes were accepted this batch and
-// which were dedup hits (already on the server).
-type ChunkAck struct {
-	state             protoimpl.MessageState `protogen:"open.v1"`
-	AcceptedHashes    []string               `protobuf:"bytes,1,rep,name=accepted_hashes,json=acceptedHashes,proto3" json:"accepted_hashes,omitempty"`
-	AlreadyHaveHashes []string               `protobuf:"bytes,2,rep,name=already_have_hashes,json=alreadyHaveHashes,proto3" json:"already_have_hashes,omitempty"`
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+func (x *CollectChunkRequest) GetEdges() []*BatchEdge {
+	if x != nil {
+		return x.Edges
+	}
+	return nil
 }
 
-func (x *ChunkAck) Reset() {
-	*x = ChunkAck{}
+type CollectChunkResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CollectChunkResponse) Reset() {
+	*x = CollectChunkResponse{}
+	mi := &file_knowledge_v1_ingest_proto_msgTypes[1]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CollectChunkResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CollectChunkResponse) ProtoMessage() {}
+
+func (x *CollectChunkResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_knowledge_v1_ingest_proto_msgTypes[1]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CollectChunkResponse.ProtoReflect.Descriptor instead.
+func (*CollectChunkResponse) Descriptor() ([]byte, []int) {
+	return file_knowledge_v1_ingest_proto_rawDescGZIP(), []int{1}
+}
+
+// FinalizeRequest ends a collection. epoch matches the CollectChunk epoch;
+// the server tombstones every node whose collect_epoch differs (the
+// prior-collection set). graph_type/graph_name/current_branch select the
+// graph + overlay arm exactly as CollectChunk did.
+type FinalizeRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Epoch         uint64                 `protobuf:"varint,1,opt,name=epoch,proto3" json:"epoch,omitempty"`
+	GraphType     string                 `protobuf:"bytes,2,opt,name=graph_type,json=graphType,proto3" json:"graph_type,omitempty"`
+	GraphName     string                 `protobuf:"bytes,3,opt,name=graph_name,json=graphName,proto3" json:"graph_name,omitempty"`
+	CurrentBranch string                 `protobuf:"bytes,4,opt,name=current_branch,json=currentBranch,proto3" json:"current_branch,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FinalizeRequest) Reset() {
+	*x = FinalizeRequest{}
 	mi := &file_knowledge_v1_ingest_proto_msgTypes[2]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
 
-func (x *ChunkAck) String() string {
+func (x *FinalizeRequest) String() string {
 	return protoimpl.X.MessageStringOf(x)
 }
 
-func (*ChunkAck) ProtoMessage() {}
+func (*FinalizeRequest) ProtoMessage() {}
 
-func (x *ChunkAck) ProtoReflect() protoreflect.Message {
+func (x *FinalizeRequest) ProtoReflect() protoreflect.Message {
 	mi := &file_knowledge_v1_ingest_proto_msgTypes[2]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
@@ -158,23 +215,73 @@ func (x *ChunkAck) ProtoReflect() protoreflect.Message {
 	return mi.MessageOf(x)
 }
 
-// Deprecated: Use ChunkAck.ProtoReflect.Descriptor instead.
-func (*ChunkAck) Descriptor() ([]byte, []int) {
+// Deprecated: Use FinalizeRequest.ProtoReflect.Descriptor instead.
+func (*FinalizeRequest) Descriptor() ([]byte, []int) {
 	return file_knowledge_v1_ingest_proto_rawDescGZIP(), []int{2}
 }
 
-func (x *ChunkAck) GetAcceptedHashes() []string {
+func (x *FinalizeRequest) GetEpoch() uint64 {
 	if x != nil {
-		return x.AcceptedHashes
+		return x.Epoch
 	}
-	return nil
+	return 0
 }
 
-func (x *ChunkAck) GetAlreadyHaveHashes() []string {
+func (x *FinalizeRequest) GetGraphType() string {
 	if x != nil {
-		return x.AlreadyHaveHashes
+		return x.GraphType
 	}
-	return nil
+	return ""
+}
+
+func (x *FinalizeRequest) GetGraphName() string {
+	if x != nil {
+		return x.GraphName
+	}
+	return ""
+}
+
+func (x *FinalizeRequest) GetCurrentBranch() string {
+	if x != nil {
+		return x.CurrentBranch
+	}
+	return ""
+}
+
+type FinalizeResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FinalizeResponse) Reset() {
+	*x = FinalizeResponse{}
+	mi := &file_knowledge_v1_ingest_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FinalizeResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FinalizeResponse) ProtoMessage() {}
+
+func (x *FinalizeResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_knowledge_v1_ingest_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FinalizeResponse.ProtoReflect.Descriptor instead.
+func (*FinalizeResponse) Descriptor() ([]byte, []int) {
+	return file_knowledge_v1_ingest_proto_rawDescGZIP(), []int{3}
 }
 
 // BatchEdge mirrors store.BatchEdge (pkg/store/db_types.go:11-26) AND the
@@ -201,7 +308,7 @@ type BatchEdge struct {
 
 func (x *BatchEdge) Reset() {
 	*x = BatchEdge{}
-	mi := &file_knowledge_v1_ingest_proto_msgTypes[3]
+	mi := &file_knowledge_v1_ingest_proto_msgTypes[4]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -213,7 +320,7 @@ func (x *BatchEdge) String() string {
 func (*BatchEdge) ProtoMessage() {}
 
 func (x *BatchEdge) ProtoReflect() protoreflect.Message {
-	mi := &file_knowledge_v1_ingest_proto_msgTypes[3]
+	mi := &file_knowledge_v1_ingest_proto_msgTypes[4]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -226,7 +333,7 @@ func (x *BatchEdge) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BatchEdge.ProtoReflect.Descriptor instead.
 func (*BatchEdge) Descriptor() ([]byte, []int) {
-	return file_knowledge_v1_ingest_proto_rawDescGZIP(), []int{3}
+	return file_knowledge_v1_ingest_proto_rawDescGZIP(), []int{4}
 }
 
 func (x *BatchEdge) GetFromIdx() int32 {
@@ -299,163 +406,6 @@ func (x *BatchEdge) GetLastValidated() int64 {
 	return 0
 }
 
-// WriteResultRequest is the remote analog of collector.Sink.WriteResult.
-// node_hashes references chunks uploaded via UploadChunks this session.
-// edges carries the typed []store.BatchEdge.
-//
-// current_branch is the git branch the client is collecting from. The
-// server compares it against the existing graph's recorded default branch
-// (graph metadata SyncDefaultBranchKey) to decide overlay-vs-full-replace:
-//   - matches recorded default → full-replace
-//   - no recorded default      → bootstrap full-replace and record this
-//     branch as the new default
-//   - differs from recorded    → overlay keyed by current_branch
-//
-// Empty/"HEAD" current_branch means "non-git or detached" — treated as
-// matching whatever the recorded default is (full-replace).
-//
-// sync_commit is the git HEAD SHA the client collected at; sync_time is the
-// collection wall-clock as unix nanos (matching the BatchEdge.last_validated
-// timestamp convention). The server persists both onto code-graph metadata
-// (SyncCommitKey / SyncTimeKey) so a later catalog read can compute "N commits
-// behind / last collected <when>". Empty values mean a non-git collection or a
-// client that predates this field.
-type WriteResultRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	CollectorName string                 `protobuf:"bytes,1,opt,name=collector_name,json=collectorName,proto3" json:"collector_name,omitempty"`
-	GraphType     string                 `protobuf:"bytes,2,opt,name=graph_type,json=graphType,proto3" json:"graph_type,omitempty"`
-	GraphName     string                 `protobuf:"bytes,3,opt,name=graph_name,json=graphName,proto3" json:"graph_name,omitempty"`
-	CurrentBranch string                 `protobuf:"bytes,4,opt,name=current_branch,json=currentBranch,proto3" json:"current_branch,omitempty"`
-	NodeHashes    []string               `protobuf:"bytes,5,rep,name=node_hashes,json=nodeHashes,proto3" json:"node_hashes,omitempty"`
-	Edges         []*BatchEdge           `protobuf:"bytes,6,rep,name=edges,proto3" json:"edges,omitempty"`
-	SyncCommit    string                 `protobuf:"bytes,7,opt,name=sync_commit,json=syncCommit,proto3" json:"sync_commit,omitempty"`
-	SyncTime      int64                  `protobuf:"varint,8,opt,name=sync_time,json=syncTime,proto3" json:"sync_time,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *WriteResultRequest) Reset() {
-	*x = WriteResultRequest{}
-	mi := &file_knowledge_v1_ingest_proto_msgTypes[4]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *WriteResultRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*WriteResultRequest) ProtoMessage() {}
-
-func (x *WriteResultRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_knowledge_v1_ingest_proto_msgTypes[4]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use WriteResultRequest.ProtoReflect.Descriptor instead.
-func (*WriteResultRequest) Descriptor() ([]byte, []int) {
-	return file_knowledge_v1_ingest_proto_rawDescGZIP(), []int{4}
-}
-
-func (x *WriteResultRequest) GetCollectorName() string {
-	if x != nil {
-		return x.CollectorName
-	}
-	return ""
-}
-
-func (x *WriteResultRequest) GetGraphType() string {
-	if x != nil {
-		return x.GraphType
-	}
-	return ""
-}
-
-func (x *WriteResultRequest) GetGraphName() string {
-	if x != nil {
-		return x.GraphName
-	}
-	return ""
-}
-
-func (x *WriteResultRequest) GetCurrentBranch() string {
-	if x != nil {
-		return x.CurrentBranch
-	}
-	return ""
-}
-
-func (x *WriteResultRequest) GetNodeHashes() []string {
-	if x != nil {
-		return x.NodeHashes
-	}
-	return nil
-}
-
-func (x *WriteResultRequest) GetEdges() []*BatchEdge {
-	if x != nil {
-		return x.Edges
-	}
-	return nil
-}
-
-func (x *WriteResultRequest) GetSyncCommit() string {
-	if x != nil {
-		return x.SyncCommit
-	}
-	return ""
-}
-
-func (x *WriteResultRequest) GetSyncTime() int64 {
-	if x != nil {
-		return x.SyncTime
-	}
-	return 0
-}
-
-type WriteResultResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *WriteResultResponse) Reset() {
-	*x = WriteResultResponse{}
-	mi := &file_knowledge_v1_ingest_proto_msgTypes[5]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *WriteResultResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*WriteResultResponse) ProtoMessage() {}
-
-func (x *WriteResultResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_knowledge_v1_ingest_proto_msgTypes[5]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use WriteResultResponse.ProtoReflect.Descriptor instead.
-func (*WriteResultResponse) Descriptor() ([]byte, []int) {
-	return file_knowledge_v1_ingest_proto_rawDescGZIP(), []int{5}
-}
-
 // FetchCloudSubgraphRequest asks the server for an in-memory slice of
 // cloud graphs the client uses to drive logs.CloudResolver and
 // logs.DependencyChecker locally. Empty graph_names = every loaded
@@ -473,7 +423,7 @@ type FetchCloudSubgraphRequest struct {
 
 func (x *FetchCloudSubgraphRequest) Reset() {
 	*x = FetchCloudSubgraphRequest{}
-	mi := &file_knowledge_v1_ingest_proto_msgTypes[6]
+	mi := &file_knowledge_v1_ingest_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -485,7 +435,7 @@ func (x *FetchCloudSubgraphRequest) String() string {
 func (*FetchCloudSubgraphRequest) ProtoMessage() {}
 
 func (x *FetchCloudSubgraphRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_knowledge_v1_ingest_proto_msgTypes[6]
+	mi := &file_knowledge_v1_ingest_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -498,7 +448,7 @@ func (x *FetchCloudSubgraphRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FetchCloudSubgraphRequest.ProtoReflect.Descriptor instead.
 func (*FetchCloudSubgraphRequest) Descriptor() ([]byte, []int) {
-	return file_knowledge_v1_ingest_proto_rawDescGZIP(), []int{6}
+	return file_knowledge_v1_ingest_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *FetchCloudSubgraphRequest) GetGraphNames() []string {
@@ -530,7 +480,7 @@ type FetchCloudSubgraphResponse struct {
 
 func (x *FetchCloudSubgraphResponse) Reset() {
 	*x = FetchCloudSubgraphResponse{}
-	mi := &file_knowledge_v1_ingest_proto_msgTypes[7]
+	mi := &file_knowledge_v1_ingest_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -542,7 +492,7 @@ func (x *FetchCloudSubgraphResponse) String() string {
 func (*FetchCloudSubgraphResponse) ProtoMessage() {}
 
 func (x *FetchCloudSubgraphResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_knowledge_v1_ingest_proto_msgTypes[7]
+	mi := &file_knowledge_v1_ingest_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -555,7 +505,7 @@ func (x *FetchCloudSubgraphResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FetchCloudSubgraphResponse.ProtoReflect.Descriptor instead.
 func (*FetchCloudSubgraphResponse) Descriptor() ([]byte, []int) {
-	return file_knowledge_v1_ingest_proto_rawDescGZIP(), []int{7}
+	return file_knowledge_v1_ingest_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *FetchCloudSubgraphResponse) GetSlices() []*CloudSubgraphSlice {
@@ -576,7 +526,7 @@ type CloudSubgraphSlice struct {
 
 func (x *CloudSubgraphSlice) Reset() {
 	*x = CloudSubgraphSlice{}
-	mi := &file_knowledge_v1_ingest_proto_msgTypes[8]
+	mi := &file_knowledge_v1_ingest_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -588,7 +538,7 @@ func (x *CloudSubgraphSlice) String() string {
 func (*CloudSubgraphSlice) ProtoMessage() {}
 
 func (x *CloudSubgraphSlice) ProtoReflect() protoreflect.Message {
-	mi := &file_knowledge_v1_ingest_proto_msgTypes[8]
+	mi := &file_knowledge_v1_ingest_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -601,7 +551,7 @@ func (x *CloudSubgraphSlice) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CloudSubgraphSlice.ProtoReflect.Descriptor instead.
 func (*CloudSubgraphSlice) Descriptor() ([]byte, []int) {
-	return file_knowledge_v1_ingest_proto_rawDescGZIP(), []int{8}
+	return file_knowledge_v1_ingest_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *CloudSubgraphSlice) GetGraphName() string {
@@ -629,16 +579,28 @@ var File_knowledge_v1_ingest_proto protoreflect.FileDescriptor
 
 const file_knowledge_v1_ingest_proto_rawDesc = "" +
 	"\n" +
-	"\x19knowledge/v1/ingest.proto\x12\fknowledge.v1\x1a\x19knowledge/v1/engine.proto\"A\n" +
+	"\x19knowledge/v1/ingest.proto\x12\fknowledge.v1\x1a\x19knowledge/v1/engine.proto\"\xa7\x02\n" +
+	"\x13CollectChunkRequest\x12\x14\n" +
+	"\x05epoch\x18\x01 \x01(\x04R\x05epoch\x12\x1d\n" +
 	"\n" +
-	"ChunkBatch\x123\n" +
-	"\x06chunks\x18\x01 \x03(\v2\x1b.knowledge.v1.ChunkEnvelopeR\x06chunks\"@\n" +
-	"\rChunkEnvelope\x12\x12\n" +
-	"\x04hash\x18\x01 \x01(\tR\x04hash\x12\x1b\n" +
-	"\tnode_json\x18\x02 \x01(\fR\bnodeJson\"c\n" +
-	"\bChunkAck\x12'\n" +
-	"\x0faccepted_hashes\x18\x01 \x03(\tR\x0eacceptedHashes\x12.\n" +
-	"\x13already_have_hashes\x18\x02 \x03(\tR\x11alreadyHaveHashes\"\x92\x02\n" +
+	"graph_type\x18\x02 \x01(\tR\tgraphType\x12\x1d\n" +
+	"\n" +
+	"graph_name\x18\x03 \x01(\tR\tgraphName\x12%\n" +
+	"\x0ecurrent_branch\x18\x04 \x01(\tR\rcurrentBranch\x12\x1f\n" +
+	"\vsync_commit\x18\x05 \x01(\tR\n" +
+	"syncCommit\x12\x1b\n" +
+	"\tsync_time\x18\x06 \x01(\x03R\bsyncTime\x12(\n" +
+	"\x05nodes\x18\a \x03(\v2\x12.knowledge.v1.NodeR\x05nodes\x12-\n" +
+	"\x05edges\x18\b \x03(\v2\x17.knowledge.v1.BatchEdgeR\x05edges\"\x16\n" +
+	"\x14CollectChunkResponse\"\x8c\x01\n" +
+	"\x0fFinalizeRequest\x12\x14\n" +
+	"\x05epoch\x18\x01 \x01(\x04R\x05epoch\x12\x1d\n" +
+	"\n" +
+	"graph_type\x18\x02 \x01(\tR\tgraphType\x12\x1d\n" +
+	"\n" +
+	"graph_name\x18\x03 \x01(\tR\tgraphName\x12%\n" +
+	"\x0ecurrent_branch\x18\x04 \x01(\tR\rcurrentBranch\"\x12\n" +
+	"\x10FinalizeResponse\"\x92\x02\n" +
 	"\tBatchEdge\x12\x19\n" +
 	"\bfrom_idx\x18\x01 \x01(\x05R\afromIdx\x12\x15\n" +
 	"\x06to_idx\x18\x02 \x01(\x05R\x05toIdx\x12\x17\n" +
@@ -652,21 +614,7 @@ const file_knowledge_v1_ingest_proto_rawDesc = "" +
 	"\x06method\x18\b \x01(\tR\x06method\x12\x1a\n" +
 	"\bevidence\x18\t \x01(\tR\bevidence\x12%\n" +
 	"\x0elast_validated\x18\n" +
-	" \x01(\x03R\rlastValidated\"\xae\x02\n" +
-	"\x12WriteResultRequest\x12%\n" +
-	"\x0ecollector_name\x18\x01 \x01(\tR\rcollectorName\x12\x1d\n" +
-	"\n" +
-	"graph_type\x18\x02 \x01(\tR\tgraphType\x12\x1d\n" +
-	"\n" +
-	"graph_name\x18\x03 \x01(\tR\tgraphName\x12%\n" +
-	"\x0ecurrent_branch\x18\x04 \x01(\tR\rcurrentBranch\x12\x1f\n" +
-	"\vnode_hashes\x18\x05 \x03(\tR\n" +
-	"nodeHashes\x12-\n" +
-	"\x05edges\x18\x06 \x03(\v2\x17.knowledge.v1.BatchEdgeR\x05edges\x12\x1f\n" +
-	"\vsync_commit\x18\a \x01(\tR\n" +
-	"syncCommit\x12\x1b\n" +
-	"\tsync_time\x18\b \x01(\x03R\bsyncTime\"\x15\n" +
-	"\x13WriteResultResponse\"a\n" +
+	" \x01(\x03R\rlastValidated\"a\n" +
 	"\x19FetchCloudSubgraphRequest\x12\x1f\n" +
 	"\vgraph_names\x18\x01 \x03(\tR\n" +
 	"graphNames\x12#\n" +
@@ -678,10 +626,10 @@ const file_knowledge_v1_ingest_proto_rawDesc = "" +
 	"graph_name\x18\x01 \x01(\tR\tgraphName\x12\x1d\n" +
 	"\n" +
 	"nodes_json\x18\x02 \x01(\fR\tnodesJson\x12(\n" +
-	"\x05edges\x18\x03 \x03(\v2\x12.knowledge.v1.EdgeR\x05edges2\x92\x02\n" +
-	"\rIngestService\x12D\n" +
-	"\fUploadChunks\x12\x18.knowledge.v1.ChunkBatch\x1a\x16.knowledge.v1.ChunkAck(\x010\x01\x12R\n" +
-	"\vWriteResult\x12 .knowledge.v1.WriteResultRequest\x1a!.knowledge.v1.WriteResultResponse\x12g\n" +
+	"\x05edges\x18\x03 \x03(\v2\x12.knowledge.v1.EdgeR\x05edges2\x9a\x02\n" +
+	"\rIngestService\x12U\n" +
+	"\fCollectChunk\x12!.knowledge.v1.CollectChunkRequest\x1a\".knowledge.v1.CollectChunkResponse\x12I\n" +
+	"\bFinalize\x12\x1d.knowledge.v1.FinalizeRequest\x1a\x1e.knowledge.v1.FinalizeResponse\x12g\n" +
 	"\x12FetchCloudSubgraph\x12'.knowledge.v1.FetchCloudSubgraphRequest\x1a(.knowledge.v1.FetchCloudSubgraphResponseB@Z>github.com/fulminate-io/knowledge/gen/knowledge/v1;knowledgev1b\x06proto3"
 
 var (
@@ -696,30 +644,30 @@ func file_knowledge_v1_ingest_proto_rawDescGZIP() []byte {
 	return file_knowledge_v1_ingest_proto_rawDescData
 }
 
-var file_knowledge_v1_ingest_proto_msgTypes = make([]protoimpl.MessageInfo, 9)
+var file_knowledge_v1_ingest_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
 var file_knowledge_v1_ingest_proto_goTypes = []any{
-	(*ChunkBatch)(nil),                 // 0: knowledge.v1.ChunkBatch
-	(*ChunkEnvelope)(nil),              // 1: knowledge.v1.ChunkEnvelope
-	(*ChunkAck)(nil),                   // 2: knowledge.v1.ChunkAck
-	(*BatchEdge)(nil),                  // 3: knowledge.v1.BatchEdge
-	(*WriteResultRequest)(nil),         // 4: knowledge.v1.WriteResultRequest
-	(*WriteResultResponse)(nil),        // 5: knowledge.v1.WriteResultResponse
-	(*FetchCloudSubgraphRequest)(nil),  // 6: knowledge.v1.FetchCloudSubgraphRequest
-	(*FetchCloudSubgraphResponse)(nil), // 7: knowledge.v1.FetchCloudSubgraphResponse
-	(*CloudSubgraphSlice)(nil),         // 8: knowledge.v1.CloudSubgraphSlice
+	(*CollectChunkRequest)(nil),        // 0: knowledge.v1.CollectChunkRequest
+	(*CollectChunkResponse)(nil),       // 1: knowledge.v1.CollectChunkResponse
+	(*FinalizeRequest)(nil),            // 2: knowledge.v1.FinalizeRequest
+	(*FinalizeResponse)(nil),           // 3: knowledge.v1.FinalizeResponse
+	(*BatchEdge)(nil),                  // 4: knowledge.v1.BatchEdge
+	(*FetchCloudSubgraphRequest)(nil),  // 5: knowledge.v1.FetchCloudSubgraphRequest
+	(*FetchCloudSubgraphResponse)(nil), // 6: knowledge.v1.FetchCloudSubgraphResponse
+	(*CloudSubgraphSlice)(nil),         // 7: knowledge.v1.CloudSubgraphSlice
+	(*Node)(nil),                       // 8: knowledge.v1.Node
 	(*Edge)(nil),                       // 9: knowledge.v1.Edge
 }
 var file_knowledge_v1_ingest_proto_depIdxs = []int32{
-	1, // 0: knowledge.v1.ChunkBatch.chunks:type_name -> knowledge.v1.ChunkEnvelope
-	3, // 1: knowledge.v1.WriteResultRequest.edges:type_name -> knowledge.v1.BatchEdge
-	8, // 2: knowledge.v1.FetchCloudSubgraphResponse.slices:type_name -> knowledge.v1.CloudSubgraphSlice
+	8, // 0: knowledge.v1.CollectChunkRequest.nodes:type_name -> knowledge.v1.Node
+	4, // 1: knowledge.v1.CollectChunkRequest.edges:type_name -> knowledge.v1.BatchEdge
+	7, // 2: knowledge.v1.FetchCloudSubgraphResponse.slices:type_name -> knowledge.v1.CloudSubgraphSlice
 	9, // 3: knowledge.v1.CloudSubgraphSlice.edges:type_name -> knowledge.v1.Edge
-	0, // 4: knowledge.v1.IngestService.UploadChunks:input_type -> knowledge.v1.ChunkBatch
-	4, // 5: knowledge.v1.IngestService.WriteResult:input_type -> knowledge.v1.WriteResultRequest
-	6, // 6: knowledge.v1.IngestService.FetchCloudSubgraph:input_type -> knowledge.v1.FetchCloudSubgraphRequest
-	2, // 7: knowledge.v1.IngestService.UploadChunks:output_type -> knowledge.v1.ChunkAck
-	5, // 8: knowledge.v1.IngestService.WriteResult:output_type -> knowledge.v1.WriteResultResponse
-	7, // 9: knowledge.v1.IngestService.FetchCloudSubgraph:output_type -> knowledge.v1.FetchCloudSubgraphResponse
+	0, // 4: knowledge.v1.IngestService.CollectChunk:input_type -> knowledge.v1.CollectChunkRequest
+	2, // 5: knowledge.v1.IngestService.Finalize:input_type -> knowledge.v1.FinalizeRequest
+	5, // 6: knowledge.v1.IngestService.FetchCloudSubgraph:input_type -> knowledge.v1.FetchCloudSubgraphRequest
+	1, // 7: knowledge.v1.IngestService.CollectChunk:output_type -> knowledge.v1.CollectChunkResponse
+	3, // 8: knowledge.v1.IngestService.Finalize:output_type -> knowledge.v1.FinalizeResponse
+	6, // 9: knowledge.v1.IngestService.FetchCloudSubgraph:output_type -> knowledge.v1.FetchCloudSubgraphResponse
 	7, // [7:10] is the sub-list for method output_type
 	4, // [4:7] is the sub-list for method input_type
 	4, // [4:4] is the sub-list for extension type_name
@@ -739,7 +687,7 @@ func file_knowledge_v1_ingest_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_knowledge_v1_ingest_proto_rawDesc), len(file_knowledge_v1_ingest_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   9,
+			NumMessages:   8,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

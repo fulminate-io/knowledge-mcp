@@ -131,6 +131,35 @@ func TestInjectRepoIfCodeGraph_QueryCodeGraph_IsInjected(t *testing.T) {
 	assert.Equal(t, "main", got["branch"])
 }
 
+func TestInjectRepoIfCodeGraph_SearchKnowledgeGraph_NotInjected(t *testing.T) {
+	// search with graph=knowledge must NOT be injected — the knowledge
+	// graph is the default memory/thought graph, not a code repo.
+	dir := gitRepoFixture(t)
+	deps := &repoTestDeps{rootDir: dir, resolver: buildResolver(t, "knowledge")}
+	out, handled, _ := InjectRepoIfCodeGraph(context.Background(), deps,
+		paramsFor("search", `{"graph":"knowledge","query":"summarizer pipeline"}`))
+	assert.False(t, handled)
+	got := callArgs(t, out.Arguments)
+	_, hasRepo := got["repo"]
+	_, hasBranch := got["branch"]
+	assert.False(t, hasRepo, "knowledge-graph search should not gain repo:")
+	assert.False(t, hasBranch, "knowledge-graph search should not gain branch:")
+}
+
+func TestInjectRepoIfCodeGraph_SearchCodeGraph_IsInjected(t *testing.T) {
+	// search with graph=code from a matching cwd MUST be injected with
+	// repo: + branch:, preserving the code-search shortcut behavior.
+	dir := gitRepoFixture(t)
+	repoName := filepath.Base(dir)
+	deps := &repoTestDeps{rootDir: dir, resolver: buildResolver(t, repoName)}
+	out, handled, _ := InjectRepoIfCodeGraph(context.Background(), deps,
+		paramsFor("search", `{"graph":"code","query":"x"}`))
+	assert.False(t, handled)
+	got := callArgs(t, out.Arguments)
+	assert.Equal(t, repoName, got["repo"])
+	assert.Equal(t, "main", got["branch"])
+}
+
 func TestInjectRepoIfCodeGraph_FileSymbols_NonMatchingCwd_ErrorsBeforeRPC(t *testing.T) {
 	// file_symbols without repo: from a non-matching cwd must produce a
 	// client-side error AND NOT invoke GraphCaller.
@@ -144,7 +173,7 @@ func TestInjectRepoIfCodeGraph_FileSymbols_NonMatchingCwd_ErrorsBeforeRPC(t *tes
 		paramsFor("file_symbols", `{"file_path":"foo.go"}`))
 	assert.True(t, handled)
 	assert.True(t, res.IsError)
-	assert.Contains(t, res.Content[0].Text, "repo is required")
+	assert.Contains(t, res.Content[0].Text, `graph="code" requires repo`)
 	assert.Equal(t, int32(0), atomic.LoadInt32(&gcCount), "GraphCaller must not be invoked on missing-repo error")
 }
 
