@@ -295,6 +295,85 @@ func TestRouter_MidSessionLoginSwap(t *testing.T) {
 	assert.Equal(t, int32(1), cloudEng.execute.Load(), "cloud must have serviced the second call")
 }
 
+// TestRouter_IngestClient_RoutesByLogin: Router.IngestClient(ctx) reuses
+// pick(ctx), so it returns the LOCAL backend's IngestService client when not
+// logged in and the CLOUD backend's when logged in — proving the collect sink
+// picker routes by live auth state rather than hardcoding local.
+func TestRouter_IngestClient_RoutesByLogin(t *testing.T) {
+	localURL, _ := startCountingEngine(t)
+	cloudURL, _ := startCountingEngine(t)
+	localGC := NewGraphClientForURL(localURL)
+	store := newFakeAuthStore() // empty initially → not logged in
+	as := auth.NewAuthState(store, time.Millisecond)
+	r := NewRouter(localGC, cloudURL, staticTokenSource{tok: "tok"}, as)
+
+	ctx := context.Background()
+
+	// Not logged in → IngestClient resolves the local backend's ingest client.
+	ic, err := r.IngestClient(ctx)
+	require.NoError(t, err)
+	assert.Same(t, localGC.IngestClient(), ic, "IngestClient must return the local backend's IngestService client when not logged in")
+
+	// User runs `knowledge login` → keychain populated; wait past TTL.
+	require.NoError(t, store.Set(ctx, auth.KeyRefreshToken, "frt-fresh"))
+	time.Sleep(50 * time.Millisecond)
+
+	// Logged in → IngestClient resolves the cloud backend's ingest client.
+	ic2, err := r.IngestClient(ctx)
+	require.NoError(t, err)
+	r.mu.Lock()
+	cloudGC := r.cloud
+	r.mu.Unlock()
+	require.NotNil(t, cloudGC, "cloud client must be built after login")
+	assert.Same(t, cloudGC.IngestClient(), ic2, "IngestClient must return the cloud backend's IngestService client when logged in")
+	assert.NotSame(t, ic, ic2, "the picked ingest client must differ across the login flip")
+}
+
+// TestRouter_Backend_RoutesByLogin: Router.Backend(ctx) reuses pick(ctx), so it
+// returns the LOCAL *GraphClient when not logged in and the CLOUD *GraphClient
+// when logged in, re-picking per call across a mid-session login flip — the
+// concrete-backend resolver the pipeline binds per collector.
+func TestRouter_Backend_RoutesByLogin(t *testing.T) {
+	localURL, _ := startCountingEngine(t)
+	cloudURL, _ := startCountingEngine(t)
+	localGC := NewGraphClientForURL(localURL)
+	store := newFakeAuthStore() // empty initially → not logged in
+	as := auth.NewAuthState(store, time.Millisecond)
+	r := NewRouter(localGC, cloudURL, staticTokenSource{tok: "tok"}, as)
+
+	ctx := context.Background()
+
+	// Not logged in → Backend resolves the local *GraphClient.
+	be, err := r.Backend(ctx)
+	require.NoError(t, err)
+	assert.Same(t, localGC, be, "Backend must return the local *GraphClient when not logged in")
+
+	// User runs `knowledge login` → keychain populated; wait past TTL.
+	require.NoError(t, store.Set(ctx, auth.KeyRefreshToken, "frt-fresh"))
+	time.Sleep(50 * time.Millisecond)
+
+	// Logged in → Backend resolves the cloud *GraphClient.
+	be2, err := r.Backend(ctx)
+	require.NoError(t, err)
+	r.mu.Lock()
+	cloudGC := r.cloud
+	r.mu.Unlock()
+	require.NotNil(t, cloudGC, "cloud client must be built after login")
+	assert.Same(t, cloudGC, be2, "Backend must return the cloud *GraphClient when logged in")
+	assert.NotSame(t, be, be2, "the picked backend must differ across the login flip")
+}
+
+// TestRouter_Backend_NoBackend: local=nil + not logged in → Backend returns
+// ErrNoBackend (the pipeline collector treats this as "no scan this tick").
+func TestRouter_Backend_NoBackend(t *testing.T) {
+	store := newFakeAuthStore()
+	as := auth.NewAuthState(store, time.Hour)
+	r := NewRouter(nil, "http://cloud.invalid", staticTokenSource{}, as)
+
+	_, err := r.Backend(context.Background())
+	require.ErrorIs(t, err, ErrNoBackend)
+}
+
 // TestRouter_Forwarders_RouteAtCallTime — table test across all 5 forwarder
 // methods proving per-call pick() dispatch. AuthState=false first; flip to
 // logged in and assert each method routes to cloud thereafter.

@@ -39,8 +39,8 @@ type goldenEdge struct {
 // the linker against the parityFixture below and capturing the emitted
 // edges. Recheck on intentional linker changes; otherwise this test
 // catches regressions in the parity invariant.
-// T-GTB6: the client linker now COMPOSES the cross-graph proxies before writing
-// the linkage edge (emitLink → crossgraph.ResolveAndLink), where the pre-T-GTB6
+// The client linker now COMPOSES the cross-graph proxies before writing
+// the linkage edge (emitLink → crossgraph.ResolveAndLink), where the prior
 // path sent RAW ids and let the SERVER's ResolveOrProxy build the proxies. So the
 // composed linkage edge's FromID is the deterministic CLOUD PROXY (the cloud
 // Deployment is a real node), while ToID stays the raw repo-name "myapp" (not a

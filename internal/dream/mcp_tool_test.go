@@ -18,7 +18,7 @@ import (
 )
 
 // testCatalog returns a small client-owned MCP tool catalog the
-// BuildAllowedTools tests filter by allowlist. T-GTB4: the catalog is
+// BuildAllowedTools tests filter by allowlist. The catalog is
 // client-owned (no GetToolSchemas RPC), so the tests construct the schema
 // literals directly rather than scripting a server stub.
 func testCatalog() []kgtools.MCPTool {
@@ -47,7 +47,7 @@ func testCatalog() []kgtools.MCPTool {
 // capturingDispatch is a test DispatchFunc that records the worker session_id
 // stamped onto the ctx (InvokableRun stamps it before dispatching) + the tool
 // name + args, and returns a scripted ToolResult / error. It stands in for the
-// standard client dispatch path the worker now routes through (T-GTB6 D8).
+// standard client dispatch path the worker now routes through.
 type capturingDispatch struct {
 	gotSession, gotTool, gotArgs string
 	result                       kgtools.ToolResult
@@ -91,8 +91,9 @@ func TestMcpTool_InvokableRunStampsSessionAndConcatContent(t *testing.T) {
 }
 
 // TestMcpTool_InvokableRunIsErrorReturnsError shows an IsError=true result
-// surfaces as a Go error containing the text — eino must see "tool failed"
-// rather than a happy-path tool message holding an error string.
+// surfaces as a (string, nil) observation containing the error text — eino wraps
+// the string in a Role:Tool message so the ReAct loop continues and the model
+// self-corrects, rather than the graph run aborting.
 func TestMcpTool_InvokableRunIsErrorReturnsError(t *testing.T) {
 	cap := &capturingDispatch{result: kgtools.ToolResult{
 		IsError: true,
@@ -100,26 +101,41 @@ func TestMcpTool_InvokableRunIsErrorReturnsError(t *testing.T) {
 	}}
 	tool := &mcpTool{name: "manage", schemaInfo: &schema.ToolInfo{Name: "manage"}, sessionID: "worker:x", dispatch: cap.fn()}
 	out, err := tool.InvokableRun(context.Background(), `{}`)
-	if err == nil {
-		t.Fatalf("InvokableRun err = nil, want error")
+	if err != nil {
+		t.Fatalf("InvokableRun err = %v, want nil (errors are observations now)", err)
 	}
-	if !strings.Contains(err.Error(), "not authorized") {
-		t.Errorf("err = %v, want to contain %q", err, "not authorized")
+	if out == "" {
+		t.Fatalf("output = empty, want a non-empty error observation")
 	}
-	if out != "" {
-		t.Errorf("output = %q, want empty on error", out)
+	if !strings.Contains(out, "not authorized") {
+		t.Errorf("output = %q, want to contain tool error text %q", out, "not authorized")
+	}
+	if !strings.Contains(out, "Error:") {
+		t.Errorf("output = %q, want an error prefix the model reads as a failure", out)
 	}
 }
 
-// TestMcpTool_InvokableRunRPCError verifies transport / RPC errors come back
-// wrapped with the tool name.
+// TestMcpTool_InvokableRunRPCError verifies transport / RPC errors come back as a
+// (string, nil) observation naming the tool and the underlying error, so the
+// ReAct loop continues instead of aborting.
 func TestMcpTool_InvokableRunRPCError(t *testing.T) {
 	cap := &capturingDispatch{err: connect.NewError(connect.CodeInternal, errors.New("boom"))}
 	tool := &mcpTool{name: "search", schemaInfo: &schema.ToolInfo{Name: "search"}, sessionID: "worker:x", dispatch: cap.fn()}
-	if _, err := tool.InvokableRun(context.Background(), `{}`); err == nil {
-		t.Fatalf("InvokableRun err = nil, want error")
-	} else if !strings.Contains(err.Error(), "mcp tool search") {
-		t.Errorf("err = %v, want to contain %q", err, "mcp tool search")
+	out, err := tool.InvokableRun(context.Background(), `{}`)
+	if err != nil {
+		t.Fatalf("InvokableRun err = %v, want nil (transport errors are observations now)", err)
+	}
+	if out == "" {
+		t.Fatalf("output = empty, want a non-empty error observation")
+	}
+	if !strings.Contains(out, "search") {
+		t.Errorf("output = %q, want to contain the tool name %q", out, "search")
+	}
+	if !strings.Contains(out, "boom") {
+		t.Errorf("output = %q, want to contain the underlying error text %q", out, "boom")
+	}
+	if !strings.Contains(out, "Error:") {
+		t.Errorf("output = %q, want an error prefix the model reads as a failure", out)
 	}
 }
 
@@ -178,8 +194,8 @@ func TestBuildAllowedTools_UnknownTool(t *testing.T) {
 }
 
 // TestBuildAllowedTools_Validation guards the nil-dispatch and empty-session
-// checks. (The catalog-fetch RPC and its nil-client guard are gone — T-GTB4
-// made the catalog client-owned.)
+// checks. (The catalog-fetch RPC and its nil-client guard are gone —
+// the catalog is client-owned.)
 func TestBuildAllowedTools_Validation(t *testing.T) {
 	if _, err := BuildAllowedTools(testCatalog(), []string{"search"}, "worker:x", nil); err == nil {
 		t.Errorf("nil dispatch: want error, got nil")
@@ -240,7 +256,7 @@ func TestMcpToolToToolInfo_RoundTrip(t *testing.T) {
 	}
 }
 
-// TestMcpToolToToolInfo_NestedObjectRoundTrip is the FUL-342 Path-2 round-trip:
+// TestMcpToolToToolInfo_NestedObjectRoundTrip is the Path-2 round-trip:
 // a Property carrying a nested object sub-shape (Properties) + a MaxLength bound
 // is fed through mcpToolToToolInfo, and the rendered eino JSON-schema is checked
 // for the nested child keys.

@@ -18,7 +18,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/kgwire"
 )
 
-// fakeGc is the carrier-backed fake (T-GTB3 Phase 6): it implements BOTH Call
+// fakeGc is the carrier-backed fake: it implements BOTH Call
 // (the legacy GraphCaller surface — unused by the repointed helpers but kept so
 // fakeGc still satisfies GraphCaller) AND Execute (the carrier seam the helpers
 // type-assert). Tests seed wire-node / knowledgev1.Edge fixtures; Execute emits them
@@ -110,7 +110,7 @@ func TestFetchNode_PropagatesTransportError(t *testing.T) {
 	assert.Contains(t, err.Error(), "boom")
 }
 
-// T-GTB4: TestFetchNode_RequiresExecutor + the callOnlyGc fake were removed — the
+// TestFetchNode_RequiresExecutor + the callOnlyGc fake were removed — the
 // GraphCaller interface now REQUIRES Execute (it is identical to Executor), so a
 // "Call-only, not an Executor" GraphCaller is no longer constructible. The
 // asExecutor upgrade-or-error path survives as a defensive seam but cannot be

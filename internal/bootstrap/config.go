@@ -50,7 +50,7 @@ type Config struct {
 	PprofPort            int
 	SkipLLMPrecheck      bool
 
-	// LLM pipeline (post-BCN5: lives client-side) worker-pool tuning.
+	// LLM pipeline (lives client-side) worker-pool tuning.
 	NoLLMPipeline      bool
 	SummaryChannelSize int
 	SummaryBatchSize   int
@@ -58,10 +58,11 @@ type Config struct {
 	EmbedChannelSize   int
 	EmbedBatchSize     int
 	EmbedWorkers       int
+	EmbedRPM           int
 	PipelineTick       time.Duration
 
 	// LocalDialer constructs the local *graphclient.GraphClient. Defaults to
-	// graphclient.NewGraphClient when nil. Test seam (FUL-323 Phase 3 step 2)
+	// graphclient.NewGraphClient when nil. Test seam
 	// — tests inject a closure that points the local client at an
 	// httptest.Server URL via graphclient.NewGraphClientForURL. Production
 	// callers leave this nil and constructClient dials 127.0.0.1:Port.
@@ -82,7 +83,7 @@ func ParseFlags(args []string) (Config, error) {
 	fs.StringVar(&cfg.LogFile, "log-file", "", "Log file path (logs to both stderr and file when set)")
 	fs.BoolVar(&cfg.NoWorkerRuntime, "no-worker-runtime", false, "Skip dream Runner wiring. Set on child processes spawned by claude-cli's --mcp-config to break the worker-spawning recursion (parent runs Runner; child is a pure MCP stdio server).")
 	fs.BoolVar(&cfg.NoPropagationRuntime, "no-propagation-runtime", false, "Skip client-side PropagationLoop wiring. The MCP stdio loop continues to work and reflective tools still run on demand, but the hourly background cluster detection + valence propagation stops. Use for offline development or to silence background log noise.")
-	fs.BoolVar(&cfg.Pprof, "pprof", true, fmt.Sprintf("Start the pprof profiling HTTP endpoint on %s (/debug/pprof/) at boot. Also reachable on demand via manage(pprof_start). Use to profile client-side work such as collect. Default-on during the BCN11.x → general-stability investigation window; flip to false once the startup-timeout flake (ticket fb39323b...) is diagnosed.", profiling.Addr()))
+	fs.BoolVar(&cfg.Pprof, "pprof", true, fmt.Sprintf("Start the pprof profiling HTTP endpoint on %s (/debug/pprof/) at boot. Also reachable on demand via manage(pprof_start). Use to profile client-side work such as collect. Default-on during the general-stability investigation window; flip to false once the startup-timeout flake is diagnosed.", profiling.Addr()))
 	fs.IntVar(&cfg.PprofPort, "pprof-port", profiling.DefaultPort, "TCP port for the pprof profiling HTTP endpoint (loopback only)")
 	fs.BoolVar(&cfg.SkipLLMPrecheck, "skip-llm-precheck", false, "Skip the live-ping check that runs against every configured (provider, model) tuple at client startup. Use for offline development or CI sandboxes; default is to fail-fast at boot rather than at first tool call.")
 	fs.BoolVar(&cfg.NoLLMPipeline, "no-llm-pipeline", false, "Skip client-side LLM pipeline (summarize + embed) wiring. The MCP stdio loop and other tools continue to work; only background summarization/embedding stops.")
@@ -92,6 +93,7 @@ func ParseFlags(args []string) (Config, error) {
 	fs.IntVar(&cfg.EmbedChannelSize, "embed-channel-size", 10000, "Client-side LLM pipeline: EmbedWork channel buffer size (full = collector blocks)")
 	fs.IntVar(&cfg.EmbedBatchSize, "embed-batch-size", 100, "Client-side LLM pipeline: items per embed worker batch (under voyageEmbedder's 128 internal cap)")
 	fs.IntVar(&cfg.EmbedWorkers, "embed-workers", 20, "Client-side LLM pipeline: count of embed worker goroutines")
+	fs.IntVar(&cfg.EmbedRPM, "embed-rpm", 0, "Client-side LLM pipeline: max embed (Voyage) API requests per MINUTE across all embed workers; 0 = unlimited (default, preserves current 20-worker behavior). Proactive throttle for low-tier Voyage accounts — paces the opening burst so it respects the account RPM before the first 429. Companion to the reactive Retry-After backoff.")
 	fs.DurationVar(&cfg.PipelineTick, "pipeline-tick", 250*time.Millisecond, "Client-side LLM pipeline: per-graph collector poll interval")
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err

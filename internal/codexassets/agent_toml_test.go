@@ -12,7 +12,7 @@ import (
 	"github.com/pelletier/go-toml/v2"
 )
 
-// criterion b7b39ff3: emitAgentTOML on planner.md produces TOML
+// emitAgentTOML on planner.md produces TOML
 // round-tripping via toml.Unmarshal into a map with name='planner',
 // non-empty description, developer_instructions containing the body,
 // and NO model key.
@@ -61,7 +61,7 @@ func TestEmitAgentTOML_PlannerRoundTrip(t *testing.T) {
 	}
 }
 
-// criterion 08db3a70: two emitAgentTOML calls on identical (fm,body)
+// Two emitAgentTOML calls on identical (fm,body)
 // produce byte-identical output — deterministic emit so sync
 // regeneration is byte-stable.
 func TestEmitAgentTOML_Deterministic(t *testing.T) {
@@ -109,7 +109,7 @@ func TestEmitAgentTOML_MultilineFormatRoundTrip(t *testing.T) {
 	}
 }
 
-// criterion 5361bf88: no real secret/key/token literal in agent_toml.go.
+// No real secret/key/token literal in agent_toml.go.
 // Self-check the source for accidental embedded credentials. Any
 // mcp_servers example must use a bearer_token_env_var placeholder, not a
 // literal token.

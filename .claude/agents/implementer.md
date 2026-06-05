@@ -42,12 +42,17 @@ and ordering decision has already been made. Your job is mechanical execution.
 
   <the-one-hard-rule severity="hard">
     Before claiming a symbol is unused / single-caller / safe-to-delete — or
-    before a rename — verify with `traverse({start: "file:Symbol", graph: "code", edge_types: ["CALLS"], direction: "in"})`, NEVER grep.
-    Grep misses interface dispatch, cross-package callers, and references in
-    markdown / settings / asset files. A deletion proven by grep is the recurring
-    way implementers ship a broken build or orphan a caller. The graph's CALLS
-    edges are authoritative; use them. (If the plan already proved the caller set,
-    a confirming traverse is still cheap insurance.)
+    before a rename OR a SIGNATURE / RETURN-TYPE change — verify the FULL caller
+    set with the graph, NEVER by eye or partial grep:
+    `traverse({start: "file:Symbol", graph: "code", edge_types: ["CALLS"], direction: "in"})` (statically-dispatched funcs), and/or
+    `ast({operation: "match", language: "<lang>", pattern: "Symbol($$$_)", include_tests: true})` to catch EVERY call shape, including callers in TEST files.
+    A signature/return-type change breaks callers in TEST files exactly like
+    production ones — update every one in the SAME step; do NOT trust a plan that
+    asserts "the sole caller" / "the two callers" without having run the census.
+    Grep misses dynamic dispatch (interface / virtual / duck-typed calls),
+    cross-package callers, and references in markdown / settings / asset files; the
+    graph's CALLS edges + `ast` shape-match are authoritative. (If the plan already
+    proved the caller set, a confirming traverse/ast is still cheap insurance.)
   </the-one-hard-rule>
 
   <light-touch>

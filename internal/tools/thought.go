@@ -9,7 +9,7 @@
 // or any thought-property filter — valence_min/valence_max/
 // magnitude_min/consistency_max/session/connected_to/status).
 //
-// Post-FUL-247: every thought-domain op is claimed client-side. The
+// Every thought-domain op is claimed client-side. The
 // server-side handlers return the client-intercept-required sentinel
 // (see cmd/knowledge-server/tools/tools_thought.go and tools_thought_query.go
 // and tools_query_routes.go); InterceptThoughts is the only path that
@@ -243,7 +243,7 @@ func marshalOrEmpty(data any) json.RawMessage {
 }
 
 // handlePropagateClient runs DeGroot propagation client-side. Returns a
-// rendered summary line matching the pre-BCN4 server-side output shape.
+// rendered summary line matching the former server-side output shape.
 func handlePropagateClient(ctx context.Context, deps ClientDeps) kgtools.ToolResult {
 	gc := deps.GraphCaller()
 	if gc == nil {

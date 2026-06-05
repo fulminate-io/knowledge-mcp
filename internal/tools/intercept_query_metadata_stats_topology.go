@@ -16,7 +16,7 @@ import (
 // intercept_query_metadata_stats_topology.go is the client-side claim for
 // query(mode:metadata_stats). The sibling topology mode is handled by the
 // extended InterceptTopology (intercept_topology.go) — dead_code stays on the
-// client-RTA path, other analyzers route through the T-GTB1 Topology RPC.
+// client-RTA path, other analyzers route through the Topology RPC.
 //
 // metadata_stats recipe (server handleMetadataStats, tools_query_metadata_stats.go):
 // the MetadataStats RPC returns BOTH carriers — the typed MetadataStats AND the

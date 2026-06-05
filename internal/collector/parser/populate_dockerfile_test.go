@@ -15,7 +15,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
-// TestPopulate_PopulatesDockerfileContent verifies the FUL-241 Phase 7
+// TestPopulate_PopulatesDockerfileContent verifies the
 // client-side Dockerfile content capture: after Populate runs over a
 // repo containing a Dockerfile, the NodeFile entry for that file
 // carries Content equal to the file bytes.

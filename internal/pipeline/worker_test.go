@@ -53,7 +53,7 @@ func (f *fakeEmbedder) call(_ context.Context, items []EmbedItem) (map[string][]
 	return f.vectors, nil
 }
 
-// summaryWork builds a SummaryWork carrying server-composed text. Post-FUL-305
+// summaryWork builds a SummaryWork carrying server-composed text. The
 // the worker reads SummarizeText off the work item directly (no node re-fetch),
 // so tests set the envelope text here rather than seeding a fake node.
 func summaryWork(id, text string) SummaryWork {
@@ -149,7 +149,7 @@ func TestSummaryWorker_SuccessWritesBatch(t *testing.T) {
 	}
 }
 
-// TestSummaryWorker_BuildsChunkFromServerText pins the FUL-305 collapse: the
+// TestSummaryWorker_BuildsChunkFromServerText pins the collapse: the
 // worker builds one BatchChunk per work item from the SERVER-COMPOSED
 // SummarizeText (chunk.Content == the work item's SummarizeText, chunk.ID ==
 // NodeID), and an item with EMPTY SummarizeText is skipped defensively. The
@@ -238,7 +238,7 @@ func TestSummaryWorker_PanicRecovery(t *testing.T) {
 	runSummaryWorkerBatch(ctx, p, batch)
 }
 
-// TestEmbedWorker_UsesServerEmbedText pins the FUL-305 collapse: the worker
+// TestEmbedWorker_UsesServerEmbedText pins the collapse: the worker
 // feeds the embedder the SERVER-COMPOSED EmbedText off each work item verbatim
 // (no node re-fetch, no client-side kgtypes EmbedText composition).
 func TestEmbedWorker_UsesServerEmbedText(t *testing.T) {

@@ -210,10 +210,9 @@ func computeMeanIoU(ours []pdf.Block, theirs []referenceBox) float64 {
 	return sum / float64(len(theirs))
 }
 
-// classifyDivergence applies the per-fixture classification tag
-// per criterion 0cf43a29b789620ecacb3fb392f5433c.
+// classifyDivergence applies the per-fixture classification tag.
 //
-// Bands per the criterion: ±10% block-count and ≥80% mean coverage
+// Bands: ±10% block-count and ≥80% mean coverage
 // (interpreted as "fraction of pdfminer.six's reference boxes
 // covered by our blocks" — an asymmetric metric appropriate for
 // our paragraph-level Blocks vs pdfminer.six's line-level boxes).

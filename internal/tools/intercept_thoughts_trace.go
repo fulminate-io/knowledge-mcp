@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// intercept_thoughts_trace.go — FUL-247 client-side claim for
+// intercept_thoughts_trace.go — client-side claim for
 // thoughts(operation:trace). The server-side handleTrace body collapses
 // is gone post-Phase-5; this is the only path that produces a
 // real response.
@@ -62,7 +62,7 @@ func handleTraceClient(ctx context.Context, deps ClientDeps, params kgtools.Call
 }
 
 // formatTraceStepsClient renders the trace. Verbatim from
-// tools_thought_query.go:245-267 pre-FUL-247.
+// the prior server-side tools_thought_query.go formatter.
 func formatTraceStepsClient(startID string, steps []clientthought.TraceStep) string {
 	if len(steps) == 0 {
 		return fmt.Sprintf("Trace from %s: no neighbors at the requested depth.", startID)

@@ -32,8 +32,8 @@ func compileMutateByIDLinkUnlink(a mutateArgs) (*knowledgev1.ExecuteRequest, boo
 		kind = knowledgev1.MutationPlan_MUTATION_KIND_UNLINK
 	}
 	spec := &knowledgev1.EdgeSpec{
-		// Client canonicalizes the per-graph relationship casing (T-GTB2 site
-		// (b)): the engine stores the relationship AS-GIVEN, so the client
+		// Client canonicalizes the per-graph relationship casing: the
+		// engine stores the relationship AS-GIVEN, so the client
 		// produces the canonical casing before it rides the wire.
 		Relationship: canonicalEdgeCasing(a.Graph, a.Relationship),
 		ToId:         a.To,

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package engine is the client-side compiler that translates the reducible
-// LLM-facing tool surface (the research 3e008f4f §A allowlist: search /
+// LLM-facing tool surface (the allowlist: search /
 // query-read-modes / traverse / mutate create-update-delete-link-unlink) into
 // the declarative proto QueryPlan/MutationPlan carried by Engine.Execute.
 //
@@ -11,11 +11,11 @@
 // the legacy gc.Call wire UNCHANGED.
 //
 // This package owns intent→plan translation PLUS the type-aware normalization
-// T-GTB2 moved client-side: per-graph edge casing (canonicalEdgeCasing) and the
+// moved client-side: per-graph edge casing (canonicalEdgeCasing) and the
 // resource_type post-filter (filterByResourceTypePrefix). Multi-query score-sum
 // fusion, the unified default limit, the traverse-both union, and depth-1
 // hydration stay in the engine. Type-aware mutate(create) body validation is NO
-// LONGER a client concern (FUL-306): the server engine enforces it in
+// LONGER a client concern: the server engine enforces it in
 // decodeCreate and returns invalidMutation, which Dispatch relays verbatim —
 // the engine package no longer imports cmd/knowledge/internal/validate. The
 // package imports gen/knowledge/v1 + pkg/store so the bootstrap chokepoint and
@@ -76,7 +76,7 @@ func buildTarget(graph, repo, account, name, language, branch string) *knowledge
 }
 
 // isCodeGraph reports whether the selector targets the code graph, which is
-// SPECIALIZED (HandleSearchCode / HandleAnalyzeNode in finding 457e861e) and
+// SPECIALIZED (HandleSearchCode / HandleAnalyzeNode) and
 // therefore never reducible on search/query.
 func isCodeGraph(graph string) bool {
 	return graph == "code"

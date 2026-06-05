@@ -29,9 +29,10 @@ type GraphClient struct {
 	baseURL    string
 	httpClient *http.Client
 
-	health knowledgev1connect.HealthServiceClient
-	ingest knowledgev1connect.IngestServiceClient
-	engine knowledgev1connect.EngineServiceClient
+	health  knowledgev1connect.HealthServiceClient
+	ingest  knowledgev1connect.IngestServiceClient
+	engine  knowledgev1connect.EngineServiceClient
+	segment knowledgev1connect.SegmentServiceClient
 }
 
 // NewGraphClient creates a GraphClient that connects to the given TCP
@@ -79,6 +80,7 @@ func NewGraphClientForURL(baseURL string) *GraphClient {
 		health:     knowledgev1connect.NewHealthServiceClient(httpClient, baseURL, retry),
 		ingest:     knowledgev1connect.NewIngestServiceClient(httpClient, baseURL, retry),
 		engine:     knowledgev1connect.NewEngineServiceClient(httpClient, baseURL, retry),
+		segment:    knowledgev1connect.NewSegmentServiceClient(httpClient, baseURL, retry),
 	}
 }
 
@@ -167,6 +169,60 @@ func (c *GraphClient) ExportGraph(
 	req *knowledgev1.ExportGraphRequest,
 ) (*knowledgev1.ExportGraphResponse, error) {
 	resp, err := c.engine.ExportGraph(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
+// Ship issues one SegmentService.Ship RPC and returns the typed response. Thin
+// connect-client passthrough mirroring Execute — the client ships
+// newly-built/merged segment blobs to the engine-free server blob store.
+func (c *GraphClient) Ship(
+	ctx context.Context,
+	req *knowledgev1.ShipRequest,
+) (*knowledgev1.ShipResponse, error) {
+	resp, err := c.segment.Ship(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
+// ListDelta issues one SegmentService.ListDelta RPC and returns the typed
+// response. Thin connect-client passthrough mirroring Execute.
+func (c *GraphClient) ListDelta(
+	ctx context.Context,
+	req *knowledgev1.ListDeltaRequest,
+) (*knowledgev1.ListDeltaResponse, error) {
+	resp, err := c.segment.ListDelta(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
+// Fetch issues one SegmentService.Fetch RPC and returns the typed response. Thin
+// connect-client passthrough mirroring Execute.
+func (c *GraphClient) Fetch(
+	ctx context.Context,
+	req *knowledgev1.FetchRequest,
+) (*knowledgev1.FetchResponse, error) {
+	resp, err := c.segment.Fetch(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
+// Prune issues one SegmentService.Prune RPC and returns the typed response. Thin
+// connect-client passthrough mirroring Fetch — the client-driven deletion of
+// merged-away segment ids.
+func (c *GraphClient) Prune(
+	ctx context.Context,
+	req *knowledgev1.PruneRequest,
+) (*knowledgev1.PruneResponse, error) {
+	resp, err := c.segment.Prune(ctx, connect.NewRequest(req))
 	if err != nil {
 		return nil, err
 	}

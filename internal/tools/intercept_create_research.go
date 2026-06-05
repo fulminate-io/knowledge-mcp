@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package tools — InterceptCreateResearch claims the create_research
-// MCP call after the FUL-246 relocation. The server has no create_research handler
+// MCP call after the relocation. The server has no create_research handler
 // has no server-side dispatch post-Phase-4 so this is the only path that
 // produces a real response.
 

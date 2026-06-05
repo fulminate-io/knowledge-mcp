@@ -22,7 +22,7 @@ import (
 // every other graph blob). Storing the raw value simplifies LLM workflows:
 // no external env var plumbing is required.
 //
-// BCN11.2: client-side handler. Reads/writes go through gc.Call("query",
+// Client-side handler. Reads/writes go through gc.Call("query",
 // ...) and gc.Call("mutate", operation:"upsert", ...) against the server.
 // Server-side handleConfigureLogBackend is gone — the dispatch returns
 // errLogsHandledClientSide so older clients can detect the move.
@@ -277,7 +277,7 @@ func redactCredential(v string) string {
 // the env var reference, so audit callers can see what would be loaded at
 // query time without leaking any secret material.
 //
-// BCN11.2: client-side handler. The list is fetched via gc.Call("query",
+// Client-side handler. The list is fetched via gc.Call("query",
 // type:"log-backend", format:"json") and rendered locally.
 func (h *Handler) handleListLogBackends(ctx context.Context, format string) kgtools.ToolResult {
 	gc := h.graphCaller()

@@ -5,16 +5,64 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"sort"
+	"sync"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 	"github.com/fulminate-io/knowledge-mcp/internal/enginetest"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
+
+// fanOutSegmentSearcher is a fan-out-aware SegmentSearcher: it returns a DISTINCT
+// hits slice per graph name (so a merged render can be checked for per-graph
+// attribution) and records the set of names it was asked to search plus per-name
+// call counts for assertions. The existing fakeSegmentSearcher only records the
+// LAST name, which cannot prove a scatter-gather hit every enumerated graph.
+type fanOutSegmentSearcher struct {
+	mu       sync.Mutex
+	hitsByGr map[string][]searchengine.Hit
+	calls    map[string]int
+}
+
+func newFanOutSegmentSearcher(hitsByGraph map[string][]searchengine.Hit) *fanOutSegmentSearcher {
+	return &fanOutSegmentSearcher{hitsByGr: hitsByGraph, calls: map[string]int{}}
+}
+
+func (f *fanOutSegmentSearcher) Search(
+	_ context.Context, _ kgtypes.GraphType, name, _ string, _ []byte, _ int,
+) ([]searchengine.Hit, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls[name]++
+	return f.hitsByGr[name], nil
+}
+
+// searchedNames returns the sorted set of graph names Search was invoked on.
+func (f *fanOutSegmentSearcher) searchedNames() []string {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]string, 0, len(f.calls))
+	for n := range f.calls {
+		out = append(out, n)
+	}
+	sort.Strings(out)
+	return out
+}
+
+// callCount returns how many times Search was invoked for a given graph name.
+func (f *fanOutSegmentSearcher) callCount(name string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls[name]
+}
 
 // plFake routes Execute by plan shape (search vs by-id vs Match) and Stats by
 // canned graph stats, for the practice/linkage composer tests.
@@ -58,12 +106,24 @@ func TestPracticeRoute_StatsAndSearch(t *testing.T) {
 	})
 
 	t.Run("search renders Best Practices shape", func(t *testing.T) {
-		f := &plFake{searchResults: []engine.SearchResult{
-			{Score: 0.88, Node: &knowledgev1.Node{Id: "p1", SymbolName: "Use errgroup", Content: "do x", Status: "active",
-				Metadata: map[string]string{"category": "concurrency", "importance": "high"}}},
-		}}
-		res := routePracticeClient(context.Background(), nil, f, queryArgs{Graph: "practice", Language: "go", Text: "errgroup"})
+		// practice search is served UNCONDITIONALLY by the CLIENT engine
+		// (Manager.Search → RRF → hydrate → RenderPracticeResults). The hydrate
+		// ids[] read is served by the harness GraphClient; the ranked node is the
+		// canned RETURN_MODE_NODES reply.
+		var execHits atomic.Int64
+		gc, handler := newInterceptHarnessWithHandler(t, &execHits, cannedNodesResp(
+			&knowledgev1.Node{Id: "p1", SymbolName: "Use errgroup", Content: "do x", Status: "active",
+				Metadata: map[string]string{"category": "concurrency", "importance": "high"}},
+		))
+		mgr := &fakeSegmentSearcher{hits: []searchengine.Hit{{ID: "p1", Score: 0.88}}}
+		deps := &interceptDeps{gc: gc, segMgr: mgr}
+
+		res := routePracticeClient(context.Background(), deps, gc, queryArgs{Graph: "practice", Language: "go", Text: "errgroup"})
 		body := textBodyTools(res)
+		assert.Equal(t, int64(1), mgr.calls.Load(), "practice search drove the CLIENT engine")
+		assert.Equal(t, kgtypes.GraphPractice, mgr.lastGT)
+		assert.Equal(t, "go", mgr.lastName, "practice engine keyed on language")
+		assert.False(t, dispatchedAServerSearch(handler.recordedReqs()), "practice search must NOT dispatch a server search")
 		assert.Contains(t, body, "## Go Best Practices — 1 results for \"errgroup\"")
 		assert.Contains(t, body, "### 1. Use errgroup [high] (concurrency)")
 		assert.Contains(t, body, "ID: p1 | Status: active")
@@ -96,19 +156,66 @@ func TestLinkageRoute_AllShapes(t *testing.T) {
 		assert.Contains(t, textBodyTools(res), "## linkage node")
 	})
 
-	t.Run("search reuses proxy annotation", func(t *testing.T) {
-		// A proxy node renders with the engine proxyMetadataAnnotation shape
-		// "[proxy → code:repo:nodeid]" — proving the helper is reused.
-		proxy := knowledgev1.Node{
-			Id: "proxy:code:repo:foo.go:Bar", SymbolName: "Bar", Type: string(kgtypes.NodeProxy),
-			Metadata: map[string]string{"foreign_graph": "code", "foreign_name": "repo", "foreign_id": "foo.go:Bar"},
-		}
-		f := &plFake{searchResults: []engine.SearchResult{{Score: 0.7, Node: &proxy}}}
+	t.Run("ranked text search RETIRED", func(t *testing.T) {
+		// a text-only linkage query returns the ranked-search-retired
+		// result and dispatches NO server search (the index-free ops still work).
+		f := &plFake{}
 		res := routeLinkageClient(context.Background(), f, queryArgs{Graph: "linkage", Text: "bar"})
 		body := textBodyTools(res)
-		assert.Contains(t, body, "## Linkage — 1 results for \"bar\"")
-		assert.Contains(t, body, "[proxy")
+		assert.Contains(t, body, "retired", "linkage ranked search is retired")
+		assert.Contains(t, body, "linkage", "the retired message names the graph")
+		assert.NotContains(t, body, "results for", "no ranked result list is rendered")
 	})
+}
+
+// TestRouteWebPDF_RetiresRankedTextPassesIndexFreeOps is the Phase 3
+// web/pdf criterion: a ranked-text query (text or queries[], no id/specialized
+// mode) returns the retired result; every index-free op (by-id, type-browse,
+// mode=stats, mode=modules) falls through unhandled to the engineDispatch path.
+func TestRouteWebPDF_RetiresRankedTextPassesIndexFreeOps(t *testing.T) {
+	for _, graph := range []string{"web", "pdf"} {
+		t.Run(graph+" ranked text retired", func(t *testing.T) {
+			for _, args := range []queryArgs{
+				{Graph: graph, Text: "x"},
+				{Graph: graph, Queries: []string{"x"}},
+				{Graph: graph, Mode: "text", Text: "x"},
+			} {
+				handled, res := routeWebPDFClient(args)
+				require.True(t, handled, "%s ranked text is claimed (retired)", graph)
+				body := textBodyTools(res)
+				assert.Contains(t, body, "retired")
+				assert.Contains(t, body, graph)
+			}
+		})
+		t.Run(graph+" index-free ops fall through", func(t *testing.T) {
+			for _, args := range []queryArgs{
+				{Graph: graph, ID: "n1"},        // by-id getNode
+				{Graph: graph, Type: "finding"}, // type-browse
+				{Graph: graph, Mode: "stats"},   // stats
+				{Graph: graph, Mode: "modules"}, // list-graphs
+				{Graph: graph},                  // bare
+			} {
+				handled, _ := routeWebPDFClient(args)
+				assert.False(t, handled, "%s index-free op %+v must fall through to engineDispatch", graph, args)
+			}
+		})
+	}
+}
+
+// TestInterceptQueryPracticeLinkage_WebPDFClaim asserts the top-level intercept
+// routes web/pdf ranked text through routeWebPDFClient (claimed) and lets their
+// index-free ops fall through (handled=false).
+func TestInterceptQueryPracticeLinkage_WebPDFClaim(t *testing.T) {
+	handled, res := InterceptQueryPracticeLinkage(nil, kgtools.CallToolParams{
+		Name: "query", Arguments: json.RawMessage(`{"graph":"web","text":"x"}`),
+	})
+	require.True(t, handled, "web ranked text is claimed + retired")
+	assert.Contains(t, textBodyTools(res), "retired")
+
+	handled, _ = InterceptQueryPracticeLinkage(nil, kgtools.CallToolParams{
+		Name: "query", Arguments: json.RawMessage(`{"graph":"pdf","id":"n1"}`),
+	})
+	assert.False(t, handled, "pdf by-id getNode falls through to engineDispatch")
 }
 
 // TestInterceptQueryPracticeLinkage_Gate asserts the intercept claims only

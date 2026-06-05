@@ -16,7 +16,7 @@ import (
 )
 
 // eventarcSubCollector collects Eventarc triggers.
-// Handles both Cloud Run and Cloud Functions destinations (decision 8c61f1929).
+// Handles both Cloud Run and Cloud Functions destinations.
 type eventarcSubCollector struct {
 	client    *eventarc.Client
 	projectID string

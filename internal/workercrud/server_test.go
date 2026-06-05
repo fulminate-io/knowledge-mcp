@@ -62,7 +62,7 @@ func TestClient_List_HappyPath(t *testing.T) {
 	assert.Equal(t, int32(workerListLimit), q.GetLimit())
 }
 
-// TestClient_List_LimitNotZero pins the criterion 9e87d7bc: the compiled
+// TestClient_List_LimitNotZero pins that the compiled
 // QueryPlan carries the explicit large limit (workerListLimit) so the worker
 // catalog is not silently capped.
 func TestClient_List_LimitNotZero(t *testing.T) {
@@ -79,8 +79,8 @@ func TestClient_List_LimitNotZero(t *testing.T) {
 	assert.Equal(t, int32(workerListLimit), q.GetLimit())
 }
 
-// TestClient_List_FiftyWorkersReturnedUncapped is the bulk-capacity proof
-// from criterion 9e87d7bc: a 50-worker nodes_json carrier round-trips with
+// TestClient_List_FiftyWorkersReturnedUncapped is the bulk-capacity proof:
+// a 50-worker nodes_json carrier round-trips with
 // len(got) == 50.
 func TestClient_List_FiftyWorkersReturnedUncapped(t *testing.T) {
 	fake := &fakeCRUDClient{}

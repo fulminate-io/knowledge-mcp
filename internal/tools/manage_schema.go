@@ -14,10 +14,6 @@ func ManageToolDef() kgtools.MCPTool {
 		Description: "Unified server and graph lifecycle management tool. " +
 			"status: show graph stats. " +
 			"pprof_start / pprof_stop: bracket a CPU profile of the knowledge stdio client (where collectors run). pprof_start lazily brings up the loopback pprof endpoint (127.0.0.1:15021); pprof_stop returns a URL to fetch the profile (go tool pprof http://127.0.0.1:15021/debug/pprof/capture). Both are handled client-side by the stdio binary. " +
-			"rebuild_hnsw: rebuild vector index (supports graph='code', 'practice', 'cloud', 'cicd', or default knowledge). " +
-			"rebuild_bm25: rebuild BM25 full-text index (supports graph='code', 'practice', 'cloud', 'cicd', or default knowledge). " +
-			"For graph='code' the server discovers live files via 'git ls-files' under root (defaults to the server's --root) and tombstones code nodes whose FilePath is no longer on disk, then rebuilds BM25 over the remaining live nodes — yielding a completely accurate index in one call. " +
-			"For other graphs no prune is performed — the call is a pure index rebuild. " +
 			"delete_branch: remove a branch overlay index. list_branches: list indexed branch overlays. " +
 			"topology: run every registered topology analyzer over every available graph; emit/refresh findings. " +
 			"link: run cross-graph linking (image, Helm, Dockerfile signals) to create code-to-cloud edges. " +
@@ -34,18 +30,19 @@ func ManageToolDef() kgtools.MCPTool {
 			"Use this immediately after the metadata-promotion subsystem ships to backfill existing graphs, or on demand when an operator wants to flip representations without waiting for the dream PROMOTE timer. " +
 			"clear_llm_failures: clear summary_failure_reason and embed_failure_reason metadata on every node across one or all loaded graphs so the LLM pipeline collector re-discovers them on the next tick. Operator recovery path for terminally-failed nodes (4xx-other / context-too-large / config error). With graph= and name= empty, walks every loaded graph; with graph= set, scopes to that graph type; with both set, scopes to one named graph. " +
 			"prune: hard-delete (garbage-collect) tombstoned nodes from a graph. Works generically on ANY graph type (knowledge, code, cloud, cicd, practice, logs, web, pdf, linkage, transformers) — it is 'delete tombstoned nodes,' nothing more, with no graph-type allowlist. Requires a non-empty graph (name it explicitly). before=<relative window like '24h'/'2d' OR absolute RFC3339> deletes only tombstones tombstoned before that cutoff; omit before to prune ALL tombstoned nodes. Returns the pruned count. " +
+			"rebuild_cache: DROP a code repo's per-repo content-hash caches (summary + embed) and RE-DERIVE them from the CURRENT base-graph nodes with ZERO model calls — a FREE re-derivation, NOT a 'clear' (a clear would guarantee a full re-pay for LLM/Voyage). The caches let a merged-and-recollected node reuse the summary/embedding it earned on a branch overlay. Use it for recovery (lost/corrupted cache), manual invalidation (the model/prompt-change lever), or backfill/migration (repos collected before the feature shipped, so branch work benefits immediately). Requires graph=code + name=repo. ASYNC: the server drops + re-derives the caches on a background goroutine and returns a STARTED acknowledgement immediately (a large repo's walk would otherwise exceed the edge timeout). Confirm completion via the server logs (\"rebuild_cache.complete\"). " +
+			"rebuild_segments: BACKFILL a code repo's BM25+HNSW search segments from nodes that are ALREADY embedded but have ZERO shipped segments (embedded before the segment-ship path existed, or after a SegmentStore prune) — WITHOUT re-embedding. The server is engine-free, so the WORK is CLIENT-driven: the client pages the already-embedded nodes (with their stored vector + server-composed BM25 fields), rebuilds the segments DETERMINISTICALLY (fixed seed + serial-within / concurrent-across), and ships them to the server SegmentStore. Requires graph=code + name=repo. Single-flight per repo. IDEMPOTENT: a deterministic build makes a re-run over an unchanged node set a byte-identical content-hash-diffed NO-OP (the first rebuild over an embed-segmented graph ships the deterministic segments and prunes the superseded embed ones; every rebuild after is a no-op). Runs SYNCHRONOUSLY and reports the scanned/built/pruned counts. " +
 			"Required params by operation (in addition to the always-required operation): " +
-			"rebuild_hnsw / rebuild_bm25 require graph for non-knowledge graphs; " +
 			"delete_branch / list_branches require name + branch; " +
 			"configure_log_backend requires name + provider + url + auth_type (credential optional for auth_type=kubeconfig); " +
 			"discard_logs requires name (empty name drops all log graphs); " +
-			"set_metadata_overrides / promote_metadata require graph + name; prune requires graph; " +
+			"set_metadata_overrides / promote_metadata require graph + name; prune requires graph; rebuild_cache requires graph=code + name; rebuild_segments requires graph=code + name; " +
 			"status / list_log_backends / list_logs / link / topology / clear_llm_failures / pprof_start / pprof_stop require nothing further.",
 		InputSchema: kgtools.InputSchema{
 			Type: "object",
 			Properties: map[string]kgtools.Property{
-				"operation":      {Type: "string", Description: "Operation to perform", Enum: []string{"status", "pprof_start", "pprof_stop", "rebuild_hnsw", "rebuild_bm25", "delete_branch", "list_branches", "link", "configure_log_backend", "list_log_backends", "list_logs", "discard_logs", "set_metadata_overrides", "promote_metadata", "clear_llm_failures", "prune"}},
-				"graph":          {Type: "string", Description: "Target graph type for rebuild_hnsw (code, practice, cloud, cicd, or default=knowledge) and clear_llm_failures (knowledge, code, practice, cloud, cicd)"},
+				"operation":      {Type: "string", Description: "Operation to perform", Enum: []string{"status", "pprof_start", "pprof_stop", "delete_branch", "list_branches", "link", "configure_log_backend", "list_log_backends", "list_logs", "discard_logs", "set_metadata_overrides", "promote_metadata", "clear_llm_failures", "prune", "rebuild_cache", "rebuild_segments"}},
+				"graph":          {Type: "string", Description: "Target graph type for clear_llm_failures (knowledge, code, practice, cloud, cicd)"},
 				"name":           {Type: "string", Description: "Repository name (or log_backend name for configure_log_backend; or query_id for discard_logs)"},
 				"branch":         {Type: "string", Description: "Branch name (for delete_branch, list_branches)"},
 				"root":           {Type: "string", Description: "Root directory path for reindex"},

@@ -145,7 +145,7 @@ func postPopulate(ctx context.Context, gc postpopulate.GraphCaller, graphName st
 	// PDB selector resolution previously emitted RESTRICTS edges, but PDBs
 	// are eviction constraints, not network restrictions — no consumer ever
 	// read them, and reusing RESTRICTS_INGRESS/EGRESS would mis-state the
-	// semantics. Dropped pre-launch (FUL-94 finding de2c3942). Add a
+	// semantics. Dropped pre-launch. Add a
 	// dedicated edge type if PDB-aware reachability becomes a feature.
 
 	// Image lineage: match workload container images against known registries
@@ -239,7 +239,7 @@ func extractLabels(meta map[string]string) map[string]string {
 
 // resolveServiceSelectors creates SELECTS edges from Services to matching Pods.
 // All matching edges accumulate into a single slice and ride ONE LinkEdgesBatch
-// — no per-pod Link inside the loop (the FUL-288 batched-write requirement).
+// — no per-pod Link inside the loop (the batched-write requirement).
 func resolveServiceSelectors(ctx context.Context, gc postpopulate.GraphCaller, graphName string, pods []podEntry) error {
 	services, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, k8sResourceQuery("Service"))
 	if err != nil {
@@ -298,7 +298,7 @@ func resolveNetworkPolicySelectors(ctx context.Context, gc postpopulate.GraphCal
 
 	// Accumulate every RESTRICTS_{INGRESS,EGRESS} edge across all policies and
 	// all matching pods, then emit ONE LinkEdgesBatch — no per-pod Link inside
-	// the loop (the FUL-288 batched-write requirement).
+	// the loop (the batched-write requirement).
 	var edges []knowledgev1.Edge
 	for _, node := range policies {
 		selectorJSON := kgtypes.Value(node, "pod_selector")

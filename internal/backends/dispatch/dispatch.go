@@ -3,7 +3,7 @@
 // Package dispatch is the client-side backend write-through dispatcher
 // consumed by the cmd/knowledge intercept layer (InterceptMutate).
 //
-// # Architecture (post-BCN2 v3)
+// # Architecture
 //
 // The async Runner is gone. Linear writes run INLINE from cmd/knowledge
 // intercepts BEFORE the local mutate hits the server. There is no

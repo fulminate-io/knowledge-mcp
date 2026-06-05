@@ -8,20 +8,22 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
-	"github.com/fulminate-io/knowledge-mcp/internal/engine"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
 
 // TestRewriteSearchArgs covers the pure rewrite stage of InterceptSearch.
-// Strategies expansion sub-cases are preserved from the prior BCN6 attempt's
+// Strategies expansion sub-cases are preserved from the prior attempt's
 // TestRewriteSearchArgs_StrategiesExpansion (Phase 0 manual criterion saved
 // the test logic before deletion). The hasReranker cases are new for the
-// post-BCN6 R2 client-side rerank wiring.
+// client-side rerank wiring.
 func TestRewriteSearchArgs(t *testing.T) {
 	t.Run("hasReranker=false, no strategies_file is passthrough", func(t *testing.T) {
 		raw := []byte(`{"text":"foo"}`)
@@ -191,33 +193,40 @@ func TestRewriteSearchArgs(t *testing.T) {
 	})
 }
 
-// TestInterceptSearchCode_RoutesViaComposeCodeSearch covers the T-GTB6 CLASS-A
+// TestInterceptSearchCode_RoutesViaComposeCodeSearch covers the CLASS-A
 // claim: search(graph:code) routes through the SAME composeCodeSearch composer
-// (Query→Text via mergeCodeQueries) against a fake Execute, with no fall-through
-// to the legacy server search-code path.
+// (Query→Text via mergeCodeQueries) against the CLIENT engine, with no
+// fall-through to the legacy server search-code path (unconditional).
 func TestInterceptSearchCode_RoutesViaComposeCodeSearch(t *testing.T) {
-	f := &codeSearchFake{byRepo: map[string][]engine.SearchResult{
-		"knowledge": {
-			{Score: 0.9, Node: &knowledgev1.Node{Id: "f.go:Foo", SymbolName: "Foo", Type: "function", FilePath: "f.go", StartLine: 1}},
-		},
-	}}
+	var execHits atomic.Int64
+	// The hydrate ids[] read is served by the harness GraphClient; the ranked
+	// node is returned as the canned RETURN_MODE_NODES reply.
+	gc := newInterceptHarness(t, &execHits, cannedNodesResp(
+		&knowledgev1.Node{Id: "f.go:Foo", SymbolName: "Foo", Type: "function", FilePath: "f.go", StartLine: 1},
+	))
+	mgr := &fakeSegmentSearcher{hits: []searchengine.Hit{{ID: "f.go:Foo", Score: 0.9}}}
+	deps := &interceptDeps{gc: gc, segMgr: mgr}
 	// The search tool carries the query under `query` (not `text`).
 	raw := json.RawMessage(`{"graph":"code","query":"foo","repo":"knowledge"}`)
-	handled, res := interceptSearchCode(context.Background(), nil, f.exec, raw)
+	handled, res := interceptSearchCode(context.Background(), deps, gc.Execute, raw)
 	require.True(t, handled, "graph=code must be claimed client-side")
 	require.False(t, res.IsError, textBodyTools(res))
 	body := textBodyTools(res)
-	assert.Equal(t, 1, f.searchCalls, "single query → one search Execute (no legacy fall-through)")
+	assert.Equal(t, int64(1), mgr.calls.Load(), "single query → one client Search (no legacy fall-through)")
+	assert.Equal(t, kgtypes.GraphCode, mgr.lastGT)
+	assert.Equal(t, "knowledge", mgr.lastName, "code engine keyed on repo")
 	assert.Contains(t, body, "[knowledge]")
-	assert.Contains(t, body, `Found 1 results for "foo" (mode: hybrid):`)
+	// no embedder, no caller vector → BM25-only → mode label "text".
+	assert.Contains(t, body, `Found 1 results for "foo" (mode: text):`)
 	assert.Contains(t, body, "Foo (function)")
 }
 
 // TestInterceptSearchCode_NoQueryFallsThrough asserts a graph=code search with
 // no query/queries falls through (handled=false) so the caller proceeds.
 func TestInterceptSearchCode_NoQueryFallsThrough(t *testing.T) {
-	f := &codeSearchFake{}
-	handled, _ := interceptSearchCode(context.Background(), nil, f.exec, json.RawMessage(`{"graph":"code"}`))
+	mgr := &fakeSegmentSearcher{}
+	deps := &interceptDeps{segMgr: mgr}
+	handled, _ := interceptSearchCode(context.Background(), deps, nil, json.RawMessage(`{"graph":"code"}`))
 	assert.False(t, handled, "no query → fall through")
-	assert.Equal(t, 0, f.searchCalls, "no Execute fires when there is no query")
+	assert.Equal(t, int64(0), mgr.calls.Load(), "no client Search fires when there is no query")
 }

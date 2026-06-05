@@ -134,21 +134,35 @@ func InterceptCollect(deps ClientDeps, params kgtools.CallToolParams) (bool, kgt
 		// survives via the pipeline's wrap.
 		return true, errorResult(err.Error())
 	}
-	// FUL-255: post-collect linker tail-call. Replaces the former server-side
+	// Post-collect linker tail-call. Replaces the former server-side
 	// runPostCollectLinker that ran on the collect-write path.
 	// Gated on the same collector types that previously triggered the
 	// server-side path. Best-effort: failures slog.Warn but the
 	// user-facing textResult is unchanged.
 	runPostCollectLinker(ctx, deps, a.Type)
-	// FUL-288: post-collect PostPopulate tail-call, SIBLING to the linker.
+	// Post-collect PostPopulate tail-call, SIBLING to the linker.
 	// Runs the registered postpopulate hook for the collector family over the
 	// wire, enriching the per-account/per-repo graph with the structural edges
 	// the linker does not own (SG/NACL rules, cross-account trust, image
 	// lineage, k8s selector/cluster linkage, CICD OIDC federation, codesync
 	// hierarchy). Best-effort, like the linker.
 	runPostCollectPostPopulate(ctx, deps, a.Type)
+	// Wake the LLM pipeline: the just-collected graph may have idle-backed-off
+	// its scan cadence toward the hour-long ceiling, so nudge every collector to
+	// re-scan now and discover + enrich the freshly-uploaded nodes instead of
+	// waiting out its idle interval. Best-effort, optional capability (no
+	// pipeline wired → skipped).
+	if w, ok := deps.(pipelineWaker); ok {
+		w.WakePipeline()
+	}
 	return true, textResult(fmt.Sprintf("Collected %s %s — streamed to server.", a.Type, a.ID))
 }
+
+// pipelineWaker is the OPTIONAL deps capability the collect interceptor uses to
+// nudge the LLM pipeline after a successful collect. Type-asserted rather than a
+// required ClientDeps method so the many test fakes that run no pipeline are
+// unaffected; the production *client implements it over Pipeline.WakeAll.
+type pipelineWaker interface{ WakePipeline() }
 
 // postPopulateGraphType maps a collector type onto the store graph type whose
 // named graphs the family's PostPopulate hook reads + writes. cloud providers
@@ -197,13 +211,13 @@ func runPostCollectPostPopulate(ctx context.Context, deps ClientDeps, collectorT
 		slog.Warn("post-collect postpopulate: no graph-type mapping (skipping)", "collector", collectorType)
 		return
 	}
-	// Post-collect postpopulate runs on the freshly-written LOCAL graph —
-	// route explicitly through LocalGraphCaller so a logged-in user still
-	// re-reads the local graph here (the routing-aware GraphCaller would
-	// land on cloud, which lacks the just-collected data).
-	gc := deps.LocalGraphCaller()
+	// Post-collect postpopulate follows the data: under the locked model the
+	// collect sink wrote to cloud when logged in (local otherwise), so the
+	// enrichment re-reads through the SAME login-routed GraphCaller — the
+	// just-collected nodes live wherever the sink put them.
+	gc := deps.GraphCaller()
 	if gc == nil {
-		slog.Warn("post-collect postpopulate: LocalGraphCaller unavailable (skipping)", "collector", collectorType)
+		slog.Warn("post-collect postpopulate: GraphCaller unavailable (skipping)", "collector", collectorType)
 		return
 	}
 	names, err := postpopulate.ListGraphNames(ctx, gc, graphType)
@@ -219,7 +233,7 @@ func runPostCollectPostPopulate(ctx context.Context, deps ClientDeps, collectorT
 }
 
 // postCollectLinkerTypes is the set of collector types that trigger the
-// post-collect cross-graph linker. Mirrors the pre-FUL-255 server-side
+// post-collect cross-graph linker. Mirrors the prior server-side
 // gate (GraphCloud / GraphCICD) plus the
 // collector-type extensions the linker exercises (aws/gcp/azure/k8s
 // land in cloud; github/gitlab/bitbucket land in cicd).
@@ -241,13 +255,13 @@ func runPostCollectLinker(ctx context.Context, deps ClientDeps, collectorType st
 	if !postCollectLinkerTypes[collectorType] {
 		return
 	}
-	// Post-collect linker walks the freshly-written LOCAL graph — route
-	// explicitly through LocalGraphCaller so a logged-in user still re-reads
-	// the local graph here (the routing-aware GraphCaller would land on
-	// cloud, which lacks the just-collected data).
-	gc := deps.LocalGraphCaller()
+	// Post-collect linker follows the data: under the locked model the collect
+	// sink wrote to cloud when logged in (local otherwise), so the cross-graph
+	// linker walks through the SAME login-routed GraphCaller — the
+	// just-collected nodes live wherever the sink put them.
+	gc := deps.GraphCaller()
 	if gc == nil {
-		slog.Warn("post-collect linker: LocalGraphCaller unavailable (skipping)", "collector", collectorType)
+		slog.Warn("post-collect linker: GraphCaller unavailable (skipping)", "collector", collectorType)
 		return
 	}
 	res, err := clientlinker.RunAll(ctx, gc, clientlinker.LinkOptions{})

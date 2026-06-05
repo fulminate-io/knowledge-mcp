@@ -38,8 +38,28 @@ func (f *corrFake) exec(_ context.Context, req *knowledgev1.ExecuteRequest) (*kn
 	return enginetest.ResponseWithNodes(ptrs...), nil
 }
 
-// TestComposeCorrelations_OneBulkEdgeFetch is the BOUNDED guard (criterion
-// b15042ed): the composer issues exactly ONE node-set fetch + ONE
+// Execute lets corrFake double as a GraphCaller for the pivot/timeline composers
+// that now take a ClientDeps (the non-text-seed paths only touch Execute).
+func (f *corrFake) Execute(ctx context.Context, req *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error) {
+	return f.exec(ctx, req)
+}
+
+// corrFakeDeps adapts a corrFake into a ClientDeps for composePivot/composeTimeline.
+// The text-seed search path (which needs a SegmentManager) is exercised separately
+// with a fakeSegmentSearcher; the type/default fetch paths only use GraphCaller.
+type corrFakeDeps struct {
+	*interceptDeps
+	f *corrFake
+}
+
+func newCorrFakeDeps(f *corrFake) *corrFakeDeps {
+	return &corrFakeDeps{interceptDeps: &interceptDeps{}, f: f}
+}
+
+func (d *corrFakeDeps) GraphCaller() GraphCaller { return d.f }
+
+// TestComposeCorrelations_OneBulkEdgeFetch is the BOUNDED guard:
+// the composer issues exactly ONE node-set fetch + ONE
 // RETURN_MODE_EDGES over the collected ids[] — never a per-node edge fetch,
 // regardless of node count.
 func TestComposeCorrelations_OneBulkEdgeFetch(t *testing.T) {
@@ -105,7 +125,7 @@ func TestComposePivot_Matrix(t *testing.T) {
 		{Id: "2", Type: "finding", Status: "open"},
 		{Id: "3", Type: "decision", Status: "closed"},
 	}}
-	res := composePivot(context.Background(), f.exec, queryArgs{Mode: "pivot", Rows: "type", Cols: "status"})
+	res := composePivot(context.Background(), newCorrFakeDeps(f), queryArgs{Mode: "pivot", Rows: "type", Cols: "status"})
 	require.False(t, res.IsError, textBodyTools(res))
 	body := textBodyTools(res)
 	assert.Contains(t, body, "## Pivot — knowledge")
@@ -116,14 +136,15 @@ func TestComposePivot_Matrix(t *testing.T) {
 // TestComposePivot_Validation asserts the rows/cols required + must-differ guards.
 func TestComposePivot_Validation(t *testing.T) {
 	f := &corrFake{}
-	res := composePivot(context.Background(), f.exec, queryArgs{Mode: "pivot", Rows: "type"})
+	deps := newCorrFakeDeps(f)
+	res := composePivot(context.Background(), deps, queryArgs{Mode: "pivot", Rows: "type"})
 	assert.Contains(t, textBodyTools(res), "pivot requires rows and cols")
 
-	res = composePivot(context.Background(), f.exec, queryArgs{Mode: "pivot", Rows: "type", Cols: "type"})
+	res = composePivot(context.Background(), deps, queryArgs{Mode: "pivot", Rows: "type", Cols: "type"})
 	assert.Contains(t, textBodyTools(res), "rows and cols must differ")
 }
 
-// TestRenderCorrelations_Golden is the engine renderer golden (criterion 30f4abca).
+// TestRenderCorrelations_Golden is the engine renderer golden.
 func TestRenderCorrelations_Golden(t *testing.T) {
 	rows := []engine.CorrelationEdgeRow{
 		{Edge: knowledgev1.Edge{FromId: "a", ToId: "b", Type: "correlates-with", Confidence: 0.91, Method: "cooccur"},

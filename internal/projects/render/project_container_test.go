@@ -3,7 +3,7 @@
 // Package render — assembleProjectContainer progress-count tests.
 //
 // Ported from cmd/knowledge-server/tools/tools_assemble_progress_test.go
-// (FUL-251 Phase 5). The tests use the fakeGc fixture instead of
+// The tests use the fakeGc fixture instead of
 // seeding the in-process store; the progress-count logic mirrors
 // the server-side contract (closed/completed/skipped count as done).
 package render

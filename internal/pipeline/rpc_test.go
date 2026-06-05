@@ -5,6 +5,7 @@ package pipeline
 import (
 	"context"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -24,11 +25,17 @@ func TestListLoadedGraphs_ComposesGraphNames(t *testing.T) {
 	f.seedGraphNames(kgtypes.GraphPractice, "go")
 	f.seedGraphNames(kgtypes.GraphCloud, "acct-1")
 
-	refs, err := listLoadedGraphs(context.Background(), f)
-	require.NoError(t, err)
+	refs, succeeded, _, throttled := listLoadedGraphs(context.Background(), f)
+	require.False(t, throttled, "a fully-enumerated tick is never throttled")
 
 	// No pipeline_list_graphs Call (the whole enumeration is Execute-composed).
 	require.Equal(t, 0, f.calls["pipeline_list_graphs"], "no pipeline_list_graphs Call")
+
+	// Every eligible type enumerated cleanly here, so each is marked succeeded —
+	// refreshOnce is then free to unregister within any of them.
+	for _, gt := range pipelineEligibleGraphTypes {
+		require.True(t, succeeded[gt], "type %s enumerated successfully", gt)
+	}
 
 	got := map[string]bool{}
 	for _, r := range refs {
@@ -40,6 +47,66 @@ func TestListLoadedGraphs_ComposesGraphNames(t *testing.T) {
 	require.True(t, got["code/agent"])
 	require.True(t, got["practice/go"])
 	require.True(t, got["cloud/acct-1"])
+}
+
+// TestListLoadedGraphs_PerTypeFailureIsNonFatal covers the pipeline-stall
+// resilience fix: a per-type list_graphs failure (a backend rollout 502, a
+// permission_denied) must NOT abort the whole enumeration. The failing type is
+// skipped — its graphs are absent and it is excluded from `succeeded` — while
+// every other type still enumerates. Before the fix, one type's Execute error
+// returned nil+error and refreshOnce bailed, registering no collectors and
+// wedging enrichment until a client reload.
+func TestListLoadedGraphs_PerTypeFailureIsNonFatal(t *testing.T) {
+	f := newFakeWireClient()
+	f.seedGraphNames(kgtypes.GraphCode, "knowledge")
+	f.seedGraphNames(kgtypes.GraphPractice, "go")
+	f.failGraphNames(kgtypes.GraphCloud) // simulate a per-type backend failure
+
+	refs, succeeded, _, throttled := listLoadedGraphs(context.Background(), f)
+	// A partial failure (healthy siblings enumerated) is NOT a throttle — the
+	// per-type skip already absorbs it; discovery must not back off for the
+	// healthy types.
+	require.False(t, throttled, "partial per-type failure is not a whole-tick throttle")
+
+	got := map[string]bool{}
+	for _, r := range refs {
+		got[string(r.GraphType)+"/"+r.GraphName] = true
+	}
+	// The healthy types still enumerated despite cloud failing.
+	require.True(t, got["knowledge/default"], "seed survives a sibling-type failure")
+	require.True(t, got["code/knowledge"], "code enumerated despite cloud failing")
+	require.True(t, got["practice/go"], "practice enumerated despite cloud failing")
+
+	// The failing type is excluded from succeeded (so refreshOnce won't tear down
+	// its collectors on the strength of an empty wanted-set); healthy types are in.
+	require.False(t, succeeded[kgtypes.GraphCloud], "failed type excluded from succeeded")
+	require.True(t, succeeded[kgtypes.GraphCode], "healthy type marked succeeded")
+	require.True(t, succeeded[kgtypes.GraphPractice], "healthy type marked succeeded")
+}
+
+// TestListLoadedGraphs_WholeTickRateLimitedThrottles covers the discovery-storm
+// fix: when EVERY eligible type's enumeration fails with a remote 429, the tick
+// made zero progress purely because the backend is throttling. listLoadedGraphs
+// reports throttled=true and surfaces the max Retry-After so RefreshLoadedGraphs
+// backs off instead of re-firing one-query-per-type at the base cadence — the
+// retry storm that filled the client log with list-graphs WARNs for days.
+func TestListLoadedGraphs_WholeTickRateLimitedThrottles(t *testing.T) {
+	f := newFakeWireClient()
+	// Rate-limit every eligible type; the heaviest Retry-After should win.
+	for _, gt := range pipelineEligibleGraphTypes {
+		f.rateLimitGraphNames(gt, 1)
+	}
+	f.rateLimitGraphNames(kgtypes.GraphCloud, 3) // max hint
+
+	refs, succeeded, hint, throttled := listLoadedGraphs(context.Background(), f)
+
+	require.True(t, throttled, "a whole tick lost to 429s is a throttle")
+	require.Equal(t, 3*time.Second, hint, "throttle surfaces the max Retry-After seen")
+	require.Empty(t, succeeded, "no type enumerated under a whole-tick throttle")
+	// Only the unconditional knowledge/default seed survives — no per-type graphs.
+	require.Len(t, refs, 1)
+	require.Equal(t, kgtypes.GraphKnowledge, refs[0].GraphType)
+	require.Equal(t, "default", refs[0].GraphName)
 }
 
 // TestWriteBatchUpdates_PassesGraphContext mirrors the fetchNodes test
@@ -123,7 +190,7 @@ func TestWriteBatchUpdates_EmptyItemsIsNoOp(t *testing.T) {
 	require.Nil(t, f.lastExecRequest(), "no items must not fire an Execute")
 }
 
-// TestWriteBatchUpdates_RidesEngineUpdateItemsArm covers criterion 6cc9452a:
+// TestWriteBatchUpdates_RidesEngineUpdateItemsArm covers that
 // writeBatchUpdates produces EXACTLY ONE Execute per write group, and the
 // captured plan is a MUTATION_KIND_UPDATE_ITEMS with N UpdateItems — proving the
 // pipeline rides the engine arm, not the legacy mutate(update_batch) Call path.

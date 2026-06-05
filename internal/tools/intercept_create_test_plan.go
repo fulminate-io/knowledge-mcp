@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package tools — InterceptCreateTestPlan claims the create_test_plan
-// MCP call after the FUL-246 relocation. The server has no create_test_plan handler
+// MCP call after the relocation. The server has no create_test_plan handler
 // has no server-side dispatch post-Phase-4.
 
 package tools

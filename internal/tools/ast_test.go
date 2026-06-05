@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // ast_test.go — unit tests for the client-side ast intercept. Mirror the
-// failure-mode pins from the prior server-side handlers (criterion 8146d875
-// cases a/b/c/d, criterion b179c13a bypass-path tie-break, etc.) without
+// failure-mode pins from the prior server-side handlers (the explain
+// cases a/b/c/d, the bypass-path tie-break, etc.) without
 // mocking the GraphClient — the client-side intercept hydrates against
 // ast.NoOpBackend so no wire calls fire and every test runs purely against
 // the local filesystem.
@@ -10,6 +10,7 @@
 package tools
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -32,7 +33,8 @@ import (
 // nil because the ast tool never calls them (NoOpBackend hydration means
 // zero wire traffic).
 type astTestDeps struct {
-	rootDir string
+	rootDir  string
+	resolver *RepoResolver
 }
 
 func (d astTestDeps) GraphClient() *graphclient.GraphClient { return nil }
@@ -44,7 +46,10 @@ func (d astTestDeps) Embedder() embed.BinaryEmbedder        { return nil }
 func (d astTestDeps) BackendResolver() BackendResolver      { return nil }
 func (d astTestDeps) GraphCaller() GraphCaller              { return nil }
 func (d astTestDeps) LocalGraphCaller() GraphCaller         { return nil }
-func (d astTestDeps) RepoResolver() *RepoResolver           { return nil }
+func (d astTestDeps) RepoResolver() *RepoResolver           { return d.resolver }
+func (d astTestDeps) SegmentManager() SegmentSearcher       { return nil }
+func (d astTestDeps) SegmentShipper() SegmentShipper        { return nil }
+func (d astTestDeps) PipelineScanner() PipelineScanner      { return nil }
 
 // astFixtureRepo writes a single Go file with N function declarations under
 // t.TempDir() and returns the directory. The fixture mirrors the prior
@@ -94,7 +99,7 @@ func TestInterceptAst_NameFiltering(t *testing.T) {
 	}
 }
 
-// TestInterceptAst_UnknownOperation pins criterion 8792285de — handler
+// TestInterceptAst_UnknownOperation pins that the handler
 // surfaces "unknown operation" for any operation outside the 4-op set
 // (match | count | explain | list_node_kinds).
 func TestInterceptAst_UnknownOperation(t *testing.T) {
@@ -106,7 +111,7 @@ func TestInterceptAst_UnknownOperation(t *testing.T) {
 	assert.NotContains(t, body, "search", "search op was removed in B'.3")
 }
 
-// TestHandleAstExplain_FailureModes pins criterion 8146d875 cases (a)/(b)/(c):
+// TestHandleAstExplain_FailureModes pins the failure-mode cases (a)/(b)/(c):
 // empty snippet, unsupported language. Mirrors the prior server-side test.
 func TestHandleAstExplain_FailureModes(t *testing.T) {
 	deps := astTestDeps{rootDir: t.TempDir()}
@@ -131,7 +136,7 @@ func TestHandleAstExplain_FailureModes(t *testing.T) {
 	})
 }
 
-// TestHandleAstExplain_GoSnippet pins criterion 37ce7ca2: a Go snippet
+// TestHandleAstExplain_GoSnippet pins that a Go snippet
 // returns a non-empty indented node-kind tree containing 'function_declaration'.
 func TestHandleAstExplain_GoSnippet(t *testing.T) {
 	deps := astTestDeps{rootDir: t.TempDir()}
@@ -180,6 +185,42 @@ func TestHandleAstListNodeKinds_Unsupported(t *testing.T) {
 	body, isErr, _ := callAst(t, deps, `{"operation":"list_node_kinds","language":"klingon"}`)
 	require.True(t, isErr)
 	assert.Contains(t, body, "unsupported language")
+}
+
+// TestDefaultRepoFromCwd covers the B1 ast hydration repo default at the seam
+// where the resolved value is directly observable: (a) empty repo + resolver hit
+// defaults to the graph name, (b) empty repo + resolver miss stays empty, (c) a
+// non-empty repo is left untouched. The resolver matches filepath.Base(cwd)
+// against the loaded code-graph names (repo_resolve.go ResolveCwd), so a temp
+// dir whose basename is "knowledge" resolves to the "knowledge" graph.
+func TestDefaultRepoFromCwd(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("empty_repo_resolver_hit_defaults_to_name", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "knowledge")
+		require.NoError(t, os.MkdirAll(dir, 0o750))
+		deps := astTestDeps{rootDir: dir, resolver: buildResolver(t, "knowledge")}
+		assert.Equal(t, "knowledge", defaultRepoFromCwd(ctx, deps, ""))
+	})
+
+	t.Run("empty_repo_resolver_miss_stays_empty", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "unmatched")
+		require.NoError(t, os.MkdirAll(dir, 0o750))
+		deps := astTestDeps{rootDir: dir, resolver: buildResolver(t, "knowledge")}
+		assert.Empty(t, defaultRepoFromCwd(ctx, deps, ""))
+	})
+
+	t.Run("nil_resolver_stays_empty", func(t *testing.T) {
+		deps := astTestDeps{rootDir: t.TempDir(), resolver: nil}
+		assert.Empty(t, defaultRepoFromCwd(ctx, deps, ""))
+	})
+
+	t.Run("non_empty_repo_left_untouched", func(t *testing.T) {
+		dir := filepath.Join(t.TempDir(), "knowledge")
+		require.NoError(t, os.MkdirAll(dir, 0o750))
+		deps := astTestDeps{rootDir: dir, resolver: buildResolver(t, "knowledge")}
+		assert.Equal(t, "explicit", defaultRepoFromCwd(ctx, deps, "explicit"))
+	})
 }
 
 // TestFlexInt_NumberAndString pins the flex-decode behavior for the

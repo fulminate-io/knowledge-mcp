@@ -104,7 +104,7 @@ func InterceptWorker(deps ClientDeps, params kgtools.CallToolParams) (bool, kgto
 	case "cancel":
 		return true, handleWorkerCancel(ctx, deps, a)
 	default:
-		// After BCN3 the server has no worker handler at all — the only
+		// The server has no worker handler at all — the only
 		// way "unknown operation" surfaces is through this client-side
 		// dispatcher, so we own the error message. Mirrors the server-
 		// side message from tools_worker_crud.go.

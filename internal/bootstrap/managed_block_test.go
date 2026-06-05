@@ -160,7 +160,7 @@ func TestManagedBlockInSync(t *testing.T) {
 }
 
 // TestCheckClaudeMD drives checkClaudeMD against a temp HOME for each of
-// the three outcomes (criterion 559f10a8).
+// the three outcomes.
 func TestCheckClaudeMD(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)

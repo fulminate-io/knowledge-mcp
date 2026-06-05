@@ -15,7 +15,7 @@ import (
 )
 
 // secretsSubCollector collects Secret Manager secrets.
-// CRITICAL: Only metadata is collected, NEVER secret values (decision 9b128a23).
+// CRITICAL: Only metadata is collected, NEVER secret values.
 type secretsSubCollector struct {
 	client    *secretmanager.Client
 	projectID string

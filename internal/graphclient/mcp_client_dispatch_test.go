@@ -22,7 +22,7 @@ import (
 )
 
 // healthyToolHandler serves Health (so EnsureServer passes) for the bare-forwarder
-// routing test. T-GTB4 deleted the ToolService — tool calls route exclusively
+// routing test. The ToolService was deleted — tool calls route exclusively
 // through the injected Dispatch, so the harness only needs a live Health surface.
 type healthyToolHandler struct{}
 
@@ -81,7 +81,7 @@ func TestHandleMCPToolCall_RoutesThroughDispatch(t *testing.T) {
 	assert.Equal(t, int64(1), dispatchHits.Load(), "Dispatch invoked")
 }
 
-// TestHandleMCPToolCall_NilDispatchErrors asserts the T-GTB4 contract: with no
+// TestHandleMCPToolCall_NilDispatchErrors asserts the contract: with no
 // Dispatch wired there is no legacy Client.Call to fall through to (the ToolService
 // wire is deleted), so the forwarder surfaces a wiring error rather than silently
 // dropping the call.

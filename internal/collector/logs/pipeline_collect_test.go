@@ -38,7 +38,7 @@ func (f *fakeProvider) ListSources(context.Context, string) ([]wirelogs.Source, 
 // chunking, correlation, and summary. It also verifies the
 // QueryEngine is registered and recoverable by queryID.
 //
-// BCN11.2: graph writes moved out of the pipeline entirely. The
+// Graph writes moved out of the pipeline entirely. The
 // CollectResult slices the client materializes via WriteResult are the
 // assertion surface here.
 func TestPipelineCollect_FullOrchestration(t *testing.T) {
@@ -116,7 +116,7 @@ func TestPipelineCollect_FullOrchestration(t *testing.T) {
 	}
 
 	// CollectResult slices carry the data the client materializes;
-	// no in-pipeline graph to inspect post-BCN11.2.
+	// no in-pipeline graph to inspect.
 	if len(result.Templates) == 0 {
 		t.Error("expected templates in CollectResult after Collect")
 	}

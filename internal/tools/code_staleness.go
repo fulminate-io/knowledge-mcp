@@ -4,9 +4,12 @@
 // metadata (HEAD SHA + collection time) back off the GraphInfo catalog and
 // turns it into a human-readable staleness signal. The collect path records
 // SyncCommitKey / SyncTimeKey onto code-graph metadata; the server surfaces
-// both on the GraphInfo carrier returned by the modules catalog read. This
-// helper is the single client-side reader shared by both consumers: the
-// code-search staleness footer and the `knowledge doctor` staleness check.
+// these as the COLLECT-meta channel (GraphInfo.CollectedCommit /
+// CollectedTime) on the carrier returned by the modules catalog read —
+// distinct from GraphInfo.SyncTime, which carries sync-receive time
+// (sync_list's "Last synced"). This helper is the single
+// client-side reader shared by both consumers: the code-search staleness
+// footer and the `knowledge doctor` staleness check.
 
 package tools
 
@@ -20,8 +23,8 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 )
 
-// recordedSyncMeta reads the recorded sync_commit + sync_time for a single code
-// graph via the generic modules catalog read (query{graph:code, mode:modules}
+// recordedSyncMeta reads the recorded collected_commit + collected_time for a
+// single code graph via the generic modules catalog read (query{graph:code, mode:modules}
 // → RETURN_MODE_GRAPH_NAMES → DecodeGraphNames). It filters the returned
 // []GraphInfo by graph name == repo and returns the recorded values. ok is
 // false (degrade-to-unknown) on any miss: no seam, decode failure, repo not
@@ -51,7 +54,7 @@ func recordedSyncMeta(ctx context.Context, exec engine.ExecuteFn, repo string) (
 		if gi.GetName() != repo {
 			continue
 		}
-		sc, st := gi.GetSyncCommit(), gi.GetSyncTime()
+		sc, st := gi.GetCollectedCommit(), gi.GetCollectedTime()
 		if sc == "" && st == 0 {
 			return "", 0, false
 		}

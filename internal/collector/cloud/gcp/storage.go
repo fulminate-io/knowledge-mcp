@@ -60,7 +60,7 @@ func (c *storageSubCollector) Collect(ctx context.Context) (cloud.SubCollectorRe
 			continue
 		}
 
-		// GCS bucket IDs use gs:// canonical URL format (decision 1390ea2b).
+		// GCS bucket IDs use gs:// canonical URL format.
 		bucketID := "gs://" + bucket.Name
 
 		spec := cloud.ResourceSpec{

@@ -13,7 +13,7 @@ import (
 )
 
 // TestInterceptQueryReflect_TimelineModeClaimed verifies query(mode:timeline)
-// gets claimed by the recall routing branch after FUL-247.
+// gets claimed by the recall routing branch.
 func TestInterceptQueryReflect_TimelineModeClaimed(t *testing.T) {
 	deps := interceptTestDeps{gc: &fakeGraphCaller{}}
 	handled, res := interceptQueryReflect(deps, kgtools.CallToolParams{
@@ -61,7 +61,7 @@ func TestInterceptQueryReflect_ThoughtFilterClaimed(t *testing.T) {
 }
 
 // TestInterceptQueryReflect_NonKnowledgeGraphFallsThrough verifies the
-// advisory T3 guard from the plan-review notes: non-knowledge graphs
+// advisory guard: non-knowledge graphs
 // return (false, _) so the server's existing generic-graph path serves
 // them.
 func TestInterceptQueryReflect_NonKnowledgeGraphFallsThrough(t *testing.T) {

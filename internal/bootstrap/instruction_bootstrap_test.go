@@ -20,7 +20,7 @@ import (
 )
 
 // fakeBootstrapGC is a scripted instructionBootstrapGC for unit tests. The
-// bootstrap rides the Execute carrier seam (T-GTB6): the idempotency
+// bootstrap rides the Execute carrier seam: the idempotency
 // pre-flight and the create_batch seed both run through Execute. The fake
 // returns a scripted typed Nodes carrier for the query (idempotency) Execute
 // and a scripted response/error for the mutate (create_batch) Execute,

@@ -18,7 +18,7 @@ import (
 // fakeCaller is a pure-Go GraphCaller stand-in — no httptest, no grpctest (per
 // locked feedback: client-side unit tests use pure-function mocks, not
 // over-the-wire harnesses). The prune startup runner rides the Execute carrier
-// seam (T-GTB6), so it records Execute requests + returns a canned response /
+// seam, so it records Execute requests + returns a canned response /
 // error. Call is retained to satisfy the interface but is unused by the runner.
 type fakeCaller struct {
 	mu       sync.Mutex
@@ -101,7 +101,7 @@ func TestRun_NoSection(t *testing.T) {
 
 // TestRun_EmptyFields: Retention non-nil but the field empty → zero
 // calls, returns nil. This is the "section exists but I left it empty"
-// case which behaves identically to the absent section per the BCN7
+// case which behaves identically to the absent section per the
 // strict-opt-in design.
 func TestRun_EmptyFields(t *testing.T) {
 	cfg := &config.Config{

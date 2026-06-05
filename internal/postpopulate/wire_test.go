@@ -4,9 +4,11 @@ package postpopulate
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
@@ -109,6 +111,66 @@ func TestLinkNodesAndEdgesBatch_NodesAndEdgesOneMutation(t *testing.T) {
 	}
 	if muts[0].GetTarget().GetAccount() != "aws-123" {
 		t.Errorf("Target.Account = %q, want aws-123", muts[0].GetTarget().GetAccount())
+	}
+}
+
+// TestExecCreateBatchNodes_SetsSystemManagedCreate pins the trusted-collector
+// signal: every postpopulate create_batch write (the code indexer's
+// BuildHierarchy package/file/branch creates ride this path) must produce a plan
+// with SystemManagedCreate==true so the server skips the user-facing
+// system-managed-type guard. Without it, the relocated validation rejects
+// every package create on every collect.
+func TestExecCreateBatchNodes_SetsSystemManagedCreate(t *testing.T) {
+	cc := &captureCaller{}
+	// A package node — the exact shape BuildHierarchy emits, which the server's
+	// systemManagedType guard rejects for unflagged user creates.
+	nodes := []*knowledgev1.Node{
+		{Id: "pkg:domains/store", Type: string(kgtypes.NodePackage), SymbolName: "domains/store"},
+	}
+	if err := LinkNodesAndEdgesBatch(context.Background(), cc, kgtypes.GraphCode, "knowledge", nodes, nil); err != nil {
+		t.Fatalf("LinkNodesAndEdgesBatch: %v", err)
+	}
+	muts := cc.mutations()
+	if len(muts) != 1 {
+		t.Fatalf("expected exactly 1 create mutation, got %d", len(muts))
+	}
+	plan := muts[0].GetMutation()
+	if plan.GetKind() != knowledgev1.MutationPlan_MUTATION_KIND_CREATE {
+		t.Fatalf("expected CREATE kind, got %v", plan.GetKind())
+	}
+	if !plan.GetSystemManagedCreate() {
+		t.Errorf("postpopulate create_batch must set SystemManagedCreate=true (trusted collector), got false")
+	}
+}
+
+// TestUserMutateCompile_DoesNotSetSystemManagedCreate proves the flag is
+// UNFORGEABLE through the user mutate tool: the LLM-facing engine.Compile path
+// (the same compiler the mutate tool dispatches to) produces SystemManagedCreate
+// ==false even when an attacker tries to smuggle the arg key into the create_batch
+// payload. Only the postpopulate wire sets it PROGRAMMATICALLY on the compiled
+// proto — there is no arg→field mapping.
+func TestUserMutateCompile_DoesNotSetSystemManagedCreate(t *testing.T) {
+	// A create_batch that even attempts to set the key via args (an attacker would
+	// try this). The compiler ignores unknown arg keys; the field stays false.
+	args := map[string]any{
+		"operation":             "create_batch",
+		"graph":                 "code",
+		"repo":                  "knowledge",
+		"system_managed_create": true, // attacker-supplied arg — must NOT land on the proto
+		"nodes": []map[string]any{
+			{"type": string(kgtypes.NodePackage), "name": "domains/store"},
+		},
+	}
+	body, err := json.Marshal(args)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	req, ok := engine.Compile("mutate", body)
+	if !ok {
+		t.Fatalf("create_batch args expected reducible to a MutationPlan")
+	}
+	if req.GetMutation().GetSystemManagedCreate() {
+		t.Errorf("user mutate compile path must NOT set SystemManagedCreate (forgeable via args), got true")
 	}
 }
 

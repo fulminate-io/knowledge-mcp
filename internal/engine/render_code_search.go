@@ -17,7 +17,7 @@ import (
 // (the server's full-graph "(N of M symbols)" total needs a server DB walk — the
 // client renders the results-only "(N symbols)" shape, matching the server's own
 // total==0 fallback). The staleness "Indexed N ago" line is NOT reconstructable
-// client-side (no graph-meta carrier — see finding e71f53bb); it degrades to
+// client-side (no graph-meta carrier); it degrades to
 // empty, matching StalenessInfoWith's own degrade-on-missing-meta.
 
 // CodeResolvedResult mirrors the server CodeResolvedResult: a search hit + its

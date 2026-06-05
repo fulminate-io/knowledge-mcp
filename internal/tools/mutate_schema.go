@@ -76,7 +76,7 @@ func mutateProperties() map[string]kgtools.Property {
 		"last_validated":        {Type: "string", Description: "Edge metadata (operation=link only). RFC3339 timestamp the linker stamps when (re-)asserting an edge. Routed into store.Edge.LastValidated."},
 		"link_graph":            {Type: "string", Description: "Optional graph selector for operation=link (e.g. 'linkage' for the cross-graph linkage view). When set, the link is dispatched via store.LinkBatch against the named graph rather than the default knowledge graph."},
 		"format":                {Type: "string", Description: "Output format: 'text' (default) or 'json' (structured per operation: create→{id, type, name, warnings}; link→{from, to, relationship}; answer→{id, name, conclusion}; update→{ids, fields}; delete→{deleted, total, ids})."},
-		// FUL-247 thought / charge create payload fields. Carried by
+		// thought / charge create payload fields. Carried by
 		// the client-side InterceptThoughts when it translates
 		// thoughts(operation:think|charge) into mutate(create,
 		// type:thought|charge).

@@ -13,7 +13,7 @@ import (
 // byte sequences become the replacement rune, and NUL bytes  become
 // \x01. Mirrors the server's store.SanitizeText so
 // a node serializes identically whether it rides the wire or is read back from
-// either backend — but it must run CLIENT-SIDE here because the FUL-351 inline-
+// either backend — but it must run CLIENT-SIDE here because the inline-
 // Node wire marshals typed proto Node messages, and proto3 string fields REJECT
 // invalid UTF-8 at MARSHAL time (the old by-hash path shipped opaque node_json
 // bytes, which tolerated it). Fast path: clean strings (the overwhelming common

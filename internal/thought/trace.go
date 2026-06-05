@@ -31,8 +31,8 @@ type traceQueueItem struct {
 	dir      string
 }
 
-// TraceThoughts follows reasoning chains from a starting thought. FUL-247
-// client-side: takes a graph client; expandTraceNeighbors issues bulk
+// TraceThoughts follows reasoning chains from a starting thought.
+// Client-side: takes a graph client; expandTraceNeighbors issues bulk
 // fetchNodesByIDs + chargeMapForThoughts round-trips (one of each per
 // fan-out level) instead of the original per-neighbor singleton query.
 func TraceThoughts(ctx context.Context, gc Caller, startID, direction string, depth int, includeCharges, includeArtifacts bool) ([]TraceStep, error) {
@@ -103,9 +103,9 @@ func traceDirections(direction string) []bool {
 
 // expandTraceNeighbors fetches neighbors for one (node, edgeType, directions)
 // combination, returning new TraceStep values and queue items for unvisited
-// neighbors. FUL-247: one traverse wire call per (forward,edgeType), one
+// neighbors. One traverse wire call per (forward,edgeType), one
 // bulk hydration of unvisited neighbors, and one bulk charges fetch for the
-// thought-typed subset (BCN4 v2 perf invariant).
+// thought-typed subset (perf invariant).
 func expandTraceNeighbors(
 	ctx context.Context,
 	gc Caller,

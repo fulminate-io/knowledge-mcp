@@ -2,7 +2,7 @@
 
 // Package tools — InterceptAssemble claims the assemble MCP call
 // and routes it through cmd/knowledge/internal/projects/render
-// (Handle). Per FUL-251, the server-side assemble handler collapses
+// (Handle). The server-side assemble handler collapses
 // to a client-intercept-required sentinel in Phase 5; this intercept must
 // be wired BEFORE Phase 5 lands so production traffic never reaches
 // the stub.

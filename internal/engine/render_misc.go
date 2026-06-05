@@ -407,8 +407,8 @@ func renderNodesByIDsResponse(resp *knowledgev1.ExecuteResponse, label, format s
 	return kgtools.TextResult(sb.String()), nil
 }
 
-// renderMutationResponse renders a MutationPlan outcome. Per criterion
-// 63d578f5 (thought 9fa5f175): CREATE renders the created Ids (the engine
+// renderMutationResponse renders a MutationPlan outcome:
+// CREATE renders the created Ids (the engine
 // threads them into ExecuteResponse.Ids — T2.4a #9); the predicate arms
 // (UPDATE/DELETE/LINK/UNLINK) render the AffectedCount. The engine response
 // carries only Ids + AffectedCount — node names / changed-field lists / resolved

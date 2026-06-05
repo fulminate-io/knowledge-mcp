@@ -2,7 +2,7 @@
 
 // Package render — golden-file byte-parity verification suite.
 //
-// Phase 6 (FUL-251): re-build each Phase 1.5 fixture under fakeGc,
+// Phase 6: re-build each Phase 1.5 fixture under fakeGc,
 // run render.Handle, scrub IDs/UUIDs to placeholders, and compare
 // byte-for-byte against the committed *.golden files under testdata/.
 //
@@ -421,7 +421,7 @@ func TestGoldenAgent(t *testing.T) {
 
 // --- 15. skill ---
 
-// NOTE on the 14-vs-15 criterion: criterion 58e4f005 locks "14
+// NOTE on the 14-vs-15 criterion: the spec locks "14
 // distinct Test* functions in golden_test.go (one per shape)" while
 // Phase 1.5 produced 15 .golden files (test_plan split into two
 // shapes). Keeping a full one-test-per-shape coverage requires 15

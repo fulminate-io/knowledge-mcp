@@ -21,7 +21,7 @@ import (
 )
 
 // dispatchCounters records exec invocation counts for the Dispatch contract
-// assertions. T-GTB4 removed the legacy fallback CallFn — there is no fallback
+// assertions. The legacy fallback CallFn was removed — there is no fallback
 // path left to count, so the struct tracks exec calls only.
 type dispatchCounters struct {
 	execCalls int
@@ -34,11 +34,11 @@ func (d *dispatchCounters) exec(resp *knowledgev1.ExecuteResponse, err error) Ex
 	}
 }
 
-// TestDispatch_DenyOnOkFalse asserts the T-GTB4 deny flip: a shape Compile does
+// TestDispatch_DenyOnOkFalse asserts the deny flip: a shape Compile does
 // NOT recognize (here a specialized query mode) is DENIED with an explicit
 // error naming the tool — exec NEVER runs, and there is no legacy fallback wire
-// to forward to. This inverts the pre-cutover fall-through contract (decision
-// 7fc2ff59): the legacy ToolService.Call fallback is gone, so an uncompilable
+// to forward to. This inverts the pre-cutover fall-through contract:
+// the legacy ToolService.Call fallback is gone, so an uncompilable
 // shape that reaches Dispatch is a genuine unrecognized request.
 func TestDispatch_DenyOnOkFalse(t *testing.T) {
 	d := &dispatchCounters{}
@@ -86,14 +86,14 @@ func TestDispatch_MapsInvalidArgument(t *testing.T) {
 	assert.Equal(t, 1, d.execCalls)
 }
 
-// TestDispatch_CreateValidationErrorRelayedFromServer asserts the FUL-306
+// TestDispatch_CreateValidationErrorRelayedFromServer asserts the
 // contract: with the client precheck deleted, a create that violates a
 // create-body validator (type=document with no summary — an embed-only type that
 // requires a Summary) is NO LONGER rejected client-side. It flows to Execute
 // EXACTLY ONCE, the server engine's decodeCreate rejects it with a
 // CodeInvalidArgument invalidMutation, and renderEngineError relays that message
 // to the LLM verbatim (out.IsError, "summary is required"). This is the inverse
-// of the pre-FUL-306 zero-exec client-precheck test — it mirrors
+// of the prior zero-exec client-precheck test — it mirrors
 // TestDispatch_MapsNotFound (which stubs a CodeNotFound exec error and asserts
 // the relayed text).
 func TestDispatch_CreateValidationErrorRelayedFromServer(t *testing.T) {
@@ -160,7 +160,7 @@ func TestDispatch_RenderQueryIDsBulk(t *testing.T) {
 // seqExec returns an ExecuteFn that hands back a different canned response per
 // call (in order), recording the per-call request shape. It backs the
 // bounded-constant Execute-count assertions on the dispatchQueryByID
-// orchestration (T-GTB2 site (d) — exactly 3 Execute calls).
+// orchestration (exactly 3 Execute calls).
 type seqExec struct {
 	responses []*knowledgev1.ExecuteResponse
 	reqs      []*knowledgev1.ExecuteRequest
@@ -179,7 +179,7 @@ func (s *seqExec) fn() ExecuteFn {
 	}
 }
 
-// TestDispatch_IncludeEdgesThreeExecCalls pins the T-GTB2 site (d)
+// TestDispatch_IncludeEdgesThreeExecCalls pins the
 // bounded-constant invariant for query(id, include_edges): the client composes
 // the edge summary in EXACTLY 3 Execute calls — (1) the bare node read, (2) the
 // RETURN_MODE_EDGES read for raw edges, (3) ONE bulk ids[] peer hydrate — NOT a
@@ -228,7 +228,7 @@ func TestDispatch_IncludeEdgesThreeExecCalls(t *testing.T) {
 // WITH summary + name) flows straight to Execute EXACTLY once and renders the
 // created id — the exec-once assertion folds in the coverage of the former
 // TestDispatch_PrecheckCreateValidPasses, which became behaviorally identical
-// once the client precheck was deleted (FUL-306).
+// once the client precheck was deleted.
 func TestDispatch_RenderMutateCreateIDs(t *testing.T) {
 	d := &dispatchCounters{}
 	resp := &knowledgev1.ExecuteResponse{Ids: []string{"created-1"}}
@@ -265,7 +265,7 @@ func TestDispatch_RenderDeleteTool(t *testing.T) {
 // TestDispatch_CreateValidationErrorRelayedFromServer, which proves a
 // type:document w/o summary DOES surface "summary is required"). A bare direct
 // LLM thought create with only content drives END-TO-END through Dispatch: the
-// client no longer prechecks (FUL-306 deleted the client precheck), Compile
+// client no longer prechecks (the client precheck was deleted), Compile
 // lowers it to a CREATE, exec runs EXACTLY once, and the render is
 // "Created → ID: t-1" with NO "summary is required". The carve-out itself now
 // lives SERVER-side (decodeCreate returns nil for type==thought before any
@@ -302,15 +302,17 @@ func TestDispatch_BareChargeCreate_NoSummaryGate(t *testing.T) {
 }
 
 // TestDispatch_PrecheckQueryEmptyTextRequiresText is the GAP-B regression guard
-// (CEO decision: REQUIRE TEXT). A text-required query mode (text/graph_reach/
-// recent) with EMPTY text used to fall through to the GENERIC post-cutover deny
-// ("tool query is not a recognized engine-reducible shape"). The precheckQuery
-// seam now intercepts it BEFORE Compile and returns the SPECIFIC requires-text
-// validation error naming the mode — exec NEVER runs (bounded-constant: 0). This
-// exercises the path END-TO-END through Dispatch, not precheckQuery in isolation,
-// so the suite catches a future regression where the seam stops being invoked.
+// (CEO decision: REQUIRE TEXT). The text-required query mode (text) with EMPTY
+// text used to fall through to the GENERIC post-cutover deny ("tool query is not a
+// recognized engine-reducible shape"). The precheckQuery seam now intercepts it
+// BEFORE Compile and returns the SPECIFIC requires-text validation error naming
+// the mode — exec NEVER runs (bounded-constant: 0). This exercises the path
+// END-TO-END through Dispatch, not precheckQuery in isolation, so the suite catches
+// a future regression where the seam stops being invoked. (graph_reach + recent
+// were retired client-side — graph_reach surfaces the unknown-mode deny;
+// recent is served client-side and never reaches this engine path.)
 func TestDispatch_PrecheckQueryEmptyTextRequiresText(t *testing.T) {
-	for _, mode := range []string{"text", "graph_reach", "recent"} {
+	for _, mode := range []string{"text"} {
 		t.Run(mode, func(t *testing.T) {
 			d := &dispatchCounters{}
 			args := `{"mode":"` + mode + `"}` // no text field → empty.
@@ -329,7 +331,7 @@ func TestDispatch_PrecheckQueryEmptyTextRequiresText(t *testing.T) {
 	}
 }
 
-// TestDispatch_RendersNoBackend_AndUnreachable is the FUL-323 Phase 4 guard
+// TestDispatch_RendersNoBackend_AndUnreachable is the guard
 // for the dispatcher's two new render branches in renderEngineError:
 //
 //   - graphclient.ErrNoBackend (bare or wrapped) → "no backend available"
@@ -424,7 +426,6 @@ func TestDispatch_PrecheckQueryNonTextRequiredModesUngated(t *testing.T) {
 	}{
 		{"modules empty text", `{"mode":"modules","graph":"code","repo":"r"}`},
 		{"default type-browse empty text", `{"type":"finding"}`},
-		{"recent WITH text", `{"mode":"recent","text":"hello"}`},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

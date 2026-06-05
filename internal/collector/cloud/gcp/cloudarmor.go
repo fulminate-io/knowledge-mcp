@@ -15,10 +15,10 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
-// --- Wire structs (FUL-88: curated content envelope for cloud armor) ---
+// --- Wire structs (curated content envelope for cloud armor) ---
 
 // securityPolicyContent is the curated wire shape for gcp:compute:securityPolicy.
-// Field set frozen in Phase 1 audit (session ful-88-gcp-planning). Rules are
+// Field set frozen in the Phase 1 audit. Rules are
 // preserved as a flattened slice so the existing `len(rules)` metadata count
 // continues to work; individual rule content is opaque (only count is used).
 type securityPolicyContent struct {

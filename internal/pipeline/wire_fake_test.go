@@ -4,8 +4,12 @@ package pipeline
 
 import (
 	"context"
+	"fmt"
+	"strconv"
 	"sync"
 	"sync/atomic"
+
+	"connectrpc.com/connect"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 
@@ -16,7 +20,7 @@ import (
 // fakeWireClient is the test seam for every pipeline test that needs to
 // exercise the worker / collector RPC paths. Records every RPC invocation
 // (tool name + invocation count) so per-batch RPC-count assertions can be
-// made cheaply. Post-FUL-305 the worker reads the server-composed text off the
+// made cheaply. The worker reads the server-composed text off the
 // scan item directly (no node re-fetch / traverse), so the read-side helpers
 // the fake serves are: listLoadedGraphs (RETURN_MODE_GRAPH_NAMES Execute) and
 // scanGaps (the typed PipelineScan RPC). The write path captures items into
@@ -33,7 +37,7 @@ type fakeWireClient struct {
 	recordedWrites [][]updateBatchItem
 
 	// Captured ExecuteRequests, in call order. listLoadedGraphs (read) and the
-	// update_batch write both ride the engine Execute seam (T-GTB6).
+	// update_batch write both ride the engine Execute seam.
 	execRequests []*knowledgev1.ExecuteRequest
 
 	// graphNamesByType seeds the listLoadedGraphs query(mode:modules) per-type
@@ -41,6 +45,17 @@ type fakeWireClient struct {
 	// Holds the wire proto directly (knowledgev1.GraphInfo) so the seed feeds the
 	// carrier without a store→proto conversion hop.
 	graphNamesByType map[string][]*knowledgev1.GraphInfo
+
+	// failGraphTypes marks graph types whose listLoadedGraphs Execute read should
+	// return an error (a backend rollout 502, a permission_denied). Used to prove
+	// per-type failures are non-fatal: enumeration skips the type and continues.
+	failGraphTypes map[string]bool
+
+	// rateLimitGraphTypes marks graph types whose listLoadedGraphs Execute read
+	// returns a connect.CodeUnavailable ("Too many requests") error carrying a
+	// Retry-After of the mapped seconds (0 = no hint). Used to prove a whole-tick
+	// remote 429 is classified as a throttle so the discovery loop backs off.
+	rateLimitGraphTypes map[string]int
 
 	// scanResp seeds the typed PipelineScan RPC. Default nil → empty items +
 	// dirty_gen=0 (collector no-op tick). Tests that need non-empty scan
@@ -50,12 +65,14 @@ type fakeWireClient struct {
 
 func newFakeWireClient() *fakeWireClient {
 	return &fakeWireClient{
-		calls:            make(map[string]int),
-		graphNamesByType: make(map[string][]*knowledgev1.GraphInfo),
+		calls:               make(map[string]int),
+		graphNamesByType:    make(map[string][]*knowledgev1.GraphInfo),
+		failGraphTypes:      make(map[string]bool),
+		rateLimitGraphTypes: make(map[string]int),
 	}
 }
 
-// PipelineScan satisfies WireClient's gap-discovery seam (T-GTB4): scanGaps
+// PipelineScan satisfies WireClient's gap-discovery seam: scanGaps
 // rides the typed EngineService.PipelineScan RPC rather than the legacy
 // ToolService.Call. Counts the call under "pipeline_scan" and returns the
 // seeded response (default: empty items, dirty_gen=0 → no-op tick).
@@ -101,7 +118,7 @@ func (f *fakeWireClient) Execute(_ context.Context, req *knowledgev1.ExecuteRequ
 	}
 
 	// Read plans: only listLoadedGraphs (RETURN_MODE_GRAPH_NAMES) rides the
-	// Execute seam in the post-FUL-305 pipeline (the worker no longer re-fetches
+	// Execute seam in the pipeline (the worker no longer re-fetches
 	// nodes or traverses children — it reads the server-composed text off the
 	// scan item directly).
 	if q := req.GetQuery(); q != nil && q.GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_GRAPH_NAMES {
@@ -115,9 +132,39 @@ func (f *fakeWireClient) Execute(_ context.Context, req *knowledgev1.ExecuteRequ
 // holds *knowledgev1.GraphInfo, so it feeds the carrier directly.
 func (f *fakeWireClient) execGraphNames(graphType string) (*knowledgev1.ExecuteResponse, error) {
 	f.mu.Lock()
+	failed := f.failGraphTypes[graphType]
+	retryAfter, rateLimited := f.rateLimitGraphTypes[graphType]
 	infos := f.graphNamesByType[graphType]
 	f.mu.Unlock()
+	if rateLimited {
+		ce := connect.NewError(connect.CodeUnavailable, fmt.Errorf("Too many requests. Please slow down."))
+		if retryAfter > 0 {
+			ce.Meta().Set("Retry-After", strconv.Itoa(retryAfter))
+		}
+		return nil, ce
+	}
+	if failed {
+		return nil, fmt.Errorf("fake: list-graphs unavailable for %s (simulated rollout)", graphType)
+	}
 	return &knowledgev1.ExecuteResponse{GraphNames: infos}, nil
+}
+
+// failGraphNames marks a graph type's listLoadedGraphs Execute read to error,
+// simulating a per-type backend failure (rollout 502, permission_denied).
+func (f *fakeWireClient) failGraphNames(gt kgtypes.GraphType) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failGraphTypes[string(gt)] = true
+}
+
+// rateLimitGraphNames marks a graph type's listLoadedGraphs Execute read to
+// return a connect.CodeUnavailable 429 carrying retryAfterSecs as Retry-After
+// (0 = no hint). Simulates the backend per-IP throttle the discovery loop must
+// classify as a whole-tick throttle and back off from.
+func (f *fakeWireClient) rateLimitGraphNames(gt kgtypes.GraphType, retryAfterSecs int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.rateLimitGraphTypes[string(gt)] = retryAfterSecs
 }
 
 // mutateCallCount returns the number of mutate(update_batch) calls the

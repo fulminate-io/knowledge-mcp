@@ -21,7 +21,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
-// FUL-251b parity tests. Each intercept's parity check seeds an
+// Parity tests. Each intercept's parity check seeds an
 // in-memory node+edge fixture, calls the intercept, and asserts byte
 // equality against the pre-relocation golden captured in Phase 1.
 // The scrub regexes match testdata_capture_test.go (build-tag
@@ -69,7 +69,7 @@ func mustMarshal(t *testing.T, v any) []byte {
 	return b
 }
 
-// parityGraphFixture is the FUL-251b in-tools parity-test fixture.
+// parityGraphFixture is the in-tools parity-test fixture.
 // Modeled on cmd/knowledge/internal/projects/render/testutil_test.go's
 // graphFixture but in-package (test file → can't import the render
 // test helpers). Answers the wire shapes the intercepts emit:
@@ -120,7 +120,7 @@ func (g *parityCaller) Call(_ context.Context, tool string, args json.RawMessage
 }
 
 // Execute satisfies render.Executor — the carrier seam the repointed
-// render.FetchNode / IterEdges use (T-GTB3 Phase 6). Answers ByID /
+// render.FetchNode / IterEdges use. Answers ByID /
 // RETURN_MODE_EDGES from the fixture as nodes_json / edges_json carriers.
 func (g *parityCaller) Execute(_ context.Context, req *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error) {
 	q := req.GetQuery()

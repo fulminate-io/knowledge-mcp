@@ -20,21 +20,13 @@ func TestRenderStatsBreakdown_Golden(t *testing.T) {
 	stats := &knowledgev1.GraphStats{
 		NodeCount:         5,
 		EdgeCount:         3,
-		VectorCount:       2,
 		BinaryVectorCount: 1,
-		TextDocCount:      4,
-		HasBm25:           true,
-		HasHnsw:           false,
 		NodesByType:       map[string]int64{"finding": 3, "decision": 2},
 		EdgesByType:       map[string]int64{"informed-by": 2, "relates-to": 1},
 	}
 	want := "Nodes: 5\n" +
 		"Edges: 3\n" +
-		"Vectors: 2\n" +
 		"Binary vectors: 1\n" +
-		"Text documents: 4\n" +
-		"BM25: true\n" +
-		"HNSW: false\n" +
 		"\n### Nodes by Type\n" +
 		"- finding: 3\n" +
 		"- decision: 2\n" +

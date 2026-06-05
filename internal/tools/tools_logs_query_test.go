@@ -223,7 +223,7 @@ func TestLogsQuery_EngineRebuild(t *testing.T) {
 	queryID := "q-rebuild"
 	h := setupLogTestHandler(t, queryID)
 
-	// BCN11.3 removed the engine cache (reviewer T2-B): handlers always
+	// The engine cache was removed: handlers always
 	// refetch + rebuild via getOrFetchLogState. UnregisterEngine + the
 	// registry assertion are no-ops now — the test still exercises the
 	// wire-fetch + rebuild path against the seeded corpus.

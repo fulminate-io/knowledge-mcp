@@ -106,7 +106,7 @@ func TestCollect_FullReplace_HappyPath(t *testing.T) {
 
 	// The pipeline's job is the Collect → resolveSink → WriteResult dispatch;
 	// verify the captured payload forwarded to the sink. Persistence + post-
-	// populate are sink/server responsibilities (FUL-288, tested server-side
+	// populate are sink/server responsibilities (tested server-side
 	// in the collect chunk/finalize tests).
 	require.Len(t, cap.calls, 1)
 	assert.Equal(t, "test", cap.names[0])

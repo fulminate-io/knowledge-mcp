@@ -9,6 +9,7 @@ import (
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
+	"github.com/fulminate-io/knowledge-mcp/internal/graphsel"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
@@ -30,19 +31,10 @@ import (
 // payload-key twin of graphTarget below; both must agree so the Compile-based
 // and raw-plan helpers scope identically.
 func scopePayload(graphType kgtypes.GraphType, name string) map[string]any {
-	payload := map[string]any{"graph": string(graphType)}
 	if name == "" {
-		return payload
+		return map[string]any{"graph": string(graphType)}
 	}
-	switch graphType {
-	case kgtypes.GraphCode:
-		payload["repo"] = name
-	case kgtypes.GraphCloud, kgtypes.GraphCICD:
-		payload["account"] = name
-	default:
-		payload["name"] = name
-	}
-	return payload
+	return graphsel.ScopePayload(graphType, name, false)
 }
 
 // graphTarget builds the envelope GraphSelector for the raw-QueryPlan helpers
@@ -57,16 +49,7 @@ func graphTarget(graphType kgtypes.GraphType, name string) *knowledgev1.GraphSel
 	if graphType == "" && name == "" {
 		return nil
 	}
-	sel := &knowledgev1.GraphSelector{Graph: string(graphType)}
-	switch graphType {
-	case kgtypes.GraphCode:
-		sel.Repo = name
-	case kgtypes.GraphCloud, kgtypes.GraphCICD:
-		sel.Account = name
-	default:
-		sel.Name = name
-	}
-	return sel
+	return graphsel.GraphSelectorFor(graphType, name, false)
 }
 
 // executeQuery compiles a query payload to an ExecuteRequest and runs it over

@@ -16,7 +16,7 @@ import (
 // (cmd/knowledge-server/tools/tools_query_cloud.go) and
 // formatCICD{Node,SearchResults,Browse} (tools_query_cicd.go) were byte-for-byte
 // identical modulo the graph label ("Cloud" vs "CI/CD") and the secondary
-// metadata key ("region" vs "provider"). Per decision 1ad493da this collapses
+// metadata key ("region" vs "provider"). By design this collapses
 // the two server families into one client family parameterized on those two
 // inputs — strictly less code than two ports.
 //

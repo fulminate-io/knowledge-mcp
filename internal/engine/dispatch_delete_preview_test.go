@@ -16,7 +16,7 @@ import (
 )
 
 // TestDispatch_DeleteByIDsDryRun_PreviewsNeverDeletes is the data-loss footgun
-// regression guard (finding f95119710b). Pre-fix, delete(ids, dry_run:true)
+// regression guard. Pre-fix, delete(ids, dry_run:true)
 // compiled UNCONDITIONALLY to a MUTATION_KIND_DELETE and really deleted the
 // nodes. This drives the standalone delete tool END-TO-END through Dispatch and
 // asserts the dry-run:

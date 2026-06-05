@@ -28,7 +28,7 @@ func repoRoot(t *testing.T) string {
 	return root
 }
 
-// criterion e6fffdb7: parseFrontmatter on .claude/agents/planner.md
+// parseFrontmatter on .claude/agents/planner.md
 // yields name='planner', non-empty description, model='opus', non-empty
 // tools, skills present, body beginning with the role/precedence block.
 func TestParseFrontmatter_PlannerAgent(t *testing.T) {
@@ -67,7 +67,7 @@ func TestParseFrontmatter_PlannerAgent(t *testing.T) {
 	}
 }
 
-// criterion 4e0b17e8: a file with no leading --- returns ok=false and
+// a file with no leading --- returns ok=false and
 // body==full content (mirrors parseInstructionFrontmatter fallthrough).
 func TestParseFrontmatter_NoFrontmatter(t *testing.T) {
 	content := "# Just a heading\n\nSome body text with no frontmatter.\n"

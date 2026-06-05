@@ -96,7 +96,7 @@ func ClusterWithParams(runs []text.TextRun, page PageInfo, lp LayoutParams) ([]B
 
 	// 5. Stage 2 — lines → blocks (computes medianGap inside).
 	//    groupLinesToBlocks handles the single-line short-circuit
-	//    (Rule 2.0, criterion 5b1b4d04) without computing medianGap.
+	//    (Rule 2.0) without computing medianGap.
 	blocks := groupLinesToBlocks(lines, page.PageIndex, lp)
 
 	// 7. Per-block dehyphenation. The post-Stage-2 ordering is per

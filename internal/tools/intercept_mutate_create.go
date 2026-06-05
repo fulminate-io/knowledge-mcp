@@ -253,7 +253,7 @@ func handleClientMutateAnswer(ctx context.Context, deps ClientDeps, a mutateArgs
 }
 
 // isClientRollupContainer returns true for node types that participate
-// in the FUL-246 closure rollup: project, ticket, plan, phase, step.
+// in the closure rollup: project, ticket, plan, phase, step.
 // Mirrors projects.closure.go behavior — any container whose
 // descendants should be marked completed when the container is.
 func isClientRollupContainer(t kgtypes.NodeType) bool {

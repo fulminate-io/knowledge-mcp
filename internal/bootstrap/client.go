@@ -19,6 +19,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/pipeline"
+	"github.com/fulminate-io/knowledge-mcp/internal/segmentdist"
 	clientthought "github.com/fulminate-io/knowledge-mcp/internal/thought"
 	"github.com/fulminate-io/knowledge-mcp/internal/tools"
 	"github.com/fulminate-io/knowledge-mcp/internal/workercrud"
@@ -43,13 +44,13 @@ type client struct {
 	port    int    // TCP port the server listens on
 	version string // binary version (reported in MCP initialize)
 	// local is the connect-go client to the LOCAL graph server (127.0.0.1).
-	// Replaces the prior `client` field as part of FUL-323. Always-local
+	// Replaces the prior `client` field as part of the routing rework. Always-local
 	// callers (sync push, post-collect linker, post-collect postpopulate,
 	// auto-prune, pipeline writeback, propagation loop) read this directly.
 	// May be nil for a cloud-first user with no install — router handles
 	// dispatch for everyone else.
 	local *graphclient.GraphClient
-	// router is the FUL-323 routing layer. Per-call dispatches to local or
+	// router is the routing layer. Per-call dispatches to local or
 	// cloud based on the live auth state cached in authState. Built by
 	// constructClient; tests that build *client directly leave router nil
 	// (the GraphCaller() accessor returns nil in that case, preserving the
@@ -91,13 +92,22 @@ type client struct {
 	// p.Stop call in runMCPMode handles nil safely.
 	pipeline *pipeline.Pipeline
 
+	// segmentMgr is the per-graph client-hosted BM25+HNSW segment owner. ONE
+	// instance shared between the PRODUCER side (the pipeline ships segments
+	// into it at embed writeback — AttachSegmentManager) and the CONSUMER side
+	// (the search intercepts query it via SegmentManager()). Constructed in
+	// wirePipelineRuntime alongside the pipeline; nil when the pipeline was not
+	// wired. Holding ONE instance is load-bearing: a second Manager would build
+	// duplicate engines (double memory) and miss the producer's loaded segments.
+	segmentMgr *segmentdist.Manager
+
 	// propLoop is the client-side reflective-surface goroutine that
 	// hourly re-detects thought clusters and propagates valence /
 	// magnitude through the graph. Wired in mcp.go::runMCPMode via
 	// wirePropagationRuntime; nil when --no-propagation-runtime is set
 	// OR construction failed at boot. The deferred Stop call in
-	// runMCPMode handles nil safely (Stop is nil-safe). Per BCN4 v2
-	// Phase 6 / T1: holds *graphclient.GraphClient directly via
+	// runMCPMode handles nil safely (Stop is nil-safe). Holds
+	// *graphclient.GraphClient directly via
 	// NewPropagationLoop — no store-shaped wrapper.
 	propLoop *clientthought.PropagationLoop
 
@@ -113,7 +123,7 @@ type client struct {
 	schemaDone bool
 
 	// repoResolver is the client-side cwd → code-graph-name resolver
-	// (FUL-241 Phase 2). Constructed lazily on first RepoResolver()
+	// resolver. Constructed lazily on first RepoResolver()
 	// call via repoResolverOnce so test harnesses that build *client
 	// without a GraphClient don't trip on the nil-graph path. The
 	// resolver's own sync.Once gates the code-graph catalog read, so
@@ -134,7 +144,7 @@ func (c *client) GraphClient() *graphclient.GraphClient { return c.local }
 // tools.pipelineMetricser interface read by handleServerStatus —
 // without this overlay, manage(status) would print zeros for the
 // pipeline counters because the server-side StatusResponse leaves
-// those proto fields unset (post-BCN5 the pipeline moved client-side
+// those proto fields unset (the pipeline moved client-side
 // but the status overlay was never wired through).
 //
 // ok=false when pipeline is nil (--no-llm-pipeline, or neither
@@ -169,6 +179,17 @@ func (c *client) CloudStatusInfo() (bool, string) {
 func (c *client) ResetPipelineFailedCounters() {
 	if c.pipeline != nil {
 		c.pipeline.ResetFailedCounters()
+	}
+}
+
+// WakePipeline nudges every LLM-pipeline collector to re-scan promptly.
+// Satisfies the optional tools.pipelineWaker interface the collect intercept
+// calls after a successful collect, so a freshly-collected graph that had
+// idle-backed-off its scan cadence discovers the new nodes within one base tick
+// instead of waiting out the hour-long idle ceiling.
+func (c *client) WakePipeline() {
+	if c.pipeline != nil {
+		c.pipeline.WakeAll()
 	}
 }
 
@@ -234,7 +255,7 @@ func (c *client) Embedder() embed.BinaryEmbedder {
 // fall through to local-only).
 func (c *client) BackendResolver() tools.BackendResolver { return providerBackendResolver{} }
 
-// GraphCaller returns the production graph caller — the FUL-323
+// GraphCaller returns the production graph caller — the
 // routing layer. The returned *Router dispatches per-call to either the
 // local *GraphClient (default / logged out) or a lazily-built cloud
 // *GraphClient (when AuthState reports IsLoggedIn=true), surfacing
@@ -252,7 +273,7 @@ func (c *client) GraphCaller() tools.GraphCaller {
 }
 
 // LocalGraphCaller returns a GraphCaller that ALWAYS targets the local
-// server, bypassing the FUL-323 routing layer. Callers that must read
+// server, bypassing the routing layer. Callers that must read
 // and write the local graph regardless of login state — sync push,
 // post-collect linker, post-collect postpopulate — use this accessor.
 // Returns nil only when the *client was constructed without a local
@@ -275,7 +296,7 @@ func (c *client) LocalGraphCaller() tools.GraphCaller {
 // failure. Get always returns ErrNotFound so AuthState reports
 // IsLoggedIn=false; Set/Delete are silent no-ops. The router falls through
 // to the local *GraphClient unconditionally when this store backs the
-// AuthState, preserving the pre-FUL-323 unauthenticated behavior on those
+// AuthState, preserving the prior unauthenticated behavior on those
 // platforms.
 type noopAuthStore struct{}
 
@@ -334,9 +355,9 @@ func (g graphClientCaller) Execute(ctx context.Context, req *knowledgev1.Execute
 }
 
 // Index exposes the wrapped *GraphClient's engine Index RPC so the client-side
-// manage intercepts (T-GTB3 Phase 7: set_metadata_overrides / delete_branch /
-// list_branches / rebuild_bm25 / rebuild_hnsw) can drive the generic lifecycle
-// ops without reaching for the concrete *GraphClient. This is the narrow Index
+// manage intercepts (set_metadata_overrides / delete_branch /
+// list_branches) can drive the generic lifecycle ops without reaching for the
+// concrete *GraphClient. This is the narrow Index
 // seam the tools.Indexer type-assert upgrades to — like Execute above, it does
 // NOT widen the Call-only tools.GraphCaller interface.
 func (g graphClientCaller) Index(ctx context.Context, req *knowledgev1.IndexRequest) (*knowledgev1.IndexResponse, error) {
@@ -344,7 +365,7 @@ func (g graphClientCaller) Index(ctx context.Context, req *knowledgev1.IndexRequ
 }
 
 // MetadataStats exposes the wrapped *GraphClient's engine MetadataStats RPC so
-// the client-side promote_metadata composer (T-GTB6) can read the per-graph
+// the client-side promote_metadata composer can read the per-graph
 // stats + override carriers off the GraphCaller without reaching for the
 // concrete *GraphClient. Like Execute/Index, this is a narrow seam a tools-side
 // interface type-asserts for; it does NOT widen the Call-only GraphCaller.
@@ -373,7 +394,7 @@ func (g graphClientCaller) ExportGraph(ctx context.Context, req *knowledgev1.Exp
 // interceptor redials transparently when the next real request lands —
 // keepalive is operator visibility, not recovery.
 //
-// Router wiring (FUL-323): builds the auth.AuthState backed by the
+// Router wiring: builds the auth.AuthState backed by the
 // platform keychain Store (or a no-op stub on platforms where the
 // keychain is not implemented — Windows) and the OAuth TokenSource, then
 // wraps the local *GraphClient + cloud-bearer machinery in a
@@ -410,7 +431,12 @@ func constructClient(f Config) *client {
 		router:    router,
 		authState: authState,
 	}
-	c.sink = remote.NewUploadSink(tcp.IngestClient())
+	// Per-call login-aware routing: the sink re-picks the IngestService
+	// backend on every CollectChunk/Finalize/FetchCloudSubgraph via the
+	// Router (cloud when logged in, local otherwise), so a mid-session
+	// `knowledge login` flip routes the next collect to cloud without a
+	// restart. Do NOT capture a fixed tcp.IngestClient() here.
+	c.sink = remote.NewUploadSinkFunc(c.router.IngestClient)
 	// Wire the worker CRUD client. Same GraphClient as everything else
 	// — every CRUD call goes back through the wire-loopback transport
 	// so the server stays the source of truth for graph-resident

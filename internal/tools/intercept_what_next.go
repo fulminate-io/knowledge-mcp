@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// Package tools — InterceptWhatNext claims the what_next MCP call after
-// FUL-246 Phase 4 removes handleWhatNext server-side. The implementation
+// Package tools — InterceptWhatNext claims the what_next MCP call now
+// that handleWhatNext was removed server-side. The implementation
 // mirrors projects.WhatNext: for each candidate type (step + question,
 // optionally project + ticket), list nodes of that type via query,
 // filter to actionable status, check ancestry, dependencies, and emit

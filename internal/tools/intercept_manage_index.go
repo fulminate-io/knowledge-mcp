@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // intercept_manage_index.go — client-side manage intercepts that drive the
-// GraphClient.Index RPC: set_metadata_overrides / delete_branch / list_branches
-// (this file) and rebuild_bm25 / rebuild_hnsw (intercept_manage_rebuild.go). Each
-// is a thin client handler that lowers the manage args to one IndexRequest, fires
-// Index, and renders the ack/overlay-list client-side. The store logic is
+// GraphClient.Index RPC: set_metadata_overrides / delete_branch / list_branches.
+// Each is a thin client handler that lowers the manage args to one IndexRequest,
+// fires Index, and renders the ack/overlay-list client-side. The store logic is
 // delegated server-side via the generic Index op; these handlers re-implement only
-// the LLM-facing rendering.
+// the LLM-facing rendering. (rebuild_bm25 / rebuild_hnsw were retired with the
+// server search subsystem.)
 
 package tools
 

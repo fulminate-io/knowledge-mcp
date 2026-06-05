@@ -9,7 +9,7 @@
 // Placeholder records describing every `$X` / `$$$X` / `$_` / `$$$_`
 // occurrence and its byte range within the source.
 //
-// Lexer rules (ticket badce432a4917ba4b5e8867e093d0b9e DSL surface, locked):
+// Lexer rules (the locked DSL surface):
 //
 //   - `$_`             — single-node wildcard, no capture name.
 //   - `$X`             — single-node placeholder, capture name X.
@@ -92,8 +92,7 @@ type Pattern struct {
 }
 
 // rawPrefix is the deleted Phase-A escape hatch. Parse rejects this prefix
-// outright per criterion b6fd85dc1203 — the user-facing escape hatch is gone
-// in v2.
+// outright — the user-facing escape hatch is gone in v2.
 const rawPrefix = "tree_sitter_query:"
 
 var (
@@ -113,7 +112,7 @@ var (
 	errParserTripleDollar = errors.New("ast/dsl: bare $$$ — expected $$$X (named) or $$$_ (wildcard)")
 
 	// errParserTreeSitterPrefix is returned for the deleted Phase-A escape
-	// hatch. Locked by criterion b6fd85dc1203.
+	// hatch.
 	errParserTreeSitterPrefix = errors.New("ast/dsl: tree_sitter_query: prefix is not supported in v2 — author the pattern with $X / $$$X placeholders")
 )
 

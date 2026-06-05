@@ -16,10 +16,10 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
-// --- Wire structs (FUL-88: curated content envelope for routers) ---
+// --- Wire structs (curated content envelope for routers) ---
 
 // routerContent is the curated wire shape for gcp:compute:router.
-// Field set frozen in Phase 1 audit (session ful-88-gcp-planning).
+// Field set frozen in the Phase 1 audit.
 type routerContent struct {
 	Name     string                 `json:"name,omitempty"`
 	SelfLink string                 `json:"selfLink,omitempty"`

@@ -132,9 +132,10 @@ func (s *Service) Generate(ctx context.Context, messages []*schema.Message, opts
 
 	if httpResp.StatusCode != http.StatusOK {
 		return nil, &llm.LLMError{
-			Transient: llm.HTTPStatusToTransient(httpResp.StatusCode),
-			Reason:    fmt.Sprintf("http_%d", httpResp.StatusCode),
-			Cause:     fmt.Errorf("openai: status %d: %s", httpResp.StatusCode, string(respBody)),
+			Transient:  llm.HTTPStatusToTransient(httpResp.StatusCode),
+			Reason:     fmt.Sprintf("http_%d", httpResp.StatusCode),
+			RetryAfter: llm.ParseRetryAfter(httpResp.Header),
+			Cause:      fmt.Errorf("openai: status %d: %s", httpResp.StatusCode, string(respBody)),
 		}
 	}
 

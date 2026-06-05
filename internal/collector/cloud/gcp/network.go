@@ -16,7 +16,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
-// --- Wire structs (FUL-88: curated content envelopes, no SDK leak) ---
+// --- Wire structs (curated content envelopes, no SDK leak) ---
 
 // networkContent is the curated wire shape for gcp:compute:network. Field set
 // frozen in Phase 1 audit (session ful-88-gcp-planning).
@@ -62,7 +62,7 @@ type subnetworkLogConfigContent struct {
 // Convergence target for postpopulate_firewall.go reader (Phase 3).
 // Pointer fields preserved where the reader checks for nil distinction.
 // IPProtocol JSON tag uses the acronym uppercase form (NOT ipProtocol) —
-// existing readers depend on this exact spelling (T3#1 reviewer finding).
+// existing readers depend on this exact spelling.
 type firewallContent struct {
 	Name                  string                   `json:"name,omitempty"`
 	SelfLink              string                   `json:"selfLink,omitempty"`

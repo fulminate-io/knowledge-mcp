@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// intercept_thoughts_charge.go — FUL-247 / T-GTB6 client-side claim for
+// intercept_thoughts_charge.go — client-side claim for
 // thoughts(operation:charge). The intercept LOWERS the charge into a GENERIC
 // create_batch MutationPlan via the Execute carrier seam (no dedicated server
 // charge handler): it reproduces handleMutateCreateCharge's invariants

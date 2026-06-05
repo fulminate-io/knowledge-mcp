@@ -67,7 +67,7 @@ func InterceptQueryExplainTimeline(deps ClientDeps, params kgtools.CallToolParam
 	if a.Mode == "explain" {
 		return true, composeExplain(ctx, gc.Execute, a)
 	}
-	return true, composeTimeline(ctx, gc.Execute, a)
+	return true, composeTimeline(ctx, deps, a)
 }
 
 // composeExplain dispatches the explain forms (pair / single-node) — port of
@@ -194,13 +194,13 @@ func renderExplainWithNames(ctx context.Context, exec engine.ExecuteFn, target *
 // composeTimeline ports handleGenericTimeline: require time_field (non-logs),
 // fetch one bounded node-set, sort ascending, apply render-output limit, render
 // flat or bucketed.
-func composeTimeline(ctx context.Context, exec engine.ExecuteFn, a queryArgs) kgtools.ToolResult {
+func composeTimeline(ctx context.Context, deps ClientDeps, a queryArgs) kgtools.ToolResult {
 	field := a.TimeField
 	if field == "" {
 		return errorResult("timeline requires time_field when graph is not logs")
 	}
 	label := domainGraphLabel(a)
-	nodes, err := pivotFetchNodesClient(ctx, exec, a) // same fetch shape (type/text/all, Limit 0).
+	nodes, err := pivotFetchNodesClient(ctx, deps, a) // same fetch shape (type/text/all, Limit 0).
 	if err != nil {
 		return errorResult(fmt.Sprintf("timeline fetch failed: %v", err))
 	}

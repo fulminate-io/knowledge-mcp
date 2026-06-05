@@ -2,7 +2,7 @@
 
 // Package tools — bulk edge wire-fetch for log graphs.
 //
-// fetchAllLogEdges issues ONE traverse RPC (the BCN11.3 graph-wide
+// fetchAllLogEdges issues ONE traverse RPC (the graph-wide
 // enumeration shape) against the server and returns every edge in the
 // resolved log graph matching the requested edge types. No start node,
 // no per-node N+1 loop — the caller indexes the response into the
@@ -21,7 +21,7 @@ import (
 )
 
 // fetchAllLogEdges composes the graph-wide-edges enumeration over the Execute
-// carrier seam (the T-GTB1e #5 shape): (1) one Match-all RETURN_MODE_NODES
+// carrier seam: (1) one Match-all RETURN_MODE_NODES
 // enumeration of every node in the resolved log graph, then (2) one
 // RETURN_MODE_EDGES ids[]→union read over the full node-id set, filtered to the
 // requested edge types. The RETURN_MODE_EDGES carrier (engine.DecodeEdges)
@@ -61,7 +61,7 @@ func fetchAllLogEdges(
 
 	// (2) RETURN_MODE_EDGES ids[]→union read over every node id, edge-type
 	// filtered. The logs graph uses UPPERCASE edge types (canonicalize per the
-	// T-GTB2 client-owns-casing rule), used AS-GIVEN by the engine.
+	// client-owns-casing rule), used AS-GIVEN by the engine.
 	ids := make([]string, len(nodes))
 	for i, n := range nodes {
 		ids[i] = n.Id

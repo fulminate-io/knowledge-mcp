@@ -182,8 +182,7 @@ func TestGroupLinesToBlocks_EmptyInput_EmptyOutput(t *testing.T) {
 }
 
 // TestGroupLinesToBlocks_SingleLineShortCircuit covers Rule 2.0 — a
-// 1-line input must emit a single Block without computing medianGap
-// (criterion 5b1b4d04).
+// 1-line input must emit a single Block without computing medianGap.
 func TestGroupLinesToBlocks_SingleLineShortCircuit(t *testing.T) {
 	t.Parallel()
 	lines := []Line{mkLine(72, 100, 200, 112, runForLine(72))}

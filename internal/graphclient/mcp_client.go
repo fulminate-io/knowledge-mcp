@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"runtime/debug"
 	"strings"
 	"sync"
 	"time"
@@ -189,19 +190,52 @@ func (m *MCPClient) handleMCPRequest(req kgtools.JSONRPCRequest) *kgtools.JSONRP
 	}
 }
 
+// clipArgs truncates a tool-arguments string for bounded log output, appending
+// the original byte length when elided. Keeps panic/debug logs from dumping
+// large payloads (e.g. mutate batches).
+func clipArgs(s string, max int) string {
+	if len(s) <= max {
+		return s
+	}
+	return fmt.Sprintf("%s…(%dB total)", s[:max], len(s))
+}
+
 // handleMCPToolCall handles a tools/call JSON-RPC request, proxying to the graph server.
-func (m *MCPClient) handleMCPToolCall(req kgtools.JSONRPCRequest) *kgtools.JSONRPCResponse {
+func (m *MCPClient) handleMCPToolCall(req kgtools.JSONRPCRequest) (resp *kgtools.JSONRPCResponse) {
 	var params kgtools.CallToolParams
 	if err := json.Unmarshal(req.Params, &params); err != nil {
 		return &kgtools.JSONRPCResponse{JSONRPC: "2.0", ID: req.ID, Error: &kgtools.RPCError{Code: -32602, Message: "invalid params"}}
 	}
+
+	// Panic safety net: a panic anywhere in the intercept chain or the dispatch
+	// path must be logged with its full stack and returned as a tool error —
+	// never allowed to escape and crash the MCP stdio process (which drops the
+	// connection and loses the stack). Diagnostic instrumentation for the
+	// client-hosted search path.
+	defer func() {
+		if r := recover(); r != nil {
+			slog.Error("mcpClient: PANIC recovered in tool call",
+				"tool", params.Name,
+				"args", clipArgs(string(params.Arguments), 400),
+				"panic", fmt.Sprintf("%v", r),
+				"stack", string(debug.Stack()))
+			resp = &kgtools.JSONRPCResponse{JSONRPC: "2.0", ID: req.ID, Result: kgtools.ToolResult{
+				Content: []kgtools.ContentBlock{{Type: "text", Text: fmt.Sprintf("Error: internal panic in tool %q: %v", params.Name, r)}},
+				IsError: true,
+			}}
+		}
+	}()
+
+	slog.Debug("mcpClient: tool call entry", "tool", params.Name, "args", clipArgs(string(params.Arguments), 400))
 
 	// Run the client-side intercept chain. The chain may handle the call
 	// inline OR rewrite params (e.g. repo:+branch: injection for code-graph
 	// calls) and fall through. Capture the rewritten params so the proxy
 	// below uses them — discarding them strips rewrites silently.
 	if m.cfg.InterceptChain != nil {
+		slog.Debug("mcpClient: running intercept chain", "tool", params.Name)
 		rewritten, intercepted, interceptResult := m.cfg.InterceptChain(params)
+		slog.Debug("mcpClient: intercept chain returned", "tool", params.Name, "intercepted", intercepted)
 		if intercepted {
 			return &kgtools.JSONRPCResponse{JSONRPC: "2.0", ID: req.ID, Result: interceptResult}
 		}

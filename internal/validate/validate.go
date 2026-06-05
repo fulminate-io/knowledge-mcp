@@ -5,12 +5,12 @@
 // project-domain types (plan, phase, step, finding, research, rule, ...).
 // The guards live client-side because the client now owns the entire
 // create path — the server-side ToolService that once shared this
-// contract was deleted in T-GTB4, leaving the EngineService wire as the
+// contract was deleted, leaving the EngineService wire as the
 // only consumer.
 //
 // The exported names (Name, Summary, StepDescription) match the
 // previously unexported names modulo capitalization. Behavior is
-// preserved bit-for-bit so the FUL-246 golden capture is unchanged after
+// preserved bit-for-bit so the golden capture is unchanged after
 // relocation.
 package validate
 
@@ -20,14 +20,13 @@ import (
 )
 
 // SummaryMaxLen caps the length of search-optimized summaries on every
-// embed-only-knowledge node creator path. Per the locked answer on
-// ticket dfd1f4e2a0777c6711e363f2ec3edefc — summaries should be a single
+// embed-only-knowledge node creator path. Summaries should be a single
 // concise line; 500 chars is the upper bound.
 const SummaryMaxLen = 500
 
 // MinStepDescriptionLen is the lower bound for step Description length.
-// 2 chars matches the ticket caecceee11feb1a699159b26dccb487d
-// "single-character or empty descriptions" wording — rejects "x" (1
+// 2 chars matches the "single-character or empty descriptions"
+// wording — rejects "x" (1
 // char) and "" while accepting any real two-character title. Keep this
 // value tight; the goal is stopping the actual offenders that escape
 // into the live graph as orphan placeholder steps, not enforcing prose
@@ -54,8 +53,8 @@ func Summary(toolName, fieldPath, summary string) error {
 
 // StepDescription enforces non-empty, non-trivial descriptions on
 // NodeStep creations. Single-character and all-whitespace descriptions
-// are the symptom of placeholder steps escaping into the graph (see
-// ticket caecceee11feb1a699159b26dccb487d fix #5). Apply at every
+// are the symptom of placeholder steps escaping into the graph.
+// Apply at every
 // step-creation entry point: handleMutateCreate when type=="step", and
 // the create_plan per-step nested-validation loop.
 func StepDescription(toolName, fieldPath, description string) error {

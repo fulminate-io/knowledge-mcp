@@ -139,6 +139,9 @@ func (d workerTestDeps) BackendResolver() BackendResolver      { return nil }
 func (d workerTestDeps) GraphCaller() GraphCaller              { return nil }
 func (d workerTestDeps) LocalGraphCaller() GraphCaller         { return nil }
 func (d workerTestDeps) RepoResolver() *RepoResolver           { return nil }
+func (d workerTestDeps) SegmentManager() SegmentSearcher       { return nil }
+func (d workerTestDeps) SegmentShipper() SegmentShipper        { return nil }
+func (d workerTestDeps) PipelineScanner() PipelineScanner      { return nil }
 
 // callWorker invokes InterceptWorker with the given JSON args and
 // returns the (handled, body, isError) tuple. Mirrors callAst's shape.
@@ -305,10 +308,10 @@ func TestInterceptWorker_StatusRuntimeNil(t *testing.T) {
 	assert.Contains(t, body, "dream runtime not available")
 }
 
-// TestInterceptWorker_UnknownOpHandledClientSide pins the post-BCN3
+// TestInterceptWorker_UnknownOpHandledClientSide pins the
 // behavior: every worker op is now intercepted client-side, so unknown
 // operations surface here rather than reaching the server (which has
-// no worker handler after BCN3). The error message lists every valid
+// no worker handler). The error message lists every valid
 // operation so a misspelled call is self-diagnosing.
 func TestInterceptWorker_UnknownOpHandledClientSide(t *testing.T) {
 	deps := workerTestDeps{runtime: &fakeRuntime{}, crud: &fakeCRUD{}}
@@ -317,7 +320,7 @@ func TestInterceptWorker_UnknownOpHandledClientSide(t *testing.T) {
 		Arguments: json.RawMessage(`{"operation":"banana"}`),
 	}
 	handled, res := InterceptWorker(deps, params)
-	require.True(t, handled, "unknown op must be handled client-side after BCN3")
+	require.True(t, handled, "unknown op must be handled client-side")
 	require.True(t, res.IsError)
 	require.NotEmpty(t, res.Content)
 	body := res.Content[0].Text

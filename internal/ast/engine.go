@@ -20,7 +20,7 @@
 //     every reserved-prefix identifier descendant by (start_byte, end_byte)
 //     so the walker can recognize placeholder positions during traversal.
 //
-// Tree-sitter Close discipline (practice/go finding 92df0f05): the parser
+// Tree-sitter Close discipline: the parser
 // is closed via defer; the parsed Tree is owned by the returned PatternTree
 // and released via PatternTree.Close. Failed wrapper attempts close their
 // trees inline.

@@ -26,7 +26,7 @@ int beta(int a, int b) { return a + b; }
 		"int $NAME(int $P) { return $E; }", target,
 		"int-arg function-decl pattern does not survive substitution")
 	if len(matches) < 1 {
-		t.Skipf("C smoke: 0 matches; wrapper iteration did not converge (finding 57ffaa5e)")
+		t.Skipf("C smoke: 0 matches; wrapper iteration did not converge")
 	}
 }
 
@@ -38,7 +38,7 @@ int beta(int a, int b) { return a + b; }
 		"int $NAME(int $P) { return $E; }", target,
 		"int-arg function-decl pattern does not survive substitution")
 	if len(matches) < 1 {
-		t.Skipf("C++ smoke: 0 matches; wrapper iteration did not converge (finding 57ffaa5e)")
+		t.Skipf("C++ smoke: 0 matches; wrapper iteration did not converge")
 	}
 }
 
@@ -52,7 +52,7 @@ func TestLongTail_CSharp_MethodDeclaration(t *testing.T) {
 		"void $NAME() { return; }", target,
 		"void method-decl pattern under class wrapper")
 	if len(matches) < 1 {
-		t.Skipf("C# smoke: 0 matches; wrapper iteration did not converge (finding 57ffaa5e)")
+		t.Skipf("C# smoke: 0 matches; wrapper iteration did not converge")
 	}
 }
 
@@ -71,7 +71,7 @@ end
 		"def $NAME do\n  $$$BODY\nend", target,
 		"def-do-end pattern under module")
 	if len(matches) < 1 {
-		t.Skipf("Elixir smoke: 0 matches; wrapper iteration did not converge (finding 57ffaa5e)")
+		t.Skipf("Elixir smoke: 0 matches; wrapper iteration did not converge")
 	}
 }
 
@@ -85,7 +85,7 @@ beta = 2
 		"$NAME = $VAL", target,
 		"top-level binding pattern")
 	if len(matches) < 1 {
-		t.Skipf("Elm smoke: 0 matches; wrapper iteration did not converge (finding 57ffaa5e)")
+		t.Skipf("Elm smoke: 0 matches; wrapper iteration did not converge")
 	}
 }
 
@@ -99,7 +99,7 @@ func TestLongTail_Groovy_MethodDef(t *testing.T) {
 		"def $NAME($$$ARGS) { $$$BODY }", target,
 		"def method pattern in class scope")
 	if len(matches) < 1 {
-		t.Skipf("Groovy smoke: 0 matches; wrapper iteration did not converge (finding 57ffaa5e)")
+		t.Skipf("Groovy smoke: 0 matches; wrapper iteration did not converge")
 	}
 }
 
@@ -111,7 +111,7 @@ fun beta(): Int { return 2 }
 		"fun $NAME(): Int { return $E }", target,
 		"fun pattern with int return type")
 	if len(matches) < 1 {
-		t.Skipf("Kotlin smoke: 0 matches; wrapper iteration did not converge (finding 57ffaa5e)")
+		t.Skipf("Kotlin smoke: 0 matches; wrapper iteration did not converge")
 	}
 }
 
@@ -128,7 +128,7 @@ end
 		"function $NAME($$$ARGS)\n  $$$BODY\nend", target,
 		"function decl pattern")
 	if len(matches) < 1 {
-		t.Skipf("Lua smoke: 0 matches; wrapper iteration did not converge (finding 57ffaa5e)")
+		t.Skipf("Lua smoke: 0 matches; wrapper iteration did not converge")
 	}
 }
 
@@ -140,7 +140,7 @@ let beta = 2
 		"let $NAME = $VAL", target,
 		"let-binding pattern")
 	if len(matches) < 1 {
-		t.Skipf("OCaml smoke: 0 matches; wrapper iteration did not converge (finding 57ffaa5e)")
+		t.Skipf("OCaml smoke: 0 matches; wrapper iteration did not converge")
 	}
 }
 
@@ -153,7 +153,7 @@ function beta() { return 2; }
 		"function $NAME() { return $E; }", target,
 		"function decl pattern under <?php tag")
 	if len(matches) < 1 {
-		t.Skipf("PHP smoke: 0 matches; wrapper iteration did not converge (finding 57ffaa5e)")
+		t.Skipf("PHP smoke: 0 matches; wrapper iteration did not converge")
 	}
 }
 
@@ -167,7 +167,7 @@ func TestLongTail_Scala_DefMethod(t *testing.T) {
 		"def $NAME(): Int = $BODY", target,
 		"def method pattern in object scope")
 	if len(matches) < 1 {
-		t.Skipf("Scala smoke: 0 matches; wrapper iteration did not converge (finding 57ffaa5e)")
+		t.Skipf("Scala smoke: 0 matches; wrapper iteration did not converge")
 	}
 }
 
@@ -179,6 +179,6 @@ func beta() { return }
 		"func $NAME() { return }", target,
 		"func decl pattern at top level")
 	if len(matches) < 1 {
-		t.Skipf("Swift smoke: 0 matches; wrapper iteration did not converge (finding 57ffaa5e)")
+		t.Skipf("Swift smoke: 0 matches; wrapper iteration did not converge")
 	}
 }

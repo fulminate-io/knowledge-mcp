@@ -12,7 +12,7 @@ import (
 )
 
 // WriteFormXObjectOwnFontsPDF emits a 1-page PDF that exercises the
-// Form-XObject-owns-its-Resources path (T4.6 ticket FUL-85). Layout:
+// Form-XObject-owns-its-Resources path. Layout:
 //
 //   - Page /Resources/Font:    F1   -> Helvetica       with /ToUnicode
 //     so the byte codes for the literal "page-text" decode cleanly

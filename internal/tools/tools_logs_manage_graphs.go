@@ -2,7 +2,7 @@
 
 // Package tools — client-side list_logs + discard_logs handlers.
 //
-// BCN11.3: handlers route through the GraphCaller. The server returns
+// Handlers route through the GraphCaller. The server returns
 // the raw GraphInfo list (list_logs) or the discarded-names list
 // (discard_logs); this client adds engine-live state from the local
 // logs.LookupEngine registry and renders the markdown / JSON table.

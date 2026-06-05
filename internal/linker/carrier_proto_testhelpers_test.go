@@ -8,7 +8,7 @@ import (
 
 // graphNamesToProto builds the typed GraphNames carrier from a list of graph
 // names, so the server-simulating fakes in this package populate the carrier
-// the real server now emits (FUL-276 migrated graph_names_json → repeated
+// the real server now emits (the migration from graph_names_json → repeated
 // GraphInfo). The test fakes only ever set Name; the remaining GraphInfo fields
 // stay zero, matching the modules-enumeration carrier the linker decode reads.
 func graphNamesToProto(names []string) []*knowledgev1.GraphInfo {

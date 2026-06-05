@@ -2,7 +2,7 @@
 
 // Package tools — wire-fetch helpers for log graph node bulk reads.
 //
-// BCN11.3 client architecture: the persistent log graph lives on the
+// Client architecture: the persistent log graph lives on the
 // server. Client handlers can't reach for store.Store() anymore — the
 // production stdio binary has no local DB initialized. Instead they
 // bulk-fetch the templates / streams / chunks they need via the
@@ -21,7 +21,7 @@
 //     returns hydrated nodes in one round-trip.
 //
 // Three RPC ceiling (one per node type) for the full bulk fetch. No
-// engine cache — every MCP call refetches per reviewer T2-B.
+// engine cache — every MCP call refetches.
 
 package tools
 
@@ -101,7 +101,7 @@ func fetchAllLogAuxNodes(
 //
 // This is an INTERNAL Match-all aggregation: it wants EVERY node of the type
 // for the in-client logState assembly, so the plan carries Limit:0 (no cap),
-// which the server now honors per the proto contract (FUL-302). It builds the
+// which the server now honors per the proto contract. It builds the
 // raw typed QueryPlan and calls Execute DIRECTLY — the sibling fetchAllLogEdges
 // pattern — rather than routing through engine.Compile/the JSON query tool. The
 // compile path applies the LLM-facing browse default-10 (applyBrowseLimitOffset),

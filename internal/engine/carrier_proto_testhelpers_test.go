@@ -9,7 +9,7 @@ import (
 // searchResultsToProtoForTest / traversalResultsToProtoForTest mirror the
 // server's searchResultsToProto / traversalResultsToProto so this package's fakes
 // seed the typed search_results / traversal_results carriers the real server now
-// emits. P2-T5 (FUL-295) deleted the node_json blob field: each carrier now holds
+// emits. P2-T5 deleted the node_json blob field: each carrier now holds
 // the nested *knowledgev1.Node DIRECTLY (the value-embed wire), so these helpers
 // take the client-side wrapper rows ([]SearchResult / []TraversalResult, whose
 // Node is already *knowledgev1.Node) and copy them into the typed proto carriers
@@ -33,7 +33,7 @@ func traversalResultsToProtoForTest(results []TraversalResult) []*knowledgev1.Tr
 // edgesToProtoForTest mirrors the server's edgesToProto
 // (cmd/knowledge-server/bootstrap/engine_carrier_convert.go) so this package's
 // fakes seed the typed ExecuteResponse.edges carrier the real server now emits
-// (FUL-276 migrated edges_json → repeated Edge). It is the encode twin of this
+// (the migration from edges_json → repeated Edge). It is the encode twin of this
 // package's EdgesFromProto decoder, taking the proto-native []knowledgev1.Edge
 // the tests build. LastValidated rides as int64 unix-nanos (zero time → 0).
 func edgesToProtoForTest(edges []knowledgev1.Edge) []*knowledgev1.Edge {

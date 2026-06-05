@@ -45,7 +45,7 @@ func runLongTailWalkerOrSkip(t *testing.T, cfg LangConfig, pattern, target, reas
 	t.Helper()
 	pt, err := compilePattern(context.Background(), mustParse(t, pattern), cfg)
 	if err != nil {
-		t.Skipf("%s smoke: compilePattern failed (%v); wrapper iteration did not converge — %s (finding 57ffaa5e)", cfg.Lang, err, reason)
+		t.Skipf("%s smoke: compilePattern failed (%v); wrapper iteration did not converge — %s", cfg.Lang, err, reason)
 	}
 	defer pt.Close()
 	return walkLongTail(t, cfg, pt, target)

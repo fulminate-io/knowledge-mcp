@@ -15,8 +15,8 @@ import (
 )
 
 // linearArchiveRetryGuidance is the locked single-line operator guidance
-// appended to delete-path partial-failure errors. See plan step c2cc917e
-// failure-mode (iv) — Linear's adapter treats re-archive of an
+// appended to delete-path partial-failure errors. Covers the
+// failure mode where Linear's adapter treats re-archive of an
 // already-archived issue as a no-op success per
 // cmd/knowledge/internal/backends/linear/backend_write_ticket.go:124-125
 // and …/backend_write_project.go:145-146. NO live probe at runtime; if
@@ -43,13 +43,13 @@ type mutateArgs struct {
 	Language    string            `json:"language,omitempty"`
 	LinkGraph   string            `json:"link_graph,omitempty"`
 
-	// Link fields — claimed by T-GTB3 Phase 6 for the intra-practice
+	// Link fields — claimed for the intra-practice
 	// cross-graph-link branch (mutate(link, graph:practice)).
 	From         string `json:"from,omitempty"`
 	To           string `json:"to,omitempty"`
 	Relationship string `json:"relationship,omitempty"`
 
-	// Edge-metadata fields — claimed by T-GTB6 D7 for the link_graph:linkage
+	// Edge-metadata fields — claimed for the link_graph:linkage
 	// branch (the client-owned cross-graph link carrying edge metadata onto the
 	// linkage EdgeSpec). The json tags match emitLink's canonical wire (linker/
 	// helpers.go) + linkWithMetaArgs (wire_persist.go). EdgeEvidence is DISTINCT
@@ -60,7 +60,7 @@ type mutateArgs struct {
 	EdgeEvidence  string  `json:"edge_evidence,omitempty"`
 	LastValidated string  `json:"last_validated,omitempty"`
 
-	// Extended fields claimed by FUL-246 Phase 3b — create=finding/
+	// Extended fields claimed for create=finding/
 	// research/rule + answer dispatch arms.
 	Evidence     string             `json:"evidence,omitempty"`
 	Source       string             `json:"source,omitempty"`
@@ -120,7 +120,7 @@ func InterceptMutate(deps ClientDeps, params kgtools.CallToolParams) (bool, kgto
 
 	ctx := context.Background()
 
-	// Cross-graph link: the universal composer (T-GTB5) is reachable for ANY
+	// Cross-graph link: the universal composer is reachable for ANY
 	// mutate(link), so a plain link whose FROM or TO is in a foreign graph (e.g.
 	// from=code-id to=knowledge-id, no graph/link_graph set) materializes the
 	// proxy client-side. handleClientCrossGraphLink is the single decision point:
@@ -137,7 +137,7 @@ func InterceptMutate(deps ClientDeps, params kgtools.CallToolParams) (bool, kgto
 		// Not claimed → fall through to the legacy server bare-link / proxy path.
 	}
 
-	// practice/transformers create/update/delete (T-GTB6 CLASS-A): with no
+	// practice/transformers create/update/delete: with no
 	// link_graph these are engine-reducible (Phase-1 narrowed compileMutate to
 	// link_graph-only), lowering to a Target-routed MutationPlan
 	// (Target.Graph==practice/transformers). Route through engine.Dispatch so a
@@ -170,7 +170,7 @@ func InterceptMutate(deps ClientDeps, params kgtools.CallToolParams) (bool, kgto
 	case "delete":
 		return handleInterceptMutateDelete(ctx, deps, a)
 	case "create":
-		// FUL-246 Phase 3b: claim create=finding/research/rule. Other
+		// Claim create=finding/research/rule. Other
 		// create types (criterion, knowledge nodes, etc.) fall through —
 		// InterceptAddCriterion fires earlier in the chain for criterion;
 		// generic create flows to the server.
@@ -184,7 +184,7 @@ func InterceptMutate(deps ClientDeps, params kgtools.CallToolParams) (bool, kgto
 		}
 		return false, kgtools.ToolResult{}
 	case "answer":
-		// FUL-246 Phase 3b: claim mutate(answer).
+		// Claim mutate(answer).
 		return true, handleClientMutateAnswer(ctx, deps, a)
 	default:
 		return false, kgtools.ToolResult{}
@@ -362,7 +362,7 @@ func handleInterceptMutateDelete(
 		return true, errorResult(fmt.Sprintf("mutate(delete): local delete failed: %v", err))
 	}
 	return true, textResult(fmt.Sprintf(
-		"mutate(delete): archived %d node(s) on backend + tombstoned %d node(s) locally",
+		"mutate(delete): archived %d node(s) in the external tracker + tombstoned %d node(s) in the knowledge graph",
 		len(archived), len(ids),
 	))
 }

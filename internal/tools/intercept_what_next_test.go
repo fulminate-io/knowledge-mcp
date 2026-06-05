@@ -76,7 +76,7 @@ func TestInterceptWhatNext_JSONFormat(t *testing.T) {
 }
 
 // fakeWhatNextCaller answers the what_next type-browse reads over the Execute
-// carrier seam (T-GTB6) with a fixed listNodes slice via the nodes_json carrier
+// carrier seam with a fixed listNodes slice via the nodes_json carrier
 // (empty by default → 0 actionable candidates).
 type fakeWhatNextCaller struct {
 	listNodes []knowledgev1.Node

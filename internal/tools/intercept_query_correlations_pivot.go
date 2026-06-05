@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/graphsel"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 
@@ -27,7 +28,7 @@ import (
 // ONE node-set fetch (Match empty, Limit 0, RETURN_MODE_NODES) and ONE
 // RETURN_MODE_EDGES over the collected ids[] (Forward=true → outgoing edges,
 // matching the server's per-node OutgoingEdges loop) — never a per-node edge
-// fetch. Cite finding 1eef9499 item 1 (RETURN_MODE_EDGES ids[] node-set form).
+// fetch (RETURN_MODE_EDGES ids[] node-set form).
 
 // InterceptQueryCorrelationsPivot claims query(mode in {correlations,pivot}) for
 // non-logs graphs.
@@ -53,7 +54,7 @@ func InterceptQueryCorrelationsPivot(deps ClientDeps, params kgtools.CallToolPar
 	if a.Mode == "correlations" {
 		return true, composeCorrelations(ctx, gc.Execute, a)
 	}
-	return true, composePivot(ctx, gc.Execute, a)
+	return true, composePivot(ctx, deps, a)
 }
 
 // composeCorrelations issues the bounded two-Execute recipe and renders.
@@ -184,14 +185,14 @@ func correlationEndpoint(id string, nameByID map[string]*knowledgev1.Node) (stri
 
 // composePivot validates rows/cols, fetches the candidate node set, builds the
 // matrix, and renders. Port of handleGenericPivot.
-func composePivot(ctx context.Context, exec engine.ExecuteFn, a queryArgs) kgtools.ToolResult {
+func composePivot(ctx context.Context, deps ClientDeps, a queryArgs) kgtools.ToolResult {
 	if a.Rows == "" || a.Cols == "" {
 		return errorResult("pivot requires rows and cols when graph is not logs")
 	}
 	if a.Rows == a.Cols {
 		return errorResult(fmt.Sprintf("rows and cols must differ (both were %q)", a.Rows))
 	}
-	nodes, err := pivotFetchNodesClient(ctx, exec, a)
+	nodes, err := pivotFetchNodesClient(ctx, deps, a)
 	if err != nil {
 		return errorResult(fmt.Sprintf("pivot fetch failed: %v", err))
 	}
@@ -200,13 +201,16 @@ func composePivot(ctx context.Context, exec engine.ExecuteFn, a queryArgs) kgtoo
 }
 
 // pivotFetchNodesClient pulls the candidate node set: by type (Match), by text
-// (QSearch), or every node (Match empty) — all Limit 0 (no cap; a truncated
-// pivot would mislead). Port of pivotFetchNodes.
-func pivotFetchNodesClient(ctx context.Context, exec engine.ExecuteFn, a queryArgs) ([]*knowledgev1.Node, error) {
+// (the CLIENT segment engine — mgr.Search + bulk hydrate, NOT a server
+// RETURN_MODE_SEARCH), or every node (Match empty) — all Limit 0 (no cap; a
+// truncated pivot would mislead). BuildPivotMatrix consumes nodes, not ranked
+// scores, so the seed search just needs the candidate node set.
+func pivotFetchNodesClient(ctx context.Context, deps ClientDeps, a queryArgs) ([]*knowledgev1.Node, error) {
+	gc := deps.GraphCaller()
 	target := domainTarget(a)
 	switch {
 	case a.Type != "":
-		resp, err := exec(ctx, &knowledgev1.ExecuteRequest{
+		resp, err := gc.Execute(ctx, &knowledgev1.ExecuteRequest{
 			Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
 				Selection:         &knowledgev1.Selection{NodeType: a.Type},
 				IncludeTombstones: a.IncludeTombstones,
@@ -218,28 +222,9 @@ func pivotFetchNodesClient(ctx context.Context, exec engine.ExecuteFn, a queryAr
 		}
 		return engine.DecodeNodes(resp)
 	case a.Text != "":
-		resp, err := exec(ctx, &knowledgev1.ExecuteRequest{
-			Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
-				Queries:           []string{a.Text},
-				ReturnMode:        knowledgev1.ReturnMode_RETURN_MODE_SEARCH,
-				IncludeTombstones: a.IncludeTombstones,
-			}},
-			Target: target,
-		})
-		if err != nil {
-			return nil, err
-		}
-		results, derr := engine.DecodeSearch(resp)
-		if derr != nil {
-			return nil, derr
-		}
-		out := make([]*knowledgev1.Node, 0, len(results))
-		for _, r := range results {
-			out = append(out, r.Node)
-		}
-		return out, nil
+		return pivotSeedSearchClient(ctx, deps, a)
 	default:
-		resp, err := exec(ctx, &knowledgev1.ExecuteRequest{
+		resp, err := gc.Execute(ctx, &knowledgev1.ExecuteRequest{
 			Plan:   &knowledgev1.ExecuteRequest_Query{Query: nodeSetPlan(a.IncludeTombstones)},
 			Target: target,
 		})
@@ -247,6 +232,77 @@ func pivotFetchNodesClient(ctx context.Context, exec engine.ExecuteFn, a queryAr
 			return nil, err
 		}
 		return engine.DecodeNodes(resp)
+	}
+}
+
+// pivotSeedSearchClient gathers the pivot text-seed candidate node set from the
+// CLIENT segment engine: embed the seed query client-side, mgr.Search over the
+// target graph's segments, then ONE bulk RETURN_MODE_NODES hydrate. No server
+// RETURN_MODE_SEARCH. An un-collected graph (no segments) yields no candidates.
+func pivotSeedSearchClient(ctx context.Context, deps ClientDeps, a queryArgs) ([]*knowledgev1.Node, error) {
+	mgr := deps.SegmentManager()
+	if mgr == nil {
+		return nil, nil
+	}
+	gt, name := pivotEngineKey(a)
+	var queryVec []byte
+	if emb := deps.Embedder(); emb != nil {
+		if vec, err := emb.EmbedBinary(ctx, a.Text); err == nil && len(vec) > 0 {
+			queryVec = vec
+		}
+	}
+	hits, err := mgr.Search(ctx, gt, name, a.Text, queryVec, knowledgeSearchDefaultLimit)
+	if err != nil {
+		return nil, err
+	}
+	results, err := hydrateEngineHits(ctx, deps.GraphCaller(), pivotHydrateSelector(a), hits)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]*knowledgev1.Node, 0, len(results))
+	for _, r := range results {
+		out = append(out, r.Node)
+	}
+	return out, nil
+}
+
+// pivotEngineKey resolves the (graph type, instance name) the segment engine keys
+// the pivot seed search on: knowledge→default, code→repo, cloud/cicd→account,
+// practice→language, everything else→name.
+func pivotEngineKey(a queryArgs) (kgtypes.GraphType, string) {
+	gt := kgtypes.GraphType(a.Graph)
+	if a.Graph == "" {
+		gt = kgtypes.GraphKnowledge
+	}
+	switch graphsel.InstanceField(gt) {
+	case graphsel.FieldRepo:
+		return gt, a.Repo
+	case graphsel.FieldAccount:
+		return gt, a.Account
+	default:
+		if gt == kgtypes.GraphKnowledge {
+			return gt, knowledgeDefaultName
+		}
+		if a.Language != "" {
+			return gt, a.Language
+		}
+		return gt, a.Name
+	}
+}
+
+// pivotHydrateSelector builds the hydrate routing envelope for the pivot seed
+// search, mirroring pivotEngineKey's per-graph instance key.
+func pivotHydrateSelector(a queryArgs) hydrateSelector {
+	graph := a.Graph
+	if graph == "" {
+		graph = string(kgtypes.GraphKnowledge)
+	}
+	return hydrateSelector{
+		Graph:    graph,
+		Repo:     a.Repo,
+		Account:  a.Account,
+		Name:     a.Name,
+		Language: a.Language,
 	}
 }
 

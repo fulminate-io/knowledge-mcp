@@ -21,7 +21,7 @@ import (
 // compressed payloads and streams are label buckets, neither of which
 // is useful as a plain search hit.
 //
-// BCN11.2: client-side handler. The search runs against the server via
+// Client-side handler. The search runs against the server via
 // gc.Call("query", graph:"logs", text:..., name:..., format:"json").
 // Server-side searchLogs is gone — the dispatch returns
 // errLogsHandledClientSide so older clients see the move.

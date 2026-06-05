@@ -30,7 +30,7 @@ const helpOverview = `# Knowledge Graph — Tool Reference (first-class tools + 
 | traverse | Edge-first graph traversal with direction + edge_types + graph       |
 | mutate   | Create, update, link knowledge nodes                                 |
 | delete   | Remove nodes by ID or prune by age                                   |
-| manage   | Server ops: status, rebuild_hnsw, clear_llm_failures, branches       |
+| manage   | Server ops: status, clear_llm_failures, branches, prune, rebuild_cache, rebuild_segments |
 | ast      | Structural code search: tree-sitter pattern DSL, 31 languages        |
 
 ## Sync tool (requires sync license scope)
@@ -266,16 +266,6 @@ Design: query is a generic primitive. It dispatches on params: 'id' → direct l
   query({ "mode": "tensions" })      — conflicting thoughts
   query({ "mode": "blind_spots" })   — weakly-supported areas
   query({ "mode": "summary" })       — concise thought summary
-
-### Graph-reach search (PPR reranking)
-  query({ "mode": "graph_reach", "text": "authentication token" })
-  query({ "mode": "graph_reach", "text": "cache eviction", "limit": 20 })
-
-  Uses Personalized PageRank (Forward Push, alpha=0.5) to propagate relevance
-  from the top BM25+HNSW seeds through the graph topology. Surfaces hub nodes
-  that are highly connected to the initial results — especially useful for
-  finding central concepts that link many related nodes. Matches HippoRAG
-  (NeurIPS 2024).
 
 ### Pre-embedded query vector (client-side LLM pipeline)
   query({ "text": "authentication", "query_vector": "<base64>" })

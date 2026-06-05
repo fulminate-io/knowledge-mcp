@@ -20,7 +20,7 @@ func TestCompileQuery_PlainIDByID(t *testing.T) {
 	assert.Empty(t, q.GetIds())
 }
 
-// TestCompileQuery_IDIncludeEdgesNoCarrier pins T-GTB2 site (d): the
+// TestCompileQuery_IDIncludeEdgesNoCarrier pins the contract: the
 // include_edges / include_cross_links absorption flags are GONE from the proto,
 // so compileQuery lowers a query(id, include_edges) to a PLAIN by-id plan with
 // no absorption carrier. The absorption is composed in dispatchQueryByID BEFORE
@@ -50,22 +50,23 @@ func TestCompileQuery_IDsBulkOnePlan(t *testing.T) {
 	assert.Empty(t, q.GetById(), "bulk uses Ids, not ById")
 }
 
-func TestCompileQuery_GraphReachPPR(t *testing.T) {
-	req, ok := compileQuery(json.RawMessage(`{"mode":"graph_reach","text":"hub","limit":5}`))
-	require.True(t, ok)
-	q := req.GetQuery()
-	assert.Equal(t, []string{"hub"}, q.GetQueries())
-	assert.Equal(t, knowledgev1.SearchMode_SEARCH_MODE_PPR, q.GetSearchMode())
-	assert.Equal(t, knowledgev1.ReturnMode_RETURN_MODE_SEARCH, q.GetReturnMode())
-	assert.Equal(t, int32(5), q.GetLimit())
+// TestCompileQuery_GraphReachRetired asserts the client PPR
+// (graph_reach) mode was retired: it is no longer a reducible query mode, so compileQuery
+// returns ok=false (the mode surfaces the unknown-mode deny). The server
+// executeSearchPPR body stays present but unreached.
+func TestCompileQuery_GraphReachRetired(t *testing.T) {
+	_, ok := compileQuery(json.RawMessage(`{"mode":"graph_reach","text":"hub","limit":5}`))
+	require.False(t, ok, "graph_reach is no longer client-reducible")
 }
 
-func TestCompileQuery_RecentTemporal(t *testing.T) {
-	req, ok := compileQuery(json.RawMessage(`{"mode":"recent","text":"fresh"}`))
-	require.True(t, ok)
-	q := req.GetQuery()
-	assert.Equal(t, knowledgev1.SearchMode_SEARCH_MODE_TEMPORAL, q.GetSearchMode())
-	assert.InEpsilon(t, recentHalfLifeDays, q.GetHalfLife(), 0.0001, "half-life 30 reproduces legacy Temporal(30)")
+// TestCompileQuery_RecentRetired asserts mode=recent was moved off the
+// server: it is no longer a reducible query mode, so compileQuery returns
+// ok=false. mode=recent is served client-side (InterceptQueryKnowledgeSearch →
+// composeKnowledgeSearch + an UpdatedAt half-life rerank); the server temporal
+// body stays present but unreached (Ticket B deletes it).
+func TestCompileQuery_RecentRetired(t *testing.T) {
+	_, ok := compileQuery(json.RawMessage(`{"mode":"recent","text":"fresh"}`))
+	require.False(t, ok, "mode=recent is no longer client-reducible (served client-side)")
 }
 
 func TestCompileQuery_TextMode(t *testing.T) {
@@ -155,7 +156,7 @@ func TestCompileQuery_DenyCases(t *testing.T) {
 	}
 }
 
-// TestCompileQuery_BrowseDefaultsLimit is the FUL-302 Option-A regression
+// TestCompileQuery_BrowseDefaultsLimit is the Option-A regression
 // guard. After the server-side default-injection was removed (planToQ now
 // honors limit==0 = no cap so internal Match-all helpers fetch everything), the
 // LLM-facing browse default-10 MUST be applied CLIENT-SIDE at compile time.
@@ -243,7 +244,7 @@ func TestApplyBrowseLimitOffset(t *testing.T) {
 }
 
 // TestCompileQuery_ModulesMode asserts query(mode:modules) compiles to a
-// RETURN_MODE_GRAPH_NAMES plan (T-GTB1e list-graphs catalog enumeration): no
+// RETURN_MODE_GRAPH_NAMES plan (list-graphs catalog enumeration): no
 // Selection, no queries — the target GraphSelector carries the GraphType.
 func TestCompileQuery_ModulesMode(t *testing.T) {
 	req, ok := compileQuery(json.RawMessage(`{"mode":"modules","graph":"practice","language":"go"}`))

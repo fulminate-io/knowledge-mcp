@@ -101,7 +101,7 @@ func (f *fakeGraphCaller) createBatchEdgeToIDs() []string {
 // TestGitLabPostPopulate_RoutesByAccount drives the real gitlabPostPopulate
 // through the wire fake: a cloud IAM role whose content references the GitLab
 // OIDC issuer must produce an EdgeFederates edge written into the cicd GitLab
-// graph by Target.Account == "gitlab-<group>" (NOT Target.Name) — the FUL-288
+// graph by Target.Account == "gitlab-<group>" (NOT Target.Name) — the
 // selector-field invariant for the cicd family.
 func TestGitLabPostPopulate_RoutesByAccount(t *testing.T) {
 	t.Setenv("GITLAB_URL", "")

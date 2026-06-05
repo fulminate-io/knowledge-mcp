@@ -18,7 +18,7 @@ import (
 // analyzer with a silent blind spot for that resource type.
 //
 // The const is sourced from either pkg/kgtypes (the shared leaf package that
-// owns the EdgeType vocabulary, decision FUL-292) or pkg/store (re-export
+// owns the EdgeType vocabulary) or pkg/store (re-export
 // alias); the matcher accepts either prefix.
 //
 // The test is deliberately string-based (grep on disk) rather than

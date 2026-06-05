@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"time"
 
 	"github.com/cloudwego/eino/schema"
 
@@ -123,15 +124,16 @@ func (s *Service) Generate(ctx context.Context, messages []*schema.Message, opts
 		return nil, &llm.LLMError{Reason: "translate_request", Cause: err}
 	}
 
-	body, status, err := s.doPost(ctx, baseURL+messagesPath, apiKey, reqBody)
+	body, status, retryAfter, err := s.doPost(ctx, baseURL+messagesPath, apiKey, reqBody)
 	if err != nil {
 		return nil, &llm.LLMError{Transient: false, Reason: "network", Cause: err}
 	}
 	if status < 200 || status >= 300 {
 		return nil, &llm.LLMError{
-			Transient: llm.HTTPStatusToTransient(status),
-			Reason:    fmt.Sprintf("http_%d", status),
-			Cause:     fmt.Errorf("anthropic: %s", string(body)),
+			Transient:  llm.HTTPStatusToTransient(status),
+			Reason:     fmt.Sprintf("http_%d", status),
+			RetryAfter: retryAfter,
+			Cause:      fmt.Errorf("anthropic: %s", string(body)),
 		}
 	}
 
@@ -159,10 +161,10 @@ func (s *Service) pickModel(options *llm.RequestOptions) llm.Model {
 // upstream error message is often the only signal the operator has
 // (mirrors store/summarize_openai_agent.go:doHTTPPost). See
 // feedback_no_truncation_for_llm.
-func (s *Service) doPost(ctx context.Context, url, apiKey string, payload []byte) ([]byte, int, error) {
+func (s *Service) doPost(ctx context.Context, url, apiKey string, payload []byte) ([]byte, int, time.Duration, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
-		return nil, 0, fmt.Errorf("create request: %w", err)
+		return nil, 0, 0, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("x-api-key", apiKey)
@@ -170,13 +172,16 @@ func (s *Service) doPost(ctx context.Context, url, apiKey string, payload []byte
 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
-		return nil, 0, fmt.Errorf("http: %w", err)
+		return nil, 0, 0, fmt.Errorf("http: %w", err)
 	}
 	defer resp.Body.Close()
 
+	// Retry-After (parsed unconditionally; only non-2xx callers consult it)
+	// lets a 429/503 caller honor the server's stated delay.
+	retryAfter := llm.ParseRetryAfter(resp.Header)
 	body, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, resp.StatusCode, fmt.Errorf("read response: %w", err)
+		return nil, resp.StatusCode, retryAfter, fmt.Errorf("read response: %w", err)
 	}
-	return body, resp.StatusCode, nil
+	return body, resp.StatusCode, retryAfter, nil
 }

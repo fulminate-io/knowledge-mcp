@@ -7,8 +7,7 @@ import (
 	internalpdf "github.com/fulminate-io/knowledge-mcp/internal/collector/pdf/internal/pdfcpu"
 )
 
-// dodTolerance is the ticket-DoD tolerance per ticket
-// 6ad90fa5d46f3b5f7e2a48ca2a9838b8: width assertions must hold within
+// dodTolerance is the ticket-DoD tolerance: width assertions must hold within
 // fontSize × 5e-4 = 0.5 per-mille. Computed for the 12pt fixtures used
 // throughout golden_test.go. Real /Widths fire via the Phase 10
 // 4-rung ladder (rung 1 for Standard 14 fonts that emit /Widths via
@@ -64,7 +63,7 @@ func TestGolden_OnePage_HelloT1(t *testing.T) {
 		t.Errorf("glyphs len: got %d, want 9 (Hello, T1)", len(r.Glyphs))
 	}
 	// Tolerance: fontSize * 5e-4 = 0.006pt at 12pt — ticket-DoD
-	// ±0.5 per-mille per ticket 6ad90fa5d46f3b5f7e2a48ca2a9838b8.
+	// ±0.5 per-mille.
 	// Real /Widths fire via the Phase 10 ladder (rung 1 for Standard
 	// 14 with /Widths emitted by fixturelib per T2-3).
 	//
@@ -127,8 +126,7 @@ func TestGolden_TJKerning(t *testing.T) {
 	if len(r.Glyphs) != 10 {
 		t.Errorf("glyphs: got %d, want 10", len(r.Glyphs))
 	}
-	// Tolerance: ticket-DoD ±0.5 per-mille per ticket
-	// 6ad90fa5d46f3b5f7e2a48ca2a9838b8. Real Helvetica AFM widths
+	// Tolerance: ticket-DoD ±0.5 per-mille. Real Helvetica AFM widths
 	// land via the Phase 10 ladder (rung 1 — /Widths emitted by
 	// fixturelib per T2-3).
 	//
@@ -175,7 +173,7 @@ func TestGolden_TfChanges(t *testing.T) {
 
 // TestGolden_MarkedContent pins the BDC/EMC fixture: 2 TextRuns, the
 // first carrying MCID=5 (inside the BDC region), the second carrying
-// MCID=0 (untagged). Verifies criterion a568144b6f86d16cf611e3adfafeb21d.
+// MCID=0 (untagged).
 func TestGolden_MarkedContent(t *testing.T) {
 	t.Parallel()
 	page := loadFixture(t, "marked_content.pdf")

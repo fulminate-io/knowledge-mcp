@@ -22,7 +22,7 @@ import (
 // errors without a breaking call-site change.
 //
 // The search-result renderers + JSON hydrator were relocated to the neutral
-// engine package (finding 3bdc9695) so the Phase-4 dispatcher can render
+// engine package so the Phase-4 dispatcher can render
 // without an engine→tools cycle; this function imports them from there.
 func applyClientRerank(ctx context.Context, resp kgtools.ToolResult, saved savedState, reranker rerank.Reranker) kgtools.ToolResult {
 	if !saved.clientSideActive || reranker == nil || resp.IsError {

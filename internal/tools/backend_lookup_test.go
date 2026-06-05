@@ -145,7 +145,7 @@ func (f *fakeGraphCaller) Call(_ context.Context, tool string, args json.RawMess
 	return f.mutateResult, f.mutateError
 }
 
-// Execute satisfies render.Executor (T-GTB3 Phase 6): render.FetchNode /
+// Execute satisfies render.Executor: render.FetchNode /
 // IterEdges now ride Execute. Records a "query" call (preserving the call-shape
 // assertions) and answers a ByID from queryResponses by re-decoding the seeded
 // node body into a nodes_json carrier; RETURN_MODE_EDGES returns no edges.

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package crossgraph is the SINGLE owner of the client-side cross-graph
-// proxy-materialization composer (T-GTB6 D7). Both package tools'
+// proxy-materialization composer. Both package tools'
 // handleClientCrossGraphLink AND package linker's emitLink call
 // crossgraph.ResolveAndLink — there is exactly ONE proxy-materialization
 // implementation across the whole client tree (the single-owner invariant).

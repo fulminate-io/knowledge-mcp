@@ -186,7 +186,7 @@ func emitPageRespectingCap(
 // lokiPageResult carries both the post-filter slice the caller wants to emit
 // AND the raw-page metadata (count + oldest timestamp) the caller needs to
 // terminate / narrow correctly. Splitting them out is the whole point of the
-// fix for finding dd2b4dce.
+// pagination fix.
 type lokiPageResult struct {
 	entries        []logwire.LogEntry
 	rawCount       int

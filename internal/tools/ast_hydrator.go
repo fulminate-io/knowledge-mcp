@@ -19,7 +19,7 @@ import (
 // extracts unique file paths from the raw match set and feeds them in via the
 // files arg.
 //
-// The gc field is the narrow Execute-only GraphCaller interface (post-FUL-323)
+// The gc field is the narrow Execute-only GraphCaller interface
 // so the hydrator routes per-call to local or cloud via the same Router every
 // other tool consumes. Narrowing from *graphclient.GraphClient also prevents
 // callers from re-introducing the concrete-type dependency.

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"strings"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/config"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
@@ -18,7 +19,7 @@ import (
 //
 // Three responsibilities, layered:
 //
-//  1. graph=logs short-circuit (BCN11.2). Log graph search runs entirely
+//  1. graph=logs short-circuit. Log graph search runs entirely
 //     client-side: searchLogs (tools_logs_search.go) issues
 //     gc.Call("query", graph:"logs", text:..., name:..., format:"json")
 //     and renders templates locally. The server-side search.go dispatch
@@ -29,9 +30,9 @@ import (
 //     non-nil and the caller did not already supply query_vector, the
 //     query text is embedded locally and the bytes are forwarded via
 //     the query_vector wire field. The server's compositor short-circuits
-//     its own embed call, so post-BCN5 servers (no Voyage key) still
+//     its own embed call, so servers without a Voyage key still
 //     return vector-quality results.
-//  3. Client-side rerank (post-BCN6 R2). When [credentials] voyage_api_key
+//  3. Client-side rerank. When [credentials] voyage_api_key
 //     is configured this interceptor widens limit + coerces format=json
 //     on the wire, calls the server, hydrates the JSON response, invokes
 //     the moved cmd/knowledge/internal/rerank package's Voyage reranker
@@ -44,7 +45,7 @@ func InterceptSearch(deps ClientDeps, params kgtools.CallToolParams) (bool, kgto
 		return false, kgtools.ToolResult{}
 	}
 	ctx := context.Background()
-	// graph=logs short-circuit (BCN11.2). Decoded here so the rewrite/
+	// graph=logs short-circuit. Decoded here so the rewrite/
 	// embed/rerank pipeline below never sees a log-graph payload it
 	// wasn't designed for.
 	var sniff searchArgs
@@ -52,13 +53,16 @@ func InterceptSearch(deps ClientDeps, params kgtools.CallToolParams) (bool, kgto
 		h := &Handler{Deps: deps}
 		return true, h.searchLogs(ctx, sniff)
 	}
-	// graph=code claim (T-GTB6 CLASS-A). Code search runs entirely client-side
+	// graph=code claim. Code search runs entirely client-side
 	// via the SAME composeCodeSearch composer InterceptQueryCodeSearch uses; the
 	// engine search-code path is denied (compileSearch isCodeGraph), so this is
-	// the only claim for the code arm. Fires BEFORE the embed/rewrite/rerank
-	// branches (those target the knowledge vector index, which code search does
-	// not use). The Query→Text mapping + mergeCodeQueries mirror
-	// InterceptQueryCodeSearch.
+	// the only claim for the code arm. It owns its OWN query embedding: interceptSearchCode
+	// auto-embeds the query set client-side (maybeEmbedCodeQueries) and threads the
+	// per-query vectors into each code-search QueryPlan's QueryVecs, so it does NOT
+	// fall through to the generic maybeEmbedQuery/rewrite/rerank branches below
+	// (those target the knowledge vector index, not the code graph). A caller-supplied
+	// query_vector on a graph=code search is honored too (broadcast to queries[0]).
+	// The Query→Text mapping + mergeCodeQueries mirror InterceptQueryCodeSearch.
 	if sniff.Graph == "code" {
 		gc := deps.GraphCaller()
 		if gc == nil {
@@ -68,6 +72,24 @@ func InterceptSearch(deps ClientDeps, params kgtools.CallToolParams) (bool, kgto
 			return true, res
 		}
 	}
+	// For completeness: the SEARCH tool is a SEPARATE client
+	// compile path from the query tool. engine.compileSearch is reducible for
+	// practice/cloud/cicd/linkage/web/pdf and would dispatch RETURN_MODE_SEARCH to
+	// the server. Claim each of those reducible graphs here — practice/cloud/cicd
+	// served by the client engine, linkage/web/pdf ranked search retired — so the
+	// SEARCH tool emits no RETURN_MODE_SEARCH for ANY reducible graph. Only the
+	// knowledge/default arm (and graph=logs/code above) flows past this point.
+	if handled, res := interceptSearchReducibleGraph(ctx, deps, sniff.Graph, params.Arguments); handled {
+		return true, res
+	}
+	// Fold a `queries` array into the single `query` for the non-code arms (the
+	// code arm above folds its own via mergeCodeQueries). The knowledge client
+	// engine + the server search dispatch read only `query`; a `queries`-only
+	// payload would otherwise embed + search the empty string. Multiple queries
+	// join into one text query (BM25 ORs the terms; the vector embeds the
+	// combined text) — the code arm is the only one that fans out per-query.
+	params.Arguments = normalizeQueriesToQuery(params.Arguments)
+
 	voyageKey := config.VoyageAPIKey()
 	hasReranker := voyageKey != ""
 	// Honor an explicit rerank:false — the caller opts out of the
@@ -102,7 +124,14 @@ func InterceptSearch(deps ClientDeps, params kgtools.CallToolParams) (bool, kgto
 	embedded, didEmbed := maybeEmbedQuery(ctx, deps.Embedder(), args)
 	slog.Debug("rerank-trace: post-embed",
 		"did_embed", didEmbed, "embedder_nil", deps.Embedder() == nil)
-	if !hasRewrite && !didEmbed {
+	// The knowledge/default arm is CLAIMED by the client engine
+	// UNCONDITIONALLY (the segment Manager is always wired in the real client) —
+	// even with no rewrite and no client embed (BM25-only via RRF-over-one-list).
+	// Only fall through to the bare server search when this is NOT the
+	// knowledge/default arm. Other graphs keep the pre-existing fall-through
+	// contract (the SEARCH-tool practice/cloud/cicd claims are added separately).
+	claimKnowledge := isKnowledgeDefaultGraph(sniff.Graph)
+	if !hasRewrite && !didEmbed && !claimKnowledge {
 		slog.Debug("rerank-trace: fall-through to bare search (no rewrite, no embed)")
 		return false, kgtools.ToolResult{}
 	}
@@ -115,7 +144,7 @@ func InterceptSearch(deps ClientDeps, params kgtools.CallToolParams) (bool, kgto
 	// Route the tail through the compile-or-DENY dispatcher: a reducible search
 	// — the Router surfaces ErrNoBackend on a missing backend, which
 	// renderEngineError translates into an actionable install-or-login message,
-	// so the pre-flight Healthy() probe (always-local pre-FUL-323) is unnecessary.
+	// so the pre-flight Healthy() probe (always-local in the prior design) is unnecessary.
 	// compiles to Engine.Execute; an unrecognized shape is denied legibly (there is
 	// no wire fallback). The per-graph search intercepts (code /
 	// cloud / cicd / practice) claim the specialized shapes upstream, so only the
@@ -123,9 +152,9 @@ func InterceptSearch(deps ClientDeps, params kgtools.CallToolParams) (bool, kgto
 	// above are preserved verbatim; applyClientRerank below still hydrates the json
 	// envelope (the engine search render in json mode emits the same
 	// SearchJSONResponse shape via renderJSON).
-	resp, err := engine.Dispatch(ctx, gc.Execute, "search", args)
-	if err != nil {
-		return true, errorResult("search call failed: " + err.Error())
+	resp, derr := runKnowledgeOrServerSearch(ctx, deps, gc, sniff.Graph, args)
+	if derr != nil {
+		return true, errorResult("search call failed: " + derr.Error())
 	}
 	if !hasRewrite || !hasReranker {
 		slog.Debug("rerank-trace: skipping rerank stage",
@@ -136,6 +165,39 @@ func InterceptSearch(deps ClientDeps, params kgtools.CallToolParams) (bool, kgto
 		"pool_size", widePoolSize, "top_k", widePoolTopK)
 	reranker := rerank.NewVoyage(voyageKey, widePoolSize, widePoolTopK)
 	return true, applyClientRerank(ctx, resp, saved, reranker)
+}
+
+// normalizeQueriesToQuery folds a `queries` array into the single `query` field
+// when `query` is empty, preserving every other arg. The non-code search arms
+// (the knowledge client engine + the server dispatch) read only `query`, so a
+// `queries`-only payload would otherwise embed + search the empty string.
+// Multiple queries join with spaces into one text query. Returns raw unchanged
+// when there's nothing to fold or on any decode error (fail-open).
+func normalizeQueriesToQuery(raw json.RawMessage) json.RawMessage {
+	var probe struct {
+		Query   string   `json:"query"`
+		Queries []string `json:"queries"`
+	}
+	if err := json.Unmarshal(raw, &probe); err != nil {
+		return raw
+	}
+	if probe.Query != "" || len(probe.Queries) == 0 {
+		return raw
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return raw
+	}
+	joined, err := json.Marshal(strings.Join(probe.Queries, " "))
+	if err != nil {
+		return raw
+	}
+	m["query"] = joined
+	out, err := json.Marshal(m)
+	if err != nil {
+		return raw
+	}
+	return out
 }
 
 // interceptSearchCode claims search(graph:code) and routes it through the
@@ -161,7 +223,65 @@ func interceptSearchCode(ctx context.Context, deps ClientDeps, exec engine.Execu
 	if len(queries) == 0 {
 		return false, kgtools.ToolResult{} // no query → fall through.
 	}
-	return true, composeCodeSearch(ctx, deps, exec, a, queries)
+	queryVecs := buildCodeQueryVecs(maybeEmbedCodeQueries(ctx, codeEmbedder(deps), queries), a.QueryVector)
+	return true, composeCodeSearch(ctx, deps, exec, a, queries, queryVecs)
+}
+
+// searchReducibleArgs is the slice of the search payload the completeness arms
+// read: the graph instance keys (language/account) + the query text. Mirrors the
+// engine.searchArgs fields compileSearch consumes for these graphs.
+type searchReducibleArgs struct {
+	Query    string   `json:"query"`
+	Queries  []string `json:"queries"`
+	Language string   `json:"language"`
+	Account  string   `json:"account"`
+}
+
+// searchReducibleQueryText picks the search text from the query/queries fields.
+func searchReducibleQueryText(a searchReducibleArgs) string {
+	if a.Query != "" {
+		return a.Query
+	}
+	if len(a.Queries) > 0 {
+		return strings.Join(a.Queries, " ")
+	}
+	return ""
+}
+
+// interceptSearchReducibleGraph claims the SEARCH-tool arms for the reducible
+// graphs OTHER than knowledge/code/logs: practice/cloud/cicd are served by the
+// CLIENT engine; linkage/web/pdf ranked search is RETIRED. Returns (false,_) for
+// any other graph (knowledge/default flows past to the embed/rerank tail). NO
+// server RETURN_MODE_SEARCH is emitted for any claimed graph.
+func interceptSearchReducibleGraph(ctx context.Context, deps ClientDeps, graph string, raw json.RawMessage) (bool, kgtools.ToolResult) {
+	switch graph {
+	case "practice", "cloud", "cicd", "linkage", "web", "pdf":
+	default:
+		return false, kgtools.ToolResult{}
+	}
+
+	var a searchReducibleArgs
+	if err := json.Unmarshal(raw, &a); err != nil {
+		return true, errorResult(graph + " search: decode args: " + err.Error())
+	}
+	query := searchReducibleQueryText(a)
+
+	switch graph {
+	case "practice":
+		// language:"all" or omitted → scatter-gather fan-out across every loaded
+		// practice graph (kills the silent-0 that mgr.Search(GraphPractice,"all",…)
+		// would otherwise return); a specific language → targeted single-graph search.
+		if a.Language == "" || a.Language == "all" {
+			return true, composePracticeSearchFanOut(ctx, deps, deps.SegmentManager(), query)
+		}
+		return true, composePracticeSearchClient(ctx, deps, deps.SegmentManager(), a.Language, query)
+	case "cloud":
+		return true, composeResourceSearchClient(ctx, deps, deps.SegmentManager(), cloudGraphKind, a.Account, query)
+	case "cicd":
+		return true, composeResourceSearchClient(ctx, deps, deps.SegmentManager(), cicdGraphKind, a.Account, query)
+	default: // linkage / web / pdf — ranked search retired.
+		return true, rankedSearchRetiredResult(graph)
+	}
 }
 
 // maybeEmbedQuery decodes args into a generic map, embeds the "query"

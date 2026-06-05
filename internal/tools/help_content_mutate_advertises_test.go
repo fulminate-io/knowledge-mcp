@@ -10,7 +10,7 @@ import (
 
 // TestHelpMutate_AdvertisesWritebackFields pins helpMutate's documentation
 // of the mutate(update, ...) writeback fields (keywords + binary_vector).
-// Relocated client-side alongside the help content per FUL-251.
+// Relocated client-side alongside the help content.
 //
 // The companion wire-surface assertion (MutateToolDef advertises the
 // property descriptions) lives on the server in

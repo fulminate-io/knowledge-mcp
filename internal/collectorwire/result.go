@@ -26,7 +26,7 @@ type CollectResult struct {
 	GraphType kgtypes.GraphType
 	GraphName string
 	// Nodes is []*knowledgev1.Node — the typed wire node the client builds and
-	// serializes onto the wire (T5/FUL-295 dropped the store.Node wrapper from the
+	// serializes onto the wire (the store.Node wrapper was dropped from the
 	// client build path). Pointer elements: knowledgev1.Node carries a noCopy, so a
 	// value slice would make collector appends + the wire-send range copylocks
 	// violations.
@@ -44,7 +44,7 @@ type CollectResult struct {
 	SyncCommit string `json:"sync_commit,omitempty"`
 	SyncTime   int64  `json:"sync_time,omitempty"`
 	// ModulePath is the Go module path declared in <rootDir>/go.mod
-	// (FUL-241 Phase 5). Empty for non-Go repos. Persisted to graph
+	// Empty for non-Go repos. Persisted to graph
 	// metadata under kgtypes.ModulePathKey so pkg/topology/dsm.go can read
 	// it server-side without opening go.mod on the server pod.
 	ModulePath string `json:"module_path,omitempty"`

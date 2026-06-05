@@ -11,7 +11,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 )
 
-// dispatch_graphwide.go holds the T-GTB1e #5 client-side composition of the
+// dispatch_graphwide.go holds the client-side composition of the
 // graph-wide-edges traverse (a start-less traverse). A single compile→one-Execute
 // cannot express the two-step "enumerate every node, then union their edges", so
 // — like dispatchQueryByID composes include_edges — this routes through a
@@ -59,7 +59,7 @@ func dispatchGraphWideEdges(ctx context.Context, exec ExecuteFn, args json.RawMe
 	// (2) RETURN_MODE_EDGES ids[]→union read over every node id. Forward=true
 	// (OutgoingEdges) so each edge is yielded once from its source — matching the
 	// server collectGraphWideEdges dedup (tools_traverse_graphwide.go:69-85).
-	// edge_types ride AS-GIVEN, canonicalized client-side (T-GTB2 site (b)).
+	// edge_types ride AS-GIVEN, canonicalized client-side.
 	ids := make([]string, len(nodes))
 	for i, n := range nodes {
 		ids[i] = n.Id

@@ -7,7 +7,7 @@ import (
 )
 
 // edgesToProtoForTest mirrors the server's edgesToProto so fakes populate the
-// typed ExecuteResponse.edges carrier (FUL-276 migrated edges_json → repeated
+// typed ExecuteResponse.edges carrier (edges_json was migrated → repeated
 // Edge). LastValidated rides as int64 unix-nanos (zero time → 0).
 func edgesToProtoForTest(edges []knowledgev1.Edge) []*knowledgev1.Edge {
 	out := make([]*knowledgev1.Edge, len(edges))

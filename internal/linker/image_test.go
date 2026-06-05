@@ -25,7 +25,7 @@ type recordedCall struct {
 // fakeGraphCaller is a scripted GraphCaller + linkerExecutor for sub-linker
 // unit tests. The `respond` function returns the mock response per call (keyed
 // on the OLD tool+args envelope shape); `calls` records every call for
-// assertion. The reads ride the Execute carrier seam (T-GTB6): Execute
+// assertion. The reads ride the Execute carrier seam: Execute
 // reconstructs the (tool, args) shape from the compiled ExecuteRequest, invokes
 // `respond`, and re-shapes the returned `{graphs}` / `{nodes}` envelope into the
 // carrier fields (graph_names_json / nodes_json) the engine decode reads. The
@@ -35,7 +35,7 @@ type fakeGraphCaller struct {
 	calls   []recordedCall
 
 	// nodesByGraph seeds by-id resolution for crossgraph.ResolveAndLink's endpoint
-	// proxy materialization (T-GTB6): graphType → nodeID → node. A by-id
+	// proxy materialization: graphType → nodeID → node. A by-id
 	// FetchNodeIn against (graph, id) returns the seeded node so the linkage proxy
 	// builds. Empty → the id resolves nowhere → best-effort raw id (linkage path).
 	nodesByGraph map[string]map[string]*knowledgev1.Node

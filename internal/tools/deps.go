@@ -20,7 +20,49 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
+
+// SegmentSearcher is the narrow consumer-side seam the search intercepts use to
+// query the client-hosted BM25+HNSW segment engines. *segmentdist.Manager
+// satisfies it (Manager.Search). Declared here as an interface — not the
+// concrete type — so the search arms reach the engine without tools importing
+// segmentdist's full surface, and so tests can inject a fake Manager that
+// asserts the arm drove the CLIENT engine instead of dispatching a server
+// search. Returns RRF-fused ranked Hits (ID + fused score) for hydration.
+type SegmentSearcher interface {
+	Search(ctx context.Context, gt kgtypes.GraphType, name, queryText string, queryVec []byte, k int) ([]searchengine.Hit, error)
+}
+
+// SegmentShipper is the build-concurrent / ship-once SHIP surface the
+// rebuild_segments driver drives. *segmentdist.Manager satisfies it. The method
+// set is DELIBERATELY the Add-ONLY + single-finalize shape (there is NO
+// AddAndShipDeterministic): the driver builds every full chunk concurrently via
+// the Add-ONLY AddDeterministic (HNSW) + AddFields (BM25) — no per-chunk ship —
+// then ships exactly ONCE via the single serial FlushDeterministic after the
+// concurrent pool joins. That is the fix for the concurrent-ship/reconcilePrune
+// data-loss race: a single ship over the fully-published Export can only prune
+// genuinely merged-away ids, never a live concurrently-built sibling.
+// FlushDeterministic RETURNS the server-pruned (merged-away) ids; the driver
+// passes them to InvalidateLocal so the superseded local .seg files are evicted
+// rather than orphaning under an unbounded cache.
+type SegmentShipper interface {
+	AddDeterministic(ctx context.Context, gt kgtypes.GraphType, name string, docs []searchengine.Document) error
+	AddFields(ctx context.Context, gt kgtypes.GraphType, name string, docs []searchengine.Document) error
+	FlushDeterministic(ctx context.Context, gt kgtypes.GraphType, name string) ([]searchengine.SegmentID, error)
+	InvalidateLocal(gt kgtypes.GraphType, name string, ids []searchengine.SegmentID)
+}
+
+// PipelineScanner is the login-routed PipelineScan + Execute wire seam the
+// rebuild_segments driver pages the segment_rebuild scan through. GraphCaller
+// exposes only Execute and the *graphclient.Router has NO PipelineScan — only the
+// bootstrap routedWireClient does — so this is a distinct accessor satisfied by a
+// login-routed adapter (per-call cloud-when-logged-in / local-otherwise).
+type PipelineScanner interface {
+	PipelineScan(ctx context.Context, req *knowledgev1.PipelineScanRequest) (*knowledgev1.PipelineScanResponse, error)
+	Execute(ctx context.Context, req *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error)
+}
 
 // BackendResolver routes between configured external project/ticket
 // backends (Linear, Jira, GitHub Issues, ...). Production wires this to
@@ -97,17 +139,19 @@ type GraphCaller interface {
 //     dispatch. Returns nil only when the client was constructed without
 //     a GraphClient (degraded headless mode) — intercepts fail fast in
 //     that case rather than performing the backend write with no way to
-//     persist the local-graph mirror. Post-FUL-323: returns the routed
+//     persist the local-graph mirror. Returns the routed
 //     *graphclient.Router that dispatches per-call to local or cloud
 //     based on live auth state.
 //   - LocalGraphCaller: returns a GraphCaller that ALWAYS targets the
-//     local server (bypasses routing). The three callers that must read
-//     and write the local graph regardless of login state — sync push,
-//     post-collect linker, post-collect postpopulate — use this accessor.
-//     Returns nil only when no local server is wired (cloud-first user);
-//     those callers' existing nil-guards surface the degraded-mode error.
+//     local server (bypasses routing). Sync push uses this accessor — it
+//     always reads + pushes the local graph regardless of login state.
+//     (The post-collect linker + postpopulate tail now follow
+//     the data via the login-routed GraphCaller instead, since the collect
+//     sink writes to cloud when logged in.) Returns nil only when no local
+//     server is wired (cloud-first user); those callers' existing nil-guards
+//     surface the degraded-mode error.
 //   - RepoResolver: client-side cwd → code-graph-name resolver used by
-//     the FUL-241 Phase 4 InjectRepoIfCodeGraph intercept. One resolver
+//     the InjectRepoIfCodeGraph intercept. One resolver
 //     per MCP session; sync.Once inside the resolver gates the
 //     underlying code-graph catalog read so a 100-call burst still
 //     produces exactly one wire read. Returns nil only in test
@@ -126,4 +170,20 @@ type ClientDeps interface {
 	GraphCaller() GraphCaller
 	LocalGraphCaller() GraphCaller
 	RepoResolver() *RepoResolver
+	// SegmentManager returns the SAME *segmentdist.Manager the client-side
+	// pipeline attached (one instance — duplicate engines would double memory
+	// and miss the producer's loaded segments). Returns nil when the pipeline
+	// was not wired (--no-llm-pipeline, or no embedder/summarizer configured);
+	// the search arms fall back to the server search path on nil.
+	SegmentManager() SegmentSearcher
+	// SegmentShipper returns the SAME *segmentdist.Manager as a build-concurrent/
+	// ship-once SHIP surface for the rebuild_segments driver. Returns nil when the
+	// pipeline was not wired (same condition as SegmentManager) — the driver errors
+	// "pipeline not wired" on nil.
+	SegmentShipper() SegmentShipper
+	// PipelineScanner returns the login-routed PipelineScan+Execute wire seam the
+	// rebuild_segments driver pages the segment_rebuild scan through. Returns nil
+	// when no router is wired (degraded headless mode) — the driver errors
+	// "pipeline not wired" on nil.
+	PipelineScanner() PipelineScanner
 }

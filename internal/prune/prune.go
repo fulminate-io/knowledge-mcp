@@ -5,7 +5,7 @@
 // [retention] section from the loaded config and issues a delete RPC
 // per non-empty node-type window against the local knowledge-server.
 //
-// Server-side pruneOnStartup is gone (BCN7) — server has no retention
+// Server-side pruneOnStartup is gone — server has no retention
 // policy of its own; clients drive their own retention windows via the
 // existing `delete(older_than:..., type:...)` MCP tool.
 package prune

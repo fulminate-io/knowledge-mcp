@@ -43,6 +43,24 @@ func (f *etFake) exec(_ context.Context, req *knowledgev1.ExecuteRequest) (*know
 	}
 }
 
+// Execute lets etFake double as a GraphCaller for composeTimeline (which now takes
+// a ClientDeps; the type/default fetch paths only touch Execute).
+func (f *etFake) Execute(ctx context.Context, req *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error) {
+	return f.exec(ctx, req)
+}
+
+// etFakeDeps adapts an etFake into a ClientDeps for composeTimeline.
+type etFakeDeps struct {
+	*interceptDeps
+	f *etFake
+}
+
+func newETFakeDeps(f *etFake) *etFakeDeps {
+	return &etFakeDeps{interceptDeps: &interceptDeps{}, f: f}
+}
+
+func (d *etFakeDeps) GraphCaller() GraphCaller { return d.f }
+
 // TestInterceptQueryExplainTimeline is the automated criterion gate. Covers the
 // explain single-node + pair forms and the timeline one-fetch ascending sort.
 func TestInterceptQueryExplainTimeline(t *testing.T) {
@@ -94,7 +112,7 @@ func TestInterceptQueryExplainTimeline(t *testing.T) {
 			{Id: "early", SymbolName: "Early", Metadata: map[string]string{"ts": "2026-01-01T00:00:00Z"}},
 			{Id: "mid", SymbolName: "Mid", Metadata: map[string]string{"ts": "2026-02-02T00:00:00Z"}},
 		}}
-		res := composeTimeline(context.Background(), f.exec, queryArgs{Mode: "timeline", TimeField: "ts"})
+		res := composeTimeline(context.Background(), newETFakeDeps(f), queryArgs{Mode: "timeline", TimeField: "ts"})
 		require.False(t, res.IsError, textBodyTools(res))
 		body := textBodyTools(res)
 		assert.Equal(t, 1, f.nodeFetches, "timeline issues exactly one node-set fetch")
@@ -106,7 +124,7 @@ func TestInterceptQueryExplainTimeline(t *testing.T) {
 
 	t.Run("timeline requires time_field", func(t *testing.T) {
 		f := &etFake{}
-		res := composeTimeline(context.Background(), f.exec, queryArgs{Mode: "timeline"})
+		res := composeTimeline(context.Background(), newETFakeDeps(f), queryArgs{Mode: "timeline"})
 		assert.Contains(t, textBodyTools(res), "timeline requires time_field")
 	})
 
@@ -115,7 +133,7 @@ func TestInterceptQueryExplainTimeline(t *testing.T) {
 			{Id: "a", SymbolName: "A", Metadata: map[string]string{"ts": "2026-01-01T00:00:00Z"}},
 			{Id: "b", SymbolName: "B", Metadata: map[string]string{"ts": "2026-01-01T00:00:05Z"}},
 		}}
-		res := composeTimeline(context.Background(), f.exec, queryArgs{Mode: "timeline", TimeField: "ts", Extra: map[string]string{"bucket": "10s"}})
+		res := composeTimeline(context.Background(), newETFakeDeps(f), queryArgs{Mode: "timeline", TimeField: "ts", Extra: map[string]string{"bucket": "10s"}})
 		require.False(t, res.IsError, textBodyTools(res))
 		assert.Contains(t, textBodyTools(res), "## Timeline (bucketed) — knowledge")
 	})

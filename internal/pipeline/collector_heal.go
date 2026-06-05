@@ -1,0 +1,51 @@
+// SPDX-License-Identifier: Apache-2.0
+
+package pipeline
+
+import (
+	"context"
+	"log/slog"
+)
+
+// collector_heal.go holds the auto-heal embed-drain edge-latch. It lives in its
+// own file to keep collector.go under the 500-line context cap, and mirrors the
+// maybeQuiescenceFlush shape in collector.go.
+
+// maybeHealCheck implements the auto-heal embed-drain edge-latch. It is
+// the consumption half of the runLoop-local healArmed latch (armed on a
+// collect-wake by the embed loop) and returns the next healArmed value:
+//   - while the gap has items or in-flight work it returns true (STAY armed — the
+//     drain has not completed yet, so the heal must not fire mid-backlog).
+//   - if the latch is NOT armed, the axis is not embed, or no heal closure is
+//     wired (test fakes / no segment manager) it returns `armed` UNCHANGED — a
+//     no-op that neither fires nor disturbs the latch.
+//   - on the armed embed drain-complete edge (empty scan AND nothing in flight AND
+//     the latch set AND a heal closure wired) it fires c.healIfSegmentless ONCE
+//     and returns false (DISARM) so the post-drain idle scans do not re-fire it.
+//     Fires once per collect (the collect armed the latch; this drain consumes it).
+//
+// A heal error only WARNs (best-effort, mirroring maybeQuiescenceFlush and the
+// embed-writeback ship path): the heal closure is itself a cheap probe + a
+// single-flight rebuild, and the next collect-armed drain retries. It still
+// DISARMS on error — the arm is per-collect, not a retry-until-success latch; a
+// transient failure self-heals on the next collect's drain.
+//
+// Independent of pendingSinceFlush: that latch is driven by embed WORK, but the
+// already-embedded new-user case (the heal's whole reason to exist) has ZERO
+// embed work, so only healArmed (collect-driven) fires for it. That is the
+// load-bearing distinction the auto-heal trigger exists for.
+func (c *collector) maybeHealCheck(ctx context.Context, ax loopAxis, items, inFlight int, armed bool) bool {
+	if items > 0 || inFlight > 0 {
+		return true
+	}
+	if !armed || ax.axis != "embed" || c.healIfSegmentless == nil {
+		return armed
+	}
+	slog.Info("pipeline.collector: embed gap drained while heal-armed — auto-heal check (cheap zero-segments probe; rebuild only on zero)",
+		"graph_type", c.gt, "name", c.name)
+	if err := c.healIfSegmentless(ctx); err != nil {
+		slog.Warn("pipeline.collector: auto-heal check failed (best-effort; next collect-armed drain retries)",
+			"graph_type", c.gt, "name", c.name, "error", err)
+	}
+	return false
+}

@@ -15,10 +15,10 @@
 //     formatSearchResultsJSON. NOT the "query" tool — the query tool's
 //     text path returns markdown unconditionally.
 //
-// Reuses engine.HydrateFromJSON (relocated from tools per finding
-// 3bdc9695) for the topic-search JSON decode.
+// Reuses engine.HydrateFromJSON (relocated from tools) for the
+// topic-search JSON decode.
 //
-// FUL-251b Phase 3: must be wired BEFORE Phase 5 gates the
+// Phase 3: must be wired BEFORE Phase 5 gates the
 // server-side decision arm on format != "json".
 
 package tools
@@ -61,7 +61,7 @@ func InterceptQueryDecisions(deps ClientDeps, params kgtools.CallToolParams) (bo
 	}
 
 	if a.Text != "" {
-		results, err := fetchDecisionsTopic(ctx, gc, a.Text, limit)
+		results, err := fetchDecisionsTopic(ctx, deps, a.Text, limit)
 		if err != nil {
 			return true, errorResult("search: " + err.Error())
 		}
@@ -81,26 +81,30 @@ func InterceptQueryDecisions(deps ClientDeps, params kgtools.CallToolParams) (bo
 // decision results (handleSearch's filterSearchResults already
 // filters server-side, but the defensive narrow shields the renderer
 // from any future change to the type-filter contract).
-func fetchDecisionsTopic(ctx context.Context, gc GraphCaller, topic string, limit int) ([]engine.SearchResult, error) {
-	args, err := json.Marshal(struct {
-		Query string   `json:"query"`
-		Graph string   `json:"graph"`
-		Types []string `json:"types"`
-		Limit int      `json:"limit"`
-	}{
-		Query: topic + " decision", Graph: "knowledge",
-		Types: []string{"decision"}, Limit: limit,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("marshal search args: %w", err)
+func fetchDecisionsTopic(ctx context.Context, deps ClientDeps, topic string, limit int) ([]engine.SearchResult, error) {
+	// Census gap: the decisions topic-search is a
+	// KNOWLEDGE-graph search and must NOT dispatch a server RETURN_MODE_SEARCH.
+	// Route it through the CLIENT knowledge segment engine (mgr.Search → RRF → bulk
+	// hydrate) — the same path composeKnowledgeSearch uses — then keep the
+	// decision-type narrow. The Manager is always wired in the real client.
+	mgr := deps.SegmentManager()
+	if mgr == nil {
+		return nil, nil // un-wired/degraded harness → no candidates (graceful empty).
 	}
-	resp, err := executeSearch(ctx, gc, args)
-	if err != nil {
-		return nil, err
+	query := topic + " decision"
+	var queryVec []byte
+	if emb := deps.Embedder(); emb != nil {
+		if vec, err := emb.EmbedBinary(ctx, query); err == nil && len(vec) > 0 {
+			queryVec = vec
+		}
 	}
-	all, err := engine.DecodeSearch(resp)
+	hits, err := mgr.Search(ctx, kgtypes.GraphKnowledge, knowledgeDefaultName, query, queryVec, limit)
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("decisions search: client engine: %w", err)
+	}
+	all, err := hydrateEngineHits(ctx, deps.GraphCaller(), hydrateSelector{Graph: string(kgtypes.GraphKnowledge)}, hits)
+	if err != nil {
+		return nil, fmt.Errorf("decisions search: hydrate: %w", err)
 	}
 	out := all[:0]
 	for _, r := range all {

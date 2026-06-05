@@ -49,13 +49,25 @@ func TestRecordedSyncMeta(t *testing.T) {
 	ctx := context.Background()
 	const ts int64 = 1779999083502863000
 
-	t.Run("recorded → values + ok", func(t *testing.T) {
+	t.Run("recorded collect-meta → values + ok", func(t *testing.T) {
 		exec := graphNamesFake([]*knowledgev1.GraphInfo{
-			{Name: "knowledge", SyncCommit: "abc123", SyncTime: ts},
+			{Name: "knowledge", CollectedCommit: "abc123", CollectedTime: ts},
 		})
 		sc, st, ok := recordedSyncMeta(ctx, exec, "knowledge")
 		if !ok || sc != "abc123" || st != ts {
 			t.Fatalf("got (%q, %d, %v), want (abc123, %d, true)", sc, st, ok, ts)
+		}
+	})
+
+	t.Run("only sync-meta (no collect-meta) → degrade", func(t *testing.T) {
+		// Proves the repoint actually reads the COLLECT channel: a carrier with
+		// only the old SyncCommit/SyncTime set (the cloud sync-receive fields)
+		// must now degrade to ok=false, NOT report a stale collect age.
+		exec := graphNamesFake([]*knowledgev1.GraphInfo{
+			{Name: "knowledge", SyncCommit: "abc123", SyncTime: ts},
+		})
+		if _, _, ok := recordedSyncMeta(ctx, exec, "knowledge"); ok {
+			t.Fatal("expected ok=false when only SyncCommit/SyncTime are set (collect-meta empty)")
 		}
 	})
 
@@ -67,7 +79,7 @@ func TestRecordedSyncMeta(t *testing.T) {
 	})
 
 	t.Run("repo absent → degrade", func(t *testing.T) {
-		exec := graphNamesFake([]*knowledgev1.GraphInfo{{Name: "other", SyncCommit: "x"}})
+		exec := graphNamesFake([]*knowledgev1.GraphInfo{{Name: "other", CollectedCommit: "x"}})
 		if _, _, ok := recordedSyncMeta(ctx, exec, "knowledge"); ok {
 			t.Fatal("expected ok=false when repo not in catalog")
 		}
@@ -87,9 +99,9 @@ func TestCodeStalenessFooter(t *testing.T) {
 	if err != nil || head == "" {
 		t.Skip("no git HEAD available; skipping")
 	}
-	t.Run("recorded sync_commit at HEAD → up to date footer with last-collected", func(t *testing.T) {
+	t.Run("recorded collect_commit at HEAD → up to date footer with last-collected", func(t *testing.T) {
 		exec := graphNamesFake([]*knowledgev1.GraphInfo{
-			{Name: "knowledge", SyncCommit: head, SyncTime: time.Now().Add(-2 * time.Hour).UnixNano()},
+			{Name: "knowledge", CollectedCommit: head, CollectedTime: time.Now().Add(-2 * time.Hour).UnixNano()},
 		})
 		footer := codeStalenessFooter(ctx, exec, root, "knowledge")
 		if footer == "" {
@@ -118,7 +130,7 @@ func TestCodeStalenessFooter(t *testing.T) {
 
 	t.Run("repo absent from catalog → no footer", func(t *testing.T) {
 		exec := graphNamesFake([]*knowledgev1.GraphInfo{
-			{Name: "other", SyncCommit: head},
+			{Name: "other", CollectedCommit: head},
 		})
 		if footer := codeStalenessFooter(ctx, exec, root, "knowledge"); footer != "" {
 			t.Fatalf("expected empty footer when repo not in catalog, got %q", footer)

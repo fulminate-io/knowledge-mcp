@@ -9,7 +9,7 @@
 // informed-by). Up to depth 10. Markdown + JSON formats both
 // preserved.
 //
-// FUL-251b Phase 3: must be wired BEFORE Phase 5 deletes the
+// Phase 3: must be wired BEFORE Phase 5 deletes the
 // server-side lineage shortcut.
 
 package tools

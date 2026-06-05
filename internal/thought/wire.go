@@ -16,7 +16,7 @@ import (
 
 // Caller is the narrow Execute-only seam every thought-package wire helper takes.
 // Both *graphclient.GraphClient (always-local) and *graphclient.Router (routing-
-// aware, FUL-323) satisfy this implicitly, so the helpers route per-call without
+// aware) satisfy this implicitly, so the helpers route per-call without
 // dragging the concrete client type into the function signatures. Mirrors the
 // tools.GraphCaller interface, kept package-local so the thought package stays
 // import-clean of the higher-level tools package.
@@ -26,7 +26,7 @@ type Caller interface {
 
 // executeViaEngine compiles a generic tool call (query / traverse / search) to a
 // declarative ExecuteRequest and runs it through the GraphClient.Execute carrier
-// seam (T-GTB3 Phase 6) — the same Compile→Execute path the bootstrap chokepoint
+// seam — the same Compile→Execute path the bootstrap chokepoint
 // and wire_persist use. Returns a typed error when the args are not reducible
 // (should not happen for the fixed internal shapes the thought helpers build).
 func executeViaEngine(ctx context.Context, gc Caller, tool string, args json.RawMessage) (*knowledgev1.ExecuteResponse, error) {
@@ -171,40 +171,6 @@ func fetchAllThoughtNodes(ctx context.Context, gc Caller) ([]*knowledgev1.Node, 
 		return nil, err
 	}
 	return engine.DecodeNodes(resp)
-}
-
-// fetchQueryBySearch runs the semantic-search candidate-gathering branch of
-// RecallThoughts via one Execute round-trip: search{text:} → the typed
-// search-results carrier ([]engine.SearchResult, each carrying the full
-// Node + Score). The carrier already hydrates the nodes, eliminating the old
-// ID-projection + separate fetchNodesByIDs hydration round-trip.
-func fetchQueryBySearch(ctx context.Context, gc Caller, text string, limit int) ([]ThoughtResult, error) {
-	if gc == nil {
-		return nil, nil
-	}
-	if limit <= 0 {
-		limit = 20
-	}
-	raw, err := json.Marshal(map[string]any{
-		"text":  text,
-		"limit": limit,
-	})
-	if err != nil {
-		return nil, err
-	}
-	resp, err := executeViaEngine(ctx, gc, "search", raw)
-	if err != nil {
-		return nil, err
-	}
-	hits, derr := engine.DecodeSearch(resp)
-	if derr != nil {
-		return nil, derr
-	}
-	out := make([]ThoughtResult, 0, len(hits))
-	for _, h := range hits {
-		out = append(out, ThoughtResult{Node: h.Node, Score: h.Score})
-	}
-	return out, nil
 }
 
 // fetchOutgoingTargets returns peer IDs reachable from nodeID over any

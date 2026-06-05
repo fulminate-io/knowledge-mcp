@@ -8,7 +8,7 @@ import (
 	"testing"
 )
 
-// criterion aea08598: install-codex-assets --skills-dest/--agents-dest
+// install-codex-assets --skills-dest/--agents-dest
 // writes skills/<n>/SKILL.md + agents/<n>.toml under the split roots.
 func TestRunInstallCodexAssets_SplitRoots(t *testing.T) {
 	skillsRoot := t.TempDir()
@@ -56,7 +56,7 @@ func TestRunInstallCodexAssets_SplitRoots(t *testing.T) {
 	}
 }
 
-// criterion ae3380f5: --dry-run writes nothing.
+// --dry-run writes nothing.
 func TestRunInstallCodexAssets_DryRunWritesNothing(t *testing.T) {
 	skillsRoot := t.TempDir()
 	agentsRoot := t.TempDir()
@@ -76,7 +76,7 @@ func TestRunInstallCodexAssets_DryRunWritesNothing(t *testing.T) {
 	}
 }
 
-// criterion ae3380f5: --diff prints NEW/diffs and writes nothing.
+// --diff prints NEW/diffs and writes nothing.
 func TestRunInstallCodexAssets_DiffWritesNothing(t *testing.T) {
 	skillsRoot := t.TempDir()
 	agentsRoot := t.TempDir()
@@ -96,7 +96,7 @@ func TestRunInstallCodexAssets_DiffWritesNothing(t *testing.T) {
 	}
 }
 
-// criterion 01c0f446: codexOutPath routes raw .claude paths to the split
+// codexOutPath routes raw .claude paths to the split
 // roots — skills verbatim, agents .md→.toml (the routing the subcommand
 // depends on). printUnifiedDiff reuse is a source-level fact verified by
 // install_codex_assets.go importing no second diff implementation.

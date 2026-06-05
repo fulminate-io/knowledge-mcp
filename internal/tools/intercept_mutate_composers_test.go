@@ -95,8 +95,8 @@ func TestMutateComposers_CrossGraphLink_ProxyFallsThrough(t *testing.T) {
 	assert.Empty(t, fc.execMutations, "no client LINK MutationPlan issued on the proxy fall-through")
 }
 
-// TestMutateComposers_CrossGraphLink_LinkageHandledClientSide covers criterion
-// 8d2a33f7 (T-GTB6 D7): mutate(link, link_graph:"linkage") is HANDLED client-side
+// TestMutateComposers_CrossGraphLink_LinkageHandledClientSide covers the case:
+// mutate(link, link_graph:"linkage") is HANDLED client-side
 // via crossgraph.ResolveAndLink — the proxies + the metadata-carrying edge land in
 // the LINKAGE graph over the Execute seam, and the server's legacy ResolveOrProxy
 // is NOT reached (no mutate gc.Call). With neither endpoint a node, both resolve
@@ -243,7 +243,7 @@ func TestMutateComposers_ClearLLMFailures_MultiGraphFanOut(t *testing.T) {
 // finding create composer rejects an embed-only type with a missing summary
 // BEFORE any write, surfacing the legacy-equivalent error. This composer-level
 // validation is a SEPARATE path from the type-aware engine create-body
-// validation, which FUL-306 relocated server-side — this composer gate stays
+// validation, which was relocated server-side — this composer gate stays
 // client-side and is unaffected.
 // ---------------------------------------------------------------------------
 
@@ -266,7 +266,7 @@ func TestMutateComposers_CreateValidationGateFires(t *testing.T) {
 
 // (The type-aware create-body validation — system-managed reject / step
 // description / embed-only summary+name — is enforced SERVER-SIDE in the engine
-// decodeCreate (FUL-306). The client no longer prechecks it; instead a CREATE
+// decodeCreate. The client no longer prechecks it; instead a CREATE
 // flows to Execute and the server's invalidMutation error is relayed verbatim.
 // That end-to-end relay is verified in the engine package by the dispatch test
 // that drives a non-summarizable create through Dispatch and asserts exec is
@@ -308,7 +308,7 @@ func TestMutateComposers_CreateStampsLLMClaudeSource(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// T-GTB6 CLASS-A: practice/transformers create/update/delete via Execute seam.
+// CLASS-A: practice/transformers create/update/delete via Execute seam.
 // ---------------------------------------------------------------------------
 
 // TestMutateComposers_PracticeCreate_TargetRouted asserts a practice create

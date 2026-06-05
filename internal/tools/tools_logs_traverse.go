@@ -45,7 +45,7 @@ const maxExampleEntriesPerChunk = 3
 //
 // This handler is kept specialized because log template/stream rendering
 // needs zstd decompression of chunk nodes — not a pure edge-first walk.
-// BCN11.3: bulk-fetch via getOrFetchLogState; all subsequent lookups
+// Bulk-fetch via getOrFetchLogState; all subsequent lookups
 // hit the pre-fetched *logState rather than the wire.
 func (h *Handler) traverseLogs(ctx context.Context, a traverseArgs) kgtools.ToolResult {
 	engine, st, err := h.getOrFetchLogState(ctx, a.Name)

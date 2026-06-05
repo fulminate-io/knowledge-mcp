@@ -3,8 +3,8 @@
 // Package rerank holds the LLM-driven candidate re-scoring + DSL
 // pipeline that used to live in domains/store. Operates on
 // engine.SearchResult (Node + Score) — the client-side search-hit DTO
-// carrying the wire proto *knowledgev1.Node directly (T5/FUL-295 dropped
-// the legacy node wrapper layer from the client read path).
+// carrying the wire proto *knowledgev1.Node directly (the legacy node wrapper
+// layer was dropped from the client read path).
 //
 // Dep direction: rerank → engine (one-way, for the SearchResult DTO) and
 // rerank → kgtypes (node-behavior free funcs). engine does NOT import

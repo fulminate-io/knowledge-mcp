@@ -49,7 +49,7 @@ func TestBuildSubCollectors_Count(t *testing.T) {
 	// All 41 subcollectors should be wired when clients are provided.
 	// 14 original + 1 VPC connector + 1 Artifact Registry + 5 LB + 1 Memorystore
 	// + 1 DNS + 1 Cloud Armor + 1 Cloud Router (NAT collected inline, no
-	//   separate sub-collector — see FUL-95 finding 32694d4b)
+	//   separate sub-collector — NAT is collected inline)
 	// + 1 Cloud Tasks + 1 Cloud Scheduler + 1 BigQuery + 1 Logging sinks
 	// + 1 Instance groups + 1 SSL certificates + 1 Alert policies + 1 Eventarc
 	// + 1 KMS + 1 Firestore + 1 Persistent Disks (Phase 2)

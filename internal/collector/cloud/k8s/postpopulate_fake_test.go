@@ -21,7 +21,7 @@ import (
 // seed → run the resolver → assert on the captured edges. Routing is by
 // Target.Account (a write/read with an empty account is a miss), so a test that
 // asserts the write landed in the right per-account graph passes only when the
-// resolver routed by Account (the FUL-288 selector-field invariant).
+// resolver routed by Account (the selector-field invariant).
 type k8sFake struct {
 	// per-account graph state.
 	nodes map[string]map[string]*knowledgev1.Node // account → id → node

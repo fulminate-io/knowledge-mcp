@@ -9,7 +9,7 @@
 // handleRules used: `strings.Contains(strings.ToLower(scope +
 // description), strings.ToLower(filter))`.
 //
-// FUL-251b Phase 3: must be wired BEFORE Phase 5 gates the
+// Must be wired BEFORE Phase 5 gates the
 // server-side rule arm on format != "json". Internal wire calls
 // still reach handleBrowseJSON because the gate fall-through at
 // tools_query_routes.go preserves the JSON path.

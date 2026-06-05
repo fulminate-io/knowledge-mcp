@@ -24,7 +24,7 @@ func nodePtrs(nodes []knowledgev1.Node) []*knowledgev1.Node {
 
 // searchResultsToProtoForTest / traversalResultsToProtoForTest mirror the
 // server's searchResultsToProto / traversalResultsToProto: each sets the TYPED
-// node carrier (T5/FUL-295 deleted the node_json blob field — the node IS the
+// node carrier (T5 deleted the node_json blob field — the node IS the
 // wire proto now), carrying score/distance as the typed fields.
 func searchResultsToProtoForTest(results []engine.SearchResult) []*knowledgev1.HydratedResult {
 	out := make([]*knowledgev1.HydratedResult, len(results))
@@ -44,7 +44,7 @@ func traversalResultsToProtoForTest(results []engine.TraversalResult) []*knowled
 
 // carrier_proto_testhelpers_test.go provides the proto converters the
 // server-simulating fakes in this package use to populate the typed proto
-// carriers FUL-276 migrated off the bytes *_json convention. After T5.5 the
+// carriers migrated off the bytes *_json convention. After T5.5 the
 // fakes hold the proto carriers directly (GraphStats / GraphInfo / Edge /
 // OverrideConfig), so the former store→proto converters are gone; only the
 // engine-result wrappers + the proto→kgwire batch-edge decode remain.

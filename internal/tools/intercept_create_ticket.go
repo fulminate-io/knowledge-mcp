@@ -83,7 +83,7 @@ func InterceptCreateTicket(deps ClientDeps, params kgtools.CallToolParams) (bool
 	}
 	if parentBackendName == "" {
 		// Local-only parent — run the local-graph composition path
-		// client-side (FUL-246 Phase 3a). The server has no create_ticket handler
+		// client-side. The server has no create_ticket handler
 		// now has no server-side dispatch so we MUST claim this case. Patterns are
 		// already validated + resolved above; pass the resolved ticketArgs + result.
 		return true, createTicketLocalOnly(ctx, gc, a, ticketArgs, res)
@@ -163,7 +163,7 @@ func createTicketBackendBacked(ctx context.Context, gc GraphCaller, a createTick
 }
 
 // validateCreateTicketArgs runs the same validation gates the server's
-// handleCreateTicket previously ran (FUL-246 Phase 4 stubbed those out
+// handleCreateTicket previously ran (a prior phase stubbed those out
 // server-side, so the client owns this now). Order matches the server-
 // side ordering: name, project_id present, summary.
 func validateCreateTicketArgs(a createTicketArgs) error {

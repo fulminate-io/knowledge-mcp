@@ -300,7 +300,7 @@ const helpSearchCode = `# search — Unified search across code, knowledge, prac
   staleness      — show index staleness info
 
 ## Knowledge graph parameters
-  mode           — also supports "ppr"/"graph_reach" (PPR reranking) and "recent"/"temporal" (recency boost)
+  mode           — also supports "recent"/"temporal" (recency boost)
 
 ## Practice graph parameters
   language       — language slug (e.g. "go", "python"). Required for search, omit to list graphs.

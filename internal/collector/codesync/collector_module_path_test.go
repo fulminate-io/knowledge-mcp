@@ -12,7 +12,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 )
 
-// TestCodeCollector_Collect_PopulatesModulePath verifies the FUL-241
+// TestCodeCollector_Collect_PopulatesModulePath verifies the
 // Phase 5 client-side go.mod read: when a repo has a go.mod, the
 // returned CollectResult.ModulePath carries the declared module path.
 func TestCodeCollector_Collect_PopulatesModulePath(t *testing.T) {
@@ -46,7 +46,7 @@ func TestCodeCollector_Collect_NoGoMod_EmptyModulePath(t *testing.T) {
 	assert.Empty(t, result.LayerConfig)
 }
 
-// TestCodeCollector_Collect_LayerConfigPopulated verifies the FUL-241
+// TestCodeCollector_Collect_LayerConfigPopulated verifies the
 // Phase 5 client-side .knowledge/topology_layers.yaml read: when the
 // file exists, its raw body is shipped over the wire. The server side
 // re-parses (ConfigFileProvider.Layers in dsm_layers.go).

@@ -74,7 +74,7 @@ func handleAstReplace(ctx context.Context, deps ClientDeps, a astArgs) kgtools.T
 }
 
 // handleAstExplain parses a snippet and emits an indented node-kind tree.
-// Per-call failure modes (criterion 8146d875) are surfaced as errorResult —
+// Per-call failure modes are surfaced as errorResult —
 // explain is a debug op invoked with a single snippet, NOT a corpus walk,
 // so the silent-skip discipline from match.go does not apply here.
 func handleAstExplain(ctx context.Context, a astArgs) kgtools.ToolResult {
@@ -122,8 +122,7 @@ func walkNodeKinds(n *sitter.Node, depth int, b *strings.Builder) {
 // for a language by walking grammar.SymbolCount() / SymbolName() and
 // filtering to SymbolTypeRegular (drops anonymous tokens like '+', '{').
 //
-// API verification recorded in plan-456dc5bb-impl think note (criterion
-// 605a68f8): smacker exposes both SymbolCount() uint32 and
+// API verification: smacker exposes both SymbolCount() uint32 and
 // SymbolName(s Symbol) string on *sitter.Language; bindings.go:362,372
 // at $GOMODCACHE/github.com/smacker/go-tree-sitter@<sha>/bindings.go.
 func handleAstListNodeKinds(a astArgs) kgtools.ToolResult {

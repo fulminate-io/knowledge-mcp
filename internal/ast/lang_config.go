@@ -97,7 +97,7 @@ func langConfigFor(lang treesitter.Language) (LangConfig, bool) {
 
 // errLanguageNotSupported is returned when Match is called with a language
 // for which no LangConfig has been registered. The message is pinned by
-// criterion 591ef8906b (Phase D long-tail deny test).
+// the long-tail deny test.
 func errLanguageNotSupported(lang treesitter.Language) error {
 	if _, denied := deniedLanguages[lang]; denied {
 		return fmt.Errorf("ast/match: pattern matching not supported for language %s (config/markup language; tree-sitter grammar lacks the structural depth for parse-substitute-walk)", lang)

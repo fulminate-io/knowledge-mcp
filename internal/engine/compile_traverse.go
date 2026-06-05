@@ -36,7 +36,7 @@ type traverseArgs struct {
 //   - a start-less graph-wide-edges traverse (handleTraverseGraphWideEdges —
 //     a distinct fast path, not a from_id walk)
 //
-// include_edge_metadata=true IS reducible as of T2.4c: the engine re-walks the
+// include_edge_metadata=true IS reducible: the engine re-walks the
 // traversed edges and returns the per-edge metadata in
 // ExecuteResponse.traversal_edges_json (the include_edge_metadata carrier); the
 // client renders it.
@@ -44,7 +44,7 @@ type traverseArgs struct {
 // Direction maps to the forward tri-state: out→true, in→false, both→nil (the
 // engine computes the forward+backward union with min-distance dedup
 // server-side — the client must NOT re-derive it). EdgeTypes are canonicalized
-// per-graph CLIENT-SIDE (T-GTB2 site (b) — the engine uses them as-given). One
+// per-graph CLIENT-SIDE (the engine uses them as-given). One
 // plan per call.
 func compileTraverse(args json.RawMessage) (*knowledgev1.ExecuteRequest, bool) {
 	var a traverseArgs
@@ -61,7 +61,7 @@ func compileTraverse(args json.RawMessage) (*knowledgev1.ExecuteRequest, bool) {
 
 	sel := &knowledgev1.Selection{FromId: []string{a.Start}}
 	if len(a.EdgeTypes) > 0 {
-		// Client canonicalizes the per-graph edge-type casing (T-GTB2 site (b)):
+		// Client canonicalizes the per-graph edge-type casing:
 		// the engine now uses edge_types AS-GIVEN, so the client produces the
 		// canonical casing (code/cloud/cicd/linkage/logs uppercase, else lowercase)
 		// before it rides the wire.

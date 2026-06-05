@@ -17,10 +17,10 @@ import (
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 )
 
-// TestDefaultDeny_SpecializedShapes asserts the T-GTB4 deny contract for the
-// SPECIALIZED set (finding 457e861e): Compile returns ok=false AND the dispatcher
+// TestDefaultDeny_SpecializedShapes asserts the deny contract for the
+// SPECIALIZED set: Compile returns ok=false AND the dispatcher
 // DENIES them with an explicit error naming the tool, NEVER exec (Execute) and
-// with no legacy fallback wire (decision 7fc2ff59 — the deny flip removed the
+// with no legacy fallback wire (the deny flip removed the
 // gc.Call fall-through).
 //
 // In production every one of these shapes is claimed by a client intercept
@@ -55,7 +55,7 @@ func TestDefaultDeny_SpecializedShapes(t *testing.T) {
 		{"query lineage", "query", `{"mode":"lineage","id":"x"}`},
 		{"query evidence", "query", `{"mode":"evidence","id":"x"}`},
 		{"query plan_tree", "query", `{"mode":"plan_tree","id":"x"}`},
-		// NOTE: query(mode:modules) is NO LONGER here — T-GTB1e added the
+		// NOTE: query(mode:modules) is NO LONGER here — the engine added the
 		// RETURN_MODE_GRAPH_NAMES list-graphs read mode, so it compiles to Execute
 		// (proven by TestListGraphs_EnumeratesCatalog). It enumerates the graph
 		// CATALOG of the target GraphType via the server-side list-graphs read.
@@ -67,36 +67,35 @@ func TestDefaultDeny_SpecializedShapes(t *testing.T) {
 		{"query logs", "query", `{"graph":"logs","name":"q1","text":"err"}`},
 		{"traverse logs", "traverse", `{"start":"n1","graph":"logs","name":"q1"}`},
 		// NOTE: multi-type search, cloud resource_type search, and
-		// include_edge_metadata traverse are NO LONGER here — T2.4c made them
+		// include_edge_metadata traverse are NO LONGER here — they were made
 		// reducible (they ride the node_types / resource_type /
 		// include_edge_metadata carriers and compile to Execute; proven by the
 		// equivalence tests TestEquivalence_SearchMultiType / SearchResourceType /
 		// TraverseEdgeMetadata).
-		// Cross-graph link_graph stays specialized (proxy creation, T-GTB5/legacy).
+		// Cross-graph link_graph stays specialized (proxy creation, legacy).
 		// NOTE: practice/transformers mutate (link/create) are NO LONGER here —
-		// T-GTB6 Phase 1 narrowed the compileMutate guard to link_graph-only, so an
+		// the compileMutate guard was narrowed to link_graph-only, so an
 		// intra-practice/transformers op (no link_graph) Target-routes to a
 		// MutationPlan (proven by TestCompileMutate_PracticeTransformers). The
 		// tools-layer InterceptMutate routes the cross-graph proxy decision tree
 		// (handleClientCrossGraphLink) BEFORE reaching the engine.
 		{"mutate link_graph", "mutate", `{"operation":"link","link_graph":"linkage","from":"x","to":"y","relationship":"r"}`},
-		// NOTE: mutate(bulk_update_metadata) is NO LONGER here — T-GTB1e lowered it
+		// NOTE: mutate(bulk_update_metadata) is NO LONGER here — it was lowered
 		// onto MUTATION_KIND_UPDATE_ITEMS (a metadata-only subset of update_batch's
 		// per-item shape, all riding one Execute → one txn; the backend-tag reject is
 		// preserved by the engine validateUpdateItems decode). Proven by
 		// TestCompileMutate_BulkUpdateMetadata + the equivalence test.
-		// NOTE: by-id update / delete / link / unlink are NO LONGER here — T2.4c
-		// added the Selection.ids by-id WRITE selector (closed TICKET-GAP
-		// b535d1a9), so they compile to Execute (proven by TestEquivalence_MutateUpdate /
+		// NOTE: by-id update / delete / link / unlink are NO LONGER here — the
+		// Selection.ids by-id WRITE selector was added, so they compile to Execute (proven by TestEquivalence_MutateUpdate /
 		// MutateDeleteByIDs / MutateLinkByID / MutateUnlinkByID).
-		// NOTE: heterogeneous update_batch is NO LONGER here — T-GTB1c added the
+		// NOTE: heterogeneous update_batch is NO LONGER here — the engine added the
 		// MUTATION_KIND_UPDATE_ITEMS per-item arm, so it compiles to Execute
 		// (proven by TestCompileMutate_UpdateBatch). A mutate(upsert) WITHOUT an id
 		// still falls through (the upsert key is required), so it stays below.
 		// answer stays specialized.
 		{"mutate upsert (no id → legacy)", "mutate", `{"operation":"upsert","type":"worker","name":"w"}`},
 		{"mutate answer", "mutate", `{"operation":"answer","id":"q","conclusion":"done"}`},
-		// NOTE: thought/charge creates are NO LONGER here — T-GTB6 Phase 7 removed
+		// NOTE: thought/charge creates are NO LONGER here — the compileMutateCreate deny was removed,
 		// the compileMutateCreate deny; a type:thought|charge create compiles to
 		// MUTATION_KIND_CREATE (proven by TestCompileMutate_ThoughtChargeCreateCompiles
 		// + the Dispatch-level bare-create no-summary-gate guards). The thoughts TOOL
@@ -141,8 +140,8 @@ func TestDefaultDeny_SpecializedShapes(t *testing.T) {
 // route through engine.Dispatch). A package importing engine.Dispatch would mean
 // it was accidentally rerouted.
 //
-// NOTE: cmd/knowledge/internal/dream was REMOVED from this list by T-GTB6 D8
-// (decision 620137ea): the dream worker's eino tool dispatch now intentionally
+// NOTE: cmd/knowledge/internal/dream was REMOVED from this list:
+// the dream worker's eino tool dispatch now intentionally
 // rides the STANDARD client path (intercept chain → engine.Dispatch, composed by
 // bootstrap/dream.go's dispatchForRunner and injected as a dream.DispatchFunc) —
 // the worker shares the one client dispatch path, with no bespoke raw t.client.Call

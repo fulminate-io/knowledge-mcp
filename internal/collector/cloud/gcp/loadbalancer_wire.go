@@ -6,9 +6,8 @@ import (
 	computepb "cloud.google.com/go/compute/apiv1/computepb"
 )
 
-// --- Wire structs (FUL-88: curated content envelopes for load-balancer
-// resources, no SDK leak). Field sets frozen in Phase 1 audit
-// (session ful-88-gcp-planning).
+// --- Wire structs (curated content envelopes for load-balancer
+// resources, no SDK leak). Field sets frozen in the Phase 1 audit.
 
 // forwardingRuleContent is the curated wire shape for gcp:compute:forwardingRule.
 // IPAddress / IPProtocol JSON tags use the acronym uppercase form (NOT

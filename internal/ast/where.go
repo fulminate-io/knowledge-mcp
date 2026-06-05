@@ -9,7 +9,7 @@
 // evaluator delegates back into compilePattern + matchTree when it
 // encounters them.
 //
-// Key locked decisions (per ticket badce432a4917ba4b5e8867e093d0b9e):
+// Key locked decisions:
 //
 //   - Sub-pattern recursion HARD CAPPED at 8 levels (Q10) — explicit
 //     error on overflow.

@@ -17,7 +17,7 @@ import (
 // a practice/transformers create/update/delete with NO link_graph compiles to a
 // Target-routed MutationPlan (Target.Graph == the requested graph,
 // Target.Language == a.Language); a link_graph!="" op still falls through to
-// legacy (T-GTB5). This is the positive complement to the deny cases moved out
+// legacy. This is the positive complement to the deny cases moved out
 // of TestCompileMutate_DenyCases / TestDefaultDeny_SpecializedShapes.
 func TestCompileMutate_PracticeTransformers(t *testing.T) {
 	t.Run("practice create → CREATE, Target practice+language", func(t *testing.T) {
@@ -56,7 +56,7 @@ func TestCompileMutate_PracticeTransformers(t *testing.T) {
 		assert.Equal(t, "transformers", req.GetTarget().GetGraph())
 	})
 
-	t.Run("link_graph linkage → ok=false (legacy/T-GTB5)", func(t *testing.T) {
+	t.Run("link_graph linkage → ok=false (legacy)", func(t *testing.T) {
 		req, ok := compileMutate(json.RawMessage(
 			`{"operation":"link","link_graph":"linkage","from":"x","to":"y","relationship":"r"}`))
 		assert.False(t, ok, "the cross-graph link_graph case stays denied")
@@ -130,7 +130,7 @@ func TestCompileDelete_SessionID(t *testing.T) {
 // TestCompileDelete_DryRunNeverCompilesToDelete asserts a dry_run:true delete
 // NEVER lowers to a MUTATION_KIND_DELETE — Compile returns ok=false for BOTH the
 // by-ids and the prune-by-age shapes. This is the compile-side half of the
-// data-loss footgun fix (finding f95119710b): the dispatcher claims the dry-run
+// data-loss footgun fix: the dispatcher claims the dry-run
 // upstream (dispatchDeletePreview) and renders a read-only preview; a dry-run
 // that somehow reached the compiler denies rather than deletes (safe direction).
 func TestCompileDelete_DryRunNeverCompilesToDelete(t *testing.T) {

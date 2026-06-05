@@ -20,7 +20,7 @@ import (
 // TestInterceptMutate_StatusRollup_OneTraverse_OneUpdate asserts that completing
 // a container fires exactly the bounded carrier sequence: one ByID lookup
 // Execute, one traversal Execute (descendants), one UPDATE Mutation Execute —
-// regardless of descendant count (T-GTB3 Phase 6 carrier path).
+// regardless of descendant count (Phase 6 carrier path).
 func TestInterceptMutate_StatusRollup_OneTraverse_OneUpdate(t *testing.T) {
 	fc := &fakeRollupGraphCaller{
 		rootNode: knowledgev1.Node{Id: "plan-1", Type: string(kgtypes.NodePlan)},

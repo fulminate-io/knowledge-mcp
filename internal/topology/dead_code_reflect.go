@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package topology / dead_code_reflect.go — per-function risk detection
-// for the dead_code analyzer (client-side, FUL-241 Phase 6).
+// for the dead_code analyzer (client-side).
 //
 // RTA is conservative on dynamic dispatch: reflective invocation,
 // //go:linkname-redirected names, and assembly stubs all undermine its

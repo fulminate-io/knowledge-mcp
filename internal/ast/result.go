@@ -17,7 +17,7 @@
 // dead_code_review.go addresses the same shape with `for _, delta := range
 // []int{0, -1, 1}` (mapOneDeadFunc:155-160). We mirror that ladder here.
 //
-// HydratorBackend abstraction: the binary split (ticket 0a8c4b30 corrective
+// HydratorBackend abstraction: the binary split (corrective
 // rework) moved the ast tool from server-side to client-side. The server has
 // the code graph; the client has the source files. Hydrate takes a
 // HydratorBackend interface so each side can supply its own enumeration: the

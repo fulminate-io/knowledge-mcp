@@ -16,7 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// TestInterpolateTemplate pins criterion ed1acae1: $X substitutes
+// TestInterpolateTemplate pins that $X substitutes
 // caps[X].Text, $$$ARGS interpolates its verbatim span, $$ emits a single
 // literal $, a wildcard reference is a usage error, and an unbound name is a
 // usage error naming the capture.
@@ -86,7 +86,7 @@ func rawMatchAt(file string, start, end uint32) RawMatch {
 	}
 }
 
-// TestBuildFileEdits pins criterion 006fa196: groups by file, DESC-sorts each
+// TestBuildFileEdits pins that it groups by file, DESC-sorts each
 // file's edits by Start, refuses files with intersecting/nested ranges, and
 // yields disjoint matches in strictly-descending Start order.
 func TestBuildFileEdits(t *testing.T) {
@@ -158,7 +158,7 @@ func TestBuildFileEdits(t *testing.T) {
 	})
 }
 
-// TestApplyEditsToSource pins criterion b2aaf6f4: a two-match file rewrites
+// TestApplyEditsToSource pins that a two-match file rewrites
 // byte-identically (offsets valid via right-to-left order), and a template
 // producing broken Go makes applyEditsToSource return a re-parse error with
 // the rewritten bytes NOT returned.
@@ -201,7 +201,7 @@ func TestApplyEditsToSource(t *testing.T) {
 	})
 }
 
-// TestUnifiedDiff pins criterion 70303e75: a changed file yields a non-empty
+// TestUnifiedDiff pins that a changed file yields a non-empty
 // unified diff with ---/+++/@@ hunk headers and -/+ lines; an unchanged file
 // yields an empty diff.
 func TestUnifiedDiff(t *testing.T) {

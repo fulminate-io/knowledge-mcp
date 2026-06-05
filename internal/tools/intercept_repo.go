@@ -37,24 +37,19 @@ var codeGraphToolNames = map[string]bool{
 //   - delete_branch: the branch arg names the overlay to delete; auto-
 //     filling current branch would delete the wrong overlay.
 //   - list_branches: branch isn't part of the call.
-//   - rebuild_hnsw / rebuild_bm25: branchless (rebuild applies to the
-//     base graph; per-branch overlays inherit BM25/HNSW via merge).
 //
-// rebuild_hnsw and rebuild_bm25 also accept practice / cloud / cicd
-// graph types where `name` carries a different identifier (account /
-// graph-id). Inject only when graph=="code".
+// (rebuild_hnsw / rebuild_bm25 were retired with the server search
+// subsystem.)
 var manageCodeGraphOps = map[string]bool{
 	"list_branches": true,
 	"delete_branch": true,
-	"rebuild_hnsw":  true,
-	"rebuild_bm25":  true,
 }
 
 // InjectRepoIfCodeGraph rewrites a code-graph-targeted CallToolParams to
 // carry repo: + branch: (and, for search with staleness:true, the three
 // git-state fields current_head / uncommitted_count / commits_behind).
 //
-// FUL-241 Phase 4: the server is filesystem-blind. Every code-graph
+// Phase 4: the server is filesystem-blind. Every code-graph
 // tool call must arrive with explicit repo: AND branch:. This intercept
 // is the canonical client-side filler that walks cwd → loaded-graph
 // name (via deps.RepoResolver) and shells out to coderun helpers for
@@ -246,12 +241,12 @@ func setStringField(args map[string]json.RawMessage, key, value string) {
 }
 
 // injectManageRepo handles the manage tool's code-graph subdispatch.
-// list_branches / delete_branch always need the repo (carried in `name:`);
-// rebuild_hnsw / rebuild_bm25 need it only when graph=="code". For other
-// manage operations (status, pprof_*, log ops, set_metadata_overrides,
-// promote_metadata, clear_llm_failures, topology, link) this is a no-op
-// fall-through. Branch is never auto-filled — delete_branch's branch
-// names the overlay to remove, not the current checkout.
+// list_branches / delete_branch always need the repo (carried in `name:`).
+// For other manage operations (status, pprof_*, log ops,
+// set_metadata_overrides, promote_metadata, clear_llm_failures, topology,
+// link) this is a no-op fall-through. Branch is never auto-filled —
+// delete_branch's branch names the overlay to remove, not the current
+// checkout.
 //
 // Returns the same tuple shape as InjectRepoIfCodeGraph: rewritten
 // params on continue, (params, true, errResult) on a typed short-circuit
@@ -262,15 +257,6 @@ func injectManageRepo(ctx context.Context, deps ClientDeps, params kgtools.CallT
 	op := decodeStringField(args, "operation")
 	if !manageCodeGraphOps[op] {
 		return params, false, kgtools.ToolResult{}
-	}
-
-	// rebuild_hnsw / rebuild_bm25 are multi-graph — only the code graph
-	// route uses cwd-derived repo. practice / cloud / cicd / knowledge
-	// pass through untouched.
-	if op == "rebuild_hnsw" || op == "rebuild_bm25" {
-		if decodeStringField(args, "graph") != "code" {
-			return params, false, kgtools.ToolResult{}
-		}
 	}
 
 	if decodeStringField(args, "name") != "" {

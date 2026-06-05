@@ -15,7 +15,7 @@ import (
 )
 
 // sslCertificatesSubCollector collects Compute Engine SSL certificates.
-// The privateKey field is redacted from Content for security (decision 8c61f1929).
+// The privateKey field is redacted from Content for security.
 //
 // LEAF NODE: SSL certificates emit no outbound edges. They are consumed
 // by target HTTP(S) proxies via EdgeUsesCert (emitted from

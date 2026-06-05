@@ -221,7 +221,7 @@ var linkageTarget = &knowledgev1.GraphSelector{Graph: "linkage"}
 
 // composeCrossLinks reproduces the server-side cross-link collection
 // (FindLinkageProxies + CollectProxyCrossLinks, tools_query_linkage.go) using
-// GENERIC Execute primitives against the linkage graph (T-GTB2 site (d)):
+// GENERIC Execute primitives against the linkage graph:
 //
 //   - FindLinkageProxies: (1) a by-id read against linkage — if the node IS a
 //     proxy (deterministic-ID O(1) path), it is the match; (2) else a foreign_id

@@ -107,7 +107,7 @@ func (f *fakeGraphCaller) createBatchEdgeToIDs() []string {
 // through the wire fake: a cloud IAM role whose trust policy references the
 // Bitbucket Pipelines OIDC issuer must produce an EdgeFederates edge written into
 // the cicd Bitbucket graph by Target.Account == "bitbucket-<workspace>" (NOT
-// Target.Name) — the FUL-288 selector-field invariant for the cicd family.
+// Target.Name) — the selector-field invariant for the cicd family.
 func TestBitbucketPostPopulate_RoutesByAccount(t *testing.T) {
 	const (
 		cloudAcct = "123456789012"

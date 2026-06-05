@@ -115,12 +115,15 @@ func (d interceptTestDeps) Embedder() embed.BinaryEmbedder        { return nil }
 func (d interceptTestDeps) BackendResolver() BackendResolver {
 	return fakeResolver{def: d.backend, byName: d.byName}
 }
-func (d interceptTestDeps) GraphCaller() GraphCaller      { return d.gc }
-func (d interceptTestDeps) LocalGraphCaller() GraphCaller { return d.gc }
-func (d interceptTestDeps) RepoResolver() *RepoResolver   { return nil }
+func (d interceptTestDeps) GraphCaller() GraphCaller         { return d.gc }
+func (d interceptTestDeps) LocalGraphCaller() GraphCaller    { return d.gc }
+func (d interceptTestDeps) RepoResolver() *RepoResolver      { return nil }
+func (d interceptTestDeps) SegmentManager() SegmentSearcher  { return nil }
+func (d interceptTestDeps) SegmentShipper() SegmentShipper   { return nil }
+func (d interceptTestDeps) PipelineScanner() PipelineScanner { return nil }
 
 func TestInterceptCreateProject_NoBackend_ClaimsLocalOnly(t *testing.T) {
-	// FUL-246 Phase 3a: no-backend path is now claimed client-side.
+	// Phase 3a: no-backend path is now claimed client-side.
 	// The server has no create_project handler, so this intercept
 	// MUST claim the call to produce a real response.
 	fc := &fakeGraphCaller{
@@ -163,7 +166,7 @@ func TestInterceptCreateProject_Success_StampsBackendMetadata(t *testing.T) {
 		groupsResult:     []backends.Group{{Key: "FUL", ID: "team-uuid"}},
 		createProjectRef: backends.RemoteRef{ID: "proj-uuid", URL: "https://example.invalid/p"},
 	}
-	// FUL-246: the client no longer forwards create_project — instead
+	// The client no longer forwards create_project — instead
 	// it issues mutate(create_batch). The fake's mutateResult feeds the
 	// create_batch RPC. Returned ids are read off the JSON.
 	fc := &fakeGraphCaller{mutateResult: kgtools.ToolResult{
@@ -177,7 +180,7 @@ func TestInterceptCreateProject_Success_StampsBackendMetadata(t *testing.T) {
 	require.True(t, handled)
 	require.False(t, res.IsError, "success should not be an error result: %s", toolResultText(res))
 	// One CREATE Mutation Execute (carrier path) with backend metadata stamped on
-	// the project NodeBody (T-GTB3 Phase 6: the create rides a MutationPlan now,
+	// the project NodeBody (the create rides a MutationPlan now,
 	// not the formatted create_batch wire envelope).
 	require.Len(t, fc.execMutations, 1)
 	m := fc.execMutations[0]

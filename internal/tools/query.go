@@ -28,7 +28,7 @@ var queryModesNeedingEmbedding = map[string]struct{}{
 // queryModesNeedingEmbedding AND the args carry a non-empty text query AND
 // the caller did not already supply query_vector, the query text is
 // embedded locally and the bytes are forwarded via query_vector. The
-// server-side compositor short-circuits its own embed call, so post-BCN5
+// server-side compositor short-circuits its own embed call, so
 // servers (no Voyage key) still return vector-quality results.
 //
 // Returns (handled, result). When the gate misses (wrong mode, no
@@ -61,7 +61,7 @@ func InterceptQuery(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtoo
 	// Route the tail through the compile-or-DENY dispatcher: a reducible query
 	// — the Router translates an empty-backend dispatch into ErrNoBackend, which
 	// renderEngineError surfaces as an actionable install-or-login message, so
-	// the pre-flight Healthy() probe (always-local pre-FUL-323) is unnecessary.
+	// the pre-flight Healthy() probe (formerly always-local) is unnecessary.
 	// compiles to Engine.Execute; an unrecognized shape is denied legibly (there is
 	// no wire fallback). The query-domain + query-rendering intercepts already claim
 	// every specialized query mode upstream in the chain,

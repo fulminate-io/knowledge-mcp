@@ -171,7 +171,6 @@ func runAccuracyFixture(t *testing.T, fc fixtureCase) {
 
 // enforceThresholds calls t.Errorf with a diagnostic naming the
 // metric, measured value, and threshold for any out-of-band metric.
-// Required by criterion fc5aaae1af55e8088e96cebb17387f80.
 func enforceThresholds(t *testing.T, name string, m metricsBundle, thr resolvedThresholds) {
 	t.Helper()
 	if m.ChunkCountDelta > thr.ChunkCountDeltaMax {

@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// intercept_thoughts_recall.go — FUL-247 client-side claim for
+// intercept_thoughts_recall.go — client-side claim for
 // thoughts(operation:recall). Translates the recall payload into a
 // clientthought.RecallThoughts call against the wire helpers from Phase 2.
 // The cluster-mode special case is preserved by early-returning to
 // handleRecallClusters (mirrors the server-side branch in
-// tools_thought_query.go:91-98 pre-FUL-247).
+// tools_thought_query.go:91-98 pre-relocation).
 
 package tools
 
@@ -73,7 +73,7 @@ func handleRecallClient(ctx context.Context, deps ClientDeps, params kgtools.Cal
 	}
 
 	// Cluster-mode special case — moved here from interceptThoughtsOp
-	// (cmd/knowledge/internal/tools/thought.go:84-87 pre-FUL-247).
+	// (cmd/knowledge/internal/tools/thought.go:84-87 pre-relocation).
 	if a.Mode == "clusters" {
 		return handleRecallClusters(ctx, deps, a.AllTypes, a.Format)
 	}
@@ -93,6 +93,20 @@ func handleRecallClient(ctx context.Context, deps ClientDeps, params kgtools.Cal
 		Session:        a.Session,
 		ConnectedTo:    a.ConnectedTo,
 		Limit:          a.Limit,
+	}
+	// Route recall candidate-gathering through the CLIENT knowledge
+	// segment engines (Manager.Search) UNCONDITIONALLY for a non-empty query — the
+	// segment Manager is always wired in the real client, so there is no
+	// server-search fallback. Embed the recall query client-side here so the HNSW
+	// arm is exercised (the wire Caller is Execute-only and carries no embedder); an
+	// empty query vector degrades to the BM25 arm.
+	if a.Query != "" {
+		opts.Searcher = deps.SegmentManager()
+		if emb := deps.Embedder(); emb != nil {
+			if vec, err := emb.EmbedBinary(ctx, a.Query); err == nil && len(vec) > 0 {
+				opts.QueryVec = vec
+			}
+		}
 	}
 	if a.TimeStart != "" {
 		t, err := time.Parse("2006-01-02", a.TimeStart)

@@ -34,7 +34,7 @@ const (
 )
 
 // Code-graph metadata keys read once by the client-side collector and shipped
-// over the wire (FUL-241 Phase 5): the server is filesystem-blind for
+// over the wire: the server is filesystem-blind for
 // code-graph paths, so topology analyzers read these off graph metadata
 // instead of opening go.mod / .knowledge/topology_layers.yaml on the pod.
 const (

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// intercept_thoughts_examine.go — FUL-247 client-side claim for the
+// intercept_thoughts_examine.go — client-side claim for the
 // thought-examination surface. The server-side handleExamine body
 // is gone post-Phase-5; this is the only path that
 // produces a real response.
@@ -38,7 +38,7 @@ type examineClientArgs struct {
 
 // handleExamineClient claims the examine surface. Renders the
 // ThoughtExamination via the byte-identical block from
-// tools_thought_query.go:159-209 pre-FUL-247.
+// the former tools_thought_query.go:159-209.
 func handleExamineClient(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) kgtools.ToolResult {
 	var a examineClientArgs
 	if err := json.Unmarshal(params.Arguments, &a); err != nil {

@@ -14,7 +14,7 @@ import (
 // WorkOS permission slugs. These identify capabilities the issued JWT
 // carries; the agent's Bearer middleware enforces them at the resource
 // endpoint. Values must match the agent's bearer.PermXxx constants
-// exactly (see decision 281d5926f6b30c06140b7b0db63b2d82). Changing any
+// exactly. Changing any
 // value here is a wire break that requires coordinated agent + WorkOS
 // dashboard updates.
 const (

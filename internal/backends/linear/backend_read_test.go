@@ -23,7 +23,7 @@ import (
 // rather than panicking on index-out-of-range.
 //
 // Generic placeholders only — never real Linear team/workspace identifiers
-// in fixtures (per criterion c654415691a05032f5cc08f10a66050a).
+// in fixtures.
 func scriptedServer(t *testing.T, responses []string) (*httptest.Server, *[]json.RawMessage) {
 	t.Helper()
 	calls := make([]json.RawMessage, 0, len(responses))

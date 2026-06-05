@@ -6,8 +6,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
@@ -32,8 +34,12 @@ import (
 //   - mode=stats    : Stats RPC → RenderStatsBreakdown ("## Linkage Graph") +
 //     the proxy-by-foreign_graph breakdown.
 //   - id getNode    : Execute ByID → node render.
-//   - search        (text): generic search Execute → RenderLinkageSearch (reuses
-//     the engine proxy annotation helpers).
+//   - ranked text search: RETIRED → rankedSearchRetiredResult("linkage").
+//
+// web/pdf shapes: ranked text search is RETIRED (rankedSearchRetiredResult); every
+// index-free op (by-id getNode, type-browse, mode=stats, mode=modules) passes
+// through unhandled to the engineDispatch path (compileQuery lowers them to
+// ById/Match/GRAPH_NAMES — no RETURN_MODE_SEARCH).
 
 // InterceptQueryPracticeLinkage claims query(graph in {practice,linkage}).
 func InterceptQueryPracticeLinkage(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
@@ -44,29 +50,58 @@ func InterceptQueryPracticeLinkage(deps ClientDeps, params kgtools.CallToolParam
 	if err := json.Unmarshal(params.Arguments, &a); err != nil {
 		return false, kgtools.ToolResult{}
 	}
-	gc := deps.GraphCaller()
 	switch a.Graph {
 	case "practice":
-		if gc == nil {
-			return true, errorResult("practice: graph client unavailable")
-		}
-		sc, ok := gc.(statsRPC)
+		sc, res, ok := statsSeamFor(deps, "practice")
 		if !ok {
-			return true, errorResult("practice: stats seam unavailable")
+			return true, res
 		}
 		return true, routePracticeClient(context.Background(), deps, sc, a)
 	case "linkage":
-		if gc == nil {
-			return true, errorResult("linkage: graph client unavailable")
-		}
-		sc, ok := gc.(statsRPC)
+		sc, res, ok := statsSeamFor(deps, "linkage")
 		if !ok {
-			return true, errorResult("linkage: stats seam unavailable")
+			return true, res
 		}
 		return true, routeLinkageClient(context.Background(), sc, a)
+	case "web", "pdf":
+		// web/pdf ranked text is retired without touching the wire — no gc needed.
+		return routeWebPDFClient(a)
 	default:
 		return false, kgtools.ToolResult{}
 	}
+}
+
+// statsSeamFor resolves the statsRPC seam for the practice/linkage arms, returning
+// a legible error result (ok=false) when the graph client or stats seam is absent.
+func statsSeamFor(deps ClientDeps, graph string) (statsRPC, kgtools.ToolResult, bool) {
+	gc := deps.GraphCaller()
+	if gc == nil {
+		return nil, errorResult(graph + ": graph client unavailable"), false
+	}
+	sc, ok := gc.(statsRPC)
+	if !ok {
+		return nil, errorResult(graph + ": stats seam unavailable"), false
+	}
+	return sc, kgtools.ToolResult{}, true
+}
+
+// routeWebPDFClient retires ONLY the ranked-text-search shape for the web/pdf raw
+// graphs and passes EVERY index-free op through unhandled. web/pdf are
+// SkipsLLMProcessing (embed-forbidden) stage-1 intermediates a translator turns
+// into knowledge nodes (which ARE client-searchable), so their raw ranked search
+// is retired rather than migrated (no BM25-only axis). A text
+// search (text or queries[], no id / specialized mode) returns the retired result;
+// everything else (by-id getNode, type-browse, mode=stats, mode=modules) returns
+// (false,_) so the engineDispatch path serves it (compileQuery lowers those to
+// ById/Match/GRAPH_NAMES — never RETURN_MODE_SEARCH).
+func routeWebPDFClient(a queryArgs) (bool, kgtools.ToolResult) {
+	isRankedText := (a.Text != "" || len(a.Queries) > 0) &&
+		a.ID == "" &&
+		(a.Mode == "" || a.Mode == "text")
+	if isRankedText {
+		return true, rankedSearchRetiredResult(a.Graph)
+	}
+	return false, kgtools.ToolResult{} // index-free op → engineDispatch serves it.
 }
 
 // routePracticeClient dispatches the three practice shapes.
@@ -93,23 +128,126 @@ func routePracticeClient(ctx context.Context, deps ClientDeps, gc statsRPC, a qu
 		}
 		return textResult(sb.String())
 	}
-	// (3) search/browse with language → generic search Execute.
+	// (3) search/browse with language.
 	query := practiceQueryText(a)
-	resp, err := gc.Execute(ctx, &knowledgev1.ExecuteRequest{
-		Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
-			Queries:    []string{query},
-			ReturnMode: knowledgev1.ReturnMode_RETURN_MODE_SEARCH,
-		}},
-		Target: &knowledgev1.GraphSelector{Graph: "practice", Language: a.Language},
-	})
+
+	// (3a) language:"all" → scatter-gather fan-out across every loaded practice
+	// graph (kills the silent-0). The empty-language list-graphs BROWSE above is
+	// preserved; only the explicit "all" sentinel fans out.
+	if a.Language == "all" {
+		return composePracticeSearchFanOut(ctx, deps, deps.SegmentManager(), query)
+	}
+
+	// (3b) Route a specific-language practice search through the per-language CLIENT
+	// engine (Manager.Search → RRF) + hydration UNCONDITIONALLY — the segment Manager
+	// is always wired in the real client, so there is no server RETURN_MODE_SEARCH
+	// fallback. list-graphs (arm 1) + stats/sample shapes (arm 2) are unchanged —
+	// only the ranked search arm reroutes. An un-collected practice graph (no
+	// segments) renders zero results cleanly.
+	return composePracticeSearchClient(ctx, deps, deps.SegmentManager(), a.Language, query)
+}
+
+// composePracticeSearchClient runs the practice ranked-search arm against the
+// CLIENT per-language engine: embed the query client-side (so the HNSW arm is
+// exercised), Manager.Search(GraphPractice, language, …) → RRF, then ONE
+// RETURN_MODE_NODES hydrate, rendered via the same RenderPracticeResults shape
+// as the server arm. A nil embedder degrades to the BM25 arm; an empty graph
+// (segments not yet built) renders zero results cleanly.
+func composePracticeSearchClient(ctx context.Context, deps ClientDeps, mgr SegmentSearcher, language, query string) kgtools.ToolResult {
+	var queryVec []byte
+	if emb := deps.Embedder(); emb != nil && query != "" {
+		if vec, err := emb.EmbedBinary(ctx, query); err == nil && len(vec) > 0 {
+			queryVec = vec
+		}
+	}
+	hits, err := mgr.Search(ctx, kgtypes.GraphPractice, language, query, queryVec, knowledgeSearchDefaultLimit)
 	if err != nil {
-		return errorResult("practice search failed: " + err.Error())
+		return errorResult("practice search: client engine: " + err.Error())
 	}
-	results, derr := engine.DecodeSearch(resp)
-	if derr != nil {
-		return errorResult("practice search decode failed: " + derr.Error())
+	results, err := hydrateEngineHits(ctx, deps.GraphCaller(), hydrateSelector{Graph: "practice", Language: language}, hits)
+	if err != nil {
+		return errorResult("practice search: hydrate: " + err.Error())
 	}
-	return engine.RenderPracticeResults(a.Language, query, results)
+	return engine.RenderPracticeResults(language, query, results)
+}
+
+// composePracticeSearchFanOut is the scatter-gather practice search across ALL
+// loaded practice graphs — the prong that kills the language:"all" silent-0.
+// It mirrors composeCodeSearchMultiRepo (intercept_query_code_search.go): the
+// graph set is enumerated DYNAMICALLY via listGraphNamesOfType (no hardcoded
+// language list), the query is embedded EXACTLY ONCE up front and the vector
+// reused for every per-graph Search (no N-embed fan-out), each graph is searched
+// in PARALLEL under a NumCPU-bounded pool, then per-graph hits are score-merged
+// (sorted desc, capped at knowledgeSearchDefaultLimit) and rendered with
+// per-graph attribution via RenderPracticeFanOut. An empty practice-graph set
+// renders a clean "no graphs" result rather than a silent zero.
+func composePracticeSearchFanOut(ctx context.Context, deps ClientDeps, mgr SegmentSearcher, query string) kgtools.ToolResult {
+	names, err := listGraphNamesOfType(ctx, deps, "practice")
+	if err != nil {
+		return errorResult("practice fan-out: resolve graphs: " + err.Error())
+	}
+	if len(names) == 0 {
+		return textResult("No practice graphs found.")
+	}
+
+	// Embed the query a SINGLE time up front; the vector is reused for every
+	// per-graph Search so the HNSW arm is exercised without an N-embed fan-out.
+	var queryVec []byte
+	if emb := deps.Embedder(); emb != nil && query != "" {
+		if vec, embErr := emb.EmbedBinary(ctx, query); embErr == nil && len(vec) > 0 {
+			queryVec = vec
+		}
+	}
+
+	type graphResult struct {
+		graph   string
+		results []engine.SearchResult
+	}
+	var (
+		mu  sync.Mutex
+		all []graphResult
+		wg  sync.WaitGroup
+	)
+	gc := deps.GraphCaller()
+	sem := make(chan struct{}, max(1, runtime.NumCPU()))
+	for _, name := range names {
+		wg.Add(1)
+		go func(language string) {
+			defer wg.Done()
+			sem <- struct{}{}
+			defer func() { <-sem }()
+			hits, searchErr := mgr.Search(ctx, kgtypes.GraphPractice, language, query, queryVec, knowledgeSearchDefaultLimit)
+			if searchErr != nil || len(hits) == 0 {
+				return
+			}
+			results, hydErr := hydrateEngineHits(ctx, gc, hydrateSelector{Graph: "practice", Language: language}, hits)
+			if hydErr != nil || len(results) == 0 {
+				return
+			}
+			mu.Lock()
+			all = append(all, graphResult{graph: language, results: results})
+			mu.Unlock()
+		}(name)
+	}
+	wg.Wait()
+
+	// Merge per-graph hits, tag each with its source graph, sort by score desc,
+	// cap to the default limit (mirrors mergeMultiRepoResults).
+	merged := make([]engine.PracticeFanOutHit, 0)
+	for _, gr := range all {
+		for _, r := range gr.results {
+			merged = append(merged, engine.PracticeFanOutHit{Graph: gr.graph, Result: r})
+		}
+	}
+	sort.Slice(merged, func(i, j int) bool { return merged[i].Result.Score > merged[j].Result.Score })
+	if len(merged) > knowledgeSearchDefaultLimit {
+		merged = merged[:knowledgeSearchDefaultLimit]
+	}
+
+	searched := make([]string, len(names))
+	copy(searched, names)
+	sort.Strings(searched)
+	return engine.RenderPracticeFanOut(query, searched, merged)
 }
 
 // practiceQueryText picks the search text from the query/text fields.
@@ -121,6 +259,25 @@ func practiceQueryText(a queryArgs) string {
 		return a.Queries[0]
 	}
 	return ""
+}
+
+// rankedSearchRetiredResult is the graph-neutral "ranked text search retired"
+// result returned for the raw/derived graphs whose ranked search is NOT migrated
+// to the client (linkage / web / pdf). The graph label names the graph so the
+// message is specific. linkage proxies + web/pdf raw graphs carry no unique
+// client-indexable content (web/pdf are SkipsLLMProcessing/embed-forbidden and are
+// stage-1 intermediates a translator turns into knowledge nodes, which ARE
+// client-searchable; linkage denormalizes source-graph text). The design
+// drops raw ranked search rather than build a BM25-only axis. The index-free ops
+// for these graphs — list-graphs / stats / getNode / traverse / proxy
+// read-through / browse — are UNAFFECTED. Defined here, reused by both tools.
+func rankedSearchRetiredResult(graph string) kgtools.ToolResult {
+	return textResult(fmt.Sprintf(
+		"Ranked text search for the %s graph is retired. The %s graph carries no "+
+			"unique client-indexable content, so it has no ranked search index. "+
+			"Its other operations still work: list-graphs, stats, get-node-by-id, "+
+			"traverse, and browse.",
+		graph, graph))
 }
 
 // routeLinkageClient dispatches the linkage shapes.
@@ -148,23 +305,11 @@ func routeLinkageClient(ctx context.Context, gc statsRPC, a queryArgs) kgtools.T
 		}
 		return engine.RenderGenericNode(nodes[0], "linkage")
 	}
-	// (4) search (text).
-	query := practiceQueryText(a)
-	resp, err := gc.Execute(ctx, &knowledgev1.ExecuteRequest{
-		Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
-			Queries:    []string{query},
-			ReturnMode: knowledgev1.ReturnMode_RETURN_MODE_SEARCH,
-		}},
-		Target: &knowledgev1.GraphSelector{Graph: "linkage"},
-	})
-	if err != nil {
-		return errorResult("linkage search failed: " + err.Error())
-	}
-	results, derr := engine.DecodeSearch(resp)
-	if derr != nil {
-		return errorResult("linkage search decode failed: " + derr.Error())
-	}
-	return engine.RenderLinkageSearch(query, results)
+	// (4) ranked text search RETIRED. linkage proxies denormalize
+	// source-graph text and carry no unique client-indexable content, so there is
+	// no client linkage search index. The index-free ops above (list-graphs, stats
+	// + proxy breakdown, id getNode) — and proxy read-through — are unaffected.
+	return rankedSearchRetiredResult("linkage")
 }
 
 // linkageStatsClient renders the linkage stats body + the proxy-by-foreign_graph

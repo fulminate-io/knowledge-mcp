@@ -35,6 +35,9 @@ func (d *logE2EDeps) BackendResolver() BackendResolver      { return nil }
 func (d *logE2EDeps) GraphCaller() GraphCaller              { return d.gc }
 func (d *logE2EDeps) LocalGraphCaller() GraphCaller         { return d.gc }
 func (d *logE2EDeps) RepoResolver() *RepoResolver           { return nil }
+func (d *logE2EDeps) SegmentManager() SegmentSearcher       { return nil }
+func (d *logE2EDeps) SegmentShipper() SegmentShipper        { return nil }
+func (d *logE2EDeps) PipelineScanner() PipelineScanner      { return nil }
 
 // e2eSetupLogGraph seeds a small store-FREE log graph (templates + chunk +
 // stream + a correlation edge) onto a fakeLogGraphCaller. Returns the queryID

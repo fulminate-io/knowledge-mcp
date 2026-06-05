@@ -14,7 +14,7 @@ import (
 // cmd/knowledge-server tools package and cmd/knowledge/internal/tools
 // cannot import each other (wrong direction for the client/server split).
 //
-// BCN11: these mirrors were introduced so the log-tool dispatchers moved
+// These mirrors were introduced so the log-tool dispatchers moved
 // client-side keep parsing the same wire fields as before. Production tool
 // calls land here via the InterceptLogsQuery / InterceptLogsManage /
 // InterceptLogsTraversal chain steps; reaching the server with one of
@@ -112,7 +112,7 @@ type traverseArgs struct {
 }
 
 // flexFloat is the client-side mirror of the server flexFloat type.
-// Lives here (not flex_types.go) to keep the BCN11 mirror block colocated
+// Lives here (not flex_types.go) to keep the mirror block colocated
 // with the rest of the moved-handler scaffolding.
 type flexFloat float64
 

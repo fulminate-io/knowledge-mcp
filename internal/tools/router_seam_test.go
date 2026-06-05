@@ -10,8 +10,8 @@ import (
 // Compile-time verification: *graphclient.Router must satisfy every type-
 // assertion seam tools-package code performs on deps.GraphCaller(). If any
 // of these fail to compile, the binary would break at runtime when
-// manage/promote/persist/stats/sync paths call gc.(SeamInterface). Reviewer
-// T1 regression guard for FUL-323.
+// manage/promote/persist/stats/sync paths call gc.(SeamInterface).
+// Regression guard for the router seam.
 //
 // Seam → site map:
 //   - Indexer             → intercept_manage_index.go:27 (Index RPC narrow)

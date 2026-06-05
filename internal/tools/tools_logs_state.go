@@ -1,17 +1,17 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// Package tools — pre-fetched log graph state for the BCN11.3
+// Package tools — pre-fetched log graph state for the
 // wire-fetch handler architecture.
 //
-// logState replaces the original BCN11.3 proposal of a 50-method
-// `prefetchedLogDB` store.DB shim (banned per feedback_bcn_is_move_not_
-// redesign — client must not host store-shaped wrappers). Instead, the
+// logState replaces an earlier proposal of a 50-method
+// `prefetchedLogDB` store.DB shim (the client must not host store-shaped
+// wrappers). Instead, the
 // 7 moved log handler families receive a `*logState` value type that
 // materializes every template/stream/chunk node and every edge a single
 // formatter call needs. No store.DB surface. No panicking methods. The
 // state is built once per MCP call via getOrFetchLogState in
 // tools_logs_wire_fetch.go and discarded after the response is rendered
-// (no engine cache per reviewer T2-B).
+// (no engine cache).
 
 package tools
 

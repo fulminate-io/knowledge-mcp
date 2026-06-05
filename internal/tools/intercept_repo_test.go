@@ -46,8 +46,11 @@ func (d *repoTestDeps) GraphCaller() GraphCaller {
 	}
 	return d.gc
 }
-func (d *repoTestDeps) LocalGraphCaller() GraphCaller { return d.gc }
-func (d *repoTestDeps) RepoResolver() *RepoResolver   { return d.resolver }
+func (d *repoTestDeps) LocalGraphCaller() GraphCaller    { return d.gc }
+func (d *repoTestDeps) RepoResolver() *RepoResolver      { return d.resolver }
+func (d *repoTestDeps) SegmentManager() SegmentSearcher  { return nil }
+func (d *repoTestDeps) SegmentShipper() SegmentShipper   { return nil }
+func (d *repoTestDeps) PipelineScanner() PipelineScanner { return nil }
 
 // buildResolver returns a RepoResolver pre-loaded with the given graph
 // names. listGraphsCaller backs the resolver; the first ResolveCwd call

@@ -26,11 +26,15 @@ func (s *UploadSink) FetchCloudSubgraph(
 	graphNames []string,
 	typePrefixes []string,
 ) (*cloudresolver.CloudSubgraph, error) {
+	client, err := s.picker(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("remote sink: resolve ingest client: %w", err)
+	}
 	req := connect.NewRequest(&knowledgev1.FetchCloudSubgraphRequest{
 		GraphNames:   graphNames,
 		TypePrefixes: typePrefixes,
 	})
-	resp, err := s.client.FetchCloudSubgraph(ctx, req)
+	resp, err := client.FetchCloudSubgraph(ctx, req)
 	if err != nil {
 		return nil, fmt.Errorf("remote sink: FetchCloudSubgraph: %w", err)
 	}

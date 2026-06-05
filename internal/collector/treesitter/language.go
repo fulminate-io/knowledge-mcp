@@ -79,7 +79,7 @@ const (
 )
 
 // TestKind classifies the kind of test code a chunk or node represents.
-// The 9-value contract is locked by decision 83735cfc14b930e395599b3abd1f850c:
+// The 9-value contract is locked by design:
 // test, benchmark, example, fuzz, setup, teardown, fixture, mock, helper. Each
 // kind answers a distinct intent — collapsing them would lose the ability to
 // rerank or filter per-intent. The empty string (TestKindNone) is the zero

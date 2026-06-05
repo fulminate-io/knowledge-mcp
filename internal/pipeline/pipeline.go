@@ -10,6 +10,7 @@ import (
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/llmproviders"
+	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
 
 // Pipeline owns the global summary/embed channels, dispatchers, worker
@@ -33,10 +34,33 @@ type Pipeline struct {
 	summarizer SummarizerFunc
 	embedder   EmbedderFunc
 
+	// resolver is the OPTIONAL login-aware backend seam (the production
+	// routedWireClient over *graphclient.Router). When non-nil the pipeline
+	// binds each collector to the CURRENT concrete backend at RegisterGraph
+	// time and tears down + rebinds every collector on a login flip
+	// (Hazard B). nil for test fakes that don't implement BackendResolver —
+	// collectors then ride the shared p.client and no flip detection runs.
+	resolver BackendResolver
+
+	// lastLoggedIn caches the login state observed at the previous refreshOnce
+	// tick. A transition forces a full collector teardown + rebind so the
+	// per-collector dirty-gen caches reset and each collector re-binds the new
+	// backend. Guarded by collectorMu (only touched inside refreshOnce, which
+	// also serializes via the RefreshLoadedGraphs single-flight semaphore).
+	lastLoggedIn    bool
+	lastLoggedInSet bool
+
 	// backoff is the shared exponential-backoff gate for LLM calls. One
 	// instance across all summary + embed workers — the rate limit it
 	// guards is global to the provider, not per-graph or per-worker.
 	backoff *errBackoff
+
+	// embedRPM is the shared PROACTIVE fixed-rate pacer for embed dispatch.
+	// One instance across all embed workers — the provider RPM limit is
+	// global. It is the proactive companion to the reactive backoff: it paces
+	// the opening burst BEFORE the first 429, where backoff only reacts after
+	// one lands. Disabled (no-op) unless cfg.EmbedRPM > 0.
+	embedRPM *rpmGate
 
 	summaryCh chan SummaryWork
 	embedCh   chan EmbedWork
@@ -52,14 +76,77 @@ type Pipeline struct {
 	collectorMu      sync.Mutex
 	collectorCancels map[graphKey]context.CancelFunc
 
+	// collectorWakes holds each live collector's two wake channels
+	// (summary + embed). WakeAll fans out across them so a collect makes every
+	// idle-backed-off collector re-scan within one base tick. Guarded by
+	// collectorMu alongside collectorCancels (same register/unregister lifecycle).
+	collectorWakes map[graphKey][]chan struct{}
+
 	collectorWG  sync.WaitGroup // every collector goroutine
 	dispatcherWG sync.WaitGroup // dispatcher goroutines
 	workerWG     sync.WaitGroup // worker goroutines
 
 	metrics *metricsState
 
+	// segmentMgr is the OPTIONAL client-side HNSW segment owner. When non-nil, the
+	// embed-writeback seam ALSO feeds the freshly-embedded binary vectors into a
+	// per-graph HNSW engine and ships any newly-sealed segments (the
+	// client builds + ships). The ship is BEST-EFFORT — a build/ship failure only
+	// WARNs and never fails embed writeback. Server-side search is retired, so
+	// these client segments ARE the search index: a dropped ship leaves the
+	// affected nodes temporarily unsearchable until the next ship or a segment
+	// rebuild, but writeback liveness takes priority and it self-heals on the next
+	// embed dirty-gen. nil for test fakes that don't wire it.
+	segmentMgr ShipManager
+
+	// healFactory builds the per-graph auto-heal closure RegisterGraph
+	// injects into each collector. Built by BOOTSTRAP (the only layer where
+	// pipeline + segmentdist + tools are all visible) over the concrete
+	// segment-presence probe (*segmentdist.Manager.HasShippedSegments) and the
+	// rebuild driver core (tools.RebuildSegments) — deliberately kept OUT of this
+	// package so pipeline never imports tools (an import cycle: tools already
+	// imports pipeline). nil when no segment manager is wired (test fakes) → the
+	// per-collector heal closure is nil → the armed embed-drain heal-check no-ops.
+	healFactory func(gt kgtypes.GraphType, name string) func(ctx context.Context) error
+
 	stopOnce sync.Once
 	stopErr  error
+}
+
+// ShipManager is the narrow surface the embed-writeback seam uses to build + ship
+// client-side segments. *segmentdist.Manager satisfies it (dual-format after
+// AddAndShip feeds the HNSW engine from vectors; AddAndShipFields feeds
+// the BM25 engine from per-field text). Declared here (consumer-side interface) so
+// the pipeline carries no hard dependency on the segmentdist concrete type and
+// tests can inject a fake.
+type ShipManager interface {
+	AddAndShip(ctx context.Context, gt kgtypes.GraphType, name string, docs []searchengine.Document) error
+	// AddAndShipFields builds + ships BM25 segments from field-bearing Documents.
+	// Best-effort at the call site — a failure WARNs and never fails embed
+	// writeback; the BM25 segments self-heal on the next ship (server-side search
+	// is retired, so these segments are the only BM25 index).
+	AddAndShipFields(ctx context.Context, gt kgtypes.GraphType, name string, docs []searchengine.Document) error
+	// Flush force-seals the sub-threshold coalescing tail of BOTH formats for one
+	// (gt, name) and ships the newly-sealed segments. The quiescence trigger
+	// fires it once per embed drain so sub-1024-doc graphs + trailing
+	// tails seal and become client-searchable. *segmentdist.Manager.Flush
+	// (manager_owner.go:110) satisfies it.
+	Flush(ctx context.Context, gt kgtypes.GraphType, name string) error
+}
+
+// AttachSegmentManager wires the optional HNSW segment owner. Called once at
+// construction (bootstrap) before Start; nil-safe — leaving it unset disables the
+// additive client-side build+ship.
+func (p *Pipeline) AttachSegmentManager(m ShipManager) { p.segmentMgr = m }
+
+// AttachHealFactory wires the auto-heal closure factory. Called once at
+// construction (bootstrap) before Start, after AttachSegmentManager; nil-safe —
+// leaving it unset means RegisterGraph builds a nil per-collector heal closure
+// and the armed embed-drain heal-check no-ops. The factory is built in bootstrap
+// (over the concrete segment probe + tools.RebuildSegments) so this package never
+// imports tools.
+func (p *Pipeline) AttachHealFactory(fn func(kgtypes.GraphType, string) func(context.Context) error) {
+	p.healFactory = fn
 }
 
 // graphKey is the Pipeline-internal map key for collector tracking.
@@ -79,7 +166,7 @@ type SummarizerFunc func(ctx context.Context, chunks []llmproviders.BatchChunk) 
 
 // EmbedderFunc is the symmetric abstraction for the embedder. The pipeline
 // worker feeds the embedder the SERVER-COMPOSED EmbedText carried on each work
-// item (FUL-305 — no client-side text composition, no node re-fetch). Returns
+// item (no client-side text composition, no node re-fetch). Returns
 // the per-id binary vectors keyed by ID (NOT just a count) so the writeback
 // path lands the bytes alongside the summary in a single
 // mutate(update_batch) RPC.
@@ -93,17 +180,25 @@ type EmbedderFunc func(ctx context.Context, items []EmbedItem) (map[string][]byt
 // MCP tool calls against. Production wires *server.GraphClient; tests
 // wire a fake satisfying the same narrow surface.
 func New(cfg Config, client WireClient, summarizer SummarizerFunc, embedder EmbedderFunc) *Pipeline {
+	// The production client (bootstrap routedWireClient) also satisfies
+	// BackendResolver — bind it so collectors get the login-routed concrete
+	// backend and refreshOnce can detect a flip. Test fakes that implement only
+	// WireClient leave resolver nil → collectors ride p.client, no flip rebind.
+	resolver, _ := client.(BackendResolver)
 	return &Pipeline{
 		cfg:              cfg,
 		client:           client,
 		summarizer:       summarizer,
 		embedder:         embedder,
+		resolver:         resolver,
 		backoff:          newErrBackoff(cfg.ErrBackoffBaseOrDefault(), cfg.ErrBackoffMaxOrDefault()),
+		embedRPM:         newRPMGate(cfg.EmbedRPMOrDefault()),
 		summaryCh:        make(chan SummaryWork, cfg.SummaryChannelSizeOrDefault()),
 		embedCh:          make(chan EmbedWork, cfg.EmbedChannelSizeOrDefault()),
 		summaryBatchCh:   make(chan []SummaryWork, cfg.SummaryWorkersOrDefault()),
 		embedBatchCh:     make(chan []EmbedWork, cfg.EmbedWorkersOrDefault()),
 		collectorCancels: make(map[graphKey]context.CancelFunc),
+		collectorWakes:   make(map[graphKey][]chan struct{}),
 		metrics:          &metricsState{},
 	}
 }
@@ -170,6 +265,7 @@ func (p *Pipeline) stopSequence(ctx context.Context) error {
 		cancel()
 	}
 	p.collectorCancels = make(map[graphKey]context.CancelFunc)
+	p.collectorWakes = make(map[graphKey][]chan struct{})
 	p.collectorMu.Unlock()
 
 	// Step 2: wait collectors, bounded by ctx.
@@ -209,53 +305,6 @@ func waitWithCtx(ctx context.Context, wg *sync.WaitGroup) error {
 	}
 }
 
-// RegisterGraph spawns the per-graph collector goroutines (summary +
-// embed) for (gt, name). Called by the registry hook (Phase 6) when a
-// graph loads. Re-registration of an already-tracked graph is a no-op
-// — the registry hook fires once per load.
-//
-// No client-side graph-type eligibility gate (FUL-307, Option B): the
-// collector is spawned for EVERY loaded graph regardless of summary/embed
-// eligibility. A non-eligible graph (logs/web/pdf/linkage) is idle-cheap:
-// the server's pipeline_scan handler short-circuits NodeIDsBySummaryGap /
-// NodeIDsByEmbedGap on the graph type and returns empty, so the collector
-// does one empty scan then cheap-tick-polls forever (no per-tick O(N) walk).
-// The graph-type eligibility decision lives server-side exclusively.
-//
-// MUST NOT call back into the store registry synchronously per ticket
-// reviewer R1: graph-load → notifyGraphLoaded → RegisterGraph runs while
-// the registry's writeMu may still be held by callers in the resolution
-// path. The collector goroutines lazy-Retrieve on their first tick so
-// no synchronous lookup happens here.
-func (p *Pipeline) RegisterGraph(gt kgtypes.GraphType, name string) {
-	key := graphKey{GraphType: gt, GraphName: name}
-	p.collectorMu.Lock()
-	defer p.collectorMu.Unlock()
-	if _, exists := p.collectorCancels[key]; exists {
-		return
-	}
-	ctx, cancel := context.WithCancel(context.Background()) //nolint:gosec // cancel is stored in collectorCancels and invoked by UnregisterGraph / stopSequence
-	p.collectorCancels[key] = cancel
-	c := newCollector(gt, name, p.cfg, p.summaryCh, p.embedCh, p.metrics, p.client)
-	p.collectorWG.Go(func() {
-		c.run(ctx)
-	})
-}
-
-// UnregisterGraph cancels the collector context and removes the entry
-// from the tracking map. Called by the registry hook on graph unload.
-// Safe if (gt, name) is not registered.
-func (p *Pipeline) UnregisterGraph(gt kgtypes.GraphType, name string) {
-	key := graphKey{GraphType: gt, GraphName: name}
-	p.collectorMu.Lock()
-	cancel, exists := p.collectorCancels[key]
-	delete(p.collectorCancels, key)
-	p.collectorMu.Unlock()
-	if exists {
-		cancel()
-	}
-}
-
 // Metrics returns a Snapshot of the current pipeline counters with the
 // channel-depth fields populated from len(channel).
 func (p *Pipeline) Metrics() Metrics {
@@ -275,7 +324,7 @@ func (p *Pipeline) ResetFailedCounters() {
 // EnqueueIDs pushes (gt, name, id) tuples directly onto the summary +
 // embed channels, skipping the pipeline_scan discovery latency for IDs
 // the caller already knows are new. Used by the collect interceptor's
-// short-circuit path (BCN5 Phase 6 step 3): uploadChunks returns the
+// short-circuit path: uploadChunks returns the
 // list of newly-uploaded node hashes; passing them here avoids a
 // round-trip through the next collector tick.
 //
@@ -288,7 +337,7 @@ func (p *Pipeline) ResetFailedCounters() {
 // channel and the collector's pruneInFlightItems handles them on the
 // next tick.
 //
-// No client-side graph-type eligibility gate (FUL-307, Option B): every id
+// No client-side graph-type eligibility gate (Option B): every id
 // is pushed onto BOTH channels regardless of the graph's summary/embed
 // eligibility. The off-axis work is discarded server-side — the worker
 // composes/reads text and the eligibility decision is the server's
@@ -310,37 +359,60 @@ func (p *Pipeline) EnqueueIDs(gt kgtypes.GraphType, name string, ids []string) {
 }
 
 // RefreshLoadedGraphs is the client-side graph-discovery poll. It polls the
-// loaded-graph catalog every Tick (listLoadedGraphs → per-type
-// RETURN_MODE_GRAPH_NAMES reads), diffs the response against the current per-(gt,
-// name) collector set, and calls RegisterGraph / UnregisterGraph for the delta.
-// Worst-case lag for graph create/destroy propagation: one collector tick — the
-// price of a wire poll rather than an in-process registry hook.
+// loaded-graph catalog (listLoadedGraphs → per-type RETURN_MODE_GRAPH_NAMES
+// reads), diffs the response against the current per-(gt, name) collector set,
+// and calls RegisterGraph / UnregisterGraph for the delta. Worst-case lag for
+// graph create/destroy propagation: one poll interval — the price of a wire
+// poll rather than an in-process registry hook.
 //
-// Single-flight semantics: a slow list_graphs call must not overlap
-// with the next tick's call. The single-token semaphore channel skips
-// a tick when a previous refresh hasn't completed.
+// Cadence is remote-aware, mirroring the per-graph collector loop (cadenceFor):
+// a logged-in (remote) backend polls at the slow Config.CloudTick base, a
+// logged-out (local loopback) backend at the cheap Config.Tick base. Polling
+// the REMOTE catalog at the 250ms local cadence fires len(eligibleTypes) wire
+// RPCs every 250ms (~24 RPC/s) and saturates the backend's per-IP rate limiter —
+// the cadence bug this loop previously had.
+//
+// Throttle insurance: when a whole tick is lost to a remote 429 (refreshOnce
+// reports throttled), the loop backs off on a dedicated errBackoff gate instead
+// of re-firing at the base cadence — the discovery-poll equivalent of the
+// collector's #3 scan-error backoff. Without it a sustained 429 turns the poll
+// into a tight retry storm against the shared limiter (backoff.go's documented
+// bug class). A clean tick resets the gate.
+//
+// refreshOnce runs synchronously, so a slow poll naturally delays the next one —
+// no separate single-flight guard is needed.
 //
 // Exits on ctx.Done.
 func (p *Pipeline) RefreshLoadedGraphs(ctx context.Context) {
-	inFlight := make(chan struct{}, 1)
-	tick := p.cfg.TickOrDefault()
-	t := time.NewTicker(tick)
-	defer t.Stop()
+	gate := newErrBackoff(p.cfg.ErrBackoffBaseOrDefault(), p.cfg.ErrBackoffMaxOrDefault())
 	for {
+		hint, throttled := p.refreshOnce(ctx)
+		var d time.Duration
+		if throttled {
+			// Sustained 429: honor the server's Retry-After (or blind exponential)
+			// rather than re-polling at the base cadence and feeding the storm.
+			d = gate.failHint(hint)
+			slog.Debug("pipeline.refresh: discovery throttled; backing off",
+				"delay", d, "retry_after_hint", hint)
+		} else {
+			gate.ok()
+			d = p.discoveryTick(ctx)
+		}
 		select {
 		case <-ctx.Done():
 			return
-		case <-t.C:
+		case <-time.After(d):
 		}
-		select {
-		case inFlight <- struct{}{}:
-		default:
-			// Previous refresh still running; skip this tick.
-			continue
-		}
-		p.refreshOnce(ctx)
-		<-inFlight
 	}
+}
+
+// discoveryTick returns the base poll interval for the graph-discovery loop:
+// Config.CloudTick when bound to a remote (logged-in) backend, Config.Tick for
+// local loopback. Reuses cadenceFor's login-aware base so discovery and the
+// per-graph collectors stay on the same remote-vs-local cadence.
+func (p *Pipeline) discoveryTick(ctx context.Context) time.Duration {
+	base, _ := p.cadenceFor(ctx)
+	return base
 }
 
 // RefreshOnceForBoot performs the one-shot startup registration pass.
@@ -353,13 +425,26 @@ func (p *Pipeline) RefreshOnceForBoot(ctx context.Context) {
 
 // refreshOnce performs one diff-and-dispatch pass. Extracted from
 // RefreshLoadedGraphs so the per-tick body stays under the
-// cognitive-complexity cap.
-func (p *Pipeline) refreshOnce(ctx context.Context) {
-	graphs, err := listLoadedGraphs(ctx, p.client)
-	if err != nil {
-		slog.Debug("pipeline.refresh: list_graphs failed; will retry next tick", "error", err)
-		return
-	}
+// cognitive-complexity cap. Returns (rlHint, throttled) from the catalog
+// enumeration so the caller can back off when the whole tick was lost to a
+// remote rate-limit; the boot caller (RefreshOnceForBoot) ignores them.
+func (p *Pipeline) refreshOnce(ctx context.Context) (time.Duration, bool) {
+	// Hazard B: on a login-state transition, tear down + clear ALL collectors
+	// BEFORE the diff so every survivor graphKey re-registers fresh against the
+	// NEW backend — resetting the per-collector dirty-gen caches (collector.go)
+	// to 0 (re-scan from scratch) and re-binding the concrete backend. Without
+	// this a graphKey present in both catalogs would never re-register (it sits
+	// in both wanted+have) and would keep scanning the new backend with a stale
+	// gen → silent no-drain of the cloud gaps.
+	p.handleLoginFlip(ctx)
+
+	// listLoadedGraphs never aborts: a per-type enumeration failure (rollout 502,
+	// permission_denied) is skipped, and `succeeded` reports which types this tick
+	// actually enumerated. We register every wanted graph, but only UNREGISTER
+	// within successfully-enumerated types — a type whose enumeration failed has
+	// an incomplete wanted-set this tick, so tearing down its collectors on the
+	// strength of that empty set would be the churn (and stall) we are fixing.
+	graphs, succeeded, rlHint, throttled := listLoadedGraphs(ctx, p.client)
 	wanted := make(map[graphKey]struct{}, len(graphs))
 	for _, g := range graphs {
 		wanted[graphKey(g)] = struct{}{}
@@ -373,12 +458,43 @@ func (p *Pipeline) refreshOnce(ctx context.Context) {
 
 	for k := range wanted {
 		if _, exists := have[k]; !exists {
-			p.RegisterGraph(k.GraphType, k.GraphName)
+			p.RegisterGraph(ctx, k.GraphType, k.GraphName)
 		}
 	}
 	for k := range have {
-		if _, still := wanted[k]; !still {
+		if _, still := wanted[k]; !still && succeeded[k.GraphType] {
 			p.UnregisterGraph(k.GraphType, k.GraphName)
 		}
 	}
+	return rlHint, throttled
+}
+
+// handleLoginFlip detects a login-state transition since the previous tick and,
+// on a flip, cancels + clears every collector so the subsequent diff re-registers
+// each wanted graph fresh (reset dirty-gen cache + rebind backend — Hazard B).
+// No-op when no resolver is wired (test fakes) or the state is unchanged. Reuses
+// the cancel-all shape from stopSequence step 1.
+func (p *Pipeline) handleLoginFlip(ctx context.Context) {
+	if p.resolver == nil {
+		return
+	}
+	now := p.resolver.LoggedIn(ctx)
+	p.collectorMu.Lock()
+	defer p.collectorMu.Unlock()
+	if !p.lastLoggedInSet {
+		p.lastLoggedIn = now
+		p.lastLoggedInSet = true
+		return
+	}
+	if now == p.lastLoggedIn {
+		return
+	}
+	slog.Info("pipeline.refresh: login state flipped — tearing down all collectors to rebind backend + reset gen caches",
+		"logged_in", now)
+	for _, cancel := range p.collectorCancels {
+		cancel()
+	}
+	p.collectorCancels = make(map[graphKey]context.CancelFunc)
+	p.collectorWakes = make(map[graphKey][]chan struct{})
+	p.lastLoggedIn = now
 }

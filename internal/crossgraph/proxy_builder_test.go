@@ -14,7 +14,7 @@ import (
 
 // TestBuildCrossGraphProxy_DeterministicIDShapes asserts the relocated client
 // builder stamps the SAME byte-identical deterministic proxy IDs the server-side
-// store builder does (criterion 5692172d). Drift here would desync client- and
+// store builder does. Drift here would desync client- and
 // server-built proxy IDs, breaking dedup.
 func TestBuildCrossGraphProxy_DeterministicIDShapes(t *testing.T) {
 	src := &knowledgev1.Node{

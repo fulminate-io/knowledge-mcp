@@ -13,11 +13,11 @@ import (
 
 // codexTestBody is the managed-block body the Codex installer now writes:
 // the full embedded KNOWLEDGE_TOOLS.md reference. The old concise
-// codexAgentsMDBody const was removed (FUL-340 #4); these tests assert
+// codexAgentsMDBody const was removed; these tests assert
 // against the same body production uses.
 func codexTestBody() string { return string(assets.KnowledgeTools) }
 
-// criterion 399bdd5e: installing into a dir with NO AGENTS.md creates
+// Installing into a dir with NO AGENTS.md creates
 // AGENTS.md with the managed block bounded by BEGIN/END markers +
 // priming content.
 func TestWriteManagedAgentsMD_CreatesWithMarkers(t *testing.T) {
@@ -45,7 +45,7 @@ func TestWriteManagedAgentsMD_CreatesWithMarkers(t *testing.T) {
 	}
 }
 
-// criterion 95e2582d: existing AGENTS.md with user content above/below
+// Existing AGENTS.md with user content above/below
 // the markers is preserved verbatim; only the managed region changes on
 // re-install.
 func TestWriteManagedAgentsMD_PreservesUserContent(t *testing.T) {
@@ -95,7 +95,7 @@ func TestWriteManagedAgentsMD_PreservesUserContent(t *testing.T) {
 	}
 }
 
-// criterion c993c1eb: the managed-block body (now the full
+// The managed-block body (now the full
 // KNOWLEDGE_TOOLS.md reference) carries no real API key/secret literal.
 func TestCodexAgentsMD_NoSecrets(t *testing.T) {
 	lower := strings.ToLower(codexTestBody())

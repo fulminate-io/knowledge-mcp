@@ -44,8 +44,8 @@ type searchArgs struct {
 //
 // Multi-type and resource_type-filtered cloud/cicd searches ARE reducible:
 // multi-type rides the node_types carrier (the engine post-filters + trims).
-// resource_type is CLIENT POST-FILTERED on the rendered result set (T-GTB2 site
-// (c)): T-GTB1 confirmed an OP_PREFIX metadata predicate does NOT compose with a
+// resource_type is CLIENT POST-FILTERED on the rendered result set:
+// an OP_PREFIX metadata predicate does NOT compose with a
 // QSearch post-rank (nodeMatchesMetaPredicate runs only at index-Match time, not
 // in the search compositor — see TestExecute_MetaPredicate_Prefix_SearchNoCompose),
 // so emitting an OP_PREFIX predicate into a search plan would silently drop the
@@ -55,7 +55,7 @@ type searchArgs struct {
 // legacy server postFilterResourceType / FilterCloudResultsByResourceType).
 //
 // The multi-query slice rides as ONE repeated Queries field — the engine owns
-// score-sum fusion (decision 60493b41), NOT a client-side N-fanout merge. NO
+// score-sum fusion, NOT a client-side N-fanout merge. NO
 // normalization here (limit defaults, node-type canon, dedup all live in the
 // engine).
 func compileSearch(args json.RawMessage) (*knowledgev1.ExecuteRequest, bool) {
@@ -87,7 +87,7 @@ func compileSearch(args json.RawMessage) (*knowledgev1.ExecuteRequest, bool) {
 	}
 
 	// resource_type does NOT ride the plan: an OP_PREFIX predicate is inert on a
-	// QSearch (T-GTB1 TestExecute_MetaPredicate_Prefix_SearchNoCompose), so the
+	// QSearch (TestExecute_MetaPredicate_Prefix_SearchNoCompose), so the
 	// client post-filters the returned SearchList by the resource_type prefix in
 	// the render path (renderSearchTool → filterByResourceTypePrefix). Routing
 	// stays reducible — only the FILTER moved from engine post-rank to client

@@ -3,8 +3,8 @@
 // Package embed provides the concrete Voyage AI binary-embedding client.
 //
 // It lives under cmd/knowledge/internal/ deliberately: the OSS knowledge-server
-// binary (cmd/knowledge-server) must carry ZERO LLM capability (governing
-// contract 147fda42 — the server is a generic graph toolbox). Go's internal/
+// binary (cmd/knowledge-server) must carry ZERO LLM capability (by design —
+// the server is a generic graph toolbox). Go's internal/
 // visibility makes this package STRUCTURALLY unreachable from any binary
 // outside the cmd/knowledge subtree — the server cannot import it even by
 // accident, so the Voyage HTTP embedding code can never reach a server binary.
@@ -149,9 +149,10 @@ func (e *voyageEmbedder) callVoyageBatch(ctx context.Context, texts []string) ([
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(io.LimitReader(resp.Body, 1024))
 		return nil, &llm.LLMError{
-			Transient: llm.HTTPStatusToTransient(resp.StatusCode),
-			Reason:    fmt.Sprintf("http_%d", resp.StatusCode),
-			Cause:     fmt.Errorf("voyage embed: status %d: %s", resp.StatusCode, string(respBody)),
+			Transient:  llm.HTTPStatusToTransient(resp.StatusCode),
+			Reason:     fmt.Sprintf("http_%d", resp.StatusCode),
+			RetryAfter: llm.ParseRetryAfter(resp.Header),
+			Cause:      fmt.Errorf("voyage embed: status %d: %s", resp.StatusCode, string(respBody)),
 		}
 	}
 

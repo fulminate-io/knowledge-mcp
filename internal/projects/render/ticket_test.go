@@ -4,7 +4,7 @@
 // pattern-catalog context surfacing.
 //
 // Ported from cmd/knowledge-server/tools/tools_assemble_containers_test.go
-// (FUL-251 Phase 5): tests use a fakeGc fixture instead of seeding the
+// (Phase 5): tests use a fakeGc fixture instead of seeding the
 // in-process store, so they live alongside the client-side render
 // package they exercise.
 package render

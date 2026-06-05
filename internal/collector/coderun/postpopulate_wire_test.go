@@ -109,7 +109,7 @@ func fileNode(path string) *knowledgev1.Node {
 // TestBuildHierarchy_RoutesByRepo drives the real BuildHierarchy through the wire
 // fake: package nodes + the dir→file / dir hierarchy edges must be emitted in a
 // create_batch whose Target.Repo == the repo graph name (NOT Name, NOT Account)
-// — the FUL-288 selector-field invariant for the code graph. File→chunk CONTAINS
+// — the selector-field invariant for the code graph. File→chunk CONTAINS
 // edges are NOT built here (the treesitter chunker emits them at collect time).
 func TestBuildHierarchy_RoutesByRepo(t *testing.T) {
 	const repo = "myrepo"

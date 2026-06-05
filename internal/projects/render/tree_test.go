@@ -18,7 +18,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
-// scriptedGc is the carrier-backed tree-render fake (T-GTB3 Phase 6). It stores
+// scriptedGc is the carrier-backed tree-render fake. It stores
 // wire-node + knowledgev1.Edge fixtures per id and answers via Execute, returning the
 // typed Nodes / Edges carriers the repointed FetchNode / IterEdges decode.
 type scriptedGc struct {
@@ -78,7 +78,7 @@ func (s *scriptedGc) Execute(_ context.Context, req *knowledgev1.ExecuteRequest)
 
 // TestRenderTree_ParentChildGrandchild seeds a 3-node fixture and
 // asserts the rendered indentation + ID lines match the documented
-// contract (criterion 923dc9802c74be8172b6bc739f711671). The server-
+// contract. The server-
 // side renderer's output shape is the golden — this test pins the
 // client-side port produces the same bytes.
 func TestRenderTree_ParentChildGrandchild(t *testing.T) {
@@ -117,8 +117,8 @@ func TestRenderTree_ParentChildGrandchild(t *testing.T) {
 	assert.Equal(t, expected, sb.String())
 }
 
-// TestTopoSort_FiveNodeDependencyChain pins criterion
-// b3ba6f05e2ada9723510bea822cc7c5d: a chain c5→c4→c3→c2→c1 sorts to
+// TestTopoSort_FiveNodeDependencyChain pins the topo-sort
+// contract: a chain c5→c4→c3→c2→c1 sorts to
 // [c1,c2,c3,c4,c5]. The dependency edge points from a child to its
 // prerequisite — c5 "depends on c4" means c4 must come first.
 func TestTopoSort_FiveNodeDependencyChain(t *testing.T) {

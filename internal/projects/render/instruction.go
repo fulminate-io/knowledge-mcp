@@ -22,7 +22,7 @@ import (
 //
 // Ported from cmd/knowledge-server/tools/tools_assemble.go:351 with
 // store reads swapped for wire-shape FetchNode + IterEdges calls.
-// Per the FUL-251 plan: NO practice-graph lookup happens here — the
+// Per the plan: NO practice-graph lookup happens here — the
 // server-side path resolved instruction nodes via the knowledge
 // graph + the practice fallback, but client-side assemble only
 // resolves through the knowledge graph (Phase 3's Handle dispatches

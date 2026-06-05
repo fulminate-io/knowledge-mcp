@@ -11,12 +11,13 @@ import (
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
+	"github.com/fulminate-io/knowledge-mcp/internal/graphsel"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgwire"
 )
 
 // nanosToTimePP converts an int64 unix-nanos value (the value-embed proto
-// Edge.LastValidated representation — decision f21640fb) to a time.Time for the
+// Edge.LastValidated representation) to a time.Time for the
 // kgwire.BatchEdge.LastValidated field (still a time.Time), mapping 0 → zero time.
 func nanosToTimePP(nanos int64) time.Time {
 	if nanos == 0 {
@@ -33,7 +34,7 @@ func nanosToTimePP(nanos int64) time.Time {
 // tools). The production graphClientCaller satisfies this naturally.
 //
 // PostPopulate hooks NEVER hold an in-process store engine — the client has no
-// store DB (project 1ce7d7aa, "client operates zero store engine"). Every
+// store DB ("client operates zero store engine"). Every
 // graph read/write rides this seam: a query/mutate compiled via engine.Compile
 // then run through Execute, exactly like the linker's read helpers
 // (linker/helpers.go) and the pipeline's rpc helpers (pipeline/rpc.go).
@@ -47,21 +48,10 @@ type GraphCaller interface {
 // the SAME translation the proven pipeline/rpc.go fetchNodes (L151-160) +
 // writeBatchUpdates (L288-297) switch performs. Routing a cloud/cicd write via
 // name: would land Account-less and the server rejects it ("graph=cloud
-// requires account") — the FUL-288 silent-write regression these helpers exist
+// requires account") — the silent-write regression these helpers exist
 // to prevent. The returned map is merged into the query/mutate args.
 func selectorArgs(gt kgtypes.GraphType, graphName string) map[string]any {
-	args := map[string]any{"graph": string(gt)}
-	switch gt {
-	case kgtypes.GraphCode:
-		args["repo"] = graphName
-	case kgtypes.GraphCloud, kgtypes.GraphCICD:
-		args["account"] = graphName
-	default:
-		if graphName != "" && graphName != "default" {
-			args["name"] = graphName
-		}
-	}
-	return args
+	return graphsel.ScopePayload(gt, graphName, true)
 }
 
 // BrowseNodes reads nodes from a named per-account/per-repo graph via the
@@ -222,6 +212,16 @@ func execCreateBatchNodes(ctx context.Context, gc GraphCaller, gt kgtypes.GraphT
 	req, ok := engine.Compile("mutate", body)
 	if !ok {
 		return fmt.Errorf("postpopulate: create_batch args not reducible to a MutationPlan")
+	}
+	// Mark this as a TRUSTED collector CREATE so the server skips the user-facing
+	// system-managed-type guard (decodeCreate → validateCreateNodeBody rejects
+	// type=package|file|branch as "created by the code indexer, not by hand"). The
+	// postpopulate (BuildHierarchy) IS the code indexer, so its package/branch/file
+	// creates are legitimate. We set the flag PROGRAMMATICALLY on the compiled proto
+	// (not via a create_batch arg key) so it is UNFORGEABLE through the user mutate
+	// tool — the LLM supplies args, never proto fields, and no arg maps to it.
+	if mp := req.GetMutation(); mp != nil {
+		mp.SystemManagedCreate = true
 	}
 	if _, err := gc.Execute(ctx, req); err != nil {
 		return fmt.Errorf("postpopulate: create_batch %s/%s (%d nodes, %d edges): %w", gt, graphName, len(nodes), len(edges), err)

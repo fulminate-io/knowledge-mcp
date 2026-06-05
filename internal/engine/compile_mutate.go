@@ -182,7 +182,7 @@ func compileMutate(args json.RawMessage) (*knowledgev1.ExecuteRequest, bool) {
 	}
 
 	// The cross-graph practice link (link_graph set) is SPECIALIZED
-	// (handleClientCrossGraphLink — proxy creation, T-GTB5/legacy). The engine
+	// (handleClientCrossGraphLink — proxy creation, legacy). The engine
 	// targets a single graph; the cross-graph LINK is its own surface, so it
 	// stays the residual deny. A practice/transformers create/update/delete/link/
 	// upsert with NO link_graph now compiles to a Target-routed MutationPlan
@@ -219,7 +219,7 @@ func compileMutate(args json.RawMessage) (*knowledgev1.ExecuteRequest, bool) {
 		// (update_batch + bulk_update_metadata are lowered to
 		// MUTATION_KIND_UPDATE_ITEMS in the sibling compile_mutate_batch.go; upsert
 		// is lowered to MUTATION_KIND_UPSERT in compileMutateUpsert above.) The rest
-		// (answer / prune-by-age) are SPECIALIZED (finding 457e861e) and fall
+		// (answer / prune-by-age) are SPECIALIZED and fall
 		// through here.
 		return nil, false
 	}
@@ -283,7 +283,7 @@ func updateSetFields(a mutateArgs) map[string]string {
 }
 
 // compileMutateCreate lowers create / create_batch into a CREATE MutationPlan.
-// thought/charge creates are NO LONGER denied (T-GTB6 Phase 7): the client
+// thought/charge creates are NO LONGER denied: the client
 // composers (handleThinkClient / handleChargeClient) lower think/charge into a
 // GENERIC create_batch carrying explicit type=thought/charge NodeBodies + the
 // EdgeChargedBy / EdgeRelatesTo / session-lineage edges, so a type:thought|charge
@@ -366,7 +366,7 @@ func nodeBodyToProto(n nodeBody) *knowledgev1.NodeBody {
 // graph=cloud/cicd by Target.Account, and the rest by Target.Name (ResolveGraphDB,
 // tools_graph_routing.go). Without these a mutate(create_batch, graph:"cloud",
 // account:"aws-123") would land Account-less and the server would reject it with
-// "graph=cloud requires account" — the FUL-288 postpopulate wire writes depend on
+// "graph=cloud requires account" — the postpopulate wire writes depend on
 // this. Mirrors the read side (compileQuery's buildTarget threads the same fields).
 func mutationRequest(plan *knowledgev1.MutationPlan, a mutateArgs) *knowledgev1.ExecuteRequest {
 	return &knowledgev1.ExecuteRequest{

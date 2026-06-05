@@ -8,6 +8,7 @@ import (
 	"sync"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1/knowledgev1connect"
 	"github.com/fulminate-io/knowledge-mcp/internal/auth"
 )
 
@@ -79,6 +80,44 @@ func (r *Router) Local() *GraphClient {
 	return r.local
 }
 
+// IngestClient is the per-call-routed IngestService picker. It resolves the
+// backend *GraphClient via pick(ctx) — cloud when logged-in, local
+// otherwise — and returns that backend's IngestServiceClient (client.go:88).
+// The collect UploadSink invokes this per CollectChunk/Finalize/FetchCloudSubgraph
+// so a mid-session login flip re-routes the next chunk without a restart.
+// Mirrors the Execute/Stats forwarder shape, but returns the IngestService
+// client rather than driving an RPC (the sink owns the CollectChunk flow).
+func (r *Router) IngestClient(ctx context.Context) (knowledgev1connect.IngestServiceClient, error) {
+	gc, err := r.pick(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return gc.IngestClient(), nil
+}
+
+// LoggedIn reports the live auth state (cloud vs local routing). The client-side
+// LLM pipeline's refreshOnce compares this across ticks to detect a login flip
+// and force a full collector rebind (resetting the per-collector dirty-gen
+// caches so a survivor graphKey re-scans the new backend from gen 0). Mirrors
+// the IsLoggedIn check pick(ctx) makes internally.
+func (r *Router) LoggedIn(ctx context.Context) bool {
+	return r.authState != nil && r.authState.IsLoggedIn(ctx)
+}
+
+// Backend is the per-call-routed concrete-backend resolver. It returns the
+// *GraphClient that should service this call — cloud when logged-in (built
+// lazily via ensureCloud), local otherwise, ErrNoBackend when neither — by
+// delegating to the same pick(ctx) the EngineService forwarders use. The
+// client-side LLM pipeline holds a routedWireClient over this so each scan +
+// writeback binds the CURRENT backend; the per-graph collector resolves one
+// concrete backend here at construction and stamps it on every emitted work
+// item. *GraphClient satisfies pipeline.WireClient (PipelineScan + Execute),
+// so the result is usable as a WireClient directly. Re-picks per call so a
+// mid-session login flip re-routes the next scan/write without a restart.
+func (r *Router) Backend(ctx context.Context) (*GraphClient, error) {
+	return r.pick(ctx)
+}
+
 // pick returns the *GraphClient that should service this call.
 //   - AuthState=true  → cloud (built lazily on first auth-true call).
 //   - AuthState=false → local (when non-nil).
@@ -121,6 +160,60 @@ func (r *Router) Execute(
 		return nil, err
 	}
 	return gc.Execute(ctx, req)
+}
+
+// Ship is the per-call-routed SegmentService.Ship forwarder. Mirrors
+// (*GraphClient).Ship so ship routes cloud-when-logged-in / local-when-not,
+// matching the Execute dispatch contract.
+func (r *Router) Ship(
+	ctx context.Context,
+	req *knowledgev1.ShipRequest,
+) (*knowledgev1.ShipResponse, error) {
+	gc, err := r.pick(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return gc.Ship(ctx, req)
+}
+
+// ListDelta is the per-call-routed SegmentService.ListDelta forwarder. Mirrors
+// (*GraphClient).ListDelta — the pull delta routes by live auth state.
+func (r *Router) ListDelta(
+	ctx context.Context,
+	req *knowledgev1.ListDeltaRequest,
+) (*knowledgev1.ListDeltaResponse, error) {
+	gc, err := r.pick(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return gc.ListDelta(ctx, req)
+}
+
+// Fetch is the per-call-routed SegmentService.Fetch forwarder. Mirrors
+// (*GraphClient).Fetch — segment-blob fetch routes by live auth state.
+func (r *Router) Fetch(
+	ctx context.Context,
+	req *knowledgev1.FetchRequest,
+) (*knowledgev1.FetchResponse, error) {
+	gc, err := r.pick(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return gc.Fetch(ctx, req)
+}
+
+// Prune is the per-call-routed SegmentService.Prune forwarder. Mirrors
+// (*GraphClient).Prune — the client-driven deletion of merged-away segment ids
+// routes by live auth state.
+func (r *Router) Prune(
+	ctx context.Context,
+	req *knowledgev1.PruneRequest,
+) (*knowledgev1.PruneResponse, error) {
+	gc, err := r.pick(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return gc.Prune(ctx, req)
 }
 
 // Index is the per-call-routed EngineService.Index forwarder. Mirrors

@@ -20,7 +20,7 @@ import (
 
 // iamSubCollector collects IAM service accounts as nodes and IAM bindings
 // as GRANTS edges. IAM bindings are NOT standalone nodes — they are modeled
-// as edges from the role to the service account (decision 966ece9a).
+// as edges from the role to the service account.
 type iamSubCollector struct {
 	iamClient      *iam.IamClient
 	projectsClient *resourcemanager.ProjectsClient

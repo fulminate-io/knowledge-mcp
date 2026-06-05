@@ -30,7 +30,7 @@ import (
 // handleLogsQuery is the graph='logs' entry point. Dispatches between the
 // supported shapes based on which of (mode, id, text) is set.
 //
-// BCN11.3: refactored to take a pre-fetched *logState instead of a
+// Refactored to take a pre-fetched *logState instead of a
 // store.DB. The wire-fetch orchestrator getOrFetchLogState bulk-loads
 // every template/stream/chunk/label/proxy and every edge of interest in
 // four RPCs before any formatter runs.
@@ -78,7 +78,7 @@ func (h *Handler) handleLogsQuery(ctx context.Context, a queryArgs) kgtools.Tool
 }
 
 // (loadLogsFromGraph + getOrRebuildLogsEngine + the per-type query
-// helpers are deleted in BCN11.3 — superseded by getOrFetchLogState in
+// helpers are deleted — superseded by getOrFetchLogState in
 // tools_logs_handler.go and the wire-fetch helpers in
 // tools_logs_wire_fetch.go.)
 

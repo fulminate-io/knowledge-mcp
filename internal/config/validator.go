@@ -101,8 +101,13 @@ func (c *Config) validateConsumer(consumer Consumer) error {
 		if !ok {
 			return fmt.Errorf("config: consumer %q: internal: no env-var mapping for API provider %q", consumer, section.Provider)
 		}
-		if os.Getenv(envVar) == "" {
-			return fmt.Errorf("config: consumer %q uses provider %q but %s is unset", consumer, section.Provider, envVar)
+		// Resolve the key the SAME way the runtime does (APIKeyForProvider:
+		// [credentials].<provider>_api_key file-first, env var fallback) so a key
+		// set only in [credentials] passes validation as it does at runtime —
+		// previously this checked os.Getenv directly and rejected [credentials]-only
+		// keys even though the summarizer constructed fine.
+		if APIKeyForProvider(section.Provider) == "" {
+			return fmt.Errorf("config: consumer %q uses provider %q but no API key is set — set [credentials].%s_api_key or the %s env var", consumer, section.Provider, section.Provider, envVar)
 		}
 		return nil
 	}

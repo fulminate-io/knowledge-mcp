@@ -93,7 +93,7 @@ func TestCollect_SingleURL_EndToEnd(t *testing.T) {
 	assert.GreaterOrEqual(t, typeCounts["paragraph"], 1, "paragraphs must be emitted")
 
 	// LLM-pipeline exclusion for a web raw graph is NOT asserted here via a
-	// client-side eligibility call (FUL-307, Option B: the client makes zero
+	// client-side eligibility call (the client makes zero
 	// GraphType.Summarizable/Embeddable calls — that decision is server-only).
 	// The exclusion is now enforced structurally by the pipeline + server:
 	// the collector is spawned for every graph, but the server's pipeline_scan

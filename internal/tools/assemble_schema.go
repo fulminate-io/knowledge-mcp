@@ -5,7 +5,7 @@ package tools
 import "github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 
 // AssembleToolDef returns the assemble MCP tool definition. Relocated
-// client-side per FUL-251 — the rendering surface lives in
+// client-side — the rendering surface lives in
 // cmd/knowledge/internal/projects/render and the wire intercept lives
 // in intercept_assemble.go; the server has no assemble handler. Wired
 // into tools/list via the client's loadSchemas augmentation.

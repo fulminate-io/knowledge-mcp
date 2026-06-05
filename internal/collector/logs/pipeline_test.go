@@ -12,7 +12,7 @@ import (
 	wirelogs "github.com/fulminate-io/knowledge-mcp/internal/logwire"
 )
 
-// BCN11.2 deleted the in-process Pipeline.store path along with the
+// The client/server split deleted the in-process Pipeline.store path along with the
 // buildGraph / writeProxiesFromResolutions / writeCorrelations
 // helpers. The end-to-end coverage now lives in
 // TestPipelineCollect_FullOrchestration (pipeline_collect_test.go),
@@ -56,7 +56,7 @@ func (m *mockResolver) accountOrDefault() string {
 	return "test-acct"
 }
 
-// BCN11.2 removed newTestLogStore — the pipeline is a pure transform
+// The client/server split removed newTestLogStore — the pipeline is a pure transform
 // and never touches store.DB. Tests that need a queryID build one with
 // fmt.Sprintf("query-%d", time.Now().UnixNano()) directly.
 

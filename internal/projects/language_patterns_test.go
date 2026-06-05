@@ -17,7 +17,7 @@ import (
 // wire. The store-using validation + creation coverage (the
 // TestValidateLanguagePatterns_* family and the *_LanguagePatternsIndependent
 // cases) moved to package tools, exercised against fakeGraphCaller on the live
-// interceptor path (FUL-286 Phase 4).
+// interceptor path.
 
 // singlePhaseSingleStep returns a minimal phase tree so BuildPlanGraph can run
 // the full path without bloating the table. Lives here (the only remaining

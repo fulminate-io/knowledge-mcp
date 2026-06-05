@@ -26,8 +26,8 @@ func graphNodeResult(t *testing.T, id, typ, symbol, summary string) kgtools.Tool
 	return kgtools.ToolResult{Content: []kgtools.ContentBlock{{Type: "text", Text: string(b)}}}
 }
 
-// TestCrossGraphLink_KnowledgeFromPracticeTo_MaterializesProxy covers criterion
-// 231b7957 (A): a mutate(link, graph:practice, from:<knowledge-id>, to:<practice-
+// TestCrossGraphLink_KnowledgeFromPracticeTo_MaterializesProxy covers case (A):
+// a mutate(link, graph:practice, from:<knowledge-id>, to:<practice-
 // id>, relationship:uses, language:go) where FROM resolves in KNOWLEDGE and TO in
 // practice/go materializes the deterministic proxy via the engine Execute seam (a
 // MUTATION_KIND_UPSERT with NodeBody.Id=='proxy:practice:go:<to>') + a from→proxy
@@ -85,7 +85,7 @@ func TestCrossGraphLink_KnowledgeFromPracticeTo_MaterializesProxy(t *testing.T) 
 	assert.Equal(t, "proxy:practice:go:pat-1", fc.execMutations[2].GetNodeBodies()[0].GetId())
 }
 
-// TestCrossGraphLink_ProxySlugParity covers criterion 231b7957's slug-parity
+// TestCrossGraphLink_ProxySlugParity covers the slug-parity
 // clause: a language with a non-trivial slug ("C++" → "cplusplus") produces the
 // byte-identical proxy id the server's slugifyLanguage would (store.Slugify-
 // Language is the single shared rule).
@@ -120,7 +120,7 @@ func TestCrossGraphLink_ProxySlugParity(t *testing.T) {
 	assert.Equal(t, wantID, fc.execMutations[0].GetNodeBodies()[0].GetId())
 }
 
-// TestCrossGraphLink_ProxyEquivalence covers criterion 3f195bfb: the client proxy
+// TestCrossGraphLink_ProxyEquivalence covers the equivalence: the client proxy
 // branch produces the SAME proxy node (id, source, foreign_graph/foreign_id/
 // language metadata) as the server's resolvePracticeToProxy. Both paths build the
 // proxy via the SHARED crossgraph.BuildCrossGraphProxy with a ProxyTarget whose
@@ -158,7 +158,7 @@ func TestCrossGraphLink_ProxyEquivalence(t *testing.T) {
 }
 
 // ---------------------------------------------------------------------------
-// T-GTB5 generalized FROM/TO matrix. Each case asserts the proxy id byte-matches
+// Generalized FROM/TO matrix. Each case asserts the proxy id byte-matches
 // store.BuildCrossGraphProxy for the located (type,name) — the server-parity
 // invariant for code/cloud/cicd, and the slug-ful decided-correct convention for
 // practice. (TestCrossGraphLink_CodeFromFallsThrough was DELETED: a code-FROM is
@@ -317,7 +317,7 @@ func TestCrossGraphLink_KnowledgeToKnowledge_Skips(t *testing.T) {
 }
 
 // TestCrossGraphLink_PracticeFromKnowledgeTo covers case (6): a practice-FROM →
-// knowledge-TO link (the direction T-GTB1c left to legacy) is now CLAIMED, with a
+// knowledge-TO link (the direction previously left to legacy) is now CLAIMED, with a
 // slug-ful FROM proxy proxy:practice:<slug>:<from>.
 func TestCrossGraphLink_PracticeFromKnowledgeTo(t *testing.T) {
 	fc := &fakeGraphCaller{

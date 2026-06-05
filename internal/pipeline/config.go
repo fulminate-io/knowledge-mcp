@@ -14,7 +14,7 @@
 //     pulling batches from the dispatcher's sub-channel and writing back
 //     Summary / vector via the existing setter paths.
 //
-// See ticket 204548103831bafc26cc29ff50262a16 Section C for the full design.
+// See the design doc, Section C, for the full design.
 package pipeline
 
 import "time"
@@ -46,10 +46,40 @@ type Config struct {
 	// EmbedWorkers is the count of embed worker goroutines. Default 20.
 	EmbedWorkers int
 
+	// EmbedRPM is the max embed API requests per minute across ALL embed
+	// workers — the PROACTIVE companion to the reactive ErrBackoff gate. It
+	// paces dispatch so the opening 20×100 worker burst respects a low-tier
+	// Voyage account's rate BEFORE the first 429 lands. 0 = unlimited =
+	// current behavior (the gate is disabled and adds zero hot-path overhead).
+	EmbedRPM int
+
 	// Tick is the per-graph collector poll interval. Default 250ms. If a
 	// tick takes longer than this to push (channel full), the next tick
 	// is delayed by the channel send block — backpressure is implicit.
 	Tick time.Duration
+
+	// CloudTick is the per-graph collector poll interval used when the
+	// collector is bound to a REMOTE (logged-in) backend. Default 5s. A
+	// local loopback scan is cheap, but a remote scan is a network round
+	// trip that may be subject to a remote per-IP rate limit — at the 250ms
+	// local cadence, N graphs × 2 axes can saturate such a limit. The
+	// collector picks Tick vs CloudTick at registration based on the
+	// resolved backend's login state; a login flip re-registers, so the
+	// cadence stays correct across flips. This is the BASE (busy) cadence;
+	// an idle graph backs off from here toward IdleTickMax.
+	CloudTick time.Duration
+
+	// IdleTickMax caps the idle-backoff interval for a REMOTE-bound collector.
+	// Default 1h. When a scan returns no work and a stable dirty-gen, the
+	// collector grows its poll interval geometrically from the base (CloudTick)
+	// up to this ceiling, so a fully-drained graph costs ~one scan/hour instead
+	// of one every base tick. Any discovered work snaps the interval straight
+	// back to the base — and a collect explicitly WAKES every collector
+	// (Pipeline.WakeAll) so a freshly-collected graph re-scans within one base
+	// tick instead of waiting out its (now hour-long) idle interval. Local-bound
+	// collectors do NOT idle-back-off (loopback scans are cheap and
+	// latency-to-first-summary should stay low), so this knob is remote-only.
+	IdleTickMax time.Duration
 
 	// ErrBackoffBase is the first-failure delay of the shared LLM-error
 	// backoff gate. Default 500ms. Each consecutive transient failure
@@ -108,12 +138,39 @@ func (c Config) EmbedWorkersOrDefault() int {
 	return 20
 }
 
+// EmbedRPMOrDefault returns cfg.EmbedRPM verbatim — 0 is a MEANINGFUL value
+// (unlimited = gate disabled), so unlike the >0-floor accessors there is no
+// default substitution. The companion gate treats rpm <= 0 as disabled.
+func (c Config) EmbedRPMOrDefault() int {
+	return c.EmbedRPM
+}
+
 // TickOrDefault returns cfg.Tick or 250ms.
 func (c Config) TickOrDefault() time.Duration {
 	if c.Tick > 0 {
 		return c.Tick
 	}
 	return 250 * time.Millisecond
+}
+
+// CloudTickOrDefault returns cfg.CloudTick or 5s — the base (busy) poll cadence
+// for collectors bound to a remote backend (keeps remote scan volume far under
+// any remote per-IP rate limit).
+func (c Config) CloudTickOrDefault() time.Duration {
+	if c.CloudTick > 0 {
+		return c.CloudTick
+	}
+	return 5 * time.Second
+}
+
+// IdleTickMaxOrDefault returns cfg.IdleTickMax or 1h — the idle-backoff ceiling
+// for a remote-bound collector (a fully-drained graph costs ~one scan/hour; a
+// collect wakes it back to the base cadence via Pipeline.WakeAll).
+func (c Config) IdleTickMaxOrDefault() time.Duration {
+	if c.IdleTickMax > 0 {
+		return c.IdleTickMax
+	}
+	return time.Hour
 }
 
 // ErrBackoffBaseOrDefault returns cfg.ErrBackoffBase or 500ms.

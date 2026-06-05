@@ -82,27 +82,56 @@ func (b *errBackoff) ok() {
 	b.blockedUntil = time.Time{}
 }
 
-// fail extends the backoff window after a transient LLM failure and returns
-// the delay applied (for logging). Concurrent fails from the worker pool
-// take the max window rather than stacking — N simultaneous rate-limit
-// errors should open ONE window, not N sequential ones.
-func (b *errBackoff) fail() time.Duration {
+// fail extends the backoff window after a transient failure with no server
+// hint — blind exponential. Shorthand for failHint(0).
+func (b *errBackoff) fail() time.Duration { return b.failHint(0) }
+
+// failHint extends the backoff window after a transient failure and returns the
+// delay applied (for logging). When hint > 0 (a 429/503 Retry-After), the window
+// honors the server's stated delay verbatim with POSITIVE-only jitter so we
+// never wake before the server said to. When hint == 0, it falls back to blind
+// exponential — base * 2^(consecutive-1) saturating at maxDelay — with symmetric
+// ±20% jitter to de-sync the worker pool. Concurrent fails take the MAX window
+// rather than stacking: N simultaneous rate-limit errors open ONE window.
+func (b *errBackoff) failHint(hint time.Duration) time.Duration {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.consecutive++
-	// base * 2^(consecutive-1), saturating at maxDelay. Shift is capped so
-	// the exponent never overflows the int64 nanosecond range.
+	d := b.nextDelayLocked(hint)
+	if until := time.Now().Add(d); until.After(b.blockedUntil) {
+		b.blockedUntil = until
+	}
+	return d
+}
+
+// nextDelayLocked computes the next backoff window. With a server hint (429/503
+// Retry-After) it honors the stated delay with POSITIVE-only jitter so it never
+// wakes early; without one it uses blind exponential (base * 2^(consecutive-1),
+// saturating at maxDelay) with symmetric ±20% jitter to de-sync the pool.
+// Caller holds b.mu (b.rng is mutated here).
+func (b *errBackoff) nextDelayLocked(hint time.Duration) time.Duration {
+	if hint > 0 {
+		return hint + b.jitter(hint, false)
+	}
+	// Shift is capped so the exponent never overflows int64 nanoseconds.
 	shift := min(b.consecutive-1, 32)
 	d := b.base << shift
 	if d <= 0 || d > b.maxDelay {
 		d = b.maxDelay
 	}
-	// ±20% jitter so the worker pool doesn't wake in lockstep.
-	if span := int64(d) / 5; span > 0 {
-		d += time.Duration(b.rng.Int63n(2*span+1) - span)
+	return d + b.jitter(d, true)
+}
+
+// jitter returns a jitter offset of up to ±20% of d (symmetric) when symmetric
+// is true, or +0..20% (positive-only) when false. Zero when d is too small to
+// jitter. Caller holds b.mu.
+func (b *errBackoff) jitter(d time.Duration, symmetric bool) time.Duration {
+	span := int64(d) / 5
+	if span <= 0 {
+		return 0
 	}
-	if until := time.Now().Add(d); until.After(b.blockedUntil) {
-		b.blockedUntil = until
+	if symmetric {
+		return time.Duration(b.rng.Int63n(2*span+1) - span)
 	}
-	return d
+	return time.Duration(b.rng.Int63n(span + 1))
 }

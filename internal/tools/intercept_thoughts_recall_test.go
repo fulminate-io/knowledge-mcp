@@ -31,7 +31,7 @@ func TestValidateRecallClientArgs_SwappedBounds(t *testing.T) {
 }
 
 func TestHandleRecallClient_GraphClientUnavailable(t *testing.T) {
-	// FUL-323: GraphCaller() (was GraphClient()) returns nil → unavailable.
+	// GraphCaller() (was GraphClient()) returns nil → unavailable.
 	// interceptTestDeps.GraphCaller() reads d.gc; leaving it unset / nil
 	// triggers the nil-guard.
 	deps := interceptTestDeps{gc: nil}

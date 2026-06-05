@@ -66,7 +66,7 @@ func InterceptCreateProject(deps ClientDeps, params kgtools.CallToolParams) (boo
 	backend := deps.BackendResolver().Default()
 	if backend == nil {
 		// No backend configured — compose the local-only project node
-		// client-side (FUL-246 Phase 3a). Server-side handleCreateProject
+		// client-side. Server-side handleCreateProject
 		// now has no server-side dispatch so we MUST claim this case.
 		return true, createProjectLocalOnly(ctx, gc, a)
 	}
@@ -79,7 +79,7 @@ func InterceptCreateProject(deps ClientDeps, params kgtools.CallToolParams) (boo
 	// Compose the local-graph mirror with backend metadata stamped onto
 	// the project node via BuildProjectNode. PersistBatch + bundle_id
 	// replaces the previous gc.Call("create_project", ...) forward —
-	// FUL-246 Phase 4 stubbed handleCreateProject server-side.
+	// handleCreateProject was stubbed server-side.
 	projectArgs := projects.ProjectArgs{
 		Name:        a.Name,
 		Description: a.Description,
@@ -113,7 +113,7 @@ func InterceptCreateProject(deps ClientDeps, params kgtools.CallToolParams) (boo
 // createProjectLocalOnly composes a local-only project node (no
 // backend write-through) and persists it via PersistBatch under one
 // bundle_anchor. Server-side handleCreateProject's local-only branch
-// was stubbed by FUL-246 Phase 4 so the client owns this path now.
+// was stubbed so the client owns this path now.
 func createProjectLocalOnly(ctx context.Context, gc GraphCaller, a createProjectArgs) kgtools.ToolResult {
 	projectArgs := projects.ProjectArgs{
 		Name:        a.Name,

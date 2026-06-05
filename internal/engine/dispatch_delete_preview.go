@@ -15,7 +15,7 @@ import (
 // dispatchDeletePreview is the special-shape pre-Compile seam for a dry-run
 // delete (mirroring dispatchQueryByID / dispatchGraphWideEdges). A
 // delete(dry_run:true) must NEVER compile to a MUTATION_KIND_DELETE — that was
-// the data-loss footgun (finding f95119710b): the by-ids compile path ignored
+// the data-loss footgun: the by-ids compile path ignored
 // dry_run and really deleted. This seam claims the dry-run BEFORE Compile and
 // instead issues a READ (RETURN_MODE_NODES) against the SAME selection the real
 // delete would target, then renders a "Would delete N node(s)" preview. It

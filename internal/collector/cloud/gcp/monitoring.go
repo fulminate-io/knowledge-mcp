@@ -19,7 +19,7 @@ import (
 
 // alertPolicySubCollector collects Cloud Monitoring alert policies.
 // MONITORS edges are emitted only when conditions reference specific resources
-// (not generic resource types) — per decision 8c61f1929.
+// (not generic resource types).
 type alertPolicySubCollector struct {
 	client    *monitoring.AlertPolicyClient
 	projectID string

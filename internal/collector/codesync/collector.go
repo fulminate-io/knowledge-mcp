@@ -103,7 +103,7 @@ func (c *CodeCollector) Collect(ctx context.Context, id string, opts collector.C
 	headSHA, _ := coderun.HeadCommit(ctx, rootDir)
 	syncTime := time.Now().UnixNano()
 
-	// FUL-241 Phase 5: read go.mod and the optional layer-config YAML
+	// Phase 5: read go.mod and the optional layer-config YAML
 	// CLIENT-SIDE and ship them over the wire. The server pod never
 	// opens these files — topology analyzers read both from graph
 	// metadata (ModulePathKey, LayerConfigKey) instead.
@@ -224,7 +224,7 @@ var systemPathPrefixes = []string{
 
 // validateCodeRoot ensures the absolute path points at a real directory,
 // isn't a known system tree, AND looks like a code repository. The probe
-// in 36cdbb01 found that `collect(type:code, id:"/etc")` was silently
+// found that `collect(type:code, id:"/etc")` was silently
 // creating an empty graph because the discovery walk found no source
 // files — but the side effect (graph creation, BM25/HNSW index seeding)
 // had already landed.

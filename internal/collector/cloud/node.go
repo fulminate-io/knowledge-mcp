@@ -14,7 +14,7 @@ import (
 // canonical way to turn a cloud resource into a graph node. All cloud
 // subcollectors produce ResourceSpec values; this function maps them into
 // the knowledge graph's node format. The typed proto wire is the sole node
-// carrier (decision FUL-295) — the client constructs the wire node directly
+// carrier — the client constructs the wire node directly
 // and writes metadata via the kgtypes free funcs.
 func BuildNode(spec ResourceSpec) *knowledgev1.Node {
 	n := &knowledgev1.Node{

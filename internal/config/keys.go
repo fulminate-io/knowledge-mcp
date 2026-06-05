@@ -58,7 +58,7 @@ func LinearAPIKey() string {
 // retention returns the loaded config's [retention] section, or nil
 // when no config has been loaded yet OR the section was absent. Callers
 // fall back to "no prune" on nil — there is NO env-var fallback for
-// retention policy (deliberate, per the BCN7 design: retention belongs
+// retention policy (deliberate by design: retention belongs
 // in the config file). Using Loaded() (not Active()) keeps the
 // accessors panic-free in tests and early-bootstrap code paths.
 func retention() *Retention {

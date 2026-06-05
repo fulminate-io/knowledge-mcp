@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// intercept_thoughts_think.go — FUL-247 / T-GTB6 client-side claim for
+// intercept_thoughts_think.go — client-side claim for
 // thoughts(operation:think). The intercept LOWERS the think into a GENERIC
 // create_batch MutationPlan via the Execute carrier seam (no dedicated server
 // thought handler): it reproduces handleMutateCreateThought's invariants
 // client-side — content validation, the thought node layout, session
 // get-or-create + EdgeKGContains + EdgeNext lineage, EdgeBranchesFrom, and
 // EdgeRelatesTo links with the 3-outcome cross-graph resolve. It does NOT write
-// the ThoughtLatestTSKey watermark (CEO-dropped: write-only dead, no reader —
-// finding 8e75d2c2) and adds no graph-meta-set primitive.
+// the ThoughtLatestTSKey watermark (intentionally dropped: write-only dead,
+// no reader) and adds no graph-meta-set primitive.
 
 package tools
 

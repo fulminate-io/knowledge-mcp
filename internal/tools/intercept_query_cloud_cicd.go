@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/graphsel"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 
@@ -111,7 +112,18 @@ func InterceptQueryCloudCICD(deps ClientDeps, params kgtools.CallToolParams) (bo
 		return true, resourceStats(ctx, sc, kind, a)
 	}
 
-	// (4) browse (optionally resource_type-prefixed).
+	// (4) ranked search (text): account-scoped client engine search. Served
+	// entirely CLIENT-side via composeResourceSearchClient (Manager.Search →
+	// RRF → hydrate → RenderResourceSearch); never a server RETURN_MODE_SEARCH.
+	if query := resourceQueryText(a); query != "" {
+		mgr := deps.SegmentManager()
+		if mgr == nil {
+			return true, errorResult(kind.graph + " search: client segment engine unavailable")
+		}
+		return true, composeResourceSearchClient(ctx, deps, mgr, kind, a.Account, query)
+	}
+
+	// (5) browse (optionally resource_type-prefixed).
 	return true, resourceBrowse(ctx, gc.Execute, kind, a)
 }
 
@@ -146,7 +158,10 @@ func listResourceGraphs(ctx context.Context, deps ClientDeps, kind resourceGraph
 // RPC. A failed fetch degrades to zeros (the listing still names the graph).
 func graphCounts(ctx context.Context, gc statsRPC, graph, name string) (int, int) {
 	resp, err := gc.Stats(ctx, &knowledgev1.StatsRequest{
-		Target: resourceTarget(graph, name),
+		// Route the instance name into the right selector field per graph family
+		// (practice→Language, cloud/cicd→Account, else→Name) — resourceTarget is
+		// Account-only and silently zeroed practice/other counts.
+		Target: graphsel.GraphSelectorFor(kgtypes.GraphType(graph), name, false),
 	})
 	if err != nil {
 		return 0, 0
@@ -237,6 +252,44 @@ func resourceBrowse(ctx context.Context, exec engine.ExecuteFn, kind resourceGra
 // resourceTarget builds the GraphSelector for a cloud/cicd graph (account-keyed).
 func resourceTarget(graph, account string) *knowledgev1.GraphSelector {
 	return &knowledgev1.GraphSelector{Graph: graph, Account: account}
+}
+
+// resourceQueryText picks the ranked-search text from the query/text fields
+// (mirrors practiceQueryText — text wins, else the first of queries[]).
+func resourceQueryText(a queryArgs) string {
+	if a.Text != "" {
+		return a.Text
+	}
+	if len(a.Queries) > 0 {
+		return a.Queries[0]
+	}
+	return ""
+}
+
+// composeResourceSearchClient runs the cloud/cicd ranked-search arm against the
+// CLIENT per-account engine — the exact mirror of composePracticeSearchClient,
+// keyed on Account instead of Language and rendered via the SCORED
+// engine.RenderResourceSearch (NOT the node/browse renderers). Embed the query
+// client-side (so the HNSW arm is exercised), Manager.Search(GraphCloud/CICD,
+// account, …) → RRF, then ONE RETURN_MODE_NODES hydrate. A nil embedder degrades
+// to the BM25 arm; an empty/un-collected account (no segments) renders zero
+// results cleanly — graceful empty, NOT an error.
+func composeResourceSearchClient(ctx context.Context, deps ClientDeps, mgr SegmentSearcher, kind resourceGraphKind, account, query string) kgtools.ToolResult {
+	var queryVec []byte
+	if emb := deps.Embedder(); emb != nil && query != "" {
+		if vec, err := emb.EmbedBinary(ctx, query); err == nil && len(vec) > 0 {
+			queryVec = vec
+		}
+	}
+	hits, err := mgr.Search(ctx, kgtypes.GraphType(kind.graph), account, query, queryVec, knowledgeSearchDefaultLimit)
+	if err != nil {
+		return errorResult(kind.graph + " search: client engine: " + err.Error())
+	}
+	results, err := hydrateEngineHits(ctx, deps.GraphCaller(), hydrateSelector{Graph: kind.graph, Account: account}, hits)
+	if err != nil {
+		return errorResult(kind.graph + " search: hydrate: " + err.Error())
+	}
+	return engine.RenderResourceSearch(kind.render, account, query, results)
 }
 
 // statsRPC is the narrow view of *GraphClient the stats/list paths need —

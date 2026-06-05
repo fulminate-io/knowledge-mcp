@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package tools — InterceptCreatePlan claims the create_plan MCP call.
-// It is the live client-side plan-creation path (the FUL-246 relocation
+// It is the live client-side plan-creation path (the relocation
 // moved the domain logic client-side; the dead store-based persister was
-// removed in FUL-286). Builds the full plan tree via projects.BuildPlanGraph,
+// removed). Builds the full plan tree via projects.BuildPlanGraph,
 // validates + resolves patterns over the wire, persists via
 // wire_persist.PersistBatch under one bundle_anchor, and renders either the
 // tree-walk text result or the structured JSON variant expected by the

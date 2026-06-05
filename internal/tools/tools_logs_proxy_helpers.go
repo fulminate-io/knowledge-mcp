@@ -42,7 +42,7 @@ func proxyAnnotation(n *knowledgev1.Node) string {
 
 // resolveProxyIfNeeded is the client-side stub for the server helper. The
 // server helper consults its store to resolve proxy targets, which the client
-// cannot do without a wire-trip. Until the BCN11 follow-up wires a ResolveProxy
+// cannot do without a wire-trip. Until a follow-up wires a ResolveProxy
 // RPC, the client returns the metadata-only annotation — which is a strict
 // subset of what the server returns. Branch proxies (kgwire.IsBranchProxy) are
 // skipped: they reference the same ID in the base graph, no annotation needed.

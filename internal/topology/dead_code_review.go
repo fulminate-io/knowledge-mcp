@@ -3,7 +3,7 @@
 // Package topology / dead_code_review.go — maps SSA dead functions back
 // to code graph nodes by (file_path, start_line) and builds Findings.
 //
-// FUL-241 Phase 6: relocated client-side from pkg/topology/. The
+// Relocated client-side from pkg/topology/. The
 // mapping pass reads the scoped code graph via the Execute carrier seam
 // (fetchNodeIndex → engine.Compile/Execute/DecodeNodes) rather than
 // holding a direct server-side graph handle, because the client stdio

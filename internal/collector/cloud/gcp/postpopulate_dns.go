@@ -232,7 +232,7 @@ func indexForwardingRuleIPs(ctx context.Context, gc postpopulate.GraphCaller, gr
 }
 
 // parseForwardingRuleIP Unmarshals into the forwardingRuleContent wire struct
-// defined in loadbalancer_wire.go (FUL-88 reader convergence — the Phase 2
+// defined in loadbalancer_wire.go (reader convergence — the Phase 2
 // wire struct is the superset of the IP-only shape this function needs).
 func parseForwardingRuleIP(content string) string {
 	if content == "" {

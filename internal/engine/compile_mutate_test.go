@@ -47,7 +47,7 @@ func TestCompileMutate_CreateBatchOnePlan(t *testing.T) {
 }
 
 // TestCompileMutate_CreateBatchEdgeMetadata covers the BatchEdgeSpec edge-metadata
-// carriers (T-GTB1d P2/P4): a create_batch edge carrying weight / confidence /
+// carriers: a create_batch edge carrying weight / confidence /
 // method / evidence / last_validated (RFC3339, sub-second) compiles to a
 // BatchEdgeSpec with those fields populated, with last_validated converted to
 // int64 unix-nanos.
@@ -85,7 +85,7 @@ func TestCompileMutate_CreateBatchMalformedLastValidated(t *testing.T) {
 }
 
 // TestCompileMutate_CreateBatchBundleID covers the MutationPlan.bundle_id carrier
-// (T-GTB1d P4): a create_batch with bundle_id produces a MutationPlan carrying
+// a create_batch with bundle_id produces a MutationPlan carrying
 // that bundle_id (the engine wraps the mutation ctx with it). Absent bundle_id
 // leaves the carrier empty.
 func TestCompileMutate_CreateBatchBundleID(t *testing.T) {
@@ -107,8 +107,8 @@ func TestCompileMutate_CreateBatchBundleID(t *testing.T) {
 }
 
 // TestCompileMutate_ByIDArmsReduce asserts the by-id WRITE arms now COMPILE to
-// Execute (T2.4c closed TICKET-GAP b535d1a9 by adding the Selection.ids by-id
-// write selector): an id-targeted update / a delete over an id-set / a by-id
+// Execute (the Selection.ids by-id
+// write selector was added): an id-targeted update / a delete over an id-set / a by-id
 // link/unlink (from→to) each lower to a MutationPlan with Selection.Ids carrying
 // the literal target set (NOT a traversal anchor — the old wrong-set bug).
 func TestCompileMutate_ByIDArmsReduce(t *testing.T) {
@@ -158,7 +158,7 @@ func TestCompileMutate_ByIDArmsReduce(t *testing.T) {
 	})
 
 	// update_batch now COMPILES to the heterogeneous MUTATION_KIND_UPDATE_ITEMS
-	// arm (T-GTB1c added the per-item carrier): each item becomes a distinct
+	// arm (the per-item carrier was added): each item becomes a distinct
 	// UpdateItem, no longer falling through to legacy.
 	t.Run("update_batch → MUTATION_KIND_UPDATE_ITEMS", func(t *testing.T) {
 		req, ok := compileMutate(json.RawMessage(`{"operation":"update_batch","items":[{"id":"a","status":"completed"},{"id":"b","status":"completed"}]}`))
@@ -169,7 +169,7 @@ func TestCompileMutate_ByIDArmsReduce(t *testing.T) {
 	})
 }
 
-// TestCompileMutate_Upsert covers criterion 9836ac0d: a mutate(upsert) with id +
+// TestCompileMutate_Upsert covers the upsert contract: a mutate(upsert) with id +
 // type compiles to a MUTATION_KIND_UPSERT one-body plan carrying id + source +
 // the body fields; a mutate(upsert) with an empty id returns ok=false (legacy
 // fall-through).
@@ -201,7 +201,7 @@ func TestCompileMutate_Upsert(t *testing.T) {
 	})
 }
 
-// TestCompileMutate_UpdateBatch covers criterion 67ed6b6f: a
+// TestCompileMutate_UpdateBatch covers the update_batch contract: a
 // mutate(update_batch, graph:code, repo:knowledge, items:[{id,summary},
 // {id,binary_vector}]) compiles to a MUTATION_KIND_UPDATE_ITEMS plan (2
 // UpdateItems, set/unset preserved) with Target{Graph:code, Repo:knowledge};
@@ -246,7 +246,7 @@ func TestCompileMutate_UpdateBatch(t *testing.T) {
 	})
 }
 
-// TestCompileMutate_ThoughtChargeCreateCompiles is the T-GTB6 Phase 7 reversal
+// TestCompileMutate_ThoughtChargeCreateCompiles is the reversal
 // of the old default-deny: thought/charge creates now COMPILE to a CREATE
 // MutationPlan (the client composers lower think/charge into a generic
 // create_batch carrying type=thought/charge NodeBodies + edges, so the engine no
@@ -276,10 +276,10 @@ func TestCompileMutate_DenyCases(t *testing.T) {
 		args string
 	}{
 		// NOTE: practice/transformers create/update/delete/link/update_batch are NO
-		// LONGER here — T-GTB6 Phase 1 narrowed the compileMutate guard to
+		// LONGER here — the compileMutate guard was narrowed to
 		// link_graph-only, so an intra-practice/transformers op (no link_graph)
 		// Target-routes to a MutationPlan (proven by TestCompileMutate_PracticeTransformers).
-		// Only the cross-graph link_graph case stays denied (T-GTB5/legacy).
+		// Only the cross-graph link_graph case stays denied.
 		{"link_graph linkage", `{"operation":"link","link_graph":"linkage","from":"x","to":"y","relationship":"r"}`},
 		{"empty update_batch", `{"operation":"update_batch","items":[]}`},
 		{"upsert", `{"operation":"upsert","type":"worker","name":"w"}`},
@@ -303,7 +303,7 @@ func TestCompileMutate_DenyCases(t *testing.T) {
 
 // TestCompileMutate_BulkUpdateMetadata asserts mutate(bulk_update_metadata)
 // compiles to a MUTATION_KIND_UPDATE_ITEMS plan with one metadata-only UpdateItem
-// per {id, metadata} entry (T-GTB1e #6).
+// per {id, metadata} entry.
 func TestCompileMutate_BulkUpdateMetadata(t *testing.T) {
 	req, ok := compileMutate(json.RawMessage(
 		`{"operation":"bulk_update_metadata","updates":[{"id":"a","metadata":{"k1":"v1"}},{"id":"b","metadata":{"k2":"v2"}}]}`))

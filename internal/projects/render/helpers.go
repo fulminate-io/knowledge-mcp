@@ -2,8 +2,8 @@
 
 // Package render assembles client-side, human-readable views of
 // project/ticket/plan/phase/step/research/test_plan/decision/pattern
-// nodes from the knowledge graph. Per the client/server split locked
-// for FUL-241/FUL-251, the server stores nodes and serves them; this
+// nodes from the knowledge graph. Per the client/server split,
+// the server stores nodes and serves them; this
 // package walks the wire-returned shapes and renders the markdown.
 // The server-side assemble dispatch (cmd/knowledge-server/tools/
 // tools_assemble.go) collapses to a client-intercept-required sentinel once
@@ -48,7 +48,7 @@ func truncate(s string, n int) string {
 // duplicated here to break the render↔tools import cycle (see
 // package doc). Operates over the wire *knowledgev1.Node via the shared
 // kgwire proxy reader (kgwire.IsProxy / kgwire.ProxyInfo), which reads
-// the proto carrier the client holds post-FUL-295 retype and returns the
+// the proto carrier the client holds after the typed-wire retype and returns the
 // proto *knowledgev1.ProxyTarget (graph_type / name / node_id getters).
 func proxyAnnotation(n *knowledgev1.Node) string {
 	if !kgwire.IsProxy(n) {

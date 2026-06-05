@@ -41,8 +41,8 @@ type mcpToolJSON struct {
 // Runner.Stop is nil-safe so the deferred drain is unconditional.
 func runMCPMode(f Config) error {
 	// Startup timing instrumentation. Each `stage` call emits elapsed-
-	// since-startup to help diagnose the MCP-host first-connect flake
-	// (ticket fb39323b...). Cheap (slog.Debug only fires under
+	// since-startup to help diagnose the MCP-host first-connect flake.
+	// Cheap (slog.Debug only fires under
 	// --log-level=debug); enable via `--log-level debug --log-file
 	// ~/.knowledge/knowledge-client.log` and grep for "client.startup:".
 	t0 := time.Now()
@@ -92,7 +92,7 @@ func runMCPMode(f Config) error {
 		slog.Debug("dream worker runtime skipped (--no-worker-runtime)")
 	}
 
-	// Wire the client-side PropagationLoop (BCN4 v2 Phase 6). Runs
+	// Wire the client-side PropagationLoop. Runs
 	// hourly cluster detection + valence/magnitude propagation in a
 	// background goroutine. The deferred Stop is nil-safe; on-demand
 	// reflective tool calls still run via InterceptThoughts (Phase 7)
@@ -111,7 +111,7 @@ func runMCPMode(f Config) error {
 	// the background goroutine rather than blocking the MCP handshake.
 	// The synchronous variant blocked startup for ~5.4s on a typical
 	// multi-provider config and pushed the MCP host's first-connect past
-	// its tolerance — see ticket fb39323b... + the client.startup stage
+	// its tolerance — see the client.startup stage
 	// timings. Caller no longer aborts on precheck failure; the misconfig
 	// trips at first tool use with a clearer per-call error.
 	//
@@ -130,8 +130,8 @@ func runMCPMode(f Config) error {
 	// Wire the client-side embedder so InterceptSearch / InterceptQuery
 	// can embed query text on the client side (Phase 4.5). nil when no
 	// voyage_api_key is configured — the search path then runs BM25-only.
-	// The server holds no embedder at all (governing contract 147fda42),
-	// so query embedding is exclusively client-side.
+	// The server holds no embedder at all by design, so query embedding is
+	// exclusively client-side.
 	c.embedder = llmproviders.BuildEmbedder()
 	stage("llmproviders.BuildEmbedder done")
 
@@ -164,10 +164,10 @@ func runMCPMode(f Config) error {
 	wireAutoPrune(c)
 	stage("wireAutoPrune done")
 
-	// FUL-246 Phase 3c: seed agent + skill nodes from .claude/{agents,
+	// Seed agent + skill nodes from .claude/{agents,
 	// skills}/*.md. Server-side projects.Bootstrap call has been
 	// removed; the client owns disk I/O for code-graph + project
-	// assets now (FUL-241). Non-fatal — startup continues on error.
+	// assets now. Non-fatal — startup continues on error.
 	if err := runInstructionBootstrap(context.Background(), c.router, f.RootDir); err != nil {
 		slog.Warn("instruction bootstrap failed; agent/skill nodes will not be seeded this session",
 			"error", err)

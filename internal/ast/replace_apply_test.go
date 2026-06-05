@@ -1,10 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // replace_apply_test.go — ApplyReplace orchestrator coverage: dry-run leaves
-// disk untouched (criterion e76dbfbe), apply rewrites atomically with no
+// disk untouched, apply rewrites atomically with no
 // leftover .tmp, a re-parse-failing file lands in RejectedFiles and is never
-// written, and a second apply matches nothing (idempotency, criterion
-// d96bf169). Split from replace_test.go to stay under the line cap.
+// written, and a second apply matches nothing (idempotency). Split from
+// replace_test.go to stay under the line cap.
 
 package ast
 

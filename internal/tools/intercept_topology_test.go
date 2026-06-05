@@ -22,7 +22,7 @@ func TestInterceptTopology_NonTopologyQuery_FallsThrough(t *testing.T) {
 	assert.False(t, handled)
 }
 
-// TestInterceptTopology_DSM_ClaimedLocally verifies the FUL-300 behavior: every
+// TestInterceptTopology_DSM_ClaimedLocally verifies the behavior: every
 // non-dead_code analyzer (dsm, centrality, etc.) is CLAIMED client-side and runs
 // LOCALLY via the foundation registry (each analyzer fetches its own nodes/edges
 // over the wire). Here the test deps have a nil GraphCaller, so runLocalTopology

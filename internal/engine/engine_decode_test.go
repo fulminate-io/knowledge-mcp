@@ -13,8 +13,8 @@ import (
 )
 
 // decodeResult is the typed-wire shape the round-trip drives: each return mode
-// owns one sub-list, all keyed off the typed *knowledgev1.Node carriers. P2-T5
-// (FUL-295) deleted the nodes_json/node_json blob path, so the fixtures build
+// owns one sub-list, all keyed off the typed *knowledgev1.Node carriers. The
+// typed-wire migration deleted the nodes_json/node_json blob path, so the fixtures build
 // the typed Nodes / SearchResults / TraversalResults fields directly via the
 // shared enginetest builders — never a store engine, never a JSON blob.
 type decodeResult struct {

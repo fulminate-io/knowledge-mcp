@@ -39,10 +39,10 @@ type topologyArgs struct {
 // foundation registry over the wire — foundation.Get(name) → analyzer.Run with
 // a Request whose Caller is the client GraphCaller (the analyzer fetches its own
 // nodes/edges over the wire). Nothing falls through to a server Topology RPC: the
-// analyzer suite now lives client-side (FUL-300) and the server RPC is gone.
+// analyzer suite now lives client-side and the server RPC is gone.
 //
-// FUL-241 Phase 6 kept dead_code client-side because it needs a real filesystem
-// view of the user's repo (the server pod has none); FUL-300 followed by moving
+// dead_code stayed client-side because it needs a real filesystem
+// view of the user's repo (the server pod has none); the rest followed by moving
 // the rest of the suite client-side too, fetching graph data over the wire so the
 // client never operates a store engine.
 func InterceptTopology(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {

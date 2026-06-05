@@ -81,7 +81,7 @@ type QuestionArgs struct {
 
 // ProjectArgs is the input for CreateProject.
 //
-// Post-BCN2 v3: backend resolution moved to the client-side intercept
+// Backend resolution moved to the client-side intercept
 // layer (cmd/knowledge/internal/tools/intercept_create_project.go). The
 // client calls Linear inline, then forwards create_project to the server
 // with BackendName / RemoteRef / RemoteGroup pre-populated so this layer
@@ -109,7 +109,7 @@ type ProjectArgs struct {
 
 // TicketArgs is the input for CreateTicket.
 //
-// Post-BCN2 v3: backend resolution moved to the client-side intercept
+// Backend resolution moved to the client-side intercept
 // layer (cmd/knowledge/internal/tools/intercept_create_ticket.go). The
 // client calls Linear inline, then forwards create_ticket to the server
 // with BackendName / RemoteRef / RemoteGroup / ParentBackendID

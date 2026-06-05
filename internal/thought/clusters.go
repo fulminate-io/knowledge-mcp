@@ -4,7 +4,7 @@
 // thought graph: cluster detection, personality scalars, DeGroot
 // propagation, and the periodic propagation loop. Every read goes
 // through the supplied *graphclient.GraphClient via the bulk MCP tools
-// added in BCN4 v2 Phase 1 (thoughts(adjacency), thoughts(charges_for),
+// added for the bulk-read path (thoughts(adjacency), thoughts(charges_for),
 // query(ids), mutate(bulk_update_metadata)). NO Store-shaped wrapper —
 // callers pass the GraphClient directly.
 package thought

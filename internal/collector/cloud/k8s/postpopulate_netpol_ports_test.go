@@ -43,8 +43,6 @@ func findEdgeByFromTo(edges []knowledgev1.Edge, from, to string) *knowledgev1.Ed
 // whose Method is stamped with methodNetworkPolicy but whose Evidence
 // payload is the empty string — the canonical "all ports, all protocols"
 // (fully-open) signal documented in the edge metadata schema.
-//
-// Satisfies criterion 45d7865e366b50e8b85c46033515f403.
 func TestResolveNetworkPolicyReachability_AllPortsFullyOpen(t *testing.T) {
 	pods := []podEntry{
 		podEntryWithLabels("default/Pod/backend", "default", map[string]string{"app": "backend"}),
@@ -133,8 +131,6 @@ func TestResolveNetworkPolicyReachability_PortRange(t *testing.T) {
 // policy referencing a named port "web" against a backend pod that
 // declares containerPort 8080 name "web" emits an edge with
 // port_from=port_to=8080.
-//
-// Satisfies criterion b296eccf0a68c1817f693a695f396797.
 func TestResolveNetworkPolicyReachability_NamedPortResolved(t *testing.T) {
 	pods := []podEntry{
 		podEntryWithLabels("default/Pod/backend", "default", map[string]string{"app": "backend"}),
@@ -174,8 +170,6 @@ func TestResolveNetworkPolicyReachability_NamedPortResolved(t *testing.T) {
 // policy referencing a named port not declared by any target pod emits an
 // edge with port_unresolved=true and preserves the named port for
 // diagnostics.
-//
-// Satisfies criterion 4c4294d0e50ced01ac32bc298847729a.
 func TestResolveNetworkPolicyReachability_NamedPortUnresolved(t *testing.T) {
 	pods := []podEntry{
 		podEntryWithLabels("default/Pod/backend", "default", map[string]string{"app": "backend"}),

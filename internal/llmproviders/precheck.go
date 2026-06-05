@@ -21,7 +21,7 @@ import (
 // ~5.4s on startup for a typical multi-provider config (verified via
 // the `client.startup` stage timings instrumentation), pushing the MCP
 // host's first-connect handshake past its tolerance window and causing
-// intermittent reconnect failures (ticket fb39323b...). The precheck's
+// intermittent reconnect failures. The precheck's
 // VALUE is "surface bad-config early via a clear slog line"; that
 // value is preserved by logging from the spawned goroutine. Its
 // previous "abort startup on failure" behavior was rare-fire safety

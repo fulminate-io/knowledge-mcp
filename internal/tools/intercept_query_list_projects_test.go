@@ -18,7 +18,7 @@ import (
 )
 
 // listProjectsFakeGc answers the query(type:X) read over the Execute carrier
-// seam (T-GTB6) with the seeded nodes for type X via the nodes_json carrier.
+// seam with the seeded nodes for type X via the nodes_json carrier.
 type listProjectsFakeGc struct {
 	byType map[string][]*knowledgev1.Node
 }

@@ -21,7 +21,7 @@ import (
 // helper exists so test fixtures that JSON-encode args land on the same
 // dispatch path the production InterceptLogsTraversal would take.
 //
-// BCN11: kept narrow on purpose — only graph='logs' is supported here,
+// Kept narrow on purpose — only graph='logs' is supported here,
 // because every other graph routes through the server unchanged. Reaching
 // this with non-logs args returns kgtools.ErrorResult so the caller
 // surfaces a clear "wrong dispatcher" error.
@@ -40,9 +40,9 @@ func (h *Handler) handleTraverse(ctx context.Context, raw []byte) kgtools.ToolRe
 }
 
 // Handler is the client-side companion to cmd/knowledge-server/tools.Handler,
-// narrowed to the surface the BCN11-moved log-tool dispatchers need.
+// narrowed to the surface the moved log-tool dispatchers need.
 //
-// BCN11.3: Handler now owns getOrFetchLogState, the wire-fetch orchestrator
+// Handler now owns getOrFetchLogState, the wire-fetch orchestrator
 // that bulk-loads templates/streams/chunks/labels/proxies + edges from the
 // server in four RPCs and assembles a *logState the formatters consume.
 // No local store.Store() reads anywhere — handlers operate purely on
@@ -103,7 +103,7 @@ func formatBytes(b int64) string {
 }
 
 // handleLogsStats renders the stats body for a logs queryID graph via the
-// T-GTB1 Stats RPC + the Phase-1 shared RenderStatsBreakdown (T-GTB3). The BCN11
+// Stats RPC + the Phase-1 shared RenderStatsBreakdown. The earlier
 // stub deferred this on the missing shared stats helpers (fetchStats /
 // formatStatsBreakdown / appendSampleNames) — those now exist client-side, so
 // the logs stats path renders the same uniform body every other graph type
@@ -140,7 +140,7 @@ var logStateEdgeTypes = []kgtypes.EdgeType{
 	kgtypes.EdgeBelongsTo,
 }
 
-// getOrFetchLogState is the BCN11.3 wire-fetch orchestrator. Four bulk
+// getOrFetchLogState is the wire-fetch orchestrator. Four bulk
 // RPCs against the GraphCaller:
 //   - fetchAllLogNodes → templates + streams + chunks (3 RPCs)
 //   - fetchAllLogAuxNodes → labels + proxies (2 RPCs)
@@ -151,14 +151,14 @@ var logStateEdgeTypes = []kgtypes.EdgeType{
 // constructor; the engine doesn't know it came from the wire. st is the
 // pre-fetched view consumed by every formatter.
 //
-// No cache — every MCP call refetches. Reviewer T2-B: server-side
+// No cache — every MCP call refetches. Server-side
 // dirty_gen tracking would be premature optimization; refetching at
 // ~tens-of-ms cost is acceptable until profiling says otherwise.
 func (h *Handler) getOrFetchLogState(ctx context.Context, queryID string) (*logs.QueryEngine, *logState, error) {
 	gc := h.graphCaller()
 	if gc == nil {
 		return nil, nil, fmt.Errorf(
-			"BCN11.3: client-side log handlers require a GraphCaller (no Deps.GraphCaller() configured for queryID=%q)",
+			"client-side log handlers require a GraphCaller (no Deps.GraphCaller() configured for queryID=%q)",
 			queryID)
 	}
 	templates, streams, chunks, err := fetchAllLogNodes(ctx, gc, queryID)

@@ -28,8 +28,8 @@ func metadataStatsResp(_ *testing.T, keys map[string]*knowledgev1.KeyStats, cfg 
 	}
 }
 
-// TestHandleManagePromoteMetadata_RejectsDisallowedGraph covers criterion
-// 82043d8b: the parseMetadataGraphTypeForBackfill code/knowledge/linkage/empty
+// TestHandleManagePromoteMetadata_RejectsDisallowedGraph covers that
+// the parseMetadataGraphTypeForBackfill code/knowledge/linkage/empty
 // rejections are applied CLIENT-SIDE before any stats read or MIGRATE_META_REPR
 // dispatch — a disallowed graph returns the operator-facing rejection without
 // touching the server (no metadata_stats / mutate call recorded).
@@ -50,7 +50,7 @@ func TestHandleManagePromoteMetadata_RejectsDisallowedGraph(t *testing.T) {
 	}
 }
 
-// TestHandleManagePromoteMetadata_PromoteAndDemote covers criterion 7a27ccb0:
+// TestHandleManagePromoteMetadata_PromoteAndDemote covers that
 // the composer reads metadata_stats, computes RecommendAction per key, and
 // dispatches one MIGRATE_META_REPR per promote/demote key (edge / scalar
 // direction), skipping KEEP keys. No promote_metadata gc.Call is made.
@@ -99,7 +99,7 @@ func TestHandleManagePromoteMetadata_PromoteAndDemote(t *testing.T) {
 	assert.Contains(t, body, "DEMOTE: trace_id")
 }
 
-// TestHandleManagePromoteMetadata_DryRunSkipsDispatch covers criterion 7a27ccb0:
+// TestHandleManagePromoteMetadata_DryRunSkipsDispatch covers that
 // dry_run computes the decisions (and renders them) but issues NO
 // MIGRATE_META_REPR dispatch and NO narrative think().
 func TestHandleManagePromoteMetadata_DryRunSkipsDispatch(t *testing.T) {

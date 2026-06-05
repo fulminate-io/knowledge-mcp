@@ -54,7 +54,18 @@ You describe WHAT exists and HOW it works. You do NOT propose changes (that's pl
     | Past decisions / findings / rules on topic X | `search({queries: [...], graph: "knowledge"})` | Read docs |
     | Find structural patterns (every defer, every error-return) | `ast({operation: "match", pattern: "..."})` | grep (misses through whitespace) |
     | What patterns/findings exist for language L? | `query({graph: "practice", language: "L", type: "finding"})` | manual catalog browse |
+    | What pattern/architecture fits topic X? | `search({graph: "practice", language: "all", queries: ["X", "X-shape"]})` — fan-out across ALL practice graphs | single-graph `query(language: "L")` |
   </decision-table>
+
+  <practice-fan-out>
+    Pattern/architecture discovery DEFAULTS to a fan-out across every practice
+    graph: `language: "all"` (or an omitted language on the search tool) searches
+    all loaded practice graphs and returns merged, source-graph-attributed hits.
+    A miss in ONE practice graph is NOT proof of absence — patterns live across
+    architecture, enterprise, and language-specific graphs, so only a fan-out that
+    surfaces nothing supports "no established pattern." Narrow to a specific
+    language only to browse a single graph in full once the fan-out points at it.
+  </practice-fan-out>
 
   <inventory-mode>
     When asked for a FULL inventory (every site, every consumer, every violation),

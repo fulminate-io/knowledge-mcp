@@ -15,10 +15,22 @@ import (
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
 
+// ThoughtSearcher is the narrow consumer-side seam recall uses to source
+// candidates from the CLIENT knowledge segment engines (BM25+HNSW → RRF)
+// instead of dispatching a server search. *segmentdist.Manager satisfies it
+// (Manager.Search). Declared here so the thought package stays import-clean of
+// the higher-level tools/bootstrap packages and so tests can inject a fake. A
+// nil searcher means "no client engine wired" — recall falls back to the
+// server-search candidate gather (fetchQueryBySearch).
+type ThoughtSearcher interface {
+	Search(ctx context.Context, gt kgtypes.GraphType, name, queryText string, queryVec []byte, k int) ([]searchengine.Hit, error)
+}
+
 // nanosToTime converts an int64 unix-nanos value (the value-embed proto
-// timestamp representation — decision f21640fb) to a time.Time, mapping 0 →
+// timestamp representation) to a time.Time, mapping 0 →
 // the zero time.Time. Shared by the thought package's timestamp-formatting and
 // time-comparison sites.
 func nanosToTime(nanos int64) time.Time {
@@ -41,12 +53,23 @@ type RecallOptions struct {
 	TimeStart      time.Time // time range start
 	TimeEnd        time.Time // time range end
 	Limit          int       // max results (default 20)
+
+	// QueryVec is the CLIENT-EMBEDDED query vector (32-byte binary). Set by the
+	// recall interceptor (handleRecallClient) via deps.Embedder() so the client
+	// knowledge HNSW arm is exercised; empty when no embedder is configured (the
+	// search degrades to the BM25 arm). Mirrors the maybeEmbedQuery seam the
+	// generic search arm uses.
+	QueryVec []byte
+	// Searcher routes candidate-gathering through the CLIENT knowledge segment
+	// engines (Manager.Search) instead of a server search dispatch. nil → recall
+	// falls back to the server-search gather (fetchQueryBySearch).
+	Searcher ThoughtSearcher
 }
 
 // ThoughtResult is a thought with its computed properties and search score.
 type ThoughtResult struct {
 	// Node is a *knowledgev1.Node — the typed wire node the client consumes
-	// natively (T5/FUL-295 dropped the store.Node wrapper from the client read
+	// natively (T5 dropped the store.Node wrapper from the client read
 	// path). Pointer element: knowledgev1.Node carries a noCopy so a value field
 	// would make every []ThoughtResult append/range a copylocks violation.
 	Node        *knowledgev1.Node
@@ -56,7 +79,7 @@ type ThoughtResult struct {
 }
 
 // RecallThoughts searches and filters thoughts with composable criteria.
-// FUL-247 client-side: takes a graph client instead of the *Store receiver.
+// Client-side: takes a graph client instead of the *Store receiver.
 // Every store.Store().Query call from the original pkg/thought/query.go is
 // translated into a gc.Call("query"|"traverse"|...) wire call.
 func RecallThoughts(ctx context.Context, gc Caller, opts RecallOptions) ([]ThoughtResult, error) {
@@ -111,12 +134,56 @@ func gatherRecallCandidates(ctx context.Context, gc Caller, opts RecallOptions) 
 }
 
 // searchRecallCandidates returns thought candidates from a semantic search
-// query. One wire round-trip; thought-only filter applied client-side.
+// query, thought-only filter applied client-side.
+//
+// Candidates come UNCONDITIONALLY from the CLIENT knowledge engines
+// (Manager.Search → RRF over the BM25 + HNSW arms, the latter driven by the
+// client-embedded opts.QueryVec) + ONE bulk RETURN_MODE_NODES hydrate — NEVER a
+// server search dispatch. Thoughts are GraphKnowledge nodes, so the same client
+// knowledge segments back the corpus. The Searcher is always wired by the real
+// recall interceptor; a nil Searcher (empty/un-collected knowledge graph in a
+// degraded harness) yields zero candidates, which gatherRecallCandidates falls
+// back to full iteration over.
 func searchRecallCandidates(ctx context.Context, gc Caller, opts RecallOptions) ([]ThoughtResult, error) {
-	results, err := fetchQueryBySearch(ctx, gc, opts.Query, opts.Limit*5)
-	if err != nil {
-		return nil, fmt.Errorf("search: %w", err)
+	if opts.Searcher == nil {
+		return nil, nil
 	}
+	return searchRecallCandidatesClient(ctx, gc, opts)
+}
+
+// searchRecallCandidatesClient gathers recall candidates from the CLIENT
+// knowledge segment engines: Manager.Search returns RRF-fused ranked Hits (ID +
+// fused score) which one bulk fetchNodesByIDs hydrates into nodes; rows join by
+// id-map in ranked order, carry the fused score, and keep the thought-only type
+// filter. The HNSW arm is exercised whenever opts.QueryVec is non-empty.
+func searchRecallCandidatesClient(ctx context.Context, gc Caller, opts RecallOptions) ([]ThoughtResult, error) {
+	hits, err := opts.Searcher.Search(ctx, kgtypes.GraphKnowledge, "default", opts.Query, opts.QueryVec, opts.Limit*5)
+	if err != nil {
+		return nil, fmt.Errorf("client search: %w", err)
+	}
+	if len(hits) == 0 {
+		return nil, nil
+	}
+	ids := make([]string, len(hits))
+	for i, h := range hits {
+		ids[i] = h.ID
+	}
+	byID := fetchNodesByIDs(ctx, gc, ids)
+
+	results := make([]ThoughtResult, 0, len(hits))
+	for _, h := range hits {
+		n, ok := byID[h.ID]
+		if !ok {
+			continue // tombstoned/deleted between rank and hydrate — skip.
+		}
+		results = append(results, ThoughtResult{Node: n, Score: h.Score})
+	}
+	return filterThoughtCandidates(results), nil
+}
+
+// filterThoughtCandidates trims a candidate set to thought-typed nodes,
+// preserving order. Shared by both the client-engine and server-search gather.
+func filterThoughtCandidates(results []ThoughtResult) []ThoughtResult {
 	candidates := make([]ThoughtResult, 0, len(results))
 	for _, r := range results {
 		if kgtypes.NodeType(r.Node.Type) != kgtypes.NodeThought {
@@ -124,7 +191,7 @@ func searchRecallCandidates(ctx context.Context, gc Caller, opts RecallOptions) 
 		}
 		candidates = append(candidates, r)
 	}
-	return candidates, nil
+	return candidates
 }
 
 // iterateRecallCandidates returns all thought nodes via two round-trips: one
@@ -146,7 +213,7 @@ func iterateRecallCandidates(ctx context.Context, gc Caller) []ThoughtResult {
 
 // applyRecallFilters filters candidates using node-level and property-level
 // criteria. Computes thought properties via a single bulk charges-fetch
-// round-trip (BCN4 v2 perf invariant: never per-thought N+1).
+// round-trip (perf invariant: never per-thought N+1).
 func applyRecallFilters(ctx context.Context, gc Caller, candidates []ThoughtResult, opts RecallOptions) []ThoughtResult {
 	// Bulk-fetch charges for all candidate IDs in one round-trip.
 	ids := make([]string, len(candidates))

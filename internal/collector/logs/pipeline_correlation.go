@@ -336,7 +336,7 @@ func maxDuration(a, b time.Duration) time.Duration {
 	return b
 }
 
-// BCN11.2 deleted writeCorrelations: the in-process flow no longer
+// writeCorrelations was deleted: the in-process flow no longer
 // exists, so the DB-write helper is unreachable. CORRELATES_WITH edges
 // are produced by cmd/knowledge/internal/collector/logs/materialize.go
 // from the same CorrelationResult slice carried on CollectResult.

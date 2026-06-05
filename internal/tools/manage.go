@@ -81,18 +81,18 @@ func InterceptManage(deps ClientDeps, params kgtools.CallToolParams) (bool, kgto
 		return true, handleClientDeleteBranch(context.Background(), deps, a)
 	case "list_branches":
 		return true, handleClientListBranches(context.Background(), deps, a)
-	case "rebuild_bm25":
-		return true, handleClientRebuildBM25(context.Background(), deps, a)
-	case "rebuild_hnsw":
-		return true, handleClientRebuildHNSW(context.Background(), deps, a)
 	case "prune":
 		return true, handleClientPrune(context.Background(), deps, a)
+	case "rebuild_cache":
+		return true, handleClientRebuildCache(context.Background(), deps, a)
+	case "rebuild_segments":
+		return true, handleClientRebuildSegments(context.Background(), deps, a)
 	}
 	return false, kgtools.ToolResult{}
 }
 
 // handleClientLinker dispatches manage(link) to the client-side cross-
-// graph linker (cmd/knowledge/internal/linker). FUL-255: the server's
+// graph linker (cmd/knowledge/internal/linker). The server's
 // handleLinker is now stubbed to a client-intercept-required sentinel — the
 // linker body lives client-side because it walks the graphs via gc.Call
 // and emits derived edges through mutate(link, link_graph:"linkage").
@@ -167,13 +167,13 @@ type manageArgs struct {
 	AuthType    string `json:"auth_type"`
 	Credential  string `json:"credential"`
 	KubeContext string `json:"kube_context"`
-	// FUL-247 Phase 7: promote_metadata flags read by the client-side
+	// promote_metadata flags read by the client-side
 	// intercept to gate batch-narrative emission and re-marshal the
 	// payload with format=json forced.
 	DryRun bool `json:"dry_run"`
 	Force  bool `json:"force"`
 
-	// T-GTB3 Phase 7: set_metadata_overrides force-lists, read by the client
+	// set_metadata_overrides force-lists, read by the client
 	// intercept and lowered onto the Index RPC params payload. Mirror the
 	// server manageArgs fields handleSetMetadataOverrides reads.
 	ForceScalar []string `json:"force_scalar"`
@@ -191,7 +191,7 @@ type manageArgs struct {
 // Pipeline counters (summary_*/embed_*) come from the CLIENT-side
 // pipeline via overlayPipelineMetrics. The server's response always
 // returns zero for those fields — the LLM pipeline moved to the stdio
-// client (post-BCN5) so its live counts only exist here. When the
+// client so its live counts only exist here. When the
 // pipeline is disabled (--no-llm-pipeline, or neither summarizer nor
 // embedder configured), the counters render as "(pipeline disabled)"
 // instead of zeros so the operator can tell the difference between
@@ -238,7 +238,7 @@ func handleServerStatus(deps ClientDeps, format string) kgtools.ToolResult {
 }
 
 // handleCloudStatus reports the CLOUD graph stats for a logged-in user via
-// the already-routed Stats RPC (deps.GraphCaller() is the FUL-323 *Router,
+// the already-routed Stats RPC (deps.GraphCaller() is the *Router,
 // which satisfies the statsRPC seam). It renders the shared
 // engine.RenderStatsBreakdown body under a "Backend: cloud (<host>)"
 // preamble — naturally emitting Nodes/Edges/Vectors/BM25 and OMITTING
@@ -268,9 +268,7 @@ func handleCloudStatus(deps ClientDeps, host, format string) kgtools.ToolResult 
 			"host":           host,
 			"nodes":          stats.GetNodeCount(),
 			"edges":          stats.GetEdgeCount(),
-			"vectors":        stats.GetVectorCount(),
 			"binary_vectors": stats.GetBinaryVectorCount(),
-			"bm25":           stats.GetHasBm25(),
 		})
 	}
 	return textResult(fmt.Sprintf(

@@ -46,7 +46,7 @@ func (f *fakeBackendStore) Call(_ context.Context, _ string, _ json.RawMessage) 
 }
 
 // Execute dispatches the configure/list handlers' UPSERT and type-browse reads
-// over the Execute carrier seam (T-GTB6) against the in-memory map, recording a
+// over the Execute carrier seam against the in-memory map, recording a
 // reconstructed (tool, args) tuple for the wire-shape assertions.
 func (f *fakeBackendStore) Execute(_ context.Context, req *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error) {
 	if m := req.GetMutation(); m != nil {

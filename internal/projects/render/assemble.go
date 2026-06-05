@@ -35,7 +35,7 @@ type Args struct {
 // based on node.Type.
 //
 // Ported from cmd/knowledge-server/tools/tools_assemble.go:50 with
-// these changes per the FUL-251 plan:
+// these changes per the relocation plan:
 //   - No-args recovery branch REMOVED. The server's assembleTools
 //     description still mentioned no-args recovery, but the body
 //     never reachable in the client-side intercept (no snapshot

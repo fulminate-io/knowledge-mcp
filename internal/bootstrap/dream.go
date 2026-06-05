@@ -100,7 +100,7 @@ func (c *client) runInterceptChain(params kgtools.CallToolParams) (kgtools.CallT
 // runInterceptChainInner is the actual chain — kept separate so the outer
 // function can wrap with the timing footer in one place.
 func (c *client) runInterceptChainInner(params kgtools.CallToolParams) (kgtools.CallToolParams, bool, kgtools.ToolResult) {
-	// FUL-241 Phase 4: rewrite-style intercept that fills repo: + branch:
+	// Phase 4: rewrite-style intercept that fills repo: + branch:
 	// (and the staleness trio when staleness:true) on code-graph tool
 	// calls. Runs BEFORE InterceptSearch because the rewriter / embedder
 	// in InterceptSearch decodes the same args struct and expects repo:
@@ -121,7 +121,7 @@ func (c *client) runInterceptChainInner(params kgtools.CallToolParams) (kgtools.
 	if handled, res := tools.InterceptSearch(c, params); handled {
 		return params, true, res
 	}
-	// T-GTB3: per-graph + composite-mode + code query-domain intercepts. MUST run
+	// Per-graph + composite-mode + code query-domain intercepts. MUST run
 	// BEFORE InterceptQuery — InterceptQuery embeds + routes a default/hybrid-mode
 	// query through engine.Dispatch → compileQuery, which default-denies ONLY
 	// code/logs, so a cloud/cicd/practice/linkage text-search would otherwise FALL
@@ -134,7 +134,7 @@ func (c *client) runInterceptChainInner(params kgtools.CallToolParams) (kgtools.
 	if handled, res := tools.InterceptQuery(c, params); handled {
 		return params, true, res
 	}
-	// FUL-241 Phase 6: dead_code analyzer runs client-side because the
+	// Phase 6: dead_code analyzer runs client-side because the
 	// RTA pipeline needs filesystem access to packages.Load. Other
 	// topology algorithms fall through to the server.
 	if handled, res := tools.InterceptTopology(context.Background(), c, params); handled {
@@ -154,7 +154,7 @@ func (c *client) runInterceptChainInner(params kgtools.CallToolParams) (kgtools.
 	if handled, res := tools.InterceptLogsQuery(c, params); handled {
 		return params, true, res
 	}
-	// FUL-251b: cluster of query-rendering intercepts (plan_tree,
+	// Cluster of query-rendering intercepts (plan_tree,
 	// list_projects, decisions, evidence, lineage, rules, examine
 	// projects). Extracted out of this chain to keep the
 	// runInterceptChainInner statement count under the lint cap.
@@ -182,7 +182,7 @@ func (c *client) runInterceptChainInner(params kgtools.CallToolParams) (kgtools.
 	if handled, res := tools.InterceptCreateTicket(c, params); handled {
 		return params, true, res
 	}
-	// FUL-246 Phase 3: cluster of project-domain create / record /
+	// Cluster of project-domain create / record /
 	// what_next handlers relocated client-side. Each one returns
 	// (false, _) for the wrong tool name so they no-op for unrelated
 	// calls. Extracted out of this chain to keep the runInterceptChainInner
@@ -190,7 +190,7 @@ func (c *client) runInterceptChainInner(params kgtools.CallToolParams) (kgtools.
 	if handled, res := runProjectDomainIntercepts(c, params); handled {
 		return params, true, res
 	}
-	// FUL-251b Phase 2: mutate(create, type:criterion) moved client-
+	// Phase 2: mutate(create, type:criterion) moved client-
 	// side. Must fire BEFORE InterceptMutate (gates on op in
 	// {update, delete} — never claims create) so the criterion
 	// orchestration runs before any generic-mutate fall-through.
@@ -204,7 +204,7 @@ func (c *client) runInterceptChainInner(params kgtools.CallToolParams) (kgtools.
 	return params, handled, res
 }
 
-// runQueryRenderingIntercepts dispatches the FUL-251b query-domain
+// runQueryRenderingIntercepts dispatches the query-domain
 // intercepts (plan_tree, list_projects, decisions, evidence, lineage,
 // rules, examine projects). Extracted from runInterceptChainInner to
 // satisfy the funlen lint cap.
@@ -230,7 +230,7 @@ func runQueryRenderingIntercepts(c *client, params kgtools.CallToolParams) (bool
 	if handled, res := tools.InterceptQueryExamineProjects(c, params); handled {
 		return true, res
 	}
-	// T-GTB3 Phase 2: general query(mode:examine) for every OTHER knowledge node
+	// Phase 2: general query(mode:examine) for every OTHER knowledge node
 	// type (NodeFile, NodeThought, finding, decision, ...). Must run AFTER
 	// InterceptQueryExamineProjects so project-domain types get the richer
 	// project-tree variant; this claims the rest, relocating the server
@@ -241,7 +241,7 @@ func runQueryRenderingIntercepts(c *client, params kgtools.CallToolParams) (bool
 	return false, kgtools.ToolResult{}
 }
 
-// runQueryDomainIntercepts dispatches the T-GTB3 per-graph + composite-mode +
+// runQueryDomainIntercepts dispatches the per-graph + composite-mode +
 // code query-domain intercepts. Modeled on runQueryRenderingIntercepts — a flat
 // gate-and-delegate sequence. Each member self-gates (on graph or mode) and
 // returns (false,_) for a call it doesn't own, so the order among members is
@@ -255,6 +255,13 @@ func runQueryDomainIntercepts(c *client, params kgtools.CallToolParams) (bool, k
 	// linkage), so a bare knowledge stats matched none and fell through to the
 	// generic deny. This member self-gates on mode==stats && graph∈{"",knowledge}.
 	if handled, res := tools.InterceptQueryStats(c, params); handled {
+		return true, res
+	}
+	// Phase 2: knowledge text-search modes (mode=recent now; text/default
+	// added by the sibling reroute step) are served by the CLIENT knowledge engine
+	// (composeKnowledgeSearch) instead of a server RETURN_MODE_SEARCH dispatch.
+	// Self-gates on graph∈{"",knowledge} + the claimed mode.
+	if handled, res := tools.InterceptQueryKnowledgeSearch(c, params); handled {
 		return true, res
 	}
 	if handled, res := tools.InterceptQueryCloudCICD(c, params); handled {
@@ -272,7 +279,7 @@ func runQueryDomainIntercepts(c *client, params kgtools.CallToolParams) (bool, k
 	if handled, res := tools.InterceptQueryMetadataStats(c, params); handled {
 		return true, res
 	}
-	// T-GTB3 Phase 5: codegraph relocation. The code composers self-gate on
+	// Phase 5: codegraph relocation. The code composers self-gate on
 	// graph=code (analyze: id+non-stats; code-search: text/queries; code-stats:
 	// mode=stats; list_modules: mode=modules) or their top-level tool name
 	// (file_symbols). They run AFTER InjectRepoIfCodeGraph (the first chain step)
@@ -293,7 +300,7 @@ func runQueryDomainIntercepts(c *client, params kgtools.CallToolParams) (bool, k
 	return false, kgtools.ToolResult{}
 }
 
-// runProjectDomainIntercepts dispatches an MCP call across the FUL-246
+// runProjectDomainIntercepts dispatches an MCP call across the
 // project-domain intercepts (create_plan / create_research /
 // create_test_plan / record_decision / what_next). Each intercept
 // returns (false, _) when params.Name doesn't match its tool — the

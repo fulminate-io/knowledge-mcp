@@ -140,7 +140,7 @@ func startCountingEngine(t *testing.T) (string, *countingEngine) {
 	return srv.URL, eng
 }
 
-// buildE2EClient builds a minimal *client with the FUL-323 routing layer
+// buildE2EClient builds a minimal *client with the routing layer
 // wired: optional local *GraphClient, cloudURL, fakeAuthStore-backed
 // AuthState. Bypasses constructClient deliberately — constructClient also
 // fires DefaultSinkFactory mutation, StartKeepalive (goroutine), and
@@ -158,7 +158,7 @@ func buildE2EClient(local *graphclient.GraphClient, cloudURL string, store auth.
 }
 
 // TestRouterE2E_FourStates_PlusSwapAndSyncAndUnreachable exercises the
-// FUL-323 dispatcher path END-TO-END through c.engineDispatch (the same
+// dispatcher path END-TO-END through c.engineDispatch (the same
 // closure production threads MCP tool calls through). The 7 subtests:
 //
 //  1. NoLocal + NoAuth — engineDispatch surfaces ErrNoBackend rendered as the
@@ -258,12 +258,12 @@ func TestRouterE2E_FourStates_PlusSwapAndSyncAndUnreachable(t *testing.T) {
 	})
 
 	t.Run("LocalWithAuth_SyncStaysLocal", func(t *testing.T) {
-		// FUL-323 carve: sync push, post-collect linker, post-collect
+		// Carve: sync push, post-collect linker, post-collect
 		// postpopulate explicitly read+write the LOCAL graph (the
 		// destination is cloud via auth.Transport for sync push, and the
 		// local-only graph for the other two). They use
 		// deps.LocalGraphCaller() instead of deps.GraphCaller() so the
-		// FUL-323 router never sends them cloudward even when logged in.
+		// router never sends them cloudward even when logged in.
 		// This subtest proves the LocalGraphCaller() accessor stays local
 		// when AuthState=true, mirroring the carve done in
 		// tools/intercept_sync.go::exporterSeam.

@@ -30,7 +30,7 @@ type replaceResultShape struct {
 	Diffs           map[string]string `json:"diffs"`
 }
 
-// TestAstSchema_ReplaceOperation pins criterion 5171378171: the operation enum
+// TestAstSchema_ReplaceOperation pins that the operation enum
 // contains "replace" and the InputSchema advertises the replacement + dry_run
 // properties.
 func TestAstSchema_ReplaceOperation(t *testing.T) {
@@ -49,7 +49,7 @@ func TestAstSchema_ReplaceOperation(t *testing.T) {
 	assert.Contains(t, def.Description, "replace", "tool description must mention the replace op")
 }
 
-// TestAstReplace_DispatchAndValidation pins criterion 18c5281817745: dispatch
+// TestAstReplace_DispatchAndValidation pins that dispatch
 // routes operation:replace to handleAstReplace, a missing replacement errors
 // naming replacement, and a dry-run on the fixture returns applied=false /
 // dry_run=true / non-empty diffs with files unchanged.
@@ -92,7 +92,7 @@ func TestAstReplace_DispatchAndValidation(t *testing.T) {
 	})
 }
 
-// TestAstReplace_DryRunPointerSemantics pins criterion 3491f638: an absent
+// TestAstReplace_DryRunPointerSemantics pins that an absent
 // dry_run defaults to a dry run (no write); an explicit dry_run:false applies.
 // Verifies the *flexBool pointer default-true semantics.
 func TestAstReplace_DryRunPointerSemantics(t *testing.T) {
@@ -160,7 +160,7 @@ func run() {
 	return dir
 }
 
-// TestHandleAstReplace_OverlapRefused pins criterion 29045c82 case (a): two
+// TestHandleAstReplace_OverlapRefused pins case (a): two
 // sibling patterns whose matches nest in one file refuse that file whole and
 // leave it unchanged.
 func TestHandleAstReplace_OverlapRefused(t *testing.T) {
@@ -190,7 +190,7 @@ func TestHandleAstReplace_OverlapRefused(t *testing.T) {
 	assert.Equal(t, string(before), string(after), "refused file must be unchanged")
 }
 
-// TestHandleAstReplace_LiteralDollarEscape pins criterion 29045c82 case (b): a
+// TestHandleAstReplace_LiteralDollarEscape pins case (b): a
 // replacement containing $$ emits a single literal $ in the rewritten file.
 func TestHandleAstReplace_LiteralDollarEscape(t *testing.T) {
 	repoDir := astIntegrationFixture(t)
@@ -219,7 +219,7 @@ func TestHandleAstReplace_LiteralDollarEscape(t *testing.T) {
 	assert.Contains(t, string(onDisk), `println("$ from f")`, "$$ must collapse to a single literal $")
 }
 
-// TestAstReplace_HelpDocumentsReplace pins criterion 2f3e2865: help("ast")
+// TestAstReplace_HelpDocumentsReplace pins that help("ast")
 // documents the replace operation (template forms, dry_run default, overlap
 // refuse-and-report, re-parse gate, worked example) and astToolDescription
 // enumerates five ops including replace.

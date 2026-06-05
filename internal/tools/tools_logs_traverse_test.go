@@ -118,7 +118,7 @@ func buildLogTraversalFixture(
 	require.NotNil(t, result)
 	t.Cleanup(func() { logs.UnregisterEngine(queryID) })
 
-	// BCN11.2: pipeline is a pure transform. Materialize the result into a
+	// Pipeline is a pure transform. Materialize the result into a
 	// store-free corpus and seed it onto the fake so subsequent traversal
 	// queries walk the same graph over the Execute carrier seam.
 	nodes, batchEdges, err := collectorlogs.MaterializeLogGraph(

@@ -11,7 +11,7 @@
 // renders the generic header/ancestry/edges view (or delegates to
 // handleExamine for thoughts).
 //
-// FUL-251b Phase 4: must be wired BEFORE Phase 5 introduces the
+// Must be wired BEFORE the phase that introduces the
 // project-domain type-switch in handleInspectNode that returns
 // the relocated client-side intercepts.
 

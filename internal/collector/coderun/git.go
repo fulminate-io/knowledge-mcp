@@ -22,7 +22,7 @@ func DetectBranch(ctx context.Context, repoDir string) (string, error) {
 
 // HeadCommit returns the current HEAD commit SHA for the given repo directory.
 // Returns empty string on error (not a git repo, no commits yet, etc.).
-// FUL-241 Phase 3: shifted client-side off the deleted server-side
+// Shifted client-side off the deleted server-side
 // fetchGitInfoIfNeeded — clients pass the SHA to the server via the
 // staleness wire args.
 func HeadCommit(ctx context.Context, repoDir string) (string, error) {

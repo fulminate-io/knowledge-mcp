@@ -9,18 +9,12 @@ import (
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 )
 
-// recentHalfLifeDays is the Temporal(30) half-life for the recent search mode.
-// The engine calls q.Temporal(p.GetHalfLife()), so the client passes 30 explicitly
-// to drive the LLM-facing recency-boost output (a zero half_life means "no
-// temporal decay").
-const recentHalfLifeDays = 30.0
-
 // browseDefaultLimit is the LLM-facing friendly cap a no-limit query-tool
 // BROWSE read (type-browse, plural-types browse, meta-only browse) compiles to.
 // It is 10 to match the search compositor's self-default — the one consistent
-// value across the LLM-facing surface (decision 60493b414d3014983b2112c2337e1537).
+// value across the LLM-facing surface.
 //
-// FUL-302: this default lives CLIENT-SIDE because only the compile layer knows
+// This default lives CLIENT-SIDE because only the compile layer knows
 // the user-facing intent. The server now honors the proto contract literally
 // (limit==0 = no cap, engine.proto:520-521) and injects NO default, so an
 // internal Match-all helper that explicitly wants everything (FetchAllNodes,
@@ -59,7 +53,7 @@ type queryArgs struct {
 	IncludeTombstones bool              `json:"include_tombstones"`
 
 	// ContentB64 opts the NodeList carrier into the binary-safe content_b64
-	// encode (T-GTB1e #1): the engine base64-encodes each non-empty Node.Content
+	// encode: the engine base64-encodes each non-empty Node.Content
 	// before marshaling nodes_json, and the caller decodes via
 	// DecodeNodesContentB64. Threaded onto the type-browse + ids[] arms (the
 	// log-chunk fetch shapes). Empty/false = Content rides as the raw string.
@@ -84,14 +78,12 @@ type queryArgs struct {
 // can serve. Everything else — stats/examine/topology/pivot/correlations/
 // timeline/explain/resolver/metadata_stats/reflect (personality/influence/
 // tensions/blind_spots/evolution/summary/simulate/charges/clusters)/lineage/
-// evidence/plan_tree/modules/file_symbols — is SPECIALIZED (finding 457e861e)
+// evidence/plan_tree/modules/file_symbols — is SPECIALIZED
 // and falls through to legacy.
 var reducibleQueryModes = map[string]struct{}{
-	"":            {}, // default: id / ids / text / type / meta dispatch
-	"text":        {}, // text search
-	"graph_reach": {}, // PPR rerank
-	"recent":      {}, // temporal decay rerank
-	"modules":     {}, // list-graphs catalog enumeration (RETURN_MODE_GRAPH_NAMES)
+	"":        {}, // default: id / ids / text / type / meta dispatch
+	"text":    {}, // text search
+	"modules": {}, // list-graphs catalog enumeration (RETURN_MODE_GRAPH_NAMES)
 }
 
 // reducibleTextRequiredModes is the subset of reducibleQueryModes whose plan is
@@ -106,9 +98,7 @@ var reducibleQueryModes = map[string]struct{}{
 // only one of several recognized shapes, so empty text is not an error there) and
 // "modules" (catalog enumeration takes NO text — the GraphType is the only input).
 var reducibleTextRequiredModes = map[string]struct{}{
-	"text":        {},
-	"graph_reach": {},
-	"recent":      {},
+	"text": {},
 }
 
 // precheckQuery runs the empty-text validation for the text-required query modes
@@ -118,7 +108,7 @@ var reducibleTextRequiredModes = map[string]struct{}{
 // for every shape that is not a text-required mode with empty text, so Dispatch
 // proceeds to Compile unchanged. It is the only remaining client-side
 // pre-Compile validation gate (the mutate(create) body precheck was relocated
-// server-side in FUL-306).
+// server-side).
 //
 // Message phrasing is fixed (`query mode "recent" requires a non-empty text
 // query`) so the LLM-facing error text stays stable and legible — distinct from
@@ -146,8 +136,8 @@ func compileQuery(args json.RawMessage) (*knowledgev1.ExecuteRequest, bool) {
 		return nil, false
 	}
 
-	// code/logs deny is NARROWED to the SPECIALIZED id/text shapes only (T-GTB1e
-	// #3): graph=code id→HandleAnalyzeNode, text→HandleSearchCode (client
+	// code/logs deny is NARROWED to the SPECIALIZED id/text shapes only:
+	// graph=code id→HandleAnalyzeNode, text→HandleSearchCode (client
 	// intercepts); graph=logs id/text→the log engine. A plain type-browse /
 	// plural-types-browse / ids[] read against code/logs is NOT specialized — the
 	// engine serves it via ResolveGraphDB (tools_graph_routing.go), and buildTarget
@@ -188,12 +178,6 @@ func hasThoughtFilter(a queryArgs) bool {
 // id/ids/text/type/meta).
 func buildQueryPlan(a queryArgs) (*knowledgev1.QueryPlan, bool) {
 	switch a.Mode {
-	case "graph_reach":
-		return searchModePlan(a, knowledgev1.SearchMode_SEARCH_MODE_PPR), a.Text != ""
-	case "recent":
-		p := searchModePlan(a, knowledgev1.SearchMode_SEARCH_MODE_TEMPORAL)
-		p.HalfLife = recentHalfLifeDays
-		return p, a.Text != ""
 	case "text":
 		return textSearchPlan(a), a.Text != ""
 	case "modules":
@@ -209,21 +193,6 @@ func buildQueryPlan(a queryArgs) (*knowledgev1.QueryPlan, bool) {
 	// server's handleGenericGraphQuery precedence (ids → id → text → type →
 	// meta-only).
 	return buildDefaultModePlan(a)
-}
-
-// searchModePlan builds a QSearch plan for the PPR / temporal rerank modes. The
-// query_vector decodes into one QueryVecs entry (engine validates length);
-// Limit rides only when supplied (engine owns the default).
-func searchModePlan(a queryArgs, mode knowledgev1.SearchMode) *knowledgev1.QueryPlan {
-	p := &knowledgev1.QueryPlan{
-		Queries:    []string{a.Text},
-		SearchMode: mode,
-		ReturnMode: knowledgev1.ReturnMode_RETURN_MODE_SEARCH,
-	}
-	applyQueryVec(p, a.QueryVector)
-	applyLimitOffset(p, a.Limit, a.Offset)
-	applyTombstones(p, a.IncludeTombstones)
-	return p
 }
 
 // textSearchPlan builds a plain hybrid QSearch plan for mode=text.
@@ -357,7 +326,7 @@ func applyQueryVec(p *knowledgev1.QueryPlan, queryVector string) {
 }
 
 // applyLimitOffset sets Limit/Offset only when supplied. Used by the SEARCH
-// arms (text / graph_reach / recent): a search plan that carries limit==0 is
+// arms (text / recent): a search plan that carries limit==0 is
 // self-defaulted to 10 by the server-side compositor (search/compositor.go), so
 // the client injects no default here — doing so would be redundant and could
 // fight the over-fetch plan.
@@ -375,7 +344,7 @@ func applyLimitOffset(p *knowledgev1.QueryPlan, limit, offset int) {
 // no positive limit, then sets Offset. Used by the three query-tool browse arms
 // (type-browse, plural-types browse, meta-only browse).
 //
-// FUL-302: a browse plan does NOT route through the compositor's self-default,
+// A browse plan does NOT route through the compositor's self-default,
 // and the server no longer injects a default (it honors limit==0 = no cap). So
 // without this client default a no-limit LLM browse would send limit==0 →
 // unbounded → the whole graph. This helper is the load-bearing guard that keeps

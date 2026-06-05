@@ -76,8 +76,8 @@ func TestCompileSearch_MultiTypeFilter(t *testing.T) {
 
 // TestCompileSearch_ResourceTypeFilter asserts a cloud resource_type search
 // COMPILES (still reducible) but carries NO resource_type signal on the plan:
-// T-GTB2 site (c) removed the resource_type carrier (an OP_PREFIX predicate is
-// inert on a QSearch post-rank — T-GTB1), so the client post-filters the
+// the resource_type carrier was removed (an OP_PREFIX predicate is
+// inert on a QSearch post-rank), so the client post-filters the
 // rendered SearchList instead. The compiled plan is a plain QSearch; the
 // resource_type prefix is applied in renderSearchTool, not on the wire.
 func TestCompileSearch_ResourceTypeFilter(t *testing.T) {

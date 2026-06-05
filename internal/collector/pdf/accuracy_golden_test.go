@@ -200,7 +200,7 @@ func parseGoldenChunksBytes(raw []byte) (goldenFile, error) {
 
 // TestGoldenSchema_VersionRejection verifies that schema_version: 2
 // (or anything != 1) produces a parse error mentioning the version
-// mismatch. Required by criterion a4ae200ba073078f8519481b2fc7f222.
+// mismatch.
 func TestGoldenSchema_VersionRejection(t *testing.T) {
 	t.Parallel()
 	bad := []byte(`{"schema_version": 2, "chunks": []}`)

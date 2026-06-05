@@ -17,7 +17,7 @@ import (
 
 // PopulateResult is the client-side hand-off type between the parser
 // collector and the codesync reindex path. It carries the typed wire node
-// (*knowledgev1.Node) the client builds directly — the FUL-295 T5 retype
+// (*knowledgev1.Node) the client builds directly — the T5 retype
 // dropped the store.Node wrapper from the client build path, so this type
 // supersedes the former store.PopulateResult. Pointer node/edge elements:
 // knowledgev1.Node/Edge each value-embed a protoimpl noCopy, so a value
@@ -149,7 +149,7 @@ func chunkResultsToPopulate(repoName, repoDir string, results []*treesitter.Resu
 
 	for _, result := range results {
 		nodeIDs[result.FilePath] = true
-		// FUL-241 Phase 7: populate Content on Dockerfile NodeFile
+		// Populate Content on Dockerfile NodeFile
 		// entries so pkg/linker/dockerfile.go can resolve BUILDS edges
 		// without reading the filesystem server-side. Other languages
 		// keep empty Content (chunk-level Content fields hold the body).

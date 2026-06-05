@@ -18,23 +18,44 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/kgwire"
 )
 
+// IngestClientPicker resolves the IngestService client to use for one call.
+// It is invoked PER CALL (WriteResult, collectChunkWithRetry, FetchCloudSubgraph)
+// so a mid-session `knowledge login` flip re-routes the next chunk to the cloud
+// backend without a process restart. Router.IngestClient(ctx) satisfies this
+// shape (router.go); NewUploadSink wraps a fixed client into a constant picker.
+type IngestClientPicker func(ctx context.Context) (knowledgev1connect.IngestServiceClient, error)
+
 // UploadSink implements collector.Sink by driving the unary IngestService
 // CollectChunk + Finalize flow. Used by cmd/knowledge (the MCP stdio client) so
 // collection runs client-side while indexing runs server-side. Stateless on the
 // wire: each chunk's nodes ride INLINE, so any server replica can land any
 // chunk (no per-process arena).
+//
+// The IngestService client is resolved PER CALL via picker so login-aware
+// routing (local vs cloud) honors a mid-session login flip; the sink never
+// caches a resolved client across calls.
 type UploadSink struct {
-	client knowledgev1connect.IngestServiceClient
+	picker IngestClientPicker
 	// epoch is the per-collection monotonic counter minted client-side. Single
 	// process, so a local atomic is authoritative; every chunk of one collection
 	// AND its Finalize share the value from one Add(1). Zero-value valid.
 	epoch atomic.Uint64
 }
 
-// NewUploadSink constructs an UploadSink wired to the IngestService client
-// exposed by the per-process GraphClient.
+// NewUploadSink constructs an UploadSink wired to a FIXED IngestService client.
+// Retained as the constant-picker convenience for callers (and tests) that
+// route to a single backend; it wraps client into a picker that always returns
+// it. Login-aware callers use NewUploadSinkFunc instead.
 func NewUploadSink(client knowledgev1connect.IngestServiceClient) *UploadSink {
-	return &UploadSink{client: client}
+	return &UploadSink{picker: func(context.Context) (knowledgev1connect.IngestServiceClient, error) {
+		return client, nil
+	}}
+}
+
+// NewUploadSinkFunc constructs an UploadSink whose IngestService client is
+// resolved per call via picker — the login-aware path (Router.IngestClient).
+func NewUploadSinkFunc(picker IngestClientPicker) *UploadSink {
+	return &UploadSink{picker: picker}
 }
 
 // Compile-time assertion.
@@ -46,9 +67,17 @@ var _ collector.Sink = (*UploadSink)(nil)
 // ID-addressed (FromIdx/ToIdx == -1, FromID/ToID set — see kgwire.BatchEdge
 // build sites), so they resolve regardless of which chunk a referenced node
 // arrived in. Per-chunk transport retry rides the existing reconnect
-// interceptor (content-idempotent: the same epoch re-lands identically through
-// the server's carry-forward upsert).
+// interceptor and is content-idempotent for BOTH nodes and edges: a node
+// re-lands identically through the server's carry-forward upsert + epoch GC,
+// and an edge re-lands at most once because the server's collect edge-landing
+// path dedups duplicate (From,Type,To) tuples against the batch and the
+// resident graph bundles. A retry of the final chunk — which carries
+// ALL edges — therefore does not double them.
 func (s *UploadSink) WriteResult(ctx context.Context, collectorName string, result *collectorwire.CollectResult) error {
+	client, err := s.picker(ctx)
+	if err != nil {
+		return fmt.Errorf("remote sink: resolve ingest client: %w", err)
+	}
 	epoch := s.epoch.Add(1)
 	// Sanitize node text BEFORE the proto marshal: the inline-Node wire marshals
 	// typed proto Node messages, and proto3 string fields reject invalid UTF-8 at
@@ -91,7 +120,7 @@ func (s *UploadSink) WriteResult(ctx context.Context, collectorName string, resu
 		GraphName:     result.GraphName,
 		CurrentBranch: result.CurrentBranch,
 	})
-	if _, err := s.client.Finalize(ctx, finReq); err != nil {
+	if _, err := client.Finalize(ctx, finReq); err != nil {
 		return fmt.Errorf("remote sink: Finalize: %w", err)
 	}
 	return nil
@@ -99,16 +128,23 @@ func (s *UploadSink) WriteResult(ctx context.Context, collectorName string, resu
 
 // collectChunkWithRetry sends one CollectChunk, retrying on a retryable
 // transport error (server restart mid-collection, TCP drop) via the existing
-// graphclient backoff. Content-idempotent: re-sending the same chunk under the
-// same epoch re-lands identically through the carry-forward upsert.
+// graphclient backoff. Content-idempotent for both nodes and edges: re-sending
+// the same chunk under the same epoch re-lands nodes identically through the
+// carry-forward upsert + epoch GC, and re-lands edges at most once because the
+// server's collect edge-landing path filters duplicate (From,Type,To) tuples
+// against the batch and the resident graph bundles.
 func (s *UploadSink) collectChunkWithRetry(ctx context.Context, msg *knowledgev1.CollectChunkRequest) error {
+	client, err := s.picker(ctx)
+	if err != nil {
+		return fmt.Errorf("remote sink: resolve ingest client: %w", err)
+	}
 	maxAttempts := len(graphclient.RetryBackoff) + 1
 	var attemptErr error
 	for attempt := range maxAttempts {
 		if ctx.Err() != nil {
 			return ctx.Err()
 		}
-		_, err := s.client.CollectChunk(ctx, connect.NewRequest(msg))
+		_, err := client.CollectChunk(ctx, connect.NewRequest(msg))
 		if err == nil {
 			return nil
 		}

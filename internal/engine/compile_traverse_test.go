@@ -46,7 +46,7 @@ func TestCompileTraverse_DefaultDirectionIsOut(t *testing.T) {
 	assert.True(t, q.GetForward(), "empty direction defaults to out (validateDirection)")
 }
 
-// TestCompileTraverse_EdgeTypesCanonicalized pins the T-GTB2 site (b) client-side
+// TestCompileTraverse_EdgeTypesCanonicalized pins the client-side
 // per-graph edge-casing: the engine now uses edge_types AS-GIVEN, so the client
 // canonicalizes them before they ride the wire. An absent graph defaults to
 // knowledge → lowercase, so both tokens lower-case.

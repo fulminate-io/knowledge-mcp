@@ -73,7 +73,7 @@ func (f *fakeIndexer) Call(_ context.Context, _ string, _ json.RawMessage) (kgto
 }
 
 // Execute satisfies render.Executor so the rebuild fan-out's graph-list
-// resolution (listGraphNamesOfType → fetchGraphNamesOfType, T-GTB6) lands. It
+// resolution (listGraphNamesOfType → fetchGraphNamesOfType) lands. It
 // serves a per-type RETURN_MODE_GRAPH_NAMES read by filtering listGraphsBody
 // (the {graphs:[{graph_type,graph_name}]} seed) to the requested Target graph
 // type, projected to the graph_names_json []store.GraphInfo carrier. Non-graph-

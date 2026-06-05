@@ -74,7 +74,7 @@ func h2cClient() *http.Client {
 // INLINE nodes + edges (no arena — chunks carry their nodes), and Finalize flushes
 // the accumulated set to the capturing sink keyed by the collection epoch.
 //
-// Lives here (client-side) post-BCN9: the test exercises the client's
+// Lives here (client-side): the test exercises the client's
 // remote.UploadSink against an in-process server-side fixture, and the production
 // connectAdapter is unreachable from cmd/knowledge/internal/ (Go's internal/ rule).
 type testIngestHandler struct {

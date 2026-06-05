@@ -10,7 +10,7 @@
 package kgtypes
 
 // NodeType classifies a node in the graph. It stays a DEFINED string type (NOT a
-// `= string` alias) under the value-embed flip (decision f21640fb): the ~50
+// `= string` alias) under the value-embed flip: the ~50
 // vocabulary consts below AND the NodeType methods (IsCodeType / ShouldEmbed /
 // Summarizable / …) both survive — Go forbids methods on an alias to a predeclared
 // type, so a true `= string` alias is incompatible with those methods. The embedded
@@ -21,7 +21,7 @@ package kgtypes
 type NodeType string
 
 // EdgeType classifies a relationship between two nodes. It stays a DEFINED string
-// type (NOT a `= string` alias) under the value-embed flip (decision f21640fb) — the
+// type (NOT a `= string` alias) under the value-embed flip — the
 // ~120 vocabulary consts below survive with zero churn, and EdgeType-typed values
 // are cast at the knowledgev1.Edge.Type proto string-field boundary (EdgeType(e.Type)
 // to read; untyped const assignment to write). A true alias is unnecessary here since

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// replace.go — the apply engine for ast operation:"replace" (FUL-308).
+// replace.go — the apply engine for ast operation:"replace".
 //
 // The WRITE counterpart to operation:"match". It consumes the existing
 // []RawMatch the matcher already produces (the outer matched node under

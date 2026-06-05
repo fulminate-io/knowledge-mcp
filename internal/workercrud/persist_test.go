@@ -63,7 +63,7 @@ func TestNodeToWorker_RejectsWrongType(t *testing.T) {
 }
 
 // TestNodeToWorker_NodeJSONRoundTrip pins the wire decode path List
-// walks via the Execute carrier seam (T-GTB6): WorkerToNode produces a
+// walks via the Execute carrier seam: WorkerToNode produces a
 // *knowledgev1.Node with the persisted metadata shape; the engine.DecodeNodes
 // carrier carries the full *knowledgev1.Node over the wire. Round-trip the node
 // through protojson and decode it back via NodeToWorker — the exact path List

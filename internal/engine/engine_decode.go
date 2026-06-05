@@ -11,7 +11,7 @@ import (
 )
 
 // nanosToTime converts an int64 unix-nanos value (the value-embed proto
-// timestamp representation — decision f21640fb) to a time.Time for the client
+// timestamp representation) to a time.Time for the client
 // renderers, mapping 0 → the zero time.Time. Shared by every render_*.go site
 // that formats a knowledgev1.Edge timestamp.
 func nanosToTime(nanos int64) time.Time {
@@ -25,7 +25,7 @@ func nanosToTime(nanos int64) time.Time {
 // client-side node types, symmetric to the server's resultToResponse encode
 // (cmd/knowledge-server/bootstrap/engine_encode.go). The server populates the
 // typed Nodes / search_results.node / traversal_results.node fields; these
-// decoders read them DIRECTLY (T5/FUL-295 deleted the nodes_json/node_json blob
+// decoders read them DIRECTLY (T5 deleted the nodes_json/node_json blob
 // boundary — the read is now field access, no json.Unmarshal). The server
 // populates exactly one sub-list per return mode, so an absent carrier is the
 // NORMAL case for the other modes — every decoder returns an empty slice (NOT an
@@ -37,7 +37,7 @@ func nanosToTime(nanos int64) time.Time {
 
 // SearchResult is the client-side search hit (node + score), mirroring the
 // former store.HydratedResult's field set (pkg/store/search_types.go:18) with
-// the embedded node retyped to the wire proto *knowledgev1.Node — T5 (FUL-295)
+// the embedded node retyped to the wire proto *knowledgev1.Node — T5
 // drops the store.Node wrapper layer from the client read path. Method-free DTO.
 type SearchResult struct {
 	Node  *knowledgev1.Node
@@ -54,7 +54,7 @@ type TraversalResult struct {
 
 // decodeNodes decodes the typed ExecuteResponse.Nodes carrier (RETURN_MODE_NODES)
 // into []*knowledgev1.Node. Empty carrier → nil slice. The server populates this
-// from &node.Node (value-embed, decision f21640fb), so the typed nodes ARE the
+// from &node.Node (value-embed), so the typed nodes ARE the
 // wire protos — no decode step, just the field read.
 func decodeNodes(resp *knowledgev1.ExecuteResponse) ([]*knowledgev1.Node, error) {
 	return resp.GetNodes(), nil
@@ -190,7 +190,7 @@ func DecodeGraphNames(resp *knowledgev1.ExecuteResponse) ([]*knowledgev1.GraphIn
 // decodeEdgesRaw decodes ExecuteResponse.edges (the RETURN_MODE_EDGES carrier)
 // into raw []knowledgev1.Edge — the full Weight/Confidence/Method/Evidence/
 // LastValidated edges the engine collects via db.IterEdges for a by_id / ids[] /
-// from_id pivot set. T-GTB2 site (d) consumes this to compose the
+// from_id pivot set. The by-id consumer uses this to compose the
 // query(id, include_edges) edge summary client-side (dispatch_byid.go). Empty
 // carrier → nil (the node has no edges).
 func decodeEdgesRaw(resp *knowledgev1.ExecuteResponse) ([]knowledgev1.Edge, error) {

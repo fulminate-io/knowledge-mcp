@@ -13,7 +13,7 @@ import (
 )
 
 // sqlSubCollector collects Cloud SQL instances.
-// Uses the REST-based google.golang.org/api (not gRPC) per decision 6454b5d9.
+// Uses the REST-based google.golang.org/api (not gRPC) per the design decision.
 type sqlSubCollector struct {
 	service   *sqladmin.Service
 	projectID string

@@ -5,6 +5,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"sync/atomic"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -15,10 +16,11 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/enginetest"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
 
 // decisionsFakeGc scripts both read shapes the decisions intercept fires over
-// the Execute carrier seam (T-GTB6): a query(type:"decision") listing
+// the Execute carrier seam: a query(type:"decision") listing
 // (nodes_json carrier) and a search(graph:"knowledge", types:["decision"])
 // topic-search (search_results_json carrier). Records every Execute request for
 // compiled-plan shape assertions.
@@ -110,19 +112,31 @@ func TestInterceptQueryDecisions_TopicSearch_ByteIdentical(t *testing.T) {
 	assert.Equal(t, want, got)
 }
 
-func TestInterceptQueryDecisions_TopicSearch_WireShape(t *testing.T) {
-	gc := seedDecisionsFixture()
-	deps := &logE2EDeps{gc: gc}
+// TestInterceptQueryDecisions_TopicSearch_ClientEngine is the census-gap
+// fix: the decisions topic-search is a KNOWLEDGE-graph search
+// that now runs against the CLIENT segment engine (mgr.Search → hydrate → keep
+// decisions) and dispatches NO server RETURN_MODE_SEARCH. The only Execute is the
+// ids[] hydrate read, which is not a server search plan.
+func TestInterceptQueryDecisions_TopicSearch_ClientEngine(t *testing.T) {
+	var execHits atomic.Int64
+	gc, handler := newInterceptHarnessWithHandler(t, &execHits, cannedNodesResp(
+		&knowledgev1.Node{Id: "d1", Type: string(kgtypes.NodeDecision), SymbolName: "cap-dec-alpha",
+			Source: "test", Status: "active"},
+	))
+	mgr := &fakeSegmentSearcher{hits: []searchengine.Hit{{ID: "d1", Score: 0.9}}}
+	deps := &interceptDeps{gc: gc, segMgr: mgr}
 	args := mustMarshal(t, map[string]any{"type": "decision", "text": "foo", "limit": 5})
 
-	handled, _ := InterceptQueryDecisions(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
+	handled, res := InterceptQueryDecisions(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
 	require.True(t, handled)
-	require.Len(t, gc.execs, 1)
-	q := gc.execs[0].GetQuery()
-	require.NotNil(t, q, "topic-search compiles a search QueryPlan")
-	require.Len(t, q.GetQueries(), 1, "topic-search rides the search query carrier")
-	assert.Equal(t, "foo decision", q.GetQueries()[0])
-	assert.Equal(t, []string{"decision"}, q.GetSelection().GetNodeTypes(), "search type-filter narrows to decision")
+	require.False(t, res.IsError, "%v", engine.FirstTextContent(res))
+
+	require.Equal(t, int64(1), mgr.calls.Load(), "decisions search drove the CLIENT knowledge engine")
+	require.Equal(t, kgtypes.GraphKnowledge, mgr.lastGT)
+	assert.Equal(t, "foo decision", mgr.lastText, "the topic+' decision' query reached the engine")
+	require.False(t, dispatchedAServerSearch(handler.recordedReqs()),
+		"decisions topic-search must NOT dispatch a server search")
+	assert.Contains(t, engine.FirstTextContent(res), "cap-dec-alpha")
 }
 
 func TestInterceptQueryDecisions_Listing_WireShape_NoIncludeTombstones(t *testing.T) {

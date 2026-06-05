@@ -38,8 +38,8 @@ type RoleMapping struct {
 	Metadata map[string]string
 }
 
-// roleTable is the canonical /S → RoleMapping table from the T6
-// ticket (FUL-80). Vendor-specific or unknown types miss the lookup
+// roleTable is the canonical /S → RoleMapping table.
+// Vendor-specific or unknown types miss the lookup
 // and ResolveRole returns {Action: RoleWalkThrough}.
 //
 // Map values are pre-allocated; the metadata maps are shared rather

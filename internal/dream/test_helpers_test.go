@@ -8,7 +8,7 @@ import (
 
 // registryWith returns a Registry seeded with the supplied workers via
 // a fakeLister. Used by runner_test.go to construct a Registry without
-// a real GraphClient or workercrud.Client — the post-BCN3 equivalent
+// a real GraphClient or workercrud.Client — the equivalent
 // of the prior wire-shape JSON harness.
 func registryWith(t testing.TB, ws ...Worker) *Registry {
 	t.Helper()

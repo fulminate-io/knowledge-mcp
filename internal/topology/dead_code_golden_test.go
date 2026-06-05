@@ -19,7 +19,7 @@ import (
 )
 
 // fakeNodeIndexCaller is a scripted graphCaller + topoExecutor for golden-file
-// tests. The node-index fetch rides the Execute carrier seam (T-GTB6); Execute
+// tests. The node-index fetch rides the Execute carrier seam; Execute
 // returns an empty typed Nodes carrier so every dead function surfaces as
 // "unmapped" — the dead_code finding shape for unmapped functions (file:line
 // evidence keys) is the golden check.
@@ -34,7 +34,7 @@ func (fakeNodeIndexCaller) Execute(_ context.Context, _ *knowledgev1.ExecuteRequ
 	return enginetest.ResponseWithNodes(), nil
 }
 
-// TestRunDeadCode_GoldenFile_UnmappedShape is the FUL-241 Phase 9 step
+// TestRunDeadCode_GoldenFile_UnmappedShape is the Phase 9 step
 // 3 equivalence check. Pre-migration the server's DeadCodeAnalyzer
 // produced the same Finding shape this test pins; the client-side
 // RunDeadCode must produce identical structure.

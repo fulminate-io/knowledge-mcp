@@ -144,7 +144,7 @@ func TestParseCMap_SurrogatePair(t *testing.T) {
 	}
 }
 
-// TestParseCMap_BfrangeOverflow_Skipped covers criterion f773fde7:
+// TestParseCMap_BfrangeOverflow_Skipped covers that
 // a bfrange claiming 4 billion entries (<00000000> <FFFFFFFF>) MUST
 // be skipped (no allocation), parser returns nil error, slog.Warn
 // fires with "bfrange span exceeds maxBfRangeSpan".
@@ -163,7 +163,7 @@ func TestParseCMap_BfrangeOverflow_Skipped(t *testing.T) {
 	}
 }
 
-// TestParseCMap_HexTokenOverflow_Skipped covers criterion cff9f3db:
+// TestParseCMap_HexTokenOverflow_Skipped covers that
 // a bfchar target whose decoded byte length exceeds maxHexTokenBytes
 // is skipped; cmap.bfchars is empty; slog.Warn fires.
 func TestParseCMap_HexTokenOverflow_Skipped(t *testing.T) {
@@ -183,7 +183,7 @@ func TestParseCMap_HexTokenOverflow_Skipped(t *testing.T) {
 	}
 }
 
-// TestParseCMap_DirectiveCountCap covers criterion fbc572a7: a CMap
+// TestParseCMap_DirectiveCountCap covers that a CMap
 // with > maxDirectives entries stops at the cap. Bound test at
 // maxDirectives + 5 (200000 is overkill for CI; use cap+5).
 func TestParseCMap_DirectiveCountCap(t *testing.T) {
@@ -211,7 +211,7 @@ func TestParseCMap_DirectiveCountCap(t *testing.T) {
 	}
 }
 
-// TestParseCMap_UseCMap_Silent covers criterion 209083f1: a usecmap
+// TestParseCMap_UseCMap_Silent covers that a usecmap
 // directive is silently skipped — no warning, no recursion. Per T2-4
 // (silent rejection prevents the implementation gap from widening
 // into a chained-CMap loader).

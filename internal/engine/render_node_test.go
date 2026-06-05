@@ -85,8 +85,8 @@ func TestRenderNodeResponse_KnowledgeJSON(t *testing.T) {
 }
 
 // TestRenderKnowledgeNode_WithEdges asserts the knowledge include_edges shape is
-// jsonResult(NodeWithEdges{Node, Edges}). T-GTB2 site (d) moved the absorption
-// composition into dispatchQueryByID, which passes the shaped []nodeEdgeInfo
+// jsonResult(NodeWithEdges{Node, Edges}). The absorption
+// composition moved into dispatchQueryByID, which passes the shaped []nodeEdgeInfo
 // directly into renderKnowledgeNode — so this test drives that renderer directly
 // (the rendering logic is unchanged; only the carrier-decode entry point moved).
 func TestRenderKnowledgeNode_WithEdges(t *testing.T) {

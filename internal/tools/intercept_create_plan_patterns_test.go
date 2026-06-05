@@ -19,7 +19,7 @@ import (
 // intercept_create_plan_patterns_test.go ports the legacy
 // projects/plan_pattern_validation_test.go coverage onto the LIVE wire path:
 // InterceptCreatePlan driven through *fakeGraphCaller. The interceptor now runs
-// the full validate→resolve tail (FUL-286 Phase 2), so these tests assert the
+// the full validate→resolve tail, so these tests assert the
 // behavior against the create_batch MutationPlan the fake captures in
 // execMutations rather than re-querying a real store.
 

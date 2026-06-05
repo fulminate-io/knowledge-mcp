@@ -160,7 +160,7 @@ func TestDecode_CIDFontIdentityH(t *testing.T) {
 	}
 }
 
-// TestFontResolver_DocScopeCaching covers criterion 07da97a0 (T3-8 +
+// TestFontResolver_DocScopeCaching covers caching (T3-8 +
 // T3-1): iterate pages[i%3] for i=0..99 against multipage_one_font.pdf;
 // the document-scoped resolver should call parseCMap exactly ONCE
 // because all 3 pages share Helvetica F1 by content.

@@ -43,6 +43,9 @@ func (d *cloudStatusDeps) BackendResolver() BackendResolver      { return nil }
 func (d *cloudStatusDeps) GraphCaller() GraphCaller              { return d.gc }
 func (d *cloudStatusDeps) LocalGraphCaller() GraphCaller         { return d.gc }
 func (d *cloudStatusDeps) RepoResolver() *RepoResolver           { return nil }
+func (d *cloudStatusDeps) SegmentManager() SegmentSearcher       { return nil }
+func (d *cloudStatusDeps) SegmentShipper() SegmentShipper        { return nil }
+func (d *cloudStatusDeps) PipelineScanner() PipelineScanner      { return nil }
 
 func (d *cloudStatusDeps) CloudStatusInfo() (bool, string) { return d.loggedIn, d.host }
 
@@ -79,8 +82,7 @@ func closedGraphClient(t *testing.T) *graphclient.GraphClient {
 // "Backend: cloud (<host>)" preamble, omitting all local-daemon-only fields.
 func TestHandleServerStatus_LoggedIn(t *testing.T) {
 	stats := &knowledgev1.GraphStats{
-		NodeCount: 1000, EdgeCount: 500, VectorCount: 200, BinaryVectorCount: 200,
-		HasBm25:     true,
+		NodeCount: 1000, EdgeCount: 500, BinaryVectorCount: 200,
 		NodesByType: map[string]int64{"thought": 700},
 	}
 	deps := &cloudStatusDeps{

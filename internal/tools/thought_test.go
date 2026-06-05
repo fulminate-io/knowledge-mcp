@@ -43,6 +43,9 @@ func (thoughtTestDeps) BackendResolver() BackendResolver      { return nil }
 func (thoughtTestDeps) GraphCaller() GraphCaller              { return nil }
 func (thoughtTestDeps) LocalGraphCaller() GraphCaller         { return nil }
 func (thoughtTestDeps) RepoResolver() *RepoResolver           { return nil }
+func (thoughtTestDeps) SegmentManager() SegmentSearcher       { return nil }
+func (thoughtTestDeps) SegmentShipper() SegmentShipper        { return nil }
+func (thoughtTestDeps) PipelineScanner() PipelineScanner      { return nil }
 
 // TestInterceptThoughts_NameFiltering pins that non-thoughts /
 // non-query tool calls fall through unchanged so the intercept chain's
@@ -60,7 +63,7 @@ func TestInterceptThoughts_NameFiltering(t *testing.T) {
 
 // TestInterceptThoughts_ThoughtsFallthroughUnknownOp pins that the
 // thoughts ops left server-side (adjacency, charges_for, the
-// unrecognized ones) fall through unchanged. Post-FUL-247: think,
+// unrecognized ones) fall through unchanged. think,
 // charge, recall, trace are ALL claimed client-side; only adjacency
 // and charges_for remain server-side bulk reads.
 func TestInterceptThoughts_ThoughtsFallthroughUnknownOp(t *testing.T) {
@@ -165,7 +168,7 @@ func TestInterceptThoughts_MalformedArgsFallthrough(t *testing.T) {
 }
 
 // TestInterceptThoughts_EvolutionRequiresClusters pins the cluster_a /
-// cluster_b validation that mirrors the pre-BCN4 server-side check.
+// cluster_b validation that mirrors the former server-side check.
 func TestInterceptThoughts_EvolutionRequiresClusters(t *testing.T) {
 	t.Parallel()
 	deps := thoughtTestDeps{}

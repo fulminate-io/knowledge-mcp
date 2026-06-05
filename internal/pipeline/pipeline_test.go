@@ -42,7 +42,7 @@ func TestPipeline_StopWithFullChannel(t *testing.T) {
 
 	// Register a real collector via the public API. Its run loop ticks
 	// every 10ms; with the fake returning no scan items it pushes nothing.
-	p.RegisterGraph(kgtypes.GraphCode, "synthetic")
+	p.RegisterGraph(context.Background(), kgtypes.GraphCode, "synthetic")
 
 	// Let the collector tick at least once.
 	time.Sleep(20 * time.Millisecond)
@@ -60,7 +60,7 @@ func TestPipeline_StopWithFullChannel(t *testing.T) {
 	}
 }
 
-// TestRegisterGraph_NonEligibleGraphIdles locks the FUL-307 Option-B
+// TestRegisterGraph_NonEligibleGraphIdles locks the Option-B
 // behavior: the client carries NO graph-type eligibility gate, so
 // RegisterGraph spawns collectors for EVERY loaded graph — including a
 // non-eligible one (web/logs/pdf/linkage). The non-eligible graph is
@@ -96,10 +96,10 @@ func TestRegisterGraph_NonEligibleGraphIdles(t *testing.T) {
 		t.Fatalf("Start: %v", err)
 	}
 
-	// Register a NON-ELIGIBLE graph type. Pre-FUL-307 the eligibility gate
+	// Register a NON-ELIGIBLE graph type. Previously the eligibility gate
 	// would have made this a no-op (no collector spawned at all). Now it
 	// spawns collectors that poll-and-idle.
-	p.RegisterGraph(kgtypes.GraphWebRaw, "test-source")
+	p.RegisterGraph(context.Background(), kgtypes.GraphWebRaw, "test-source")
 
 	// Let both collector loops tick several times.
 	time.Sleep(40 * time.Millisecond)
@@ -131,10 +131,10 @@ func TestRegisterGraph_NonEligibleGraphIdles(t *testing.T) {
 	}
 }
 
-// TestEnqueueIDs_PushesBothAxesRegardlessOfGraphType locks the FUL-307
+// TestEnqueueIDs_PushesBothAxesRegardlessOfGraphType locks the
 // Option-B EnqueueIDs behavior: with the eligibility gate removed, every id
 // is pushed onto BOTH the summary and embed channels regardless of the
-// graph's eligibility. The off-axis work is discarded server-side. Pre-FUL-307
+// graph's eligibility. The off-axis work is discarded server-side. Previously
 // a non-eligible graph would early-return (zero pushes); now both channels
 // receive the id. Workers are NOT started here so the pushed work stays
 // queued for the depth assertion.
@@ -151,7 +151,7 @@ func TestEnqueueIDs_PushesBothAxesRegardlessOfGraphType(t *testing.T) {
 	}
 	p := New(cfg, newFakeWireClient(), noopSum, noopEmb)
 
-	// A non-eligible graph type — pre-FUL-307 this early-returned with zero
+	// A non-eligible graph type — this previously early-returned with zero
 	// pushes. Note: Start is NOT called, so no dispatcher drains the channels;
 	// the pushed work stays queued for the Metrics() depth read.
 	p.EnqueueIDs(kgtypes.GraphWebRaw, "test-source", []string{"n1", "n2"})

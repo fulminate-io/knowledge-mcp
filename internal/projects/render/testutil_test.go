@@ -132,8 +132,8 @@ func (g *fakeGcFixture) Call(_ context.Context, tool string, args json.RawMessag
 }
 
 // Execute satisfies render.Executor — the carrier seam the repointed FetchNode /
-// IterEdges / resolveAssembleByName / listPracticeGraphs use (T-GTB3 Phase 6 +
-// T-GTB6). It resolves the target graph from the plan's GraphSelector (knowledge
+// IterEdges / resolveAssembleByName / listPracticeGraphs use. It resolves
+// the target graph from the plan's GraphSelector (knowledge
 // default, practice via language) and answers RETURN_MODE_GRAPH_NAMES (practice
 // list), RETURN_MODE_EDGES, type-browse, and ByID from the fixture as the
 // matching carrier (graph_names_json / edges_json / nodes_json).

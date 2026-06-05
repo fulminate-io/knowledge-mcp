@@ -9,6 +9,7 @@ import (
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
+	"github.com/fulminate-io/knowledge-mcp/internal/graphsel"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgwire"
 )
@@ -122,16 +123,5 @@ func UnlinkEdgesBatch(ctx context.Context, gc GraphCaller, gt kgtypes.GraphType,
 // query/mutate engine.Compile path consumes); the edge-read builds the proto
 // directly because RETURN_MODE_EDGES is not an engine.Compile tool shape.
 func edgeSelector(gt kgtypes.GraphType, graphName string) *knowledgev1.GraphSelector {
-	sel := &knowledgev1.GraphSelector{Graph: string(gt)}
-	switch gt {
-	case kgtypes.GraphCode:
-		sel.Repo = graphName
-	case kgtypes.GraphCloud, kgtypes.GraphCICD:
-		sel.Account = graphName
-	default:
-		if graphName != "" && graphName != "default" {
-			sel.Name = graphName
-		}
-	}
-	return sel
+	return graphsel.GraphSelectorFor(gt, graphName, true)
 }

@@ -22,7 +22,7 @@ import (
 // asserted on below are those go-readability PRESERVES: id, data-*,
 // cite, rel, and the inline-emphasis tag names. class and role are
 // stripped by readability's chrome-strip and do NOT survive to the
-// emitted graph — see finding 80353ac299a4d25434d117dee3c2402a. The
+// emitted graph. The
 // emitter-level unit tests (parse_dom_attrs_test.go, emit_nodes_test.go)
 // verify class/role preservation against raw *html.Node trees, so v1's
 // attribute-preservation contract is fully covered at the unit layer;

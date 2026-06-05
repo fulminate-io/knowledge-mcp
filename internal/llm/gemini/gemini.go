@@ -184,9 +184,10 @@ func (s *Service) do(ctx context.Context, body any, applied *llm.RequestOptions,
 
 	if resp.StatusCode != http.StatusOK {
 		return nil, &llm.LLMError{
-			Transient: llm.HTTPStatusToTransient(resp.StatusCode),
-			Reason:    fmt.Sprintf("http_%d", resp.StatusCode),
-			Cause:     fmt.Errorf("gemini API status %d: %s", resp.StatusCode, string(respBytes)),
+			Transient:  llm.HTTPStatusToTransient(resp.StatusCode),
+			Reason:     fmt.Sprintf("http_%d", resp.StatusCode),
+			RetryAfter: llm.ParseRetryAfter(resp.Header),
+			Cause:      fmt.Errorf("gemini API status %d: %s", resp.StatusCode, string(respBytes)),
 		}
 	}
 	return respBytes, nil

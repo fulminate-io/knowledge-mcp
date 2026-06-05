@@ -14,10 +14,10 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
-// --- Wire structs (FUL-88: curated content envelope for cloud dns) ---
+// --- Wire structs (curated content envelope for cloud dns) ---
 
 // managedZoneContent is the curated wire shape for gcp:dns:managedZone.
-// Field set frozen in Phase 1 audit (session ful-88-gcp-planning).
+// Field set frozen in the Phase 1 audit.
 // Note: googleapi dns.ManagedZone has no SelfLink field; the synthetic
 // ResourceSpec.ID `projects/<proj>/managedZones/<name>` is composed by the
 // collector and lives outside this Content blob.

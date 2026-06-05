@@ -16,7 +16,7 @@ import (
 
 // TestRenderExamine_Golden builds a ThoughtExamination fixture and
 // renders it through the relocated handler. Asserts every label the
-// pre-FUL-247 server-side handleExamine produced is present.
+// prior server-side handleExamine produced is present.
 func TestRenderExamine_Golden(t *testing.T) {
 	exam := clientthought.ThoughtExamination{
 		Node: &knowledgev1.Node{

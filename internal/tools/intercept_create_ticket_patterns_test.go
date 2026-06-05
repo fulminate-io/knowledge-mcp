@@ -20,7 +20,7 @@ import (
 // projects/ticket_pattern_validation_test.go coverage onto the LIVE wire path:
 // InterceptCreateTicket (local-only parent branch) driven through
 // *fakeGraphCaller. resolveTicketPatterns runs the full validate→resolve tail
-// (FUL-286 Phase 2) BEFORE any backend side-effect, so these tests assert
+// BEFORE any backend side-effect, so these tests assert
 // against the create_batch MutationPlan the fake captures.
 
 const localParentID = "proj-local"

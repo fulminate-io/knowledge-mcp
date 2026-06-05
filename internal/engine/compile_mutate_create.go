@@ -13,7 +13,7 @@ import (
 func createPayload(a mutateArgs) ([]*knowledgev1.NodeBody, []*knowledgev1.BatchEdgeSpec, bool) {
 	if a.Operation == "create_batch" {
 		// Edges-only create_batch is a first-class shape: PostPopulate hooks
-		// (FUL-288) write structural edges referencing nodes the collector
+		// write structural edges referencing nodes the collector
 		// already uploaded, with no new node bodies. The store's CreateBatch
 		// supports it natively (edges referencing pre-existing nodes by string
 		// ID). Only the truly-empty batch (0 nodes AND 0 edges) is non-reducible

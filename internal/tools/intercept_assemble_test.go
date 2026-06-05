@@ -36,6 +36,9 @@ func (d *fakeAssembleDeps) BackendResolver() BackendResolver      { return nil }
 func (d *fakeAssembleDeps) GraphCaller() GraphCaller              { return d.gc }
 func (d *fakeAssembleDeps) LocalGraphCaller() GraphCaller         { return d.gc }
 func (d *fakeAssembleDeps) RepoResolver() *RepoResolver           { return nil }
+func (d *fakeAssembleDeps) SegmentManager() SegmentSearcher       { return nil }
+func (d *fakeAssembleDeps) SegmentShipper() SegmentShipper        { return nil }
+func (d *fakeAssembleDeps) PipelineScanner() PipelineScanner      { return nil }
 
 // scriptGcAssemble is a tiny GraphCaller that answers query(id:)
 // calls with canned node JSON keyed by ID. Sufficient for the
@@ -71,7 +74,7 @@ func (s *scriptGcAssemble) Call(_ context.Context, tool string, args json.RawMes
 	return kgtools.TextResult(""), nil
 }
 
-// Execute satisfies render.Executor (T-GTB3 Phase 6): render.FetchNode /
+// Execute satisfies render.Executor: render.FetchNode /
 // IterEdges now ride Execute. Answers ByID from the seeded node JSON (decoded
 // into a nodes_json carrier) and RETURN_MODE_EDGES with no edges. The practice
 // list-graphs fallback still rides the legacy Call above.

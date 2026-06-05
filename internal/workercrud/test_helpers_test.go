@@ -14,7 +14,7 @@ import (
 
 // fakeCRUDClient is a workerCRUDClient (the production interface at
 // server.go) for unit tests. The worker CRUD surface rides the Execute
-// carrier seam (T-GTB6), so every CRUD op appends an execRecord (the
+// carrier seam, so every CRUD op appends an execRecord (the
 // compiled *ExecuteRequest) and returns the next queued execResponse —
 // the test body asserts on the compiled plan shape and feeds canned
 // ExecuteResponses / connect errors back. Call is retained to satisfy the

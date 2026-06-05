@@ -51,7 +51,7 @@ type crossLink struct {
 //   - KNOWLEDGE graph (handleGetNode): JSON — json.MarshalIndent(node).
 //   - GENERIC cross-graph (renderGenericNode): markdown "## <label> node" + body.
 //
-// T-GTB2 site (d): the include_edges / include_cross_links shapes do NOT reach
+// The include_edges / include_cross_links shapes do NOT reach
 // here — they are intercepted in dispatchQueryByID (dispatch_byid.go) and
 // composed via multi-call orchestration BEFORE the generic Compile/exec/Render
 // flow. This path therefore renders the BARE node only (no edge-summary /

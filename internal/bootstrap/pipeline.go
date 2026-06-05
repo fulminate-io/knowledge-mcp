@@ -14,10 +14,83 @@ package bootstrap
 import (
 	"context"
 	"log/slog"
+	"os"
+	"path/filepath"
 
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
+	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/llmproviders"
 	"github.com/fulminate-io/knowledge-mcp/internal/pipeline"
+	"github.com/fulminate-io/knowledge-mcp/internal/segmentdist"
+)
+
+// segmentCacheDir is the L2 disk-cache root for client-built/pulled HNSW segment
+// blobs, under ~/.knowledge/segments (falls back to a temp dir if the home dir is
+// unavailable — the cache is a best-effort backstop).
+func segmentCacheDir() string {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return filepath.Join(os.TempDir(), "knowledge-segments")
+	}
+	return filepath.Join(home, ".knowledge", "segments")
+}
+
+// routedWireClient adapts the login-aware *graphclient.Router to the pipeline's
+// WireClient + BackendResolver contract. Every PipelineScan/Execute re-picks the
+// backend via Router.Backend(ctx) (cloud when logged in, local otherwise), so a
+// mid-session login flip re-routes the next scan + writeback without a restart.
+// Backend(ctx) hands the pipeline the concrete backend to bind per collector;
+// LoggedIn(ctx) lets refreshOnce detect a flip and rebind every collector.
+//
+// Lives client-side next to wirePipelineRuntime (placement by ownership): it
+// composes the Router with the pipeline's contract and is consumed only by the
+// client pipeline wiring — never serialized across the boundary.
+type routedWireClient struct {
+	router *graphclient.Router
+}
+
+func (a routedWireClient) PipelineScan(
+	ctx context.Context,
+	req *knowledgev1.PipelineScanRequest,
+) (*knowledgev1.PipelineScanResponse, error) {
+	gc, err := a.router.Backend(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return gc.PipelineScan(ctx, req)
+}
+
+func (a routedWireClient) Execute(
+	ctx context.Context,
+	req *knowledgev1.ExecuteRequest,
+) (*knowledgev1.ExecuteResponse, error) {
+	gc, err := a.router.Backend(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return gc.Execute(ctx, req)
+}
+
+// Backend returns the concrete login-picked backend as a pipeline.WireClient so
+// the collector binds + scans + stamps one backend per registration.
+func (a routedWireClient) Backend(ctx context.Context) (pipeline.WireClient, error) {
+	gc, err := a.router.Backend(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return gc, nil
+}
+
+// LoggedIn reports the live login state for refreshOnce's flip detection.
+func (a routedWireClient) LoggedIn(ctx context.Context) bool {
+	return a.router.LoggedIn(ctx)
+}
+
+// Compile-time assertions: the adapter satisfies both pipeline contracts.
+var (
+	_ pipeline.WireClient      = routedWireClient{}
+	_ pipeline.BackendResolver = routedWireClient{}
 )
 
 // wirePipelineRuntime constructs the client-side LLM pipeline (summarize
@@ -56,10 +129,42 @@ func wirePipelineRuntime(c *client, f Config) error {
 		EmbedChannelSize:   f.EmbedChannelSize,
 		EmbedBatchSize:     f.EmbedBatchSize,
 		EmbedWorkers:       f.EmbedWorkers,
+		EmbedRPM:           f.EmbedRPM,
 		Tick:               f.PipelineTick,
 	}
 
-	p := pipeline.New(pcfg, c.local, adaptSummarizer(sum), adaptEmbedder(emb))
+	// Login-aware routing: the pipeline scans + writes back through the Router
+	// (cloud when logged in, local otherwise) instead of the fixed local client,
+	// and rebinds collectors on a login flip — paid = cloud-only per the locked
+	// model. The routedWireClient also satisfies pipeline.BackendResolver, which
+	// the Pipeline type-asserts for per-collector backend binding + flip detection.
+	p := pipeline.New(pcfg, routedWireClient{router: c.router}, adaptSummarizer(sum), adaptEmbedder(emb))
+
+	// Wire the optional client-side HNSW segment owner: at embed writeback the
+	// pipeline ALSO builds + ships HNSW segments from the binary vectors it just
+	// embedded. The Router satisfies segmentdist's segmentCaller
+	// (Ship/ListDelta/Fetch route cloud-when-logged-in / local-when-not, the same
+	// dispatch the Engine RPCs use). Best-effort: a ship failure only WARNs and
+	// never fails embed writeback (server vector path authoritative — fusion
+	// finding). The L2 segment cache roots under ~/.knowledge/segments.
+	// ONE Manager instance, shared between the PRODUCER (this pipeline ships
+	// segments into it at embed writeback) and the CONSUMER (the search
+	// intercepts query it via deps.SegmentManager()). Hoisted onto *client so
+	// both sides reach the same engines + the segments the producer loaded.
+	c.segmentMgr = segmentdist.NewManager(c.router, segmentCacheDir(), 0)
+	p.AttachSegmentManager(c.segmentMgr)
+
+	// Wire the auto-heal factory: on the embed drain after a collect armed
+	// the heal-check, a code graph with ZERO shipped segments triggers a one-shot
+	// rebuild (closure built over the segment-presence probe + tools.RebuildSegments,
+	// single-flight shared with the manual rebuild_segments op). Guarded on the
+	// segment manager being wired — without it there is no probe/shipper, so the
+	// factory (and the per-collector heal closure) stay unset and the heal-check
+	// no-ops (headless/degraded mode unaffected).
+	if c.segmentMgr != nil {
+		p.AttachHealFactory(c.buildHealFactory())
+	}
+
 	c.pipeline = p
 	if err := p.Start(ctx); err != nil {
 		return err

@@ -114,7 +114,7 @@ func (f *fakeGraphCaller) createBatchEdgeToIDs() []string {
 // TestPostPopulateOIDC_RoutesByAccount drives the real postPopulateOIDC through
 // the wire fake: a cloud IAM role trusting the GitHub Actions OIDC provider must
 // produce an EdgeFederates edge written into the cicd GitHub graph by
-// Target.Account == the cicd graph name (NOT Target.Name) — the FUL-288
+// Target.Account == the cicd graph name (NOT Target.Name) — the
 // selector-field invariant for the cicd family.
 func TestPostPopulateOIDC_RoutesByAccount(t *testing.T) {
 	const (

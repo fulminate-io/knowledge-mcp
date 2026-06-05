@@ -2,7 +2,7 @@
 
 // Package tools — InterceptHelp claims the help MCP call client-side.
 // help is pure static-map lookup over hardcoded documentation strings —
-// no graph access, no I/O, no server-side state. Per the FUL-251 cleanup
+// no graph access, no I/O, no server-side state. Per the relocation cleanup
 // the entire surface (schema + handler + content) lives client-side.
 
 package tools

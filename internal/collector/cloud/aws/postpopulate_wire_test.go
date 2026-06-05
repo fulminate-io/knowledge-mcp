@@ -129,7 +129,7 @@ func (f *fakeGraphCaller) createBatchTargets() []*knowledgev1.GraphSelector {
 // TestResolveSecurityGroupRules_RoutesByAccount drives the real
 // resolveSecurityGroupRules through the wire fake and asserts the emitted
 // reachability edges land in the per-account cloud graph (Target.Account ==
-// the account graph name, NOT Target.Name) — the FUL-288 selector-field invariant.
+// the account graph name, NOT Target.Name) — the selector-field invariant.
 func TestResolveSecurityGroupRules_RoutesByAccount(t *testing.T) {
 	const acct = "111111111111"
 	sg := &knowledgev1.Node{

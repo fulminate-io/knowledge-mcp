@@ -3,7 +3,7 @@
 // Package tools — InterceptLogsTraversal dispatches client-side log
 // traverse calls.
 //
-// BCN11.3: traverse(graph:"logs") MCP calls land here. The server's
+// traverse(graph:"logs") MCP calls land here. The server's
 // gated handleTraverse returns errLogsHandledClientSide for the
 // per-node walk (logs+name+start); we route to traverseLogs which uses
 // the pre-fetched logState built by getOrFetchLogState. The graph-wide
@@ -41,7 +41,7 @@ func InterceptLogsTraversal(deps ClientDeps, params kgtools.CallToolParams) (boo
 		return false, kgtools.ToolResult{}
 	}
 	if a.Start == "" {
-		// Graph-wide enumeration — handled server-side by the BCN11.3
+		// Graph-wide enumeration — handled server-side by the
 		// loosened gate. Fall through.
 		return false, kgtools.ToolResult{}
 	}

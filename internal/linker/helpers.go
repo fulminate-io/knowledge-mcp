@@ -15,7 +15,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 )
 
-// linkerExecutor is the narrow Execute seam (T-GTB3 Phase 6). The linker's
+// linkerExecutor is the narrow Execute seam. The linker's
 // read helpers compile each browse to a declarative QueryPlan and decode the
 // RAW ExecuteResponse carriers (nodes_json / graph_names_json) instead of the
 // formatted JSON tool wire. They keep their GraphCaller param + type-assert it
@@ -40,7 +40,7 @@ func asExecutor(gc GraphCaller) (linkerExecutor, error) {
 // seam and decodes the typed Nodes carrier into []*knowledgev1.Node. Shared by the
 // code/cloud type-browse helpers (queryCodeFiles / queryCodePackages /
 // queryCloudResources). args is the query tool's JSON arg shape (graph / repo /
-// name / type / limit); the engine lowers it via compileQuery (the T-GTB1e
+// name / type / limit); the engine lowers it via compileQuery (the
 // relaxed code guard lets a type-browse through — only code id/text is denied).
 func browseNodesViaEngine(ctx context.Context, gc GraphCaller, args map[string]any) ([]*knowledgev1.Node, error) {
 	ex, err := asExecutor(gc)

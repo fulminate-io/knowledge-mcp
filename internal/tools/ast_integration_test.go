@@ -142,7 +142,7 @@ func TestAstIntegration_Count(t *testing.T) {
 	assert.Equal(t, 1, out.ByFile["lib/lib.go"])
 }
 
-// TestAstIntegration_Explain pins criterion 8146d875 cases (a)/(b) plus the
+// TestAstIntegration_Explain pins the failure-mode cases (a)/(b) plus the
 // happy path against a 5-line snippet.
 func TestAstIntegration_Explain(t *testing.T) {
 	deps := astTestDeps{rootDir: t.TempDir()}
@@ -224,7 +224,7 @@ func TestAstIntegration_ListNodeKinds(t *testing.T) {
 }
 
 // TestAstIntegration_EmptyResultHint verifies the LLM-facing guidance
-// text surfaces when the query returns 0 matches (criterion ebff721f8).
+// text surfaces when the query returns 0 matches.
 func TestAstIntegration_EmptyResultHint(t *testing.T) {
 	repoDir := astIntegrationFixture(t)
 	deps := astTestDeps{rootDir: repoDir}

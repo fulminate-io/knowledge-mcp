@@ -34,10 +34,10 @@ type ThoughtExamination struct {
 }
 
 // ExamineThought returns a comprehensive view of a thought with all charges
-// and connections. FUL-247 client-side: every store.Store().Query call from
+// and connections. Client-side: every store.Store().Query call from
 // the original pkg/thought/query.go ExamineThought is translated into one
 // bulk wire round-trip. Per-evidence and per-connection hydration goes
-// through fetchNodesByIDs so the BCN4 v2 perf invariant holds.
+// through fetchNodesByIDs so the perf invariant holds.
 func ExamineThought(ctx context.Context, gc Caller, thoughtID string) (ThoughtExamination, error) {
 	if gc == nil {
 		return ThoughtExamination{}, errors.New("thought: ExamineThought: graph client unavailable")

@@ -18,7 +18,7 @@ import (
 const widePoolSize = 1000
 
 // widePoolTopK is the top_k value sent in the Voyage rerank request body.
-// Mirrors the pre-BCN6 OSS-side default (500). The reranker returns this
+// Mirrors the OSS-side default (500). The reranker returns this
 // many scored docs; the InterceptSearch trim further truncates to
 // savedState.originalLimit before re-render.
 const widePoolTopK = 500

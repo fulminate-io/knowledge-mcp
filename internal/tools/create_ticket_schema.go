@@ -5,7 +5,7 @@ package tools
 import "github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 
 // CreateTicketToolDef returns the create_ticket MCP tool definition.
-// Relocated client-side per FUL-251 — the actual flow runs through
+// Relocated client-side — the actual flow runs through
 // InterceptCreateTicket (intercept_create_ticket.go) against the projects
 // package; the server has no create_ticket handler. Wired into tools/list
 // via the client's loadSchemas augmentation.

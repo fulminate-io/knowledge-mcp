@@ -8,7 +8,7 @@
 // link_graph:"linkage") so the server's handleLink auto-creates proxies
 // and writes the linkage-graph edge with metadata.
 //
-// Relocated from pkg/linker/ as part of FUL-255. The package operates
+// Relocated from pkg/linker/ during the client/server separation. The package operates
 // only through GraphCaller — it holds no in-process store engine —
 // because the linker is a client-side process that drives the server
 // over the wire.

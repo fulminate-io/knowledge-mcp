@@ -18,7 +18,7 @@ import (
 
 // workerCRUDClient is the minimal slice of *server.GraphClient that the
 // Client needs to drive the worker CRUD surface over the wire-loopback
-// transport. The reads/writes ride the Execute carrier seam (T-GTB6):
+// transport. The reads/writes ride the Execute carrier seam:
 // every CRUD op compiles to a declarative ExecuteRequest via engine.Compile
 // and runs through Execute. *server.GraphClient satisfies the interface
 // structurally; tests inject a fake.

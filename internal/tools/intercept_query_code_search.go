@@ -11,7 +11,9 @@ import (
 	"sync"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/embed"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 )
@@ -60,6 +62,13 @@ type codeSearchArgs struct {
 	IncludeComments *bool    `json:"include_comments"`
 	IncludeTests    *bool    `json:"include_tests"`
 	TestKinds       []string `json:"test_kinds"`
+	// QueryVector is the caller-supplied single query vector for this search's
+	// query/queries set (a caller supplies at most one per call). The Go stdlib
+	// JSON []byte codec base64-decodes it transparently, matching
+	// maybeEmbedQuery's json.Marshal(vec) wire shape — no manual base64 step.
+	// The PER-QUERY auto-embed slice (maybeEmbedCodeQueries) is built separately;
+	// this caller vector is broadcast to queryVecs[0] during threading.
+	QueryVector []byte `json:"query_vector"`
 }
 
 // InterceptQueryCodeSearch claims query(graph:code) with text/queries and no id
@@ -84,7 +93,51 @@ func InterceptQueryCodeSearch(deps ClientDeps, params kgtools.CallToolParams) (b
 	if gc == nil {
 		return true, errorResult("code search: graph client unavailable")
 	}
-	return true, composeCodeSearch(context.Background(), deps, gc.Execute, a, queries)
+	ctx := context.Background()
+	queryVecs := buildCodeQueryVecs(maybeEmbedCodeQueries(ctx, codeEmbedder(deps), queries), a.QueryVector)
+	return true, composeCodeSearch(ctx, deps, gc.Execute, a, queries, queryVecs)
+}
+
+// codeEmbedder returns deps.Embedder() or nil when deps is nil (the exec-seam
+// unit tests pass nil deps with a fake Execute). A nil embedder degrades the
+// search to BM25-only, so the nil-deps path stays valid.
+func codeEmbedder(deps ClientDeps) embed.BinaryEmbedder {
+	if deps == nil {
+		return nil
+	}
+	return deps.Embedder()
+}
+
+// maybeEmbedCodeQueries embeds every query in ONE EmbedBinaryBatch round-trip
+// and returns a [][]byte parallel to queries (queryVecs[i] embeds queries[i]).
+// Returns nil for a nil embedder or empty queries, and nil on any embed error
+// (the search degrades to BM25-only rather than failing). Mirrors the
+// knowledge-arm maybeEmbedQuery idiom, batched for the code-search fan-out.
+func maybeEmbedCodeQueries(ctx context.Context, emb embed.BinaryEmbedder, queries []string) [][]byte {
+	if emb == nil || len(queries) == 0 {
+		return nil
+	}
+	vecs, err := emb.EmbedBinaryBatch(ctx, queries)
+	if err != nil || len(vecs) == 0 {
+		return nil
+	}
+	return vecs
+}
+
+// buildCodeQueryVecs broadcasts a caller-supplied single query vector to index 0
+// (the caller supplies at most one vector per search call), overriding any
+// auto-embedded vector there. When no caller vector is supplied it returns the
+// auto-embedded slice unchanged (possibly nil → BM25-only).
+func buildCodeQueryVecs(autoEmbedded [][]byte, callerVec []byte) [][]byte {
+	if len(callerVec) == 0 {
+		return autoEmbedded
+	}
+	out := autoEmbedded
+	if len(out) == 0 {
+		out = make([][]byte, 1)
+	}
+	out[0] = callerVec
+	return out
 }
 
 func mergeCodeQueries(query string, queries []string) []string {
@@ -97,7 +150,11 @@ func mergeCodeQueries(query string, queries []string) []string {
 }
 
 // composeCodeSearch dispatches single-repo vs multi-repo (repos[] / repo=all).
-func composeCodeSearch(ctx context.Context, deps ClientDeps, exec engine.ExecuteFn, a codeSearchArgs, queries []string) kgtools.ToolResult {
+// queryVecs is PER-QUERY (queryVecs[i] is the vector for queries[i]) — either
+// the caller-supplied vector broadcast to index 0 or the auto-embedded batch.
+// It is nil/empty when no embedder is wired and no caller vector was supplied,
+// in which case the search stays BM25-only.
+func composeCodeSearch(ctx context.Context, deps ClientDeps, exec engine.ExecuteFn, a codeSearchArgs, queries []string, queryVecs [][]byte) kgtools.ToolResult {
 	limit := int(a.Limit)
 	if limit <= 0 {
 		limit = 10
@@ -105,10 +162,56 @@ func composeCodeSearch(ctx context.Context, deps ClientDeps, exec engine.Execute
 	includeSource := a.IncludeSource == nil || *a.IncludeSource
 	groupByFile := a.GroupByFile != nil && *a.GroupByFile
 
-	if len(a.Repos) > 0 || a.Repo == "all" {
-		return composeCodeSearchMultiRepo(ctx, deps, exec, a, queries, limit, includeSource, groupByFile)
+	// GO-LIVE: the per-repo code search runs against the CLIENT engine
+	// (Manager.Search → RRF) + hydration when the segment Manager is wired,
+	// instead of a server RETURN_MODE_SEARCH Execute. Both code entry points
+	// (the search-tool arm interceptSearchCode AND the query-tool arm
+	// InterceptQueryCodeSearch) funnel through here, so threading the engine seam
+	// at this single point reroutes both. cdeps carries the engine seam + the
+	// hydration caller down to the per-query site; a nil Manager falls back to the
+	// server Execute path verbatim.
+	cdeps := codeSearchDeps{exec: exec}
+	if deps != nil {
+		cdeps.mgr = deps.SegmentManager()
+		cdeps.gc = deps.GraphCaller()
 	}
-	return composeCodeSearchSingleRepo(ctx, deps, exec, a, queries, limit, includeSource, groupByFile)
+
+	if len(a.Repos) > 0 || a.Repo == "all" {
+		return composeCodeSearchMultiRepo(ctx, deps, cdeps, a, queries, queryVecs, limit, includeSource, groupByFile)
+	}
+	return composeCodeSearchSingleRepo(ctx, deps, cdeps, a, queries, queryVecs, limit, includeSource, groupByFile)
+}
+
+// codeSearchDeps bundles the per-query search seam: the CLIENT engine Manager +
+// hydration caller (GO-LIVE path) and the server Execute fn (fallback when no
+// Manager is wired). Threaded through the code-search fan-out so each per-query
+// site picks the client engine when available.
+type codeSearchDeps struct {
+	mgr  SegmentSearcher
+	gc   GraphCaller
+	exec engine.ExecuteFn
+}
+
+// codeSearchModeLabel returns "hybrid" when any per-query vector is threaded
+// (the server fuses BM25 + vector for those queries) and "text" when none is —
+// replacing the previously hardcoded "hybrid" label, which was accurate only
+// once a vector is present.
+func codeSearchModeLabel(queryVecs [][]byte) string {
+	for _, v := range queryVecs {
+		if len(v) > 0 {
+			return "hybrid"
+		}
+	}
+	return "text"
+}
+
+// queryVecAt returns the per-query vector for index i, or nil when the slice is
+// shorter than i+1 (BM25-only for that query).
+func queryVecAt(queryVecs [][]byte, i int) []byte {
+	if i < len(queryVecs) {
+		return queryVecs[i]
+	}
+	return nil
 }
 
 // appendStalenessFooter appends the code-index staleness footer for the
@@ -133,9 +236,9 @@ func appendStalenessFooter(ctx context.Context, deps ClientDeps, exec engine.Exe
 
 // composeCodeSearchSingleRepo runs one RETURN_MODE_SEARCH Execute per query
 // (parallel) against the single repo graph, then renders.
-func composeCodeSearchSingleRepo(ctx context.Context, deps ClientDeps, exec engine.ExecuteFn, a codeSearchArgs, queries []string, limit int, includeSource, groupByFile bool) kgtools.ToolResult {
+func composeCodeSearchSingleRepo(ctx context.Context, deps ClientDeps, cdeps codeSearchDeps, a codeSearchArgs, queries []string, queryVecs [][]byte, limit int, includeSource, groupByFile bool) kgtools.ToolResult {
 	target := &knowledgev1.GraphSelector{Graph: "code", Repo: a.Repo, Branch: a.Branch}
-	perQuery := searchAllQueries(ctx, exec, target, queries, limit, a.PathPrefix, "")
+	perQuery := searchAllQueries(ctx, cdeps, target, queries, queryVecs, limit, a.PathPrefix, "")
 	perQuery = applyCodeResultFilters(perQuery, a)
 
 	counts := make([]int, len(perQuery))
@@ -143,20 +246,20 @@ func composeCodeSearchSingleRepo(ctx context.Context, deps ClientDeps, exec engi
 		counts[i] = len(perQuery[i])
 	}
 	var sb strings.Builder
-	engine.WriteCodePerQuerySearchHeader(&sb, queries, counts, "hybrid")
+	engine.WriteCodePerQuerySearchHeader(&sb, queries, counts, codeSearchModeLabel(queryVecs))
 	if groupByFile {
 		engine.FormatCodePerQueryGroupByFile(&sb, queries, perQuery)
 	} else {
 		engine.FormatCodePerQueryResults(&sb, queries, perQuery, includeSource)
 	}
 	res := textResult(engine.FormatCodeWithRepo(repoLabelFor(a.Repo, a.Branch), sb.String()))
-	return appendStalenessFooter(ctx, deps, exec, a.Repo, res)
+	return appendStalenessFooter(ctx, deps, cdeps.exec, a.Repo, res)
 }
 
 // composeCodeSearchMultiRepo resolves the repo set then fans the per-repo
 // searches in PARALLEL (NumCPU-bounded pool), merges by score, and renders the
 // cross-repo shape.
-func composeCodeSearchMultiRepo(ctx context.Context, deps ClientDeps, exec engine.ExecuteFn, a codeSearchArgs, queries []string, limit int, includeSource, groupByFile bool) kgtools.ToolResult {
+func composeCodeSearchMultiRepo(ctx context.Context, deps ClientDeps, cdeps codeSearchDeps, a codeSearchArgs, queries []string, queryVecs [][]byte, limit int, includeSource, groupByFile bool) kgtools.ToolResult {
 	repos := a.Repos
 	if len(repos) == 0 { // repo=all → enumerate loaded code graphs.
 		names, err := listGraphNamesOfType(ctx, deps, "code")
@@ -186,7 +289,7 @@ func composeCodeSearchMultiRepo(ctx context.Context, deps ClientDeps, exec engin
 			sem <- struct{}{}
 			defer func() { <-sem }()
 			target := &knowledgev1.GraphSelector{Graph: "code", Repo: repo}
-			pq := searchAllQueries(ctx, exec, target, queries, limit, a.PathPrefix, repo)
+			pq := searchAllQueries(ctx, cdeps, target, queries, queryVecs, limit, a.PathPrefix, repo)
 			mu.Lock()
 			all = append(all, repoResult{repo: repo, perQuery: pq})
 			mu.Unlock()
@@ -221,7 +324,7 @@ func composeCodeSearchMultiRepo(ctx context.Context, deps ClientDeps, exec engin
 	}
 	var sb strings.Builder
 	sb.WriteString("Cross-repo search across " + strings.Join(repoNames, ", ") + "\n")
-	engine.WriteCodePerQuerySearchHeader(&sb, queries, counts, "hybrid")
+	engine.WriteCodePerQuerySearchHeader(&sb, queries, counts, codeSearchModeLabel(queryVecs))
 	if groupByFile {
 		engine.FormatCodePerQueryGroupByFile(&sb, queries, merged)
 	} else {
@@ -233,10 +336,10 @@ func composeCodeSearchMultiRepo(ctx context.Context, deps ClientDeps, exec engin
 // searchAllQueries runs one RETURN_MODE_SEARCH Execute per query (parallel,
 // NumCPU-bounded), mirroring SearchOneGraph's per-query goroutine fan-out, and
 // returns per-query resolved results (path_prefix filtered, repo-tagged).
-func searchAllQueries(ctx context.Context, exec engine.ExecuteFn, target *knowledgev1.GraphSelector, queries []string, limit int, pathPrefix, repo string) [][]engine.CodeResolvedResult {
+func searchAllQueries(ctx context.Context, cdeps codeSearchDeps, target *knowledgev1.GraphSelector, queries []string, queryVecs [][]byte, limit int, pathPrefix, repo string) [][]engine.CodeResolvedResult {
 	perQuery := make([][]engine.CodeResolvedResult, len(queries))
 	if len(queries) == 1 {
-		perQuery[0] = searchOneCodeQuery(ctx, exec, target, queries[0], limit, pathPrefix, repo)
+		perQuery[0] = searchOneCodeQuery(ctx, cdeps, target, queries[0], queryVecAt(queryVecs, 0), limit, pathPrefix, repo)
 		return perQuery
 	}
 	var wg sync.WaitGroup
@@ -247,30 +350,34 @@ func searchAllQueries(ctx context.Context, exec engine.ExecuteFn, target *knowle
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			perQuery[idx] = searchOneCodeQuery(ctx, exec, target, query, limit, pathPrefix, repo)
+			perQuery[idx] = searchOneCodeQuery(ctx, cdeps, target, query, queryVecAt(queryVecs, idx), limit, pathPrefix, repo)
 		}(i, q)
 	}
 	wg.Wait()
 	return perQuery
 }
 
-// searchOneCodeQuery issues the dedicated code-search RETURN_MODE_SEARCH Execute
-// for one query and resolves the hits into CodeResolvedResults (path_prefix
-// filtered). Port of resolveSearchResults over the generic search carrier.
-func searchOneCodeQuery(ctx context.Context, exec engine.ExecuteFn, target *knowledgev1.GraphSelector, query string, limit int, pathPrefix, repo string) []engine.CodeResolvedResult {
-	resp, err := exec(ctx, &knowledgev1.ExecuteRequest{
-		Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
-			Queries:    []string{query},
-			Limit:      int32(limit),
-			ReturnMode: knowledgev1.ReturnMode_RETURN_MODE_SEARCH,
-		}},
-		Target: target,
-	})
-	if err != nil {
+// searchOneCodeQuery resolves one query's hits into CodeResolvedResults
+// (path_prefix filtered, repo-tagged). Runs UNCONDITIONALLY against the
+// CLIENT per-repo engine (Manager.Search → RRF) + RETURN_MODE_NODES hydration —
+// the segment Manager is always wired in the real client, so there is no server
+// RETURN_MODE_SEARCH fallback. An un-collected repo (no segments) yields zero hits.
+func searchOneCodeQuery(ctx context.Context, cdeps codeSearchDeps, target *knowledgev1.GraphSelector, query string, queryVec []byte, limit int, pathPrefix, repo string) []engine.CodeResolvedResult {
+	return searchOneCodeQueryClient(ctx, cdeps, target, query, queryVec, limit, pathPrefix, repo)
+}
+
+// searchOneCodeQueryClient runs one code query against the CLIENT engine and
+// hydrates the ranked Hit IDs into CodeResolvedResults. The graph name for the
+// code engine is the repo (segmentdist.graphSelector routes GraphCode's name to
+// the Repo field). path_prefix is applied post-hydrate, matching the server arm.
+func searchOneCodeQueryClient(ctx context.Context, cdeps codeSearchDeps, target *knowledgev1.GraphSelector, query string, queryVec []byte, limit int, pathPrefix, repo string) []engine.CodeResolvedResult {
+	hits, err := cdeps.mgr.Search(ctx, kgtypes.GraphCode, target.GetRepo(), query, queryVec, limit)
+	if err != nil || len(hits) == 0 {
 		return nil
 	}
-	results, derr := engine.DecodeSearch(resp)
-	if derr != nil {
+	sel := hydrateSelector{Graph: "code", Repo: target.GetRepo(), Branch: target.GetBranch()}
+	results, err := hydrateEngineHits(ctx, cdeps.gc, sel, hits)
+	if err != nil {
 		return nil
 	}
 	out := make([]engine.CodeResolvedResult, 0, len(results))

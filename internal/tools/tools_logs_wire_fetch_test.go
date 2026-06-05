@@ -19,7 +19,7 @@ import (
 )
 
 // scriptedTypeFakeCaller answers the log node fetches over the Execute carrier
-// seam (T-GTB6): a type-browse keyed by NodeType (or a by-ids hydrate) returns
+// seam: a type-browse keyed by NodeType (or a by-ids hydrate) returns
 // the configured knowledgev1.Node set via the nodes_json carrier. When the plan sets
 // content_b64=true (the chunk fetch), Node.Content is base64-encoded on the
 // wire so DecodeNodesContentB64 reverses it client-side. Records every Execute

@@ -6,12 +6,12 @@
 // Four arms, all client-handled over the generic Execute seam:
 //   - list_logs → enumerate the loaded log graphs via a RETURN_MODE_GRAPH_NAMES
 //     read; discard_logs → tear each graph down via a DROP_GRAPH Execute. Both
-//     then format / clean up the local engine cache (T-GTB6 D2).
+//     then format / clean up the local engine cache.
 //   - configure_log_backend / list_log_backends → run the moved client-side
 //     handlers (tools_logs_manage_backend.go), which issue executeMutate(upsert)
 //     / executeQuery(type:"log-backend") over the Execute seam against the
-//     server's generic mutate/query engine. BCN11.2 moved the formatting +
-//     validation off the server entirely; the server only stores nodes.
+//     server's generic mutate/query engine. The formatting +
+//     validation moved off the server entirely; the server only stores nodes.
 //
 // Non-logs manage operations return (false, _) so the chain continues
 // to InterceptManage (which owns status/pprof) and then to the bare

@@ -29,19 +29,19 @@ type ExecuteFn func(ctx context.Context, req *knowledgev1.ExecuteRequest) (*know
 //     mapped to the LLM-facing rendered message (CodeInvalidArgument →
 //     validation text; CodeNotFound → not-found text).
 //   - Compile returns ok=false → return an EXPLICIT DENY naming the tool
-//     (decision 7fc2ff59). Every LLM-facing tool either compiles to Engine.Execute
+//     by design. Every LLM-facing tool either compiles to Engine.Execute
 //     here OR is claimed by a client intercept BEFORE this dispatcher runs (the
 //     InterceptChain); a shape that reaches Dispatch and does not compile is a
 //     genuine unrecognized request, so it is denied legibly.
 //
-// Type-aware mutate(create) body validation is NO LONGER prechecked client-side
-// (FUL-306): the create path flows straight to Compile→exec, and the server
+// Type-aware mutate(create) body validation is NO LONGER prechecked client-side:
+// the create path flows straight to Compile→exec, and the server
 // engine enforces the system-managed/step/embed-only-summary rules in
 // decodeCreate, returning invalidMutation (CodeInvalidArgument) that
 // renderEngineError relays to the LLM verbatim. The query precheck seam below
 // (precheckQuery) is the remaining pre-Compile validation hook.
 func Dispatch(ctx context.Context, exec ExecuteFn, tool string, args json.RawMessage) (kgtools.ToolResult, error) {
-	// Special-shape pre-Compile seam (T-GTB2 site (d)): a query(id) carrying
+	// Special-shape pre-Compile seam: a query(id) carrying
 	// include_edges / include_cross_links is NOT a single-plan compile — the
 	// engine does not absorb those carriers. dispatchQueryByID composes the
 	// edge-summary / cross-link sections via bounded multi-call orchestration
@@ -50,8 +50,8 @@ func Dispatch(ctx context.Context, exec ExecuteFn, tool string, args json.RawMes
 	// the shape is not an absorption read it returns handled=false and Dispatch
 	// proceeds normally.
 	if tool == "query" {
-		// Special-shape pre-Compile seam (GAP-B): a text-required query mode
-		// (text/graph_reach/recent) with EMPTY text is a validation failure, not a
+		// Special-shape pre-Compile seam (GAP-B): the text-required query mode
+		// (text) with EMPTY text is a validation failure, not a
 		// generic deny. precheckQuery returns the specific requires-text error
 		// BEFORE Compile so the LLM sees a legible message rather than the
 		// post-cutover "not a recognized engine-reducible shape" fall-through. A
@@ -63,7 +63,7 @@ func Dispatch(ctx context.Context, exec ExecuteFn, tool string, args json.RawMes
 			return out, nil
 		}
 	}
-	// Special-shape pre-Compile seam (T-GTB1e #5): a start-less traverse is the
+	// Special-shape pre-Compile seam: a start-less traverse is the
 	// graph-wide-edges fast path — a two-step (enumerate all nodes, then union
 	// their edges) that no single compiled plan can express. dispatchGraphWideEdges
 	// composes it from a Match-all enumeration + the RETURN_MODE_EDGES ids[]→union
@@ -76,7 +76,7 @@ func Dispatch(ctx context.Context, exec ExecuteFn, tool string, args json.RawMes
 	}
 	// Special-shape pre-Compile seam: a delete(dry_run:true) must NEVER compile to
 	// a MUTATION_KIND_DELETE (the by-ids compile path ignored dry_run and really
-	// deleted — finding f95119710b). dispatchDeletePreview claims the dry-run here
+	// deleted). dispatchDeletePreview claims the dry-run here
 	// and issues a READ against the same selection the real delete would target,
 	// rendering a "would delete N" preview. It returns handled=false for a non-
 	// dry-run delete so Dispatch proceeds to the generic compile→exec→Render
@@ -88,7 +88,7 @@ func Dispatch(ctx context.Context, exec ExecuteFn, tool string, args json.RawMes
 	}
 	req, ok := Compile(tool, args)
 	if !ok {
-		// Deny flip (decision 7fc2ff59): a Compile-miss is an explicit deny. Any
+		// Deny flip: a Compile-miss is an explicit deny. Any
 		// tool that should run here either compiles or is intercept-claimed upstream.
 		return errorResult(fmt.Sprintf(
 			"engine: tool %q is not a recognized engine-reducible shape and has no client intercept — request denied (no legacy dispatch fallback exists post-cutover)",
@@ -115,11 +115,11 @@ func validationError(msg string) error { return validationErr{msg: msg} }
 // renderEngineError maps an error returned by the Engine.Execute transport
 // into an LLM-facing error ToolResult. The mapping ladder, in order:
 //
-//  1. graphclient.ErrNoBackend (FUL-323) — Router.pick returned no backend
+//  1. graphclient.ErrNoBackend — Router.pick returned no backend
 //     (local==nil AND not logged in). Surfaces "no backend available — run
 //     `knowledge install` ... `knowledge login`" so the LLM has an
 //     actionable hint rather than the raw sentinel text.
-//  2. Local-server-unreachable transport failure (FUL-323) — connect-go's
+//  2. Local-server-unreachable transport failure — connect-go's
 //     CodeUnavailable, or a wrapped syscall.ECONNREFUSED in a net.OpError
 //     chain. The local server was named (Router.pick chose it) but the
 //     underlying HTTP/2 dial failed. Surfaces "local server unreachable —
@@ -151,7 +151,7 @@ func renderEngineError(err error) kgtools.ToolResult {
 	return errorResult("engine: " + err.Error())
 }
 
-// isLocalServerUnreachable reports whether err carries the FUL-323
+// isLocalServerUnreachable reports whether err carries the
 // local-server-unreachable signature: either a connect.Error with
 // CodeUnavailable (the connect-go transport surfaces this when the underlying
 // HTTP/2 dial fails) OR a wrapped syscall.ECONNREFUSED (the underlying connect
@@ -220,7 +220,7 @@ func renderDeleteTool(args json.RawMessage, resp *knowledgev1.ExecuteResponse) (
 // renderSearchTool renders a compiled search response with the mode-label
 // suffix. The search tool is always RETURN_MODE_SEARCH; the mode is hybrid
 // (no suffix) for the `search` tool. A cloud/cicd resource_type is post-filtered
-// here on the client (T-GTB2 site (c) — OP_PREFIX is inert on a QSearch, so the
+// here on the client (OP_PREFIX is inert on a QSearch, so the
 // trim moved from the engine post-rank to this render path).
 func renderSearchTool(args json.RawMessage, resp *knowledgev1.ExecuteResponse) (kgtools.ToolResult, error) {
 	var a searchArgs
@@ -236,9 +236,10 @@ func renderSearchTool(args json.RawMessage, resp *knowledgev1.ExecuteResponse) (
 }
 
 // renderQueryTool renders a compiled query response, branching on the same
-// shape Compile recognized: search modes (text/graph_reach/recent) → search
-// render with the mode-label; ids[]-bulk → {nodes:[]}; single id → bare node;
-// type-browse / meta-only → browse.
+// shape Compile recognized: the text search mode → search render with the
+// mode-label; ids[]-bulk → {nodes:[]}; single id → bare node; type-browse /
+// meta-only → browse. (mode=recent is served client-side by the knowledge-search
+// claim and never reaches this renderer.)
 func renderQueryTool(args json.RawMessage, resp *knowledgev1.ExecuteResponse) (kgtools.ToolResult, error) {
 	var a queryArgs
 	if err := json.Unmarshal(args, &a); err != nil {
@@ -246,16 +247,12 @@ func renderQueryTool(args json.RawMessage, resp *knowledgev1.ExecuteResponse) (k
 	}
 	label := queryGraphLabelFor(a)
 	// Per-request embed signal: a present query_vector ⟺ a vector search ran.
-	// InterceptQuery embeds only the "" / "hybrid" modes, so graph_reach /
-	// recent / text and the bare default arrive with no query_vector and are
-	// BM25-only EVEN with a Voyage key — keying off config would mislabel them.
+	// InterceptQuery embeds only the "" / "hybrid" modes, so text and the bare
+	// default arrive with no query_vector and are BM25-only EVEN with a Voyage
+	// key — keying off config would mislabel them.
 	mode := searchModeLabel(a.QueryVector != "", false)
 
 	switch a.Mode {
-	case "graph_reach":
-		return renderSearchResponse(resp, a.Text, a.Format, a.Fields, knowledgev1.SearchMode_SEARCH_MODE_PPR, mode)
-	case "recent":
-		return renderSearchResponse(resp, a.Text, a.Format, a.Fields, knowledgev1.SearchMode_SEARCH_MODE_TEMPORAL, mode)
 	case "text":
 		return renderSearchResponse(resp, a.Text, a.Format, a.Fields, knowledgev1.SearchMode_SEARCH_MODE_HYBRID, mode)
 	case "modules":
@@ -288,9 +285,9 @@ func renderQueryTool(args json.RawMessage, resp *knowledgev1.ExecuteResponse) (k
 // renderGraphNamesResponse renders the query(mode:modules) catalog enumeration:
 // it decodes the RETURN_MODE_GRAPH_NAMES carrier into []*knowledgev1.GraphInfo
 // and emits the {graphs:[{name,loaded,file_path,file_size,...}]} envelope (the
-// proto GraphInfo's JSON shape). T-GTB1e ships THIS object shape + its test only;
+// proto GraphInfo's JSON shape). This object shape ships with its test only;
 // the legacy fetchGraphNames ([]string) + listPracticeGraphs ([{name}]) consumers
-// stay on their unchanged legacy paths (they are T-GTB6 repoint targets).
+// stay on their unchanged legacy paths (they are future repoint targets).
 func renderGraphNamesResponse(resp *knowledgev1.ExecuteResponse) (kgtools.ToolResult, error) {
 	infos, err := DecodeGraphNames(resp)
 	if err != nil {

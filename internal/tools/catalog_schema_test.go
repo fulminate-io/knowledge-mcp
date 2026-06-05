@@ -15,8 +15,8 @@ import (
 // "<tool>.<param>". These five are the only open objects in the catalog: their
 // keys are unbounded at the wire (analyzer knobs, metadata, free-form payloads,
 // label filters), so closing them would reject valid calls. The guard skips the
-// closed-object assertion for paths in this set. Source of truth: the FUL-342
-// audit (finding 111f4312) + the plan's open-vs-closed lock.
+// closed-object assertion for paths in this set. Source of truth: the schema
+// audit + the plan's open-vs-closed lock.
 var openMaps = map[string]bool{
 	"query.extra":     true,
 	"query.meta":      true,
@@ -52,7 +52,7 @@ var dispatchTools = map[string]bool{
 	"delete":   true,
 }
 
-// TestAllToolSchemas is the FUL-342 catalog-wide strict-validity guard. It walks
+// TestAllToolSchemas is the catalog-wide strict-validity guard. It walks
 // every tool's InputSchema recursively (descending into Property.Properties and
 // Property.Items) and asserts the four invariants that make the raw tools/list
 // JSON strict-valid for a Codex/OpenAI-strict client:

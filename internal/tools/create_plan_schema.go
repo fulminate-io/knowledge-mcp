@@ -5,7 +5,7 @@ package tools
 import "github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 
 // CreatePlanToolDef returns the create_plan MCP tool definition.
-// Relocated client-side per FUL-251 — the actual flow runs through
+// Relocated client-side — the actual flow runs through
 // InterceptCreatePlan (intercept_create_plan.go) against the projects
 // package; the server has no create_plan handler. Wired into tools/list
 // via the client's loadSchemas augmentation.

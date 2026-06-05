@@ -12,7 +12,7 @@
 // Accumulate the nodes locally and render the same markdown/json shape
 // the server-side handlers produced.
 //
-// FUL-251b Phase 2: must be wired BEFORE Phase 5 deletes the
+// Phase 2: must be wired BEFORE Phase 5 deletes the
 // server-side dispatch arm.
 
 package tools

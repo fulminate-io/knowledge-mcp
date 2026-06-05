@@ -16,7 +16,7 @@ import "github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 
 // repoProp is the shared repo parameter added to the code tools. Moved
 // verbatim from the server-side cmd/knowledge-server/tools/tools_code.go.
-var repoProp = kgtools.Property{Type: "string", Description: "Repository name (default: all repos). Pass a specific repo name to limit to one repo."}
+var repoProp = kgtools.Property{Type: "string", Description: "Repository name. Optional for the knowledge graph and cross-repo search; REQUIRED for graph=code unless you are running inside an indexed repo, where it auto-resolves from the current directory."}
 
 // ThoughtsToolDef returns the unified MCP tool definition for the thought
 // graph. Five operations cover the full reasoning-cycle surface (think /
@@ -109,7 +109,7 @@ func SearchToolDef() kgtools.MCPTool {
 				"limit":              {Type: "number", Description: "Max results per query (default: 10, max: 50)."},
 				"include_source":     {Type: "boolean", Description: "Include full source code (default: true). Code graph only."},
 				"include_comments":   {Type: "boolean", Description: "Include comment nodes in code search results (default: false). Comments are excluded by default to reduce noise."},
-				"mode":               {Type: "string", Description: "Search mode: 'hybrid', 'text', 'vector' (code); 'ppr'/'graph_reach' (knowledge PPR reranking); 'recent'/'temporal' (knowledge recency boost)."},
+				"mode":               {Type: "string", Description: "Search mode: 'hybrid', 'text', 'vector' (code); 'recent'/'temporal' (knowledge recency boost)."},
 				"group_by_file":      {Type: "boolean", Description: "Group results by file (default: false). Code graph only."},
 				"path_prefix":        {Type: "string", Description: "Filter to files under this path. Code graph only."},
 				"repo":               repoProp,

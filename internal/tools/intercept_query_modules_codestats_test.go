@@ -69,7 +69,7 @@ func TestComposeListModules(t *testing.T) {
 }
 
 // TestComposeCodeStats asserts the code-stats Stats RPC + RenderStatsBreakdown
-// with the per-repo header (criterion 1d310160).
+// with the per-repo header.
 func TestComposeCodeStats(t *testing.T) {
 	f := &modFake{stats: &knowledgev1.GraphStats{
 		NodeCount: 42, EdgeCount: 17,

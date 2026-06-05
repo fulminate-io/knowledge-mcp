@@ -2,10 +2,10 @@
 
 // Package bootstrap — runInstructionBootstrap seeds the knowledge graph
 // with agent + skill nodes parsed from `.claude/agents/*.md` and
-// `.claude/skills/*.md` under rootDir. FUL-246 Phase 3c relocates this
+// `.claude/skills/*.md` under rootDir. This was relocated
 // from the server (cmd/knowledge-server/bootstrap/server.go::buildServer
 // previously called projects.Bootstrap) to the client because the
-// server is now filesystem-blind for source paths (FUL-241) and the
+// server is now filesystem-blind for source paths and the
 // client owns disk I/O for code-graph + project assets.
 //
 // The bootstrap is gated by a query(type:agent, limit:1) pre-flight —
@@ -35,7 +35,7 @@ import (
 )
 
 // instructionBootstrapGC is the narrow MCP surface this bootstrap needs.
-// The reads/writes ride the Execute carrier seam (T-GTB6): the create_batch
+// The reads/writes ride the Execute carrier seam: the create_batch
 // seed and the idempotency pre-flight both compile to a declarative
 // ExecuteRequest via engine.Compile and run through Execute. Structural typing
 // makes it satisfied by the production graphClientCaller and a test fake.

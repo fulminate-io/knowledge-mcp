@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// long_tail_lang_deny_test.go — covers criterion 591ef8906b: each of the 11
+// long_tail_lang_deny_test.go — covers that each of the 11
 // explicitly denied config/markup languages, when passed to Compile, returns
 // an error containing the canonical "pattern matching not supported for
 // language" prefix and the language name. No registration, no LangConfig —

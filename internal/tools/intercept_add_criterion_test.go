@@ -81,7 +81,7 @@ func (g *scriptedCriterionGc) Call(_ context.Context, tool string, raw json.RawM
 	return kgtools.ErrorResult("unexpected: " + tool), nil
 }
 
-// Execute satisfies render.Executor (T-GTB3 Phase 6 + T-GTB6): the step lookup
+// Execute satisfies render.Executor: the step lookup
 // (render.FetchNode), the criterion upsert, and the verifies/contains links all
 // ride the Execute carrier seam. It reconstructs the (tool, args) shape the
 // test's 4-RPC sequence assertions expect from the compiled QueryPlan /

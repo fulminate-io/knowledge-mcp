@@ -60,7 +60,7 @@ func (f *fakeCaller) Execute(_ context.Context, req *knowledgev1.ExecuteRequest)
 	return enginetest.ResponseWithNodes(nodes...), nil
 }
 
-// TestResolveAndLink_ProxyUpsertAndLink covers criterion 77427fa4: ResolveAndLink
+// TestResolveAndLink_ProxyUpsertAndLink covers that ResolveAndLink
 // performs the proxy UPSERT + the from→to LINK through Execute (NOT a gc.Call),
 // both targeting req.TargetGraph, and the proxy id matches BuildCrossGraphProxy.
 func TestResolveAndLink_ProxyUpsertAndLink(t *testing.T) {

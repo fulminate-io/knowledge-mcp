@@ -18,7 +18,7 @@ import (
 )
 
 // fakeLogSearchStore is a minimal in-memory log-graph search backend over the
-// Execute carrier seam (T-GTB6). Tests register a per-graph slice of
+// Execute carrier seam. Tests register a per-graph slice of
 // "templates" (and optional non-template hits) keyed by query_id. The
 // type-browse Execute returns ALL nodes of the requested type via the
 // nodes_json carrier (the CLIENT does the substring filter now —

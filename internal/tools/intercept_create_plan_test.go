@@ -87,8 +87,8 @@ func TestInterceptCreatePlan_JSONFormat(t *testing.T) {
 }
 
 // TestInterceptCreatePlan_CreateRidesMutationExecute asserts the create rides a
-// single CREATE Mutation Execute (the carrier path). NOTE (T-GTB3 Phase 6,
-// finding 4b8e3c40): the version-overlay bundle_id anchor is NOT carried by the
+// single CREATE Mutation Execute (the carrier path). NOTE:
+// the version-overlay bundle_id anchor is NOT carried by the
 // engine MutationPlan create path — bundle grouping is no longer expressible on
 // the carrier path, so this no longer asserts a bundle_id (the prior behavior).
 func TestInterceptCreatePlan_CreateRidesMutationExecute(t *testing.T) {
@@ -164,7 +164,7 @@ func (f *fakePlanGraphCaller) Call(_ context.Context, tool string, args json.Raw
 	return kgtools.ToolResult{}, nil
 }
 
-// Execute satisfies render.Executor (T-GTB3 Phase 6). PersistBatch (create_batch)
+// Execute satisfies render.Executor. PersistBatch (create_batch)
 // now rides a Mutation Execute → answer with the ids parsed from the seeded
 // mutateResult {ids:[...]} body. The post-create FetchNode walk + rollup
 // TraverseDescendants ride Query Executes answered from queryResponses /

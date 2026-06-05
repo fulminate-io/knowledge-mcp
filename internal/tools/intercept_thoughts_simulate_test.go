@@ -14,7 +14,7 @@ import (
 )
 
 func TestHandleSimulateClient_NoGraphClient_Errors(t *testing.T) {
-	// FUL-323: leave gc nil so GraphCaller() returns nil → unavailable.
+	// Leave gc nil so GraphCaller() returns nil → unavailable.
 	deps := interceptTestDeps{gc: nil}
 	res := handleSimulateClient(context.Background(), deps, kgtools.CallToolParams{
 		Name:      "query",

@@ -28,7 +28,7 @@ type SimulationResult struct {
 }
 
 // SimulateRemoveCharge previews the impact of removing a charge without
-// committing. FUL-247 client-side: takes a graph client; bulk-fetches all
+// committing. Client-side: takes a graph client; bulk-fetches all
 // affected thought charges in one round-trip via chargeMapForThoughts.
 func SimulateRemoveCharge(ctx context.Context, gc Caller, chargeID string) (SimulationResult, error) {
 	if gc == nil {
@@ -53,7 +53,7 @@ func SimulateRemoveCharge(ctx context.Context, gc Caller, chargeID string) (Simu
 			chargeID, kgtypes.Value(charge, "polarity"), kgtypes.Value(charge, "weight"), charge.SymbolName),
 	}
 
-	// One bulk charges fetch for all affected thoughts (BCN4 v2 perf
+	// One bulk charges fetch for all affected thoughts (perf
 	// invariant — never per-thought N+1).
 	chargeMap := chargeMapForThoughts(ctx, gc, thoughtIDs)
 
@@ -73,7 +73,7 @@ func SimulateRemoveCharge(ctx context.Context, gc Caller, chargeID string) (Simu
 }
 
 // SimulateInvalidateThought previews the cascading impact of invalidating a
-// thought. FUL-247 client-side: takes a graph client; bulk-fetches neighbor
+// thought. Client-side: takes a graph client; bulk-fetches neighbor
 // nodes + charges in two round-trips total (one outgoing-targets, one
 // fetchNodesByIDs, one chargeMapForThoughts over the thought-typed
 // subset).
@@ -129,7 +129,7 @@ func SimulateInvalidateThought(ctx context.Context, gc Caller, thoughtID string)
 }
 
 // SimulateAddCharge previews the impact of adding a hypothetical charge.
-// FUL-247 client-side: one fetchNode + one chargeMapForThoughts round-trip.
+// Client-side: one fetchNode + one chargeMapForThoughts round-trip.
 func SimulateAddCharge(ctx context.Context, gc Caller, thoughtID, polarity string, weight float64) (SimulationResult, error) {
 	if gc == nil {
 		return SimulationResult{}, errors.New("simulate: SimulateAddCharge: graph client unavailable")
@@ -192,7 +192,7 @@ func RunSimulation(ctx context.Context, gc Caller, action, target, polarity stri
 }
 
 // computePropertiesExcluding computes thought properties while excluding a
-// specific charge. FUL-247 signature change: now takes a pre-loaded charges
+// specific charge. Signature change: now takes a pre-loaded charges
 // slice instead of issuing GetChargesForThought internally. Caller is
 // expected to have bulk-fetched via chargeMapForThoughts upstream.
 func computePropertiesExcluding(charges []*knowledgev1.Node, excludeChargeID string) ThoughtProperties {

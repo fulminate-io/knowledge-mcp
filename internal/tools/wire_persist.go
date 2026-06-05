@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package tools — wire_persist.go exports the shared client-side
-// persistence helpers every relocated FUL-246 intercept uses to talk
+// persistence helpers every relocated intercept uses to talk
 // to the server's mutate / query / traverse handlers. Each helper is
 // single-RPC (one gc.Call) so the client-side intercept code stays a
 // thin sequencer over the wire instead of re-implementing per-feature
@@ -117,7 +117,7 @@ func PersistBatch(ctx context.Context, gc GraphCaller, nodes []*knowledgev1.Node
 	if err != nil {
 		return nil, fmt.Errorf("PersistBatch: marshal: %w", err)
 	}
-	// T-GTB3 Phase 6: lower the create_batch JSON to a MutationPlan via the engine
+	// Lower the create_batch JSON to a MutationPlan via the engine
 	// (reuses the existing compile_mutate.go create_batch lowering) and Execute it;
 	// the created node IDs ride the raw resp.GetIds() carrier (not the formatted
 	// {ids:[...]} tool wire).
@@ -156,21 +156,6 @@ func executeQuery(ctx context.Context, gc GraphCaller, args json.RawMessage) (*k
 	req, ok := engine.Compile("query", args)
 	if !ok {
 		return nil, fmt.Errorf("query args not reducible to a QueryPlan")
-	}
-	return ex.Execute(ctx, req)
-}
-
-// executeSearch lowers a search JSON arg to a search ExecuteRequest via
-// engine.Compile and runs it through the Execute carrier seam. Shared by the
-// reducible search READS; callers decode via engine.DecodeSearch.
-func executeSearch(ctx context.Context, gc GraphCaller, args json.RawMessage) (*knowledgev1.ExecuteResponse, error) {
-	ex, err := persistExecutor(gc)
-	if err != nil {
-		return nil, err
-	}
-	req, ok := engine.Compile("search", args)
-	if !ok {
-		return nil, fmt.Errorf("search args not reducible to a search plan")
 	}
 	return ex.Execute(ctx, req)
 }
@@ -313,7 +298,7 @@ func TraverseDescendants(ctx context.Context, gc GraphCaller, rootID string, edg
 	if err != nil {
 		return nil, fmt.Errorf("TraverseDescendants: %w", err)
 	}
-	// T-GTB3 Phase 6: a forward (out) traversal over the edge type, returning the
+	// A forward (out) traversal over the edge type, returning the
 	// raw traversal_results_json carrier ([]store.TraversalResult — each carries a
 	// full store.Node), then the skip-root / skip-empty-ID filter client-side.
 	fwd := true

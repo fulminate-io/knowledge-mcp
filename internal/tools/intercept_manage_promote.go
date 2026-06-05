@@ -2,7 +2,7 @@
 
 // intercept_manage_promote.go — client-side composer for
 // manage(operation:promote_metadata). The client OWNS the whole operation
-// (T-GTB6): it reads the per-graph metadata stats via the generic
+// it reads the per-graph metadata stats via the generic
 // query(metadata_stats) carrier, computes the per-key promote/demote decision
 // with the SAME pure engine.RecommendAction the server executor uses, dispatches
 // one MIGRATE_META_REPR Execute per non-noop key (N2), builds the report, emits

@@ -33,11 +33,7 @@ func RenderStatsBreakdown(stats *knowledgev1.GraphStats) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Nodes: %d\n", stats.GetNodeCount())
 	fmt.Fprintf(&sb, "Edges: %d\n", stats.GetEdgeCount())
-	fmt.Fprintf(&sb, "Vectors: %d\n", stats.GetVectorCount())
 	fmt.Fprintf(&sb, "Binary vectors: %d\n", stats.GetBinaryVectorCount())
-	fmt.Fprintf(&sb, "Text documents: %d\n", stats.GetTextDocCount())
-	fmt.Fprintf(&sb, "BM25: %v\n", stats.GetHasBm25())
-	fmt.Fprintf(&sb, "HNSW: %v\n", stats.GetHasHnsw())
 
 	writeTypeBreakdown(&sb, "Nodes", stats.GetNodesByType())
 	writeTypeBreakdown(&sb, "Edges", stats.GetEdgesByType())

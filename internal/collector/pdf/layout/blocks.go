@@ -6,8 +6,7 @@
 // Splitting them materially improves accuracy on real-world PDFs.
 //
 // Rule 2.0 — single-line short-circuit: when len(lines) < 2, emit
-// one Block directly (no medianGap calc). Per Phase-4 step
-// criterion 5b1b4d04.
+// one Block directly (no medianGap calc). Per the Phase-4 step.
 // Rule 2.1 — X-start similarity check: |line.BBox.X0 -
 // block.firstLine.BBox.X0| <= CharMargin × avgCharWidthAcrossLines.
 // Rule 2.2 — mismatched X-start break: fail Rule 2.1 → new block.
@@ -48,7 +47,7 @@ func groupLinesToBlocks(lines []Line, pageIndex int, lp LayoutParams) []Block {
 
 	// Rule 2.0 single-line short-circuit. When there is only one
 	// line on the page, emit a single Block directly without
-	// computing medianGap. Same-as-criterion 5b1b4d04 (Phase 4 step):
+	// computing medianGap (Phase 4 step):
 	// avoids a degenerate medianGap sort over an empty gap slice.
 	if len(sorted) < 2 {
 		return []Block{newBlock(sorted[0], pageIndex)}

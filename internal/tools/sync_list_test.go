@@ -52,6 +52,9 @@ func (d *fakeSyncListDeps) BackendResolver() BackendResolver      { return nil }
 func (d *fakeSyncListDeps) GraphCaller() GraphCaller              { return d.cloud }
 func (d *fakeSyncListDeps) LocalGraphCaller() GraphCaller         { return d.local }
 func (d *fakeSyncListDeps) RepoResolver() *RepoResolver           { return nil }
+func (d *fakeSyncListDeps) SegmentManager() SegmentSearcher       { return nil }
+func (d *fakeSyncListDeps) SegmentShipper() SegmentShipper        { return nil }
+func (d *fakeSyncListDeps) PipelineScanner() PipelineScanner      { return nil }
 
 // CloudStatusInfo satisfies the cloudStatusInfo seam (manage.go:43).
 func (d *fakeSyncListDeps) CloudStatusInfo() (bool, string) { return d.loggedIn, d.host }

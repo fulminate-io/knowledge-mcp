@@ -154,13 +154,6 @@ func TestRenderQueryTool_FooterInvertedLie(t *testing.T) {
 		assert.Contains(t, out.Content[0].Text, "_search mode: BM25-only_")
 	})
 
-	t.Run("graph_reach, no query_vector → BM25-only", func(t *testing.T) {
-		args := queryArgsJSON(t, queryArgs{Mode: "graph_reach", Text: "q", Format: "text"})
-		out, err := renderQueryTool(args, resp)
-		require.NoError(t, err)
-		assert.Contains(t, out.Content[0].Text, "_search mode: BM25-only_")
-	})
-
 	t.Run("query carrying a query_vector → vector", func(t *testing.T) {
 		args := queryArgsJSON(t, queryArgs{Mode: "text", Text: "q", Format: "text", QueryVector: "AAAA"})
 		out, err := renderQueryTool(args, resp)

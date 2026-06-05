@@ -22,13 +22,13 @@ const DefaultChunkWindow = 5 * time.Minute
 //  3. Group entries into LogStreams using a CardinalityTracker
 //  4. Assemble compressed LogChunks per (stream, template, time-window)
 //  5. Produce a CollectResult the client materializes into the log
-//     graph via the standard WriteResult RPC (BCN11.1)
+//     graph via the standard WriteResult RPC
 //
 // Cloud-graph access is injected via CloudResolver and DependencyChecker
 // so this package never imports cloud/. Both callbacks are nil-safe:
 // when absent, the pipeline simply skips the cloud-linked stages.
 //
-// BCN11.2 dropped the in-process store handle entirely: every write
+// The in-process store handle was dropped entirely: every write
 // flows through the client-side MaterializeLogGraph + the WriteResult
 // RPC. The pipeline is now a pure transform.
 type Pipeline struct {
@@ -114,7 +114,7 @@ type TimeRange struct {
 // Options may override defaults:
 //   - WithCloudResolver / WithDependencyChecker for cloud linkage
 //
-// BCN11.2: the previous store.DB argument is gone. The pipeline is now a
+// The previous store.DB argument is gone. The pipeline is now a
 // pure transform; the client (cmd/knowledge/internal/tools.runLogsCollect)
 // runs MaterializeLogGraph on the returned CollectResult and ships the
 // node/edge slices via the standard IngestService.WriteResult RPC.
@@ -155,7 +155,7 @@ func (p *Pipeline) CollectFromEntries(ctx context.Context, entries []wirelogs.Lo
 		return nil, fmt.Errorf("logs: assemble chunks: %w", err)
 	}
 
-	// BCN11.2: pipeline is a pure transform — no DB writes. The client
+	// Pipeline is a pure transform — no DB writes. The client
 	// materializes the result via MaterializeLogGraph + WriteResult RPC.
 	correlations, resolutions := p.runCorrelations(ctx, templates, streams, chunks)
 
@@ -182,8 +182,8 @@ func (p *Pipeline) CollectFromEntries(ctx context.Context, entries []wirelogs.Lo
 		TimeRange:    computeTimeRange(entries),
 		Summary:      buildSummary(templates, streams, chunks, correlations, agg, query),
 		// CorrelationsFound previously counted edges written by
-		// writeCorrelations in the now-gone in-process flow. Post-
-		// BCN11.2 the source of truth is the full Correlations slice
+		// writeCorrelations in the now-gone in-process flow. Now
+		// the source of truth is the full Correlations slice
 		// the client materializes into edges — count the
 		// structurally-confirmed entries (the ones that materialize
 		// into CORRELATES_WITH edges) so callers see the same number
@@ -195,8 +195,8 @@ func (p *Pipeline) CollectFromEntries(ctx context.Context, entries []wirelogs.Lo
 }
 
 // runCorrelations handles the optional cloud-linkage stages: it computes
-// stream-label resolutions and runs temporal correlations. BCN11.2
-// dropped the in-process DB-write half; the returned slices ride the
+// stream-label resolutions and runs temporal correlations. The
+// in-process DB-write half was dropped; the returned slices ride the
 // CollectResult to the client, which materializes proxy + EMITTED_BY +
 // CORRELATES_WITH edges via the standard WriteResult RPC.
 //

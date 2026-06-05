@@ -32,16 +32,26 @@ type SummaryWork struct {
 	GraphName string
 	NodeID    string
 	// SummarizeText is the server-composed chunkInput JSON envelope
-	// (item.GetSummarizeText(), FUL-305) the worker feeds straight to the
+	// (item.GetSummarizeText()) the worker feeds straight to the
 	// summarizer — it no longer re-fetches the node or composes the envelope
 	// client-side. The summary axis drops empty composed text server-side, so
 	// in steady state this is non-empty.
 	SummarizeText string
 	Release       chan<- string
+	// Backend is the CONCRETE backend the originating collector scanned this
+	// item from (login-routed: cloud when logged in, local otherwise). The
+	// worker writes the summary result back through THIS backend — not the
+	// shared p.client — so a survivor graphKey's items always land on the
+	// backend that produced them, even across a mid-session login flip. The
+	// writeback grouping keys on (graphKey, Backend) to keep each group
+	// backend-homogeneous. Constant per collector (one collector scans one
+	// backend). May be nil for tests that drive the worker without a collector;
+	// the worker falls back to p.client in that case.
+	Backend WireClient
 }
 
 // EmbedWork mirrors SummaryWork for the embed system. The worker reads the
-// SERVER-COMPOSED EmbedText (FUL-305) straight into the embedder input — it no
+// SERVER-COMPOSED EmbedText straight into the embedder input — it no
 // longer re-fetches the node or composes EmbedText client-side. EmbedText may
 // be whitespace-only (the server EMITS empty-embed items so the client's
 // markStuckEmbedItems path can stamp the durable failure marker). Release
@@ -51,7 +61,21 @@ type EmbedWork struct {
 	GraphName string
 	NodeID    string
 	EmbedText string // server-composed embed input (item.GetEmbedText()); may be empty
-	Release   chan<- string
+	// Bm25Fields is the server-composed per-field BM25 text (item.GetBm25Fields()),
+	// populated only on the EMBED axis (Option A). The client builds BM25
+	// segments from these fields at the embed writeback seam (alongside the HNSW
+	// vector ship). May be nil — the server leaves it nil for nodes with no
+	// indexable field, and a code-leaf embedded via Content before its summary/
+	// keywords land carries a thin map (acceptable: transient, self-heals when
+	// re-summarization bumps the embed dirty-gen and re-ships — it only
+	// under-indexes that one node for the brief window until it re-ships).
+	Bm25Fields map[string]string
+	Release    chan<- string
+	// Backend is the CONCRETE backend the originating collector scanned this
+	// item from. See SummaryWork.Backend — same login-routed-writeback contract
+	// on the embed axis. Constant per collector; may be nil for collector-less
+	// tests (worker falls back to p.client).
+	Backend WireClient
 }
 
 // Metrics is a Snapshot of the pipeline's observable counters. Returned by

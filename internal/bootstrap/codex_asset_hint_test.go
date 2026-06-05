@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// criterion d8a4dfda: hintCodexAssetsIfStale (via codexAssetDrift) walks
+// hintCodexAssetsIfStale (via codexAssetDrift) walks
 // codexassets.Files vs split roots: counts missing/drift, and is a no-op
 // (0/0) when everything is in sync. AGENTS.md is NOT part of the walk.
 func TestCodexAssetDrift_MissingThenInSync(t *testing.T) {

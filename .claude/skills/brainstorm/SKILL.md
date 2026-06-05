@@ -524,7 +524,15 @@ The two lists are independent — a ticket can carry any combination, including 
 
 </constraint>
 
-**The pattern catalog exists to be looked up and applied.** When a pattern clearly fits the work, attach it. Do not wait for the user to name the pattern; that defeats the purpose of having the catalog. The auto-suggest (BM25 over name+description) and a quick `query(graph:"practice", language:"...")` lookup are the discovery tools — use them, judge fit, attach.
+**The pattern catalog exists to be looked up and applied.** When a pattern clearly fits the work, attach it. Do not wait for the user to name the pattern; that defeats the purpose of having the catalog. The auto-suggest (BM25 over name+description) and a quick fan-out lookup across ALL practice graphs are the discovery tools — use them, judge fit, attach.
+
+**Discovery fans out across every practice graph — a single-graph miss is not proof of absence.** Patterns live in multiple practice graphs (architecture, enterprise, language-specific). Search them as a set, not one at a time:
+
+```json
+search({ "graph": "practice", "language": "all", "queries": ["<concept>", "<shape>"] })
+```
+
+`language:"all"` (or an omitted language on the search tool) fans the query across every loaded practice graph and returns merged, source-graph-attributed hits. **Never conclude "no pattern fits" — and never write `no_patterns_reason` — from a miss in one graph.** A single-language lookup only tells you that one graph lacks the pattern; the fan-out is what tells you the catalog as a whole has nothing.
 
 **Attach `pattern_ids` when the pattern is structurally load-bearing:** the work IS an instance of the pattern, or the planner needs the pattern as the canonical shape to build to. Examples: a new dream phase IS a `dream-phase` instance; a refactor that moves server-side session state to the client IS `Client Session State`; a registry-of-named-implementations IS `init-time-registry`. In these cases the pattern is the shape of the work, and the planner builds to it.
 
@@ -538,14 +546,13 @@ The two lists are independent — a ticket can carry any combination, including 
 
 **Real failure mode (do not repeat):** A ticket attached `init-time-registry` because it "kind of fit" — the user had said "patterns probably not necessary." The planner faithfully built an exported `Register`/`Unregister` registry with panic-on-duplicate semantics, sync.RWMutex, and dedicated tests for those mechanics — for a closed set of 3 ops with no plugin extension story. A plain switch would have been one screen of code. The pattern attachment was the seed. The lesson is "don't attach mediocre matches," not "don't attach without user endorsement."
 
-Enumerate the architecture catalog whenever there's a real pattern question:
+Enumerate the catalog with a FAN-OUT across all practice graphs whenever there's a real pattern question — one query, every graph, merged + attributed:
 
 ```json
-query({ "graph": "practice", "language": "knowledge-architecture" })
-query({ "graph": "practice", "language": "enterprise-patterns", "type": "pattern", "text": "..." })
+search({ "graph": "practice", "language": "all", "queries": ["<concept>", "<shape>"] })
 ```
 
-Walk the candidates against the work: the catalog covers cross-cutting architecture (init-time-registry, composite-layered-db, batch-mutation-tool-handler, etc.) AND classical patterns (Client Session State, Repository, Unit of Work, CQRS, ...). If you find a clear fit, attach without asking. If the user pushes back ("not necessary", "skip"), accept that as `no_patterns_reason` and move on — do NOT counter-propose patterns "in case they're useful."
+The fan-out covers cross-cutting architecture (init-time-registry, composite-layered-db, batch-mutation-tool-handler, etc.) AND classical patterns (Client Session State, Repository, Unit of Work, CQRS, ...) in a single sweep, tagging each hit with its source graph. To browse one graph in full once the fan-out points you at it, narrow to a specific language. Walk the candidates against the work. If you find a clear fit, attach without asking. **Do NOT write `no_patterns_reason` off a single-graph miss — only a fan-out that surfaces nothing justifies it.** If the user pushes back ("not necessary", "skip"), accept that as `no_patterns_reason` and move on — do NOT counter-propose patterns "in case they're useful."
 
 For each pattern encountered, check whether anything still uses it:
 

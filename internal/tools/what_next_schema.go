@@ -5,7 +5,7 @@ package tools
 import "github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 
 // WhatNextToolDef returns the what_next MCP tool definition. Relocated
-// client-side per FUL-251 — the actual flow runs through InterceptWhatNext
+// client-side — the actual flow runs through InterceptWhatNext
 // (intercept_what_next.go); the server has no what_next handler. Wired
 // into tools/list via the client's loadSchemas augmentation.
 func WhatNextToolDef() kgtools.MCPTool {

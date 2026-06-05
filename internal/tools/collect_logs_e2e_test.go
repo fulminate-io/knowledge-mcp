@@ -41,6 +41,9 @@ func (d *fakeDeps) BackendResolver() BackendResolver      { return nil }
 func (d *fakeDeps) GraphCaller() GraphCaller              { return nil }
 func (d *fakeDeps) LocalGraphCaller() GraphCaller         { return nil }
 func (d *fakeDeps) RepoResolver() *RepoResolver           { return nil }
+func (d *fakeDeps) SegmentManager() SegmentSearcher       { return nil }
+func (d *fakeDeps) SegmentShipper() SegmentShipper        { return nil }
+func (d *fakeDeps) PipelineScanner() PipelineScanner      { return nil }
 
 // stubLogsProvider returns a fixed entry batch plus zero sources. Each
 // test registers it under a unique name to avoid colliding with other
@@ -134,7 +137,7 @@ func uniqueProviderName(t *testing.T) string {
 // TestRunLogsCollect_E2E exercises the entries-first wire path against a
 // fake IngestServiceClient seeded with a hand-built CloudSubgraph slice.
 //
-// Post-BCN11.1: runLogsCollect runs MaterializeLogGraph CLIENT-SIDE and
+// runLogsCollect runs MaterializeLogGraph CLIENT-SIDE and
 // ships the resulting ([]knowledgev1.Node, []kgwire.BatchEdge) via the standard
 // UploadSink CollectChunk + Finalize flow — same wire as code/cloud/cicd. The
 // test captures the final CollectChunkRequest (which carries the edges) and

@@ -16,7 +16,7 @@ import (
 )
 
 func TestInterceptCreateTicket_LocalOnlyParent_ClaimsLocally(t *testing.T) {
-	// FUL-246 Phase 3a: local-only parent is now claimed client-side.
+	// Phase 3a: local-only parent is now claimed client-side.
 	// The intercept composes the local-graph mirror via PersistBatch.
 	fc := &fakeGraphCaller{
 		queryResponses: map[string]kgtools.ToolResult{
@@ -93,10 +93,10 @@ func TestInterceptCreateTicket_Success_StampsBackendMetadata(t *testing.T) {
 		createTicketRef: backends.RemoteRef{
 			ID:         "ticket-uuid",
 			URL:        "https://example.invalid/t",
-			Identifier: "FUL-42",
+			Identifier: "EX-42",
 		},
 	}
-	// FUL-246: the client no longer forwards create_ticket — instead
+	// The client no longer forwards create_ticket — instead
 	// it issues mutate(create_batch) to persist the local mirror.
 	fc := &fakeGraphCaller{
 		queryResponses: map[string]kgtools.ToolResult{
@@ -126,8 +126,8 @@ func TestInterceptCreateTicket_Success_StampsBackendMetadata(t *testing.T) {
 	assert.Equal(t, "FUL", fb.createTicketArg.GroupKey)
 	assert.Equal(t, "proj-uuid", fb.createTicketArg.ProjectRef.ID)
 	// Verify the local mirror's CREATE Mutation Execute carried the backend
-	// metadata stamped on the ticket NodeBody via BuildTicketNode (T-GTB3 Phase 6
-	// carrier path: parent lookup + create both ride Execute now).
+	// metadata stamped on the ticket NodeBody via BuildTicketNode
+	// (carrier path: parent lookup + create both ride Execute now).
 	require.Len(t, fc.execMutations, 1)
 	m := fc.execMutations[0]
 	assert.Equal(t, knowledgev1.MutationPlan_MUTATION_KIND_CREATE, m.GetKind())
@@ -139,5 +139,5 @@ func TestInterceptCreateTicket_Success_StampsBackendMetadata(t *testing.T) {
 	assert.Equal(t, "proj-uuid", md["linear_project_id"])
 	assert.Equal(t, "team-uuid", md["linear_group_id"])
 	assert.Equal(t, "FUL", md["linear_group_key"])
-	assert.Equal(t, "FUL-42", md["external_id"], "ref.Identifier should fill external_id when caller didn't supply one")
+	assert.Equal(t, "EX-42", md["external_id"], "ref.Identifier should fill external_id when caller didn't supply one")
 }

@@ -88,7 +88,7 @@ func resolveLoggingSinkDest(dest string) string {
 	switch {
 	case strings.HasPrefix(dest, "storage.googleapis.com/"):
 		// Match the canonical GCS bucket node ID emitted by storage.go
-		// ("gs://<name>", per decision 1390ea2b). Returning a REST URL
+		// ("gs://<name>", the canonical bucket-ID format). Returning a REST URL
 		// here would dangle every Logging-sink → bucket edge.
 		bucket := strings.TrimPrefix(dest, "storage.googleapis.com/")
 		return "gs://" + bucket

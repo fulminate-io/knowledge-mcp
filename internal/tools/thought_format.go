@@ -7,7 +7,7 @@
 //
 // Function-shape note: these are free functions, not methods on
 // *Handler. The migration from the server-side handler form to the
-// client-side intercept form is the structural change BCN4 v2 makes.
+// client-side intercept form is the structural change made here.
 
 package tools
 
@@ -33,7 +33,7 @@ func handleReflectPersonality(ctx context.Context, deps ClientDeps, a queryRefle
 }
 
 // renderPersonality is the text body shared with the JSON-disabled
-// path. Mirrors the pre-BCN4 server-side formatter.
+// path. Mirrors the prior server-side formatter.
 func renderPersonality(report clientthought.PersonalityReport) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "# Personality Profile (%d clusters)\n\n", report.ClusterCount)
@@ -261,8 +261,8 @@ func handleReflectClusters(ctx context.Context, deps ClientDeps, a queryReflectA
 // handleRecallClusters serves thoughts(recall, mode:"clusters"[,
 // all_types]). For all_types, runs DetectAllClusters (every node type
 // minus proxies). For the thought-only variant, runs
-// DetectThoughtClusters. The pre-BCN4 implementation overlaid server
-// recall results on the cluster topology; the BCN4 v2 path is
+// DetectThoughtClusters. The prior implementation overlaid server
+// recall results on the cluster topology; the current path is
 // cluster-only — clients call thoughts(recall) (no mode) for text-mode
 // recall and use cluster IDs from this output to cross-reference.
 func handleRecallClusters(ctx context.Context, deps ClientDeps, allTypes bool, format string) kgtools.ToolResult {
@@ -281,7 +281,7 @@ func handleRecallClusters(ctx context.Context, deps ClientDeps, allTypes bool, f
 		return textResult(formatAllClusters(clusters))
 	}
 	// Thought-only clusters mode: just surface the cluster topology.
-	// The pre-BCN4 implementation overlaid recall results on clusters,
+	// The prior implementation overlaid recall results on clusters,
 	// but the recall+overlay path is not part of the reflective
 	// surface's primary use case — clients call query(mode:"clusters")
 	// for cluster-only views and thoughts(recall) for text-mode recall.
@@ -296,7 +296,7 @@ func handleRecallClusters(ctx context.Context, deps ClientDeps, allTypes bool, f
 }
 
 // formatAllClusters renders the cluster topology directly. Mirrors the
-// pre-BCN4 server-side formatter that lived in tools_thought_query.go.
+// prior server-side formatter that lived in tools_thought_query.go.
 func formatAllClusters(clusters []clientthought.ThoughtCluster) string {
 	if len(clusters) == 0 {
 		return "No clusters detected."
@@ -313,7 +313,7 @@ func formatAllClusters(clusters []clientthought.ThoughtCluster) string {
 	return sb.String()
 }
 
-// formatPropagationResult mirrors the pre-BCN4 server-side message
+// formatPropagationResult mirrors the prior server-side message
 // shape returned by handlePropagate.
 func formatPropagationResult(r clientthought.PropagationResult) string {
 	return fmt.Sprintf(

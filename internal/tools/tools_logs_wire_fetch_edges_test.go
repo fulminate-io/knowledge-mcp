@@ -18,7 +18,7 @@ import (
 )
 
 // scriptedEdgesFakeCaller answers the graph-wide-edges composition over the
-// Execute carrier seam (T-GTB6): (1) a Match-all RETURN_MODE_NODES enumeration
+// Execute carrier seam: (1) a Match-all RETURN_MODE_NODES enumeration
 // (nodes_json carrier), then (2) a RETURN_MODE_EDGES ids[]→union read
 // (edges_json carrier). Records every Execute request so tests can verify the
 // bounded 2-Execute contract (no per-node N+1).

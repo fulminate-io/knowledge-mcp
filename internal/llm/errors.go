@@ -3,6 +3,10 @@ package llm
 import (
 	"errors"
 	"fmt"
+	"net/http"
+	"strconv"
+	"strings"
+	"time"
 )
 
 // LLMError is the typed error every llm.Client implementation returns so
@@ -32,6 +36,14 @@ type LLMError struct {
 	// "http_400", "context_too_large", "config", "network"). Logged on
 	// every failure for operator triage; not used for control flow.
 	Reason string
+
+	// RetryAfter carries the server's stated retry delay, parsed from the
+	// HTTP Retry-After header on a 429 / 503, when present. Zero means no
+	// hint — callers fall back to their own exponential backoff. Only the
+	// HTTP providers (anthropic / openai / gemini / voyage) populate it; the
+	// CLI providers are subprocesses with no response headers and always
+	// leave it zero.
+	RetryAfter time.Duration
 
 	// Cause wraps the underlying error so callers can drill into
 	// provider-specific detail. errors.As / Unwrap both honor it.
@@ -76,6 +88,45 @@ func IsTransient(err error) bool {
 // a network error as transient should set LLMError.Transient directly.
 func HTTPStatusToTransient(status int) bool {
 	return status == 429 || (status >= 500 && status < 600)
+}
+
+// ParseRetryAfter extracts the Retry-After delay from a response header, in
+// the two RFC 7231 forms: delay-seconds (e.g. "30") and an HTTP-date (e.g.
+// "Wed, 21 Oct 2026 07:28:00 GMT"). Returns 0 when the header is absent,
+// empty, unparseable, or already in the past — callers treat 0 as "no hint"
+// and fall back to their own backoff. Shared by every HTTP provider so a 429
+// is honored identically regardless of which model backs the summarizer.
+func ParseRetryAfter(h http.Header) time.Duration {
+	if h == nil {
+		return 0
+	}
+	v := strings.TrimSpace(h.Get("Retry-After"))
+	if v == "" {
+		return 0
+	}
+	if secs, err := strconv.Atoi(v); err == nil {
+		if secs <= 0 {
+			return 0
+		}
+		return time.Duration(secs) * time.Second
+	}
+	if t, err := http.ParseTime(v); err == nil {
+		if d := time.Until(t); d > 0 {
+			return d
+		}
+	}
+	return 0
+}
+
+// RetryAfterOf returns the server-stated retry delay carried by err when it is
+// (or wraps) an *LLMError with a populated RetryAfter, else 0. Callers pass the
+// result to their backoff gate so a provider 429 waits the server's delay
+// instead of guessing.
+func RetryAfterOf(err error) time.Duration {
+	if le, ok := errors.AsType[*LLMError](err); ok {
+		return le.RetryAfter
+	}
+	return 0
 }
 
 // Sentinel errors for the registry / config validation paths. Callers

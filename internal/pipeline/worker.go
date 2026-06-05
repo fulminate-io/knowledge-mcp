@@ -64,6 +64,31 @@ func runSummaryWorkerBatch(ctx context.Context, p *Pipeline, batch []SummaryWork
 	}
 }
 
+// groupKey is the writeback-grouping key: the (GraphType, GraphName) graphKey
+// PLUS the concrete Backend the items were scanned from. Grouping on the
+// COMPOSITE (not graphKey alone) keeps each group backend-homogeneous so a
+// survivor graphKey's items — which can carry TWO backends on the global
+// channel during a mid-session login flip — fan out to the correct backend
+// instead of collapsing onto one. Backend is a WireClient interface value bound
+// to a *GraphClient pointer → comparable → a safe map key. A nil Backend (a
+// collector-less test work item) groups under the zero value and resolves to
+// p.client at the writeback site.
+type groupKey struct {
+	Key     graphKey
+	Backend WireClient
+}
+
+// backendOr returns the group's bound Backend, falling back to p.client when
+// the work items carried no Backend (collector-less test path). This is the
+// single seam that turns "write through the scanning backend" into a concrete
+// WireClient for the writeBatchUpdates call.
+func backendOr(p *Pipeline, b WireClient) WireClient {
+	if b != nil {
+		return b
+	}
+	return p.client
+}
+
 // releaseInFlight tries to send id on release. Non-blocking — if the
 // receiver is gone (collector unregistered between dispatch and worker
 // completion) the send is dropped silently. Nil release is a no-op so
@@ -78,11 +103,15 @@ func releaseInFlight(release chan<- string, id string) {
 	}
 }
 
-// groupSummaryByGraph groups SummaryWork items by their (GraphType, GraphName).
-func groupSummaryByGraph(batch []SummaryWork) map[graphKey][]SummaryWork {
-	groups := make(map[graphKey][]SummaryWork)
+// groupSummaryByGraph groups SummaryWork items by the COMPOSITE (graphKey,
+// Backend) so each group is backend-homogeneous (see groupKey).
+func groupSummaryByGraph(batch []SummaryWork) map[groupKey][]SummaryWork {
+	groups := make(map[groupKey][]SummaryWork)
 	for _, w := range batch {
-		k := graphKey{GraphType: w.GraphType, GraphName: w.GraphName}
+		k := groupKey{
+			Key:     graphKey{GraphType: w.GraphType, GraphName: w.GraphName},
+			Backend: w.Backend,
+		}
 		groups[k] = append(groups[k], w)
 	}
 	return groups
@@ -91,35 +120,37 @@ func groupSummaryByGraph(batch []SummaryWork) map[graphKey][]SummaryWork {
 // processSummaryGroup handles one (gt, name) group: fetches each node
 // via wire, builds chunks, calls the summarizer, and issues exactly ONE
 // mutate(update_batch) RPC for the per-id writeback.
-func processSummaryGroup(ctx context.Context, p *Pipeline, key graphKey, items []SummaryWork) {
-	slog.Debug("pipeline.summary: processing group", "graph_type", key.GraphType, "graph_name", key.GraphName, "items", len(items))
-	chunks, idMap := buildSummaryChunks(ctx, p, key, items)
+func processSummaryGroup(ctx context.Context, p *Pipeline, key groupKey, items []SummaryWork) {
+	gk := key.Key
+	be := backendOr(p, key.Backend)
+	slog.Debug("pipeline.summary: processing group", "graph_type", gk.GraphType, "graph_name", gk.GraphName, "items", len(items))
+	chunks, idMap := buildSummaryChunks(ctx, p, gk, items)
 	if len(chunks) == 0 {
 		slog.Debug("pipeline.summary: no chunks produced — batch skipped",
-			"graph_type", key.GraphType, "graph_name", key.GraphName, "items", len(items))
+			"graph_type", gk.GraphType, "graph_name", gk.GraphName, "items", len(items))
 		return
 	}
 
 	// Pause if a prior transient failure opened the shared backoff window.
 	p.backoff.wait(ctx)
-	slog.Debug("pipeline.summary: invoking summarizer", "chunks", len(chunks), "graph_type", key.GraphType, "graph_name", key.GraphName)
+	slog.Debug("pipeline.summary: invoking summarizer", "chunks", len(chunks), "graph_type", gk.GraphType, "graph_name", gk.GraphName)
 	results, err := p.summarizer(ctx, chunks)
 	if err != nil {
 		slog.Warn("pipeline.summary: summarizer call failed",
-			"graph_type", key.GraphType, "graph_name", key.GraphName, "chunks", len(chunks), "error", err)
-		handleSummarizerError(ctx, p, key, items, err)
+			"graph_type", gk.GraphType, "graph_name", gk.GraphName, "chunks", len(chunks), "error", err)
+		handleSummarizerError(ctx, p, be, gk, items, err)
 		return
 	}
 	p.backoff.ok()
 	slog.Debug("pipeline.summary: summarizer returned",
-		"chunks", len(chunks), "results", len(results), "graph_type", key.GraphType, "graph_name", key.GraphName)
-	writeSummaryResults(ctx, p, key, results, idMap)
+		"chunks", len(chunks), "results", len(results), "graph_type", gk.GraphType, "graph_name", gk.GraphName)
+	writeSummaryResults(ctx, p, be, gk, results, idMap)
 	slog.Debug("pipeline.summary: writeSummaryResults done",
-		"chunks", len(chunks), "graph_type", key.GraphType, "graph_name", key.GraphName)
+		"chunks", len(chunks), "graph_type", gk.GraphType, "graph_name", gk.GraphName)
 }
 
 // buildSummaryChunks builds the BatchChunk payload from the SERVER-COMPOSED
-// SummarizeText carried on each SummaryWork (FUL-305) — it no longer re-fetches
+// SummarizeText carried on each SummaryWork — it no longer re-fetches
 // the node, no longer composes the chunkInput envelope, and no longer walks
 // hierarchy children client-side (the server did all of that at the gap-scan
 // site, and dropped any node whose composed text was empty). The chunk ID is the
@@ -151,7 +182,7 @@ func buildSummaryChunks(_ context.Context, _ *Pipeline, key graphKey, items []Su
 // Load-bearing perf criterion (the integration test asserts the call
 // counter on the fake WireClient): exactly 1 RPC per call, regardless of
 // len(results).
-func writeSummaryResults(ctx context.Context, p *Pipeline, key graphKey, results map[string]llmproviders.SummarizeResult, idMap map[string]string) {
+func writeSummaryResults(ctx context.Context, p *Pipeline, be WireClient, key graphKey, results map[string]llmproviders.SummarizeResult, idMap map[string]string) {
 	items := make([]updateBatchItem, 0, len(results))
 	for chunkID, res := range results {
 		nodeID, ok := idMap[chunkID]
@@ -172,7 +203,10 @@ func writeSummaryResults(ctx context.Context, p *Pipeline, key graphKey, results
 	if len(items) == 0 {
 		return
 	}
-	if err := writeBatchUpdates(ctx, p.client, key.GraphType, key.GraphName, items); err != nil {
+	// Log the EXACT ids + writeback target graph name (see debugLogWriteback) so
+	// a recurring summary re-computation is traceable.
+	debugLogWriteback("summary", key.GraphName, items)
+	if err := writeBatchUpdates(ctx, be, key.GraphType, key.GraphName, items); err != nil {
 		slog.Warn("pipeline.summary: writeSummaryResults batch write failed", "error", err, "items", len(items), "graph_type", key.GraphType, "graph_name", key.GraphName)
 		for range items {
 			p.metrics.summaryFail()
@@ -193,11 +227,13 @@ func writeSummaryResults(ctx context.Context, p *Pipeline, key graphKey, results
 // log immediately. Transient errors WARN with retry context; terminal
 // errors WARN with the reason that just got stamped on each affected
 // node's metadata.
-func handleSummarizerError(ctx context.Context, p *Pipeline, key graphKey, items []SummaryWork, err error) {
+func handleSummarizerError(ctx context.Context, p *Pipeline, be WireClient, key graphKey, items []SummaryWork, err error) {
 	if llm.IsTransient(err) {
-		delay := p.backoff.fail()
+		// Honor a provider 429/503 Retry-After when present (else exponential).
+		hint := llm.RetryAfterOf(err)
+		delay := p.backoff.failHint(hint)
 		slog.Warn("pipeline.summary: transient error, backing off before retry",
-			"items", len(items), "backoff", delay, "error", err)
+			"items", len(items), "backoff", delay, "retry_after_hint", hint, "error", err)
 		for range items {
 			p.metrics.summaryFail()
 		}
@@ -221,7 +257,7 @@ func handleSummarizerError(ctx context.Context, p *Pipeline, key graphKey, items
 			},
 		})
 	}
-	if werr := writeBatchUpdates(ctx, p.client, key.GraphType, key.GraphName, batchItems); werr != nil {
+	if werr := writeBatchUpdates(ctx, be, key.GraphType, key.GraphName, batchItems); werr != nil {
 		slog.Warn("pipeline.summary: write failure markers failed",
 			"items", len(batchItems), "error", werr, "graph_type", key.GraphType, "graph_name", key.GraphName)
 	}

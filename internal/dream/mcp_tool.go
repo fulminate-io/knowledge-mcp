@@ -21,7 +21,7 @@ import (
 // through the single Execute/Call passthrough). The dream worker's eino tools
 // wrap this so worker tool calls ride the IDENTICAL dispatch upstream MCP
 // traffic uses — no worker-specific tool plumbing, no second raw-to-legacy
-// passthrough (decision 620137ea). cmd/knowledge wires it to dispatchForRunner;
+// passthrough. cmd/knowledge wires it to dispatchForRunner;
 // the CLI-subcommand callers wire a degraded dispatch that still routes through
 // engine.Dispatch (the single passthrough), never a bespoke one.
 type DispatchFunc func(ctx context.Context, name string, args json.RawMessage) (kgtools.ToolResult, error)
@@ -61,20 +61,34 @@ func (t *mcpTool) Info(_ context.Context) (*schema.ToolInfo, error) {
 // The worker session_id is stamped onto the ctx so the chokepoint emits
 // Origin="worker:<name>" on the tool-started/completed events.
 //
-// Error policy:
-//   - dispatch transport / RPC error → return wrapped Go error.
-//   - ToolResult{IsError: true} → return Go error containing the concatenated
-//     text. The model sees "tool failed" rather than a tool message carrying an
-//     error string and continuing as if all was well.
+// Error policy: both failure paths return the error text as
+// the tool-result observation string with a nil error, mirroring the success
+// path, so the eino ReAct loop continues and the model self-corrects on the next
+// step instead of the graph run aborting with NodeRunError.
+//   - dispatch transport / RPC error → return "Error: mcp tool <name> failed:
+//     <err>" as the observation (nil error); res may be zero-valued.
+//   - ToolResult{IsError: true} → return "Error: mcp tool <name> failed: <text>"
+//     as the observation (nil error), where <text> is the concatenated Content.
 //   - Successful ToolResult → concatenate Content text blocks and return.
+//
+// Worker-construction-time failures (an unknown tool name in BuildAllowedTools)
+// stay fatal and are NOT part of this observation contract: the model cannot emit
+// such a name, so it is surfaced as a hard error before the loop runs.
 func (t *mcpTool) InvokableRun(ctx context.Context, argumentsInJSON string, _ ...einotool.Option) (string, error) {
 	ctx = session.ContextWithSessionID(ctx, t.sessionID)
 	res, err := t.dispatch(ctx, t.name, json.RawMessage(argumentsInJSON))
 	if err != nil {
-		return "", fmt.Errorf("mcp tool %s: %w", t.name, err)
+		// Deliberate: hand the transport/RPC failure back to the ReAct loop as an
+		// observation (nil error) so the model can self-correct instead of the eino
+		// graph run aborting with NodeRunError. res may be
+		// zero-valued here, so build the observation from err.Error().
+		return fmt.Sprintf("Error: mcp tool %s failed: %s", t.name, err.Error()), nil
 	}
 	if res.IsError {
-		return "", fmt.Errorf("mcp tool %s: %s", t.name, joinTextBlocks(res.Content))
+		// Deliberate: a tool-level/application error (bad ast pattern, missing
+		// repo, server-side validation) also becomes an observation so the model
+		// retries rather than the whole invocation dying.
+		return fmt.Sprintf("Error: mcp tool %s failed: %s", t.name, joinTextBlocks(res.Content)), nil
 	}
 	return joinTextBlocks(res.Content), nil
 }

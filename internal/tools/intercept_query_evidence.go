@@ -7,8 +7,7 @@
 // existing render.FetchNode + render.IterEdges wire helpers. Both
 // markdown and JSON formats are supported with byte-parity goldens.
 //
-// FUL-251b Phase 3: must be wired BEFORE Phase 5 deletes the
-// server-side evidence shortcut.
+// Must be wired BEFORE the server-side evidence shortcut is deleted.
 
 package tools
 

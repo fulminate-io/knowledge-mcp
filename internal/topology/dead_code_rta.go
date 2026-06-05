@@ -4,7 +4,7 @@
 // module from disk, builds SSA, computes reachability via the rta package,
 // and returns the unreachable source-level functions.
 //
-// FUL-241 Phase 6: relocated client-side from pkg/topology/. The server
+// Relocated client-side from pkg/topology/. The server
 // is filesystem-blind; the RTA pipeline (packages.Load, SSA build,
 // callgraph) requires reading every .go file under the repo root, so
 // it now runs entirely inside the cmd/knowledge stdio client.

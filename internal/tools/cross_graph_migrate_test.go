@@ -46,7 +46,7 @@ func slugLessPracticeProxyNode(foreignID string) *knowledgev1.Node {
 	return n
 }
 
-// TestMigrateSlugLessPracticeProxy covers criterion b726880a: CASE A re-keys a
+// TestMigrateSlugLessPracticeProxy covers CASE A: re-keys a
 // metadata-FREE incident edge (UPSERT slug-ful proxy, re-point LINK before
 // DELETE, 2nd run no-op); CASE B re-keys a metadata-BEARING edge with the
 // metadata PRESERVED on the re-point LINK's EdgeSpec (the Phase 0 carrier proof —

@@ -14,9 +14,8 @@ import (
 // the search targets the code graph. classifyQueryIntent (rerank_intent.go)
 // inspects the query string at request time and selects one of three
 // per-intent Pipelines via defaultRerankPipeline. The per-intent ×
-// per-test_kind weight table was locked via the rankeval ablation in
-// ticket cddf5098 (see finding 2aad0816fa13682f5a4744c356c0047f for the
-// directionality-rule analysis behind these specific magnitudes).
+// per-test_kind weight table was locked via the rankeval ablation
+// (the directionality-rule analysis explains these specific magnitudes).
 //
 // Locked decisions referenced:
 //   - Q1: ADDITIVE ScoreOps (Mode "add"), NOT multiplicative.

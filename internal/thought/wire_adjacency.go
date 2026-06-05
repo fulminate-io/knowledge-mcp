@@ -12,7 +12,7 @@ import (
 )
 
 // wire_adjacency.go holds the client-side composition of the whole-graph
-// adjacency map (T-GTB6 D1) — the reduction of thoughts(adjacency) off the raw
+// adjacency map — the reduction of thoughts(adjacency) off the raw
 // gc.Call onto the generic Execute seam. It reproduces the server's
 // handleAdjacency (a PURE topology.BuildAdjacency read) using a single bulk
 // RETURN_MODE_EDGES read over the node set + (scope="all") per-thought

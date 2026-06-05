@@ -5,7 +5,7 @@ package tools
 import "github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 
 // RecordDecisionToolDef returns the record_decision MCP tool definition.
-// Relocated client-side per FUL-251 — the actual flow runs through
+// Relocated client-side — the actual flow runs through
 // InterceptRecordDecision (intercept_record_decision.go) against the
 // projects package; the server has no record_decision handler. Wired
 // into tools/list via the client's loadSchemas augmentation.

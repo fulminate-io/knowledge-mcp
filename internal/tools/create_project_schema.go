@@ -5,7 +5,7 @@ package tools
 import "github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 
 // CreateProjectToolDef returns the create_project MCP tool definition.
-// Relocated client-side per FUL-251 — the actual flow runs through
+// Relocated client-side — the actual flow runs through
 // InterceptCreateProject against the projects package; the server has
 // no create_project handler. Wired into tools/list via the client's
 // loadSchemas augmentation.

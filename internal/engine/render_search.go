@@ -16,13 +16,13 @@ import (
 // cmd/knowledge/internal/tools/search_rerank.go into the neutral engine package
 // so the Phase-4 dispatcher (engine.Render) can render WITHOUT importing
 // internal/tools — the tools-side InterceptSearch/Query reroute through
-// engine.Dispatch, so engine→tools would be a cycle (finding 3bdc9695). The
+// engine.Dispatch, so engine→tools would be a cycle. The
 // tools-side rerank path (applyClientRerank) and intercept_query_decisions now
 // import these from engine. The bodies are unchanged — this is relocation, not
 // duplication.
 
 // SearchJSONResult is the client-local JSON shape for --format json search
-// output. Relocated from pkg/store/search_json_result.go (T5.5): this envelope
+// output. Relocated from pkg/store/search_json_result.go: this envelope
 // is CLIENT-ONLY and never crosses the wire — renderJSON builds it for tool
 // output and HydrateFromJSON re-reads it for the client rerank + decisions
 // narrowing. The real search wire is the typed HydratedResult/Node proto
@@ -50,7 +50,7 @@ type SearchJSONResult struct {
 }
 
 // SearchJSONResponse is the client-local envelope wrapping the JSON search
-// rows. Relocated from pkg/store/search_json_result.go (T5.5) for the same
+// rows. Relocated from pkg/store/search_json_result.go for the same
 // client-only reason as SearchJSONResult: it is built by renderJSON and
 // consumed by HydrateFromJSON entirely client-side; it never crosses the wire.
 type SearchJSONResponse struct {
@@ -84,9 +84,9 @@ func renderSearchResponse(resp *knowledgev1.ExecuteResponse, query, format strin
 }
 
 // renderSearchResponseFiltered is renderSearchResponse plus a client-side
-// resource_type prefix post-filter (T-GTB2 site (c)). The cloud/cicd
-// resource_type filter does NOT compose with a QSearch post-rank server-side
-// (T-GTB1), so the client trims the decoded SearchList here. An empty prefix is
+// resource_type prefix post-filter. The cloud/cicd
+// resource_type filter does NOT compose with a QSearch post-rank server-side,
+// so the client trims the decoded SearchList here. An empty prefix is
 // a no-op (RenderForCaller renders the full set).
 func renderSearchResponseFiltered(resp *knowledgev1.ExecuteResponse, query, format string, fields []string, mode knowledgev1.SearchMode, resourceType, searchMode string) (kgtools.ToolResult, error) {
 	results, err := decodeSearch(resp)
@@ -101,8 +101,8 @@ func renderSearchResponseFiltered(resp *knowledgev1.ExecuteResponse, query, form
 // metadata begins with prefix — the VERBATIM behavior of the server-side
 // srvtools.FilterCloudResultsByResourceType (tools_query_cloud.go:226) the
 // engine post-filter previously applied. An empty prefix is a no-op (returns the
-// input). T-GTB2 site (c) moved this trim from the engine search post-rank to
-// the client render path (OP_PREFIX is inert on a QSearch — T-GTB1).
+// input). This trim moved from the engine search post-rank to
+// the client render path (OP_PREFIX is inert on a QSearch).
 func filterByResourceTypePrefix(results []SearchResult, prefix string) []SearchResult {
 	if prefix == "" {
 		return results
@@ -311,7 +311,7 @@ func renderText(query string, results []SearchResult, searchMode string) kgtools
 // []SearchResult. Maps every field on SearchJSONResult including Metadata
 // (load-bearing — augmentCallerHints populates the "callers" key server-side and
 // the rerank package consumes kgtypes.Value(n, "callers")). Builds the typed
-// *knowledgev1.Node directly (T5/FUL-295 dropped the store.Node wrapper layer from
+// *knowledgev1.Node directly (the typed-wire migration dropped the store.Node wrapper layer from
 // the client read path). Relocated from tools so intercept_query_decisions +
 // applyClientRerank import it here.
 func HydrateFromJSON(body string) ([]SearchResult, error) {

@@ -78,7 +78,7 @@ func graphTarget(graphType, graphName string) *knowledgev1.GraphSelector {
 }
 
 // decodeCarrierNodes reads the typed Nodes carrier (the same carrier the engine
-// decodeNodes reads) — T5 (FUL-295) deleted the nodes_json blob, so this is now a
+// decodeNodes reads) — T5 deleted the nodes_json blob, so this is now a
 // direct field read of []*knowledgev1.Node. Empty carrier → nil.
 func decodeCarrierNodes(resp *knowledgev1.ExecuteResponse) []*knowledgev1.Node {
 	return resp.GetNodes()
@@ -92,7 +92,7 @@ func decodeCarrierEdges(resp *knowledgev1.ExecuteResponse) []knowledgev1.Edge {
 
 // FetchNode resolves a single node by ID against the knowledge/default graph via
 // the Execute carrier path: one ByID Execute (include_tombstones) read from the
-// typed Nodes carrier directly as *knowledgev1.Node (T5/FUL-295 dropped the
+// typed Nodes carrier directly as *knowledgev1.Node (T5 dropped the
 // store.Node wrapper). Returns nil (no error) for not-found / tombstoned-without-
 // flag so callers can branch on node == nil.
 func FetchNode(ctx context.Context, gc GraphCaller, nodeID string) (*knowledgev1.Node, error) {

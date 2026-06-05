@@ -166,7 +166,7 @@ func chasePracticeProxy(ctx context.Context, ex render.Executor, hit *knowledgev
 // crossgraph.ListForeignGraphs enumerates code/practice/cloud/cicd over the
 // wire; we filter to GraphPractice so the lookup stays practice-scoped per the
 // legacy contract, then probe via crossgraph.LocateForeignNode (which returns
-// the wire *knowledgev1.Node directly post-FUL-295 retype).
+// the wire *knowledgev1.Node directly post-retype).
 func lookupInPracticeGraphs(ctx context.Context, ex render.Executor, id string) (*knowledgev1.Node, string, bool) {
 	all, err := crossgraph.ListForeignGraphs(ctx, ex)
 	if err != nil {

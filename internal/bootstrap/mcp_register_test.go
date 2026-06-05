@@ -51,7 +51,7 @@ func recordedLines(t *testing.T, logPath string) []string {
 
 // TestRegisterKnowledgeMCP_ClaudeArgv: claude registration emits a
 // preceding `mcp remove knowledge` then `mcp add -s user knowledge --
-// <abs>` (criterion 4d87505d).
+// <abs>`.
 func TestRegisterKnowledgeMCP_ClaudeArgv(t *testing.T) {
 	dir := t.TempDir()
 	log := filepath.Join(dir, "argv.log")
@@ -103,8 +103,7 @@ func TestRegisterKnowledgeMCP_CodexArgv(t *testing.T) {
 }
 
 // TestRegisterKnowledgeMCP_MissingCLI: with the client absent from PATH,
-// registration returns nil (non-fatal) and records no argv (criterion
-// 859defac).
+// registration returns nil (non-fatal) and records no argv.
 func TestRegisterKnowledgeMCP_MissingCLI(t *testing.T) {
 	withPATH(t, t.TempDir()) // empty dir → claude not found
 	withStubExecutable(t, "/opt/knowledge/bin/knowledge")
@@ -114,7 +113,7 @@ func TestRegisterKnowledgeMCP_MissingCLI(t *testing.T) {
 }
 
 // TestRegisterKnowledgeMCP_DryRun: dry-run prints argv and records
-// nothing (the fake is never invoked) (criterion 42192172).
+// nothing (the fake is never invoked).
 func TestRegisterKnowledgeMCP_DryRun(t *testing.T) {
 	dir := t.TempDir()
 	log := filepath.Join(dir, "argv.log")
@@ -131,7 +130,7 @@ func TestRegisterKnowledgeMCP_DryRun(t *testing.T) {
 }
 
 // TestRunInstallClaudeAssets_NoMCP: --no-mcp skips registration (no argv
-// recorded); without it, registration runs (criterion 6964da98).
+// recorded); without it, registration runs.
 func TestRunInstallClaudeAssets_NoMCP(t *testing.T) {
 	dir := t.TempDir()
 	log := filepath.Join(dir, "argv.log")

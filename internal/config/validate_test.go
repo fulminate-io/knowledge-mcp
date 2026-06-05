@@ -52,6 +52,49 @@ func TestValidate_MissingAPIKey(t *testing.T) {
 	}
 }
 
+// TestValidate_CredentialsOnlyAPIKey proves a key set only in [credentials]
+// (env var unset) passes Validate, matching the runtime resolver. APIKeyForProvider
+// reads the loaded-config GLOBAL singleton (keys.go credentials()/Active()), NOT
+// the receiver handed to Validate, so the credentials must be installed via
+// t.Cleanup(SetForTest(cfg)) — setting them only on the local cfg is insufficient.
+func TestValidate_CredentialsOnlyAPIKey(t *testing.T) {
+	cfg := &Config{
+		Default:     Section{Provider: ProviderAnthropic, Model: "claude-haiku-5"},
+		Summarizer:  &Section{},
+		Credentials: &Credentials{AnthropicAPIKey: "cfg-key"},
+	}
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Cleanup(SetForTest(cfg))
+	if err := cfg.Validate([]Consumer{ConsumerSummarizer}); err != nil {
+		t.Errorf("Validate with [credentials]-only key: %v", err)
+	}
+}
+
+// TestValidate_NeitherCredentialsNorEnv proves that when the key is set in
+// neither [credentials] nor the env var, Validate fails with a provider-named
+// message that points the operator at both ways to set it.
+func TestValidate_NeitherCredentialsNorEnv(t *testing.T) {
+	cfg := &Config{
+		Default: Section{Provider: ProviderAnthropic, Model: "claude-haiku-5"},
+	}
+	t.Setenv("ANTHROPIC_API_KEY", "")
+	t.Cleanup(SetForTest(cfg))
+	err := cfg.Validate([]Consumer{ConsumerSummarizer})
+	if err == nil {
+		t.Fatal("Validate: want error when key set in neither [credentials] nor env, got nil")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "anthropic") {
+		t.Errorf("error does not name the provider: %v", err)
+	}
+	if !strings.Contains(msg, "[credentials]") {
+		t.Errorf("error does not mention [credentials]: %v", err)
+	}
+	if !strings.Contains(msg, "ANTHROPIC_API_KEY") {
+		t.Errorf("error does not mention the env var: %v", err)
+	}
+}
+
 func TestValidate_HappyCLI(t *testing.T) {
 	dir := t.TempDir()
 	stubBinary(t, dir, "claude")

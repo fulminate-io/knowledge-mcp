@@ -2,11 +2,11 @@
 
 // Package tools — InterceptLogsQuery dispatches client-side log queries.
 //
-// BCN11.3: production query(graph:"logs") MCP calls reach the server's
+// Production query(graph:"logs") MCP calls reach the server's
 // gated routeQueryByTarget, which now lets raw reads fall through. But
 // formatted modes (pivot/correlations/timeline/explain/resolver) AND the
 // default overview/drill-down/template-detail shapes all live client-
-// side post-BCN11. InterceptLogsQuery is the chain step that routes
+// side. InterceptLogsQuery is the chain step that routes
 // those calls to the moved handleLogsQuery before any wire trip.
 //
 // Non-logs queries return (false, _) — caller falls through to the next

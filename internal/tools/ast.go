@@ -124,14 +124,39 @@ func handleAstMatch(ctx context.Context, deps ClientDeps, a astArgs) kgtools.Too
 		return errorResult("match: " + merr.Error())
 	}
 
+	// Default the hydration repo from the cwd resolver when the caller did not
+	// pass one, so match hydration is correct without the model supplying repo.
+	a.Repo = defaultRepoFromCwd(ctx, deps, a.Repo)
+
 	// nil GraphCaller is tolerated — the hydrator's b.gc == nil branch returns
-	// empty hydration without error, matching the pre-FUL-323 behavior where
+	// empty hydration without error, matching the prior behavior where
 	// the bare GraphClient could legitimately be nil in test harnesses.
 	results, herr := ast.Hydrate(ctx, graphClientHydratorBackend{gc: deps.GraphCaller(), repo: a.Repo}, raws, walk)
 	if herr != nil {
 		return errorResult("hydrate: " + herr.Error())
 	}
 	return jsonResult(results)
+}
+
+// defaultRepoFromCwd returns explicit when it is non-empty; otherwise it
+// resolves the repo from the cwd resolver and returns the resolved name on a
+// hit, or "" on a miss/error. Hit-only by design: ast hydration must NOT fail
+// when the cwd matches no loaded code graph — a missing repo only degrades
+// hydration quality (count/replace don't hydrate at all, and the hydrator
+// tolerates an empty repo). This is why the soft variant is inlined here rather
+// than reusing resolveTopologyRepo, which errors on a miss.
+func defaultRepoFromCwd(ctx context.Context, deps ClientDeps, explicit string) string {
+	if explicit != "" {
+		return explicit
+	}
+	resolver := deps.RepoResolver()
+	if resolver == nil {
+		return ""
+	}
+	if name, ok, err := resolver.ResolveCwd(ctx, deps.RootDir()); err == nil && ok {
+		return name
+	}
+	return ""
 }
 
 // handleAstCount runs the same walk as match but skips Hydrate. Returns a

@@ -108,7 +108,7 @@ func detectGCPProject(subnets []*knowledgev1.Node) string {
 
 // extractNetworkFromSubnet parses the subnet node's Content JSON to get the
 // 'network' field (parent VPC self-link). Unmarshals into the curated wire
-// struct subnetworkContent (defined in network.go) — FUL-88 reader convergence.
+// struct subnetworkContent (defined in network.go) — reader convergence.
 func extractNetworkFromSubnet(subnet *knowledgev1.Node) string {
 	if subnet.Content == "" {
 		return ""

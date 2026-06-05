@@ -17,7 +17,7 @@ import (
 )
 
 // rulesFakeGc answers the query(type:"rule") read over the Execute carrier seam
-// (T-GTB6) with a scripted set of rule nodes via the nodes_json carrier.
+// with a scripted set of rule nodes via the nodes_json carrier.
 type rulesFakeGc struct {
 	rules []*knowledgev1.Node
 }

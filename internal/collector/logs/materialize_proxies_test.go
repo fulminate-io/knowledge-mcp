@@ -18,7 +18,7 @@ import (
 // produce both a NodeProxy in the returned nodes AND an EMITTED_BY edge
 // from the corresponding log-label node to that proxy in the returned edges.
 //
-// Regression guard for the post-BCN11.1 client-side flow: prior to the pure
+// Regression guard for the client-side flow: prior to the pure
 // shape, the proxies were only written via the server-side
 // writeProxiesFromResolutions DB-write call; the client could not derive
 // them deterministically. This test fails if MaterializeLogGraph regresses

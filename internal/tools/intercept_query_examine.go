@@ -267,7 +267,7 @@ func examineBulkHydrate(ctx context.Context, exec engine.ExecuteFn, idSet map[st
 // examineDecodeNodes / examineDecodeEdges / examineDecodeTraversal decode the
 // ExecuteResponse carriers. Local, self-contained (the engine's decoders are
 // unexported); examineDecodeNodes reads the typed Nodes carrier directly (T5/
-// FUL-295 deleted the nodes_json blob). The error return is always nil now that
+// T5 deleted the nodes_json blob). The error return is always nil now that
 // the blob json.Unmarshal is gone, but is retained for the symmetric (nodes,
 // err) call shape both callers use alongside examineDecodeTraversal.
 //
