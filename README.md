@@ -206,21 +206,29 @@ context layer; the LLM trusts it because it's traceable end-to-end.
 
 ### Homebrew
 
-The recommended path on macOS and Linux. The formula installs both the
-`knowledge` MCP client and the `knowledge-server` graph server side by
-side, so lifecycle and auto-spawn work out of the box.
+The recommended path on macOS and Linux. `brew install knowledge` pulls
+in two formulae — the `knowledge` binary (CLI + the shared MCP daemon)
+and the `knowledge-server` graph server — and registers a launchd
+service for each.
 
 ```bash
 brew tap fulminate-io/knowledge
 brew install knowledge
 ```
 
-Run the server as a background service (optional — the client also
-auto-spawns it on demand):
+Start both background services (run as **your user** — do not `sudo`; a
+root LaunchDaemon can't read your login keychain, which breaks Fulminate
+Cloud auth):
 
 ```bash
-brew services start knowledge   # launchd-managed knowledge-server
+brew services start knowledge-server   # local graph server  (127.0.0.1:15022)
+brew services start knowledge          # shared MCP daemon    (127.0.0.1:15023)
 ```
+
+The daemon is the MCP endpoint your editor connects to; the graph server
+backs it locally. Wire your editor with `knowledge install-claude-assets`
+or `knowledge install-codex-assets` (below) — they point the editor at
+the daemon for you.
 
 ### From source
 
@@ -228,9 +236,12 @@ Requirements: Go 1.26+, CGO enabled (tree-sitter C bindings). Optional:
 [Voyage AI key](https://voyageai.com) for vector search;
 [Fulminate Cloud account](https://fulminate.io) for paid cloud features.
 
-Building from source produces the `knowledge` client only; the
-`knowledge-server` binary ships via the Homebrew formula or a release
-download.
+Building from source produces the `knowledge` binary only (CLI + the
+shared MCP daemon). The `knowledge-server` graph server is a prebuilt
+download — it ships via the Homebrew formula or a release tarball and is
+not built from this repo. After building, run `knowledge install` to
+fetch the matching `knowledge-server` from the GitHub releases — it
+verifies the checksum and installs it next to `knowledge`.
 
 ```bash
 CGO_ENABLED=1 go install github.com/fulminate-io/knowledge-mcp@latest
@@ -244,49 +255,55 @@ cd knowledge-mcp
 CGO_ENABLED=1 go build -o bin/knowledge .
 ```
 
-That produces the `knowledge` MCP stdio client. (`make build`
-does the same and also refreshes the embedded Claude Code agents and
-skills.)
+That produces the `knowledge` binary. (`make build` does the same and
+also refreshes the embedded Claude Code agents and skills.)
 
-### Server setup
+### Running it
 
-`knowledge` is the MCP stdio client. It proxies tool calls to a
-`knowledge-server` graph server over loopback TCP (`127.0.0.1:15022`
-by default). Two options:
+Two long-lived processes:
 
-**Local server** (free, file-backed). The client looks for a
-`knowledge-server` binary next to itself or on `$PATH` and spawns it
-automatically the first time a tool call needs it, so the common case
-needs no manual lifecycle. To drive it by hand:
+- **`knowledge serve`** — the shared MCP daemon. A streamable-HTTP MCP
+  server on `127.0.0.1:15023` (path `/mcp`); this is what your editor
+  connects to. `brew services start knowledge` runs it.
+- **`knowledge-server`** — the local graph server on `127.0.0.1:15022`,
+  file-backed under `~/.knowledge/`. The daemon talks to it for local
+  work and sync. `brew services start knowledge-server` runs it.
+
+Source-built users (no `brew services`) run them by hand:
 
 ```bash
-knowledge start      # spawn knowledge-server on 127.0.0.1:15022
-knowledge status     # confirm running (pid + node/edge counts)
-knowledge stop       # graceful drain + shutdown
+knowledge serve                    # MCP daemon on 127.0.0.1:15023
+knowledge start / status / stop    # knowledge-server lifecycle (15022)
+knowledge doctor                   # diagnose install + daemon/server health
 ```
 
-The server stores graphs in `~/.knowledge/`. If `knowledge start`
-reports that `knowledge-server` was not found, install it via Homebrew
-(below), which ships both binaries side by side.
+**Fulminate Cloud** (paid, team-shared) — log in once and the daemon
+routes your tool calls to the hosted graph server:
 
-**Fulminate Cloud** (paid, team-shared):
 ```bash
-knowledge login      # browser-PKCE OAuth flow — no local server needed
+knowledge login      # browser-PKCE OAuth flow; token stored in your keychain
 ```
 
-Logged-in users route tool calls through Fulminate Cloud's hosted
-graph server. No local server installation required.
+When you're logged in, the daemon serves every tool call from cloud; the
+local `knowledge-server` is then needed only for `sync`. Logged out, the
+daemon runs fully local against `knowledge-server`.
 
 ### Claude Code integration
 
-Install the curated agents and skills that ship with Knowledge:
+One command wires Claude Code to the daemon and installs the curated
+catalog:
 
 ```bash
 knowledge install-claude-assets
 ```
 
-That writes the project's curated agents (`~/.claude/agents/*.md`) and
-skills (`~/.claude/skills/*/SKILL.md`) so Claude Code picks them up.
+That does two things:
+
+- **Registers the MCP daemon** with Claude Code (`claude mcp add -s user
+  --transport http knowledge http://127.0.0.1:15023/mcp`) — no manual
+  `.mcp.json` editing.
+- **Writes the curated agents** (`~/.claude/agents/*.md`) and skills
+  (`~/.claude/skills/*/SKILL.md`) so Claude Code picks them up.
 
 **Keeping them in sync:** the catalog is embedded in the `knowledge`
 binary, so re-run `install-claude-assets` after every upgrade to refresh
@@ -294,26 +311,27 @@ your installed copies — a startup hint warns when they drift. Preview
 before writing with `--dry-run`, see exactly what would change with
 `--diff`, and list each file with `--verbose`.
 
-Wiring the MCP server itself into `.mcp.json` is covered under
-[Connect](#connect) below.
-
 ### Codex CLI integration
 
-Codex consumes the same curated catalog. Install the Codex twin of the
-agents and skills:
+Codex consumes the same curated catalog. One command wires Codex to the
+daemon and installs the agents and skills:
 
 ```bash
 knowledge install-codex-assets
 ```
 
-That writes, using Codex's native layout (split roots):
+That does two things:
 
-- skills → `~/.agents/skills/<name>/SKILL.md` (verbatim copies of the
-  Claude skills — Codex interprets the same constructs)
-- agents → `~/.codex/agents/<name>.toml` (the Claude agents converted to
-  Codex subagent TOML: `name`, `description`, `developer_instructions`)
-- a clobber-safe knowledge-priming block in `~/.codex/AGENTS.md`,
-  bounded by managed markers so any prose you keep there is preserved
+- **Registers the MCP daemon** with Codex (`codex mcp add knowledge
+  --url http://127.0.0.1:15023/mcp`; Codex names the streamable-HTTP
+  target with `--url`) — no manual `config.toml` editing.
+- **Writes the catalog** using Codex's native layout (split roots):
+  - skills → `~/.agents/skills/<name>/SKILL.md` (verbatim copies of the
+    Claude skills — Codex interprets the same constructs)
+  - agents → `~/.codex/agents/<name>.toml` (the Claude agents converted
+    to Codex subagent TOML: `name`, `description`, `developer_instructions`)
+  - a clobber-safe knowledge-priming block in `~/.codex/AGENTS.md`,
+    bounded by managed markers so any prose you keep there is preserved
 
 **Keeping them in sync:** the catalog is embedded in the binary, so
 re-run `install-codex-assets` after every upgrade to refresh your
@@ -322,48 +340,12 @@ installed copies — a startup hint warns when they drift. Preview with
 with `--verbose`. Skills you've added yourself and any non-managed prose
 in `~/.codex/AGENTS.md` are left untouched.
 
-Register the MCP server itself in `~/.codex/config.toml`:
+## First index
 
-```toml
-[mcp_servers.knowledge]
-command = "knowledge"
-args = ["mcp"]
-```
-
-`knowledge` resolves through `$PATH` after brew install; source-built
-users use the absolute path to `bin/knowledge`.
-
-## Connect
-
-Add to `.mcp.json` at your project root:
-
-```json
-{
-  "mcpServers": {
-    "knowledge": {
-      "command": "knowledge"
-    }
-  }
-}
-```
-
-That's the whole config — `knowledge` resolves through `$PATH` after
-brew install. Source-built users replace `knowledge` with the absolute
-path to `bin/knowledge`.
-
-The stdio client (`knowledge`) auto-spawns the graph server on first
-use if no server is running, so brew users without `brew services
-start knowledge` get a working setup anyway. To drive lifecycle
-manually:
-
-```bash
-knowledge start    # spawn the server
-knowledge status   # show pid + node/edge counts
-knowledge stop     # graceful shutdown
-```
-
-After installing, point your MCP client at the binary, restart the
-client, and trigger an initial index from inside the LLM:
+`install-claude-assets` / `install-codex-assets` already registered the
+daemon with your editor, so there's no `.mcp.json` to hand-edit. Restart
+your editor so it picks up the new MCP server, then trigger an initial
+index from inside the LLM:
 
 ```jsonc
 collect({ "type": "code", "id": "/absolute/path/to/repo" })
@@ -373,6 +355,9 @@ First pass takes 30s–2min for typical repos: tree-sitter chunks the
 files, the LLM summarizes each node, Voyage embeds them. Subsequent
 indexes are incremental — only changed files re-summarize. Branch
 overlays and auto-compaction recovery run in the background.
+
+> Connecting another MCP client by hand? Point it at the daemon's
+> streamable-HTTP endpoint: `http://127.0.0.1:15023/mcp`.
 
 ### LLM and embedding providers
 
@@ -405,7 +390,7 @@ voyage_api_key = "..."
 [KNOWLEDGE_TOOLS.md](./KNOWLEDGE_TOOLS.md). The ones you'll touch
 daily: `search`, `ast`, `traverse`, `thoughts`, `record_decision`,
 `create_project` / `create_ticket` / `create_plan`, `assemble`,
-`what_next`. Generic primitives — `query`, `mutate`, `delete`,
+`collect`. Generic primitives — `query`, `mutate`, `delete`,
 `manage` — route by graph and operation.
 
 ## Fulminate Cloud (optional)
@@ -429,7 +414,7 @@ design — headless environments are not supported. Sign up at
 [fulminate.io](https://fulminate.io).
 
 ```bash
-knowledge login    # WorkOS browser-PKCE flow
+knowledge login    # browser-PKCE OAuth flow
 knowledge logout   # revoke + clear keychain
 ```
 
@@ -442,13 +427,9 @@ state down, promote a working copy as the team head.
 Pre-1.0. Active development toward Apache 2.0 OSS launch.
 
 **Shipping today**: MCP server with five-graph architecture, thought
-reasoning with DeGroot propagation, 25 topology analyzers, branch
+reasoning with DeGroot propagation, 31 topology analyzers, branch
 overlays, auto-compaction recovery, tokenless OSS boot, browser-PKCE
 OAuth login with keychain-backed credentials.
-
-**In flight toward OSS launch**: Apache 2.0 LICENSE + release
-automation, repo rename, bidirectional sync to Fulminate Cloud,
-post-incident learning loop, code-aware RCA demo.
 
 ## Contributing
 
