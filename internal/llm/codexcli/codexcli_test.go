@@ -216,9 +216,10 @@ func TestGenerate_SystemAndUser(t *testing.T) {
 
 // TestGenerate_ToolsInjectMCPServer verifies that non-empty Tools causes the
 // knowledge MCP server to be injected as `-c mcp_servers.knowledge.*` config
-// overrides (codex has no inline --mcp-config flag). The fork-bomb guard
-// (--no-worker-runtime in the child args) and the bare-name enabled_tools
-// allowlist are the load-bearing assertions.
+// overrides (codex has no inline --mcp-config flag). The server is the shared
+// daemon's loopback streamable-HTTP url (NOT a spawned stdio child — no
+// command/args) and the bare-name enabled_tools allowlist are the
+// load-bearing assertions.
 func TestGenerate_ToolsInjectMCPServer(t *testing.T) {
 	bin, argvFile, _ := recordingFakeCodex(t, successfulTranscript)
 	svc := mustNewService(t, bin, "gpt-5-codex")
@@ -246,22 +247,22 @@ func TestGenerate_ToolsInjectMCPServer(t *testing.T) {
 		}
 	}
 
-	cmdVal, ok := overrides["mcp_servers.knowledge.command"]
+	// The knowledge server is the shared daemon's loopback streamable-HTTP
+	// /mcp endpoint — a url override, NOT a spawned stdio child. No
+	// command/args overrides on this path (so no fork-bomb guard needed:
+	// the daemon runs one shared runtime).
+	urlVal, ok := overrides["mcp_servers.knowledge.url"]
 	if !ok {
-		t.Fatalf("argv missing mcp_servers.knowledge.command override; got %v", args)
+		t.Fatalf("argv missing mcp_servers.knowledge.url override; got %v", args)
 	}
-	// command is a TOML basic string (quoted); strip the quotes for the check.
-	if !strings.Contains(cmdVal, "knowledge") && cmdVal == "" {
-		t.Errorf("mcp_servers.knowledge.command = %q, want the knowledge binary path", cmdVal)
+	if !strings.Contains(urlVal, "/mcp") || !strings.Contains(urlVal, "127.0.0.1") {
+		t.Errorf("mcp_servers.knowledge.url = %q, want the daemon loopback /mcp url", urlVal)
 	}
-
-	argsVal, ok := overrides["mcp_servers.knowledge.args"]
-	if !ok {
-		t.Fatalf("argv missing mcp_servers.knowledge.args override; got %v", args)
+	if _, present := overrides["mcp_servers.knowledge.command"]; present {
+		t.Errorf("mcp_servers.knowledge.command must NOT be set (no stdio child); got %v", args)
 	}
-	// Fork-bomb guard: the child argv MUST carry --no-worker-runtime.
-	if !strings.Contains(argsVal, llm.NoWorkerRuntimeFlag) {
-		t.Errorf("mcp_servers.knowledge.args = %s, missing fork-bomb guard %q", argsVal, llm.NoWorkerRuntimeFlag)
+	if _, present := overrides["mcp_servers.knowledge.args"]; present {
+		t.Errorf("mcp_servers.knowledge.args must NOT be set (no stdio child); got %v", args)
 	}
 
 	toolsVal, ok := overrides["mcp_servers.knowledge.enabled_tools"]

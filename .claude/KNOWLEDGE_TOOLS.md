@@ -61,7 +61,6 @@
     <param name="mode">hybrid (default) | text (BM25 only) | vector (semantic only); also ppr/graph_reach + recent/temporal for knowledge</param>
     <param name="repo">repo name, or "all" for cross-repo</param>
     <param name="branch">branch overlay (auto-detected from current branch if omitted)</param>
-    <param name="language">required for graph:"practice" (e.g. "go")</param>
     <param name="account">cloud account key — required for graph:"cloud" (omit to list available cloud graphs)</param>
     <param name="name">query_id — required for graph:"logs"</param>
     <param name="limit">max results (default 10, max 50)</param>
@@ -161,19 +160,21 @@
     <param name="format">text (default) | json</param>
   </params>
   <modes>
-    <mode name="examine">deep inspect — ancestry, edges, version history. Use when debugging why a node has an unexpected status or is missing from what_next.</mode>
+    <mode name="examine">deep inspect — ancestry, edges, version history. Use when debugging why a node has an unexpected status or is missing from a plan tree.</mode>
     <mode name="stats">all node types + edge types for a graph (discovery)</mode>
     <mode name="plan_tree">walk plan/project/ticket hierarchy</mode>
     <mode name="lineage">trace provenance chains</mode>
     <mode name="evidence">what shaped a decision (follows informed-by)</mode>
     <mode name="topology">run a topology analyzer (`algorithm`, e.g. pagerank, scc) over a graph</mode>
     <mode name="metadata_stats">per-graph cardinality histogram for every metadata key</mode>
+    <mode name="recent">recency-ordered browse (UpdatedAt half-life). Empty `text` → pure recency; add `types` to scope (e.g. a lightweight active-work view).</mode>
     <mode name="personality | tensions | blind_spots | summary">reflection over the thought graph</mode>
   </modes>
   <example caption="deep inspect a node">query({ "mode": "examine", "id": "node_id" })</example>
   <example caption="browse decisions">query({ "type": "decision" })</example>
   <example caption="discover the vocabulary">query({ "mode": "stats", "graph": "code" })</example>
   <example caption="walk a plan tree">query({ "mode": "plan_tree", "id": "plan_id" })</example>
+  <example caption="recent work items by recency">query({ "mode": "recent", "types": ["project", "ticket", "plan", "phase", "step", "question"] })</example>
 </tool>
 
 </category>

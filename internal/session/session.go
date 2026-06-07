@@ -24,3 +24,27 @@ func SessionIDFromContext(ctx context.Context) string {
 	v, _ := ctx.Value(sessionIDKey{}).(string)
 	return v
 }
+
+// workspaceCwdKey is the typed context key carrying a session's resolved
+// workspace cwd through the tool dispatch call stack (HTTP transport). A
+// private type avoids cross-package collisions, mirroring sessionIDKey.
+type workspaceCwdKey struct{}
+
+// ContextWithWorkspaceCwd returns a copy of ctx with the per-session workspace
+// cwd attached. An empty cwd is a no-op (returns ctx unchanged) so the stdio
+// path — which carries no workspace cwd — leaves the context clean and repo
+// resolution falls back to the process --root.
+func ContextWithWorkspaceCwd(ctx context.Context, cwd string) context.Context {
+	if cwd == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, workspaceCwdKey{}, cwd)
+}
+
+// WorkspaceCwdFromContext extracts the per-session workspace cwd from ctx.
+// Returns "" if none was set (the stdio default), signaling callers to fall
+// back to the process --root.
+func WorkspaceCwdFromContext(ctx context.Context) string {
+	v, _ := ctx.Value(workspaceCwdKey{}).(string)
+	return v
+}

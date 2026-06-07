@@ -37,12 +37,14 @@ var ErrNoBackend = errors.New("graphclient: no backend available — run `knowle
 //
 // Zero local + zero auth: ErrNoBackend is returned without dispatching.
 //
-// Local() accessor: callers that MUST bypass routing (sync push,
-// post-collect linker, post-collect postpopulate — they always read+write
-// the local graph) call Router.Local() and operate on the bare local
-// *GraphClient. May return nil for cloud-first users without a local
-// install; those callsites must nil-check and surface a "no local server"
-// error appropriately.
+// Local() accessor: the three callers that MUST bypass routing call
+// Router.Local() and operate on the bare local *GraphClient — sync push (source
+// bytes always come from the local graph), sync list, and sync pull (the
+// OverwriteGraph apply target is always the local .bin). The post-collect linker
+// and postpopulate are NOT local-only; they route through the cloud-aware
+// GraphCaller. May return nil for cloud-first users without a local install;
+// those callsites must nil-check and surface a "no local server" error
+// appropriately.
 type Router struct {
 	local       *GraphClient
 	cloudURL    string
@@ -73,9 +75,11 @@ func NewRouter(
 }
 
 // Local returns the local *GraphClient backing the router, or nil for a
-// cloud-first install. Callers that always-route-local (sync push,
-// post-collect linker, post-collect postpopulate) use this accessor; the
-// LocalGraphCaller() shape on bootstrap *client exposes it to tools/.
+// cloud-first install. The three always-route-local callers (sync push, sync
+// list, and sync pull's OverwriteGraph apply) use this accessor; the
+// LocalGraphCaller() shape on bootstrap *client exposes it to tools/. The
+// post-collect linker and postpopulate route through the cloud-aware
+// GraphCaller, not this accessor.
 func (r *Router) Local() *GraphClient {
 	return r.local
 }
@@ -99,7 +103,10 @@ func (r *Router) IngestClient(ctx context.Context) (knowledgev1connect.IngestSer
 // LLM pipeline's refreshOnce compares this across ticks to detect a login flip
 // and force a full collector rebind (resetting the per-collector dirty-gen
 // caches so a survivor graphKey re-scans the new backend from gen 0). Mirrors
-// the IsLoggedIn check pick(ctx) makes internally.
+// the cloud-routing decision pick(ctx) makes internally.
+//
+// Routing consults ONLY the keychain auth state (KeyRefreshToken presence, set
+// by the user-run `knowledge login` CLI). There is no per-session override.
 func (r *Router) LoggedIn(ctx context.Context) bool {
 	return r.authState != nil && r.authState.IsLoggedIn(ctx)
 }
@@ -122,6 +129,8 @@ func (r *Router) Backend(ctx context.Context) (*GraphClient, error) {
 //   - AuthState=true  → cloud (built lazily on first auth-true call).
 //   - AuthState=false → local (when non-nil).
 //   - Neither         → ErrNoBackend.
+//
+// Routing consults ONLY the keychain auth state (set by `knowledge login`).
 //
 // pick must be called per-RPC; forwarders MUST NOT cache the *GraphClient
 // across calls or the mid-session login swap would not land.
@@ -246,11 +255,12 @@ func (r *Router) MetadataStats(
 }
 
 // ExportGraph is the per-call-routed EngineService.ExportGraph forwarder.
-// In the v1 flow, sync push explicitly routes through LocalGraphCaller()
-// (the bare local *GraphClient natively implements Exporter), so this
-// forwarder typically only fires when an unanticipated future caller
-// reaches ExportGraph via the routed GraphCaller(). Mirrors
-// (*GraphClient).ExportGraph (client.go:166) for completeness.
+// sync pull fetches its cloud bytes through THIS routed forwarder —
+// GraphCaller().ExportGraph routes cloud when logged in via r.pick — then
+// applies them locally via OverwriteGraph. sync push instead reads its local
+// source bytes through LocalGraphCaller() (the bare local *GraphClient natively
+// implements Exporter), bypassing this forwarder. Mirrors
+// (*GraphClient).ExportGraph (client.go) for completeness.
 func (r *Router) ExportGraph(
 	ctx context.Context,
 	req *knowledgev1.ExportGraphRequest,

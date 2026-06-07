@@ -123,10 +123,10 @@ func deleteRequest(plan *knowledgev1.MutationPlan, graph, language string) *know
 // pruneTypeAliases maps the user-facing prune `type` onto the concrete
 // kgtypes.NodeType. The client cannot import the cmd/knowledge-server package
 // (compile.go import-boundary), so it carries its own copy of this mapping.
-// Session is the only retention-eligible aggregate type.
-var pruneTypeAliases = map[string]kgtypes.NodeType{
-	"session": kgtypes.NodeSession,
-}
+// Currently empty: no node type is retention-eligible, so pruneSelection
+// returns ok=false for every type and the prune-by-age path falls through to
+// the legacy handler.
+var pruneTypeAliases = map[string]kgtypes.NodeType{}
 
 // ParsePruneDuration parses durations like "24h", "7d", "30m". The client cannot
 // import cmd/knowledge-server, so it carries its own copy of this parser. Exported

@@ -24,7 +24,6 @@ import (
 	"github.com/stretchr/testify/assert"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
-	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 )
 
 // thoughtTestDeps satisfies ClientDeps for dispatch-only tests. All
@@ -33,19 +32,20 @@ import (
 // unavailable" error, which the tests assert.
 type thoughtTestDeps struct{}
 
-func (thoughtTestDeps) GraphClient() *graphclient.GraphClient { return nil }
-func (thoughtTestDeps) Sink() collector.Sink                  { return nil }
-func (thoughtTestDeps) RootDir() string                       { return "" }
-func (thoughtTestDeps) WorkerRuntime() WorkerRuntimeAPI       { return nil }
-func (thoughtTestDeps) WorkerCRUD() WorkerCRUDAPI             { return nil }
-func (thoughtTestDeps) Embedder() embed.BinaryEmbedder        { return nil }
-func (thoughtTestDeps) BackendResolver() BackendResolver      { return nil }
-func (thoughtTestDeps) GraphCaller() GraphCaller              { return nil }
-func (thoughtTestDeps) LocalGraphCaller() GraphCaller         { return nil }
-func (thoughtTestDeps) RepoResolver() *RepoResolver           { return nil }
-func (thoughtTestDeps) SegmentManager() SegmentSearcher       { return nil }
-func (thoughtTestDeps) SegmentShipper() SegmentShipper        { return nil }
-func (thoughtTestDeps) PipelineScanner() PipelineScanner      { return nil }
+func (thoughtTestDeps) LocalLiveness() LocalLiveness     { return nil }
+func (thoughtTestDeps) Sink() collector.Sink             { return nil }
+func (thoughtTestDeps) RootDir() string                  { return "" }
+func (thoughtTestDeps) WorkerRuntime() WorkerRuntimeAPI  { return nil }
+func (thoughtTestDeps) WorkerCRUD() WorkerCRUDAPI        { return nil }
+func (thoughtTestDeps) GraphTypeCRUD() GraphTypeCRUDAPI  { return nil }
+func (thoughtTestDeps) Embedder() embed.BinaryEmbedder   { return nil }
+func (thoughtTestDeps) BackendResolver() BackendResolver { return nil }
+func (thoughtTestDeps) GraphCaller() GraphCaller         { return nil }
+func (thoughtTestDeps) LocalGraphCaller() GraphCaller    { return nil }
+func (thoughtTestDeps) RepoResolver() *RepoResolver      { return nil }
+func (thoughtTestDeps) SegmentManager() SegmentSearcher  { return nil }
+func (thoughtTestDeps) SegmentShipper() SegmentShipper   { return nil }
+func (thoughtTestDeps) PipelineScanner() PipelineScanner { return nil }
 
 // TestInterceptThoughts_NameFiltering pins that non-thoughts /
 // non-query tool calls fall through unchanged so the intercept chain's

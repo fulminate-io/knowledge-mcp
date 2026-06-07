@@ -30,6 +30,7 @@ type queryArgs struct {
 	Text              string            `json:"text"`
 	Queries           []string          `json:"queries"`
 	Type              string            `json:"type"`
+	Types             []string          `json:"types,omitempty"`
 	Status            string            `json:"status"`
 	PathPrefix        string            `json:"path_prefix"`
 	PathPrefixes      []string          `json:"path_prefixes"`

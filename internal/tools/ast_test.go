@@ -20,8 +20,6 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 
-	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
-
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
@@ -37,19 +35,20 @@ type astTestDeps struct {
 	resolver *RepoResolver
 }
 
-func (d astTestDeps) GraphClient() *graphclient.GraphClient { return nil }
-func (d astTestDeps) Sink() collector.Sink                  { return nil }
-func (d astTestDeps) RootDir() string                       { return d.rootDir }
-func (d astTestDeps) WorkerRuntime() WorkerRuntimeAPI       { return nil }
-func (d astTestDeps) WorkerCRUD() WorkerCRUDAPI             { return nil }
-func (d astTestDeps) Embedder() embed.BinaryEmbedder        { return nil }
-func (d astTestDeps) BackendResolver() BackendResolver      { return nil }
-func (d astTestDeps) GraphCaller() GraphCaller              { return nil }
-func (d astTestDeps) LocalGraphCaller() GraphCaller         { return nil }
-func (d astTestDeps) RepoResolver() *RepoResolver           { return d.resolver }
-func (d astTestDeps) SegmentManager() SegmentSearcher       { return nil }
-func (d astTestDeps) SegmentShipper() SegmentShipper        { return nil }
-func (d astTestDeps) PipelineScanner() PipelineScanner      { return nil }
+func (d astTestDeps) LocalLiveness() LocalLiveness     { return nil }
+func (d astTestDeps) Sink() collector.Sink             { return nil }
+func (d astTestDeps) RootDir() string                  { return d.rootDir }
+func (d astTestDeps) WorkerRuntime() WorkerRuntimeAPI  { return nil }
+func (d astTestDeps) WorkerCRUD() WorkerCRUDAPI        { return nil }
+func (d astTestDeps) GraphTypeCRUD() GraphTypeCRUDAPI  { return nil }
+func (d astTestDeps) Embedder() embed.BinaryEmbedder   { return nil }
+func (d astTestDeps) BackendResolver() BackendResolver { return nil }
+func (d astTestDeps) GraphCaller() GraphCaller         { return nil }
+func (d astTestDeps) LocalGraphCaller() GraphCaller    { return nil }
+func (d astTestDeps) RepoResolver() *RepoResolver      { return d.resolver }
+func (d astTestDeps) SegmentManager() SegmentSearcher  { return nil }
+func (d astTestDeps) SegmentShipper() SegmentShipper   { return nil }
+func (d astTestDeps) PipelineScanner() PipelineScanner { return nil }
 
 // astFixtureRepo writes a single Go file with N function declarations under
 // t.TempDir() and returns the directory. The fixture mirrors the prior

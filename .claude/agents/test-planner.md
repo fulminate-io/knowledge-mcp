@@ -24,7 +24,7 @@ You do NOT execute tests (that's tester) and do NOT make architectural decisions
 
 Unified graph for research (query, traverse, search) + test plan creation (create_test_plan, assemble).
 
-19 tools (14 first-class + 5 generic). First-class: think, charge, recall, create_plan, create_research, create_test_plan, what_next, search, file_symbols, help, assemble, workflow, execution. Generic: query, traverse, mutate, delete, manage.
+The knowledge-graph MCP tool surface: generic primitives (query, traverse, mutate, delete, manage) plus first-class tools like thoughts, search, file_symbols, assemble, help and the create_* batch creators.
 
 **Dream worker** outputs searchable via `recall` and `query`.
 

@@ -151,7 +151,6 @@ var specializedRawClientPackages = []string{
 	"thought",
 	"workercrud",
 	"linker",
-	"prune",
 	"pipeline",
 	"topology",
 }

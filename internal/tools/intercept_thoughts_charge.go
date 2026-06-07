@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 
@@ -206,19 +207,23 @@ func resolveCrossGraphID(ctx context.Context, gc GraphCaller, ex render.Executor
 	return id
 }
 
-// truncateAtWordCreate truncates s to at most maxLen characters at a word
-// boundary. Verbatim from the server-side truncateAtWordCreate
+// truncateAtWordCreate truncates s to at most maxLen RUNES at a word
+// boundary, never splitting a multibyte UTF-8 sequence (so the result is
+// always valid UTF-8). Adapted from the server-side truncateAtWordCreate
 // (tools_mutate_create_thought.go:170) — the charge/think composers need the
 // SAME SymbolName the server produced; the client cannot import the server-side
 // package (import boundary), so this is the design-locked transitional
-// duplication (cf. canonicalEdgeCasing).
+// duplication (cf. canonicalEdgeCasing). Made rune-correct here: maxLen counts
+// runes, not bytes, and the word-boundary cut operates on the rune-bounded
+// prefix.
 func truncateAtWordCreate(s string, maxLen int) string {
-	if len(s) <= maxLen {
+	if utf8.RuneCountInString(s) <= maxLen {
 		return s
 	}
-	idx := strings.LastIndex(s[:maxLen], " ")
+	prefix := string([]rune(s)[:maxLen])
+	idx := strings.LastIndex(prefix, " ")
 	if idx <= 0 {
-		return s[:maxLen]
+		return prefix
 	}
-	return s[:idx]
+	return prefix[:idx]
 }

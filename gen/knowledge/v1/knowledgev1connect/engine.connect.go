@@ -50,6 +50,9 @@ const (
 	// EngineServiceExportGraphProcedure is the fully-qualified name of the EngineService's ExportGraph
 	// RPC.
 	EngineServiceExportGraphProcedure = "/knowledge.v1.EngineService/ExportGraph"
+	// EngineServiceOverwriteGraphProcedure is the fully-qualified name of the EngineService's
+	// OverwriteGraph RPC.
+	EngineServiceOverwriteGraphProcedure = "/knowledge.v1.EngineService/OverwriteGraph"
 )
 
 // EngineServiceClient is a client for the knowledge.v1.EngineService service.
@@ -82,15 +85,27 @@ type EngineServiceClient interface {
 	// (graph_type, graph_name) with overlay-suffix base-name splitting, so it keeps
 	// its native arg shape.
 	PipelineScan(context.Context, *connect.Request[v1.PipelineScanRequest]) (*connect.Response[v1.PipelineScanResponse], error)
-	// ExportGraph is the OSS-only bulk-graph-export read: it serializes the target
-	// graph's full byte image via store.SerializeGraph (pkg/store/graph_migrate_api.go)
-	// and returns the bytes, so the client can fetch the serialized OSS graph and
-	// push it to Fulminate Cloud. It mirrors the Stats read shape exactly
-	// (resolveTargetDB(target) → serialize → return a single bytes carrier) and
-	// reuses the GraphSelector envelope for graph/name routing. The cloud Postgres
-	// backend need not implement it — sync only ever invokes this against the OSS
+	// ExportGraph is the bulk-graph-export read serving BOTH build flavors: it
+	// serializes the target graph's full byte image and returns the bytes. It
+	// mirrors the Stats read shape exactly (resolveTargetDB(target) → serialize →
+	// return a single bytes carrier) and reuses the GraphSelector envelope for
+	// graph/name routing. It is the read half of sync push (local → cloud) AND the
+	// cloud-fetch half of sync pull (cloud → local). The cloud Postgres backend
+	// DOES serve it: the server-side serialize seam is build-tag-paired so the
+	// internal build serializes a per-account backend, the OSS build the local
 	// file-backed graph.
 	ExportGraph(context.Context, *connect.Request[v1.ExportGraphRequest]) (*connect.Response[v1.ExportGraphResponse], error)
+	// OverwriteGraph is the LOCAL-ONLY mutating inverse of ExportGraph: it fully
+	// replaces the (graph_type, name) local graph with the supplied byte image via
+	// store.OverwriteFromBytes (build-complete-before-destroy, creates-if-absent,
+	// flushes the .bin to disk). It is the apply half of sync pull — the client
+	// fetches cloud bytes via ExportGraph (routed cloud when logged in) and applies
+	// them locally through this RPC. It is reachable ONLY via the local graph
+	// caller: the routed graph caller has no OverwriteGraph forwarder, so a cloud
+	// route to it cannot resolve. It uses a FLAT (graph_type, name) shape rather
+	// than the GraphSelector envelope (mirroring PipelineScan) because the local
+	// apply resolves a flat gt/name pair directly.
+	OverwriteGraph(context.Context, *connect.Request[v1.OverwriteGraphRequest]) (*connect.Response[v1.OverwriteGraphResponse], error)
 }
 
 // NewEngineServiceClient constructs a client for the knowledge.v1.EngineService service. By
@@ -140,17 +155,24 @@ func NewEngineServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(engineServiceMethods.ByName("ExportGraph")),
 			connect.WithClientOptions(opts...),
 		),
+		overwriteGraph: connect.NewClient[v1.OverwriteGraphRequest, v1.OverwriteGraphResponse](
+			httpClient,
+			baseURL+EngineServiceOverwriteGraphProcedure,
+			connect.WithSchema(engineServiceMethods.ByName("OverwriteGraph")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
 // engineServiceClient implements EngineServiceClient.
 type engineServiceClient struct {
-	execute       *connect.Client[v1.ExecuteRequest, v1.ExecuteResponse]
-	stats         *connect.Client[v1.StatsRequest, v1.StatsResponse]
-	metadataStats *connect.Client[v1.MetadataStatsRequest, v1.MetadataStatsResponse]
-	index         *connect.Client[v1.IndexRequest, v1.IndexResponse]
-	pipelineScan  *connect.Client[v1.PipelineScanRequest, v1.PipelineScanResponse]
-	exportGraph   *connect.Client[v1.ExportGraphRequest, v1.ExportGraphResponse]
+	execute        *connect.Client[v1.ExecuteRequest, v1.ExecuteResponse]
+	stats          *connect.Client[v1.StatsRequest, v1.StatsResponse]
+	metadataStats  *connect.Client[v1.MetadataStatsRequest, v1.MetadataStatsResponse]
+	index          *connect.Client[v1.IndexRequest, v1.IndexResponse]
+	pipelineScan   *connect.Client[v1.PipelineScanRequest, v1.PipelineScanResponse]
+	exportGraph    *connect.Client[v1.ExportGraphRequest, v1.ExportGraphResponse]
+	overwriteGraph *connect.Client[v1.OverwriteGraphRequest, v1.OverwriteGraphResponse]
 }
 
 // Execute calls knowledge.v1.EngineService.Execute.
@@ -183,6 +205,11 @@ func (c *engineServiceClient) ExportGraph(ctx context.Context, req *connect.Requ
 	return c.exportGraph.CallUnary(ctx, req)
 }
 
+// OverwriteGraph calls knowledge.v1.EngineService.OverwriteGraph.
+func (c *engineServiceClient) OverwriteGraph(ctx context.Context, req *connect.Request[v1.OverwriteGraphRequest]) (*connect.Response[v1.OverwriteGraphResponse], error) {
+	return c.overwriteGraph.CallUnary(ctx, req)
+}
+
 // EngineServiceHandler is an implementation of the knowledge.v1.EngineService service.
 type EngineServiceHandler interface {
 	// Execute runs one declarative plan. The ExecuteRequest oneof case routes
@@ -213,15 +240,27 @@ type EngineServiceHandler interface {
 	// (graph_type, graph_name) with overlay-suffix base-name splitting, so it keeps
 	// its native arg shape.
 	PipelineScan(context.Context, *connect.Request[v1.PipelineScanRequest]) (*connect.Response[v1.PipelineScanResponse], error)
-	// ExportGraph is the OSS-only bulk-graph-export read: it serializes the target
-	// graph's full byte image via store.SerializeGraph (pkg/store/graph_migrate_api.go)
-	// and returns the bytes, so the client can fetch the serialized OSS graph and
-	// push it to Fulminate Cloud. It mirrors the Stats read shape exactly
-	// (resolveTargetDB(target) → serialize → return a single bytes carrier) and
-	// reuses the GraphSelector envelope for graph/name routing. The cloud Postgres
-	// backend need not implement it — sync only ever invokes this against the OSS
+	// ExportGraph is the bulk-graph-export read serving BOTH build flavors: it
+	// serializes the target graph's full byte image and returns the bytes. It
+	// mirrors the Stats read shape exactly (resolveTargetDB(target) → serialize →
+	// return a single bytes carrier) and reuses the GraphSelector envelope for
+	// graph/name routing. It is the read half of sync push (local → cloud) AND the
+	// cloud-fetch half of sync pull (cloud → local). The cloud Postgres backend
+	// DOES serve it: the server-side serialize seam is build-tag-paired so the
+	// internal build serializes a per-account backend, the OSS build the local
 	// file-backed graph.
 	ExportGraph(context.Context, *connect.Request[v1.ExportGraphRequest]) (*connect.Response[v1.ExportGraphResponse], error)
+	// OverwriteGraph is the LOCAL-ONLY mutating inverse of ExportGraph: it fully
+	// replaces the (graph_type, name) local graph with the supplied byte image via
+	// store.OverwriteFromBytes (build-complete-before-destroy, creates-if-absent,
+	// flushes the .bin to disk). It is the apply half of sync pull — the client
+	// fetches cloud bytes via ExportGraph (routed cloud when logged in) and applies
+	// them locally through this RPC. It is reachable ONLY via the local graph
+	// caller: the routed graph caller has no OverwriteGraph forwarder, so a cloud
+	// route to it cannot resolve. It uses a FLAT (graph_type, name) shape rather
+	// than the GraphSelector envelope (mirroring PipelineScan) because the local
+	// apply resolves a flat gt/name pair directly.
+	OverwriteGraph(context.Context, *connect.Request[v1.OverwriteGraphRequest]) (*connect.Response[v1.OverwriteGraphResponse], error)
 }
 
 // NewEngineServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -267,6 +306,12 @@ func NewEngineServiceHandler(svc EngineServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(engineServiceMethods.ByName("ExportGraph")),
 		connect.WithHandlerOptions(opts...),
 	)
+	engineServiceOverwriteGraphHandler := connect.NewUnaryHandler(
+		EngineServiceOverwriteGraphProcedure,
+		svc.OverwriteGraph,
+		connect.WithSchema(engineServiceMethods.ByName("OverwriteGraph")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/knowledge.v1.EngineService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case EngineServiceExecuteProcedure:
@@ -281,6 +326,8 @@ func NewEngineServiceHandler(svc EngineServiceHandler, opts ...connect.HandlerOp
 			engineServicePipelineScanHandler.ServeHTTP(w, r)
 		case EngineServiceExportGraphProcedure:
 			engineServiceExportGraphHandler.ServeHTTP(w, r)
+		case EngineServiceOverwriteGraphProcedure:
+			engineServiceOverwriteGraphHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -312,4 +359,8 @@ func (UnimplementedEngineServiceHandler) PipelineScan(context.Context, *connect.
 
 func (UnimplementedEngineServiceHandler) ExportGraph(context.Context, *connect.Request[v1.ExportGraphRequest]) (*connect.Response[v1.ExportGraphResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("knowledge.v1.EngineService.ExportGraph is not implemented"))
+}
+
+func (UnimplementedEngineServiceHandler) OverwriteGraph(context.Context, *connect.Request[v1.OverwriteGraphRequest]) (*connect.Response[v1.OverwriteGraphResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("knowledge.v1.EngineService.OverwriteGraph is not implemented"))
 }

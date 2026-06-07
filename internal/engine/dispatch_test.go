@@ -101,7 +101,7 @@ func TestDispatch_CreateValidationErrorRelayedFromServer(t *testing.T) {
 	// The server's invalidMutation surfaces across the wire as a
 	// CodeInvalidArgument carrying the "summary is required" message.
 	serverErr := connect.NewError(connect.CodeInvalidArgument,
-		errors.New("planToMutation: mutate(create): summary is required and must be non-empty (search-optimized one-line summary). See docs/node-type-llm-defaults.md for context"))
+		errors.New("planToMutation: mutate(create): summary is required and must be non-empty (search-optimized one-line summary)"))
 	out, err := Dispatch(context.Background(),
 		d.exec(nil, serverErr),
 		"mutate", json.RawMessage(`{"operation":"create","type":"document","name":"X"}`))
@@ -308,9 +308,12 @@ func TestDispatch_BareChargeCreate_NoSummaryGate(t *testing.T) {
 // BEFORE Compile and returns the SPECIFIC requires-text validation error naming
 // the mode — exec NEVER runs (bounded-constant: 0). This exercises the path
 // END-TO-END through Dispatch, not precheckQuery in isolation, so the suite catches
-// a future regression where the seam stops being invoked. (graph_reach + recent
-// were retired client-side — graph_reach surfaces the unknown-mode deny;
-// recent is served client-side and never reaches this engine path.)
+// a future regression where the seam stops being invoked. (graph_reach surfaces
+// the unknown-mode deny. recent is served entirely client-side and never reaches
+// this engine path — both arms: text-bearing recent via composeKnowledgeSearch and
+// bare empty-text recent via composeRecentBrowse, in intercept_search_knowledge.go.
+// recent is not in reducibleTextRequiredModes — only "text" is — so it is not in
+// this test's loop.)
 func TestDispatch_PrecheckQueryEmptyTextRequiresText(t *testing.T) {
 	for _, mode := range []string{"text"} {
 		t.Run(mode, func(t *testing.T) {

@@ -71,6 +71,12 @@ func (s *stubEngine) ExportGraph(
 	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("stubEngine: ExportGraph not scripted"))
 }
 
+func (s *stubEngine) OverwriteGraph(
+	context.Context, *connect.Request[knowledgev1.OverwriteGraphRequest],
+) (*connect.Response[knowledgev1.OverwriteGraphResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("stubEngine: OverwriteGraph not scripted"))
+}
+
 // newEngineHarness stands up an in-process h2c httptest.Server behind the
 // EngineService handler and returns a GraphClient (via NewGraphClientForURL)
 // pointed at it.

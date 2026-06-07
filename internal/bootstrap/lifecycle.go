@@ -277,10 +277,12 @@ type closer interface {
 	Close() error
 }
 
-// ensureServerReachable is the load-bearing entry point that
-// runMCPMode calls before constructing the MCP client. It probes the
-// graph server first; if the server is healthy, returns immediately.
-// If the server is unreachable, attempts to spawn one via
+// ensureServerReachable is the load-bearing entry point maybeSpawnLocalServer
+// calls — AFTER constructing the client and ONLY when the active backend is
+// local (logged-out). A logged-in user routes every op to cloud via Dispatch
+// and never needs a local server, so maybeSpawnLocalServer skips this call for
+// them. It probes the graph server first; if the server is healthy, returns
+// immediately. If the server is unreachable, attempts to spawn one via
 // findServerBinary + spawnServer, then waits up to 10s for the new
 // server to become healthy.
 //

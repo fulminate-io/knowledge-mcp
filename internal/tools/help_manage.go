@@ -24,6 +24,17 @@ const helpManage = `# manage — Server operations
   manage({ "operation": "clear_llm_failures", "graph": "code" })              — scope to one graph type
   manage({ "operation": "clear_llm_failures", "graph": "code", "name": "knowledge" })  — scope to one named graph
 
+  manage({ "operation": "pipeline_status" })                                  — report whether the summary/embed pipeline is RUNNING or PAUSED (+ reason + how to resume)
+  manage({ "operation": "pause_pipeline", "reason": "quota investigation" })  — manually latch BOTH axes paused (reason optional, surfaced by pipeline_status)
+  manage({ "operation": "resume_pipeline" })                                  — clear the paused latch and re-enable the workers
+
+  The pipeline AUTO-PAUSES after a full error round — every LLM call erroring
+  with zero successes across both axes (a quota/auth wall or repeated timeouts).
+  It latches PAUSED with NO self-heal: resume_pipeline is the ONLY exit, whether
+  the pause was an auto-trip or a manual pause_pipeline. The search staleness
+  footer ALSO surfaces the paused state loudly. Pause/resume state is global +
+  in-memory and is cleared on restart.
+
 ## Garbage collection
   manage({ "operation": "prune", "graph": "knowledge" })                       — hard-delete ALL tombstoned nodes from the knowledge graph
   manage({ "operation": "prune", "graph": "code", "name": "myrepo" })          — GC tombstoned code nodes for one repo
@@ -85,6 +96,7 @@ const helpManage = `# manage — Server operations
 
 ## Gotchas
   - clear_llm_failures clears markers but does NOT re-discover; the pipeline picks the node up on its next tick (default 250ms)
+  - a circuit-break trip (auto-pause) does NOT self-heal — diagnose the cause (quota/auth/timeouts), then run resume_pipeline to re-enable; pause state is lost on restart
   - log graphs are ephemeral; they live under ~/.knowledge/logs/ and are not LLM-summarized/embedded
   - prune requires an explicit graph (it never defaults to knowledge); without before it hard-deletes EVERY tombstoned node in that graph
 `

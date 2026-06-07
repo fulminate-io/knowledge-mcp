@@ -15,6 +15,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/cloud"
 	_ "github.com/fulminate-io/knowledge-mcp/internal/collector/pdf/pdfcollector" // side-effect: registers "pdf" with collector.Register
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/web"
+	"github.com/fulminate-io/knowledge-mcp/internal/externalcollector"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	clientlinker "github.com/fulminate-io/knowledge-mcp/internal/linker"
 	"github.com/fulminate-io/knowledge-mcp/internal/postpopulate"
@@ -60,6 +61,21 @@ func InterceptCollect(deps ClientDeps, params kgtools.CallToolParams) (bool, kgt
 	if a.Type == "logs" {
 		return true, runLogsCollect(deps, a)
 	}
+
+	// ctx is hoisted above the registered-type probe (which needs it for the
+	// ByName wire lookup) and the builtin cascade plumbing below both reuse it.
+	ctx := context.Background()
+
+	// Registered (non-builtin) graph type: a collect whose type misses the
+	// builtin collector registry but matches a registered GraphTypeDef runs the
+	// external collector plugin. This probe sits BEFORE the `a.ID == ""` guard
+	// so a params-only registered collector (key inside params, empty top-level
+	// id) is accepted; builtin types (collector.Lookup hit) fall through to the
+	// guard + collector.Collect unchanged.
+	if handled, res := tryRegisteredCollect(ctx, deps, a); handled {
+		return true, res
+	}
+
 	if a.ID == "" {
 		// Prefix with "collect <type>:" so the error shape matches the
 		// other collect-time errors (e.g. "collect logs: provider is
@@ -67,8 +83,6 @@ func InterceptCollect(deps ClientDeps, params kgtools.CallToolParams) (bool, kgt
 		// no clue which tool surfaced it.
 		return true, errorResult(fmt.Sprintf("collect %s: 'id' is required", a.Type))
 	}
-
-	ctx := context.Background()
 
 	// Cloud collectors use a cascade set for cross-provider dedup; the cicd path
 	// has no matching infrastructure.
@@ -156,6 +170,37 @@ func InterceptCollect(deps ClientDeps, params kgtools.CallToolParams) (bool, kgt
 		w.WakePipeline()
 	}
 	return true, textResult(fmt.Sprintf("Collected %s %s — streamed to server.", a.Type, a.ID))
+}
+
+// tryRegisteredCollect runs the external collector plugin for a registered
+// (non-builtin) graph type. It returns (false, _) when a.Type is a builtin
+// collector OR no registered GraphTypeDef matches it — the caller then continues
+// the builtin path unchanged. On a registered match it execs the binary via
+// externalcollector.RunExternal and ships the result through deps.Sink(),
+// returning (true, result) so the caller returns immediately.
+//
+// The registered branch does NOT enter cloud cascade dispatch (RunExternal ->
+// Sink().WriteResult is a direct ship), so it deliberately skips the CascadeSet /
+// ResolutionMap plumbing the builtin cloud path needs.
+func tryRegisteredCollect(ctx context.Context, deps ClientDeps, a collectArgs) (bool, kgtools.ToolResult) {
+	if _, lookErr := collector.Lookup(a.Type); lookErr == nil {
+		return false, kgtools.ToolResult{} // builtin type — caller owns it.
+	}
+	if deps.GraphTypeCRUD() == nil {
+		return false, kgtools.ToolResult{}
+	}
+	def, found, _ := deps.GraphTypeCRUD().ByName(ctx, a.Type)
+	if !found {
+		return false, kgtools.ToolResult{}
+	}
+	res, err := externalcollector.RunExternal(ctx, def, a.Params)
+	if err != nil {
+		return true, errorResult(err.Error())
+	}
+	if err := deps.Sink().WriteResult(ctx, a.Type, res); err != nil {
+		return true, errorResult(err.Error())
+	}
+	return true, textResult(fmt.Sprintf("Collected %s — streamed to server.", a.Type))
 }
 
 // pipelineWaker is the OPTIONAL deps capability the collect interceptor uses to
@@ -282,6 +327,13 @@ type collectArgs struct {
 	Type  string `json:"type"`
 	ID    string `json:"id"`
 	Force bool   `json:"force"`
+
+	// Params is the generic param passthrough for a registered (non-builtin)
+	// graph-type collector: the registered external binary carries all of its
+	// domain params inside this single object, validated against the collector's
+	// param_schema before exec. The built-in collectors (code/web/logs/pdf/
+	// cloud) ignore it and read their typed fields below instead.
+	Params map[string]any `json:"params,omitempty"`
 
 	// Web-specific. Threaded through ctx via web.WithCrawlOptions.
 	SeedURLs         []string `json:"seed_urls,omitempty"`

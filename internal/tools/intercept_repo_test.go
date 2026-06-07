@@ -17,8 +17,8 @@ import (
 
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
-	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
+	"github.com/fulminate-io/knowledge-mcp/internal/session"
 )
 
 // repoTestDeps satisfies ClientDeps for the InjectRepoIfCodeGraph tests.
@@ -33,13 +33,14 @@ type repoTestDeps struct {
 	gc       GraphCaller
 }
 
-func (d *repoTestDeps) GraphClient() *graphclient.GraphClient { return nil }
-func (d *repoTestDeps) Sink() collector.Sink                  { return nil }
-func (d *repoTestDeps) RootDir() string                       { return d.rootDir }
-func (d *repoTestDeps) WorkerRuntime() WorkerRuntimeAPI       { return nil }
-func (d *repoTestDeps) WorkerCRUD() WorkerCRUDAPI             { return nil }
-func (d *repoTestDeps) Embedder() embed.BinaryEmbedder        { return nil }
-func (d *repoTestDeps) BackendResolver() BackendResolver      { return nil }
+func (d *repoTestDeps) LocalLiveness() LocalLiveness     { return nil }
+func (d *repoTestDeps) Sink() collector.Sink             { return nil }
+func (d *repoTestDeps) RootDir() string                  { return d.rootDir }
+func (d *repoTestDeps) WorkerRuntime() WorkerRuntimeAPI  { return nil }
+func (d *repoTestDeps) WorkerCRUD() WorkerCRUDAPI        { return nil }
+func (d *repoTestDeps) GraphTypeCRUD() GraphTypeCRUDAPI  { return nil }
+func (d *repoTestDeps) Embedder() embed.BinaryEmbedder   { return nil }
+func (d *repoTestDeps) BackendResolver() BackendResolver { return nil }
 func (d *repoTestDeps) GraphCaller() GraphCaller {
 	if d.gcCount != nil {
 		atomic.AddInt32(d.gcCount, 1)
@@ -255,6 +256,46 @@ func TestInjectRepoIfCodeGraph_MissingBranch_NonGitCwd_ErrorsBeforeRPC(t *testin
 	assert.True(t, res.IsError)
 	assert.Contains(t, res.Content[0].Text, "branch is required")
 	assert.Equal(t, int32(0), atomic.LoadInt32(&gcCount), "GraphCaller must not be invoked on missing-branch error")
+}
+
+func TestInjectRepoIfCodeGraph_PerSessionWorkspaceCwd_OverridesRootDir(t *testing.T) {
+	// Two concurrent sessions from DIFFERENT repos: each carries its own
+	// workspace cwd on ctx (session.ContextWithWorkspaceCwd). The resolver
+	// knows both graph names. deps.RootDir() points at repoA, but the session
+	// ctx for repoB MUST override it so repoB's query resolves to repoB — and
+	// vice versa. This is the core multi-session repo-routing invariant.
+	dirA := gitRepoFixture(t)
+	dirB := gitRepoFixture(t)
+	repoA := filepath.Base(dirA)
+	repoB := filepath.Base(dirB)
+
+	// RootDir = dirA (the stdio --root). The session ctx is what differentiates.
+	deps := &repoTestDeps{rootDir: dirA, resolver: buildResolver(t, repoA, repoB)}
+
+	ctxA := session.ContextWithWorkspaceCwd(context.Background(), dirA)
+	ctxB := session.ContextWithWorkspaceCwd(context.Background(), dirB)
+
+	outA, handledA, _ := InjectRepoIfCodeGraph(ctxA, deps, paramsFor("query", `{"graph":"code","text":"x"}`))
+	assert.False(t, handledA)
+	assert.Equal(t, repoA, callArgs(t, outA.Arguments)["repo"], "session A must resolve to repoA")
+
+	outB, handledB, _ := InjectRepoIfCodeGraph(ctxB, deps, paramsFor("query", `{"graph":"code","text":"x"}`))
+	assert.False(t, handledB)
+	assert.Equal(t, repoB, callArgs(t, outB.Arguments)["repo"], "session B must resolve to repoB even though RootDir is repoA")
+}
+
+func TestInjectRepoIfCodeGraph_NoWorkspaceCwd_FallsBackToRootDir(t *testing.T) {
+	// The stdio path carries no workspace cwd on ctx, so repo resolution must
+	// fall back to deps.RootDir() exactly as before B. (Criterion: stdio path
+	// unchanged.)
+	dir := gitRepoFixture(t)
+	repoName := filepath.Base(dir)
+	deps := &repoTestDeps{rootDir: dir, resolver: buildResolver(t, repoName)}
+	// context.Background() carries NO workspace cwd.
+	out, handled, _ := InjectRepoIfCodeGraph(context.Background(), deps,
+		paramsFor("query", `{"graph":"code","text":"x"}`))
+	assert.False(t, handled)
+	assert.Equal(t, repoName, callArgs(t, out.Arguments)["repo"], "no-cwd ctx must fall back to RootDir")
 }
 
 func TestInjectRepoIfCodeGraph_NonCodeGraphTool_PassesThrough(t *testing.T) {

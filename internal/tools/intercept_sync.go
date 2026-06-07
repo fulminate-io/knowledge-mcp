@@ -1,14 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// intercept_sync.go — client-side `sync` intercept, PUSH-ONLY. Sync runs
-// entirely client-side now: the handler fetches the serialized OSS graph bytes
-// from the server via the EngineService.ExportGraph read, then POSTs them to
-// Fulminate Cloud over the client's OAuth auth.Transport (PushGraph). The
-// serialize HALF lives server-side (connectAdapter.ExportGraph); the upload +
-// license gate live here on the client. Bidirectional pull/promote were dropped
-// by the decision — they return a clear push-only error. The keychain /
-// not-logged-in / transport-failure cases render the chat-visible
-// "run knowledge login" guidance verbatim (the legacy is_error shape).
+// intercept_sync.go — client-side `sync` intercept (push, pull, list). Sync runs
+// entirely client-side: it orchestrates two RPC seams.
+//   - push (local → cloud): fetch the serialized LOCAL graph bytes via the
+//     EngineService.ExportGraph read (off LocalGraphCaller), then POST them to
+//     Fulminate Cloud over the client's OAuth auth.Transport (PushGraph).
+//   - pull (cloud → local): fetch the authoritative CLOUD bytes via ExportGraph
+//     (off the login-routed GraphCaller), then FULLY OVERWRITE the local graph
+//     via the EngineService.OverwriteGraph apply (off LocalGraphCaller).
+//   - list: print the sync-eligibility table.
+//
+// The serialize/apply HALVES live server-side (connectAdapter.ExportGraph /
+// OverwriteGraph); the routing, upload, and license gate live here on the client.
+// promote was removed — it returns a clear error. The keychain / not-logged-in /
+// transport-failure cases render the chat-visible "run knowledge login" guidance
+// verbatim (the legacy is_error shape).
 
 package tools
 
@@ -35,6 +41,15 @@ type Exporter interface {
 	ExportGraph(ctx context.Context, req *knowledgev1.ExportGraphRequest) (*knowledgev1.ExportGraphResponse, error)
 }
 
+// Overwriter is the narrow OverwriteGraph-RPC seam the pull intercept drives to
+// apply fetched cloud bytes to the LOCAL graph. The production graphClientCaller
+// implements it; tests inject a recording fake. Mirrors Exporter — type-asserted
+// from the LOCAL GraphCaller (never the routed one) so the apply always lands
+// locally and the Call-only tools.GraphCaller interface stays unwidened.
+type Overwriter interface {
+	OverwriteGraph(ctx context.Context, req *knowledgev1.OverwriteGraphRequest) (*knowledgev1.OverwriteGraphResponse, error)
+}
+
 // syncTransportBuilder constructs the OAuth-backed sync Transport. It is a
 // package var (defaulting to buildSyncTransport) so the push path stays a thin
 // delegation to the Phase 2 builder while tests can inject an httptest-backed
@@ -42,19 +57,21 @@ type Exporter interface {
 var syncTransportBuilder = buildSyncTransport
 
 // syncArgs is the MCP JSON payload the client reads for a sync call. graph and
-// name may be empty (defaulted to knowledge/default). Sync is push-only —
-// operation must be "push" (or empty); "pull"/"promote" are rejected.
+// name may be empty (defaulted to knowledge/default). operation is one of
+// "push" (or empty), "pull", or "list"; "promote" is rejected.
 type syncArgs struct {
 	Operation string `json:"operation"`
 	Graph     string `json:"graph"`
 	Name      string `json:"name"`
 }
 
-// InterceptSync claims the `sync` tool and runs the client-side push: it fetches
-// the serialized graph bytes via the ExportGraph RPC, then uploads them to
-// Fulminate Cloud over the OAuth Transport. Returns (false, _) for any other
-// tool so the chain falls through. pull/promote return a push-only error; the
-// not-logged-in / transport-failure cases render the actionable login guidance.
+// InterceptSync claims the `sync` tool and routes to the push, pull, or list
+// arm: push fetches the local graph bytes via ExportGraph and uploads them to
+// Fulminate Cloud; pull fetches the cloud bytes via ExportGraph and applies them
+// to the local graph via OverwriteGraph; list prints the eligibility table.
+// Returns (false, _) for any other tool so the chain falls through. promote
+// returns an error; the not-logged-in / transport-failure cases render the
+// actionable login guidance.
 func InterceptSync(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	if params.Name != "sync" {
 		return false, kgtools.ToolResult{}
@@ -71,12 +88,6 @@ func InterceptSync(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtool
 		return true, handleSyncList(deps)
 	}
 
-	// Push-only: pull/promote were dropped by the decision.
-	if a.Operation != "" && a.Operation != "push" {
-		return true, errorResult(fmt.Sprintf(
-			"sync: %q is not supported — sync is push/list only (pull/promote were removed)", a.Operation))
-	}
-
 	graph := a.Graph
 	if graph == "" {
 		graph = string(kgtypes.GraphKnowledge)
@@ -84,6 +95,19 @@ func InterceptSync(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtool
 	name := a.Name
 	if name == "" {
 		name = "default"
+	}
+
+	// pull: fetch the authoritative cloud copy and FULLY OVERWRITE the local
+	// graph with it. Cloud fetch routes through the login-aware GraphCaller; the
+	// apply lands on the LOCAL graph via the Overwriter seam.
+	if a.Operation == "pull" {
+		return true, handlePull(deps, graph, name)
+	}
+
+	// promote was removed; only push/pull/list are supported.
+	if a.Operation != "" && a.Operation != "push" {
+		return true, errorResult(fmt.Sprintf(
+			"sync: %q is not supported — sync supports push, pull, list (promote was removed)", a.Operation))
 	}
 
 	exp, err := exporterSeam(deps)
@@ -97,6 +121,58 @@ func InterceptSync(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtool
 	}
 
 	return true, pushGraph(context.Background(), exp, transport, graph, name)
+}
+
+// handlePull wires the two seams the pull arm needs — the CLOUD Exporter (the
+// login-routed GraphCaller, which fetches the authoritative cloud bytes) and the
+// LOCAL Overwriter (the OverwriteGraph apply target) — and drives pullGraph.
+// Each seam error surfaces cleanly: a cloud caller that is nil/not-logged-in
+// fails at the ExportGraph call inside pullGraph; a missing local server fails at
+// overwriterSeam (pull requires a local server because its destination is the
+// local .bin).
+func handlePull(deps ClientDeps, graph, name string) kgtools.ToolResult {
+	exp, ok := deps.GraphCaller().(Exporter)
+	if !ok {
+		return errorResult("sync pull: graph caller is not ExportGraph-capable")
+	}
+	ov, err := overwriterSeam(deps)
+	if err != nil {
+		return errorResult("sync pull: " + err.Error())
+	}
+	return pullGraph(context.Background(), ov, exp, graph, name)
+}
+
+// pullGraph fetches the serialized (graph, name) bytes from the cloud via the
+// routed ExportGraph RPC (GraphCaller routes cloud when logged in via
+// Router.pick), then applies them to the LOCAL graph via the OverwriteGraph RPC
+// (full overwrite). It is the inverse of pushGraph: push reads local + writes
+// cloud; pull reads cloud + writes local. Not-logged-in surfaces from the cloud
+// ExportGraph call with caller-actionable login guidance.
+func pullGraph(
+	ctx context.Context,
+	ov Overwriter,
+	exp Exporter,
+	graph, name string,
+) kgtools.ToolResult {
+	resp, err := exp.ExportGraph(ctx, &knowledgev1.ExportGraphRequest{
+		Target: manageGraphSelector(graph, name),
+	})
+	if err != nil {
+		return errorResult(wrapPullErr(graph, name, err))
+	}
+	body := resp.GetGraphBytes()
+
+	ovResp, err := ov.OverwriteGraph(ctx, &knowledgev1.OverwriteGraphRequest{
+		GraphType:  graph,
+		Name:       name,
+		GraphBytes: body,
+	})
+	if err != nil {
+		return errorResult(fmt.Sprintf("sync pull: apply %s/%s: %v", graph, name, err))
+	}
+
+	return textResult(fmt.Sprintf("pulled %s/%s (%d bytes; %d nodes, %d edges)",
+		graph, name, len(body), ovResp.GetNodes(), ovResp.GetEdges()))
 }
 
 // pushGraph fetches the serialized (graph, name) bytes via the ExportGraph RPC
@@ -148,6 +224,24 @@ func exporterSeam(deps ClientDeps) (Exporter, error) {
 	return exp, nil
 }
 
+// overwriterSeam upgrades deps.LocalGraphCaller() to the Overwriter seam, or
+// returns a typed error so the missing seam is loud (degraded headless mode).
+// Sync pull's destination is the LOCAL .bin, so the apply must ALWAYS be local —
+// the routing-aware GraphCaller would be wrong here (it has no OverwriteGraph
+// forwarder anyway). Mirrors exporterSeam in shape: same nil-guard, type-assert,
+// degraded-mode wording.
+func overwriterSeam(deps ClientDeps) (Overwriter, error) {
+	gc := deps.LocalGraphCaller()
+	if gc == nil {
+		return nil, fmt.Errorf("local graph caller unavailable — no local server is wired (cloud-first user without `knowledge install`)")
+	}
+	ov, ok := gc.(Overwriter)
+	if !ok {
+		return nil, fmt.Errorf("sync requires an OverwriteGraph-capable graph client")
+	}
+	return ov, nil
+}
+
 // wrapPushErr produces a caller-actionable message for common auth failure modes
 // on top of the underlying transport error. 401 means the refresh flow could not
 // re-auth; 403 usually means the OAuth session lacks the `sync` scope.
@@ -170,4 +264,27 @@ func wrapPushErr(graph, name string, err error) string {
 		}
 	}
 	return fmt.Sprintf("sync push %s/%s: %v", graph, name, err)
+}
+
+// wrapPullErr produces a caller-actionable message for the cloud-fetch failure
+// modes of sync pull, mirroring wrapPushErr. A nil cloud caller or a not-logged-in
+// session surfaces as login guidance; 401/403 map to refresh/scope guidance;
+// other errors surface verbatim. Pull fetches from the cloud over the routed
+// ExportGraph, so the not-logged-in case is the common one.
+func wrapPullErr(graph, name string, err error) string {
+	if errors.Is(err, auth.ErrNotFound) {
+		return fmt.Sprintf("sync pull %s/%s: not logged in — run 'knowledge login' to authenticate",
+			graph, name)
+	}
+	if se, ok := errors.AsType[*auth.SyncHTTPError](err); ok {
+		switch se.StatusCode {
+		case http.StatusUnauthorized:
+			return fmt.Sprintf("sync pull %s/%s: authentication failed — run 'knowledge login' to refresh credentials (HTTP 401)",
+				graph, name)
+		case http.StatusForbidden:
+			return fmt.Sprintf("sync pull %s/%s: server rejected request — your login may lack the 'sync' scope (HTTP 403)",
+				graph, name)
+		}
+	}
+	return fmt.Sprintf("sync pull %s/%s: %v", graph, name, err)
 }

@@ -126,6 +126,14 @@ Decisions surfacing during implementation = upstream artifacts inadequate; route
     regression. Fix it in-phase or surface the blocker. Do not delete tests to
     make the suite green — substantive completion is the criterion, not literal pass.
 
+    Updating comments is part of the change, NOT optional cleanup. When your edit
+    changes what code does, how it routes, what it consumes or returns, or which
+    invariant holds, fix every comment and docstring the edit makes wrong in the
+    SAME step — especially comments that list consumers, describe a routing/fallback
+    path, or name a return shape. A stale or misleading comment is as bad as
+    incorrect test logic: both assert something false the next reader trusts. A
+    touched file whose comments still describe the old behavior is a FAILED step.
+
     If you run out of context, capture precise resumption state (what's done,
     what's pending, exact file state) so a successor agent picks up cleanly. Do
     not self-truncate by pausing "to be safe."
@@ -139,6 +147,7 @@ Decisions surfacing during implementation = upstream artifacts inadequate; route
     - Scope estimation pauses
     - Test deletion for green-suite
     - Silent substitution
+    - Stale comments left behind after a behavioral edit
   </mandatory-prompt-block>
 
   <single-phase-template>
@@ -153,7 +162,7 @@ Decisions surfacing during implementation = upstream artifacts inadequate; route
   <whole-plan-template>
     Agent(
       subagent_type: "implementer",
-      prompt: "&lt;EXECUTION DIRECTIVE block&gt;\n\nImplement plan &lt;plan_id&gt; end-to-end. Use what_next to find the next step; follow each phase to completion. Stop only on blocking exceptions or completion of all phases.",
+      prompt: "&lt;EXECUTION DIRECTIVE block&gt;\n\nImplement plan &lt;plan_id&gt; end-to-end. Use assemble / query(mode:plan_tree) to find the next step; follow each phase to completion. Stop only on blocking exceptions or completion of all phases.",
       description: "Implement: &lt;plan name&gt;",
       run_in_background: true
     )
@@ -226,6 +235,10 @@ Decisions surfacing during implementation = upstream artifacts inadequate; route
     <pattern id="orphaned-stub">
       Implementer left server stubs returning interceptRequired with no client claimant.
       Re-spawn directive: "the construction half is missing — add the client intercepts that claim the calls before the stubs are reached."
+    </pattern>
+    <pattern id="stale-comments-left">
+      Implementer changed behavior but left comments/docstrings describing the old behavior (consumer lists, routing/fallback paths, return shapes, invariants).
+      Re-spawn directive: "the code is right but the comments now lie — sweep every touched file and update each comment the change falsified; a stale comment is as bad as wrong test logic."
     </pattern>
   </implementer-specific-drift-patterns>
 

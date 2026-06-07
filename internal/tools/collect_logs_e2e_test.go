@@ -19,7 +19,6 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/remote"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
-	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	logwire "github.com/fulminate-io/knowledge-mcp/internal/logwire"
 )
@@ -29,21 +28,23 @@ import (
 // called.
 type fakeDeps struct {
 	sink collector.Sink
+	crud GraphTypeCRUDAPI // optional: registered-type dispatch tests inject a stub
 }
 
-func (d *fakeDeps) GraphClient() *graphclient.GraphClient { return nil }
-func (d *fakeDeps) Sink() collector.Sink                  { return d.sink }
-func (d *fakeDeps) RootDir() string                       { return "" }
-func (d *fakeDeps) WorkerRuntime() WorkerRuntimeAPI       { return nil }
-func (d *fakeDeps) WorkerCRUD() WorkerCRUDAPI             { return nil }
-func (d *fakeDeps) Embedder() embed.BinaryEmbedder        { return nil }
-func (d *fakeDeps) BackendResolver() BackendResolver      { return nil }
-func (d *fakeDeps) GraphCaller() GraphCaller              { return nil }
-func (d *fakeDeps) LocalGraphCaller() GraphCaller         { return nil }
-func (d *fakeDeps) RepoResolver() *RepoResolver           { return nil }
-func (d *fakeDeps) SegmentManager() SegmentSearcher       { return nil }
-func (d *fakeDeps) SegmentShipper() SegmentShipper        { return nil }
-func (d *fakeDeps) PipelineScanner() PipelineScanner      { return nil }
+func (d *fakeDeps) LocalLiveness() LocalLiveness     { return nil }
+func (d *fakeDeps) Sink() collector.Sink             { return d.sink }
+func (d *fakeDeps) RootDir() string                  { return "" }
+func (d *fakeDeps) WorkerRuntime() WorkerRuntimeAPI  { return nil }
+func (d *fakeDeps) WorkerCRUD() WorkerCRUDAPI        { return nil }
+func (d *fakeDeps) GraphTypeCRUD() GraphTypeCRUDAPI  { return d.crud }
+func (d *fakeDeps) Embedder() embed.BinaryEmbedder   { return nil }
+func (d *fakeDeps) BackendResolver() BackendResolver { return nil }
+func (d *fakeDeps) GraphCaller() GraphCaller         { return nil }
+func (d *fakeDeps) LocalGraphCaller() GraphCaller    { return nil }
+func (d *fakeDeps) RepoResolver() *RepoResolver      { return nil }
+func (d *fakeDeps) SegmentManager() SegmentSearcher  { return nil }
+func (d *fakeDeps) SegmentShipper() SegmentShipper   { return nil }
+func (d *fakeDeps) PipelineScanner() PipelineScanner { return nil }
 
 // stubLogsProvider returns a fixed entry batch plus zero sources. Each
 // test registers it under a unique name to avoid colliding with other

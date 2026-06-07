@@ -59,17 +59,3 @@ model    = "gpt-4o-mini"
 # anthropic_api_key = "..."
 # openai_api_key    = "..."
 # gemini_api_key    = "..."
-
-# Optional. Client-side auto-prune policy applied at MCP startup. The
-# stdio client (bin/knowledge) issues delete(older_than:..., type:...)
-# RPCs against the local knowledge-server when these fields are set;
-# missing section or empty field = no prune for that type (strictly
-# opt-in, no built-in defaults). Unlike [credentials] there is NO
-# env-var fallback — retention policy is a deliberate per-machine
-# choice that belongs in this file.
-#
-# Durations accept the same shapes as the delete tool: '24h', '7d',
-# '30m', etc.
-#
-# [retention]
-# sessions = "7d"

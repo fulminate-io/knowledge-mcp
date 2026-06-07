@@ -69,6 +69,15 @@ func TestBuildArgs_ToolsEmitMCPConfig(t *testing.T) {
 	if !strings.Contains(mcpJSON, `"mcpServers"`) || !strings.Contains(mcpJSON, `"knowledge"`) {
 		t.Errorf("--mcp-config JSON missing mcpServers.knowledge; got: %s", mcpJSON)
 	}
+	// The knowledge server is the daemon's loopback streamable-HTTP
+	// endpoint (http transport + /mcp url), NOT a spawned stdio child:
+	// no command/args, a `"type":"http"` entry pointing at the daemon.
+	if !strings.Contains(mcpJSON, `"type":"http"`) || !strings.Contains(mcpJSON, `/mcp"`) {
+		t.Errorf("--mcp-config knowledge entry not the http-transport daemon url shape; got: %s", mcpJSON)
+	}
+	if strings.Contains(mcpJSON, `"command"`) || strings.Contains(mcpJSON, `"args"`) {
+		t.Errorf("--mcp-config still spawns a stdio child (command/args present); got: %s", mcpJSON)
+	}
 	allowedIdx := -1
 	for i, a := range args {
 		if a == "--allowedTools" {
@@ -270,7 +279,9 @@ func TestParseResponse_StructuredOutputPreferred(t *testing.T) {
 }
 
 // TestParseResponse_IsErrorIsClassified verifies that envelope-level
-// errors surface as LLMError with appropriate transient classification.
+// errors surface as a terminal LLMError. A rate-limit envelope now
+// classifies TERMINAL — CLI quota blowups carry no Retry-After, so retrying
+// re-runs the same node forever; the node is shed and a human resumes.
 func TestParseResponse_IsErrorIsClassified(t *testing.T) {
 	body := []byte(`{"is_error":true,"result":"HTTP 429 rate limit exceeded"}`)
 	_, err := parseResponse(body, "haiku")
@@ -284,8 +295,8 @@ func TestParseResponse_IsErrorIsClassified(t *testing.T) {
 	if llmErr.Reason != "cli_response_error" {
 		t.Fatalf("Reason = %q, want %q", llmErr.Reason, "cli_response_error")
 	}
-	if !llmErr.Transient {
-		t.Fatalf("rate-limit envelope must be transient")
+	if llmErr.Transient {
+		t.Fatalf("rate-limit envelope must classify terminal")
 	}
 }
 

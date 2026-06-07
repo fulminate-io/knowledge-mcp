@@ -8,9 +8,25 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/backends"
 )
+
+// truncateRunes returns s truncated to at most maxRunes RUNES (not bytes),
+// never splitting a multibyte UTF-8 sequence. A sub-cap input is returned
+// unchanged. Mirrors the rune-counting idiom at validate.go:48
+// (utf8.RuneCountInString) — kept LOCAL to the linear adapter rather than
+// importing a shared helper, per the no-cross-boundary-shared-package rule.
+// Used to cap Linear's `description` field (≤255 chars) without producing
+// invalid UTF-8 when the source summary contains multibyte characters.
+func truncateRunes(s string, maxRunes int) string {
+	if utf8.RuneCountInString(s) <= maxRunes {
+		return s
+	}
+	runes := []rune(s)
+	return string(runes[:maxRunes])
+}
 
 // Compile-time assertion: *Backend satisfies backends.Backend. Placed here
 // in backend_write.go (rather than backend.go) because backend.go was

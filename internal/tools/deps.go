@@ -19,7 +19,6 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/backends"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
-	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
@@ -104,11 +103,27 @@ type GraphCaller interface {
 	Execute(ctx context.Context, req *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error)
 }
 
+// LocalLiveness is the liveness-only view of the LOCAL graph server the
+// tools layer is allowed to reach. It deliberately exposes ONLY Healthy +
+// Status — NO Execute / CRUD carrier — so no tools-layer code can pull a
+// graph-write off the local accessor and bypass the login-aware Router. The
+// local server is sync-only when logged in; every read/write routes via
+// GraphCaller() (the Router). *graphclient.GraphClient satisfies this
+// (Healthy + Status); the narrowing is what makes "grab the bare local
+// client and Execute on it" fail to compile.
+type LocalLiveness interface {
+	Healthy() bool
+	Status() (map[string]any, error)
+}
+
 // ClientDeps is the narrow surface the cmd/knowledge main package exposes
 // to this internal/tools package. Keep it minimal — every new accessor
 // widens the coupling. The accessors cover:
 //
-//   - GraphClient: liveness check + Status RPC for handleServerStatus.
+//   - LocalLiveness: liveness check + Status RPC for handleServerStatus.
+//     A liveness-only view (Healthy + Status, no Execute) of the LOCAL
+//     server — manage(status) is the local-daemon-only path; the
+//     logged-in path reports cloud Stats via CloudStatusInfo instead.
 //   - Sink: collector.Sink used by collect to stream chunks to the
 //     server's IngestService.
 //   - RootDir: project root directory the user passed via --root. The
@@ -143,13 +158,14 @@ type GraphCaller interface {
 //     *graphclient.Router that dispatches per-call to local or cloud
 //     based on live auth state.
 //   - LocalGraphCaller: returns a GraphCaller that ALWAYS targets the
-//     local server (bypasses routing). Sync push uses this accessor — it
-//     always reads + pushes the local graph regardless of login state.
-//     (The post-collect linker + postpopulate tail now follow
-//     the data via the login-routed GraphCaller instead, since the collect
-//     sink writes to cloud when logged in.) Returns nil only when no local
-//     server is wired (cloud-first user); those callers' existing nil-guards
-//     surface the degraded-mode error.
+//     local server (bypasses routing). Sync push uses it to read + push the
+//     local graph, and sync pull uses it to apply fetched cloud bytes to the
+//     local graph via OverwriteGraph — both are local-only regardless of login
+//     state. (The post-collect linker + postpopulate tail follow the data via
+//     the login-routed GraphCaller instead, since the collect sink writes to
+//     cloud when logged in.) Returns nil only when no local server is wired
+//     (cloud-first user); those callers' existing nil-guards surface the
+//     degraded-mode error.
 //   - RepoResolver: client-side cwd → code-graph-name resolver used by
 //     the InjectRepoIfCodeGraph intercept. One resolver
 //     per MCP session; sync.Once inside the resolver gates the
@@ -160,11 +176,12 @@ type GraphCaller interface {
 //     server-side handlers already reject empty repo: with a typed
 //     error after Phase 1.
 type ClientDeps interface {
-	GraphClient() *graphclient.GraphClient
+	LocalLiveness() LocalLiveness
 	Sink() collector.Sink
 	RootDir() string
 	WorkerRuntime() WorkerRuntimeAPI
 	WorkerCRUD() WorkerCRUDAPI
+	GraphTypeCRUD() GraphTypeCRUDAPI
 	Embedder() embed.BinaryEmbedder
 	BackendResolver() BackendResolver
 	GraphCaller() GraphCaller

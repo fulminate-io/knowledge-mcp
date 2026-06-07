@@ -14,19 +14,18 @@ import (
 	"sync"
 	"time"
 
-	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 )
 
 // Runner is the dream-foundation control surface. It owns:
 //   - the Registry of Workers (graph-resident catalog)
 //   - the EventBus that fans tool events out to subscribed workers
-//   - the GraphClient used to invoke MCP tools loopback (in-process)
 //   - the GraphStorage path used to write per-worker logs
 //
-// One process holds at most one Runner; the server's constructServer
-// (Phase 5) wires it. Test harnesses construct Runners directly with
-// mock GraphClients pointing at httptest servers.
+// Worker MCP tool calls route through the injected Dispatch func (the
+// client intercept chain → engine.Dispatch), NOT a Runner-held graph
+// client. One process holds at most one Runner; bootstrap wires it. Test
+// harnesses construct Runners directly via NewRunner.
 type Runner struct {
 	// Registry loads graph-resident NodeWorker entries via the wire-
 	// loopback worker:list tool call.
@@ -40,10 +39,6 @@ type Runner struct {
 	// directory (typically ~/.knowledge/). Per-worker logs live under
 	// <GraphStorage>/workers/<name>.log.
 	GraphStorage string
-
-	// GraphClient is the in-process loopback handle every worker uses to
-	// dispatch its MCP tool calls.
-	GraphClient *graphclient.GraphClient
 
 	// Dispatch is the standard client tool-call path BuildAllowedTools routes
 	// every worker tool call through (intercept chain → engine.Dispatch) — the
@@ -114,11 +109,10 @@ type RunningInvocation struct {
 // call at use-time — constructing a Runner before the server has
 // finished standing up the listener is fine, the call resolves lazily
 // when triggered.
-func NewRunner(reg *Registry, bus *EventBus, client *graphclient.GraphClient, graphStorage string, dispatch DispatchFunc, catalog []kgtools.MCPTool) *Runner {
+func NewRunner(reg *Registry, bus *EventBus, graphStorage string, dispatch DispatchFunc, catalog []kgtools.MCPTool) *Runner {
 	return &Runner{
 		Registry:     reg,
 		Bus:          bus,
-		GraphClient:  client,
 		GraphStorage: graphStorage,
 		Dispatch:     dispatch,
 		Catalog:      catalog,

@@ -10,6 +10,7 @@ import (
 
 	"github.com/cloudwego/eino/schema"
 
+	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/llm"
 )
 
@@ -141,14 +142,14 @@ const systemPromptDelimiter = "\n\n----\n\n"
 //   - ReasoningEffort → -c model_reasoning_effort=<value>. Codex respects
 //     low/medium/high; an empty value falls through (drop, leaving codex
 //     default).
-//   - Tools → -c mcp_servers.knowledge.{command,args,enabled_tools} overrides.
+//   - Tools → -c mcp_servers.knowledge.{url,enabled_tools} overrides.
 //     codex has no inline MCP-config flag (claude-cli's --mcp-config), so the
-//     dream-worker tool surface is injected as config: a stdio MCP server
-//     "knowledge" pointing back at this binary (the child runs with the
-//     fork-bomb guard via llm.ChildKnowledgeArgs). enabled_tools is the
-//     bare-name allowlist (codex scopes it to the server id). See
-//     buildMCPOverrides. --ignore-user-config in baseArgs means ONLY this
-//     injected server loads — the codex equivalent of claude's
+//     dream-worker tool surface is injected as config: a streamable-HTTP MCP
+//     server "knowledge" whose url is the shared knowledge daemon's loopback
+//     /mcp endpoint (no spawned child — the daemon runs one shared runtime).
+//     enabled_tools is the bare-name allowlist (codex scopes it to the server
+//     id). See buildMCPOverrides. --ignore-user-config in baseArgs means ONLY
+//     this injected server loads — the codex equivalent of claude's
 //     --strict-mcp-config.
 func buildArgs(model llm.Model, messages []*schema.Message, options *llm.RequestOptions) ([]string, string, func(), error) {
 	system, user, err := translateMessages(options.SystemPrompt, messages)
@@ -219,31 +220,23 @@ func buildArgs(model llm.Model, messages []*schema.Message, options *llm.Request
 // the knowledge MCP server for a tool-using (dream-worker) Generate call.
 // codex has no inline MCP-config flag, so the server is injected as config:
 //
-//	mcp_servers.knowledge.command      = <this binary>
-//	mcp_servers.knowledge.args         = [<parent argv tail> + --no-worker-runtime]
+//	mcp_servers.knowledge.url           = <daemon loopback /mcp url>
 //	mcp_servers.knowledge.enabled_tools = [<bare tool names>]
 //
-// The child argv comes from llm.ChildKnowledgeArgs — the SOLE owner of the
-// fork-bomb guard, shared with claude-cli's buildMCPConfig. enabled_tools
-// carries BARE tool names (search, thoughts, …): codex scopes the allowlist
-// to the server id, unlike claude-cli's --allowedTools which needs the
-// mcp__knowledge__ qualifier.
+// The server is the shared `knowledge serve` daemon's loopback streamable-
+// HTTP endpoint (the same url editors register via `codex mcp add --url`),
+// NOT a per-call stdio child of this process — so no os.Executable / argv
+// inheritance / fork-bomb guard is needed here (the daemon runs a single
+// shared runtime). enabled_tools carries BARE tool names (search, thoughts,
+// …): codex scopes the allowlist to the server id, unlike claude-cli's
+// --allowedTools which needs the mcp__knowledge__ qualifier.
 //
 // Encoding: the `-c value` side is parsed as TOML. A JSON array of strings is
 // also a valid TOML array of strings (both use the same double-quote +
-// backslash escape set for ASCII paths/flags), so json.Marshal is the
-// encoder for both array values; %q quotes the command path as a TOML basic
-// string. Mirrors the json.Marshal approach claude-cli uses for its whole
-// --mcp-config blob.
+// backslash escape set for ASCII tool names), so json.Marshal is the encoder
+// for enabled_tools; %q quotes the url as a TOML basic string.
 func buildMCPOverrides(tools []*schema.ToolInfo) ([]string, error) {
-	self, err := os.Executable()
-	if err != nil {
-		return nil, &llm.LLMError{Transient: false, Reason: "config", Cause: fmt.Errorf("codex-cli: resolve self path: %w", err)}
-	}
-	argsJSON, err := json.Marshal(llm.ChildKnowledgeArgs(os.Args))
-	if err != nil {
-		return nil, &llm.LLMError{Transient: false, Reason: "config", Cause: fmt.Errorf("codex-cli: marshal mcp args: %w", err)}
-	}
+	url := fmt.Sprintf("http://127.0.0.1:%d/mcp", graphclient.DefaultMCPHTTPPort)
 	names := make([]string, 0, len(tools))
 	for _, t := range tools {
 		if t == nil || t.Name == "" {
@@ -256,8 +249,7 @@ func buildMCPOverrides(tools []*schema.ToolInfo) ([]string, error) {
 		return nil, &llm.LLMError{Transient: false, Reason: "config", Cause: fmt.Errorf("codex-cli: marshal enabled_tools: %w", err)}
 	}
 	return []string{
-		"-c", fmt.Sprintf("mcp_servers.knowledge.command=%q", self),
-		"-c", "mcp_servers.knowledge.args=" + string(argsJSON),
+		"-c", fmt.Sprintf("mcp_servers.knowledge.url=%q", url),
 		"-c", "mcp_servers.knowledge.enabled_tools=" + string(namesJSON),
 	}, nil
 }

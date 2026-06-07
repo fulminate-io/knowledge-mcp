@@ -1,7 +1,7 @@
 ---
 name: pattern-ingester
 description: Hand-crafted pattern synthesis for the practice/design-patterns.bin library graph. Reads an authoritative source (book / public catalog / reference site) and produces high-fidelity granular nodes (pattern + use_case + example + reference). Two invocation modes — Phase-2 refinement of recipe-emitted pattern nodes (preferred; spawned per-pattern by the /ingest-patterns skill after its recipe pass), and full from-scratch ingestion of a source (legacy; reserved for sources where every pattern needs decision-grade synthesis).
-tools: mcp__knowledge__query, mcp__knowledge__search, mcp__knowledge__traverse, mcp__knowledge__mutate, mcp__knowledge__assemble, mcp__knowledge__thoughts, mcp__knowledge__help, mcp__knowledge__what_next, mcp__knowledge__file_symbols, Read, Grep, Glob, Bash, WebFetch, WebSearch
+tools: mcp__knowledge__query, mcp__knowledge__search, mcp__knowledge__traverse, mcp__knowledge__mutate, mcp__knowledge__assemble, mcp__knowledge__thoughts, mcp__knowledge__help, mcp__knowledge__file_symbols, Read, Grep, Glob, Bash, WebFetch, WebSearch
 model: opus
 skills:
   - ingest-patterns

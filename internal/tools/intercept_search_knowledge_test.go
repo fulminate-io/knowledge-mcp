@@ -4,8 +4,10 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -117,4 +119,162 @@ func TestInterceptSearchKnowledge_ClientEngineWithoutEmbedder(t *testing.T) {
 	require.Empty(t, mgr.lastVec, "no embedder → BM25-only arm (empty query vector)")
 	require.False(t, dispatchedAServerSearch(handler.recordedReqs()), "knowledge arm must NOT dispatch a server search")
 	assert.Contains(t, engine.FirstTextContent(out), "BM25Hit")
+}
+
+// daysAgoNanos returns a unix-nanos timestamp `days` in the past — used to give
+// the canned browse nodes distinct UpdatedAt values for the recency-order asserts.
+func daysAgoNanos(days float64) int64 {
+	return time.Now().Add(-time.Duration(days*24) * time.Hour).UnixNano()
+}
+
+// recentJSONResult is the slice of the rendered JSON envelope the recent-browse
+// tests assert against: result order (recency) + count (limit honored).
+type recentJSONResult struct {
+	Total   int `json:"total"`
+	Results []struct {
+		ID   string `json:"id"`
+		Type string `json:"type"`
+	} `json:"results"`
+}
+
+// browseSelection returns the first recorded Execute's browse Selection — the
+// Match-empty / NodeTypes-scoped plan the recent browse issues. A nil return means
+// no Selection-bearing browse plan was recorded.
+func browseSelection(reqs []*knowledgev1.ExecuteRequest) *knowledgev1.Selection {
+	for _, r := range reqs {
+		if q := r.GetQuery(); q != nil && q.GetSelection() != nil {
+			return q.GetSelection()
+		}
+	}
+	return nil
+}
+
+// recordedBrowsePlan returns the first recorded Execute's QueryPlan (the browse).
+func recordedBrowsePlan(reqs []*knowledgev1.ExecuteRequest) *knowledgev1.QueryPlan {
+	for _, r := range reqs {
+		if q := r.GetQuery(); q != nil {
+			return q
+		}
+	}
+	return nil
+}
+
+// TestInterceptQueryKnowledgeSearch_BareRecentTemporalBrowse is the scope-A
+// regression guard: bare query(mode:recent) with EMPTY text returns the
+// most-recently-updated nodes via a Match-empty no-Limit GraphCaller browse —
+// honoring `limit` AFTER the recency sort, with NO server search dispatch and NO
+// Manager.Search call.
+//
+// Red-before-green note: steps 1-2 (the composeRecentBrowse branch) and this test
+// land in the same atomic ticket, so a literal pre-fix red run was impractical in
+// one pass; the assertions below are the green target proven against the landed fix.
+func TestInterceptQueryKnowledgeSearch_BareRecentTemporalBrowse(t *testing.T) {
+	var execHits atomic.Int64
+	// Canned nodes appended OLD→NEW (and the oldest last-but-one) so a pass-through
+	// that skipped the temporal sort would NOT already be in recency order.
+	gc, handler := newInterceptHarnessWithHandler(t, &execHits, cannedNodesResp(
+		&knowledgev1.Node{Id: "old", Type: "finding", SymbolName: "OldNode", UpdatedAt: daysAgoNanos(100)},
+		&knowledgev1.Node{Id: "mid", Type: "finding", SymbolName: "MidNode", UpdatedAt: daysAgoNanos(10)},
+		&knowledgev1.Node{Id: "new", Type: "finding", SymbolName: "NewNode", UpdatedAt: daysAgoNanos(1)},
+	))
+	mgr := &fakeSegmentSearcher{}
+	deps := &interceptDeps{gc: gc, segMgr: mgr}
+
+	handled, out := InterceptQueryKnowledgeSearch(deps, queryParams(t, map[string]any{
+		"mode": "recent", "limit": 2, "format": "json",
+	}))
+	require.True(t, handled, "bare recent is claimed + served client-side")
+	require.False(t, out.IsError, "bare recent renders cleanly: %v", engine.FirstTextContent(out))
+
+	// Manager.Search must NOT run — this is a pure browse, not a text search.
+	require.Equal(t, int64(0), mgr.calls.Load(), "bare recent does NOT drive Manager.Search")
+	// No server RETURN_MODE_SEARCH dispatch — the browse is a Selection plan.
+	require.False(t, dispatchedAServerSearch(handler.recordedReqs()), "bare recent must NOT dispatch a server search")
+
+	// The recorded Execute is a Match-empty (all-types) browse carrying NO Limit —
+	// truncation is client-side AFTER the sort.
+	sel := browseSelection(handler.recordedReqs())
+	require.NotNil(t, sel, "recorded a Selection-bearing browse plan")
+	require.Empty(t, sel.GetNodeTypes(), "bare recent (no types) is a Match-empty all-types browse")
+	plan := recordedBrowsePlan(handler.recordedReqs())
+	require.NotNil(t, plan)
+	require.Zero(t, plan.GetLimit(), "browse carries NO Limit — truncation is client-side after the sort")
+
+	// Rendered JSON: recency order (new before mid) and limit=2 honored (old omitted).
+	var got recentJSONResult
+	require.NoError(t, json.Unmarshal([]byte(engine.FirstTextContent(out)), &got))
+	require.Equal(t, 2, got.Total, "limit=2 honored after the recency sort")
+	require.Len(t, got.Results, 2)
+	assert.Equal(t, "new", got.Results[0].ID, "most-recently-updated first")
+	assert.Equal(t, "mid", got.Results[1].ID, "second-most-recent next")
+}
+
+// TestInterceptQueryKnowledgeSearch_TextBearingRecentUnchanged proves the
+// text-bearing recent path is UNCHANGED by the bare-recent branch: a recent query
+// WITH text still drives Manager.Search via composeKnowledgeSearch (mgr.calls==1)
+// and dispatches no server search.
+func TestInterceptQueryKnowledgeSearch_TextBearingRecentUnchanged(t *testing.T) {
+	var execHits, embedCalls atomic.Int64
+	gc, handler := newInterceptHarnessWithHandler(t, &execHits, cannedNodesResp(
+		&knowledgev1.Node{Id: "n1", Type: "finding", SymbolName: "TextRecentHit", UpdatedAt: daysAgoNanos(2)},
+	))
+	mgr := &fakeSegmentSearcher{hits: []searchengine.Hit{{ID: "n1", Score: 0.9}}}
+	deps := &interceptDeps{gc: gc, emb: stubEmbedder{calls: &embedCalls}, segMgr: mgr}
+
+	handled, out := InterceptQueryKnowledgeSearch(deps, queryParams(t, map[string]any{
+		"mode": "recent", "text": "foo",
+	}))
+	require.True(t, handled)
+	require.False(t, out.IsError, "text-bearing recent renders cleanly: %v", engine.FirstTextContent(out))
+	require.Equal(t, int64(1), mgr.calls.Load(), "text-bearing recent STILL drives Manager.Search")
+	require.False(t, dispatchedAServerSearch(handler.recordedReqs()), "text-bearing recent must NOT dispatch a server search")
+	assert.Contains(t, engine.FirstTextContent(out), "TextRecentHit")
+}
+
+// TestInterceptQueryKnowledgeSearch_RecentWithTypesFilter is the scope-B regression
+// guard: recent + types pushes the type set to the FETCH (the recorded browse
+// plan's Selection.NodeTypes equals the requested set), carries NO Limit on the
+// plan, renders in recency order honoring limit, drives no Manager.Search, and
+// dispatches no server search. The canned resp contains ONLY the requested types
+// (the fake handler cannot itself apply the server-side postFilterBrowseNodeTypes),
+// so the rendered recency order is unambiguous; the real fetch-filter proof is the
+// recorded Selection.NodeTypes assertion.
+func TestInterceptQueryKnowledgeSearch_RecentWithTypesFilter(t *testing.T) {
+	var execHits atomic.Int64
+	// Mixed-recency project/ticket nodes, appended so neither type nor recency is
+	// already sorted (project older than ticket; project appended first).
+	gc, handler := newInterceptHarnessWithHandler(t, &execHits, cannedNodesResp(
+		&knowledgev1.Node{Id: "p1", Type: "project", SymbolName: "Proj", UpdatedAt: daysAgoNanos(2)},
+		&knowledgev1.Node{Id: "t1", Type: "ticket", SymbolName: "Tick", UpdatedAt: daysAgoNanos(1)},
+	))
+	mgr := &fakeSegmentSearcher{}
+	deps := &interceptDeps{gc: gc, segMgr: mgr}
+
+	handled, out := InterceptQueryKnowledgeSearch(deps, queryParams(t, map[string]any{
+		"mode": "recent", "types": []string{"project", "ticket"}, "limit": 5, "format": "json",
+	}))
+	require.True(t, handled)
+	require.False(t, out.IsError, "recent+types renders cleanly: %v", engine.FirstTextContent(out))
+
+	// The fetch-level type-set filter: the recorded browse plan carries the
+	// requested NodeTypes set (proof the filter is pushed to the FETCH, not applied
+	// client-side over a fetch-all).
+	sel := browseSelection(handler.recordedReqs())
+	require.NotNil(t, sel, "recorded a Selection-bearing browse plan")
+	assert.Equal(t, []string{"project", "ticket"}, sel.GetNodeTypes(), "type set pushed to the fetch")
+
+	plan := recordedBrowsePlan(handler.recordedReqs())
+	require.NotNil(t, plan)
+	require.Zero(t, plan.GetLimit(), "browse carries NO Limit — truncation is client-side after the sort")
+
+	require.Equal(t, int64(0), mgr.calls.Load(), "recent+types does NOT drive Manager.Search")
+	require.False(t, dispatchedAServerSearch(handler.recordedReqs()), "recent+types must NOT dispatch a server search")
+
+	// Rendered JSON: recency order — ticket t1 (newer) before project p1 (older).
+	var got recentJSONResult
+	require.NoError(t, json.Unmarshal([]byte(engine.FirstTextContent(out)), &got))
+	require.Equal(t, 2, got.Total)
+	require.Len(t, got.Results, 2)
+	assert.Equal(t, "t1", got.Results[0].ID, "newer ticket ranks first")
+	assert.Equal(t, "p1", got.Results[1].ID, "older project ranks second")
 }

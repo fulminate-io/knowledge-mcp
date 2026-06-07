@@ -228,13 +228,12 @@ func interceptSearchCode(ctx context.Context, deps ClientDeps, exec engine.Execu
 }
 
 // searchReducibleArgs is the slice of the search payload the completeness arms
-// read: the graph instance keys (language/account) + the query text. Mirrors the
+// read: the graph instance key (account) + the query text. Mirrors the
 // engine.searchArgs fields compileSearch consumes for these graphs.
 type searchReducibleArgs struct {
-	Query    string   `json:"query"`
-	Queries  []string `json:"queries"`
-	Language string   `json:"language"`
-	Account  string   `json:"account"`
+	Query   string   `json:"query"`
+	Queries []string `json:"queries"`
+	Account string   `json:"account"`
 }
 
 // searchReducibleQueryText picks the search text from the query/queries fields.
@@ -268,13 +267,11 @@ func interceptSearchReducibleGraph(ctx context.Context, deps ClientDeps, graph s
 
 	switch graph {
 	case "practice":
-		// language:"all" or omitted → scatter-gather fan-out across every loaded
-		// practice graph (kills the silent-0 that mgr.Search(GraphPractice,"all",…)
-		// would otherwise return); a specific language → targeted single-graph search.
-		if a.Language == "" || a.Language == "all" {
-			return true, composePracticeSearchFanOut(ctx, deps, deps.SegmentManager(), query)
-		}
-		return true, composePracticeSearchClient(ctx, deps, deps.SegmentManager(), a.Language, query)
+		// The search tool ALWAYS fans across every loaded practice graph: a
+		// scatter-gather over all languages (kills the silent-0 that
+		// mgr.Search(GraphPractice,"all",…) would otherwise return). Any passed
+		// language is ignored on the SEARCH path — there is no single-graph branch.
+		return true, composePracticeSearchFanOut(ctx, deps, deps.SegmentManager(), query)
 	case "cloud":
 		return true, composeResourceSearchClient(ctx, deps, deps.SegmentManager(), cloudGraphKind, a.Account, query)
 	case "cicd":

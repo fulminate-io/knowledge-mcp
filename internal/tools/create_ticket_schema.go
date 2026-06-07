@@ -19,7 +19,7 @@ func CreateTicketToolDef() kgtools.MCPTool {
 				"name":        {Type: "string", MaxLength: 255, Description: "Ticket name or title (synced to the Linear issue title, which caps at 255 chars)."},
 				"project_id":  {Type: "string", Description: "Parent project node ID (required — links ticket to project)"},
 				"description": {Type: "string", Description: "Ticket description"},
-				"summary":     {Type: "string", MaxLength: 500, Description: "Required search-optimized one-line summary, max 500 chars (handler enforces). See docs/node-type-llm-defaults.md for why this is required on embed-only-knowledge types."},
+				"summary":     {Type: "string", MaxLength: 500, Description: "Required search-optimized one-line summary, max 500 chars (handler enforces)."},
 				"external_id": {Type: "string", Description: "External tracker ID (e.g. JIRA-123, GH-456)"},
 				"priority":    {Type: "string", Description: "Ticket priority (e.g. high, medium, low)"},
 				"labels":      {Type: "string", Description: "Comma-separated labels or tags"},

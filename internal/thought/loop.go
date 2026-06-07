@@ -10,7 +10,6 @@ import (
 	"time"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
-	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/topology/graph"
 )
 
@@ -23,12 +22,13 @@ const PropagationInterval = time.Hour
 // PropagationLoop is the client-side "subconscious" goroutine that
 // periodically propagates charge influence through the thought graph
 // and re-detects clusters. Constructed with NewPropagationLoop and
-// owned by cmd/knowledge/mcp.go's runMCPMode (Phase 6 wiring).
+// owned by the cmd/knowledge serve daemon bootstrap (wirePropagationRuntime).
 //
-// Carries a *graphclient.GraphClient directly per the T1 lock — no
-// Store-shaped wrapper. Every read/write is a wire call through gc.
+// Carries an Execute-only thought.Caller — no Store-shaped wrapper. The
+// serve daemon passes the login-aware Router, so every read/write is a wire
+// call that routes cloud-when-logged-in / local otherwise.
 type PropagationLoop struct {
-	gc *graphclient.GraphClient
+	gc Caller
 
 	// interval is the per-tick cadence. Defaults to PropagationInterval
 	// (one hour) in production. Tests override via newPropagationLoopForTest
@@ -58,7 +58,7 @@ type PropagationLoop struct {
 // NewPropagationLoop creates a PropagationLoop backed by the given
 // GraphClient. Single argument — no Store. wirePropagationRuntime in
 // cmd/knowledge/mcp.go owns construction.
-func NewPropagationLoop(gc *graphclient.GraphClient) *PropagationLoop {
+func NewPropagationLoop(gc Caller) *PropagationLoop {
 	p := &PropagationLoop{
 		gc:       gc,
 		interval: PropagationInterval,

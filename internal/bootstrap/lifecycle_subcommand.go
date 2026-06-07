@@ -252,8 +252,8 @@ func runStatus(args []string) error {
 //     avoid parsing the full list output.
 //
 // When neither source claims the running PID, returns "external
-// (auto-spawn or manual)" — e.g. the stdio client's auto-spawn from
-// runMCPMode, or a `bin/knowledge-server` invoked directly.
+// (auto-spawn or manual)" — e.g. the serve daemon's local auto-spawn
+// (maybeSpawnLocalServer), or a `bin/knowledge-server` invoked directly.
 func identifyServerOwner(runningPID int64) (owner, warning string) {
 	makePID := readMakePIDFile()
 	brewPID := launchctlPID()

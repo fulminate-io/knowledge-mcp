@@ -42,36 +42,38 @@ import (
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/config"
 	"github.com/fulminate-io/knowledge-mcp/internal/dream"
-	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/tools"
 	"github.com/fulminate-io/knowledge-mcp/internal/workercrud"
 )
 
 // buildRuntime is the single-source construction path for the client-side
-// dream.Runner. Both wireWorkerRuntime (MCP stdio path) and Phase I's
+// dream.Runner. Both wireWorkerRuntime (the serve daemon path) and Phase I's
 // runWorkerSubcommand (CLI `knowledge worker run` path) call through here
 // so the construction order — config load → bus → registry(client) →
 // runner(reg, bus, client, graphStorage) — stays in one place.
 //
-// gc is an existing *graphclient.GraphClient. wireWorkerRuntime passes the
-// stdio client's own GraphClient so a single TCP connection serves both
-// the MCP wire and the dream Runner's worker-list loopback. The CLI
-// subcommand path runs BEFORE the MCP client is built and so constructs
-// its own GraphClient — the signature stays uniform across both callers.
+// gc is the login-aware Execute seam (runtimeLister). wireWorkerRuntime
+// passes the stdio client's c.router so the dream Registry's worker-list
+// loopback routes per-call to cloud when logged in (no local server) and
+// to the local graph otherwise. The CLI subcommand path runs BEFORE the
+// MCP client is built and so constructs its own local *graphclient.GraphClient
+// (which also satisfies runtimeLister) — the signature stays uniform across
+// both callers.
 //
 // graphStorage is the absolute path to ~/.knowledge/ (already
 // tilde-expanded by main()); the Runner writes per-worker logs under
 // <graphStorage>/workers/<name>.log.
 //
-// The Registry takes the GraphClient directly and resolves workers via a
+// The Registry takes the Execute seam directly and resolves workers via a
 // wire-loopback query.
 // runInterceptChain dispatches an incoming MCP tool call through the same
-// client-side interceptor chain runMCPMode wires for upstream traffic. Used
-// in two places:
+// client-side interceptor chain the serve daemon wires for upstream traffic.
+// Used in two places:
 //
-//  1. runMCPMode (mcp.go) hands it directly to NewMCPClient as
+//  1. The serve daemon (daemon.go) hands it to NewMCPClient as
 //     InterceptManageOp — every upstream MCP tool call from the host
 //     traverses the chain.
 //  2. buildRuntime composes it via dispatchForRunner into a dream.DispatchFunc
@@ -83,9 +85,14 @@ import (
 // Returning (false, _) means no interceptor handled the call; the caller
 // then falls back to forwarding to the server (NewMCPClient does this for
 // MCP traffic; mcpTool.InvokableRun does it for worker traffic).
-func (c *client) runInterceptChain(params kgtools.CallToolParams) (kgtools.CallToolParams, bool, kgtools.ToolResult) {
+//
+// ctx carries the per-session workspace cwd (HTTP transport) so
+// InjectRepoIfCodeGraph resolves code-graph calls against the session's repo;
+// the stdio transport passes context.Background(). It is threaded into the
+// cwd-dependent intercepts (InjectRepoIfCodeGraph, InterceptTopology).
+func (c *client) runInterceptChain(ctx context.Context, params kgtools.CallToolParams) (kgtools.CallToolParams, bool, kgtools.ToolResult) {
 	start := time.Now()
-	rewritten, handled, res := c.runInterceptChainInner(params)
+	rewritten, handled, res := c.runInterceptChainInner(ctx, params)
 	if handled {
 		// Always-on latency footer for client-side intercepts so LLM
 		// callers see consistent timing alongside server-side tool
@@ -98,8 +105,9 @@ func (c *client) runInterceptChain(params kgtools.CallToolParams) (kgtools.CallT
 }
 
 // runInterceptChainInner is the actual chain — kept separate so the outer
-// function can wrap with the timing footer in one place.
-func (c *client) runInterceptChainInner(params kgtools.CallToolParams) (kgtools.CallToolParams, bool, kgtools.ToolResult) {
+// function can wrap with the timing footer in one place. ctx is threaded into
+// the cwd-dependent intercepts (InjectRepoIfCodeGraph, InterceptTopology).
+func (c *client) runInterceptChainInner(ctx context.Context, params kgtools.CallToolParams) (kgtools.CallToolParams, bool, kgtools.ToolResult) {
 	// Phase 4: rewrite-style intercept that fills repo: + branch:
 	// (and the staleness trio when staleness:true) on code-graph tool
 	// calls. Runs BEFORE InterceptSearch because the rewriter / embedder
@@ -112,7 +120,7 @@ func (c *client) runInterceptChainInner(params kgtools.CallToolParams) (kgtools.
 	// rewritten args — the rewritten params propagate to the caller so
 	// fall-through tool calls (file_symbols, list_branches, …) reach the
 	// server with the injected repo+branch.
-	rewritten, handled, res := tools.InjectRepoIfCodeGraph(context.Background(), c, params)
+	rewritten, handled, res := tools.InjectRepoIfCodeGraph(ctx, c, params)
 	if handled {
 		return params, true, res
 	}
@@ -137,7 +145,7 @@ func (c *client) runInterceptChainInner(params kgtools.CallToolParams) (kgtools.
 	// Phase 6: dead_code analyzer runs client-side because the
 	// RTA pipeline needs filesystem access to packages.Load. Other
 	// topology algorithms fall through to the server.
-	if handled, res := tools.InterceptTopology(context.Background(), c, params); handled {
+	if handled, res := tools.InterceptTopology(ctx, c, params); handled {
 		return params, true, res
 	}
 	if handled, res := tools.InterceptManage(c, params); handled {
@@ -176,14 +184,17 @@ func (c *client) runInterceptChainInner(params kgtools.CallToolParams) (kgtools.
 	if handled, res := tools.InterceptWorker(c, params); handled {
 		return params, true, res
 	}
+	if handled, res := tools.InterceptGraphType(c, params); handled {
+		return params, true, res
+	}
 	if handled, res := tools.InterceptCreateProject(c, params); handled {
 		return params, true, res
 	}
 	if handled, res := tools.InterceptCreateTicket(c, params); handled {
 		return params, true, res
 	}
-	// Cluster of project-domain create / record /
-	// what_next handlers relocated client-side. Each one returns
+	// Cluster of project-domain create / record / help
+	// handlers relocated client-side. Each one returns
 	// (false, _) for the wrong tool name so they no-op for unrelated
 	// calls. Extracted out of this chain to keep the runInterceptChainInner
 	// statement count under the lint cap.
@@ -302,7 +313,7 @@ func runQueryDomainIntercepts(c *client, params kgtools.CallToolParams) (bool, k
 
 // runProjectDomainIntercepts dispatches an MCP call across the
 // project-domain intercepts (create_plan / create_research /
-// create_test_plan / record_decision / what_next). Each intercept
+// create_test_plan / record_decision / help). Each intercept
 // returns (false, _) when params.Name doesn't match its tool — the
 // chain falls through with no extra work. Extracted from
 // runInterceptChainInner to satisfy the funlen lint cap; the dispatch
@@ -319,9 +330,6 @@ func runProjectDomainIntercepts(c *client, params kgtools.CallToolParams) (bool,
 		return true, res
 	}
 	if handled, res := tools.InterceptRecordDecision(c, params); handled {
-		return true, res
-	}
-	if handled, res := tools.InterceptWhatNext(c, params); handled {
 		return true, res
 	}
 	if handled, res := tools.InterceptHelp(c, params); handled {
@@ -370,7 +378,7 @@ func formatClientDuration(d time.Duration) string {
 // client tool path, so engineDispatch is the only passthrough.
 func (c *client) dispatchForRunner() dream.DispatchFunc {
 	return func(ctx context.Context, name string, args json.RawMessage) (kgtools.ToolResult, error) {
-		rewritten, handled, res := c.runInterceptChain(kgtools.CallToolParams{Name: name, Arguments: args})
+		rewritten, handled, res := c.runInterceptChain(ctx, kgtools.CallToolParams{Name: name, Arguments: args})
 		if handled {
 			return res, nil
 		}
@@ -378,7 +386,18 @@ func (c *client) dispatchForRunner() dream.DispatchFunc {
 	}
 }
 
-func buildRuntime(gc *graphclient.GraphClient, port int, graphStorage string, dispatch dream.DispatchFunc) (*dream.Runner, error) {
+// runtimeLister is the Execute-only seam buildRuntime takes so it can be
+// handed the login-aware *graphclient.Router (cloud when logged in, local
+// otherwise) rather than the bare local *graphclient.GraphClient. The
+// argument flows ONLY to the dream Registry's worker-list lister
+// (workercrud.New); the worker tool-dispatch path is wired separately via
+// c.dispatchForRunner. Mirrors thought.Caller — both *graphclient.GraphClient
+// and *graphclient.Router satisfy it structurally.
+type runtimeLister interface {
+	Execute(ctx context.Context, req *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error)
+}
+
+func buildRuntime(gc runtimeLister, port int, graphStorage string, dispatch dream.DispatchFunc) (*dream.Runner, error) {
 	cfgPath, err := defaultConfigPath()
 	if err != nil {
 		return nil, fmt.Errorf("resolve config path: %w", err)
@@ -408,20 +427,21 @@ func buildRuntime(gc *graphclient.GraphClient, port int, graphStorage string, di
 	// The MCP tool catalog is client-owned. The Runner carries it so
 	// BuildAllowedTools can filter the worker allowlist locally (and without
 	// dream importing tools — that would cycle, since tools imports dream).
-	runner := dream.NewRunner(reg, bus, gc, graphStorage, dispatch, tools.AllToolSchemas())
+	runner := dream.NewRunner(reg, bus, graphStorage, dispatch, tools.AllToolSchemas())
 	return runner, nil
 }
 
 // wireWorkerRuntime constructs the client-side dream.Runner and wires it
-// into the *client. It REUSES c.client (single TCP connection — no
-// duplicate GraphClient construction) and assigns the returned Runner to
+// into the *client. It hands buildRuntime the login-aware c.router so the
+// Registry's worker-list loopback routes to cloud when logged in (no local
+// server) and local otherwise, and assigns the returned Runner to
 // c.runtime. After construction it calls Runner.Start(ctx) to install
 // triggers; per the file-level docstring this is mostly registry
 // validation in the client topology, so a Start failure is logged and
 // the runtime is still kept (manual triggers — the only invocation path
 // that matters today — work without Start).
 func wireWorkerRuntime(c *client, f Config) error {
-	runner, err := buildRuntime(c.local, f.Port, f.GraphStorage, c.dispatchForRunner())
+	runner, err := buildRuntime(c.router, f.Port, f.GraphStorage, c.dispatchForRunner())
 	if err != nil {
 		return err
 	}

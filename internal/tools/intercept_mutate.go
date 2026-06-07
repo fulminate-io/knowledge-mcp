@@ -88,9 +88,10 @@ type findingReference struct {
 // InterceptMutate intercepts mutate(update) and mutate(delete) on
 // knowledge-graph nodes. For backend-backed nodes (those carrying a
 // `backend` metadata key) it runs the Linear write-through INLINE
-// BEFORE forwarding the local-only portion of the mutate to the
-// server. Local-only nodes fall through to the server's existing
-// local-only path.
+// BEFORE forwarding the knowledge-graph portion of the mutate through the
+// login-routed GraphCaller (cloud when logged in). Non-backend nodes are
+// not claimed here — they return (false,_) and route through the
+// cloud-aware engine dispatch.
 //
 // Returns (false, _) when:
 //   - The tool isn't `mutate`.
@@ -127,14 +128,16 @@ func InterceptMutate(deps ClientDeps, params kgtools.CallToolParams) (bool, kgto
 	// it returns (false,_) for everything it cannot fully resolve — link_graph,
 	// both-endpoints-in-knowledge bare links (its FROM-first early skip runs
 	// BEFORE any listForeignGraphs Call, so a knowledge↔knowledge link costs zero
-	// extra RPCs and stays on the server bare-link path), and unresolvable
+	// extra RPCs and returns (false,_) for the cloud-aware engine dispatch to
+	// handle as a generic bare link), and unresolvable
 	// endpoints. Checked BEFORE the knowledge-graph guard below because a
 	// cross-graph link may carry graph:practice / a foreign endpoint.
 	if a.Operation == "link" {
 		if handled, res := handleClientCrossGraphLink(ctx, deps, a); handled {
 			return true, res
 		}
-		// Not claimed → fall through to the legacy server bare-link / proxy path.
+		// Not claimed → route through the cloud-aware engine dispatch
+		// (generic MUTATION_KIND_LINK Execute) / proxy path.
 	}
 
 	// practice/transformers create/update/delete: with no
@@ -209,7 +212,8 @@ func handleInterceptMutateUpdate(
 		return true, errorResult(err.Error())
 	}
 	if a.ID == "" {
-		// Local-only multi-id batch — fall through to server.
+		// Non-backend multi-id batch — return (false,_) to route through the
+		// cloud-aware engine dispatch.
 		return false, kgtools.ToolResult{}
 	}
 
@@ -224,7 +228,8 @@ func handleInterceptMutateUpdate(
 		if a.Status == kgtypes.StatusCompleted && node != nil && isClientRollupContainer(kgtypes.NodeType(node.Type)) {
 			return true, handleClientUpdateStatusRollup(ctx, gc, a, node)
 		}
-		// Local-only non-rollup update — fall through.
+		// Non-backend non-rollup update — return (false,_) to route through
+		// the cloud-aware engine dispatch.
 		return false, kgtools.ToolResult{}
 	}
 	backend := deps.BackendResolver().ByName(backendName)
@@ -262,10 +267,11 @@ func handleInterceptMutateUpdate(
 	}
 
 	// Build the forwarded args from a FRESH map (NOT in-place mutation
-	// of caller's metadata). stripBackendPrivateMetadata is pure. The local
-	// forward runs AFTER the backend dispatch.Update above, routed through the
-	// Execute carrier seam (by-id UPDATE) — the ordering + the desync message
-	// below are preserved byte-for-byte.
+	// of caller's metadata). stripBackendPrivateMetadata is pure. The
+	// knowledge-graph forward runs AFTER the backend dispatch.Update above,
+	// routed through the login-aware Execute carrier seam (by-id UPDATE, cloud
+	// when logged in) — the ordering + the desync message below are preserved
+	// byte-for-byte.
 	forwardedArgs := marshalForwardedMutateUpdateArgs(a, backendName)
 	if _, err := executeMutate(ctx, gc, forwardedArgs); err != nil {
 		return true, errorResult(fmt.Sprintf(
@@ -306,7 +312,7 @@ func handleInterceptMutateDelete(
 			return true, errorResult("mutate(delete): " + lookupErr.Error())
 		}
 		if backendName == "" {
-			// Local-only id — skip; the final forward will tombstone it.
+			// Non-backend id — skip; the final routed forward will tombstone it.
 			continue
 		}
 		backend := deps.BackendResolver().ByName(backendName)
@@ -336,9 +342,10 @@ func handleInterceptMutateDelete(
 		archived = append(archived, id)
 	}
 
-	// Forward the local tombstone — the server tombstones every id regardless
-	// of Linear's involvement — routed through the Execute carrier seam (by-id
-	// DELETE). The engine DELETE arm selects via Selection.Ids, so the forward
+	// Forward the tombstone — the knowledge graph tombstones every id regardless
+	// of Linear's involvement — routed through the login-aware Execute carrier
+	// seam (by-id DELETE, cloud when logged in). The engine DELETE arm selects
+	// via Selection.Ids, so the forward
 	// carries the normalized PLURAL ids[] (a singular caller `id` was folded
 	// into ids above); the caller's graph/format are preserved. Reuses
 	// params.Arguments-equivalent intent without the singular-id wire shape the

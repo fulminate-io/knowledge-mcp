@@ -15,7 +15,6 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
 	"github.com/fulminate-io/knowledge-mcp/internal/enginetest"
-	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 )
 
@@ -26,19 +25,20 @@ type fakeAssembleDeps struct {
 	gc GraphCaller
 }
 
-func (d *fakeAssembleDeps) GraphClient() *graphclient.GraphClient { return nil }
-func (d *fakeAssembleDeps) Sink() collector.Sink                  { return nil }
-func (d *fakeAssembleDeps) RootDir() string                       { return "" }
-func (d *fakeAssembleDeps) WorkerRuntime() WorkerRuntimeAPI       { return nil }
-func (d *fakeAssembleDeps) WorkerCRUD() WorkerCRUDAPI             { return nil }
-func (d *fakeAssembleDeps) Embedder() embed.BinaryEmbedder        { return nil }
-func (d *fakeAssembleDeps) BackendResolver() BackendResolver      { return nil }
-func (d *fakeAssembleDeps) GraphCaller() GraphCaller              { return d.gc }
-func (d *fakeAssembleDeps) LocalGraphCaller() GraphCaller         { return d.gc }
-func (d *fakeAssembleDeps) RepoResolver() *RepoResolver           { return nil }
-func (d *fakeAssembleDeps) SegmentManager() SegmentSearcher       { return nil }
-func (d *fakeAssembleDeps) SegmentShipper() SegmentShipper        { return nil }
-func (d *fakeAssembleDeps) PipelineScanner() PipelineScanner      { return nil }
+func (d *fakeAssembleDeps) LocalLiveness() LocalLiveness     { return nil }
+func (d *fakeAssembleDeps) Sink() collector.Sink             { return nil }
+func (d *fakeAssembleDeps) RootDir() string                  { return "" }
+func (d *fakeAssembleDeps) WorkerRuntime() WorkerRuntimeAPI  { return nil }
+func (d *fakeAssembleDeps) WorkerCRUD() WorkerCRUDAPI        { return nil }
+func (d *fakeAssembleDeps) GraphTypeCRUD() GraphTypeCRUDAPI  { return nil }
+func (d *fakeAssembleDeps) Embedder() embed.BinaryEmbedder   { return nil }
+func (d *fakeAssembleDeps) BackendResolver() BackendResolver { return nil }
+func (d *fakeAssembleDeps) GraphCaller() GraphCaller         { return d.gc }
+func (d *fakeAssembleDeps) LocalGraphCaller() GraphCaller    { return d.gc }
+func (d *fakeAssembleDeps) RepoResolver() *RepoResolver      { return nil }
+func (d *fakeAssembleDeps) SegmentManager() SegmentSearcher  { return nil }
+func (d *fakeAssembleDeps) SegmentShipper() SegmentShipper   { return nil }
+func (d *fakeAssembleDeps) PipelineScanner() PipelineScanner { return nil }
 
 // scriptGcAssemble is a tiny GraphCaller that answers query(id:)
 // calls with canned node JSON keyed by ID. Sufficient for the

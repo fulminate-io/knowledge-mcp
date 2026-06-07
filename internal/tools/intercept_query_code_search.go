@@ -5,6 +5,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"runtime"
 	"sort"
 	"strings"
@@ -215,13 +216,24 @@ func queryVecAt(queryVecs [][]byte, i int) []byte {
 }
 
 // appendStalenessFooter appends the code-index staleness footer for the
-// searched repo to a rendered result, when one is available. Degrades to the
-// body unchanged when no metadata is recorded.
+// searched repo PLUS a loud paused-pipeline line when the LLM pipeline is in
+// circuit-break, to a rendered result. The paused line is surfaced
+// UNCONDITIONALLY — even when no code-staleness metadata exists — because a
+// paused pipeline means search results are silently going stale and the
+// operator must see it regardless of any code footer. Degrades to the body
+// unchanged when neither a staleness footer nor a paused state applies.
 func appendStalenessFooter(ctx context.Context, deps ClientDeps, exec engine.ExecuteFn, repo string, res kgtools.ToolResult) kgtools.ToolResult {
 	if deps == nil {
 		return res
 	}
 	footer := codeStalenessFooter(ctx, exec, deps.RootDir(), repo)
+	if paused := pipelinePausedFooter(deps); paused != "" {
+		if footer == "" {
+			footer = paused
+		} else {
+			footer += "\n" + paused
+		}
+	}
 	if footer == "" {
 		return res
 	}
@@ -232,6 +244,25 @@ func appendStalenessFooter(ctx context.Context, deps ClientDeps, exec engine.Exe
 		}
 	}
 	return res
+}
+
+// pipelinePausedFooter returns the loud paused-pipeline footer line when the
+// LLM pipeline is latched paused (circuit-break or manual), or "" when running,
+// disabled, or the deps don't expose pipeline control (test fakes). The reason
+// is the breaker's own trip reason — which deliberately does not name quota/auth
+// exclusively, since repeated local timeouts also feed the zero-success window.
+func pipelinePausedFooter(deps ClientDeps) string {
+	pp, ok := deps.(pipelinePauser)
+	if !ok {
+		return ""
+	}
+	st, wired := pp.PipelineStatus()
+	if !wired || !st.Paused {
+		return ""
+	}
+	return fmt.Sprintf(
+		"pipelines PAUSED (circuit-break: %s) — run manage(operation:\"resume_pipeline\") to re-enable.",
+		st.Reason)
 }
 
 // composeCodeSearchSingleRepo runs one RETURN_MODE_SEARCH Execute per query

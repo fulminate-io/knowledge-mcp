@@ -6,7 +6,7 @@
 // it equals "worker", parses os.Args[2] as the sub-op (trigger | status)
 // then defers to a per-op flag set. Returns true when it handled the
 // invocation (caller exits immediately) and false when os.Args[1] is
-// not "worker" so the default MCP stdio path runs.
+// not "worker" so the no-subcommand fall-through (bootstrap.Run) runs.
 //
 // Dispatch runs BEFORE parseFlags + constructClient: the subcommand
 // path is short-lived (one operator command, prints results, exits)
@@ -70,9 +70,9 @@ run "knowledge worker <subcommand> --help" for per-subcommand flags.
 `
 
 // RunWorkerSubcommand is the top-level dispatcher. Returns (false, 0)
-// when os.Args[1] is not "worker" so main() falls through to the
-// default MCP stdio path; returns (true, exitCode) when this function
-// handled the call.
+// when os.Args[1] is not "worker" so main() falls through to
+// bootstrap.Run (the no-subcommand path); returns (true, exitCode) when
+// this function handled the call.
 //
 // Errors from sub-ops print to stderr and return (true, 1); successful
 // sub-ops return (true, 0). Mirrors cmd/knowledge-server/bootstrap's
@@ -81,12 +81,11 @@ func RunWorkerSubcommand() (handled bool, exitCode int) {
 	if len(os.Args) < 2 || os.Args[1] != "worker" {
 		return false, 0
 	}
-	// Recursion guard: when claude-cli's --mcp-config spawns a child of
-	// this binary, it inherits the parent's argv (which may include the
-	// "worker trigger ..." subcommand args) and we appended
-	// --no-worker-runtime. The child must NOT re-trigger the worker;
-	// fall through to MCP stdio mode where ParseFlags sees the flag and
-	// skips wireWorkerRuntime. See bootstrap.ParseFlags.
+	// --no-worker-runtime guard: a knowledge process launched with that
+	// flag (e.g. the bench harness, or any caller that wants the graph
+	// served without a dream Runner) must NOT enter the worker subcommand
+	// even if its argv carries "worker ..." — fall through so ParseFlags
+	// sees the flag and skips wireWorkerRuntime. See bootstrap.ParseFlags.
 	if hasNoWorkerRuntimeFlag(os.Args) {
 		return false, 0
 	}

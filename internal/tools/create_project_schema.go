@@ -18,7 +18,7 @@ func CreateProjectToolDef() kgtools.MCPTool {
 			Properties: map[string]kgtools.Property{
 				"name":        {Type: "string", MaxLength: 255, Description: "Project name (synced to the Linear project name, which caps at 255 chars)."},
 				"description": {Type: "string", MaxLength: 249, Description: "Project description (must stay under 250 chars for Linear)."},
-				"summary":     {Type: "string", MaxLength: 500, Description: "Required search-optimized one-line summary, max 500 chars. See docs/node-type-llm-defaults.md."},
+				"summary":     {Type: "string", MaxLength: 500, Description: "Required search-optimized one-line summary, max 500 chars."},
 				"group":       {Type: "string", Description: "Optional. Backend group key (Linear team key, Jira project key, GitHub repo, etc.) — required when LINEAR_API_KEY (or other backend env var) is set AND multiple groups exist; auto-defaults when only one group exists; ignored when no backend is enabled."},
 
 				// Backend metadata passthrough. Pre-populated by the

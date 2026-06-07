@@ -5,9 +5,51 @@ package linear
 import (
 	"context"
 	"fmt"
+	"unicode/utf8"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/backends"
 )
+
+// linearDescriptionMaxRunes is the rune cap Linear enforces on a project's
+// `description` (the short tagline) — exceeding it triggers an "Argument
+// Validation Error". The schema fact is also documented at backend.go:150.
+const linearDescriptionMaxRunes = 255
+
+// contentSeparator joins the (overflow) full summary to the markdown body
+// when both are present in Linear's uncapped `content` field.
+const contentSeparator = "\n\n"
+
+// projectDescriptionField returns the value for Linear's `description`
+// (the short tagline) derived from the knowledge summary, rune-capped to
+// linearDescriptionMaxRunes. The bool is false when summary is empty, so
+// the caller omits the field entirely (empty-omission contract).
+func projectDescriptionField(summary string) (string, bool) {
+	if summary == "" {
+		return "", false
+	}
+	return truncateRunes(summary, linearDescriptionMaxRunes), true
+}
+
+// projectContentField returns the value for Linear's uncapped `content`
+// (the markdown body). When the summary overflows the 255-rune description
+// cap, the FULL summary is prepended so nothing is lost; the markdown body
+// is appended only when non-empty (no trailing separator on an empty body).
+// When the summary fits the cap, content is exactly the body. The bool is
+// false when neither piece is present, so the caller omits the field.
+func projectContentField(summary, body string) (string, bool) {
+	overflow := utf8.RuneCountInString(summary) > linearDescriptionMaxRunes
+	if !overflow {
+		if body == "" {
+			return "", false
+		}
+		return body, true
+	}
+	content := summary
+	if body != "" {
+		content += contentSeparator + body
+	}
+	return content, true
+}
 
 // CreateProject — group-key-driven team resolution; project status is
 // passed verbatim (workspace-level enum). Labels resolve against the
@@ -23,22 +65,23 @@ func (b *Backend) CreateProject(ctx context.Context, args backends.ProjectCreate
 	if err != nil {
 		return backends.RemoteRef{}, err
 	}
-	// Linear distinguishes the short tagline (`description`, ≤255 chars)
+	// Linear distinguishes the short tagline (`description`, ≤255 RUNES)
 	// from the long markdown body (`content`, no length cap). We map
-	// args.Summary → description and args.Description → content. Sending
-	// our long Description into Linear's `description` is exactly what the
-	// 255-char "Argument Validation Error" was rejecting before this fix.
-	// Both fields are optional on Linear's side, so omit when empty.
+	// args.Summary → description (rune-capped to 255 via truncateRunes) and
+	// args.Description → content. On overflow (summary > 255 runes) the FULL
+	// summary is prepended to content so nothing is lost — see
+	// projectDescriptionContent. Both fields are optional on Linear's side,
+	// so omit when empty.
 	input := map[string]any{
 		"teamIds":  []string{team.ID},
 		"name":     args.Name,
 		"priority": args.Priority,
 	}
-	if args.Summary != "" {
-		input["description"] = args.Summary
+	if desc, ok := projectDescriptionField(args.Summary); ok {
+		input["description"] = desc
 	}
-	if args.Description != "" {
-		input["content"] = args.Description
+	if content, ok := projectContentField(args.Summary, args.Description); ok {
+		input["content"] = content
 	}
 	if args.Status != "" {
 		input["state"] = args.Status // workspace-level enum string verbatim
@@ -75,11 +118,21 @@ func (b *Backend) UpdateProject(ctx context.Context, ref backends.RemoteRef, dif
 	if diff.Name != nil {
 		input["name"] = *diff.Name
 	}
-	// Same Summary→description / Description→content split as CreateProject.
+	// Same rune-capped Summary→description / lossless-overflow→content split
+	// as CreateProject (see projectDescriptionField / projectContentField).
+	// Only build the fields the diff actually carries: a nil diff.Summary
+	// means "don't touch description"; the overflow-into-content rule fires
+	// only when diff.Summary is present and exceeds the 255-rune cap.
 	if diff.Summary != nil {
-		input["description"] = *diff.Summary
-	}
-	if diff.Description != nil {
+		input["description"] = truncateRunes(*diff.Summary, linearDescriptionMaxRunes)
+		body := ""
+		if diff.Description != nil {
+			body = *diff.Description
+		}
+		if content, ok := projectContentField(*diff.Summary, body); ok {
+			input["content"] = content
+		}
+	} else if diff.Description != nil {
 		input["content"] = *diff.Description
 	}
 	if diff.Priority != nil {

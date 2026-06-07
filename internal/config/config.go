@@ -126,12 +126,6 @@ type Config struct {
 	// var when unset here; see keys.go for the accessor functions that
 	// apply that precedence.
 	Credentials *Credentials
-	// Retention holds the optional [retention] section: client-side
-	// auto-prune policy applied at MCP startup. nil when the section is
-	// absent (the default — no prune fires). See keys.go for the
-	// accessor functions and the cmd/knowledge/internal/prune package
-	// for the consumer.
-	Retention *Retention
 }
 
 // Credentials mirrors the [credentials] TOML table. Every field is
@@ -149,16 +143,6 @@ type Credentials struct {
 	AnthropicAPIKey string
 	OpenAIAPIKey    string
 	GeminiAPIKey    string
-}
-
-// Retention mirrors the [retention] TOML table. Each field is a duration
-// string ('7d', '24h', etc.) consumed by the client-side auto-prune
-// runner. Empty (or absent section) means "no prune for this node type"
-// — strictly opt-in, no built-in defaults. Unlike Credentials there is
-// NO env-var fallback: retention policy is a deliberate per-machine
-// choice that belongs in the config file, not the environment.
-type Retention struct {
-	Sessions string
 }
 
 // Resolve returns the effective Section for consumer.

@@ -8,7 +8,6 @@ import (
 	"fmt"
 	"sync"
 
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/auth"
 	"github.com/fulminate-io/knowledge-mcp/internal/backends"
 	"github.com/fulminate-io/knowledge-mcp/internal/backends/provider"
@@ -18,6 +17,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/dream"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
+	"github.com/fulminate-io/knowledge-mcp/internal/graphtypecrud"
 	"github.com/fulminate-io/knowledge-mcp/internal/pipeline"
 	"github.com/fulminate-io/knowledge-mcp/internal/segmentdist"
 	clientthought "github.com/fulminate-io/knowledge-mcp/internal/thought"
@@ -44,11 +44,13 @@ type client struct {
 	port    int    // TCP port the server listens on
 	version string // binary version (reported in MCP initialize)
 	// local is the connect-go client to the LOCAL graph server (127.0.0.1).
-	// Replaces the prior `client` field as part of the routing rework. Always-local
-	// callers (sync push, post-collect linker, post-collect postpopulate,
-	// auto-prune, pipeline writeback, propagation loop) read this directly.
-	// May be nil for a cloud-first user with no install — router handles
-	// dispatch for everyone else.
+	// Replaces the prior `client` field as part of the routing rework. The
+	// genuinely always-local callers (sync push, sync list) reach it via the
+	// LocalGraphCaller()/Router.Local() accessors. The post-collect linker and
+	// postpopulate do NOT read this directly — they follow the data via the
+	// login-routed GraphCaller (cloud when logged in). May be nil for a
+	// cloud-first user with no install — router handles dispatch for everyone
+	// else.
 	local *graphclient.GraphClient
 	// router is the routing layer. Per-call dispatches to local or
 	// cloud based on the live auth state cached in authState. Built by
@@ -61,26 +63,29 @@ type client struct {
 	// inputs.
 	authState *auth.AuthState
 
-	mcpClient *graphclient.MCPClient // MCP stdio loop (built in mcp.go)
+	mcpClient *graphclient.MCPClient // MCP dispatch client (built by the serve daemon, daemon.go)
 	sink      collector.Sink         // remote upload sink for client-side collection
-	// runtime is the client-side dream.Runner. Wired in mcp.go::runMCPMode
+	// runtime is the client-side dream.Runner. Wired in buildClient (daemon.go)
 	// via wireWorkerRuntime; nil in test harnesses that build *client
 	// directly. Phase H narrows the WorkerRuntime() accessor to a
 	// tools.WorkerRuntimeAPI interface — for now the field stays concrete.
 	runtime *dream.Runner
 
-	// workerCRUD is the client-side wire-loopback CRUD client used by
-	// InterceptWorker's list/create/update/delete branches. Wired in
-	// constructClient against the same *graphclient.GraphClient; nil in
-	// test harnesses that build *client directly. The WorkerCRUD()
-	// accessor returns an untyped nil interface in that case so the
-	// intercept nil-check fires.
-	workerCRUD *workercrud.Client
+	// workerCRUD / graphTypeCRUD are the client-side CRUD clients used by
+	// InterceptWorker and InterceptGraphType. Both are wired in
+	// constructClient against the login-aware c.router (Execute routes
+	// per-call to cloud when logged in / local otherwise) so a cloud-only
+	// daemon serves worker + graph-type CRUD from cloud instead of dialing
+	// :15022; nil in test harnesses that build *client directly, where the
+	// WorkerCRUD() / GraphTypeCRUD() accessors return an untyped nil
+	// interface so the intercept nil-check fires.
+	workerCRUD    *workercrud.Client
+	graphTypeCRUD *graphtypecrud.Client
 
 	// embedder is the client-side BinaryEmbedder used by InterceptSearch /
 	// InterceptQuery to embed query text on the client side so the
 	// server's compositor short-circuits its own embed call (Phase 4.5).
-	// Built in runMCPMode via llmproviders.BuildEmbedder after config
+	// Built in buildClient via llmproviders.BuildEmbedder after config
 	// load. nil when no voyage_api_key is configured — search falls
 	// back to BM25-only via the server-side nil-embedder path.
 	embedder embed.BinaryEmbedder
@@ -89,7 +94,7 @@ type client struct {
 	// pools + per-graph collectors + background graph-refresh goroutine)
 	// constructed by wirePipelineRuntime. nil when --no-llm-pipeline is
 	// set OR config provides neither summarizer nor embedder. The deferred
-	// p.Stop call in runMCPMode handles nil safely.
+	// p.Stop call in buildClient's cleanup closure (daemon.go) handles nil safely.
 	pipeline *pipeline.Pipeline
 
 	// segmentMgr is the per-graph client-hosted BM25+HNSW segment owner. ONE
@@ -103,12 +108,12 @@ type client struct {
 
 	// propLoop is the client-side reflective-surface goroutine that
 	// hourly re-detects thought clusters and propagates valence /
-	// magnitude through the graph. Wired in mcp.go::runMCPMode via
+	// magnitude through the graph. Wired in buildClient (daemon.go) via
 	// wirePropagationRuntime; nil when --no-propagation-runtime is set
 	// OR construction failed at boot. The deferred Stop call in
-	// runMCPMode handles nil safely (Stop is nil-safe). Holds
-	// *graphclient.GraphClient directly via
-	// NewPropagationLoop — no store-shaped wrapper.
+	// buildClient's cleanup closure handles nil safely (Stop is nil-safe). Holds
+	// the Execute-only thought.Caller (passed c.router) via NewPropagationLoop
+	// — no store-shaped wrapper — so propagation routes cloud-when-logged-in.
 	propLoop *clientthought.PropagationLoop
 
 	// Tool-schema cache: built once by loadSchemas on the first
@@ -132,11 +137,13 @@ type client struct {
 	repoResolver     *tools.RepoResolver
 }
 
-// GraphClient returns the connect-go client to the graph server. Satisfies
-// tools.ClientDeps so the internal/tools package can reach liveness +
-// Status RPCs without importing the concrete *client type (which would
-// create an import cycle back into cmd/knowledge).
-func (c *client) GraphClient() *graphclient.GraphClient { return c.local }
+// LocalLiveness returns the LOCAL graph client as a liveness-only view
+// (Healthy + Status, no Execute carrier). Satisfies tools.ClientDeps so the
+// internal/tools package can reach the local daemon's liveness + Status RPCs
+// for manage(status) without being able to pull a graph-write off the bare
+// local client — graph reads/writes route via GraphCaller() (the Router).
+// *graphclient.GraphClient satisfies tools.LocalLiveness structurally.
+func (c *client) LocalLiveness() tools.LocalLiveness { return c.local }
 
 // PipelineMetrics returns a snapshot of the client-side LLM pipeline
 // counters (summary + embed queue depth, running workers, cumulative
@@ -226,17 +233,21 @@ func (c *client) WorkerRuntime() tools.WorkerRuntimeAPI {
 	return c.runtime
 }
 
-// WorkerCRUD returns the client-side wire-loopback CRUD client so the
-// worker list / create / update / delete MCP intercepts can dispatch
-// through it. Mirrors the WorkerRuntime accessor's nil-tolerance —
-// returns an untyped nil interface when the *client was constructed
-// without one, so InterceptWorker's nil-check fires before any wire
-// call.
+// WorkerCRUD returns the client-side wire-loopback CRUD client for the worker
+// intercepts (nil-tolerant; see the workerCRUD/graphTypeCRUD field comment).
 func (c *client) WorkerCRUD() tools.WorkerCRUDAPI {
 	if c.workerCRUD == nil {
 		return nil
 	}
 	return c.workerCRUD
+}
+
+// GraphTypeCRUD mirrors WorkerCRUD for the graph_type intercepts (nil-tolerant).
+func (c *client) GraphTypeCRUD() tools.GraphTypeCRUDAPI {
+	if c.graphTypeCRUD == nil {
+		return nil
+	}
+	return c.graphTypeCRUD
 }
 
 // Embedder returns the client-side binary embedder so InterceptSearch /
@@ -272,18 +283,14 @@ func (c *client) GraphCaller() tools.GraphCaller {
 	return c.router
 }
 
-// LocalGraphCaller returns a GraphCaller that ALWAYS targets the local
-// server, bypassing the routing layer. Callers that must read
-// and write the local graph regardless of login state — sync push,
-// post-collect linker, post-collect postpopulate — use this accessor.
-// Returns nil only when the *client was constructed without a local
-// GraphClient (cloud-first user with no install); the three local-only
-// callers' existing nil-guards surface the degraded-mode error.
-//
-// Post-step-2 (Router wiring): the underlying field is c.local; this
-// accessor stays a thin wrapper either way. The wrapper continues to
-// satisfy the Indexer / Exporter / metadataStatsCaller / statsRPC seams
-// via the *GraphClient's native method set (mirrors graphClientCaller).
+// LocalGraphCaller returns a GraphCaller that ALWAYS targets the local server,
+// bypassing routing. Only the three local-only callers use it: sync push (source
+// bytes come from the LOCAL graph; destination is cloud), sync list, and sync
+// pull (the OverwriteGraph apply target is the LOCAL .bin). The post-collect
+// linker and postpopulate are NOT local-only (cloud-routed GraphCaller). Returns
+// nil when the *client has no local GraphClient (cloud-first user, no install);
+// callers' nil-guards surface the degraded-mode error. The wrapper satisfies
+// Indexer / Exporter / Overwriter / metadataStatsCaller / statsRPC.
 func (c *client) LocalGraphCaller() tools.GraphCaller {
 	if c.local == nil {
 		return nil
@@ -335,53 +342,19 @@ func (providerBackendResolver) ByName(name string) backends.Backend {
 	return provider.ByName(name)
 }
 
-// graphClientCaller adapts a *graphclient.GraphClient to the narrow
-// tools.GraphCaller interface so intercepts can forward tail-calls
-// without depending on the concrete graph-client type. The base seam is Execute —
-// every intercept read/write rides the Execute carrier, type-asserting this
-// concrete value UP to render.Executor / Indexer / Syncer / topologyFetcher as
-// needed.
-type graphClientCaller struct {
-	gc *graphclient.GraphClient
-}
+// newAuthStoreFn is the keychain Store constructor used by constructClient.
+// Tests override it to inject an in-memory store (e.g. a logged-in fake) and
+// avoid touching the real platform keychain. Mirrors the cli.go newStoreFn
+// seam. Production callers leave the default in place so auth.NewStore runs.
+var newAuthStoreFn = auth.NewStore
 
-// Execute is the base GraphCaller seam: it exposes the wrapped *GraphClient's
-// engine Execute so the carrier-backed internal wire helpers (PersistBatch,
-// render.FetchNode / IterEdges, the project/plan/ticket intercepts, the
-// thought/linker/pipeline wire helpers) decode raw ExecuteResponse carriers. The
-// helpers type-assert this same concrete value to the render.Executor seam.
-func (g graphClientCaller) Execute(ctx context.Context, req *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error) {
-	return g.gc.Execute(ctx, req)
-}
-
-// Index exposes the wrapped *GraphClient's engine Index RPC so the client-side
-// manage intercepts (set_metadata_overrides / delete_branch /
-// list_branches) can drive the generic lifecycle ops without reaching for the
-// concrete *GraphClient. This is the narrow Index
-// seam the tools.Indexer type-assert upgrades to — like Execute above, it does
-// NOT widen the Call-only tools.GraphCaller interface.
-func (g graphClientCaller) Index(ctx context.Context, req *knowledgev1.IndexRequest) (*knowledgev1.IndexResponse, error) {
-	return g.gc.Index(ctx, req)
-}
-
-// MetadataStats exposes the wrapped *GraphClient's engine MetadataStats RPC so
-// the client-side promote_metadata composer can read the per-graph
-// stats + override carriers off the GraphCaller without reaching for the
-// concrete *GraphClient. Like Execute/Index, this is a narrow seam a tools-side
-// interface type-asserts for; it does NOT widen the Call-only GraphCaller.
-func (g graphClientCaller) MetadataStats(ctx context.Context, req *knowledgev1.MetadataStatsRequest) (*knowledgev1.MetadataStatsResponse, error) {
-	return g.gc.MetadataStats(ctx, req)
-}
-
-// ExportGraph exposes the wrapped *GraphClient's engine ExportGraph RPC so the
-// client-side push orchestration (InterceptSync) can fetch the serialized OSS
-// graph bytes off the GraphCaller without reaching for the concrete
-// *GraphClient. This is the narrow Exporter seam the tools.Exporter type-assert
-// upgrades to — like Execute/Index/MetadataStats/Sync, it does NOT widen the
-// Call-only tools.GraphCaller interface.
-func (g graphClientCaller) ExportGraph(ctx context.Context, req *knowledgev1.ExportGraphRequest) (*knowledgev1.ExportGraphResponse, error) {
-	return g.gc.ExportGraph(ctx, req)
-}
+// startKeepaliveFn is a method-expression seam over
+// (*graphclient.GraphClient).StartKeepalive so tests can observe whether
+// constructClient launched the keepalive goroutine without driving a real
+// loopback dial. Production callers leave the default in place. Gating the call
+// on not-LoggedIn (a logged-in daemon routes cloud and must never probe :15022)
+// is what this seam lets a test assert.
+var startKeepaliveFn = (*graphclient.GraphClient).StartKeepalive
 
 // constructClient builds a stdio client that proxies to the graph server.
 // It does NOT open any .bin file and does NOT register key fragments —
@@ -390,16 +363,18 @@ func (g graphClientCaller) ExportGraph(ctx context.Context, req *knowledgev1.Exp
 // server.
 //
 // Also launches the background keepalive goroutine that surfaces server
-// drops to slog between user-triggered tool calls. The unary reconnect
-// interceptor redials transparently when the next real request lands —
-// keepalive is operator visibility, not recovery.
+// drops to slog between user-triggered tool calls — but ONLY when not logged
+// in. A logged-in daemon routes every op to cloud and operates with no local
+// knowledge-server, so it must never probe :15022; the keepalive is gated off
+// for it. The unary reconnect interceptor redials transparently when the next
+// real request lands — keepalive is operator visibility, not recovery.
 //
-// Router wiring: builds the auth.AuthState backed by the
-// platform keychain Store (or a no-op stub on platforms where the
-// keychain is not implemented — Windows) and the OAuth TokenSource, then
-// wraps the local *GraphClient + cloud-bearer machinery in a
-// *graphclient.Router. Every routed GraphCaller() call dispatches
-// per-call: cached IsLoggedIn=true → cloud; false → local; neither → ErrNoBackend.
+// Router wiring: builds the auth.AuthState backed by the platform keychain
+// Store (or a no-op stub on platforms where the keychain is not implemented —
+// Windows) and the bare keychain OAuth TokenSource, then wraps the local
+// *GraphClient in a *graphclient.Router. Every routed GraphCaller() call
+// dispatches per-call on the keychain auth state: cached IsLoggedIn=true →
+// cloud; false → local; neither → ErrNoBackend.
 func constructClient(f Config) *client {
 	dialLocal := f.LocalDialer
 	if dialLocal == nil {
@@ -411,7 +386,7 @@ func constructClient(f Config) *client {
 	// substitute a no-op Store so AuthState always returns false and the
 	// Router falls through to local. Other errors are also non-fatal —
 	// degrade to no-op so the local path still works.
-	authStore, storeErr := auth.NewStore()
+	authStore, storeErr := newAuthStoreFn()
 	if storeErr != nil {
 		authStore = noopAuthStore{}
 	}
@@ -420,6 +395,10 @@ func constructClient(f Config) *client {
 		cli.CloudEndpoint,
 		cli.AllowedAuthHosts(),
 	)
+	// Routing is keychain-only: the bare keychain token source mints fresh
+	// access tokens on demand from the `knowledge login` refresh token. There is
+	// no per-session editor bearer — the Router routes purely on
+	// authState.IsLoggedIn.
 	authState := auth.NewAuthState(authStore, 0)
 	router := graphclient.NewRouter(tcp, cli.CloudEndpoint, tokenSource, authState)
 
@@ -437,20 +416,29 @@ func constructClient(f Config) *client {
 	// `knowledge login` flip routes the next collect to cloud without a
 	// restart. Do NOT capture a fixed tcp.IngestClient() here.
 	c.sink = remote.NewUploadSinkFunc(c.router.IngestClient)
-	// Wire the worker CRUD client. Same GraphClient as everything else
-	// — every CRUD call goes back through the wire-loopback transport
-	// so the server stays the source of truth for graph-resident
-	// NodeWorker rows.
-	c.workerCRUD = workercrud.New(tcp)
+	// Wire the worker CRUD client through the login-aware Router so a
+	// logged-in (cloud-only, no local server) daemon serves worker CRUD
+	// from cloud instead of dialing :15022. Every CRUD call rides the
+	// Router's per-call Execute dispatch (cloud when logged in, local
+	// otherwise) so the active backend stays the source of truth for
+	// graph-resident NodeWorker rows.
+	c.workerCRUD = workercrud.New(c.router)
+	// Same login-aware Router routing for graph-resident NodeGraphTypeDef rows.
+	c.graphTypeCRUD = graphtypecrud.New(c.router)
 	// Install as the process-wide default factory too so call-sites that
 	// don't route through c.sink (e.g. codegraph.Sync in an intercept
 	// handler that forgets to set opts.Sink) still get the remote sink.
 	collector.DefaultSinkFactory = func() collector.Sink { return c.sink }
-	// Production-only: the stdio MCP client needs periodic drop detection.
-	// Test harnesses that build a *client directly (without this
-	// constructor) skip this — nothing else in the codebase calls
-	// StartKeepalive.
-	tcp.StartKeepalive(context.Background())
+	// Periodic local-server drop detection — but ONLY for a not-logged-in
+	// client. A logged-in daemon routes every op to cloud and runs with no local
+	// knowledge-server, so probing :15022 would only emit escalating ERROR-log
+	// spam for a server intentionally not running; gate it off. Routed through
+	// the startKeepaliveFn seam so test (b) can assert the gate without a real
+	// loopback dial. Test harnesses that build a *client directly (without this
+	// constructor) skip this — nothing else in the codebase calls StartKeepalive.
+	if !c.router.LoggedIn(context.Background()) {
+		startKeepaliveFn(tcp, context.Background())
+	}
 	return c
 }
 

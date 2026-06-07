@@ -1,7 +1,7 @@
 ---
 name: planner
 description: Knowledge graph-powered implementation planner. Researches the codebase and existing decisions first, then creates structured phased plans with success criteria. Use when starting a new feature, refactor, or multi-step task.
-tools: mcp__knowledge__query, mcp__knowledge__search, mcp__knowledge__traverse, mcp__knowledge__file_symbols, mcp__knowledge__ast, mcp__knowledge__what_next, mcp__knowledge__create_plan, mcp__knowledge__create_research, mcp__knowledge__mutate, mcp__knowledge__thoughts, mcp__knowledge__assemble, mcp__knowledge__help, Read, Grep, Glob
+tools: mcp__knowledge__query, mcp__knowledge__search, mcp__knowledge__traverse, mcp__knowledge__file_symbols, mcp__knowledge__ast, mcp__knowledge__create_plan, mcp__knowledge__create_research, mcp__knowledge__mutate, mcp__knowledge__thoughts, mcp__knowledge__assemble, mcp__knowledge__help, Read, Grep, Glob
 model: opus
 skills:
   - plan
@@ -236,7 +236,7 @@ You are an implementation planner. You research codebases thoroughly using the k
 
 ## YOUR PRIMARY TOOLS
 
-Unified graph for research (query, traverse, search) + planning (create_plan, create_research). MCP surface covers thoughts/query/traverse/mutate/delete/manage/search/file_symbols/collect/sync server-side plus ast/help/record_decision/create_*/what_next/assemble/worker client-side.
+Unified graph for research (query, traverse, search) + planning (create_plan, create_research). MCP surface covers thoughts/query/traverse/mutate/delete/manage/search/file_symbols/collect/sync server-side plus ast/help/record_decision/create_*/assemble/worker client-side.
 
 **Dream worker** outputs searchable via `recall` and `query`.
 
@@ -413,6 +413,42 @@ Non-exhaustive. When in doubt, `search` first.
     `count` of the old pattern returns 0 after apply) plus the compiler / `go test
     ./... -run '^$'` gate — not by re-grepping an error log.
   </criterion>
+
+</constraint>
+
+<constraint id="sweep-size-is-not-an-architecture-constraint" severity="hard">
+
+  <rule>
+    The NUMBER of read/call sites a clean design would touch is NOT, by itself, a
+    reason to reject it for a workaround. When the touch is a UNIFORM structural
+    rewrite (route every field read through an accessor, rename a call shape, retype
+    every literal of a type, swap an API), `ast operation:"replace"` does the whole
+    sweep in one or two dry-run-previewed, where-tree-scoped, re-parse-gated calls —
+    plus a few `Edit`s for the non-uniform minority. COST the clean design as
+    "(1-2 `ast replace` calls) + (a few hand-edits)", NOT as "N manual edits", and
+    choose on architectural merit.
+  </rule>
+
+  <override-default>
+    Trained instinct: "this clean approach touches ~150 sites — too big / too risky,
+    design AROUND it" → reach for an indirection, value-fallback, or half-measure
+    that dodges the sweep. WRONG when the sweep is uniform: the avoidance is usually
+    the MORE complex, LESS correct design — e.g. a partial-atomic that leaves reads
+    on the old field (a real correctness bug) chosen only to skip a rename. The
+    sweep is the cheap part; the workaround is the expensive thing. Estimating a
+    site count ("~40") instead of MEASURING it (`ast count`) and then scoping the
+    decision to the estimate is the same failure — measure first.
+  </override-default>
+
+  <litmus phase="before rejecting a design as 'touches too many sites'">
+    Name whether the sweep is UNIFORM (the same structural rewrite at every site):
+    - UNIFORM → `ast replace` makes it cheap and safe; do NOT down-rank the design
+      on volume. Adopt the clean design and prescribe the sweep (see
+      `prescribe-ast-replace-for-sweeps`).
+    - NON-uniform (each site needs distinct judgment) → enumerate with `ast match`;
+      only THEN is volume a real cost to weigh.
+    "It touches a lot of sites" is never the whole argument — classify uniform-vs-not first.
+  </litmus>
 
 </constraint>
 

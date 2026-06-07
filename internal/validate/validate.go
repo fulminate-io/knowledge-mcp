@@ -17,6 +17,7 @@ package validate
 import (
 	"fmt"
 	"strings"
+	"unicode/utf8"
 )
 
 // SummaryMaxLen caps the length of search-optimized summaries on every
@@ -37,16 +38,15 @@ const MinStepDescriptionLen = 2
 // knowledge node, else a structured error naming the calling tool and
 // the failure reason. Callers gate on NodeType.Summarizable() to decide
 // WHEN to invoke Summary; this helper does NOT consult any NodeType
-// map. See docs/node-type-llm-defaults.md for context on why embed-only
-// nodes require an author-supplied summary at creation time (pipeline
-// v2 stops auto-summarizing them).
+// map. Embed-only nodes require an author-supplied summary at creation
+// time because pipeline v2 stops auto-summarizing them.
 func Summary(toolName, fieldPath, summary string) error {
 	trimmed := strings.TrimSpace(summary)
 	if trimmed == "" {
-		return fmt.Errorf("%s: %s is required and must be non-empty (search-optimized one-line summary). See docs/node-type-llm-defaults.md for context", toolName, fieldPath)
+		return fmt.Errorf("%s: %s is required and must be non-empty (search-optimized one-line summary)", toolName, fieldPath)
 	}
-	if len(trimmed) > SummaryMaxLen {
-		return fmt.Errorf("%s: %s exceeds %d characters (got %d). Search-optimized summaries should be a single concise line", toolName, fieldPath, SummaryMaxLen, len(trimmed))
+	if utf8.RuneCountInString(trimmed) > SummaryMaxLen {
+		return fmt.Errorf("%s: %s exceeds %d characters (got %d). Search-optimized summaries should be a single concise line", toolName, fieldPath, SummaryMaxLen, utf8.RuneCountInString(trimmed))
 	}
 	return nil
 }

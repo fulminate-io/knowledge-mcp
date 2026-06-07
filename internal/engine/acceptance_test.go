@@ -80,6 +80,12 @@ func (e *cloudEngineBackend) ExportGraph(
 	return nil, connect.NewError(connect.CodeUnimplemented, nil)
 }
 
+func (e *cloudEngineBackend) OverwriteGraph(
+	context.Context, *connect.Request[knowledgev1.OverwriteGraphRequest],
+) (*connect.Response[knowledgev1.OverwriteGraphResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, nil)
+}
+
 // newCloudEngineBackend stands up an h2c httptest.Server in front of a
 // cloudEngineBackend handler and returns the server URL plus the handler so the
 // test can read the Execute counter. The canned Execute response carries a

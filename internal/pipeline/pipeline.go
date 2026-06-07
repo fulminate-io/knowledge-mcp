@@ -10,14 +10,18 @@ import (
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/llmproviders"
-	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
 
 // Pipeline owns the global summary/embed channels, dispatchers, worker
-// pools, and per-graph collector goroutines. One Pipeline per server
-// process. Created by cmd/knowledge-server's startup; goroutines launched
-// in Start; collectors registered/unregistered as graphs load/unload via
-// the registry hooks (see pipeline_hooks.go in package store).
+// pools, and per-graph collector goroutines. ONE Pipeline per client daemon
+// PROCESS — created once at startup by the client bootstrap
+// (cmd/knowledge/internal/bootstrap wirePipelineRuntime, the sole pipeline.New
+// site) and SHARED across every MCP session the daemon serves. The
+// multi-session HTTP transport holds no per-session pipeline: N concurrent
+// sessions share this one pipeline + its one rate gate (the resource fix — a
+// constant worker count, not workers×N). Goroutines launch in Start; collectors
+// register/unregister as graphs load/unload via the client pipeline-refresh
+// loop.
 //
 // Concurrency model: each loaded graph gets two collector goroutines (one
 // summary, one embed). Collectors push work onto the global channels;
@@ -55,6 +59,13 @@ type Pipeline struct {
 	// guards is global to the provider, not per-graph or per-worker.
 	backoff *errBackoff
 
+	// circuit is the shared LATCHED pause gate. Where backoff self-clears a
+	// transient window, circuit latches the WHOLE worker pool paused on a
+	// zero-success storm and stays paused until a human resumes (no self-heal).
+	// One shared instance: a success on either axis resets it, a trip pauses
+	// both. See circuit_breaker.go.
+	circuit *circuitBreaker
+
 	// embedRPM is the shared PROACTIVE fixed-rate pacer for embed dispatch.
 	// One instance across all embed workers — the provider RPM limit is
 	// global. It is the proactive companion to the reactive backoff: it paces
@@ -88,65 +99,28 @@ type Pipeline struct {
 
 	metrics *metricsState
 
-	// segmentMgr is the OPTIONAL client-side HNSW segment owner. When non-nil, the
-	// embed-writeback seam ALSO feeds the freshly-embedded binary vectors into a
-	// per-graph HNSW engine and ships any newly-sealed segments (the
-	// client builds + ships). The ship is BEST-EFFORT — a build/ship failure only
-	// WARNs and never fails embed writeback. Server-side search is retired, so
-	// these client segments ARE the search index: a dropped ship leaves the
-	// affected nodes temporarily unsearchable until the next ship or a segment
-	// rebuild, but writeback liveness takes priority and it self-heals on the next
-	// embed dirty-gen. nil for test fakes that don't wire it.
+	// segmentMgr is the OPTIONAL client-side HNSW segment owner. When non-nil,
+	// the embed-writeback seam ALSO feeds freshly-embedded binary vectors into a
+	// per-graph HNSW engine and ships any newly-sealed segments. The ship is
+	// BEST-EFFORT — a build/ship failure only WARNs and never fails embed
+	// writeback. Server-side search is retired, so these client segments ARE the
+	// search index: a dropped ship leaves the affected nodes temporarily
+	// unsearchable until the next ship or rebuild, but writeback liveness takes
+	// priority and it self-heals on the next embed dirty-gen. nil for test fakes.
 	segmentMgr ShipManager
 
-	// healFactory builds the per-graph auto-heal closure RegisterGraph
-	// injects into each collector. Built by BOOTSTRAP (the only layer where
-	// pipeline + segmentdist + tools are all visible) over the concrete
-	// segment-presence probe (*segmentdist.Manager.HasShippedSegments) and the
-	// rebuild driver core (tools.RebuildSegments) — deliberately kept OUT of this
-	// package so pipeline never imports tools (an import cycle: tools already
-	// imports pipeline). nil when no segment manager is wired (test fakes) → the
-	// per-collector heal closure is nil → the armed embed-drain heal-check no-ops.
+	// healFactory builds the per-graph auto-heal closure RegisterGraph injects
+	// into each collector. Built by BOOTSTRAP (the only layer where pipeline +
+	// segmentdist + tools are all visible) over the segment-presence probe
+	// (*segmentdist.Manager.HasShippedSegments) and rebuild driver core
+	// (tools.RebuildSegments) — kept OUT of this package so pipeline never
+	// imports tools (tools already imports pipeline). nil when no segment
+	// manager is wired (test fakes) → the heal closure is nil → the armed
+	// embed-drain heal-check no-ops.
 	healFactory func(gt kgtypes.GraphType, name string) func(ctx context.Context) error
 
 	stopOnce sync.Once
 	stopErr  error
-}
-
-// ShipManager is the narrow surface the embed-writeback seam uses to build + ship
-// client-side segments. *segmentdist.Manager satisfies it (dual-format after
-// AddAndShip feeds the HNSW engine from vectors; AddAndShipFields feeds
-// the BM25 engine from per-field text). Declared here (consumer-side interface) so
-// the pipeline carries no hard dependency on the segmentdist concrete type and
-// tests can inject a fake.
-type ShipManager interface {
-	AddAndShip(ctx context.Context, gt kgtypes.GraphType, name string, docs []searchengine.Document) error
-	// AddAndShipFields builds + ships BM25 segments from field-bearing Documents.
-	// Best-effort at the call site — a failure WARNs and never fails embed
-	// writeback; the BM25 segments self-heal on the next ship (server-side search
-	// is retired, so these segments are the only BM25 index).
-	AddAndShipFields(ctx context.Context, gt kgtypes.GraphType, name string, docs []searchengine.Document) error
-	// Flush force-seals the sub-threshold coalescing tail of BOTH formats for one
-	// (gt, name) and ships the newly-sealed segments. The quiescence trigger
-	// fires it once per embed drain so sub-1024-doc graphs + trailing
-	// tails seal and become client-searchable. *segmentdist.Manager.Flush
-	// (manager_owner.go:110) satisfies it.
-	Flush(ctx context.Context, gt kgtypes.GraphType, name string) error
-}
-
-// AttachSegmentManager wires the optional HNSW segment owner. Called once at
-// construction (bootstrap) before Start; nil-safe — leaving it unset disables the
-// additive client-side build+ship.
-func (p *Pipeline) AttachSegmentManager(m ShipManager) { p.segmentMgr = m }
-
-// AttachHealFactory wires the auto-heal closure factory. Called once at
-// construction (bootstrap) before Start, after AttachSegmentManager; nil-safe —
-// leaving it unset means RegisterGraph builds a nil per-collector heal closure
-// and the armed embed-drain heal-check no-ops. The factory is built in bootstrap
-// (over the concrete segment probe + tools.RebuildSegments) so this package never
-// imports tools.
-func (p *Pipeline) AttachHealFactory(fn func(kgtypes.GraphType, string) func(context.Context) error) {
-	p.healFactory = fn
 }
 
 // graphKey is the Pipeline-internal map key for collector tracking.
@@ -160,8 +134,8 @@ type graphKey struct {
 // client-side in cmd/knowledge/internal/llmproviders.BuildSummarizer.
 // Defined as a function-type rather than an interface so the test suite
 // can inject a fake without depending on the store package's *compositeDB
-// internals. Exported so callers wiring the pipeline (e.g. cmd/knowledge
-// runMCPMode) can adapt their summarizer to this signature.
+// internals. Exported so callers wiring the pipeline (e.g. the cmd/knowledge
+// serve daemon bootstrap) can adapt their summarizer to this signature.
 type SummarizerFunc func(ctx context.Context, chunks []llmproviders.BatchChunk) (map[string]llmproviders.SummarizeResult, error)
 
 // EmbedderFunc is the symmetric abstraction for the embedder. The pipeline
@@ -192,6 +166,7 @@ func New(cfg Config, client WireClient, summarizer SummarizerFunc, embedder Embe
 		embedder:         embedder,
 		resolver:         resolver,
 		backoff:          newErrBackoff(cfg.ErrBackoffBaseOrDefault(), cfg.ErrBackoffMaxOrDefault()),
+		circuit:          newCircuitBreaker(cfg.CircuitBreakerThresholdOrDefault()),
 		embedRPM:         newRPMGate(cfg.EmbedRPMOrDefault()),
 		summaryCh:        make(chan SummaryWork, cfg.SummaryChannelSizeOrDefault()),
 		embedCh:          make(chan EmbedWork, cfg.EmbedChannelSizeOrDefault()),
@@ -319,6 +294,26 @@ func (p *Pipeline) Metrics() Metrics {
 // output reflects the live state.
 func (p *Pipeline) ResetFailedCounters() {
 	p.metrics.resetFailed()
+}
+
+// PausePipeline latches the worker pool paused with an operator-supplied
+// reason. Both summary and embed workers block at their wait sites until
+// ResumePipeline is called. Manual pause and an auto-trip share the same
+// latch — there is no self-heal from either.
+func (p *Pipeline) PausePipeline(reason string) {
+	p.circuit.pause(reason)
+}
+
+// ResumePipeline clears the paused latch and wakes every parked worker. It is
+// the ONLY exit from a circuit break (auto-trip or manual pause).
+func (p *Pipeline) ResumePipeline() {
+	p.circuit.resume()
+}
+
+// PipelineStatus returns the current paused state for operator surfacing
+// (pipeline_status manage op, search staleness footer).
+func (p *Pipeline) PipelineStatus() PipelineStatus {
+	return PipelineStatus(p.circuit.status())
 }
 
 // EnqueueIDs pushes (gt, name, id) tuples directly onto the summary +

@@ -104,7 +104,7 @@ You describe WHAT exists and HOW it works. You do NOT propose changes (that's pl
 
 Unified graph with code symbols (functions, types, files) AND knowledge nodes (decisions, findings, plans, rules). Use both sides.
 
-The MCP surface exposes the canonical primitives the LLM calls. The server handles thoughts (adjacency/charges_for), query, traverse, mutate, delete, manage, search, file_symbols, collect, sync, pipeline_scan, and pipeline_list_graphs directly. The stdio client augments tools/list with ast, help, record_decision, create_plan, create_ticket, create_project, create_research, create_test_plan, what_next, assemble, and worker — these tools run entirely client-side via the intercept chain.
+The MCP surface exposes the canonical primitives the LLM calls. The server handles thoughts (adjacency/charges_for), query, traverse, mutate, delete, manage, search, file_symbols, collect, sync, pipeline_scan, and pipeline_list_graphs directly. The stdio client augments tools/list with ast, help, record_decision, create_plan, create_ticket, create_project, create_research, create_test_plan, assemble, and worker — these tools run entirely client-side via the intercept chain.
 
 thoughts is operation-dispatched: `thoughts({ "operation": "think" | "charge" | "recall" | "trace" | "propagate", ... })`.
 

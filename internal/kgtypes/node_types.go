@@ -28,7 +28,6 @@ const (
 	NodeEvent      NodeType = "event"       // something that happened: commit, deploy
 	NodeDocument   NodeType = "document"    // general document (plan, spec, notes)
 	NodeGithubRepo NodeType = "github_repo" // root anchor for a materialized github (owner, repo, ref) — emitted by the web collector's github materializer
-	NodeSession    NodeType = "session"     // groups tool calls within a Claude Code session
 	NodeRule       NodeType = "rule"        // codebase constraint: lint rules, conventions, patterns
 
 	// Workflow/instruction node types — agents, skills, test plans.
@@ -97,6 +96,19 @@ const (
 	// of both LLM summarization and embedding (see node_type_eligibility.go).
 	NodeWorker NodeType = "worker"
 
+	// NodeGraphTypeDef is the user-registered graph-type configuration record.
+	// It carries the combined collector + behavior definition for a
+	// new arbitrary graph type, stored as a per-account, graph-resident config
+	// node. Like NodeWorker / NodeLogBackend it is a configuration record and
+	// opts out of LLM summarization and embedding. The record body is persisted
+	// as a single base64 serialized-proto blob under the "graph_type_def_pb"
+	// metadata key (see cmd/knowledge/internal/graphtypecrud/codec.go), so both
+	// the client and the server decode the SAME proto with one proto.Unmarshal.
+	// The wire string is mirrored verbatim by the server store vocabulary
+	// (cmd/knowledge-server/internal/store/node_types_vocab.go) — a deliberate
+	// dual declaration across the two modules (no shared package).
+	NodeGraphTypeDef NodeType = "graph_type_def"
+
 	// Self-tuning metadata storage node types.
 	//
 	// NodeMetaValue is a shared value-node holding the actual content for
@@ -116,7 +128,7 @@ var knowledgeTypes = map[NodeType]bool{
 	NodePlan: true, NodePhase: true, NodeStep: true, NodeCriterion: true,
 	NodeDecision: true, NodeFinding: true, nodeMemory: true, NodeResearch: true,
 	NodeQuestion: true, NodeReference: true, nodeResource: true, NodeEvent: true,
-	NodeDocument: true, NodeGithubRepo: true, NodeSession: true, NodeRule: true,
+	NodeDocument: true, NodeGithubRepo: true, NodeRule: true,
 	NodeThought: true, NodeCharge: true, NodeThoughtSession: true,
 	NodeProxy:    true,
 	NodeTestPlan: true, NodeTestStep: true, NodeTestRun: true,

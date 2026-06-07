@@ -35,7 +35,6 @@ var helpTopics = map[string]string{
 	"create_plan":      helpCreatePlan,
 	"create_research":  helpCreateResearch,
 	"create_test_plan": helpCreateTestPlan,
-	"what_next":        helpWhatNext,
 	"record_decision":  helpRecordDecision,
 	"search":           helpSearchCode,
 	"file_symbols":     helpFileSymbols,

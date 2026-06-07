@@ -15,8 +15,8 @@ import (
 
 // intercept_query_examine.go is the client-side claim for query(mode:examine)
 // over an arbitrary node — the get-by-id + edge-neighborhood + CONTAINS-backward
-// ancestry recipe. Composed over deps.GraphClient().Execute with a BOUNDED number
-// of calls:
+// ancestry recipe. Composed over the routed deps.GraphCaller().Execute with a
+// BOUNDED number of calls:
 //
 //   - subject ByID                                       (1 Execute)
 //   - edge-neighborhood RETURN_MODE_EDGES over the id     (1 Execute)

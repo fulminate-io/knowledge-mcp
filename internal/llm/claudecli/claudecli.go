@@ -22,11 +22,12 @@
 //     translate.go).
 //
 // Tool-use is supported via --mcp-config: when opts.Tools is non-empty,
-// buildArgs emits an MCP config pointing the CLI at the running binary
-// (which speaks MCP to the knowledge graph server) plus --allowedTools to
-// pre-authorize each tool. The CLI runs its own ReAct loop and returns a
-// single final text response; intermediate tool_use blocks do not round-
-// trip to the substrate. eino's react.NewAgent sees one text response and
+// buildArgs emits an MCP config pointing the CLI at the shared knowledge
+// daemon's loopback HTTP MCP endpoint (which fronts the knowledge graph)
+// plus --allowedTools to pre-authorize each tool. The CLI runs its own
+// ReAct loop and returns a single final text response; intermediate
+// tool_use blocks do not round-trip to the substrate. eino's
+// react.NewAgent sees one text response and
 // terminates the loop, treating the CLI's answer as the final output.
 //
 // The provider self-registers under [llm.ProviderClaudeCLI] from init() so a

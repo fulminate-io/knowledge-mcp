@@ -99,7 +99,7 @@ func TestPropagationLoop_StopUnwinds(t *testing.T) {
 // TestPropagationLoop_StopNilSafe locks in the dream.Runner.Stop-style
 // nil-guard at PropagationLoop.Stop. wirePropagationRuntime degrading
 // at boot leaves c.propLoop nil; the deferred c.propLoop.Stop(...) in
-// runMCPMode must not panic.
+// the serve daemon's cleanup closure must not panic.
 func TestPropagationLoop_StopNilSafe(t *testing.T) {
 	t.Parallel()
 	var p *PropagationLoop

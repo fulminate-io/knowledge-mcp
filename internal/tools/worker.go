@@ -115,7 +115,8 @@ func InterceptWorker(deps ClientDeps, params kgtools.CallToolParams) (bool, kgto
 
 // handleWorkerTrigger fires a worker manually via the client-side
 // runtime. Errors when the runtime is nil (wireWorkerRuntime degraded
-// at boot — see runMCPMode in mcp.go) or when the worker name is empty.
+// at boot — see buildClient in the serve daemon bootstrap) or when the
+// worker name is empty.
 // The runtime itself rejects unknown / disabled workers with a
 // descriptive error message; we forward that verbatim.
 //

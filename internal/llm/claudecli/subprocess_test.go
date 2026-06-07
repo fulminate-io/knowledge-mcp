@@ -59,10 +59,9 @@ echo "$@"`)
 
 // TestRunCLI_NonZeroExit_TerminalDefault verifies that a non-zero exit
 // with neutral stderr maps to a terminal LLMError (Reason "cli_exec").
-// Wait — our heuristic classifies empty/neutral stderr as TRANSIENT to
-// avoid stamping recoverable wobbles as terminal. This test asserts that
-// neutral-but-non-empty stderr is terminal: the heuristic only flips
-// transient when explicit rate-limit / 429 / 503 signals are present.
+// Every non-zero claude-CLI exit (other than the ctx-deadline path) now
+// classifies terminal — see TestRunCLI_NonZeroExit_TerminalOnRateLimit for
+// the formerly-transient rate-limit case.
 func TestRunCLI_NonZeroExit_TerminalDefault(t *testing.T) {
 	bin := writeFakeClaudeBin(t, `echo 'parse failure' 1>&2
 exit 2`)
@@ -87,9 +86,12 @@ exit 2`)
 	}
 }
 
-// TestRunCLI_NonZeroExit_TransientOnRateLimit verifies that the heuristic
-// flips transient when rate-limit signals appear in stderr.
-func TestRunCLI_NonZeroExit_TransientOnRateLimit(t *testing.T) {
+// TestRunCLI_NonZeroExit_TerminalOnRateLimit verifies that a rate-limit
+// signal in stderr now classifies TERMINAL. CLI quota/rate-limit blowups
+// carry no Retry-After, so retrying re-runs the same node forever; terminal
+// classification sheds the node and the circuit breaker / human resume
+// handles a quota wall.
+func TestRunCLI_NonZeroExit_TerminalOnRateLimit(t *testing.T) {
 	bin := writeFakeClaudeBin(t, `echo 'HTTP 429: rate limit exceeded' 1>&2
 exit 1`)
 
@@ -101,8 +103,8 @@ exit 1`)
 	if !errors.As(err, &llmErr) {
 		t.Fatalf("expected *llm.LLMError, got %T: %v", err, err)
 	}
-	if !llmErr.Transient {
-		t.Fatalf("expected transient classification for rate-limit stderr, got terminal")
+	if llmErr.Transient {
+		t.Fatalf("expected terminal classification for rate-limit stderr, got transient")
 	}
 }
 
@@ -130,28 +132,30 @@ func TestRunCLI_ContextCancel(t *testing.T) {
 	}
 }
 
-// TestCLIErrorSignalTransient spot-checks the classifier's case-insensitive
-// signal matching and — critically — the empty/unknown → TERMINAL default.
-// The empty → transient default was the infinite-retry bug: claude CLI
-// writes nothing to stderr on failure, so every non-zero exit hit the empty
-// branch, was classified transient, and retried forever.
+// TestCLIErrorSignalTransient pins the always-terminal classification: every
+// claude-CLI error — including the former transient signals (rate limit / 429
+// / 503 / overloaded / usage limit / try again) — now classifies TERMINAL.
+// CLI quota/auth blowups carry no Retry-After, so retrying re-discovers and
+// re-runs the same node forever; shedding it and letting a human resume is the
+// fix. The ctx-deadline path stays transient and is classified in runCLI, not
+// here.
 func TestCLIErrorSignalTransient(t *testing.T) {
 	tests := []struct {
 		name string
 		in   string
 		want bool
 	}{
-		{"empty -> terminal (was the bug)", "", false},
+		{"empty -> terminal", "", false},
 		{"whitespace -> terminal", "   \n", false},
-		{"rate limit lowercase", "got rate limit", true},
-		{"RATE LIMIT uppercase", "GOT RATE LIMIT", true},
-		{"429 substring", "got HTTP 429", true},
-		{"503 substring", "503 service unavailable", true},
-		{"overloaded", "model is Overloaded", true},
-		{"usage limit", "usage limit reached", true},
-		{"try again", "please try again later", true},
-		{"neutral parse error", "parse failure: bad json", false},
-		{"4xx not 429", "400 bad request", false},
+		{"rate limit lowercase -> terminal", "got rate limit", false},
+		{"RATE LIMIT uppercase -> terminal", "GOT RATE LIMIT", false},
+		{"429 substring -> terminal", "got HTTP 429", false},
+		{"503 substring -> terminal", "503 service unavailable", false},
+		{"overloaded -> terminal", "model is Overloaded", false},
+		{"usage limit -> terminal", "usage limit reached", false},
+		{"try again -> terminal", "please try again later", false},
+		{"neutral parse error -> terminal", "parse failure: bad json", false},
+		{"4xx not 429 -> terminal", "400 bad request", false},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -175,9 +179,9 @@ func TestClassifyCLIExit(t *testing.T) {
 		wantContains  string
 	}{
 		{
-			name:          "stdout envelope rate-limit -> transient, message surfaced",
+			name:          "stdout envelope rate-limit -> terminal, message surfaced",
 			stdout:        `{"type":"result","subtype":"error","is_error":true,"result":"rate limit exceeded, try again"}`,
-			wantTransient: true,
+			wantTransient: false,
 			wantContains:  "rate limit exceeded",
 		},
 		{
@@ -200,9 +204,9 @@ func TestClassifyCLIExit(t *testing.T) {
 			wantContains:  "claude login",
 		},
 		{
-			name:          "stderr fallback when stdout empty",
+			name:          "stderr fallback when stdout empty -> terminal",
 			stderr:        "overloaded_error",
-			wantTransient: true,
+			wantTransient: false,
 			wantContains:  "overloaded_error",
 		},
 	}

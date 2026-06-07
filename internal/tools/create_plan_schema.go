@@ -22,7 +22,7 @@ Returns the full plan tree. Use this instead of individual create_project/create
 			Properties: map[string]kgtools.Property{
 				"name":    {Type: "string", Description: "Plan name"},
 				"goal":    {Type: "string", Description: "What this plan aims to achieve"},
-				"summary": {Type: "string", MaxLength: 500, Description: "Required search-optimized one-line summary, max 500 chars (handler enforces). See docs/node-type-llm-defaults.md for why this is required on embed-only-knowledge types."},
+				"summary": {Type: "string", MaxLength: 500, Description: "Required search-optimized one-line summary, max 500 chars (handler enforces)."},
 				"phases": {Type: "array", Description: "Ordered list of phases. Each phase REQUIRES name and summary; each step REQUIRES name, description, and summary (handler enforces).", Items: &kgtools.Property{
 					Type: "object", Description: `Phase object: {"name":"...","overview":"...","summary":"required search-optimized one-line summary, max 500 chars","steps":[{"name":"...","description":"...","summary":"required search-optimized one-line summary, max 500 chars","file_paths":"...","criteria":[{"description":"...","command":"...","type":"automated|manual"}]}]}`,
 					AdditionalProperties: &falseValue, Properties: map[string]kgtools.Property{

@@ -19,7 +19,7 @@ func HelpToolDef() kgtools.MCPTool {
 					Type: "string",
 					Description: "Topic to get help on. Omit for overview. Tool names: query, traverse, mutate, delete, manage, ast, " +
 						"thoughts, create_project, create_ticket, create_plan, create_research, create_test_plan, " +
-						"what_next, record_decision, search, file_symbols, help, assemble, sync. " +
+						"record_decision, search, file_symbols, help, assemble, sync. " +
 						"Reference topics: node_types, edge_types, statuses, workflows, logs, patterns, recipes, topology.",
 					Enum: []string{
 						"overview",
@@ -29,7 +29,7 @@ func HelpToolDef() kgtools.MCPTool {
 						"thoughts",
 						"create_project", "create_ticket",
 						"create_plan", "create_research", "create_test_plan",
-						"what_next", "record_decision",
+						"record_decision",
 						"search", "file_symbols",
 						"help", "assemble", "sync",
 					},

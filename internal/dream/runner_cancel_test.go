@@ -13,7 +13,7 @@ import (
 // observe Running() returns just the survivor. Verifies the map plumbing
 // before any cancel-flow assertions ride on it.
 func TestRunner_RegisterUnregister(t *testing.T) {
-	r := NewRunner(nil, NewEventBus(), nil, t.TempDir(), nil, nil)
+	r := NewRunner(nil, NewEventBus(), t.TempDir(), nil, nil)
 
 	id1, _, cancel1 := r.registerInvocation(context.Background(), "alpha")
 	defer cancel1()
@@ -46,7 +46,7 @@ func TestRunner_RegisterUnregister(t *testing.T) {
 //     simulate by calling unregisterInvocation directly), Cancel(id) on
 //     the same id returns count=0.
 func TestRunner_CancelByID(t *testing.T) {
-	r := NewRunner(nil, NewEventBus(), nil, t.TempDir(), nil, nil)
+	r := NewRunner(nil, NewEventBus(), t.TempDir(), nil, nil)
 
 	id1, ctx1, cancel1 := r.registerInvocation(context.Background(), "alpha")
 	defer cancel1()
@@ -91,7 +91,7 @@ func TestRunner_CancelByID(t *testing.T) {
 // worker name. Two invocations of "alpha" + one of "beta" → Cancel("",
 // "alpha") returns 2 and only the "alpha" contexts close.
 func TestRunner_CancelByName(t *testing.T) {
-	r := NewRunner(nil, NewEventBus(), nil, t.TempDir(), nil, nil)
+	r := NewRunner(nil, NewEventBus(), t.TempDir(), nil, nil)
 
 	_, ctxA1, cA1 := r.registerInvocation(context.Background(), "alpha")
 	defer cA1()
@@ -126,7 +126,7 @@ func TestRunner_CancelByName(t *testing.T) {
 // errors out with a clear message. Sanity check on the only validation
 // path exposed by the cancel surface.
 func TestRunner_CancelValidation(t *testing.T) {
-	r := NewRunner(nil, NewEventBus(), nil, t.TempDir(), nil, nil)
+	r := NewRunner(nil, NewEventBus(), t.TempDir(), nil, nil)
 	if _, err := r.Cancel("", ""); err == nil {
 		t.Fatalf("Cancel(\"\", \"\"): want error, got nil")
 	}

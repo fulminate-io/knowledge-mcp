@@ -12,12 +12,13 @@ import (
 )
 
 // RunSubcommand inspects os.Args[1] and, when it matches one of the
-// recognized CLI subcommands (login/logout/start/stop/status/
+// recognized CLI subcommands (login/logout/start/stop/status/serve/
 // install-claude-assets/install-codex-assets/doctor), dispatches to the
 // appropriate handler.
 // Returns (handled=true, exitCode) when it handled the invocation so
 // the caller exits immediately. Returns (false, 0) when the first arg
-// is not a recognized subcommand so the default MCP stdio path runs.
+// is not a recognized subcommand so the no-subcommand fall-through
+// (bootstrap.Run, which directs the user to `knowledge serve`) runs.
 //
 // Errors from subcommands are printed to stderr; the returned exitCode
 // is non-zero on failure and 0 on clean completion.
@@ -43,6 +44,8 @@ func RunSubcommand() (handled bool, exitCode int) {
 		err = runStop(rest)
 	case "status":
 		err = runStatus(rest)
+	case "serve":
+		err = runServe(rest)
 	case "install":
 		err = runInstall(rest)
 	case "install-claude-assets":
@@ -65,9 +68,9 @@ func RunSubcommand() (handled bool, exitCode int) {
 // anywhere in args. Used by RunWorkerSubcommand for an early-bail path:
 // when the flag is present anywhere in os.Args, the subcommand returns
 // (false, 0) so main() falls through to Run, where ParseFlags picks the
-// flag up and skips wireWorkerRuntime. This is the recursion guard for
-// claudecli child processes that inherit the parent's argv (which may
-// include the worker subcommand keywords).
+// flag up and skips wireWorkerRuntime. This lets a process whose argv
+// happens to carry the worker subcommand keywords still be run purely to
+// serve the graph (e.g. the bench harness) without starting a Runner.
 func hasNoWorkerRuntimeFlag(args []string) bool {
 	for _, a := range args {
 		if a == "--no-worker-runtime" || a == "-no-worker-runtime" {

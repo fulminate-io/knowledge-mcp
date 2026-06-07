@@ -241,18 +241,6 @@ const helpCreateTestPlan = `# create_test_plan — Create a structured test plan
   })
 `
 
-const helpWhatNext = `# what_next — Find the next actionable steps
-
-Returns pending steps whose depends-on dependencies are all completed.
-
-## Parameters
-  project_id — filter to a specific project (optional)
-
-## Examples
-  what_next()
-  what_next({ "project_id": "b9c77f4e30f7e448ea3b63f626a0a6fa" })
-`
-
 const helpRecordDecision = `# record_decision — Record a design decision with rationale
 
 ## Parameters
@@ -326,7 +314,7 @@ const helpSearchCode = `# search — Unified search across code, knowledge, prac
   search({ "query": "handleRequest", "repo": "all" })
   search({ "query": "database connection", "path_prefix": "pkg/db/" })
   search({ "query": "auth", "graph": "knowledge" })
-  search({ "query": "concurrency", "graph": "practice", "language": "go" })
+  search({ "query": "concurrency", "graph": "practice" })
   search({ "query": "web server", "graph": "cloud", "account": "aws-prod" })
   search({ "query": "bucket", "graph": "cloud", "account": "aws-prod", "resource_type": "s3" })
   search({ "graph": "cloud" })  — list available cloud graphs (no account)
@@ -358,7 +346,7 @@ const helpHelp = `# help — Get documentation about tools, node types, edge typ
   Per-tool: query, traverse, mutate, delete, manage,
   think, charge, recall, create_project, create_ticket,
   create_plan, create_research, create_test_plan,
-  what_next, record_decision, search, file_symbols,
+  record_decision, search, file_symbols,
   help, assemble, sync
 `
 
@@ -386,41 +374,33 @@ The node type determines the traversal pattern:
   assemble({ "id": "agent_id" })
 `
 
-const helpSync = `# sync — Bidirectional knowledge graph sync with Fulminate Cloud
+const helpSync = `# sync — knowledge graph sync with Fulminate Cloud
 
 Requires the "sync" license scope. Three operations:
 
-  push    — upload local version-overlay changesets newer than the persisted
-            cursor. Idempotent: re-running a push with no new changes is a no-op.
-  pull    — download every server bundle newer than the persisted cursor and
-            apply with current-state-wins semantics. Empty local cursor → server
-            ships a full snapshot (first-run bootstrap).
-  promote — collapse a local overlay into the cloud base graph. Optional
-            local=true also merges the overlay into the local base.
+  push — upload the LOCAL graph to your cloud account (local → cloud). The
+         server serializes the local graph and the client uploads it; the cloud
+         side merges it new-wins into your authoritative copy.
+  pull — overwrite the LOCAL graph from your cloud account (cloud → local). A
+         FULL OVERWRITE from the authoritative cloud copy: the client fetches the
+         serialized cloud bytes and fully replaces the local graph (all
+         sync-eligible types). Requires a local server (the destination is the
+         local graph), so a cloud-only install cannot pull.
+  list — print a table of sync-eligible local graphs with their cloud sync
+         status and last-synced time.
 
 ## Parameters
-  operation — push | pull | promote (required)
-  overlay   — overlay name (promote only; defaults to active overlay)
-  local     — boolean (promote only); also merge locally when true (default false)
-
-## Cursor state
-  Stored at <graph-storage>/sync_cursor as a single timestamp line. Server-
-  authoritative — safe to delete to force a full re-pull on next sync.
-
-## First-run bootstrap
-  pull with no cursor on disk → server returns the full upstream history as a
-  snapshot bundle. The client applies it and writes the resulting cursor.
-  No special argument needed; the empty-cursor pull IS the bootstrap.
+  operation — push | pull | list (required)
+  graph     — graph type (knowledge, code, cloud, ...); defaults to 'knowledge'
+  name      — graph name; defaults to 'default'
 
 ## Examples
   sync({ "operation": "push" })
-  sync({ "operation": "pull" })
-  sync({ "operation": "promote", "overlay": "session-abc" })
-  sync({ "operation": "promote", "overlay": "session-abc", "local": true })
+  sync({ "operation": "pull", "graph": "knowledge", "name": "default" })
+  sync({ "operation": "list" })
 
 ## Result shape
-  push    → { "pushed": N, "cursor": "...", "bootstrap": bool, "changesets": N }
-  pull    → { "pulled": N, "applied": N, "cursor": "...", "bootstrap": bool }
-  promote → { "promoted": "...", "local": bool, "local_nodes_merged": N,
-              "local_edges_merged": N }   // last two only when local=true
+  push → "pushed <graph>/<name> (N bytes; ...)"
+  pull → "pulled <graph>/<name> (N bytes; N nodes, E edges)"
+  list → a table of sync-eligible graphs + cloud status
 `

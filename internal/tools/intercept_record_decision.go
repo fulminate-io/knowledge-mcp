@@ -87,10 +87,7 @@ func InterceptRecordDecision(deps ClientDeps, params kgtools.CallToolParams) (bo
 // buildDecisionNode constructs the decision node with metadata.
 // Mirrors projects.RecordDecision body.
 func buildDecisionNode(a recordDecisionArgs) *knowledgev1.Node {
-	summary := a.Choice + " because " + a.Rationale
-	if a.Alternatives != "" {
-		summary += ". Alternatives considered: " + a.Alternatives
-	}
+	summary := truncateAtWordCreate(a.Choice, validate.SummaryMaxLen)
 	node := &knowledgev1.Node{
 		Type:        string(kgtypes.NodeDecision),
 		Source:      "llm:claude",

@@ -6,9 +6,9 @@
 // hint via their MCP host's stderr/debug log without having to know
 // `knowledge doctor` exists.
 //
-// Runs from runMCPMode (per-session, not per-call) so the cost is
-// amortized across the entire MCP-host session. Walk + sha256 of
-// 19 files is ~10ms — negligible relative to the existing
+// Runs once from the serve daemon bootstrap (buildClient, per-process not
+// per-call) so the cost is amortized across the entire daemon lifetime.
+// Walk + sha256 of 19 files is ~10ms — negligible relative to the existing
 // ensureServerReachable call.
 //
 // Failures (file system errors, walk panics) are silently swallowed

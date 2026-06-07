@@ -124,6 +124,12 @@ func (e *countingEngine) ExportGraph(
 	return connect.NewResponse(&knowledgev1.ExportGraphResponse{}), nil
 }
 
+func (e *countingEngine) OverwriteGraph(
+	context.Context, *connect.Request[knowledgev1.OverwriteGraphRequest],
+) (*connect.Response[knowledgev1.OverwriteGraphResponse], error) {
+	return connect.NewResponse(&knowledgev1.OverwriteGraphResponse{}), nil
+}
+
 // startCountingEngine stands up an h2c httptest.Server in front of a
 // countingEngine handler. Returns the server URL and the engine pointer so
 // the subtest reads the hit counter. Mirrors graphclient/router_test.go's

@@ -55,34 +55,6 @@ func LinearAPIKey() string {
 	return credOrEnv(c, "LINEAR_API_KEY")
 }
 
-// retention returns the loaded config's [retention] section, or nil
-// when no config has been loaded yet OR the section was absent. Callers
-// fall back to "no prune" on nil — there is NO env-var fallback for
-// retention policy (deliberate by design: retention belongs
-// in the config file). Using Loaded() (not Active()) keeps the
-// accessors panic-free in tests and early-bootstrap code paths.
-func retention() *Retention {
-	if !Loaded() {
-		return nil
-	}
-	return Active().Retention
-}
-
-// RetentionSessions returns the configured retention window for
-// NodeSession pruning. Resolution: [retention].sessions if set, else
-// "". Empty means "do not prune session nodes" — strictly opt-in by
-// design (no env-var fallback, no built-in default).
-//
-// NOTE: this reads the loaded config singleton, so it only returns the
-// [retention] value AFTER LoadOrAutoDetect has run. The client-side
-// prune runner is responsible for the load before calling.
-func RetentionSessions() string {
-	if r := retention(); r != nil {
-		return r.Sessions
-	}
-	return ""
-}
-
 // APIKeyForProvider returns the API key for an API provider, or the empty
 // string for CLI providers (which authenticate via the user's local CLI
 // login). Resolution: [credentials].<provider>_api_key if set, else the

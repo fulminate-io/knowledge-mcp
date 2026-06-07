@@ -134,7 +134,8 @@ func shipLogsResult(ctx context.Context, uploader *remote.UploadSink, result *lo
 
 // resolveLogsProviderConfig builds the provider config map either by
 // looking up the named log_backend node via the standard query path
-// (deps.GraphClient().Call) or from inline collectArgs fields. The
+// (deps.GraphCaller() — the routed Execute carrier) or from inline
+// collectArgs fields. The
 // returned map is the input to provider.Configure.
 func resolveLogsProviderConfig(ctx context.Context, deps ClientDeps, a collectArgs) (map[string]string, error) {
 	name := strings.TrimSpace(a.Backend)

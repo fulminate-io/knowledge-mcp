@@ -5,11 +5,11 @@ package claudecli
 import (
 	"encoding/json"
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/cloudwego/eino/schema"
 
+	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/llm"
 )
 
@@ -24,10 +24,11 @@ import (
 //
 // Tool-use:
 //   - When opts.Tools is non-empty, buildArgs emits --strict-mcp-config +
-//     --mcp-config pointing the CLI back at the running binary (so it speaks
-//     MCP to the same knowledge graph server we proxy to — and ONLY that, not
-//     the user's globally-configured MCP servers) plus --allowedTools to pre-
-//     authorize each tool by its mcp__knowledge__<name> qualified form.
+//     --mcp-config pointing the CLI at the shared knowledge daemon's loopback
+//     HTTP MCP endpoint (so it speaks MCP to the same knowledge graph the
+//     daemon fronts — and ONLY that, not the user's globally-configured MCP
+//     servers) plus --allowedTools to pre-authorize each tool by its
+//     mcp__knowledge__<name> qualified form.
 //     The CLI runs its OWN MCP/ReAct loop and returns a single final
 //     text response in the JSON envelope; intermediate tool_use blocks
 //     do not round-trip to the substrate. eino-side react.NewAgent sees
@@ -106,34 +107,26 @@ func buildArgs(model llm.Model, messages []*schema.Message, opts *llm.RequestOpt
 }
 
 // buildMCPConfig generates the --mcp-config + --allowedTools arg pair for a
-// CLI invocation that needs tool-use. The MCP config points at the running
-// binary (resolved via os.Executable) under server name "knowledge"; the CLI
-// spawns it as a child stdio MCP server and proxies tool calls through it.
+// CLI invocation that needs tool-use. The MCP config points the CLI at the
+// shared `knowledge serve` daemon's loopback streamable-HTTP endpoint
+// (http transport, daemon /mcp url) under server name "knowledge" — NOT a
+// per-call stdio child of this process. The worker connects to the one
+// running daemon over HTTP exactly as editors do, so there is no spawned
+// child to break recursion on (the daemon runs a single shared runtime).
 // Tool names go from bare "search" / "thoughts" to the CLI's qualified form
 // "mcp__knowledge__search" / "mcp__knowledge__thoughts" for --allowedTools so
 // the CLI doesn't prompt for permission per call.
 //
-// Args inheritance: the child receives os.Args[1:] (whatever flags the parent
-// was invoked with — --port, --graph-storage, --root, --log-level, etc.) PLUS
-// --no-worker-runtime. Inheriting matters because the child must dial the
-// same knowledge-server the parent does; the no-worker-runtime flag breaks
-// the recursion (parent runs the dream Runner; child does NOT, so child
-// can't spawn another claude-cli that would spawn another child …). Already-
-// set --no-worker-runtime is not duplicated.
-//
 // The returned mcp-config is inline JSON suitable for `--mcp-config <json>`;
 // the CLI accepts both a file path and an inline JSON string for that flag.
+// The HTTP entry shape ({"type":"http","url":…}) matches what `claude mcp
+// add --transport http` writes into .claude.json.
 func buildMCPConfig(tools []*schema.ToolInfo) (string, string, error) {
-	self, err := os.Executable()
-	if err != nil {
-		return "", "", &llm.LLMError{Transient: false, Reason: "config", Cause: fmt.Errorf("claude-cli: resolve self path: %w", err)}
-	}
-	args := llm.ChildKnowledgeArgs(os.Args)
 	cfg := map[string]any{
 		"mcpServers": map[string]any{
 			"knowledge": map[string]any{
-				"command": self,
-				"args":    args,
+				"type": "http",
+				"url":  fmt.Sprintf("http://127.0.0.1:%d/mcp", graphclient.DefaultMCPHTTPPort),
 			},
 		},
 	}

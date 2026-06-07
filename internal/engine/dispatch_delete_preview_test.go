@@ -78,43 +78,6 @@ func TestDispatch_DeleteByIDsRealDelete_StillDeletes(t *testing.T) {
 	assert.Equal(t, "Deleted 2 node(s)", out.Content[0].Text)
 }
 
-// TestDispatch_DeletePruneDryRun_PreviewsNeverDeletes asserts the prune-by-age
-// dry-run is ALSO a real preview now (pre-fix it returned the post-cutover deny
-// error, not a preview). The single Execute is a QueryPlan whose Selection is the
-// SAME prune selection the real delete builds (NodeType=session + created_at
-// OP_LT), and the render is a "would delete" preview — nothing is deleted.
-func TestDispatch_DeletePruneDryRun_PreviewsNeverDeletes(t *testing.T) {
-	s := &seqExec{responses: []*knowledgev1.ExecuteResponse{
-		enginetest.ResponseWithNodes(
-			&knowledgev1.Node{Id: "s1", SymbolName: "old-session", Type: "session"},
-		),
-	}}
-
-	out, err := Dispatch(context.Background(),
-		s.fn(),
-		"delete", json.RawMessage(`{"older_than":"7d","type":"session","dry_run":true}`))
-	require.NoError(t, err)
-	require.False(t, out.IsError, "prune dry-run preview renders cleanly: %s", out.Content[0].Text)
-
-	require.Equal(t, 1, s.calls, "prune dry-run issues EXACTLY one Execute (the read)")
-	require.Len(t, s.reqs, 1)
-	q := s.reqs[0].GetQuery()
-	require.NotNil(t, q, "prune dry-run Execute MUST be a QueryPlan (a read)")
-	assert.Nil(t, s.reqs[0].GetMutation(), "prune dry-run Execute MUST NOT be a MutationPlan")
-	// The read Selection mirrors the real prune selection.
-	sel := q.GetSelection()
-	require.NotNil(t, sel, "the prune dry-run read carries the prune Selection")
-	assert.Equal(t, "session", sel.GetNodeType())
-	require.Len(t, sel.GetFieldPredicates(), 1)
-	assert.Equal(t, "created_at", sel.GetFieldPredicates()[0].GetField())
-	assert.Equal(t, knowledgev1.MetadataPredicate_OP_LT, sel.GetFieldPredicates()[0].GetOp())
-
-	text := out.Content[0].Text
-	assert.Contains(t, strings.ToLower(text), "would delete")
-	assert.Contains(t, text, "old-session")
-	assert.NotContains(t, text, "Deleted 1 node(s)")
-}
-
 // TestDispatch_DeleteDryRunJSON_ReportsWouldDelete asserts the JSON-format dry-run
 // reports the read-only would_delete count + nodes, NOT an affected-count delete.
 func TestDispatch_DeleteDryRunJSON_ReportsWouldDelete(t *testing.T) {

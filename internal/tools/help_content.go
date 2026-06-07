@@ -14,7 +14,6 @@ const helpOverview = `# Knowledge Graph — Tool Reference (first-class tools + 
 | create_plan       | Batch-create plan → phases → steps → criteria                          |
 | create_research   | Batch-create research with nested questions                            |
 | create_test_plan  | Create a structured test plan with steps and criteria                  |
-| what_next         | Find pending steps whose dependencies are all completed                |
 | record_decision   | Record a design decision with choice, rationale, alternatives          |
 | search            | Unified search across code, knowledge, practice, cloud graphs          |
 | file_symbols      | List all symbols in a file with optional source                        |
@@ -64,8 +63,7 @@ only-no-summarize. The CREATOR (you) must author a search-optimized one-line
 summary at creation time so search quality survives the pipeline change.
 500-char cap, handler-side validation, structured error if missing.
 record_decision / criterion / rule keep their auto-synthesized Summary;
-think keeps the SymbolName / first-line-of-content convention. See
-docs/node-type-llm-defaults.md for the full per-NodeType matrix.
+think keeps the SymbolName / first-line-of-content convention.
 `
 
 const helpNodeTypes = `# Node Types
@@ -136,8 +134,6 @@ const helpEdgeTypes = `# Edge Types
   references      — finding → external reference (paper/URL)
   produced-by     — output of a work item
   used-in         — knowledge applied somewhere
-  followed-by     — tool call sequence: A→B means B happened after A
-  executed-during — tool call → plan step it ran during
   uses            — agent/skill → tool_guide it relies on; also plan → pattern it extends
   constrains      — rule → agent/skill it governs
   instantiates    — project pattern → library pattern it instantiates (per-project concrete → generic template)
@@ -198,13 +194,13 @@ const helpWorkflows = `# Common Multi-Tool Workflows
   4. mutate(operation:"link", from:finding_id, to:question_id, relationship:"answers")
   5. record_decision() for key choices
   6. create_plan({ "name": "...", "phases": [...] })
-  7. what_next() → implement each step → mutate(status:"completed")
+  7. assemble({ "id": plan_id }) → implement each step → mutate(status:"completed")
 
 ## Project → Ticket → Plan hierarchy
   1. create_project({ "name": "My Product" })        — top-level container
   2. create_ticket({ "name": "Feature X", "project_id": "proj_id" })  — unit of work
   3. create_plan({ "name": "Impl plan", "ticket_id": "ticket_id", "phases": [...] })
-  4. what_next({ "project_id": "proj_id" }) → implement steps
+  4. query({ "mode": "plan_tree", "id": "plan_id" }) → implement steps
 
 ## Think → Charge → Recall (reasoning loop)
   1. think({ "content": "hypothesis", "summary": "one-line searchable gist", "session": "topic" })  → returns thought_id (summary REQUIRED)
@@ -280,11 +276,17 @@ Design: query is a generic primitive. It dispatches on params: 'id' → direct l
 ### Recency-boosted search
   query({ "mode": "recent", "text": "authentication" })
   query({ "mode": "recent", "text": "cache eviction", "limit": 20 })
+  query({ "mode": "recent" })                                  — most-recently-updated nodes, all types
+  query({ "mode": "recent", "types": ["project", "ticket", "plan", "phase", "step", "question"] })
 
-  Hybrid BM25+vector search with exponential temporal decay (half-life 30 days).
-  Recently-updated nodes rank higher than semantically-equal but stale ones.
-  Useful when you want the freshest relevant nodes — e.g., recent decisions,
-  active plan steps, or newly created findings.
+  With a text query: hybrid BM25+vector search with exponential temporal decay
+  (half-life 30 days) — recently-updated nodes rank higher than semantically-equal
+  but stale ones. Useful when you want the freshest relevant nodes — e.g., recent
+  decisions, active plan steps, or newly created findings.
+
+  Omit text for a pure recency browse (no search): the most-recently-updated
+  nodes by UpdatedAt. Add types to scope it — e.g. a lightweight view of the
+  most-recently-touched work items.
 
 ### Practice graph queries
   query({ "graph": "practice" })                                    — list all practice graphs

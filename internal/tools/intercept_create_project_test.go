@@ -15,7 +15,6 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/backends"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
-	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 )
 
@@ -106,12 +105,13 @@ type interceptTestDeps struct {
 	gc      GraphCaller
 }
 
-func (d interceptTestDeps) GraphClient() *graphclient.GraphClient { return nil }
-func (d interceptTestDeps) Sink() collector.Sink                  { return nil }
-func (d interceptTestDeps) RootDir() string                       { return "" }
-func (d interceptTestDeps) WorkerRuntime() WorkerRuntimeAPI       { return nil }
-func (d interceptTestDeps) WorkerCRUD() WorkerCRUDAPI             { return nil }
-func (d interceptTestDeps) Embedder() embed.BinaryEmbedder        { return nil }
+func (d interceptTestDeps) LocalLiveness() LocalLiveness    { return nil }
+func (d interceptTestDeps) Sink() collector.Sink            { return nil }
+func (d interceptTestDeps) RootDir() string                 { return "" }
+func (d interceptTestDeps) WorkerRuntime() WorkerRuntimeAPI { return nil }
+func (d interceptTestDeps) WorkerCRUD() WorkerCRUDAPI       { return nil }
+func (d interceptTestDeps) GraphTypeCRUD() GraphTypeCRUDAPI { return nil }
+func (d interceptTestDeps) Embedder() embed.BinaryEmbedder  { return nil }
 func (d interceptTestDeps) BackendResolver() BackendResolver {
 	return fakeResolver{def: d.backend, byName: d.byName}
 }

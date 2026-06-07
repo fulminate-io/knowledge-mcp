@@ -92,15 +92,19 @@ func handleClientCrossGraphLink(ctx context.Context, deps ClientDeps, a mutateAr
 	//    FROM-only short-circuit: a foreign FROM is decided on ONE probe).
 	//  - FROM in knowledge → probe a.To in knowledge. If BOTH resolve in knowledge
 	//    this is a knowledge↔knowledge link with no cross-graph aspect → return
-	//    (false,_) BEFORE any foreign-graph enumeration so it stays on the server
-	//    bare-link path. Worst case: 2 ByID probes (FROM then TO), zero list read.
+	//    (false,_) BEFORE any foreign-graph enumeration. The declined call then
+	//    routes through the cloud-aware engine dispatch (generic
+	//    MUTATION_KIND_LINK Execute), not a local server. Worst case: 2 ByID
+	//    probes (FROM then TO), zero list read.
 	fromInKnowledge := false
 	if knownFrom, ferr := render.FetchNodeIn(ctx, gc, a.From, "knowledge", ""); ferr == nil && knownFrom != nil && knownFrom.Id != "" {
 		fromInKnowledge = true
 	}
 	if fromInKnowledge {
 		if knownTO, terr := render.FetchNodeIn(ctx, gc, a.To, "knowledge", ""); terr == nil && knownTO != nil && knownTO.Id != "" {
-			// Both endpoints in knowledge → no cross-graph aspect → server bare-link.
+			// Both endpoints in knowledge → no cross-graph aspect → return
+			// (false,_); the bare link is handled by the cloud-aware engine
+			// dispatch (generic MUTATION_KIND_LINK Execute), not a local server.
 			return false, kgtools.ToolResult{}
 		}
 	}

@@ -20,7 +20,7 @@ Findings are added later via record_finding with question_id. Use this for compl
 			Properties: map[string]kgtools.Property{
 				"name":      {Type: "string", Description: "Research project name"},
 				"goal":      {Type: "string", Description: "What this research aims to answer"},
-				"summary":   {Type: "string", MaxLength: 500, Description: "Required search-optimized one-line summary, max 500 chars (handler enforces). See docs/node-type-llm-defaults.md for why this is required on embed-only-knowledge types."},
+				"summary":   {Type: "string", MaxLength: 500, Description: "Required search-optimized one-line summary, max 500 chars (handler enforces)."},
 				"ticket_id": {Type: "string", Description: "Ticket node ID to link this research under (optional)"},
 				"questions": {Type: "array", Description: "Ordered list of research questions. Each question REQUIRES a summary (search-optimized rendering of the question itself, distinct from context which is background).", Items: &kgtools.Property{
 					Type: "object", Description: `Question object: {"question":"...","summary":"required search-optimized one-line summary, max 500 chars","context":"why this question matters"}`,

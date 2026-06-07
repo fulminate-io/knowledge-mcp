@@ -29,7 +29,6 @@ import (
 
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 	"github.com/fulminate-io/knowledge-mcp/internal/dream"
-	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 )
 
 // fakeRuntime satisfies WorkerRuntimeAPI without instantiating a real
@@ -129,19 +128,20 @@ type workerTestDeps struct {
 	crud    WorkerCRUDAPI
 }
 
-func (d workerTestDeps) GraphClient() *graphclient.GraphClient { return nil }
-func (d workerTestDeps) Sink() collector.Sink                  { return nil }
-func (d workerTestDeps) RootDir() string                       { return "" }
-func (d workerTestDeps) WorkerRuntime() WorkerRuntimeAPI       { return d.runtime }
-func (d workerTestDeps) WorkerCRUD() WorkerCRUDAPI             { return d.crud }
-func (d workerTestDeps) Embedder() embed.BinaryEmbedder        { return nil }
-func (d workerTestDeps) BackendResolver() BackendResolver      { return nil }
-func (d workerTestDeps) GraphCaller() GraphCaller              { return nil }
-func (d workerTestDeps) LocalGraphCaller() GraphCaller         { return nil }
-func (d workerTestDeps) RepoResolver() *RepoResolver           { return nil }
-func (d workerTestDeps) SegmentManager() SegmentSearcher       { return nil }
-func (d workerTestDeps) SegmentShipper() SegmentShipper        { return nil }
-func (d workerTestDeps) PipelineScanner() PipelineScanner      { return nil }
+func (d workerTestDeps) LocalLiveness() LocalLiveness     { return nil }
+func (d workerTestDeps) Sink() collector.Sink             { return nil }
+func (d workerTestDeps) RootDir() string                  { return "" }
+func (d workerTestDeps) WorkerRuntime() WorkerRuntimeAPI  { return d.runtime }
+func (d workerTestDeps) WorkerCRUD() WorkerCRUDAPI        { return d.crud }
+func (d workerTestDeps) GraphTypeCRUD() GraphTypeCRUDAPI  { return nil }
+func (d workerTestDeps) Embedder() embed.BinaryEmbedder   { return nil }
+func (d workerTestDeps) BackendResolver() BackendResolver { return nil }
+func (d workerTestDeps) GraphCaller() GraphCaller         { return nil }
+func (d workerTestDeps) LocalGraphCaller() GraphCaller    { return nil }
+func (d workerTestDeps) RepoResolver() *RepoResolver      { return nil }
+func (d workerTestDeps) SegmentManager() SegmentSearcher  { return nil }
+func (d workerTestDeps) SegmentShipper() SegmentShipper   { return nil }
+func (d workerTestDeps) PipelineScanner() PipelineScanner { return nil }
 
 // callWorker invokes InterceptWorker with the given JSON args and
 // returns the (handled, body, isError) tuple. Mirrors callAst's shape.

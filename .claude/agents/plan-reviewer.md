@@ -284,6 +284,10 @@ For every step proposing non-trivial code, run through:
 
 If no findings, "None" is fine but be SPECIFIC — name the steps and primitives.
 
+### Step 7.6 — Workaround chosen to avoid a mechanical sweep (over-complex design)
+
+When a plan adopts an indirection, value-fallback, half-measure, or special-case to AVOID touching many call/read sites, check whether the *avoided* clean design would have been a UNIFORM structural sweep. If yes, `ast operation:"replace"` makes that sweep cheap (1-2 dry-run-previewed, where-tree-scoped, re-parse-gated calls + a few `Edit`s for the non-uniform minority) — so the avoidance is an over-complex (and frequently LESS-correct) workaround chosen to dodge nearly-free work → **Tier 2**. The tell: rationale like "this touches ~N sites, too large/risky, so instead we…", or a site count that was ESTIMATED rather than measured. Verify by running `ast count` on the would-be-sweep pattern: a high count of a UNIFORM shape argues FOR the clean design, not against it. (A genuinely NON-uniform sweep — each site needing distinct judgment — is a real cost, not a finding.) Watch especially for correctness regressions in the workaround itself (e.g. a partial-atomic that leaves some reads on the old field).
+
 ### Step 8 — Externalize reasoning (optional)
 
 Use `think` for non-obvious hypotheses during investigation.

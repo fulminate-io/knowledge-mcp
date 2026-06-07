@@ -24,23 +24,21 @@ const (
 
 // Knowledge edge types (lowercase, for knowledge graph relationships).
 const (
-	EdgeKGContains     EdgeType = "contains"        // parent → child (plan → phase, phase → step)
-	EdgeDependsOn      EdgeType = "depends-on"      // must complete before
-	EdgeVerifies       EdgeType = "verifies"        // criterion → step
-	EdgeInformedBy     EdgeType = "informed-by"     // decision ← finding/research
-	EdgeSupports       EdgeType = "supports"        // evidence → decision
-	EdgeAnswers        EdgeType = "answers"         // finding → research question
-	EdgeRelatesTo      EdgeType = "relates-to"      // general association
-	EdgeKGImplements   EdgeType = "implements"      // step → code resource
-	EdgeReferences     EdgeType = "references"      // finding → reference (paper/URL)
-	EdgeFollowedBy     EdgeType = "followed-by"     // tool call sequence: A → B means B happened after A
-	EdgeExecutedDuring EdgeType = "executed-during" // tool call → plan step it was executed during
-	EdgeUses           EdgeType = "uses"            // agent/skill → tool_guide it relies on
-	EdgeAudits         EdgeType = "audits"          // ticket/plan → language_pattern (defensive — "audit the implementation against this anti-pattern")
-	EdgeConstrains     EdgeType = "constrains"      // rule → agent/skill it governs
-	EdgeInstantiates   EdgeType = "instantiates"    // project pattern → library pattern (concrete instantiation of a canonical pattern)
-	EdgeAppliesWhen    EdgeType = "applies-when"    // pattern → use_case condition under which the pattern should be applied
-	EdgeAvoidWhen      EdgeType = "avoid-when"      // pattern → use_case condition under which the pattern should be avoided
+	EdgeKGContains   EdgeType = "contains"     // parent → child (plan → phase, phase → step)
+	EdgeDependsOn    EdgeType = "depends-on"   // must complete before
+	EdgeVerifies     EdgeType = "verifies"     // criterion → step
+	EdgeInformedBy   EdgeType = "informed-by"  // decision ← finding/research
+	EdgeSupports     EdgeType = "supports"     // evidence → decision
+	EdgeAnswers      EdgeType = "answers"      // finding → research question
+	EdgeRelatesTo    EdgeType = "relates-to"   // general association
+	EdgeKGImplements EdgeType = "implements"   // step → code resource
+	EdgeReferences   EdgeType = "references"   // finding → reference (paper/URL)
+	EdgeUses         EdgeType = "uses"         // agent/skill → tool_guide it relies on
+	EdgeAudits       EdgeType = "audits"       // ticket/plan → language_pattern (defensive — "audit the implementation against this anti-pattern")
+	EdgeConstrains   EdgeType = "constrains"   // rule → agent/skill it governs
+	EdgeInstantiates EdgeType = "instantiates" // project pattern → library pattern (concrete instantiation of a canonical pattern)
+	EdgeAppliesWhen  EdgeType = "applies-when" // pattern → use_case condition under which the pattern should be applied
+	EdgeAvoidWhen    EdgeType = "avoid-when"   // pattern → use_case condition under which the pattern should be avoided
 	// EdgeTranslatedFrom records provenance from a node in a target domain graph
 	// (e.g. practice/design-patterns) back to the source node it was synthesized
 	// from (in any source graph type — web, code, cloud, knowledge, …) during a

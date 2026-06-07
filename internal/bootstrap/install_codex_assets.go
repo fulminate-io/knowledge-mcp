@@ -124,8 +124,9 @@ func runInstallCodexAssets(args []string) error {
 		fmt.Fprintln(os.Stdout, "  --no-mcp: skipped MCP registration")
 		return nil
 	}
-	// Default-on, non-fatal MCP registration. Codex has no -s user
-	// scope flag, so scopeArgs is nil.
+	// Default-on, non-fatal MCP registration against the daemon's
+	// loopback streamable-HTTP MCP endpoint. Codex has no -s user scope
+	// flag, so scopeArgs is nil.
 	return registerKnowledgeMCP("codex", nil, f.dryRun)
 }
 

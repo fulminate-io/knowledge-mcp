@@ -24,7 +24,7 @@ You are a test execution specialist. You run test plans from the knowledge graph
 
 Tools for test execution (assemble, mutate for recording, query for steps) + code understanding (search, traverse, Read).
 
-The server exposes 19 tools (14 first-class + 5 generic). First-class: think, charge, recall, create_plan, create_research, create_test_plan, what_next, search, file_symbols, help, assemble, workflow, execution. Generic: query, traverse, mutate, delete, manage.
+The server exposes the knowledge-graph MCP tool surface: generic primitives (query, traverse, mutate, delete, manage) plus first-class tools like thoughts, search, file_symbols, assemble, help and the create_* batch creators.
 
 **Dream worker** runs in background to enrich the graph. Outputs searchable via `recall` and `query`.
 

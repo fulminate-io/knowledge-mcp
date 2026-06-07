@@ -33,9 +33,9 @@ import (
 //     callers (the CLI doesn't expose thinking blocks via JSON output in
 //     prompt mode). Mirrors store/summarize_cli.go.
 //   - Exit-code classification: ctx-deadline → transient cli_deadline.
-//     Otherwise heuristic match on stderr for rate-limit / overloaded /
-//     429 / 503 → transient cli_exec; anything else terminal cli_exec.
-//     Heuristic mirrors store/summarize_cli.go which has run for months.
+//     Every other non-zero exit → terminal cli_exec. CLI quota/auth blowups
+//     carry no Retry-After and only a human can clear them, so they shed the
+//     node rather than retry forever (see cliErrorSignalTransient).
 func runCLI(ctx context.Context, bin string, args []string, stdin string, inheritWorkdir bool) ([]byte, error) {
 	cmd := exec.CommandContext(ctx, bin, args...)
 	// ANTHROPIC_API_KEY is stripped from the subprocess env so the
@@ -49,14 +49,16 @@ func runCLI(ctx context.Context, bin string, args []string, stdin string, inheri
 	cmd.Env = llm.ChildEnv([]string{"ANTHROPIC_API_KEY"}, "MAX_THINKING_TOKENS=0")
 	// Default cwd = os.TempDir() to suppress claude-cli's project-
 	// config auto-detection. claude-cli reads `.mcp.json` from the
-	// cwd at startup and spawns the configured MCP servers as child
-	// processes BEFORE issuing the API call. When runCLI fires from
-	// inside knowledge-server with cwd = the project root (which has
-	// `.mcp.json` → command:"knowledge"), claude-cli spawns a child
-	// `knowledge` stdio client that dials back to the same server
-	// we're running in — recursive trap that adds ~30s per call and
-	// risks deadlocks. The summarizer + startup precheck are
-	// non-agentic and must NOT inherit project context.
+	// cwd at startup and connects to the configured MCP servers
+	// BEFORE issuing the API call. When runCLI fires from inside
+	// knowledge-server with cwd = the project root (whose `.mcp.json`
+	// registers the knowledge daemon's loopback HTTP MCP endpoint),
+	// the CLI would open an extra connection to that daemon for a
+	// summarizer/precheck turn that wants no tools at all — wasted
+	// startup. The summarizer + startup precheck are non-agentic and
+	// must NOT inherit project context. (Tool-use callers pass their
+	// own --strict-mcp-config blob via buildMCPConfig, which points at
+	// the same daemon over HTTP — see translate.go.)
 	//
 	// Dream-worker callers pass inheritWorkdir=true (see
 	// llm.WithInheritWorkdir): they're explicitly running the LLM
@@ -111,11 +113,11 @@ func runCLI(ctx context.Context, bin string, args []string, stdin string, inheri
 // empty — an opaque exit with no output at all yields "(no CLI output)" so
 // the operator log always carries SOMETHING actionable.
 //
-// Classification is signal-driven, NOT empty-default-transient: a non-zero
-// exit we cannot positively identify as a rate-limit / overload is treated
-// as TERMINAL. This matches llm.IsTransient's own philosophy (unknown
-// failure modes are terminal so one bad node never burns infinite worker
-// time) and is the fix for the empty-stderr → infinite-retry loop.
+// Classification is always TERMINAL for a non-zero exit (cliErrorSignalTransient
+// returns false unconditionally): CLI quota/auth/overload failures have no
+// programmatic reset hint, so retrying re-discovers and re-runs the same node
+// forever. Shedding the node matches llm.IsTransient's unknown-is-terminal
+// philosophy and lets the circuit breaker + human resume handle a quota wall.
 func classifyCLIExit(stdoutBytes []byte, stderrStr string) (transient bool, detail string) {
 	stdout := strings.TrimSpace(string(stdoutBytes))
 	stderr := strings.TrimSpace(stderrStr)
@@ -160,26 +162,26 @@ func parseCLIErrorEnvelope(stdoutBytes []byte) (msg string, ok bool) {
 	return env.Subtype, true
 }
 
-// cliErrorSignalTransient reports whether the supplied diagnostic text
-// carries a positive transient signal — a rate-limit or server-overload
-// marker (case-insensitive substring match).
+// cliErrorSignalTransient reports whether a non-zero claude-CLI exit should
+// classify transient. It ALWAYS returns false: every claude-CLI error —
+// including rate-limit / usage-limit / 429 / 503 / overloaded / "try again" —
+// is now terminal.
 //
-// Empty / unrecognized text returns FALSE (terminal). This is the deliberate
-// inversion of the prior empty-stderr → transient default, which caused an
-// infinite retry loop: claude CLI writes nothing to stderr on failure (its
-// JSON error envelope goes to stdout), so EVERY non-zero exit hit the empty
-// branch, was classified transient, never got a failure marker, and was
-// re-discovered + retried every collector tick forever. Callers that have
-// the stdout envelope must pass its text here so a genuine 429/overload is
-// still recognized; anything we cannot positively identify as transient is
-// terminal so a single bad node never burns infinite worker time (matches
-// llm.IsTransient's unknown-is-terminal philosophy).
-func cliErrorSignalTransient(s string) bool {
-	lower := strings.ToLower(s)
-	return strings.Contains(lower, "rate limit") ||
-		strings.Contains(lower, "overloaded") ||
-		strings.Contains(lower, "429") ||
-		strings.Contains(lower, "503") ||
-		strings.Contains(lower, "usage limit") ||
-		strings.Contains(lower, "try again")
+// The CLI authenticates via the user's local subscription login, so a
+// quota/auth blowup has no Retry-After and no programmatic reset hint: the
+// subprocess cannot tell us when the user's limit refills. Treating those
+// signals as transient previously meant the summary/embed pipeline re-
+// discovered the same node and re-ran the CLI every collector tick forever,
+// burning worker time against a wall that only a human can clear. Terminal
+// classification stamps a failure reason and sheds the node instead; the
+// pipeline-level circuit breaker pauses the worker pool on a zero-success
+// storm, and the operator clears the failure (clear_llm_failures) or resumes
+// (resume_pipeline) once the quota refills. The ctx-deadline path
+// (cli_deadline) stays transient and is classified separately in runCLI — it
+// never reaches here.
+//
+// The string parameter is retained so the five call sites keep their
+// (string) bool shape; the argument is now unused.
+func cliErrorSignalTransient(_ string) bool {
+	return false
 }

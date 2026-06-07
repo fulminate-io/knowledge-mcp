@@ -106,6 +106,22 @@ func SyncEligibleGraphTypes() []GraphType {
 	return out
 }
 
+// IsBuiltinGraphType reports whether name matches one of the canonical built-in
+// GraphType constants (knowledge / code / cloud / cicd / practice / linkage /
+// transformers / logs / web / pdf). It is the registration-time collision
+// predicate for user-registered graph types: a GraphTypeDef whose Name collides
+// with a built-in is rejected so a registered type can never shadow a built-in.
+// A predicate (not the slice) is exported so allGraphTypes stays package-private
+// and its existing readers are untouched.
+func IsBuiltinGraphType(name string) bool {
+	for _, gt := range allGraphTypes {
+		if string(gt) == name {
+			return true
+		}
+	}
+	return false
+}
+
 // Status values for work nodes. Internal vocabulary, NOT a closed enum —
 // see mutateRequestArgs.Status comment for the open-string contract.
 const (

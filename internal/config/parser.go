@@ -26,7 +26,6 @@ type parseShape struct {
 	Summarizer    *parseSection     `toml:"summarizer"`
 	Dream         *parseSection     `toml:"dream"`
 	Credentials   *parseCredentials `toml:"credentials"`
-	Retention     *parseRetention   `toml:"retention"`
 }
 
 // parseCredentials mirrors the optional [credentials] TOML table. Pointer
@@ -38,17 +37,6 @@ type parseCredentials struct {
 	AnthropicAPIKey string `toml:"anthropic_api_key"`
 	OpenAIAPIKey    string `toml:"openai_api_key"`
 	GeminiAPIKey    string `toml:"gemini_api_key"`
-}
-
-// parseRetention mirrors the optional [retention] TOML table. Pointer
-// on parseShape preserves absent-vs-present. Each field is a duration
-// string ('7d', '24h', etc.) consumed by the client-side auto-prune
-// runner; empty means "no prune for this node type" (strictly opt-in,
-// no built-in defaults). Unlike [credentials] there is NO env-var
-// fallback — retention policy is a deliberate per-machine choice that
-// belongs in the config file, not the environment.
-type parseRetention struct {
-	Sessions string `toml:"sessions"`
 }
 
 // parseSection mirrors a single TOML table. Three keys:
@@ -140,11 +128,6 @@ func Parse(data []byte) (*Config, error) {
 			AnthropicAPIKey: raw.Credentials.AnthropicAPIKey,
 			OpenAIAPIKey:    raw.Credentials.OpenAIAPIKey,
 			GeminiAPIKey:    raw.Credentials.GeminiAPIKey,
-		}
-	}
-	if raw.Retention != nil {
-		cfg.Retention = &Retention{
-			Sessions: raw.Retention.Sessions,
 		}
 	}
 	return cfg, nil

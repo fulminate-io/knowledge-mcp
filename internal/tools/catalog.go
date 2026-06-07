@@ -26,7 +26,7 @@ var falseValue = false
 //   - sync (the bidirectional Fulminate Cloud sync tool)
 //   - first-class tools (thoughts/search/file_symbols/collect)
 //   - the remaining client-owned tools (worker/ast/help/record_decision +
-//     the create_* batch creators + what_next + assemble)
+//     the create_* batch creators + assemble)
 //
 // pipeline_scan + pipeline_list_graphs are NOT advertised. They are
 // index-gap-discovery infra, never LLM-facing tool calls — pipeline_scan rides its
@@ -54,6 +54,7 @@ func AllToolSchemas() []kgtools.MCPTool {
 
 		// Remaining client-owned tools.
 		WorkerToolDef(),
+		GraphTypeToolDef(),
 		AstToolDef(),
 		HelpToolDef(),
 		RecordDecisionToolDef(),
@@ -62,7 +63,6 @@ func AllToolSchemas() []kgtools.MCPTool {
 		CreateProjectToolDef(),
 		CreateResearchToolDef(),
 		CreateTestPlanToolDef(),
-		WhatNextToolDef(),
 		AssembleToolDef(),
 	}
 }

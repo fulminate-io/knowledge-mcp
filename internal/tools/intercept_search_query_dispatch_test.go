@@ -112,6 +112,12 @@ func (h *dispatchEngineHandler) ExportGraph(
 	return nil, connect.NewError(connect.CodeUnimplemented, nil)
 }
 
+func (h *dispatchEngineHandler) OverwriteGraph(
+	context.Context, *connect.Request[knowledgev1.OverwriteGraphRequest],
+) (*connect.Response[knowledgev1.OverwriteGraphResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, nil)
+}
+
 // stubEmbedder is a fake BinaryEmbedder recording invocations and deriving a
 // DISTINCT deterministic 32-byte vector per input text (sha256(text)[:32]) so
 // per-query tests can assert each query carries its OWN embedding (not a shared
@@ -153,19 +159,20 @@ type interceptDeps struct {
 	segMgr SegmentSearcher
 }
 
-func (d *interceptDeps) GraphClient() *graphclient.GraphClient { return d.gc }
-func (d *interceptDeps) Sink() collector.Sink                  { return nil }
-func (d *interceptDeps) RootDir() string                       { return "" }
-func (d *interceptDeps) WorkerRuntime() WorkerRuntimeAPI       { return nil }
-func (d *interceptDeps) WorkerCRUD() WorkerCRUDAPI             { return nil }
-func (d *interceptDeps) Embedder() embed.BinaryEmbedder        { return d.emb }
-func (d *interceptDeps) BackendResolver() BackendResolver      { return nil }
-func (d *interceptDeps) GraphCaller() GraphCaller              { return d.gc }
-func (d *interceptDeps) LocalGraphCaller() GraphCaller         { return d.gc }
-func (d *interceptDeps) RepoResolver() *RepoResolver           { return nil }
-func (d *interceptDeps) SegmentManager() SegmentSearcher       { return d.segMgr }
-func (d *interceptDeps) SegmentShipper() SegmentShipper        { return nil }
-func (d *interceptDeps) PipelineScanner() PipelineScanner      { return nil }
+func (d *interceptDeps) LocalLiveness() LocalLiveness     { return d.gc }
+func (d *interceptDeps) Sink() collector.Sink             { return nil }
+func (d *interceptDeps) RootDir() string                  { return "" }
+func (d *interceptDeps) WorkerRuntime() WorkerRuntimeAPI  { return nil }
+func (d *interceptDeps) WorkerCRUD() WorkerCRUDAPI        { return nil }
+func (d *interceptDeps) GraphTypeCRUD() GraphTypeCRUDAPI  { return nil }
+func (d *interceptDeps) Embedder() embed.BinaryEmbedder   { return d.emb }
+func (d *interceptDeps) BackendResolver() BackendResolver { return nil }
+func (d *interceptDeps) GraphCaller() GraphCaller         { return d.gc }
+func (d *interceptDeps) LocalGraphCaller() GraphCaller    { return d.gc }
+func (d *interceptDeps) RepoResolver() *RepoResolver      { return nil }
+func (d *interceptDeps) SegmentManager() SegmentSearcher  { return d.segMgr }
+func (d *interceptDeps) SegmentShipper() SegmentShipper   { return nil }
+func (d *interceptDeps) PipelineScanner() PipelineScanner { return nil }
 
 func newInterceptHarness(t *testing.T, execHits *atomic.Int64, resp *knowledgev1.ExecuteResponse) *graphclient.GraphClient {
 	t.Helper()

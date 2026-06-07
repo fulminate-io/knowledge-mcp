@@ -21,6 +21,12 @@ import (
 // cmd/knowledge-server/internal/server/server.go — keep both in sync.
 const DefaultPort = 15022
 
+// DefaultMCPHTTPPort is the loopback TCP port the `knowledge serve` daemon
+// binds its streamable-HTTP MCP endpoint (/mcp) on. Deliberately distinct
+// from DefaultPort (the graph-server port) so the daemon and the graph
+// server can run side by side on one host.
+const DefaultMCPHTTPPort = 15023
+
 // GraphClient calls the graph server over connect-go. EngineService (Execute /
 // Topology / Stats / MetadataStats / Index / PipelineScan / Sync) is the only
 // LLM-facing dispatch surface, alongside Health (Check/Status) and Ingest (chunk
@@ -169,6 +175,22 @@ func (c *GraphClient) ExportGraph(
 	req *knowledgev1.ExportGraphRequest,
 ) (*knowledgev1.ExportGraphResponse, error) {
 	resp, err := c.engine.ExportGraph(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
+// OverwriteGraph issues one EngineService.OverwriteGraph RPC and returns the
+// typed response. Thin connect-client passthrough mirroring ExportGraph — the
+// mutating local-apply inverse of ExportGraph. The client pull arm
+// (InterceptSync) drives it through the LOCAL graph caller only (cloud bytes are
+// fetched via ExportGraph, then applied here); it is never routed cloud-side.
+func (c *GraphClient) OverwriteGraph(
+	ctx context.Context,
+	req *knowledgev1.OverwriteGraphRequest,
+) (*knowledgev1.OverwriteGraphResponse, error) {
+	resp, err := c.engine.OverwriteGraph(ctx, connect.NewRequest(req))
 	if err != nil {
 		return nil, err
 	}

@@ -1,17 +1,20 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// Command knowledge is the MCP stdio client for the knowledge graph
-// server. It speaks JSON-RPC over stdin/stdout (the MCP wire format),
-// ships tools/list locally from static metadata, and proxies tools/call
-// requests to a running knowledge-server on the configured TCP port.
-// The server is NOT auto-started — bring the knowledge-server binary
-// up in a separate process or service manager before configuring this
-// binary in .mcp.json.
+// Command knowledge is the CLI front end for the knowledge graph: it
+// dispatches subcommands (serve / start / stop / status / login / logout /
+// doctor / install-claude-assets / install-codex-assets) and otherwise
+// directs the user to the daemon.
+//
+// MCP is served by the `knowledge serve` daemon over a loopback
+// streamable-HTTP endpoint (one shared process for every editor + dream
+// worker); editors register that URL via install-claude-assets /
+// install-codex-assets. Bare `knowledge` (no subcommand) no longer serves
+// MCP over stdio — it returns a hint pointing at `knowledge serve`.
 //
 // Usage:
 //
 //	go build -o bin/knowledge ./cmd/knowledge
-//	./bin/knowledge --root .
+//	./bin/knowledge serve
 package main
 
 import (
@@ -54,7 +57,8 @@ import (
 	// so domains/dream's runReAct can resolve a worker's provider via
 	// llm.NewClient. anthropic / openai / gemini drive tool-use via the
 	// in-Go eino ReAct loop; claude-cli / codex-cli drive tool-use via
-	// --mcp-config (see domains/llm/claudecli/translate.go::buildMCPConfig).
+	// --mcp-config pointed at the daemon (see
+	// cmd/knowledge/internal/llm/claudecli/translate.go::buildMCPConfig).
 	_ "github.com/fulminate-io/knowledge-mcp/internal/llm/anthropic"
 	_ "github.com/fulminate-io/knowledge-mcp/internal/llm/claudecli"
 	_ "github.com/fulminate-io/knowledge-mcp/internal/llm/codexcli"
@@ -76,9 +80,10 @@ func init() { bootstrap.Version = version }
 
 func main() {
 	// Subcommand dispatch runs BEFORE ParseFlags so each subcommand can
-	// parse its own minimal flag set without colliding with the MCP
-	// stdio flag list. Unknown first args (or no arg at all) fall
-	// through to the default MCP stdio path.
+	// parse its own minimal flag set without colliding with the client
+	// flag list. Unknown first args (or no arg at all) fall through to
+	// bootstrap.Run, which now directs the user to `knowledge serve`
+	// (bare `knowledge` no longer serves MCP over stdio).
 	if handled, code := bootstrap.RunSubcommand(); handled {
 		os.Exit(code)
 	}

@@ -145,6 +145,34 @@ func TestParseResponse_TurnFailedSurface(t *testing.T) {
 	}
 }
 
+// TestParseResponse_TurnFailedQuotaIsTerminal pins the codex-cli quota
+// contract: a turn.failed event carrying an "out of usage limit" message
+// classifies TERMINAL (Transient==false), so the summary/embed pipeline
+// sheds the node rather than retrying a quota wall forever. codex-cli is
+// already terminal here (parse.go stamps Transient:false unconditionally on
+// turn_failed) — this is the regression guard against a future flip, and the
+// codex counterpart to claude-cli's now-terminal quota classification.
+func TestParseResponse_TurnFailedQuotaIsTerminal(t *testing.T) {
+	transcript := `{"type":"thread.started","thread_id":"x"}
+{"type":"turn.started"}
+{"type":"turn.failed","error":{"message":"You are out of usage limit. Please try again later."}}
+`
+	_, err := parseResponse([]byte(transcript), "gpt-5-codex")
+	if err == nil {
+		t.Fatalf("expected error, got nil")
+	}
+	var llmErr *llm.LLMError
+	if !errors.As(err, &llmErr) {
+		t.Fatalf("expected *llm.LLMError, got %T: %v", err, err)
+	}
+	if llmErr.Reason != "turn_failed" {
+		t.Errorf("Reason = %q, want %q", llmErr.Reason, "turn_failed")
+	}
+	if llmErr.Transient {
+		t.Fatalf("codex quota turn.failed must classify terminal, got transient")
+	}
+}
+
 // TestParseResponse_TurnFailedFallsBackToRawOnUnknownShape verifies that
 // a turn.failed event with an unrecognized error envelope still surfaces
 // the raw JSON rather than collapsing to an empty message.

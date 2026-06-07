@@ -110,7 +110,8 @@ func runInstallClaudeAssets(args []string) error {
 		fmt.Fprintln(os.Stdout, "  --no-mcp: skipped MCP registration")
 		return nil
 	}
-	// Default-on, non-fatal MCP registration at user scope.
+	// Default-on, non-fatal MCP registration at user scope against the
+	// daemon's loopback streamable-HTTP MCP endpoint.
 	return registerKnowledgeMCP("claude", []string{"-s", "user"}, f.dryRun)
 }
 

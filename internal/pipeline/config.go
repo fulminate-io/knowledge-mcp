@@ -19,6 +19,14 @@ package pipeline
 
 import "time"
 
+// DefaultCircuitBreakerThreshold is the default number of consecutive errored
+// LLM calls (with zero intervening success across either axis) that latches the
+// worker pool paused. 20 ≈ half the default in-flight worker set (25 summary +
+// 20 embed = 45), so it reads as a clear majority-failing signal while still
+// being unreachable from an isolated failure: any single success zeroes the
+// shared counter, so only a genuine zero-success storm climbs to 20.
+const DefaultCircuitBreakerThreshold = 20
+
 // Config controls the pipeline's worker counts, batch sizes, channel
 // capacities, and tick cadence. Zero values fall back to defaults via the
 // *OrDefault accessors. Defaults match ticket Section C — channel=10000,
@@ -88,6 +96,13 @@ type Config struct {
 
 	// ErrBackoffMax caps the exponential backoff window. Default 60s.
 	ErrBackoffMax time.Duration
+
+	// CircuitBreakerThreshold is the number of consecutive errored LLM calls
+	// (with zero intervening success across either the summary or embed axis)
+	// that latches the whole worker pool PAUSED. Default 20. The breaker is the
+	// latched companion to the self-clearing ErrBackoff gate: once tripped it
+	// stays paused until a human runs resume_pipeline — there is no self-heal.
+	CircuitBreakerThreshold int
 }
 
 // SummaryChannelSizeOrDefault returns cfg.SummaryChannelSize or 10000.
@@ -187,4 +202,13 @@ func (c Config) ErrBackoffMaxOrDefault() time.Duration {
 		return c.ErrBackoffMax
 	}
 	return 60 * time.Second
+}
+
+// CircuitBreakerThresholdOrDefault returns cfg.CircuitBreakerThreshold or
+// DefaultCircuitBreakerThreshold (20).
+func (c Config) CircuitBreakerThresholdOrDefault() int {
+	if c.CircuitBreakerThreshold > 0 {
+		return c.CircuitBreakerThreshold
+	}
+	return DefaultCircuitBreakerThreshold
 }

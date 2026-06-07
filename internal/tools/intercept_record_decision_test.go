@@ -4,13 +4,48 @@ package tools
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/validate"
 )
+
+// TestBuildDecisionNode_LongRationale_BoundedSummary proves the Summary fix:
+// buildDecisionNode no longer composes choice+rationale+alternatives into
+// Summary (which could blow past the 500-rune cap), but sets Summary to the
+// bounded choice. A long rationale/alternatives is preserved in Description
+// and metadata for retrieval, never leaked into Summary.
+func TestBuildDecisionNode_LongRationale_BoundedSummary(t *testing.T) {
+	choice := "Adopt the composite-DB store engine"
+	rationale := strings.Repeat("x", 2000)
+	alternatives := strings.Repeat("y", 2000)
+	node := buildDecisionNode(recordDecisionArgs{
+		Name:         "store-engine-decision",
+		Choice:       choice,
+		Rationale:    rationale,
+		Alternatives: alternatives,
+	})
+
+	// (1) Summary stays within the rune cap — the long rationale never leaks in.
+	assert.LessOrEqual(t, utf8.RuneCountInString(node.Summary), validate.SummaryMaxLen,
+		"Summary must stay within the rune cap regardless of rationale length")
+
+	// (2) Summary is the bounded choice, not the composed prose.
+	assert.Equal(t, truncateAtWordCreate(choice, validate.SummaryMaxLen), node.Summary,
+		"Summary must be the bounded choice, not choice+rationale+alternatives prose")
+
+	// (3) Description and metadata carry the full content for retrieval.
+	assert.Equal(t, choice, node.Description, "Description must preserve the full choice")
+	assert.Equal(t, choice, kgtypes.Value(node, "choice"), "choice metadata preserved")
+	assert.Equal(t, rationale, kgtypes.Value(node, "rationale"), "rationale metadata preserved in full")
+	assert.Equal(t, alternatives, kgtypes.Value(node, "alternatives"), "alternatives metadata preserved in full")
+}
 
 func TestInterceptRecordDecision_WrongTool_FallsThrough(t *testing.T) {
 	deps := interceptTestDeps{gc: &fakeGraphCaller{}}

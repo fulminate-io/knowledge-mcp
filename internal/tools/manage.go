@@ -32,6 +32,18 @@ type pipelineResetter interface {
 	ResetPipelineFailedCounters()
 }
 
+// pipelinePauser is the local view of ClientDeps the pause_pipeline /
+// resume_pipeline / pipeline_status manage ops use to drive the circuit
+// breaker. Same structural-typing discipline as pipelineMetricser: production
+// *client satisfies it; test fakes don't, and the handlers degrade to an
+// errorResult when the type-assert misses. ResumePipeline is the ONLY exit
+// from a circuit break (auto-trip or manual pause).
+type pipelinePauser interface {
+	PausePipeline(reason string)
+	ResumePipeline()
+	PipelineStatus() (pipeline.PipelineStatus, bool)
+}
+
 // cloudStatusInfo is the optional view of ClientDeps that manage(status)
 // uses to learn (a) whether the user is logged in to Fulminate Cloud and
 // (b) the cloud host to surface in the status body. Declared here (not on
@@ -75,6 +87,12 @@ func InterceptManage(deps ClientDeps, params kgtools.CallToolParams) (bool, kgto
 		return true, handleManagePromoteMetadata(context.Background(), deps, a, params.Arguments)
 	case "clear_llm_failures":
 		return true, handleClientClearLLMFailures(context.Background(), deps, a)
+	case "pause_pipeline":
+		return true, handlePausePipeline(deps, a)
+	case "resume_pipeline":
+		return true, handleResumePipeline(deps)
+	case "pipeline_status":
+		return true, handlePipelineStatus(deps)
 	case "set_metadata_overrides":
 		return true, handleClientSetMetadataOverrides(context.Background(), deps, a)
 	case "delete_branch":
@@ -183,6 +201,10 @@ type manageArgs struct {
 	// timestamp. Tombstones tombstoned BEFORE it are hard-deleted; empty
 	// prunes ALL tombstoned nodes.
 	Before string `json:"before"`
+
+	// pause_pipeline operator reason, surfaced verbatim by pipeline_status.
+	// Empty falls back to a generic "manually paused by operator" string.
+	Reason string `json:"reason"`
 }
 
 // handleServerStatus reports liveness (and, when the server is up, basic
@@ -207,7 +229,7 @@ func handleServerStatus(deps ClientDeps, format string) kgtools.ToolResult {
 			return handleCloudStatus(deps, host, format)
 		}
 	}
-	gc := deps.GraphClient()
+	gc := deps.LocalLiveness()
 	if !gc.Healthy() {
 		if format == "json" {
 			return jsonResult(map[string]any{"status": "not_running"})
@@ -226,15 +248,20 @@ func handleServerStatus(deps ClientDeps, format string) kgtools.ToolResult {
 	}
 	pipelineLine := "  Summarization: (pipeline disabled)\n  Embedding: (pipeline disabled)"
 	if pipelineOK {
+		// These counters are PROCESS-LIFETIME runtime metrics — they reset on
+		// restart and on clear_llm_failures, and are NOT durable coverage (the
+		// LLM Coverage table below is). The caption disambiguates the two so a
+		// queue-empty process is not mistaken for an uncovered graph.
 		pipelineLine = fmt.Sprintf(
-			"  Summarization: %d queued, %d running, %d succeeded, %d failed\n  Embedding: %d queued, %d running, %d succeeded, %d failed",
+			"  Pipeline runtime (this process only — resets on restart / clear_llm_failures; NOT durable coverage):\n"+
+				"  Summarization: %d queued, %d running, %d succeeded, %d failed\n  Embedding: %d queued, %d running, %d succeeded, %d failed",
 			metrics.SummaryQueued, metrics.SummaryRunning, metrics.SummarySucceeded, metrics.SummaryFailed,
 			metrics.EmbedQueued, metrics.EmbedRunning, metrics.EmbedSucceeded, metrics.EmbedFailed)
 	}
 	return textResult(fmt.Sprintf(
-		"Graph server: RUNNING\n  PID: %.0f\n  Nodes: %.0f\n  Edges: %.0f\n  Vectors: %.0f\n  BM25 docs: %.0f\n  Path: %s\n%s",
+		"Graph server: RUNNING\n  PID: %.0f\n  Nodes: %.0f\n  Edges: %.0f\n  Vectors: %.0f\n  BM25 docs: %.0f\n  Path: %s\n%s%s",
 		status["pid"], status["nodes"], status["edges"], status["binary_vectors"], status["bm25_docs"], status["graph_path"],
-		pipelineLine))
+		pipelineLine, renderLLMCoverage(context.Background(), deps)))
 }
 
 // handleCloudStatus reports the CLOUD graph stats for a logged-in user via
@@ -272,8 +299,8 @@ func handleCloudStatus(deps ClientDeps, host, format string) kgtools.ToolResult 
 		})
 	}
 	return textResult(fmt.Sprintf(
-		"## Graph server: cloud\n  Backend: cloud (%s)\n\n%s",
-		host, engine.RenderStatsBreakdown(stats)))
+		"## Graph server: cloud\n  Backend: cloud (%s)\n\n%s%s",
+		host, engine.RenderStatsBreakdown(stats), renderLLMCoverage(context.Background(), deps)))
 }
 
 // overlayPipelineMetrics reads the client-side LLM pipeline counters and

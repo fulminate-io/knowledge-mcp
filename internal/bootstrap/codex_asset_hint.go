@@ -8,8 +8,8 @@
 // hint via their MCP host's stderr/debug log. The codex twin of
 // claude_asset_hint.go.
 //
-// Runs from runMCPMode (per-session, not per-call). Walk + translate +
-// sha256 of a few dozen files is negligible.
+// Runs once from the serve daemon bootstrap (buildClient, per-process not
+// per-call). Walk + translate + sha256 of a few dozen files is negligible.
 //
 // AGENTS.md is intentionally NOT part of this check: it is a clobber-safe
 // managed-block merge into a user-owned file, so a sha256 mismatch there

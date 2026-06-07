@@ -103,7 +103,6 @@ func SearchToolDef() kgtools.MCPTool {
 				"queries":            {Type: "array", Description: "Batch search: array of query strings. Results deduplicated and merged.", Items: &kgtools.Property{Type: "string"}},
 				"graph":              {Type: "string", Description: "Which graph to search: code (default), knowledge, practice, cloud, cicd, linkage, or logs."},
 				"name":               {Type: "string", Description: "Graph identifier. Required when graph=logs (the per-query log graph queryID). Ignored for other graph types."},
-				"language":           {Type: "string", Description: "Language for practice graph search (e.g. 'go', 'python'). Required when graph=practice."},
 				"account":            {Type: "string", Description: "Cloud account key to search. Required when graph=cloud (omit to list available cloud graphs)."},
 				"resource_type":      {Type: "string", Description: "Cloud resource type filter prefix (e.g. 'ec2', 'ec2:instance'). Cloud graph only."},
 				"limit":              {Type: "number", Description: "Max results per query (default: 10, max: 50)."},
@@ -171,7 +170,7 @@ func CollectToolDef() kgtools.MCPTool {
 			"id (absolute path), runs the chunker, and emits typed document/section/paragraph/" +
 			"code_block/list_item/table/block nodes into a per-source graph under GraphPDFRaw. " +
 			"Collection runs client-side after the binary split — invoking this tool against the " +
-			"graph server returns an error; the MCP stdio client intercepts and runs the collector " +
+			"graph server returns an error; the knowledge MCP client intercepts and runs the collector " +
 			"locally with a RemoteUploadSink. " +
 			"Required params: type is always required; id is required for every type except type=\"logs\".",
 		InputSchema: kgtools.InputSchema{

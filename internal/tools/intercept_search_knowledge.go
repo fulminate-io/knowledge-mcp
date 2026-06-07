@@ -9,6 +9,7 @@ import (
 	"sort"
 	"time"
 
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
@@ -61,11 +62,14 @@ const recentTemporalHalfLifeDays = 30.0
 // InterceptQueryKnowledgeSearch claims the query-tool knowledge text-search modes
 // that were previously compiled to a server RETURN_MODE_SEARCH dispatch and routes
 // them through the CLIENT knowledge engine (composeKnowledgeSearch).
-// mode=recent is served here with a client UpdatedAt half-life rerank (the
-// text/default-text arms are added by the sibling reroute step). Returns (false,_)
-// for any other tool/graph/mode so the chain proceeds. The query tool carries the
-// search text in `text` (not `query`); this claim maps it onto the
-// knowledgeSearchArgs `query` field composeKnowledgeSearch reads.
+// mode=recent has TWO arms: text-bearing recent runs the client search with a
+// client UpdatedAt half-life rerank (composeKnowledgeSearch); BARE recent (empty
+// text) is a pure temporal browse over GraphCaller (composeRecentBrowse) — no
+// search query, just most-recently-updated nodes, optionally scoped by `types`.
+// Returns (false,_) for any other tool/graph/mode — and for empty-text text/default
+// modes — so the chain proceeds. The query tool carries the search text in `text`
+// (not `query`); this claim maps it onto the knowledgeSearchArgs `query` field
+// composeKnowledgeSearch reads.
 func InterceptQueryKnowledgeSearch(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	if params.Name != "query" {
 		return false, kgtools.ToolResult{}
@@ -87,20 +91,90 @@ func InterceptQueryKnowledgeSearch(deps ClientDeps, params kgtools.CallToolParam
 	if !claimed {
 		return false, kgtools.ToolResult{}
 	}
-	if a.Text == "" {
-		return false, kgtools.ToolResult{} // empty text → precheck/deny owns the message.
-	}
 	gc := deps.GraphCaller()
+	ctx := context.Background()
+	if a.Text == "" {
+		// Empty-text recent is a pure temporal BROWSE (no search query): fetch the
+		// most-recently-updated nodes via GraphCaller and rerank by UpdatedAt. Every
+		// other empty-text mode (text/default) still bails so precheck/deny owns the
+		// requires-text message.
+		if mode != "recent" {
+			return false, kgtools.ToolResult{} // empty text → precheck/deny owns the message.
+		}
+		if gc == nil {
+			return true, errorResult("recent browse: graph client unavailable")
+		}
+		return true, composeRecentBrowse(ctx, gc, a)
+	}
 	if gc == nil {
 		return true, errorResult(mode + " search: graph client unavailable")
 	}
-	ctx := context.Background()
 	halfLife := 0.0
 	if mode == "recent" {
 		halfLife = recentTemporalHalfLifeDays
 	}
 	return true, composeKnowledgeSearch(ctx, gc, deps.SegmentManager(),
 		knowledgeQueryToSearchArgs(ctx, deps, a, mode, halfLife))
+}
+
+// composeRecentBrowse serves bare query(mode:recent) (empty text) as a temporal
+// browse: it fetches the candidate node set over GraphCaller (type-scoped when
+// `types` is set, else every node), maps each node to a unit-score SearchResult,
+// applies the UpdatedAt half-life rerank verbatim, then truncates to the limit
+// AFTER the sort and renders. Because every base score is 1.0, applyTemporalRerank's
+// UpdatedAt boost is the SOLE ordering signal → pure most-recently-updated order.
+//
+// The type filter is pushed to the FETCH: a Selection.NodeTypes-bearing browse
+// plan is trimmed to that type set server-side by postFilterBrowseNodeTypes
+// (cmd/knowledge-server/internal/bootstrap/engine_normalize.go) BEFORE responding —
+// the same mechanism the plural-types browse arm uses (no client-side fetch-all).
+// The plan carries NO Limit (Limit 0 = no cap) so every recency-eligible node is
+// considered before the sort; the limit is honored only after ordering.
+func composeRecentBrowse(ctx context.Context, gc GraphCaller, a queryArgs) kgtools.ToolResult {
+	selection := &knowledgev1.Selection{}
+	if len(a.Types) > 0 {
+		selection = &knowledgev1.Selection{NodeTypes: a.Types}
+	}
+	plan := &knowledgev1.QueryPlan{
+		Selection:         selection,
+		IncludeTombstones: a.IncludeTombstones,
+	}
+	resp, err := gc.Execute(ctx, &knowledgev1.ExecuteRequest{
+		Plan:   &knowledgev1.ExecuteRequest_Query{Query: plan},
+		Target: domainTarget(a),
+	})
+	if err != nil {
+		return errorResult("recent browse: fetch: " + err.Error())
+	}
+	nodes, derr := engine.DecodeNodes(resp)
+	if derr != nil {
+		return errorResult("recent browse: decode: " + derr.Error())
+	}
+
+	results := make([]engine.SearchResult, len(nodes))
+	for i, n := range nodes {
+		results[i] = engine.SearchResult{Node: n, Score: 1.0}
+	}
+
+	// UpdatedAt half-life rerank (BOOST + re-sort); base scores are all 1.0 so the
+	// resulting order is pure most-recently-updated.
+	applyTemporalRerank(results, recentTemporalHalfLifeDays)
+
+	// Truncate AFTER the sort — truncating the fetch would bias which nodes are
+	// considered (mirrors composeTimeline's render-output limit-after-sort).
+	k := int(a.Limit)
+	if k <= 0 {
+		k = knowledgeSearchDefaultLimit
+	}
+	if len(results) > k {
+		results = results[:k]
+	}
+
+	format := a.Format
+	if format == "" {
+		format = "text"
+	}
+	return engine.RenderForCaller("", results, format, a.Fields, "recency-boosted")
 }
 
 // knowledgeSearchModeFor reports whether a knowledge-graph query is one of the

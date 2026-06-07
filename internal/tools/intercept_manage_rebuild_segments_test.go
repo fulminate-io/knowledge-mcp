@@ -15,7 +15,6 @@ import (
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
-	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
@@ -262,16 +261,17 @@ type rebuildClientDeps struct {
 	shipper SegmentShipper
 }
 
-func (rebuildClientDeps) GraphClient() *graphclient.GraphClient { return nil }
-func (rebuildClientDeps) Sink() collector.Sink                  { return nil }
-func (rebuildClientDeps) RootDir() string                       { return "" }
-func (rebuildClientDeps) WorkerRuntime() WorkerRuntimeAPI       { return nil }
-func (rebuildClientDeps) WorkerCRUD() WorkerCRUDAPI             { return nil }
-func (rebuildClientDeps) Embedder() embed.BinaryEmbedder        { return nil }
-func (rebuildClientDeps) BackendResolver() BackendResolver      { return nil }
-func (rebuildClientDeps) GraphCaller() GraphCaller              { return nil }
-func (rebuildClientDeps) LocalGraphCaller() GraphCaller         { return nil }
-func (rebuildClientDeps) RepoResolver() *RepoResolver           { return nil }
-func (rebuildClientDeps) SegmentManager() SegmentSearcher       { return nil }
-func (d rebuildClientDeps) SegmentShipper() SegmentShipper      { return d.shipper }
-func (d rebuildClientDeps) PipelineScanner() PipelineScanner    { return d.scanner }
+func (rebuildClientDeps) LocalLiveness() LocalLiveness       { return nil }
+func (rebuildClientDeps) Sink() collector.Sink               { return nil }
+func (rebuildClientDeps) RootDir() string                    { return "" }
+func (rebuildClientDeps) WorkerRuntime() WorkerRuntimeAPI    { return nil }
+func (rebuildClientDeps) WorkerCRUD() WorkerCRUDAPI          { return nil }
+func (rebuildClientDeps) GraphTypeCRUD() GraphTypeCRUDAPI    { return nil }
+func (rebuildClientDeps) Embedder() embed.BinaryEmbedder     { return nil }
+func (rebuildClientDeps) BackendResolver() BackendResolver   { return nil }
+func (rebuildClientDeps) GraphCaller() GraphCaller           { return nil }
+func (rebuildClientDeps) LocalGraphCaller() GraphCaller      { return nil }
+func (rebuildClientDeps) RepoResolver() *RepoResolver        { return nil }
+func (rebuildClientDeps) SegmentManager() SegmentSearcher    { return nil }
+func (d rebuildClientDeps) SegmentShipper() SegmentShipper   { return d.shipper }
+func (d rebuildClientDeps) PipelineScanner() PipelineScanner { return d.scanner }

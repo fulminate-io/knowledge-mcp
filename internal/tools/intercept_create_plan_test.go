@@ -153,7 +153,7 @@ func (f *fakePlanGraphCaller) Call(_ context.Context, tool string, args json.Raw
 			}
 			return kgtools.ToolResult{IsError: true, Content: []kgtools.ContentBlock{{Type: "text", Text: "not found"}}}, nil
 		}
-		// Listing query — return empty so what_next short-circuits.
+		// Listing query — return empty so the create_plan listing read short-circuits.
 		return kgtools.ToolResult{
 			Content: []kgtools.ContentBlock{{Type: "text", Text: `{"nodes":[]}`}},
 		}, nil

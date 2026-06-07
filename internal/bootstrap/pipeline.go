@@ -3,8 +3,8 @@
 // Client-side LLM pipeline construction.
 //
 // wirePipelineRuntime mirrors wireWorkerRuntime: build runtime AFTER
-// the client is constructed and BEFORE the MCP stdio loop starts, then
-// spawn a graph-list refresh goroutine. The refresh polls the loaded-graph
+// the client is constructed and BEFORE the serve daemon's MCP transport
+// starts, then spawn a graph-list refresh goroutine. The refresh polls the loaded-graph
 // catalog every Tick (per-type RETURN_MODE_GRAPH_NAMES reads), diffs against the
 // local collectorCancels map, and calls Register/Unregister for the delta
 // — worst-case lag for new-graph pickup is one collector tick.

@@ -3,6 +3,8 @@
 package pipeline
 
 import (
+	"time"
+
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
@@ -98,4 +100,15 @@ type Metrics struct {
 	EmbedRunning     int64
 	EmbedSucceeded   int64
 	EmbedFailed      int64
+}
+
+// PipelineStatus is the operator-facing snapshot of the circuit breaker's
+// paused state. Surfaced by the pipeline_status manage op and the search
+// staleness footer. Paused is true while the worker pool is latched off
+// (manual pause or an auto-trip); Reason carries the human-readable cause and
+// Since the time it paused.
+type PipelineStatus struct {
+	Paused bool
+	Reason string
+	Since  time.Time
 }

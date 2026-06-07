@@ -25,6 +25,13 @@ func TestSummary(t *testing.T) {
 		{name: "single_char", summary: "x", wantErr: ""},
 		{name: "exactly_500", summary: strings.Repeat("a", 500), wantErr: ""},
 		{name: "501_chars", summary: strings.Repeat("a", 501), wantErr: "exceeds 500 characters"},
+		// Rune-vs-byte: the em-dash (U+2014) is 3 bytes. A 500-em-dash
+		// summary is 1500 bytes but exactly 500 runes — accepted, proving
+		// the cap counts runes not bytes (the byte-count regression is gone).
+		{name: "500_runes_multibyte", summary: strings.Repeat("—", 500), wantErr: ""},
+		// 501 em-dashes = 1503 bytes / 501 runes — rejected with a
+		// rune-accurate count.
+		{name: "501_runes_multibyte", summary: strings.Repeat("—", 501), wantErr: "exceeds 500 characters"},
 		{name: "leading_trailing_whitespace_under_cap", summary: "   actual content   ", wantErr: ""},
 		{name: "leading_trailing_whitespace_over_cap", summary: "  " + strings.Repeat("a", 501) + "  ", wantErr: "exceeds 500 characters"},
 		{name: "valid_realistic_summary", summary: "Search-optimized one-line summary describing what the node is about.", wantErr: ""},
@@ -51,6 +58,19 @@ func TestSummary(t *testing.T) {
 				t.Errorf("Summary error must name the field path: got %q", err.Error())
 			}
 		})
+	}
+}
+
+// TestSummary_RuneCountReported confirms the over-cap error reports the
+// count in RUNES, not bytes: a 501-em-dash summary (1503 bytes, 501 runes)
+// must report "got 501", proving the byte-count regression is gone.
+func TestSummary_RuneCountReported(t *testing.T) {
+	err := Summary("test_tool", "summary", strings.Repeat("—", 501))
+	if err == nil {
+		t.Fatal("expected non-nil error for a 501-rune summary")
+	}
+	if !strings.Contains(err.Error(), "got 501") {
+		t.Errorf("error must report the rune count (got 501), not the byte count: got %q", err.Error())
 	}
 }
 

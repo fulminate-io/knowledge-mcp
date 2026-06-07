@@ -51,22 +51,19 @@ func setupLogging(cfg *Config, lvl *slog.LevelVar) {
 	slog.SetDefault(slog.New(slog.NewTextHandler(logWriter, &slog.HandlerOptions{Level: lvl})))
 }
 
-// Run is the single entry point cmd/knowledge/main.go calls after
-// dispatching subcommands and parsing flags. Sets up logging, applies
-// the GOMEMLIMIT soft ceiling, expands ~/ in GraphStorage, then enters
-// the MCP stdio loop via runMCPMode.
+// Run is the entry point cmd/knowledge/main.go falls through to when the
+// invocation is bare `knowledge` — no recognized subcommand.
 //
-// The client never opens a .bin file directly, so it does not register
-// encryption key fragments (fragment registration is a server-only
-// responsibility — the server is the only reader of knowledge.bin).
-func Run(cfg Config) error {
-	var logLevelVar slog.LevelVar // defaults to Info
-	if err := logLevelVar.UnmarshalText([]byte(cfg.LogLevel)); err != nil {
-		// Can't warn via slog yet — setupLogging configures it below.
-		fmt.Fprintf(os.Stderr, "invalid --log-level %q, using info\n", cfg.LogLevel)
-	}
-	setupLogging(&cfg, &logLevelVar)
-	applyMemoryLimit()
-	cfg.GraphStorage = expandTilde(cfg.GraphStorage)
-	return runMCPMode(cfg)
+// Post-cutover there is no per-session stdio MCP serving: editors
+// and dream workers connect to the one shared `knowledge serve` daemon over
+// its loopback streamable-HTTP MCP endpoint. Bare `knowledge` therefore no
+// longer serves MCP over stdin/stdout — it returns a clear error directing the
+// caller to the daemon (run `knowledge serve`, or `brew services start
+// knowledge`). The lifecycle subcommands (start/stop/status), install-asset
+// subcommands, login/logout, doctor, and serve are dispatched upstream in
+// RunSubcommand and never reach here.
+func Run(_ Config) error {
+	return fmt.Errorf("`knowledge` no longer serves MCP over stdio; run the shared daemon with `knowledge serve` " +
+		"(or `brew services start knowledge`) and point your editor at its MCP endpoint — " +
+		"`knowledge install-claude-assets` / `install-codex-assets` wire it for you")
 }

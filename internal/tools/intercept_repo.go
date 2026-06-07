@@ -8,7 +8,21 @@ import (
 
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/coderun"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
+	"github.com/fulminate-io/knowledge-mcp/internal/session"
 )
+
+// effectiveCwd is the cwd repo resolution uses: the per-session workspace cwd
+// carried on ctx (HTTP transport, set by the daemon from peer-cwd resolution)
+// when present, else the process-global --root (deps.RootDir(), the stdio
+// default). This is what lets two concurrent HTTP sessions from different
+// repos each resolve their own code graph: the stdio path carries no workspace
+// cwd, so it falls back to --root exactly as before.
+func effectiveCwd(ctx context.Context, deps ClientDeps) string {
+	if cwd := session.WorkspaceCwdFromContext(ctx); cwd != "" {
+		return cwd
+	}
+	return deps.RootDir()
+}
 
 // codeGraphToolNames is the allowlist of MCP tool names that target a
 // specific code graph and therefore require repo: + branch: server-side.
@@ -53,7 +67,10 @@ var manageCodeGraphOps = map[string]bool{
 // tool call must arrive with explicit repo: AND branch:. This intercept
 // is the canonical client-side filler that walks cwd → loaded-graph
 // name (via deps.RepoResolver) and shells out to coderun helpers for
-// branch / git state. When the cwd doesn't match a loaded code graph
+// branch / git state. The cwd is the per-session workspace cwd carried on
+// ctx (HTTP transport, from peer-cwd resolution) when present, else the
+// process --root (deps.RootDir(), the stdio default) — see effectiveCwd.
+// When the cwd doesn't match a loaded code graph
 // AND the caller did not pass repo: explicitly, the call short-circuits
 // with a typed error WITHOUT issuing the wire RPC. Same posture for
 // missing branch on a non-git cwd.
@@ -114,7 +131,7 @@ func InjectRepoIfCodeGraph(ctx context.Context, deps ClientDeps, params kgtools.
 		}
 	}
 
-	cwd := deps.RootDir()
+	cwd := effectiveCwd(ctx, deps)
 
 	// Step 3: Repo injection.
 	if decodeStringField(args, "repo") == "" {
@@ -263,7 +280,7 @@ func injectManageRepo(ctx context.Context, deps ClientDeps, params kgtools.CallT
 		return params, false, kgtools.ToolResult{}
 	}
 
-	repo, ok, err := resolveRepo(ctx, deps, deps.RootDir())
+	repo, ok, err := resolveRepo(ctx, deps, effectiveCwd(ctx, deps))
 	if err != nil {
 		return params, true, errorResult("manage(" + op + "): resolve repo: " + err.Error())
 	}

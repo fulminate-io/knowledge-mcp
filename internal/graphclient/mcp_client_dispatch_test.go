@@ -81,6 +81,82 @@ func TestHandleMCPToolCall_RoutesThroughDispatch(t *testing.T) {
 	assert.Equal(t, int64(1), dispatchHits.Load(), "Dispatch invoked")
 }
 
+// newUnhealthyLocalClient returns a *GraphClient pointed at a server that is
+// already closed, so Healthy() (and therefore EnsureServer) fails. Models a
+// logged-in cloud user who has no local knowledge-server running.
+func newUnhealthyLocalClient(t *testing.T) *GraphClient {
+	t.Helper()
+	h2s := &http2.Server{}
+	srv := httptest.NewServer(h2c.NewHandler(http.NewServeMux(), h2s))
+	url := srv.URL
+	srv.Close() // close immediately so the port is dead and Healthy()=false.
+	return NewGraphClientForURL(url)
+}
+
+// TestHandleMCPToolCall_LoggedIn_SkipsEnsureServer proves a logged-in user
+// dispatches every fall-through op WITHOUT a healthy local server: the
+// EnsureServer gate is skipped when cfg.LoggedIn(ctx) reports true. Table-driven
+// over representative members of the engine-reducible / cloud-routed op set so
+// the named set is exercised, not one generic call.
+func TestHandleMCPToolCall_LoggedIn_SkipsEnsureServer(t *testing.T) {
+	ops := []struct {
+		name string
+		args map[string]any
+	}{
+		{"traverse", map[string]any{"start": "n1", "graph": "knowledge"}},
+		{"query", map[string]any{"id": "n1"}},
+		{"mutate", map[string]any{"operation": "link", "from": "k1", "to": "k2", "relationship": "relates-to"}},
+		{"mutate", map[string]any{"operation": "create_batch", "nodes": []any{}}},
+	}
+	for _, op := range ops {
+		t.Run(op.name, func(t *testing.T) {
+			gc := newUnhealthyLocalClient(t)
+			var dispatchHits atomic.Int64
+			m := NewMCPClient(MCPClientConfig{
+				Client:   gc,
+				LoggedIn: func(context.Context) bool { return true },
+				Dispatch: func(_ context.Context, _ string, _ json.RawMessage) (kgtools.ToolResult, error) {
+					dispatchHits.Add(1)
+					return kgtools.TextResult("dispatched output"), nil
+				},
+			})
+
+			resp := m.handleMCPToolCall(toolCallReq(t, op.name, op.args))
+			result, ok := resp.Result.(kgtools.ToolResult)
+			require.True(t, ok)
+			assert.False(t, result.IsError,
+				"logged-in dispatch must not surface the EnsureServer error")
+			assert.Equal(t, "dispatched output", result.Content[0].Text)
+			assert.Equal(t, int64(1), dispatchHits.Load(),
+				"Dispatch invoked — EnsureServer gate was skipped for logged-in user")
+		})
+	}
+}
+
+// TestHandleMCPToolCall_LoggedOut_GatesLocal is the sibling: a logged-out user
+// (LoggedIn nil) with an unhealthy local hits the EnsureServer gate and never
+// reaches Dispatch.
+func TestHandleMCPToolCall_LoggedOut_GatesLocal(t *testing.T) {
+	gc := newUnhealthyLocalClient(t)
+	var dispatchHits atomic.Int64
+	m := NewMCPClient(MCPClientConfig{
+		Client:   gc,
+		LoggedIn: nil, // nil always gates (logged-out / test-fixture default).
+		Dispatch: func(_ context.Context, _ string, _ json.RawMessage) (kgtools.ToolResult, error) {
+			dispatchHits.Add(1)
+			return kgtools.TextResult("dispatched output"), nil
+		},
+	})
+
+	resp := m.handleMCPToolCall(toolCallReq(t, "query", map[string]any{"id": "n1"}))
+	result, ok := resp.Result.(kgtools.ToolResult)
+	require.True(t, ok)
+	assert.True(t, result.IsError, "logged-out unhealthy local gates on EnsureServer")
+	assert.Contains(t, result.Content[0].Text, "not reachable",
+		"surfaces the EnsureServer 'not reachable' error")
+	assert.Equal(t, int64(0), dispatchHits.Load(), "Dispatch NOT hit when the gate fails")
+}
+
 // TestHandleMCPToolCall_NilDispatchErrors asserts the contract: with no
 // Dispatch wired there is no legacy Client.Call to fall through to (the ToolService
 // wire is deleted), so the forwarder surfaces a wiring error rather than silently

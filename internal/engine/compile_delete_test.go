@@ -5,7 +5,6 @@ package engine
 import (
 	"encoding/json"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -64,44 +63,6 @@ func TestCompileMutate_PracticeTransformers(t *testing.T) {
 	})
 }
 
-// TestCompileDelete_PruneByAge asserts the standalone `delete` tool + the id-less
-// mutate(operation:delete) BOTH lower a prune-by-age delete onto the same
-// MUTATION_KIND_DELETE plan: Selection.NodeType=session + a created_at OP_LT
-// FieldPredicate whose Value is the duration-parsed cutoff (~Now-7d, RFC3339).
-// The server-side semantics (created_at OP_LT selects older-than-cutoff) are
-// proven by engine_fieldpredicate_test.go:47-58; this asserts the COMPILE
-// produces that exact plan shape.
-func TestCompileDelete_PruneByAge(t *testing.T) {
-	assertPrunePlan := func(t *testing.T, req *knowledgev1.ExecuteRequest, ok bool) {
-		t.Helper()
-		require.True(t, ok, "prune-by-age delete must compile")
-		m := req.GetMutation()
-		assert.Equal(t, knowledgev1.MutationPlan_MUTATION_KIND_DELETE, m.GetKind())
-		sel := m.GetSelection()
-		assert.Equal(t, "session", sel.GetNodeType(), "NodeType = session (the prune alias)")
-		assert.Empty(t, sel.GetIds(), "prune-by-age carries NO by-id selector")
-		preds := sel.GetFieldPredicates()
-		require.Len(t, preds, 1, "exactly one created_at FieldPredicate")
-		assert.Equal(t, "created_at", preds[0].GetField())
-		assert.Equal(t, knowledgev1.MetadataPredicate_OP_LT, preds[0].GetOp())
-		// The cutoff Value parses as RFC3339 and sits ~7d in the past.
-		cutoff, err := time.Parse(time.RFC3339, preds[0].GetValue())
-		require.NoError(t, err, "FieldPredicate.Value must be RFC3339")
-		want := time.Now().Add(-7 * 24 * time.Hour)
-		assert.WithinDuration(t, want, cutoff, time.Minute, "cutoff ≈ Now-7d")
-	}
-
-	t.Run("standalone delete tool", func(t *testing.T) {
-		req, ok := Compile("delete", json.RawMessage(`{"older_than":"7d","type":"session"}`))
-		assertPrunePlan(t, req, ok)
-	})
-
-	t.Run("id-less mutate(operation:delete) lowers identically", func(t *testing.T) {
-		req, ok := compileMutate(json.RawMessage(`{"operation":"delete","older_than":"7d","type":"session"}`))
-		assertPrunePlan(t, req, ok)
-	})
-}
-
 // TestCompileDelete_ByIDs asserts the by-ids delete shape is unchanged: a
 // {ids:[...]} delete → Selection.Ids with NO FieldPredicate.
 func TestCompileDelete_ByIDs(t *testing.T) {
@@ -113,32 +74,13 @@ func TestCompileDelete_ByIDs(t *testing.T) {
 	assert.Empty(t, m.GetSelection().GetFieldPredicates(), "by-ids delete carries NO FieldPredicate")
 }
 
-// TestCompileDelete_SessionID asserts that when session_id is set on a
-// prune-by-age delete, a {session_id, OP_EQ} MetadataPredicate is added so only
-// that session's nodes match (mirroring handlePruneHistory's session_id metadata
-// == SessionID guard).
-func TestCompileDelete_SessionID(t *testing.T) {
-	req, ok := Compile("delete", json.RawMessage(`{"older_than":"7d","type":"session","session_id":"sess-1"}`))
-	require.True(t, ok)
-	preds := req.GetMutation().GetSelection().GetMetadataPredicates()
-	require.Len(t, preds, 1, "session_id adds exactly one metadata predicate")
-	assert.Equal(t, "session_id", preds[0].GetKey())
-	assert.Equal(t, knowledgev1.MetadataPredicate_OP_EQ, preds[0].GetOp())
-	assert.Equal(t, "sess-1", preds[0].GetValue())
-}
-
-// TestCompileDelete_DryRunNeverCompilesToDelete asserts a dry_run:true delete
-// NEVER lowers to a MUTATION_KIND_DELETE — Compile returns ok=false for BOTH the
-// by-ids and the prune-by-age shapes. This is the compile-side half of the
-// data-loss footgun fix: the dispatcher claims the dry-run
-// upstream (dispatchDeletePreview) and renders a read-only preview; a dry-run
-// that somehow reached the compiler denies rather than deletes (safe direction).
+// TestCompileDelete_DryRunNeverCompilesToDelete asserts a dry_run:true by-ids
+// delete NEVER lowers to a MUTATION_KIND_DELETE — Compile returns ok=false.
+// This is the compile-side half of the data-loss footgun fix: the dispatcher
+// claims the dry-run upstream (dispatchDeletePreview) and renders a read-only
+// preview; a dry-run that somehow reached the compiler denies rather than
+// deletes (safe direction).
 func TestCompileDelete_DryRunNeverCompilesToDelete(t *testing.T) {
-	t.Run("prune-by-age dry_run → ok=false (no DELETE plan)", func(t *testing.T) {
-		req, ok := Compile("delete", json.RawMessage(`{"older_than":"7d","type":"session","dry_run":true}`))
-		assert.False(t, ok, "dry_run:true must NOT compile to a DELETE")
-		assert.Nil(t, req)
-	})
 	t.Run("by-ids dry_run → ok=false (the footgun: was unconditionally DELETE)", func(t *testing.T) {
 		req, ok := Compile("delete", json.RawMessage(`{"ids":["a","b"],"dry_run":true}`))
 		assert.False(t, ok, "by-ids dry_run:true must NOT compile to a DELETE (the data-loss footgun)")
@@ -146,9 +88,9 @@ func TestCompileDelete_DryRunNeverCompilesToDelete(t *testing.T) {
 	})
 }
 
-// TestCompileDelete_UnknownTypeFallsThrough asserts an unknown prune type
-// (not in pruneTypeAliases) returns ok=false so the legacy handler surfaces the
-// error.
+// TestCompileDelete_UnknownTypeFallsThrough asserts a prune type that is not in
+// pruneTypeAliases (now empty — no type is retention-eligible) returns ok=false
+// so the legacy handler surfaces the error.
 func TestCompileDelete_UnknownTypeFallsThrough(t *testing.T) {
 	req, ok := Compile("delete", json.RawMessage(`{"older_than":"7d","type":"thought"}`))
 	assert.False(t, ok, "unknown prune type must fall through to legacy")

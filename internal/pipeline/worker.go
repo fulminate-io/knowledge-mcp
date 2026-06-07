@@ -131,7 +131,11 @@ func processSummaryGroup(ctx context.Context, p *Pipeline, key groupKey, items [
 		return
 	}
 
-	// Pause if a prior transient failure opened the shared backoff window.
+	// Block here while the circuit breaker is latched paused (a prior
+	// zero-success storm), then pause if a transient failure opened the shared
+	// backoff window. waitResumed selects on ctx.Done(), so a worker parked
+	// here unblocks on Pipeline.Stop and never hangs the worker WaitGroup.
+	p.circuit.waitResumed(ctx)
 	p.backoff.wait(ctx)
 	slog.Debug("pipeline.summary: invoking summarizer", "chunks", len(chunks), "graph_type", gk.GraphType, "graph_name", gk.GraphName)
 	results, err := p.summarizer(ctx, chunks)
@@ -141,6 +145,9 @@ func processSummaryGroup(ctx context.Context, p *Pipeline, key groupKey, items [
 		handleSummarizerError(ctx, p, be, gk, items, err)
 		return
 	}
+	// A successful LLM call zeroes the shared zero-success-window counter on
+	// both gates: a success on either axis proves the pipeline isn't dead.
+	p.circuit.record(true)
 	p.backoff.ok()
 	slog.Debug("pipeline.summary: summarizer returned",
 		"chunks", len(chunks), "results", len(results), "graph_type", gk.GraphType, "graph_name", gk.GraphName)
@@ -228,6 +235,10 @@ func writeSummaryResults(ctx context.Context, p *Pipeline, be WireClient, key gr
 // errors WARN with the reason that just got stamped on each affected
 // node's metadata.
 func handleSummarizerError(ctx context.Context, p *Pipeline, be WireClient, key graphKey, items []SummaryWork, err error) {
+	// Every errored summarizer call — transient OR terminal — feeds the
+	// zero-success window: only an actual success (recorded at the ok() site)
+	// resets it, so a full round where every call errors trips the breaker.
+	p.circuit.record(false)
 	if llm.IsTransient(err) {
 		// Honor a provider 429/503 Retry-After when present (else exponential).
 		hint := llm.RetryAfterOf(err)

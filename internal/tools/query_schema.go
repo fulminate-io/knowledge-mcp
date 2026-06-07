@@ -41,6 +41,7 @@ func QueryToolDef() kgtools.MCPTool {
 				"text":                {Type: "string", Description: "Search query text"},
 				"queries":             {Type: "array", Description: "Batch search queries (code graph only)", Items: &kgtools.Property{Type: "string"}},
 				"type":                {Type: "string", Description: "Node type filter (e.g. decision, rule, plan, research, document)"},
+				"types":               {Type: "array", Description: "Filter mode=recent results to these node types (e.g. [\"project\", \"ticket\", \"plan\", \"step\"]). Knowledge graph, mode=recent only — ignored for other modes.", Items: &kgtools.Property{Type: "string"}},
 				"status":              {Type: "string", Description: "Status filter for thought recall"},
 				"path_prefix":         {Type: "string", Description: "File path filter (code graph). Also used as file_path for file_symbols mode."},
 				"path_prefixes":       {Type: "array", Description: "List form of path_prefix for file_symbols mode — query symbols across multiple files in one call. Combined with path_prefix when both supplied.", Items: &kgtools.Property{Type: "string"}},

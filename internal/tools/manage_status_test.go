@@ -33,19 +33,20 @@ type cloudStatusDeps struct {
 	host     string
 }
 
-func (d *cloudStatusDeps) GraphClient() *graphclient.GraphClient { return d.local }
-func (d *cloudStatusDeps) Sink() collector.Sink                  { return nil }
-func (d *cloudStatusDeps) RootDir() string                       { return "" }
-func (d *cloudStatusDeps) WorkerRuntime() WorkerRuntimeAPI       { return nil }
-func (d *cloudStatusDeps) WorkerCRUD() WorkerCRUDAPI             { return nil }
-func (d *cloudStatusDeps) Embedder() embed.BinaryEmbedder        { return nil }
-func (d *cloudStatusDeps) BackendResolver() BackendResolver      { return nil }
-func (d *cloudStatusDeps) GraphCaller() GraphCaller              { return d.gc }
-func (d *cloudStatusDeps) LocalGraphCaller() GraphCaller         { return d.gc }
-func (d *cloudStatusDeps) RepoResolver() *RepoResolver           { return nil }
-func (d *cloudStatusDeps) SegmentManager() SegmentSearcher       { return nil }
-func (d *cloudStatusDeps) SegmentShipper() SegmentShipper        { return nil }
-func (d *cloudStatusDeps) PipelineScanner() PipelineScanner      { return nil }
+func (d *cloudStatusDeps) LocalLiveness() LocalLiveness     { return d.local }
+func (d *cloudStatusDeps) Sink() collector.Sink             { return nil }
+func (d *cloudStatusDeps) RootDir() string                  { return "" }
+func (d *cloudStatusDeps) WorkerRuntime() WorkerRuntimeAPI  { return nil }
+func (d *cloudStatusDeps) WorkerCRUD() WorkerCRUDAPI        { return nil }
+func (d *cloudStatusDeps) GraphTypeCRUD() GraphTypeCRUDAPI  { return nil }
+func (d *cloudStatusDeps) Embedder() embed.BinaryEmbedder   { return nil }
+func (d *cloudStatusDeps) BackendResolver() BackendResolver { return nil }
+func (d *cloudStatusDeps) GraphCaller() GraphCaller         { return d.gc }
+func (d *cloudStatusDeps) LocalGraphCaller() GraphCaller    { return d.gc }
+func (d *cloudStatusDeps) RepoResolver() *RepoResolver      { return nil }
+func (d *cloudStatusDeps) SegmentManager() SegmentSearcher  { return nil }
+func (d *cloudStatusDeps) SegmentShipper() SegmentShipper   { return nil }
+func (d *cloudStatusDeps) PipelineScanner() PipelineScanner { return nil }
 
 func (d *cloudStatusDeps) CloudStatusInfo() (bool, string) { return d.loggedIn, d.host }
 

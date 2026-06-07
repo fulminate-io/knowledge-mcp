@@ -50,15 +50,14 @@ func recordedLines(t *testing.T, logPath string) []string {
 }
 
 // TestRegisterKnowledgeMCP_ClaudeArgv: claude registration emits a
-// preceding `mcp remove knowledge` then `mcp add -s user knowledge --
-// <abs>`.
+// preceding `mcp remove knowledge` then the http-transport add form
+// `mcp add -s user --transport http knowledge <daemon-url>` — no stdio
+// `-- <abs>` command.
 func TestRegisterKnowledgeMCP_ClaudeArgv(t *testing.T) {
 	dir := t.TempDir()
 	log := filepath.Join(dir, "argv.log")
 	writeRecordingFake(t, dir, "claude", log)
 	withPATH(t, dir)
-	const abs = "/opt/knowledge/bin/knowledge"
-	withStubExecutable(t, abs)
 
 	if err := registerKnowledgeMCP("claude", []string{"-s", "user"}, false); err != nil {
 		t.Fatalf("registerKnowledgeMCP: %v", err)
@@ -70,21 +69,21 @@ func TestRegisterKnowledgeMCP_ClaudeArgv(t *testing.T) {
 	if lines[0] != "mcp remove knowledge" {
 		t.Errorf("first argv = %q, want %q", lines[0], "mcp remove knowledge")
 	}
-	want := "mcp add -s user knowledge -- " + abs
+	want := "mcp add -s user --transport http knowledge " + daemonMCPURL()
 	if lines[1] != want {
 		t.Errorf("second argv = %q, want %q", lines[1], want)
 	}
 }
 
-// TestRegisterKnowledgeMCP_CodexArgv: codex registration emits the
-// scope-less `mcp add knowledge -- <abs>` shape.
+// TestRegisterKnowledgeMCP_CodexArgv: codex registration emits a
+// preceding `mcp remove knowledge` then the codex url-form add
+// `mcp add knowledge --url <daemon-url>` (codex names the streamable-HTTP
+// target with --url, not claude's --transport http) and no scope flag.
 func TestRegisterKnowledgeMCP_CodexArgv(t *testing.T) {
 	dir := t.TempDir()
 	log := filepath.Join(dir, "argv.log")
 	writeRecordingFake(t, dir, "codex", log)
 	withPATH(t, dir)
-	const abs = "/opt/knowledge/bin/knowledge"
-	withStubExecutable(t, abs)
 
 	if err := registerKnowledgeMCP("codex", nil, false); err != nil {
 		t.Fatalf("registerKnowledgeMCP: %v", err)
@@ -96,7 +95,7 @@ func TestRegisterKnowledgeMCP_CodexArgv(t *testing.T) {
 	if lines[0] != "mcp remove knowledge" {
 		t.Errorf("first argv = %q, want remove", lines[0])
 	}
-	want := "mcp add knowledge -- " + abs
+	want := "mcp add knowledge --url " + daemonMCPURL()
 	if lines[1] != want {
 		t.Errorf("second argv = %q, want %q", lines[1], want)
 	}
@@ -106,7 +105,6 @@ func TestRegisterKnowledgeMCP_CodexArgv(t *testing.T) {
 // registration returns nil (non-fatal) and records no argv.
 func TestRegisterKnowledgeMCP_MissingCLI(t *testing.T) {
 	withPATH(t, t.TempDir()) // empty dir → claude not found
-	withStubExecutable(t, "/opt/knowledge/bin/knowledge")
 	if err := registerKnowledgeMCP("claude", []string{"-s", "user"}, false); err != nil {
 		t.Errorf("missing CLI should be non-fatal, got err: %v", err)
 	}
@@ -119,7 +117,6 @@ func TestRegisterKnowledgeMCP_DryRun(t *testing.T) {
 	log := filepath.Join(dir, "argv.log")
 	writeRecordingFake(t, dir, "claude", log)
 	withPATH(t, dir)
-	withStubExecutable(t, "/opt/knowledge/bin/knowledge")
 
 	if err := registerKnowledgeMCP("claude", []string{"-s", "user"}, true); err != nil {
 		t.Fatalf("dry-run: %v", err)

@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
-	"sync/atomic"
+	"sync"
 	"testing"
 
 	"connectrpc.com/connect"
@@ -31,6 +31,9 @@ import (
 type fanOutEngineHandler struct {
 	graphNames []string
 	nodesByID  map[string]*knowledgev1.Node
+
+	mu   sync.Mutex
+	reqs []*knowledgev1.ExecuteRequest
 }
 
 func (h *fanOutEngineHandler) Check(
@@ -48,6 +51,9 @@ func (h *fanOutEngineHandler) Status(
 func (h *fanOutEngineHandler) Execute(
 	_ context.Context, req *connect.Request[knowledgev1.ExecuteRequest],
 ) (*connect.Response[knowledgev1.ExecuteResponse], error) {
+	h.mu.Lock()
+	h.reqs = append(h.reqs, req.Msg)
+	h.mu.Unlock()
 	q := req.Msg.GetQuery()
 	if q != nil && q.GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_GRAPH_NAMES {
 		infos := make([]*knowledgev1.GraphInfo, 0, len(h.graphNames))
@@ -99,9 +105,35 @@ func (h *fanOutEngineHandler) ExportGraph(
 	return nil, connect.NewError(connect.CodeUnimplemented, nil)
 }
 
+func (h *fanOutEngineHandler) OverwriteGraph(
+	context.Context, *connect.Request[knowledgev1.OverwriteGraphRequest],
+) (*connect.Response[knowledgev1.OverwriteGraphResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, nil)
+}
+
+// recordedReqs returns a copy of every ExecuteRequest the fan-out handler
+// captured, taken under the lock so callers race neither with the per-graph
+// fan-out goroutines nor the append.
+func (h *fanOutEngineHandler) recordedReqs() []*knowledgev1.ExecuteRequest {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	out := make([]*knowledgev1.ExecuteRequest, len(h.reqs))
+	copy(out, h.reqs)
+	return out
+}
+
 // newFanOutHarness wires a GraphClient at a fan-out handler seeded with the given
 // practice graph names + hydrate nodes (keyed by id).
 func newFanOutHarness(t *testing.T, graphNames []string, nodes ...*knowledgev1.Node) *graphclient.GraphClient {
+	t.Helper()
+	gc, _ := newFanOutHarnessWithHandler(t, graphNames, nodes...)
+	return gc
+}
+
+// newFanOutHarnessWithHandler is newFanOutHarness but also returns the handler so
+// callers can inspect the captured requests (recordedReqs) — e.g. to assert no
+// server RETURN_MODE_SEARCH was dispatched by the client-served fan-out.
+func newFanOutHarnessWithHandler(t *testing.T, graphNames []string, nodes ...*knowledgev1.Node) (*graphclient.GraphClient, *fanOutEngineHandler) {
 	t.Helper()
 	byID := make(map[string]*knowledgev1.Node, len(nodes))
 	for _, n := range nodes {
@@ -118,7 +150,7 @@ func newFanOutHarness(t *testing.T, graphNames []string, nodes ...*knowledgev1.N
 	h2s := &http2.Server{}
 	srv := httptest.NewServer(h2c.NewHandler(mux, h2s))
 	t.Cleanup(srv.Close)
-	return graphclient.NewGraphClientForURL(srv.URL)
+	return graphclient.NewGraphClientForURL(srv.URL), h
 }
 
 // practiceNode builds a practice hit node with the importance/category metadata.
@@ -220,26 +252,32 @@ func TestPracticeFanOut_NoSilentZeroWhenMatchesExist(t *testing.T) {
 	})
 }
 
-// TestPracticeFanOut_SingleLanguagePreserved asserts a specific-language search
-// issues EXACTLY ONE per-graph Search keyed on that language, with NO graph
-// enumeration, and renders the single-language "## <Lang> Best Practices" shape —
-// the targeted path is untouched by the fan-out.
-func TestPracticeFanOut_SingleLanguagePreserved(t *testing.T) {
-	t.Run("SEARCH tool language:go", func(t *testing.T) {
-		var execHits atomic.Int64
-		gc, handler := newInterceptHarnessWithHandler(t, &execHits, cannedNodesResp(
-			practiceNode("p:go", "GoOnly", "go content"),
-		))
-		mgr := &fakeSegmentSearcher{hits: []searchengine.Hit{{ID: "p:go", Score: 0.88}}}
+// TestPracticeFanOut_SearchIgnoresLanguage asserts the SEARCH tool ALWAYS fans
+// across every loaded practice graph: a passed `language` is IGNORED on the SEARCH
+// path (the single-language scope was removed), so the search still enumerates and
+// searches BOTH seeded graphs and renders the fan-out header. The QUERY tool's
+// empty-language browse is unaffected and stays.
+func TestPracticeFanOut_SearchIgnoresLanguage(t *testing.T) {
+	t.Run("SEARCH tool language:go still fans out", func(t *testing.T) {
+		gc := newFanOutHarness(t, []string{"go", "python"},
+			practiceNode("p:go", "GoWorkerPool", "bounded goroutines"),
+			practiceNode("p:py", "PyThreadPool", "thread pool executor"),
+		)
+		mgr := newFanOutSegmentSearcher(map[string][]searchengine.Hit{
+			"go":     {{ID: "p:go", Score: 0.90}},
+			"python": {{ID: "p:py", Score: 0.70}},
+		})
 		deps := &interceptDeps{gc: gc, segMgr: mgr}
-		handled, out := InterceptSearch(deps, searchParams(t, map[string]any{"graph": "practice", "language": "go", "query": "x"}))
+		// A passed language:"go" is ignored — the SEARCH tool fans across ALL graphs.
+		handled, out := InterceptSearch(deps, searchParams(t, map[string]any{"graph": "practice", "language": "go", "query": "pool"}))
 		require.True(t, handled)
+		require.False(t, out.IsError, "result is not an error: %s", textBodyTools(out))
 		body := textBodyTools(out)
-		assert.Equal(t, int64(1), mgr.calls.Load(), "exactly one per-graph Search")
-		assert.Equal(t, "go", mgr.lastName, "keyed on the targeted language")
-		// No GRAPH_NAMES enumeration was issued (targeted path skips listGraphNamesOfType).
-		assert.False(t, dispatchedGraphNames(handler.recordedReqs()), "single-language search must not enumerate graphs")
-		assert.Contains(t, body, "## Go Best Practices — 1 results for \"x\"")
+		// Both graphs were enumerated and searched despite language:"go".
+		assert.Equal(t, []string{"go", "python"}, mgr.searchedNames())
+		assert.Contains(t, body, "Searched 2 practice graphs (go, python)")
+		assert.Contains(t, body, "GoWorkerPool")
+		assert.Contains(t, body, "PyThreadPool")
 	})
 
 	t.Run("QUERY tool empty language stays browse", func(t *testing.T) {
@@ -254,13 +292,28 @@ func TestPracticeFanOut_SingleLanguagePreserved(t *testing.T) {
 	})
 }
 
-// dispatchedGraphNames reports whether any captured request was a
-// RETURN_MODE_GRAPH_NAMES enumeration.
-func dispatchedGraphNames(reqs []*knowledgev1.ExecuteRequest) bool {
-	for _, r := range reqs {
-		if q := r.GetQuery(); q != nil && q.GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_GRAPH_NAMES {
-			return true
-		}
-	}
-	return false
+// TestPracticeFanOut_NoLanguageSpansLanguageGraphs is the ticket acceptance
+// criterion: a SEARCH with NO language key returns hits spanning >=2 language
+// graphs (go AND python), each attributed to its source graph.
+func TestPracticeFanOut_NoLanguageSpansLanguageGraphs(t *testing.T) {
+	gc := newFanOutHarness(t, []string{"go", "python"},
+		practiceNode("p:go", "GoWorkerPool", "bounded goroutines"),
+		practiceNode("p:py", "PyThreadPool", "thread pool executor"),
+	)
+	mgr := newFanOutSegmentSearcher(map[string][]searchengine.Hit{
+		"go":     {{ID: "p:go", Score: 0.90}},
+		"python": {{ID: "p:py", Score: 0.70}},
+	})
+	deps := &interceptDeps{gc: gc, segMgr: mgr}
+	// No "language" key at all — a single search fans across every language graph.
+	handled, out := InterceptSearch(deps, searchParams(t, map[string]any{"graph": "practice", "query": "pool"}))
+	require.True(t, handled)
+	require.False(t, out.IsError, "result is not an error: %s", textBodyTools(out))
+	body := textBodyTools(out)
+	// Both language graphs were searched and both hits surfaced, each tagged.
+	assert.Equal(t, []string{"go", "python"}, mgr.searchedNames())
+	assert.Contains(t, body, "Searched 2 practice graphs (go, python)")
+	assert.Contains(t, body, "### 1. GoWorkerPool [high] (concurrency) — go")
+	assert.Contains(t, body, "### 2. PyThreadPool [high] (concurrency) — python")
+	assert.Less(t, strings.Index(body, "GoWorkerPool"), strings.Index(body, "PyThreadPool"))
 }

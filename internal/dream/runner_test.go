@@ -90,7 +90,7 @@ func TestRunner_OnManualTriggerSpawnsWorker(t *testing.T) {
 	bus := NewEventBus()
 
 	dir := t.TempDir()
-	r := NewRunner(reg, bus, nil, dir, disp.fn(), searchOnlyCatalog())
+	r := NewRunner(reg, bus, dir, disp.fn(), searchOnlyCatalog())
 
 	// Subscribe to worker-completed before firing so we can assert the
 	// outcome event lands on the bus with status=ok.
@@ -140,7 +140,7 @@ func TestRunner_OnManualTriggerSpawnsWorker(t *testing.T) {
 func TestRunner_OnManualTriggerUnknownWorkerReturnsError(t *testing.T) {
 	reg := registryWith(t)
 	bus := NewEventBus()
-	r := NewRunner(reg, bus, nil, t.TempDir(), nil, nil)
+	r := NewRunner(reg, bus, t.TempDir(), nil, nil)
 
 	err := r.OnManualTrigger(context.Background(), "no-such-worker", json.RawMessage(`""`))
 	if err == nil {
@@ -156,7 +156,7 @@ func TestRunner_OnManualTriggerUnknownWorkerReturnsError(t *testing.T) {
 func TestRunner_StopIsIdempotent(t *testing.T) {
 	reg := registryWith(t)
 	bus := NewEventBus()
-	r := NewRunner(reg, bus, nil, t.TempDir(), nil, nil)
+	r := NewRunner(reg, bus, t.TempDir(), nil, nil)
 	r.Stop(0)
 	r.Stop(time.Millisecond)
 	r.Stop(0)
@@ -166,7 +166,7 @@ func TestRunner_StopIsIdempotent(t *testing.T) {
 // implementation translates chokepoint args back into Events.
 func TestRunner_EmitToolStarted_FansOutOnBus(t *testing.T) {
 	bus := NewEventBus()
-	r := NewRunner(registryWith(t), bus, nil, t.TempDir(), nil, nil)
+	r := NewRunner(registryWith(t), bus, t.TempDir(), nil, nil)
 
 	ch := bus.Subscribe(Trigger{Event: EventToolStarted})
 	now := time.Now().UTC()
@@ -191,7 +191,7 @@ func TestRunner_EmitToolStarted_FansOutOnBus(t *testing.T) {
 // TestRunner_EmitToolCompleted_FansOutOnBus mirrors the started variant.
 func TestRunner_EmitToolCompleted_FansOutOnBus(t *testing.T) {
 	bus := NewEventBus()
-	r := NewRunner(registryWith(t), bus, nil, t.TempDir(), nil, nil)
+	r := NewRunner(registryWith(t), bus, t.TempDir(), nil, nil)
 
 	ch := bus.Subscribe(Trigger{Event: EventToolCompleted})
 	now := time.Now().UTC()
@@ -232,7 +232,7 @@ func TestRunner_ListByNameDelegateToRegistry(t *testing.T) {
 	}
 
 	reg := registryWith(t, w)
-	r := NewRunner(reg, NewEventBus(), nil, t.TempDir(), nil, nil)
+	r := NewRunner(reg, NewEventBus(), t.TempDir(), nil, nil)
 
 	ctx := context.Background()
 	all, err := r.List(ctx)
@@ -256,7 +256,7 @@ func TestRunner_ListByNameDelegateToRegistry(t *testing.T) {
 // the log file.
 func TestRunner_StatusReadsLog(t *testing.T) {
 	dir := t.TempDir()
-	r := NewRunner(registryWith(t), NewEventBus(), nil, dir, nil, nil)
+	r := NewRunner(registryWith(t), NewEventBus(), dir, nil, nil)
 
 	wl, err := OpenWorkerLog(dir, "manual")
 	if err != nil {

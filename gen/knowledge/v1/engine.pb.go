@@ -458,7 +458,7 @@ func (x IndexRequest_IndexOp) Number() protoreflect.EnumNumber {
 
 // Deprecated: Use IndexRequest_IndexOp.Descriptor instead.
 func (IndexRequest_IndexOp) EnumDescriptor() ([]byte, []int) {
-	return file_knowledge_v1_engine_proto_rawDescGZIP(), []int{33, 0}
+	return file_knowledge_v1_engine_proto_rawDescGZIP(), []int{35, 0}
 }
 
 // PipelineScanRequest carries the (graph_type, graph_name, axis) scope, an item
@@ -2947,10 +2947,14 @@ func (x *EdgeSpec) GetLastValidated() int64 {
 
 // StatsRequest routes a db.Stats read to the target graph.
 type StatsRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Target        *GraphSelector         `protobuf:"bytes,1,opt,name=target,proto3" json:"target,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Target *GraphSelector         `protobuf:"bytes,1,opt,name=target,proto3" json:"target,omitempty"`
+	// when true the backend ALSO computes the 4 on-demand LLM-coverage counts
+	// (O(N) OSS scan / 4 extra cloud COUNTs); default false keeps Stats O(1) for
+	// graph-load/enumerate/export/generic-stats callers that never read coverage.
+	IncludeCoverage bool `protobuf:"varint,2,opt,name=include_coverage,json=includeCoverage,proto3" json:"include_coverage,omitempty"`
+	unknownFields   protoimpl.UnknownFields
+	sizeCache       protoimpl.SizeCache
 }
 
 func (x *StatsRequest) Reset() {
@@ -2990,6 +2994,13 @@ func (x *StatsRequest) GetTarget() *GraphSelector {
 	return nil
 }
 
+func (x *StatsRequest) GetIncludeCoverage() bool {
+	if x != nil {
+		return x.IncludeCoverage
+	}
+	return false
+}
+
 // GraphStats mirrors store.GraphStats (pkg/store/graph_stats.go:50-62) — the
 // db.Stats counters. Method-free pure-data carrier. nodes_by_type/edges_by_type
 // are map<string,int64>: store.GraphStats.NodesByType is map[store.NodeType]int64
@@ -3003,8 +3014,13 @@ type GraphStats struct {
 	BinaryVectorCount int32                  `protobuf:"varint,4,opt,name=binary_vector_count,json=binaryVectorCount,proto3" json:"binary_vector_count,omitempty"`                                                         // store.GraphStats.BinaryVectorCount
 	NodesByType       map[string]int64       `protobuf:"bytes,5,rep,name=nodes_by_type,json=nodesByType,proto3" json:"nodes_by_type,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"` // store.GraphStats.NodesByType (NodeType key as string)
 	EdgesByType       map[string]int64       `protobuf:"bytes,6,rep,name=edges_by_type,json=edgesByType,proto3" json:"edges_by_type,omitempty" protobuf_key:"bytes,1,opt,name=key" protobuf_val:"varint,2,opt,name=value"` // store.GraphStats.EdgesByType (EdgeType key as string)
-	unknownFields     protoimpl.UnknownFields
-	sizeCache         protoimpl.SizeCache
+	// On-demand LLM-coverage counts (populated only when StatsRequest.include_coverage):
+	SummarizedCount     int32 `protobuf:"varint,12,opt,name=summarized_count,json=summarizedCount,proto3" json:"summarized_count,omitempty"`               // store.GraphStats.SummarizedCount (non-proxy non-tombstoned nodes with Summary != "")
+	SummaryFailureCount int32 `protobuf:"varint,13,opt,name=summary_failure_count,json=summaryFailureCount,proto3" json:"summary_failure_count,omitempty"` // store.GraphStats.SummaryFailureCount (nodes with the summary-failure-reason MetaKey set)
+	EmbedFailureCount   int32 `protobuf:"varint,14,opt,name=embed_failure_count,json=embedFailureCount,proto3" json:"embed_failure_count,omitempty"`       // store.GraphStats.EmbedFailureCount (nodes with the embed-failure-reason MetaKey set)
+	NonProxyNodeCount   int32 `protobuf:"varint,15,opt,name=non_proxy_node_count,json=nonProxyNodeCount,proto3" json:"non_proxy_node_count,omitempty"`     // store.GraphStats.NonProxyNodeCount (coverage denominator: non-proxy non-tombstoned total)
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *GraphStats) Reset() {
@@ -3070,6 +3086,34 @@ func (x *GraphStats) GetEdgesByType() map[string]int64 {
 		return x.EdgesByType
 	}
 	return nil
+}
+
+func (x *GraphStats) GetSummarizedCount() int32 {
+	if x != nil {
+		return x.SummarizedCount
+	}
+	return 0
+}
+
+func (x *GraphStats) GetSummaryFailureCount() int32 {
+	if x != nil {
+		return x.SummaryFailureCount
+	}
+	return 0
+}
+
+func (x *GraphStats) GetEmbedFailureCount() int32 {
+	if x != nil {
+		return x.EmbedFailureCount
+	}
+	return 0
+}
+
+func (x *GraphStats) GetNonProxyNodeCount() int32 {
+	if x != nil {
+		return x.NonProxyNodeCount
+	}
+	return 0
 }
 
 // StatsResponse carries the typed store.GraphStats counters (db.Stats). No
@@ -3165,10 +3209,11 @@ func (x *ExportGraphRequest) GetTarget() *GraphSelector {
 }
 
 // ExportGraphResponse carries the raw serialized graph bytes (KGV2 image from
-// store.SerializeGraph). No rows/labels — the client pushes the bytes verbatim.
+// the serialize seam). No rows/labels — the client either uploads the bytes to
+// cloud (push) or applies them to the local graph via OverwriteGraph (pull).
 type ExportGraphResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	GraphBytes    []byte                 `protobuf:"bytes,1,opt,name=graph_bytes,json=graphBytes,proto3" json:"graph_bytes,omitempty"` // store.SerializeGraph output (KGV2 byte image)
+	GraphBytes    []byte                 `protobuf:"bytes,1,opt,name=graph_bytes,json=graphBytes,proto3" json:"graph_bytes,omitempty"` // serialize-seam output (KGV2 byte image)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -3210,6 +3255,124 @@ func (x *ExportGraphResponse) GetGraphBytes() []byte {
 	return nil
 }
 
+// OverwriteGraphRequest carries the flat (graph_type, name) target plus the
+// serialized graph image to apply. FLAT shape (not the GraphSelector envelope)
+// because the local apply resolves a flat gt/name pair directly (mirroring
+// PipelineScanRequest).
+type OverwriteGraphRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	GraphType     string                 `protobuf:"bytes,1,opt,name=graph_type,json=graphType,proto3" json:"graph_type,omitempty"`    // store.GraphType (knowledge / code / practice / ...)
+	Name          string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`                               // graph name within the type
+	GraphBytes    []byte                 `protobuf:"bytes,3,opt,name=graph_bytes,json=graphBytes,proto3" json:"graph_bytes,omitempty"` // serialized graph image to overwrite the local graph with
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *OverwriteGraphRequest) Reset() {
+	*x = OverwriteGraphRequest{}
+	mi := &file_knowledge_v1_engine_proto_msgTypes[27]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *OverwriteGraphRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*OverwriteGraphRequest) ProtoMessage() {}
+
+func (x *OverwriteGraphRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_knowledge_v1_engine_proto_msgTypes[27]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use OverwriteGraphRequest.ProtoReflect.Descriptor instead.
+func (*OverwriteGraphRequest) Descriptor() ([]byte, []int) {
+	return file_knowledge_v1_engine_proto_rawDescGZIP(), []int{27}
+}
+
+func (x *OverwriteGraphRequest) GetGraphType() string {
+	if x != nil {
+		return x.GraphType
+	}
+	return ""
+}
+
+func (x *OverwriteGraphRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *OverwriteGraphRequest) GetGraphBytes() []byte {
+	if x != nil {
+		return x.GraphBytes
+	}
+	return nil
+}
+
+// OverwriteGraphResponse reports the node/edge counts of the overwritten local
+// graph after the apply (read from the just-written target's db.Stats).
+type OverwriteGraphResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Nodes         int64                  `protobuf:"varint,1,opt,name=nodes,proto3" json:"nodes,omitempty"` // overwritten graph node count
+	Edges         int64                  `protobuf:"varint,2,opt,name=edges,proto3" json:"edges,omitempty"` // overwritten graph edge count
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *OverwriteGraphResponse) Reset() {
+	*x = OverwriteGraphResponse{}
+	mi := &file_knowledge_v1_engine_proto_msgTypes[28]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *OverwriteGraphResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*OverwriteGraphResponse) ProtoMessage() {}
+
+func (x *OverwriteGraphResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_knowledge_v1_engine_proto_msgTypes[28]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use OverwriteGraphResponse.ProtoReflect.Descriptor instead.
+func (*OverwriteGraphResponse) Descriptor() ([]byte, []int) {
+	return file_knowledge_v1_engine_proto_rawDescGZIP(), []int{28}
+}
+
+func (x *OverwriteGraphResponse) GetNodes() int64 {
+	if x != nil {
+		return x.Nodes
+	}
+	return 0
+}
+
+func (x *OverwriteGraphResponse) GetEdges() int64 {
+	if x != nil {
+		return x.Edges
+	}
+	return 0
+}
+
 // MetadataStatsRequest routes a db.MetadataStats + db.OverrideConfig read to the
 // target graph.
 type MetadataStatsRequest struct {
@@ -3221,7 +3384,7 @@ type MetadataStatsRequest struct {
 
 func (x *MetadataStatsRequest) Reset() {
 	*x = MetadataStatsRequest{}
-	mi := &file_knowledge_v1_engine_proto_msgTypes[27]
+	mi := &file_knowledge_v1_engine_proto_msgTypes[29]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3233,7 +3396,7 @@ func (x *MetadataStatsRequest) String() string {
 func (*MetadataStatsRequest) ProtoMessage() {}
 
 func (x *MetadataStatsRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_knowledge_v1_engine_proto_msgTypes[27]
+	mi := &file_knowledge_v1_engine_proto_msgTypes[29]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3246,7 +3409,7 @@ func (x *MetadataStatsRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MetadataStatsRequest.ProtoReflect.Descriptor instead.
 func (*MetadataStatsRequest) Descriptor() ([]byte, []int) {
-	return file_knowledge_v1_engine_proto_rawDescGZIP(), []int{27}
+	return file_knowledge_v1_engine_proto_rawDescGZIP(), []int{29}
 }
 
 func (x *MetadataStatsRequest) GetTarget() *GraphSelector {
@@ -3269,7 +3432,7 @@ type OverrideConfig struct {
 
 func (x *OverrideConfig) Reset() {
 	*x = OverrideConfig{}
-	mi := &file_knowledge_v1_engine_proto_msgTypes[28]
+	mi := &file_knowledge_v1_engine_proto_msgTypes[30]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3281,7 +3444,7 @@ func (x *OverrideConfig) String() string {
 func (*OverrideConfig) ProtoMessage() {}
 
 func (x *OverrideConfig) ProtoReflect() protoreflect.Message {
-	mi := &file_knowledge_v1_engine_proto_msgTypes[28]
+	mi := &file_knowledge_v1_engine_proto_msgTypes[30]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3294,7 +3457,7 @@ func (x *OverrideConfig) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use OverrideConfig.ProtoReflect.Descriptor instead.
 func (*OverrideConfig) Descriptor() ([]byte, []int) {
-	return file_knowledge_v1_engine_proto_rawDescGZIP(), []int{28}
+	return file_knowledge_v1_engine_proto_rawDescGZIP(), []int{30}
 }
 
 func (x *OverrideConfig) GetForceScalar() []string {
@@ -3333,7 +3496,7 @@ type KeyStats struct {
 
 func (x *KeyStats) Reset() {
 	*x = KeyStats{}
-	mi := &file_knowledge_v1_engine_proto_msgTypes[29]
+	mi := &file_knowledge_v1_engine_proto_msgTypes[31]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3345,7 +3508,7 @@ func (x *KeyStats) String() string {
 func (*KeyStats) ProtoMessage() {}
 
 func (x *KeyStats) ProtoReflect() protoreflect.Message {
-	mi := &file_knowledge_v1_engine_proto_msgTypes[29]
+	mi := &file_knowledge_v1_engine_proto_msgTypes[31]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3358,7 +3521,7 @@ func (x *KeyStats) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use KeyStats.ProtoReflect.Descriptor instead.
 func (*KeyStats) Descriptor() ([]byte, []int) {
-	return file_knowledge_v1_engine_proto_rawDescGZIP(), []int{29}
+	return file_knowledge_v1_engine_proto_rawDescGZIP(), []int{31}
 }
 
 func (x *KeyStats) GetDistinctValues() int64 {
@@ -3417,7 +3580,7 @@ type MetadataStats struct {
 
 func (x *MetadataStats) Reset() {
 	*x = MetadataStats{}
-	mi := &file_knowledge_v1_engine_proto_msgTypes[30]
+	mi := &file_knowledge_v1_engine_proto_msgTypes[32]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3429,7 +3592,7 @@ func (x *MetadataStats) String() string {
 func (*MetadataStats) ProtoMessage() {}
 
 func (x *MetadataStats) ProtoReflect() protoreflect.Message {
-	mi := &file_knowledge_v1_engine_proto_msgTypes[30]
+	mi := &file_knowledge_v1_engine_proto_msgTypes[32]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3442,7 +3605,7 @@ func (x *MetadataStats) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MetadataStats.ProtoReflect.Descriptor instead.
 func (*MetadataStats) Descriptor() ([]byte, []int) {
-	return file_knowledge_v1_engine_proto_rawDescGZIP(), []int{30}
+	return file_knowledge_v1_engine_proto_rawDescGZIP(), []int{32}
 }
 
 func (x *MetadataStats) GetKeys() map[string]*KeyStats {
@@ -3472,7 +3635,7 @@ type MetadataStatsResponse struct {
 
 func (x *MetadataStatsResponse) Reset() {
 	*x = MetadataStatsResponse{}
-	mi := &file_knowledge_v1_engine_proto_msgTypes[31]
+	mi := &file_knowledge_v1_engine_proto_msgTypes[33]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3484,7 +3647,7 @@ func (x *MetadataStatsResponse) String() string {
 func (*MetadataStatsResponse) ProtoMessage() {}
 
 func (x *MetadataStatsResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_knowledge_v1_engine_proto_msgTypes[31]
+	mi := &file_knowledge_v1_engine_proto_msgTypes[33]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3497,7 +3660,7 @@ func (x *MetadataStatsResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use MetadataStatsResponse.ProtoReflect.Descriptor instead.
 func (*MetadataStatsResponse) Descriptor() ([]byte, []int) {
-	return file_knowledge_v1_engine_proto_rawDescGZIP(), []int{31}
+	return file_knowledge_v1_engine_proto_rawDescGZIP(), []int{33}
 }
 
 func (x *MetadataStatsResponse) GetMetadataStats() *MetadataStats {
@@ -3534,7 +3697,7 @@ type ProxyTarget struct {
 
 func (x *ProxyTarget) Reset() {
 	*x = ProxyTarget{}
-	mi := &file_knowledge_v1_engine_proto_msgTypes[32]
+	mi := &file_knowledge_v1_engine_proto_msgTypes[34]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3546,7 +3709,7 @@ func (x *ProxyTarget) String() string {
 func (*ProxyTarget) ProtoMessage() {}
 
 func (x *ProxyTarget) ProtoReflect() protoreflect.Message {
-	mi := &file_knowledge_v1_engine_proto_msgTypes[32]
+	mi := &file_knowledge_v1_engine_proto_msgTypes[34]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3559,7 +3722,7 @@ func (x *ProxyTarget) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use ProxyTarget.ProtoReflect.Descriptor instead.
 func (*ProxyTarget) Descriptor() ([]byte, []int) {
-	return file_knowledge_v1_engine_proto_rawDescGZIP(), []int{32}
+	return file_knowledge_v1_engine_proto_rawDescGZIP(), []int{34}
 }
 
 func (x *ProxyTarget) GetGraphType() string {
@@ -3598,7 +3761,7 @@ type IndexRequest struct {
 
 func (x *IndexRequest) Reset() {
 	*x = IndexRequest{}
-	mi := &file_knowledge_v1_engine_proto_msgTypes[33]
+	mi := &file_knowledge_v1_engine_proto_msgTypes[35]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3610,7 +3773,7 @@ func (x *IndexRequest) String() string {
 func (*IndexRequest) ProtoMessage() {}
 
 func (x *IndexRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_knowledge_v1_engine_proto_msgTypes[33]
+	mi := &file_knowledge_v1_engine_proto_msgTypes[35]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3623,7 +3786,7 @@ func (x *IndexRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IndexRequest.ProtoReflect.Descriptor instead.
 func (*IndexRequest) Descriptor() ([]byte, []int) {
-	return file_knowledge_v1_engine_proto_rawDescGZIP(), []int{33}
+	return file_knowledge_v1_engine_proto_rawDescGZIP(), []int{35}
 }
 
 func (x *IndexRequest) GetTarget() *GraphSelector {
@@ -3673,7 +3836,7 @@ type IndexResponse struct {
 
 func (x *IndexResponse) Reset() {
 	*x = IndexResponse{}
-	mi := &file_knowledge_v1_engine_proto_msgTypes[34]
+	mi := &file_knowledge_v1_engine_proto_msgTypes[36]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -3685,7 +3848,7 @@ func (x *IndexResponse) String() string {
 func (*IndexResponse) ProtoMessage() {}
 
 func (x *IndexResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_knowledge_v1_engine_proto_msgTypes[34]
+	mi := &file_knowledge_v1_engine_proto_msgTypes[36]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -3698,7 +3861,7 @@ func (x *IndexResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use IndexResponse.ProtoReflect.Descriptor instead.
 func (*IndexResponse) Descriptor() ([]byte, []int) {
-	return file_knowledge_v1_engine_proto_rawDescGZIP(), []int{34}
+	return file_knowledge_v1_engine_proto_rawDescGZIP(), []int{36}
 }
 
 func (x *IndexResponse) GetResultJson() []byte {
@@ -3993,9 +4156,10 @@ const file_knowledge_v1_engine_proto_rawDesc = "" +
 	"confidence\x12\x16\n" +
 	"\x06method\x18\a \x01(\tR\x06method\x12\x1a\n" +
 	"\bevidence\x18\b \x01(\tR\bevidence\x12%\n" +
-	"\x0elast_validated\x18\t \x01(\x03R\rlastValidated\"C\n" +
+	"\x0elast_validated\x18\t \x01(\x03R\rlastValidated\"n\n" +
 	"\fStatsRequest\x123\n" +
-	"\x06target\x18\x01 \x01(\v2\x1b.knowledge.v1.GraphSelectorR\x06target\"\x93\x04\n" +
+	"\x06target\x18\x01 \x01(\v2\x1b.knowledge.v1.GraphSelectorR\x06target\x12)\n" +
+	"\x10include_coverage\x18\x02 \x01(\bR\x0fincludeCoverage\"\xd3\x05\n" +
 	"\n" +
 	"GraphStats\x12\x1d\n" +
 	"\n" +
@@ -4004,7 +4168,11 @@ const file_knowledge_v1_engine_proto_rawDesc = "" +
 	"edge_count\x18\x02 \x01(\x05R\tedgeCount\x12.\n" +
 	"\x13binary_vector_count\x18\x04 \x01(\x05R\x11binaryVectorCount\x12M\n" +
 	"\rnodes_by_type\x18\x05 \x03(\v2).knowledge.v1.GraphStats.NodesByTypeEntryR\vnodesByType\x12M\n" +
-	"\redges_by_type\x18\x06 \x03(\v2).knowledge.v1.GraphStats.EdgesByTypeEntryR\vedgesByType\x1a>\n" +
+	"\redges_by_type\x18\x06 \x03(\v2).knowledge.v1.GraphStats.EdgesByTypeEntryR\vedgesByType\x12)\n" +
+	"\x10summarized_count\x18\f \x01(\x05R\x0fsummarizedCount\x122\n" +
+	"\x15summary_failure_count\x18\r \x01(\x05R\x13summaryFailureCount\x12.\n" +
+	"\x13embed_failure_count\x18\x0e \x01(\x05R\x11embedFailureCount\x12/\n" +
+	"\x14non_proxy_node_count\x18\x0f \x01(\x05R\x11nonProxyNodeCount\x1a>\n" +
 	"\x10NodesByTypeEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\x03R\x05value:\x028\x01\x1a>\n" +
@@ -4020,7 +4188,16 @@ const file_knowledge_v1_engine_proto_rawDesc = "" +
 	"\x06target\x18\x01 \x01(\v2\x1b.knowledge.v1.GraphSelectorR\x06target\"6\n" +
 	"\x13ExportGraphResponse\x12\x1f\n" +
 	"\vgraph_bytes\x18\x01 \x01(\fR\n" +
-	"graphBytes\"K\n" +
+	"graphBytes\"k\n" +
+	"\x15OverwriteGraphRequest\x12\x1d\n" +
+	"\n" +
+	"graph_type\x18\x01 \x01(\tR\tgraphType\x12\x12\n" +
+	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1f\n" +
+	"\vgraph_bytes\x18\x03 \x01(\fR\n" +
+	"graphBytes\"D\n" +
+	"\x16OverwriteGraphResponse\x12\x14\n" +
+	"\x05nodes\x18\x01 \x01(\x03R\x05nodes\x12\x14\n" +
+	"\x05edges\x18\x02 \x01(\x03R\x05edges\"K\n" +
 	"\x14MetadataStatsRequest\x123\n" +
 	"\x06target\x18\x01 \x01(\v2\x1b.knowledge.v1.GraphSelectorR\x06target\"R\n" +
 	"\x0eOverrideConfig\x12!\n" +
@@ -4086,14 +4263,15 @@ const file_knowledge_v1_engine_proto_rawDesc = "" +
 	"\x12RETURN_MODE_SEARCH\x10\x03\x12\x19\n" +
 	"\x15RETURN_MODE_TRAVERSAL\x10\x04\x12\x15\n" +
 	"\x11RETURN_MODE_EDGES\x10\x05\x12\x1b\n" +
-	"\x17RETURN_MODE_GRAPH_NAMES\x10\x062\xe0\x03\n" +
+	"\x17RETURN_MODE_GRAPH_NAMES\x10\x062\xbd\x04\n" +
 	"\rEngineService\x12F\n" +
 	"\aExecute\x12\x1c.knowledge.v1.ExecuteRequest\x1a\x1d.knowledge.v1.ExecuteResponse\x12@\n" +
 	"\x05Stats\x12\x1a.knowledge.v1.StatsRequest\x1a\x1b.knowledge.v1.StatsResponse\x12X\n" +
 	"\rMetadataStats\x12\".knowledge.v1.MetadataStatsRequest\x1a#.knowledge.v1.MetadataStatsResponse\x12@\n" +
 	"\x05Index\x12\x1a.knowledge.v1.IndexRequest\x1a\x1b.knowledge.v1.IndexResponse\x12U\n" +
 	"\fPipelineScan\x12!.knowledge.v1.PipelineScanRequest\x1a\".knowledge.v1.PipelineScanResponse\x12R\n" +
-	"\vExportGraph\x12 .knowledge.v1.ExportGraphRequest\x1a!.knowledge.v1.ExportGraphResponseB@Z>github.com/fulminate-io/knowledge/gen/knowledge/v1;knowledgev1b\x06proto3"
+	"\vExportGraph\x12 .knowledge.v1.ExportGraphRequest\x1a!.knowledge.v1.ExportGraphResponse\x12[\n" +
+	"\x0eOverwriteGraph\x12#.knowledge.v1.OverwriteGraphRequest\x1a$.knowledge.v1.OverwriteGraphResponseB@Z>github.com/fulminate-io/knowledge/gen/knowledge/v1;knowledgev1b\x06proto3"
 
 var (
 	file_knowledge_v1_engine_proto_rawDescOnce sync.Once
@@ -4108,7 +4286,7 @@ func file_knowledge_v1_engine_proto_rawDescGZIP() []byte {
 }
 
 var file_knowledge_v1_engine_proto_enumTypes = make([]protoimpl.EnumInfo, 6)
-var file_knowledge_v1_engine_proto_msgTypes = make([]protoimpl.MessageInfo, 45)
+var file_knowledge_v1_engine_proto_msgTypes = make([]protoimpl.MessageInfo, 47)
 var file_knowledge_v1_engine_proto_goTypes = []any{
 	(SearchMode)(0),                     // 0: knowledge.v1.SearchMode
 	(ReturnMode)(0),                     // 1: knowledge.v1.ReturnMode
@@ -4143,24 +4321,26 @@ var file_knowledge_v1_engine_proto_goTypes = []any{
 	(*StatsResponse)(nil),               // 30: knowledge.v1.StatsResponse
 	(*ExportGraphRequest)(nil),          // 31: knowledge.v1.ExportGraphRequest
 	(*ExportGraphResponse)(nil),         // 32: knowledge.v1.ExportGraphResponse
-	(*MetadataStatsRequest)(nil),        // 33: knowledge.v1.MetadataStatsRequest
-	(*OverrideConfig)(nil),              // 34: knowledge.v1.OverrideConfig
-	(*KeyStats)(nil),                    // 35: knowledge.v1.KeyStats
-	(*MetadataStats)(nil),               // 36: knowledge.v1.MetadataStats
-	(*MetadataStatsResponse)(nil),       // 37: knowledge.v1.MetadataStatsResponse
-	(*ProxyTarget)(nil),                 // 38: knowledge.v1.ProxyTarget
-	(*IndexRequest)(nil),                // 39: knowledge.v1.IndexRequest
-	(*IndexResponse)(nil),               // 40: knowledge.v1.IndexResponse
-	nil,                                 // 41: knowledge.v1.Node.MetadataEntry
-	nil,                                 // 42: knowledge.v1.MutationPlan.SetFieldsEntry
-	nil,                                 // 43: knowledge.v1.MutationPlan.SetMetadataEntry
-	nil,                                 // 44: knowledge.v1.UpdateItem.MetadataEntry
-	nil,                                 // 45: knowledge.v1.NodeBody.MetadataEntry
-	nil,                                 // 46: knowledge.v1.GraphStats.NodesByTypeEntry
-	nil,                                 // 47: knowledge.v1.GraphStats.EdgesByTypeEntry
-	nil,                                 // 48: knowledge.v1.KeyStats.ValueDistributionEntry
-	nil,                                 // 49: knowledge.v1.MetadataStats.KeysEntry
-	nil,                                 // 50: knowledge.v1.IndexRequest.ParamsEntry
+	(*OverwriteGraphRequest)(nil),       // 33: knowledge.v1.OverwriteGraphRequest
+	(*OverwriteGraphResponse)(nil),      // 34: knowledge.v1.OverwriteGraphResponse
+	(*MetadataStatsRequest)(nil),        // 35: knowledge.v1.MetadataStatsRequest
+	(*OverrideConfig)(nil),              // 36: knowledge.v1.OverrideConfig
+	(*KeyStats)(nil),                    // 37: knowledge.v1.KeyStats
+	(*MetadataStats)(nil),               // 38: knowledge.v1.MetadataStats
+	(*MetadataStatsResponse)(nil),       // 39: knowledge.v1.MetadataStatsResponse
+	(*ProxyTarget)(nil),                 // 40: knowledge.v1.ProxyTarget
+	(*IndexRequest)(nil),                // 41: knowledge.v1.IndexRequest
+	(*IndexResponse)(nil),               // 42: knowledge.v1.IndexResponse
+	nil,                                 // 43: knowledge.v1.Node.MetadataEntry
+	nil,                                 // 44: knowledge.v1.MutationPlan.SetFieldsEntry
+	nil,                                 // 45: knowledge.v1.MutationPlan.SetMetadataEntry
+	nil,                                 // 46: knowledge.v1.UpdateItem.MetadataEntry
+	nil,                                 // 47: knowledge.v1.NodeBody.MetadataEntry
+	nil,                                 // 48: knowledge.v1.GraphStats.NodesByTypeEntry
+	nil,                                 // 49: knowledge.v1.GraphStats.EdgesByTypeEntry
+	nil,                                 // 50: knowledge.v1.KeyStats.ValueDistributionEntry
+	nil,                                 // 51: knowledge.v1.MetadataStats.KeysEntry
+	nil,                                 // 52: knowledge.v1.IndexRequest.ParamsEntry
 }
 var file_knowledge_v1_engine_proto_depIdxs = []int32{
 	8,  // 0: knowledge.v1.PipelineScanResponse.items:type_name -> knowledge.v1.PipelineScanItem
@@ -4168,7 +4348,7 @@ var file_knowledge_v1_engine_proto_depIdxs = []int32{
 	21, // 2: knowledge.v1.ExecuteRequest.query:type_name -> knowledge.v1.QueryPlan
 	22, // 3: knowledge.v1.ExecuteRequest.mutation:type_name -> knowledge.v1.MutationPlan
 	11, // 4: knowledge.v1.ExecuteRequest.target:type_name -> knowledge.v1.GraphSelector
-	41, // 5: knowledge.v1.Node.metadata:type_name -> knowledge.v1.Node.MetadataEntry
+	43, // 5: knowledge.v1.Node.metadata:type_name -> knowledge.v1.Node.MetadataEntry
 	14, // 6: knowledge.v1.HydratedResult.node:type_name -> knowledge.v1.Node
 	14, // 7: knowledge.v1.TraversalResult.node:type_name -> knowledge.v1.Node
 	15, // 8: knowledge.v1.ExecuteResponse.search_results:type_name -> knowledge.v1.HydratedResult
@@ -4186,46 +4366,48 @@ var file_knowledge_v1_engine_proto_depIdxs = []int32{
 	1,  // 20: knowledge.v1.QueryPlan.return_mode:type_name -> knowledge.v1.ReturnMode
 	3,  // 21: knowledge.v1.MutationPlan.kind:type_name -> knowledge.v1.MutationPlan.MutationKind
 	20, // 22: knowledge.v1.MutationPlan.selection:type_name -> knowledge.v1.Selection
-	42, // 23: knowledge.v1.MutationPlan.set_fields:type_name -> knowledge.v1.MutationPlan.SetFieldsEntry
-	43, // 24: knowledge.v1.MutationPlan.set_metadata:type_name -> knowledge.v1.MutationPlan.SetMetadataEntry
+	44, // 23: knowledge.v1.MutationPlan.set_fields:type_name -> knowledge.v1.MutationPlan.SetFieldsEntry
+	45, // 24: knowledge.v1.MutationPlan.set_metadata:type_name -> knowledge.v1.MutationPlan.SetMetadataEntry
 	27, // 25: knowledge.v1.MutationPlan.edge_spec:type_name -> knowledge.v1.EdgeSpec
 	25, // 26: knowledge.v1.MutationPlan.node_bodies:type_name -> knowledge.v1.NodeBody
 	26, // 27: knowledge.v1.MutationPlan.edges:type_name -> knowledge.v1.BatchEdgeSpec
 	24, // 28: knowledge.v1.MutationPlan.update_items:type_name -> knowledge.v1.UpdateItem
 	23, // 29: knowledge.v1.MutationPlan.migrate_meta_repr:type_name -> knowledge.v1.MigrateMetaReprSpec
 	4,  // 30: knowledge.v1.MigrateMetaReprSpec.target_repr:type_name -> knowledge.v1.MigrateMetaReprSpec.TargetRepr
-	44, // 31: knowledge.v1.UpdateItem.metadata:type_name -> knowledge.v1.UpdateItem.MetadataEntry
-	45, // 32: knowledge.v1.NodeBody.metadata:type_name -> knowledge.v1.NodeBody.MetadataEntry
+	46, // 31: knowledge.v1.UpdateItem.metadata:type_name -> knowledge.v1.UpdateItem.MetadataEntry
+	47, // 32: knowledge.v1.NodeBody.metadata:type_name -> knowledge.v1.NodeBody.MetadataEntry
 	20, // 33: knowledge.v1.EdgeSpec.to_selection:type_name -> knowledge.v1.Selection
 	11, // 34: knowledge.v1.StatsRequest.target:type_name -> knowledge.v1.GraphSelector
-	46, // 35: knowledge.v1.GraphStats.nodes_by_type:type_name -> knowledge.v1.GraphStats.NodesByTypeEntry
-	47, // 36: knowledge.v1.GraphStats.edges_by_type:type_name -> knowledge.v1.GraphStats.EdgesByTypeEntry
+	48, // 35: knowledge.v1.GraphStats.nodes_by_type:type_name -> knowledge.v1.GraphStats.NodesByTypeEntry
+	49, // 36: knowledge.v1.GraphStats.edges_by_type:type_name -> knowledge.v1.GraphStats.EdgesByTypeEntry
 	29, // 37: knowledge.v1.StatsResponse.graph_stats:type_name -> knowledge.v1.GraphStats
 	11, // 38: knowledge.v1.ExportGraphRequest.target:type_name -> knowledge.v1.GraphSelector
 	11, // 39: knowledge.v1.MetadataStatsRequest.target:type_name -> knowledge.v1.GraphSelector
-	48, // 40: knowledge.v1.KeyStats.value_distribution:type_name -> knowledge.v1.KeyStats.ValueDistributionEntry
-	49, // 41: knowledge.v1.MetadataStats.keys:type_name -> knowledge.v1.MetadataStats.KeysEntry
-	36, // 42: knowledge.v1.MetadataStatsResponse.metadata_stats:type_name -> knowledge.v1.MetadataStats
-	34, // 43: knowledge.v1.MetadataStatsResponse.override_config:type_name -> knowledge.v1.OverrideConfig
+	50, // 40: knowledge.v1.KeyStats.value_distribution:type_name -> knowledge.v1.KeyStats.ValueDistributionEntry
+	51, // 41: knowledge.v1.MetadataStats.keys:type_name -> knowledge.v1.MetadataStats.KeysEntry
+	38, // 42: knowledge.v1.MetadataStatsResponse.metadata_stats:type_name -> knowledge.v1.MetadataStats
+	36, // 43: knowledge.v1.MetadataStatsResponse.override_config:type_name -> knowledge.v1.OverrideConfig
 	11, // 44: knowledge.v1.IndexRequest.target:type_name -> knowledge.v1.GraphSelector
 	5,  // 45: knowledge.v1.IndexRequest.operation:type_name -> knowledge.v1.IndexRequest.IndexOp
-	50, // 46: knowledge.v1.IndexRequest.params:type_name -> knowledge.v1.IndexRequest.ParamsEntry
+	52, // 46: knowledge.v1.IndexRequest.params:type_name -> knowledge.v1.IndexRequest.ParamsEntry
 	12, // 47: knowledge.v1.IndexResponse.branches:type_name -> knowledge.v1.GraphInfo
-	35, // 48: knowledge.v1.MetadataStats.KeysEntry.value:type_name -> knowledge.v1.KeyStats
+	37, // 48: knowledge.v1.MetadataStats.KeysEntry.value:type_name -> knowledge.v1.KeyStats
 	10, // 49: knowledge.v1.EngineService.Execute:input_type -> knowledge.v1.ExecuteRequest
 	28, // 50: knowledge.v1.EngineService.Stats:input_type -> knowledge.v1.StatsRequest
-	33, // 51: knowledge.v1.EngineService.MetadataStats:input_type -> knowledge.v1.MetadataStatsRequest
-	39, // 52: knowledge.v1.EngineService.Index:input_type -> knowledge.v1.IndexRequest
+	35, // 51: knowledge.v1.EngineService.MetadataStats:input_type -> knowledge.v1.MetadataStatsRequest
+	41, // 52: knowledge.v1.EngineService.Index:input_type -> knowledge.v1.IndexRequest
 	6,  // 53: knowledge.v1.EngineService.PipelineScan:input_type -> knowledge.v1.PipelineScanRequest
 	31, // 54: knowledge.v1.EngineService.ExportGraph:input_type -> knowledge.v1.ExportGraphRequest
-	17, // 55: knowledge.v1.EngineService.Execute:output_type -> knowledge.v1.ExecuteResponse
-	30, // 56: knowledge.v1.EngineService.Stats:output_type -> knowledge.v1.StatsResponse
-	37, // 57: knowledge.v1.EngineService.MetadataStats:output_type -> knowledge.v1.MetadataStatsResponse
-	40, // 58: knowledge.v1.EngineService.Index:output_type -> knowledge.v1.IndexResponse
-	7,  // 59: knowledge.v1.EngineService.PipelineScan:output_type -> knowledge.v1.PipelineScanResponse
-	32, // 60: knowledge.v1.EngineService.ExportGraph:output_type -> knowledge.v1.ExportGraphResponse
-	55, // [55:61] is the sub-list for method output_type
-	49, // [49:55] is the sub-list for method input_type
+	33, // 55: knowledge.v1.EngineService.OverwriteGraph:input_type -> knowledge.v1.OverwriteGraphRequest
+	17, // 56: knowledge.v1.EngineService.Execute:output_type -> knowledge.v1.ExecuteResponse
+	30, // 57: knowledge.v1.EngineService.Stats:output_type -> knowledge.v1.StatsResponse
+	39, // 58: knowledge.v1.EngineService.MetadataStats:output_type -> knowledge.v1.MetadataStatsResponse
+	42, // 59: knowledge.v1.EngineService.Index:output_type -> knowledge.v1.IndexResponse
+	7,  // 60: knowledge.v1.EngineService.PipelineScan:output_type -> knowledge.v1.PipelineScanResponse
+	32, // 61: knowledge.v1.EngineService.ExportGraph:output_type -> knowledge.v1.ExportGraphResponse
+	34, // 62: knowledge.v1.EngineService.OverwriteGraph:output_type -> knowledge.v1.OverwriteGraphResponse
+	56, // [56:63] is the sub-list for method output_type
+	49, // [49:56] is the sub-list for method input_type
 	49, // [49:49] is the sub-list for extension type_name
 	49, // [49:49] is the sub-list for extension extendee
 	0,  // [0:49] is the sub-list for field type_name
@@ -4248,7 +4430,7 @@ func file_knowledge_v1_engine_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_knowledge_v1_engine_proto_rawDesc), len(file_knowledge_v1_engine_proto_rawDesc)),
 			NumEnums:      6,
-			NumMessages:   45,
+			NumMessages:   47,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

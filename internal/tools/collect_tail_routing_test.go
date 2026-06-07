@@ -11,7 +11,6 @@ import (
 
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
-	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/postpopulate"
@@ -25,19 +24,20 @@ type tailRoutingDeps struct {
 	local  GraphCaller
 }
 
-func (d *tailRoutingDeps) GraphClient() *graphclient.GraphClient { return nil }
-func (d *tailRoutingDeps) Sink() collector.Sink                  { return noopSink{} }
-func (d *tailRoutingDeps) RootDir() string                       { return "" }
-func (d *tailRoutingDeps) WorkerRuntime() WorkerRuntimeAPI       { return nil }
-func (d *tailRoutingDeps) WorkerCRUD() WorkerCRUDAPI             { return nil }
-func (d *tailRoutingDeps) Embedder() embed.BinaryEmbedder        { return nil }
-func (d *tailRoutingDeps) BackendResolver() BackendResolver      { return nil }
-func (d *tailRoutingDeps) GraphCaller() GraphCaller              { return d.routed }
-func (d *tailRoutingDeps) LocalGraphCaller() GraphCaller         { return d.local }
-func (d *tailRoutingDeps) RepoResolver() *RepoResolver           { return nil }
-func (d *tailRoutingDeps) SegmentManager() SegmentSearcher       { return nil }
-func (d *tailRoutingDeps) SegmentShipper() SegmentShipper        { return nil }
-func (d *tailRoutingDeps) PipelineScanner() PipelineScanner      { return nil }
+func (d *tailRoutingDeps) LocalLiveness() LocalLiveness     { return nil }
+func (d *tailRoutingDeps) Sink() collector.Sink             { return noopSink{} }
+func (d *tailRoutingDeps) RootDir() string                  { return "" }
+func (d *tailRoutingDeps) WorkerRuntime() WorkerRuntimeAPI  { return nil }
+func (d *tailRoutingDeps) WorkerCRUD() WorkerCRUDAPI        { return nil }
+func (d *tailRoutingDeps) GraphTypeCRUD() GraphTypeCRUDAPI  { return nil }
+func (d *tailRoutingDeps) Embedder() embed.BinaryEmbedder   { return nil }
+func (d *tailRoutingDeps) BackendResolver() BackendResolver { return nil }
+func (d *tailRoutingDeps) GraphCaller() GraphCaller         { return d.routed }
+func (d *tailRoutingDeps) LocalGraphCaller() GraphCaller    { return d.local }
+func (d *tailRoutingDeps) RepoResolver() *RepoResolver      { return nil }
+func (d *tailRoutingDeps) SegmentManager() SegmentSearcher  { return nil }
+func (d *tailRoutingDeps) SegmentShipper() SegmentShipper   { return nil }
+func (d *tailRoutingDeps) PipelineScanner() PipelineScanner { return nil }
 
 // TestPostCollectTail_RoutesThroughGraphCaller proves Phase 2: the post-collect
 // linker + postpopulate tail follow the data through deps.GraphCaller() (the

@@ -95,3 +95,16 @@ func TestNodeMetaValue_IsKnowledgeType(t *testing.T) {
 		t.Fatalf("NodeMetaValue literal = %q, want %q", got, want)
 	}
 }
+
+// TestNodeGraphTypeDef_WireLiteral pins the client NodeGraphTypeDef literal to
+// the agreed cross-module wire string "graph_type_def". The server store
+// vocabulary (cmd/knowledge-server/internal/store/node_types_vocab.go) carries
+// an independent copy of this const — a deliberate per-module duplicate (no
+// shared package). This per-module drift-guard plus its server twin
+// (TestNodeGraphTypeDef_WireLiteral in store) fail if either literal changes
+// without the other, keeping the two modules in lockstep on the wire value.
+func TestNodeGraphTypeDef_WireLiteral(t *testing.T) {
+	if got, want := string(NodeGraphTypeDef), "graph_type_def"; got != want {
+		t.Fatalf("NodeGraphTypeDef literal = %q, want %q (must match the server store const + the proto file's documented wire string)", got, want)
+	}
+}

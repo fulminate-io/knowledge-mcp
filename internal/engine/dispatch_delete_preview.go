@@ -44,7 +44,7 @@ func dispatchDeletePreview(ctx context.Context, exec ExecuteFn, args json.RawMes
 		// unknown prune type / unparseable duration). Surface a legible error
 		// rather than silently doing nothing — but still never delete.
 		return errorResult(
-			"delete: dry_run requires either ids[] or a valid older_than + type (e.g. older_than:\"7d\", type:\"session\")",
+			"delete: dry_run requires either ids[] or a valid older_than + a retention-eligible type",
 		), true
 	}
 

@@ -47,7 +47,7 @@ func mutateProperties() map[string]kgtools.Property {
 		"ids":                   {Type: "array", Description: "List of node IDs for batch status update", Items: &kgtools.Property{Type: "string"}},
 		"name":                  {Type: "string", Description: "Node name or title"},
 		"description":           {Type: "string", Description: "Node description"},
-		"summary":               {Type: "string", MaxLength: 500, Description: "Required search-optimized one-line summary, max 500 chars, when create-ing an embed-only-knowledge node type (NodeType.Summarizable()=false). Handler-side enforcement returns an error when missing/empty/whitespace or > 500 chars. See docs/node-type-llm-defaults.md."},
+		"summary":               {Type: "string", MaxLength: 500, Description: "Required search-optimized one-line summary, max 500 chars, when create-ing an embed-only-knowledge node type (NodeType.Summarizable()=false). Handler-side enforcement returns an error when missing/empty/whitespace or > 500 chars."},
 		"content":               {Type: "string", Description: "Full content. For research create: context/background."},
 		"status":                {Type: "string", Description: "Status to set (for update operation)"},
 		"expand_to_descendants": {Type: "boolean", Description: "When updating status to 'completed' on a project/ticket/plan/phase, also walk the contains tree and write completed to every non-terminal descendant. Default true. Set false to update only the named node(s). Has no effect for non-completed statuses or non-container types."},

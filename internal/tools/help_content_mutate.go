@@ -16,7 +16,7 @@ const helpMutate = `# mutate — Create, update, and link knowledge nodes
   summary is REQUIRED for embed-only-knowledge types (NodeType.Summarizable()=false):
     finding, document, pattern, tool_guide, reference, use_case, resource, example,
     memory, event. Handler enforces non-empty + 500-char cap and returns a structured
-    error naming "mutate(create)" if missing. See docs/node-type-llm-defaults.md.
+    error naming "mutate(create)" if missing.
   Q5 locked: rule and criterion KEEP auto-synthesized Summary (no summary required).
   Q2 locked: research goes through handleRecordResearch (auto-synthesized).
 
@@ -96,7 +96,6 @@ const helpDelete = `# delete — Remove nodes or prune history
 ## Prune by age
   delete({ "older_than": "7d", "dry_run": true })  — preview
   delete({ "older_than": "7d" })                   — execute
-  delete({ "older_than": "24h", "type": "tool_call" })
 
 ## Practice graph deletion
   delete({ "ids": ["node_id"], "graph": "practice", "language": "go" })

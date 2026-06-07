@@ -5,7 +5,9 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -13,6 +15,7 @@ import (
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/validate"
 )
 
 func TestHandleChargeClient_EmptyThought_Errors(t *testing.T) {
@@ -127,4 +130,37 @@ func TestHandleChargeClient_NoHitEvidence_RawIDPreserved(t *testing.T) {
 	edges := fc.execMutations[0].GetEdges()
 	require.Len(t, edges, 2, "EdgeChargedBy + the dangling EdgeEvidencedBy (no-hit ID NOT dropped)")
 	assert.Equal(t, "dangling-ev", edges[1].GetToId(), "no-hit evidence id preserved as raw (outcome c)")
+}
+
+// TestTruncateAtWordCreate_RuneCorrect proves the helper counts and slices by
+// RUNES, not bytes: a multibyte input over maxLen is capped to exactly maxLen
+// runes and is always valid UTF-8 (a byte cap would slice mid-rune), while
+// ASCII word-boundary behavior is preserved and sub-cap input is unchanged.
+func TestTruncateAtWordCreate_RuneCorrect(t *testing.T) {
+	// Multibyte over cap: 300 em-dashes (U+2014, 3 bytes / 1 rune each), no
+	// spaces → idx<=0 path → exactly maxLen runes of valid UTF-8.
+	const maxLen = 60
+	emdashes := strings.Repeat("—", 300)
+	got := truncateAtWordCreate(emdashes, maxLen)
+	assert.Equal(t, maxLen, utf8.RuneCountInString(got), "capped to maxLen RUNES, not bytes")
+	assert.True(t, utf8.ValidString(got), "result must be valid UTF-8 (byte cap would slice mid-rune)")
+
+	// Sub-cap input is returned unchanged.
+	short := "hello world"
+	assert.Equal(t, short, truncateAtWordCreate(short, maxLen), "sub-cap input unchanged")
+
+	// ASCII word-boundary preserved: cut at the last space within the cap.
+	ascii := "alpha beta gamma delta epsilon zeta eta theta iota kappa lambda"
+	gotASCII := truncateAtWordCreate(ascii, 20)
+	assert.LessOrEqual(t, utf8.RuneCountInString(gotASCII), 20)
+	assert.False(t, strings.HasSuffix(gotASCII, " "), "no trailing space")
+	assert.True(t, strings.HasPrefix(ascii, gotASCII), "word-boundary cut is a prefix of the input")
+	assert.NotContains(t, gotASCII[strings.LastIndex(gotASCII, " ")+1:], " ")
+
+	// SummaryMaxLen multibyte path: a summary of em-dashes longer than
+	// SummaryMaxLen runes caps to SummaryMaxLen runes of valid UTF-8.
+	bigSummary := strings.Repeat("—", validate.SummaryMaxLen+100)
+	gotSummary := truncateAtWordCreate(bigSummary, validate.SummaryMaxLen)
+	assert.Equal(t, validate.SummaryMaxLen, utf8.RuneCountInString(gotSummary))
+	assert.True(t, utf8.ValidString(gotSummary))
 }

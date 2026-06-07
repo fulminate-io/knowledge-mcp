@@ -16,17 +16,18 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
 
-// TestInterceptSearch_PracticeCloudCICDClientServed is the SEARCH-tool
-// completeness criterion: search(graph in {practice,cloud,cicd}) is served by the
-// CLIENT engine (Manager.Search → hydrate), never a server RETURN_MODE_SEARCH.
-func TestInterceptSearch_PracticeCloudCICDClientServed(t *testing.T) {
+// TestInterceptSearch_CloudCICDClientServed is the SEARCH-tool completeness
+// criterion for the targeted-account graphs: search(graph in {cloud,cicd}) is
+// served by the CLIENT engine (Manager.Search → hydrate), never a server
+// RETURN_MODE_SEARCH. Practice is no longer a targeted single-graph search — it
+// ALWAYS fans out, so its coverage lives in TestInterceptSearch_PracticeClientServedViaFanOut.
+func TestInterceptSearch_CloudCICDClientServed(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		args   map[string]any
 		wantGT kgtypes.GraphType
 		want   string
 	}{
-		{"practice", map[string]any{"graph": "practice", "language": "go", "query": "x"}, kgtypes.GraphPractice, "go"},
 		{"cloud", map[string]any{"graph": "cloud", "account": "acct", "query": "x"}, kgtypes.GraphCloud, "acct"},
 		{"cicd", map[string]any{"graph": "cicd", "account": "org", "query": "x"}, kgtypes.GraphCICD, "org"},
 	} {
@@ -47,6 +48,34 @@ func TestInterceptSearch_PracticeCloudCICDClientServed(t *testing.T) {
 				"%s search must NOT dispatch a server search", tc.name)
 		})
 	}
+}
+
+// TestInterceptSearch_PracticeClientServedViaFanOut is the SEARCH-tool
+// completeness criterion for practice: search(graph:practice) is served by the
+// CLIENT engine across EVERY loaded practice graph (fan-out), never a server
+// RETURN_MODE_SEARCH. Practice always fans out, so it is driven against the
+// fan-out-aware harness (>=2 graph names enumerated, per-graph hits) rather than
+// the single-graph dispatch harness.
+func TestInterceptSearch_PracticeClientServedViaFanOut(t *testing.T) {
+	gc, handler := newFanOutHarnessWithHandler(t, []string{"go", "python"},
+		practiceNode("p:go", "GoWorkerPool", "bounded goroutines"),
+		practiceNode("p:py", "PyThreadPool", "thread pool executor"),
+	)
+	mgr := newFanOutSegmentSearcher(map[string][]searchengine.Hit{
+		"go":     {{ID: "p:go", Score: 0.90}},
+		"python": {{ID: "p:py", Score: 0.70}},
+	})
+	deps := &interceptDeps{gc: gc, segMgr: mgr}
+
+	handled, out := InterceptSearch(deps, searchParams(t, map[string]any{"graph": "practice", "query": "x"}))
+	require.True(t, handled, "practice search must be claimed client-side")
+	require.False(t, out.IsError, "%v", engine.FirstTextContent(out))
+
+	// The CLIENT engine was driven across BOTH enumerated practice graphs.
+	require.Equal(t, []string{"go", "python"}, mgr.searchedNames(), "fan-out searched every practice graph")
+	// No server ranked search — the only server reqs are GRAPH_NAMES + ids[] hydrate.
+	require.False(t, dispatchedAServerSearch(handler.recordedReqs()),
+		"practice fan-out must NOT dispatch a server search")
 }
 
 // TestInterceptQueryKnowledgeSearch_RecentClientServed is the Phase 2
@@ -125,13 +154,15 @@ func TestPivotSeedSearch_ClientServed(t *testing.T) {
 
 // TestInterceptQueryKnowledgeSearch_GateMisses asserts the claim falls through
 // (handled=false) for non-recent modes and non-knowledge graphs so the rest of
-// the chain owns them (the text/default arms are added by the sibling step).
+// the chain owns them. NOTE: bare empty-text recent is NO LONGER a gate-miss — it
+// is now served client-side as a temporal browse (composeRecentBrowse), covered by
+// TestInterceptQueryKnowledgeSearch_BareRecentTemporalBrowse; only NON-recent
+// empty-text modes still fall through to precheck/deny.
 func TestInterceptQueryKnowledgeSearch_GateMisses(t *testing.T) {
 	deps := &interceptDeps{segMgr: &fakeSegmentSearcher{}}
 	for _, args := range []map[string]any{
 		{"graph": "practice", "mode": "recent", "text": "x"},                  // non-knowledge graph
 		{"graph": "knowledge", "mode": "recent", "session": "s", "text": "x"}, // thought filter
-		{"graph": "knowledge", "mode": "recent"},                              // empty text
 		{"graph": "knowledge", "mode": "stats"},                               // non-search mode
 		{"graph": "knowledge", "id": "n1"},                                    // default-mode getNode (not text)
 		{"graph": "knowledge", "type": "finding"},                             // default-mode type-browse (not text)

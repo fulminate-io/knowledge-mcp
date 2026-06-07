@@ -115,12 +115,13 @@ func (e *countingEngine) PipelineScan(
 	return connect.NewResponse(&knowledgev1.PipelineScanResponse{}), nil
 }
 
-func (e *countingEngine) ExportGraph(
-	_ context.Context,
-	_ *connect.Request[knowledgev1.ExportGraphRequest],
-) (*connect.Response[knowledgev1.ExportGraphResponse], error) {
+func (e *countingEngine) ExportGraph(_ context.Context, _ *connect.Request[knowledgev1.ExportGraphRequest]) (*connect.Response[knowledgev1.ExportGraphResponse], error) {
 	e.exportGraph.Add(1)
 	return connect.NewResponse(&knowledgev1.ExportGraphResponse{}), nil
+}
+
+func (e *countingEngine) OverwriteGraph(_ context.Context, _ *connect.Request[knowledgev1.OverwriteGraphRequest]) (*connect.Response[knowledgev1.OverwriteGraphResponse], error) {
+	return connect.NewResponse(&knowledgev1.OverwriteGraphResponse{}), nil
 }
 
 // startCountingEngine stands up an h2c httptest.Server in front of a
@@ -205,6 +206,30 @@ func TestRouter_NoLocal_Auth_RoutesCloud(t *testing.T) {
 	_, err := r.Execute(context.Background(), &knowledgev1.ExecuteRequest{})
 	require.NoError(t, err)
 	assert.Equal(t, int32(1), cloudEng.execute.Load())
+}
+
+// TestRouter_DownLocal_Auth_RoutesCloud: a wired-but-DOWN local + AuthState=true
+// → Execute (and the IngestService/Backend picker) route cloud with the local
+// counter at 0 — fall-through reaches cloud WITHOUT a healthy local server.
+func TestRouter_DownLocal_Auth_RoutesCloud(t *testing.T) {
+	cloudURL, cloudEng := startCountingEngine(t)
+	localGC := newUnhealthyLocalClient(t)
+	store := newFakeAuthStore()
+	require.NoError(t, store.Set(context.Background(), auth.KeyRefreshToken, "frt-stub"))
+	as := auth.NewAuthState(store, time.Hour)
+	r := NewRouter(localGC, cloudURL, staticTokenSource{tok: "tok-cloud"}, as)
+
+	_, err := r.Execute(context.Background(), &knowledgev1.ExecuteRequest{})
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), cloudEng.execute.Load(), "cloud serviced Execute despite the down local")
+
+	// The collect path picks the same routed target (not the down local).
+	picked, perr := r.Backend(context.Background())
+	require.NoError(t, perr)
+	assert.NotSame(t, localGC, picked, "collect routing must not select the down local")
+	ingest, ierr := r.IngestClient(context.Background())
+	require.NoError(t, ierr)
+	assert.NotNil(t, ingest, "IngestClient resolves a routed target with no healthy local")
 }
 
 // TestRouter_CloudBuiltLazilyOnce: route 100 Execute calls with AuthState=true
