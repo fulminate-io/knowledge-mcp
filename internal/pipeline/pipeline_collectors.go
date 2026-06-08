@@ -14,10 +14,12 @@ import (
 // wake, cadence/backend resolution, and teardown. Split out of pipeline.go to
 // keep that file under the 500-line cap as the cadence + wake state accreted.
 
-// RegisterGraph spawns the per-graph collector goroutines (summary +
-// embed) for (gt, name). Called by the registry hook (Phase 6) when a
-// graph loads. Re-registration of an already-tracked graph is a no-op
-// — the registry hook fires once per load.
+// RegisterGraph spawns the per-graph collector goroutines for (gt, name): one
+// loop per ENABLED axis — the summary loop when a summarizer is configured
+// (p.summaryEnabled()) and the embed loop when an embedder is configured
+// (p.embedEnabled()), both threaded onto the collector here. Called by the
+// registry hook (Phase 6) when a graph loads. Re-registration of an
+// already-tracked graph is a no-op — the registry hook fires once per load.
 //
 // No client-side graph-type eligibility gate (Option B): the
 // collector is spawned for EVERY loaded graph regardless of summary/embed
@@ -68,7 +70,7 @@ func (p *Pipeline) RegisterGraph(ctx context.Context, gt kgtypes.GraphType, name
 	if p.healFactory != nil {
 		heal = p.healFactory(gt, name)
 	}
-	c := newCollector(gt, name, p.cfg, p.summaryCh, p.embedCh, p.metrics, backend, base, idleMax, flush, heal)
+	c := newCollector(gt, name, p.cfg, p.summaryCh, p.embedCh, p.metrics, backend, base, idleMax, flush, heal, p.summaryEnabled(), p.embedEnabled())
 	p.collectorWakes[key] = []chan struct{}{c.summaryWake, c.embedWake}
 	p.collectorWG.Go(func() {
 		c.run(cctx)

@@ -180,7 +180,15 @@ func TestFlipResetsGenCache(t *testing.T) {
 	// LastSeenGen the collector SENDS (0 after reset), not the response.
 	fb.cloud.scanResp = &knowledgev1.PipelineScanResponse{DirtyGen: 9}
 
-	p := New(cfg, fb, nil, nil)
+	// A non-nil summarizer enables the summary axis so the collector's summary
+	// loop actually scans (the gen-cache-reset behavior under test is axis-
+	// agnostic; both axes share the same dirty-gen reset path). With BOTH LLM
+	// functions nil the per-axis gates would disable every collector loop and no
+	// scan would fire.
+	noopSum := func(_ context.Context, _ []llmproviders.BatchChunk) (map[string]llmproviders.SummarizeResult, error) {
+		return nil, nil
+	}
+	p := New(cfg, fb, noopSum, nil)
 	ctx := context.Background()
 	require.NoError(t, p.Start(ctx))
 	survivor := graphKey{GraphType: kgtypes.GraphCode, GraphName: "survivor"}

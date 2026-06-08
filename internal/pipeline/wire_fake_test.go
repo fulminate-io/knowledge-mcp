@@ -61,6 +61,19 @@ type fakeWireClient struct {
 	// dirty_gen=0 (collector no-op tick). Tests that need non-empty scan
 	// results set it via seedScan.
 	scanResp *knowledgev1.PipelineScanResponse
+
+	// embedScanResp / summaryScanResp, when non-nil, are returned for the
+	// matching axis's scans (req.axis == "embed" / "summary") INSTEAD of scanResp.
+	// Lets a test seed eligible items on ONE axis only while the other returns
+	// empty — used to prove a given axis is (or is not) being scanned.
+	embedScanResp   *knowledgev1.PipelineScanResponse
+	summaryScanResp *knowledgev1.PipelineScanResponse
+
+	// scansByAxis records pipeline_scan invocation counts keyed by the request
+	// axis ("summary" | "embed"). The flat calls["pipeline_scan"] counts both
+	// axes together; this split lets a test assert that the embed axis was never
+	// scanned (the embed-gate proof) while the summary axis flowed.
+	scansByAxis map[string]int
 }
 
 func newFakeWireClient() *fakeWireClient {
@@ -69,6 +82,7 @@ func newFakeWireClient() *fakeWireClient {
 		graphNamesByType:    make(map[string][]*knowledgev1.GraphInfo),
 		failGraphTypes:      make(map[string]bool),
 		rateLimitGraphTypes: make(map[string]int),
+		scansByAxis:         make(map[string]int),
 	}
 }
 
@@ -76,15 +90,51 @@ func newFakeWireClient() *fakeWireClient {
 // rides the typed EngineService.PipelineScan RPC rather than the legacy
 // ToolService.Call. Counts the call under "pipeline_scan" and returns the
 // seeded response (default: empty items, dirty_gen=0 → no-op tick).
-func (f *fakeWireClient) PipelineScan(_ context.Context, _ *knowledgev1.PipelineScanRequest) (*knowledgev1.PipelineScanResponse, error) {
+func (f *fakeWireClient) PipelineScan(_ context.Context, req *knowledgev1.PipelineScanRequest) (*knowledgev1.PipelineScanResponse, error) {
+	axis := req.GetAxis()
 	f.mu.Lock()
 	f.calls["pipeline_scan"]++
+	f.scansByAxis[axis]++
 	resp := f.scanResp
+	switch {
+	case axis == "embed" && f.embedScanResp != nil:
+		resp = f.embedScanResp
+	case axis == "summary" && f.summaryScanResp != nil:
+		resp = f.summaryScanResp
+	}
 	f.mu.Unlock()
 	if resp == nil {
 		return &knowledgev1.PipelineScanResponse{}, nil
 	}
 	return resp, nil
+}
+
+// scanCountForAxis returns how many pipeline_scan RPCs the fake observed for the
+// given axis ("summary" | "embed"). Used by the embed-gate test to assert the
+// embed axis was never scanned when no embedder is configured.
+func (f *fakeWireClient) scanCountForAxis(axis string) int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.scansByAxis[axis]
+}
+
+// seedEmbedScan installs the response returned for embed-axis scans only,
+// modeling a server that has embed-eligible gaps. Each item carries a NodeID +
+// server-composed EmbedText so a running embed loop would push real EmbedWork.
+func (f *fakeWireClient) seedEmbedScan(items ...*knowledgev1.PipelineScanItem) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.embedScanResp = &knowledgev1.PipelineScanResponse{Items: items, DirtyGen: 1}
+}
+
+// seedSummaryScan installs the response returned for summary-axis scans only,
+// modeling a server that has summary-eligible gaps. Each item carries a NodeID +
+// server-composed SummarizeText so a running summary loop would push real
+// SummaryWork.
+func (f *fakeWireClient) seedSummaryScan(items ...*knowledgev1.PipelineScanItem) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.summaryScanResp = &knowledgev1.PipelineScanResponse{Items: items, DirtyGen: 1}
 }
 
 // Execute satisfies WireClient's engine seam. writeBatchUpdates compiles its

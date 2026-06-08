@@ -125,7 +125,7 @@ func TestCollectorRunLoop_OverlayBacklogDrainsAcrossWavesAndQuiesces(t *testing.
 	c := newCollector(
 		kgtypes.GraphCode, "agent", cfg,
 		nil, embedCh, &metricsState{}, fake,
-		cfg.Tick, cfg.Tick, nil, nil,
+		cfg.Tick, cfg.Tick, nil, nil, false, true, // summaryEnabled=false, embedEnabled=true: this test drives runEmbedLoop directly
 	)
 
 	ctx, cancel := context.WithCancel(context.Background())

@@ -5,6 +5,7 @@ package pipeline
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 
@@ -37,10 +38,26 @@ func runSummaryWorker(ctx context.Context, p *Pipeline, batchIn <-chan []Summary
 // the batch (not the goroutine). Groups items by (GraphType, GraphName),
 // then per-group: fetches nodes via wire, builds BatchChunks, calls the
 // summarizer, writes results via mutate(update_batch).
+//
+// The recover defer is loop-safe (mirrors the embed side, runEmbedWorkerBatch):
+// a recovered panic that wrote no durable marker would leave the batch's nodes
+// summary-eligible, so the collector re-discovers + re-enqueues them and the
+// SAME batch panics again — an infinite loop. So on recover we route every node
+// in the panicked batch to the durable SUMMARY terminal-marker
+// (MetaKeySummaryFailureReason) so the eligibility loop terminates. An
+// unhandled panic in summary processing is a deterministic code bug — re-running
+// panics again — so the marker is TERMINAL (human-clearable), NOT a retry.
+//
+// Defer ordering (LIFO): the in-flight-release defer is registered AFTER the
+// recover defer, so on a panic the release runs FIRST (in-flight is freed), then
+// the recover defer stamps the terminal marker. The marker write is best-effort
+// and never re-panics out of the recover.
 func runSummaryWorkerBatch(ctx context.Context, p *Pipeline, batch []SummaryWork) {
 	defer func() {
 		if r := recover(); r != nil {
-			slog.Warn("pipeline.summary worker: batch panic recovered", "panic", r, "batch_size", len(batch))
+			slog.Warn("pipeline.summary worker: batch panic recovered — stamping terminal markers to break the eligibility loop",
+				"panic", r, "batch_size", len(batch))
+			markPanickedSummaryBatch(ctx, p, batch, r)
 		}
 	}()
 	for range batch {
@@ -124,6 +141,19 @@ func processSummaryGroup(ctx context.Context, p *Pipeline, key groupKey, items [
 	gk := key.Key
 	be := backendOr(p, key.Backend)
 	slog.Debug("pipeline.summary: processing group", "graph_type", gk.GraphType, "graph_name", gk.GraphName, "items", len(items))
+
+	// Defense-in-depth against the nil-summarizer loop: the summary axis is gated
+	// OFF at Start / collector.run when p.summarizer == nil, so no summary worker
+	// should ever reach here without a summarizer. This belt-and-suspenders guard
+	// makes a future regression of that wiring gate fail SAFE — return without
+	// calling the nil func (which would nil-panic) and WITHOUT stamping a marker,
+	// leaving the nodes summary-ELIGIBLE for a later run that has a summarizer.
+	if p.summarizer == nil {
+		slog.Debug("pipeline.summary: no summarizer configured — group skipped (nodes stay summary-eligible)",
+			"graph_type", gk.GraphType, "graph_name", gk.GraphName, "items", len(items))
+		return
+	}
+
 	chunks, idMap := buildSummaryChunks(ctx, p, gk, items)
 	if len(chunks) == 0 {
 		slog.Debug("pipeline.summary: no chunks produced — batch skipped",
@@ -259,10 +289,27 @@ func handleSummarizerError(ctx context.Context, p *Pipeline, be WireClient, key 
 	slog.Warn("pipeline.summary: terminal error, marking nodes as failed",
 		"items", len(items), "reason", reason, "error", err)
 
-	batchItems := make([]updateBatchItem, 0, len(items))
+	ids := make([]string, 0, len(items))
 	for _, w := range items {
+		ids = append(ids, w.NodeID)
+	}
+	markSummaryItemsWithReason(ctx, p, be, key, ids, reason)
+}
+
+// markSummaryItemsWithReason is the shared durable terminal-marker write for the
+// summary axis: it stamps MetaKeySummaryFailureReason=reason on every id via ONE
+// mutate(update_batch) RPC scoped to (graphType, graphName) and bumps
+// summaryFail per id. The eligibility-loop circuit breaker for ANY terminal
+// summary condition — a terminal summarizer error (handleSummarizerError) and a
+// recovered batch panic (markPanickedSummaryBatch) both route here. A write
+// error only WARNs (best-effort): a missed marker re-surfaces the node next
+// tick, which is strictly safer than blocking the worker. Mirrors the embed
+// side's markEmbedItemsWithReason.
+func markSummaryItemsWithReason(ctx context.Context, p *Pipeline, be WireClient, key graphKey, ids []string, reason string) {
+	batchItems := make([]updateBatchItem, 0, len(ids))
+	for _, id := range ids {
 		batchItems = append(batchItems, updateBatchItem{
-			ID: w.NodeID,
+			ID: id,
 			Metadata: map[string]string{
 				kgtypes.MetaKeySummaryFailureReason: reason,
 			},
@@ -272,7 +319,25 @@ func handleSummarizerError(ctx context.Context, p *Pipeline, be WireClient, key 
 		slog.Warn("pipeline.summary: write failure markers failed",
 			"items", len(batchItems), "error", werr, "graph_type", key.GraphType, "graph_name", key.GraphName)
 	}
-	for range items {
+	for range ids {
 		p.metrics.summaryFail()
+	}
+}
+
+// markPanickedSummaryBatch stamps the durable terminal MetaKeySummaryFailureReason
+// marker on every node of a batch whose processing panicked (recovered in
+// runSummaryWorkerBatch), so the eligibility loop terminates instead of
+// re-discovering + re-panicking the same batch forever. Re-groups by (graphKey,
+// Backend) so each marker write targets the right backend, and reuses the shared
+// markSummaryItemsWithReason terminal-marker path. Best-effort and panic-free —
+// it runs inside the recover. Mirrors the embed side's markPanickedEmbedBatch.
+func markPanickedSummaryBatch(ctx context.Context, p *Pipeline, batch []SummaryWork, r any) {
+	reason := fmt.Sprintf("summary batch panic recovered: %v", r)
+	for key, items := range groupSummaryByGraph(batch) {
+		ids := make([]string, 0, len(items))
+		for _, w := range items {
+			ids = append(ids, w.NodeID)
+		}
+		markSummaryItemsWithReason(ctx, p, backendOr(p, key.Backend), key.Key, ids, reason)
 	}
 }

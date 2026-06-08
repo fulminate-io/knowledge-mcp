@@ -23,8 +23,13 @@ import (
 // register/unregister as graphs load/unload via the client pipeline-refresh
 // loop.
 //
-// Concurrency model: each loaded graph gets two collector goroutines (one
-// summary, one embed). Collectors push work onto the global channels;
+// Concurrency model: each loaded graph gets ONE collector goroutine per ENABLED
+// axis — the summary loop when a summarizer is configured (summaryEnabled) and
+// the embed loop when an embedder is configured (embedEnabled). A disabled axis
+// has its dispatcher, worker pool, and per-collector loop all gated off, so a
+// graph can run two loops (both axes), one (a single axis), or — only in the
+// degenerate both-disabled case wirePipelineRuntime already prevents — none.
+// Collectors push work onto the global channels;
 // dispatchers batch the work; workers drain the per-batch sub-channels.
 // The collector + dispatcher + worker WaitGroups are tracked separately
 // so Stop's 7-step ordering (cancel collectors → wait collectors → close
@@ -178,106 +183,72 @@ func New(cfg Config, client WireClient, summarizer SummarizerFunc, embedder Embe
 	}
 }
 
+// embedEnabled reports whether the embed axis is live. It is the SINGLE
+// source of truth for the embed gate: when no embedder is configured (no
+// Voyage key → BuildEmbedder returns nil → adaptEmbedder(nil) → nil func),
+// the entire embed axis stays OFF — no embed dispatcher, no embed worker
+// pool, and no per-collector runEmbedLoop. Without this gate a nil embedder
+// would nil-panic-loop: collectors re-discover embed-eligible nodes forever,
+// the recovered worker panic stamps no marker so the nodes stay eligible,
+// embedCh fills, and summarization starves.
+func (p *Pipeline) embedEnabled() bool { return p.embedder != nil }
+
+// summaryEnabled is the symmetric gate for the summary axis: when no
+// summarizer is configured (BuildSummarizer returns nil when summarization is
+// disabled / config not loaded → nil SummarizerFunc), the entire summary axis
+// stays OFF — no summary dispatcher, no summary worker pool, and no
+// per-collector runSummaryLoop. The same nil-func-loop hazard the embed gate
+// fixes applies identically to a nil summarizer.
+func (p *Pipeline) summaryEnabled() bool { return p.summarizer != nil }
+
 // Start launches the dispatcher + worker goroutines. One-shot — call
 // once after constructing the Pipeline. Pipeline.Stop terminates them.
+//
+// Each axis (its dispatcher + worker pool, and the per-collector loop) starts
+// ONLY when its LLM function is configured: the summary axis on summaryEnabled,
+// the embed axis on embedEnabled. The WaitGroup Add counts are kept EXACTLY in
+// step with the goroutines actually launched so Stop never waits on a goroutine
+// that never started. When neither axis is enabled, Start launches nothing and
+// Stop still returns cleanly.
 func (p *Pipeline) Start(ctx context.Context) error {
-	// Dispatchers (one per channel).
-	p.dispatcherWG.Add(2)
-	go func() {
-		defer p.dispatcherWG.Done()
-		runSummaryDispatcher(ctx, p.summaryCh, p.summaryBatchCh, p.cfg.SummaryBatchSizeOrDefault())
-	}()
-	go func() {
-		defer p.dispatcherWG.Done()
-		runEmbedDispatcher(ctx, p.embedCh, p.embedBatchCh, p.cfg.EmbedBatchSizeOrDefault())
-	}()
+	summaryOn := p.summaryEnabled()
+	embedOn := p.embedEnabled()
 
-	// Worker pools.
-	for range p.cfg.SummaryWorkersOrDefault() {
-		p.workerWG.Add(1)
-		go runSummaryWorker(ctx, p, p.summaryBatchCh, &p.workerWG)
+	// Dispatchers — each axis only when its LLM function is configured.
+	if summaryOn {
+		p.dispatcherWG.Go(func() {
+			runSummaryDispatcher(ctx, p.summaryCh, p.summaryBatchCh, p.cfg.SummaryBatchSizeOrDefault())
+		})
 	}
-	for range p.cfg.EmbedWorkersOrDefault() {
-		p.workerWG.Add(1)
-		go runEmbedWorker(ctx, p, p.embedBatchCh, &p.workerWG)
+	if embedOn {
+		p.dispatcherWG.Go(func() {
+			runEmbedDispatcher(ctx, p.embedCh, p.embedBatchCh, p.cfg.EmbedBatchSizeOrDefault())
+		})
+	}
+
+	// Worker pools — each axis only when its LLM function is configured.
+	if summaryOn {
+		for range p.cfg.SummaryWorkersOrDefault() {
+			p.workerWG.Add(1)
+			go runSummaryWorker(ctx, p, p.summaryBatchCh, &p.workerWG)
+		}
+	}
+	if embedOn {
+		for range p.cfg.EmbedWorkersOrDefault() {
+			p.workerWG.Add(1)
+			go runEmbedWorker(ctx, p, p.embedBatchCh, &p.workerWG)
+		}
 	}
 
 	slog.Info("pipeline: starting",
+		"summary_enabled", summaryOn,
 		"summary_workers", p.cfg.SummaryWorkersOrDefault(),
 		"summary_batch", p.cfg.SummaryBatchSizeOrDefault(),
+		"embed_enabled", embedOn,
 		"embed_workers", p.cfg.EmbedWorkersOrDefault(),
 		"embed_batch", p.cfg.EmbedBatchSizeOrDefault(),
 		"tick", p.cfg.TickOrDefault())
 	return nil
-}
-
-// Stop runs the 7-step shutdown sequence per ticket Section D. Returns
-// when (a) every goroutine has exited or (b) ctx fires, whichever first.
-// Idempotent via stopOnce.
-//
-// Sequence:
-//  1. Cancel every collector context (collectors stop pushing).
-//  2. Wait collectorWG (collectors fully exited; no new work in flight).
-//  3. Close summaryCh + embedCh (dispatchers see EOF, drain partial batches).
-//  4. Wait dispatcherWG (dispatchers exited; sub-channels won't see new sends).
-//  5. Close summaryBatchCh + embedBatchCh (workers see EOF, drain final batches).
-//  6. Wait workerWG (workers exited).
-//  7. Return.
-//
-// stopOnce.Do guards against double-close panics if Stop is invoked
-// concurrently from server-shutdown + test-cleanup paths.
-func (p *Pipeline) Stop(ctx context.Context) error {
-	p.stopOnce.Do(func() { p.stopErr = p.stopSequence(ctx) })
-	return p.stopErr
-}
-
-// stopSequence is the body of Stop, factored out so the Stop method
-// itself stays under the 80-line cap.
-func (p *Pipeline) stopSequence(ctx context.Context) error {
-	// Step 1: cancel every collector.
-	p.collectorMu.Lock()
-	for _, cancel := range p.collectorCancels {
-		cancel()
-	}
-	p.collectorCancels = make(map[graphKey]context.CancelFunc)
-	p.collectorWakes = make(map[graphKey][]chan struct{})
-	p.collectorMu.Unlock()
-
-	// Step 2: wait collectors, bounded by ctx.
-	if err := waitWithCtx(ctx, &p.collectorWG); err != nil {
-		return err
-	}
-
-	// Step 3: close summary + embed channels (dispatcher EOF).
-	close(p.summaryCh)
-	close(p.embedCh)
-
-	// Step 4: wait dispatchers. Note: dispatcher functions close their
-	// own output (batch) channels via deferred close — Step 5 below is
-	// implicit, NOT an explicit close here (would be double-close).
-	if err := waitWithCtx(ctx, &p.dispatcherWG); err != nil {
-		return err
-	}
-
-	// Step 5: per-batch sub-channels are closed by dispatcher's defer.
-	// Step 6: wait workers (they observe EOF via the dispatcher's close).
-	return waitWithCtx(ctx, &p.workerWG)
-}
-
-// waitWithCtx waits for wg to reach zero or ctx to fire. Returns ctx.Err
-// on timeout / cancel.
-func waitWithCtx(ctx context.Context, wg *sync.WaitGroup) error {
-	done := make(chan struct{})
-	go func() {
-		wg.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-		return nil
-	case <-ctx.Done():
-		return ctx.Err()
-	}
 }
 
 // Metrics returns a Snapshot of the current pipeline counters with the

@@ -335,6 +335,39 @@ and ordering decision has already been made. Your job is mechanical execution.
 
 </constraint>
 
+<constraint id="implement-every-specified-behavior" severity="hard">
+
+  <rule>
+    A step is done when every behavior it (and the ticket) SPECIFIES is built — not
+    when the tests that happen to exist pass. Before marking a step complete, read
+    the step + ticket text as a CHECKLIST of required behaviors and confirm each one
+    is present in your diff. Decompose compound requirements: "bump X AND extend Y"
+    is TWO behaviors — building X and leaving Y unbuilt is a half-done step even when
+    the suite is fully green. If a specified behavior has NO test that would go red
+    when it is absent, that is the danger zone: ADD the test (a real one that fails
+    without the behavior), or — only if you genuinely cannot — surface the
+    unverified requirement LOUDLY in your report as an open hole. Never let a
+    specified-but-untested clause pass silently under a green suite.
+  </rule>
+
+  <override-default>
+    Trained instinct: the build is clean and every existing test passes, so the step
+    is done. Wrong — a green suite proves what you BUILT works, never that you built
+    everything specified. The behaviors most likely to be dropped are exactly the
+    ones with no criterion: nothing goes red when they are missing, so momentum
+    carries right past them. A specified-but-untested clause is how a ticketed,
+    planned requirement ships missing — through you and every gate downstream.
+  </override-default>
+
+  <compound-requirement-tell>
+    The highest-risk shape is one sentence asking for two things — "does A and also
+    B", "writes P and refreshes Q", "on event E do M then N". Split it; confirm each
+    half is in the diff AND each half has a fails-when-absent test. Implementing the
+    first clause and quietly dropping the second is the canonical miss.
+  </compound-requirement-tell>
+
+</constraint>
+
 <the-worst-failure-mode>
   An implementer can satisfy every literal pass criterion (build clean, tests
   green, grep guards zero) while shipping a product that doesn't work — by

@@ -17,8 +17,10 @@ import (
 // needing summary/embed and pushes them onto the global channels. One
 // collector per (GraphType, GraphName), spawned by Pipeline.RegisterGraph.
 //
-// Lifecycle: run() launches two parallel goroutines — runSummaryLoop and
-// runEmbedLoop. Each loop is a stoplight cycle: drain releases from
+// Lifecycle: run() launches one goroutine per ENABLED axis — runSummaryLoop
+// when a summarizer is configured (summaryEnabled) and runEmbedLoop when an
+// embedder is configured (embedEnabled). A disabled axis's loop never starts
+// (it is gated off end-to-end). Each loop is a stoplight cycle: drain releases from
 // completed workers, scan eligible IDs via the pipeline_scan MCP tool,
 // push every new one onto the channel, sleep one tick, repeat. The
 // in-flight set prevents duplicate queueing during the worker call
@@ -50,6 +52,16 @@ type collector struct {
 	embedCh   chan<- EmbedWork
 	metrics   *metricsState
 	client    WireClient
+
+	// summaryEnabled / embedEnabled mirror Pipeline.summaryEnabled() /
+	// embedEnabled() at construction time (p.summarizer != nil / p.embedder != nil
+	// are the single sources of truth, threaded in by RegisterGraph). run launches
+	// a per-axis loop ONLY when its flag is set: a disabled axis's loop must never
+	// start, because nothing downstream can process it and a running loop would
+	// push eligible nodes onto that axis's channel forever (the nil-func loop this
+	// gate fixes).
+	summaryEnabled bool
+	embedEnabled   bool
 
 	// flush, when non-nil, force-seals this graph's sub-threshold segment tail
 	// (both formats) and ships it. Built per-(gt,name) in RegisterGraph as a
@@ -101,7 +113,7 @@ type collector struct {
 // newCollector constructs a collector. The actual goroutine launch is
 // done by Pipeline.RegisterGraph so the WaitGroup accounting stays
 // centralized.
-func newCollector(gt kgtypes.GraphType, name string, cfg Config, summaryCh chan<- SummaryWork, embedCh chan<- EmbedWork, metrics *metricsState, client WireClient, baseTick, idleTick time.Duration, flush func(ctx context.Context) error, healIfSegmentless func(ctx context.Context) error) *collector {
+func newCollector(gt kgtypes.GraphType, name string, cfg Config, summaryCh chan<- SummaryWork, embedCh chan<- EmbedWork, metrics *metricsState, client WireClient, baseTick, idleTick time.Duration, flush func(ctx context.Context) error, healIfSegmentless func(ctx context.Context) error, summaryEnabled, embedEnabled bool) *collector {
 	return &collector{
 		gt:                gt,
 		name:              name,
@@ -114,23 +126,36 @@ func newCollector(gt kgtypes.GraphType, name string, cfg Config, summaryCh chan<
 		idleTick:          idleTick,
 		flush:             flush,
 		healIfSegmentless: healIfSegmentless,
+		summaryEnabled:    summaryEnabled,
+		embedEnabled:      embedEnabled,
 		summaryWake:       make(chan struct{}, 1),
 		embedWake:         make(chan struct{}, 1),
 	}
 }
 
-// run launches two parallel ticker loops — one for summary dispatch, one
-// for embed dispatch. Splitting them prevents the embed loop from being
-// starved when the summary channel is saturated (the per-graph collector
-// blocks on summary push; without the split the same goroutine never
+// run launches the per-graph ticker loops, one per ENABLED axis: the summary
+// loop when a summarizer is configured (summaryEnabled) and the embed loop when
+// an embedder is configured (embedEnabled). Splitting them prevents the embed
+// loop from being starved when the summary channel is saturated (the per-graph
+// collector blocks on summary push; without the split the same goroutine never
 // reaches dispatchEmbeds).
+//
+// A disabled axis's loop is NOT started: nothing downstream can process it, so a
+// running loop would push eligible nodes onto that axis's channel forever (the
+// nil-func loop). The WaitGroup Add is kept in step with the loops actually
+// launched, so a collector with both axes disabled starts nothing and run
+// returns immediately. (wirePipelineRuntime prevents the both-disabled case from
+// reaching here, but run stays robust to it.)
 //
 // Exits on ctx.Done.
 func (c *collector) run(ctx context.Context) {
 	var wg sync.WaitGroup
-	wg.Add(2)
-	go func() { defer wg.Done(); c.runSummaryLoop(ctx) }()
-	go func() { defer wg.Done(); c.runEmbedLoop(ctx) }()
+	if c.summaryEnabled {
+		wg.Go(func() { c.runSummaryLoop(ctx) })
+	}
+	if c.embedEnabled {
+		wg.Go(func() { c.runEmbedLoop(ctx) })
+	}
 	wg.Wait()
 }
 

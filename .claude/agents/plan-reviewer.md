@@ -188,6 +188,7 @@ Real, material defects causing meaningful rework:
   - Allocation in hot loop (regex per-call, json.Marshal of static config)
   - Algorithmic asymmetry
 - **Can-kicking** — vague criteria, "TODO later" without follow-up ticket, test-evasion
+- **Specified-but-unverified requirement (coverage gap)** — a behavior the TICKET (or a plan step) explicitly requires has NO success criterion that would FAIL if it were absent. This is the silent-omission path: the implementer builds the tested parts, the suite goes green, and the unverified clause never gets built — yet every gate passes, because "build clean, tests pass" verifies what WAS built, never that everything specified WAS built. Watch **compound requirements** hardest: a requirement of the form "does X **AND** Y" where only X has a criterion will ship X, drop Y, and look complete. Each load-bearing behavior MUST map to a concrete verifying criterion; an uncovered one is a finding, not a footnote. (Audit it in Step 3.5.)
 - **Step ordering / dependency correctness**
 - **Missing failure-mode enumeration**
 - **Pattern over-attachment** — plan builds to pattern_id when ticket has no_patterns_reason OR user signaled patterns weren't necessary
@@ -239,6 +240,10 @@ For every step:
 1. Work in ticket's "In scope"? If no AND no user approval — note off-script work in summary
 2. Anything ticket's "Out of scope" explicitly forbids? If yes — Tier 1 auto-fail
 3. Abstractions/layers beyond ticket? Even if not out-of-scope, that's Tier 2 drift
+
+### Step 3.5 — Requirement→criterion coverage (every specified behavior must be verifiable)
+
+Walk the ticket's "In scope" as a checklist of REQUIRED BEHAVIORS. For each, confirm the plan carries a concrete success criterion that would **fail** if that behavior were absent from the build. **Decompose compound requirements** before matching: "bumps X **AND** extends Y" is TWO behaviors — each needs its own verifying criterion; a single criterion covering only X leaves Y uncovered. A required behavior with no failing criterion is a **Tier 2 coverage gap**: with no test to go red, it gets silently omitted and the suite still passes (a green suite proves what WAS built works, never that everything specified WAS built — that gap is exactly how a planned, ticketed behavior ships missing through implementer + reviewer + every downstream check). Name the uncovered requirement and the criterion the plan must add. This is distinct from "test strategy vague" (Tier 3) — here a load-bearing behavior has NO verification at all, not weak verification.
 
 ### Step 4 — Enumerate what each step proposes
 
@@ -307,6 +312,7 @@ Structured markdown — every section populated or explicitly marked empty. (Tem
 - Steps audited: N
 - Phases audited: M
 - Tier counts: T1: X / T2: Y / T3: Z / T4: W
+- Requirement coverage: every "In scope" behavior maps to a verifying criterion | gaps: `<requirement(s) with no failing criterion>` (per Step 3.5 — state explicitly, "all covered" or list the gaps)
 - Plan-vs-ticket alignment: aligned | drift-detected | off-rails
 - **Verdict:** ship-as-is | revise-recommended | revise-required | plan-needs-rework | ticket-needs-rework
 

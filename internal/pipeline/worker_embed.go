@@ -5,6 +5,7 @@ package pipeline
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"strings"
 	"sync"
@@ -30,10 +31,28 @@ func runEmbedWorker(ctx context.Context, p *Pipeline, batchIn <-chan []EmbedWork
 }
 
 // runEmbedWorkerBatch is the embed-side mirror of runSummaryWorkerBatch.
+//
+// The recover defer is loop-safe for EVERY panic source, not just a logged
+// warning: a recovered panic that wrote no durable marker would leave the
+// batch's nodes embed-eligible, so the collector re-discovers + re-enqueues
+// them and the SAME batch panics again — an infinite loop. So on recover we
+// route every node in the panicked batch to the EXISTING terminal-marker path
+// (markStuckEmbedItems) with a panic reason, mirroring the empty-text
+// terminal-marker idiom documented at composeEmbedItems below ("Without the
+// marker ... would loop the pipeline forever"). An unhandled panic in embed
+// processing is a deterministic code bug — re-running panics again — so the
+// marker is TERMINAL (human-clearable via clear_llm_failures), NOT a retry.
+//
+// Defer ordering (LIFO): the in-flight-release defer is registered AFTER the
+// recover defer, so on a panic the release runs FIRST (in-flight is freed),
+// then the recover defer stamps the terminal marker. The marker write is
+// best-effort — an error only WARNs and never re-panics out of the recover.
 func runEmbedWorkerBatch(ctx context.Context, p *Pipeline, batch []EmbedWork) {
 	defer func() {
 		if r := recover(); r != nil {
-			slog.Warn("pipeline.embed worker: batch panic recovered", "panic", r, "batch_size", len(batch))
+			slog.Warn("pipeline.embed worker: batch panic recovered — stamping terminal markers to break the eligibility loop",
+				"panic", r, "batch_size", len(batch))
+			markPanickedEmbedBatch(ctx, p, batch, r)
 		}
 	}()
 	for range batch {
@@ -49,6 +68,26 @@ func runEmbedWorkerBatch(ctx context.Context, p *Pipeline, batch []EmbedWork) {
 	groups := groupEmbedByGraph(batch)
 	for key, items := range groups {
 		processEmbedGroup(ctx, p, key, items)
+	}
+}
+
+// markPanickedEmbedBatch stamps the durable terminal MetaKeyEmbedFailureReason
+// marker on every node of a batch whose processing panicked (recovered above),
+// so the eligibility loop terminates instead of re-discovering + re-panicking
+// the same batch forever. Re-groups by (graphKey, Backend) so each marker write
+// targets the right backend, and reuses the existing markStuckEmbedItems
+// terminal-marker path (one mutate(update_batch) RPC per group). Best-effort:
+// markStuckEmbedItems only WARNs on a write error, and this runs inside the
+// recover so it must never panic — the wire call it makes is the same one the
+// empty-text path already makes safely.
+func markPanickedEmbedBatch(ctx context.Context, p *Pipeline, batch []EmbedWork, r any) {
+	reason := fmt.Sprintf("embed batch panic recovered: %v", r)
+	for key, items := range groupEmbedByGraph(batch) {
+		ids := make([]string, 0, len(items))
+		for _, w := range items {
+			ids = append(ids, w.NodeID)
+		}
+		markEmbedItemsWithReason(ctx, p, backendOr(p, key.Backend), key.Key, ids, reason)
 	}
 }
 
@@ -73,6 +112,20 @@ func processEmbedGroup(ctx context.Context, p *Pipeline, key groupKey, items []E
 	gk := key.Key
 	be := backendOr(p, key.Backend)
 	slog.Debug("pipeline.embed: processing group", "graph_type", gk.GraphType, "graph_name", gk.GraphName, "items", len(items))
+	// Defense-in-depth against the nil-embedder loop: the embed axis is gated
+	// OFF at Start / collector.run when p.embedder == nil, so no embed worker
+	// should ever reach here without an embedder. This belt-and-suspenders guard
+	// makes a future regression of that wiring gate fail SAFE — return without
+	// calling the nil func (which would nil-panic) and WITHOUT stamping a marker,
+	// leaving the nodes embed-ELIGIBLE for a later keyed run that does have an
+	// embedder. (The terminal-marker recover path is for genuine panics, not the
+	// no-embedder-configured case — those stay distinct.)
+	if p.embedder == nil {
+		slog.Debug("pipeline.embed: no embedder configured — group skipped (nodes stay embed-eligible)",
+			"graph_type", gk.GraphType, "graph_name", gk.GraphName, "items", len(items))
+		return
+	}
+
 	embedItems, idsForMarker := composeEmbedItems(ctx, p, be, gk, items)
 	if len(embedItems) == 0 {
 		slog.Debug("pipeline.embed: no items produced — batch skipped",
@@ -146,7 +199,19 @@ func composeEmbedItems(ctx context.Context, p *Pipeline, be WireClient, key grap
 // RPC scoped to (graphType, graphName).
 func markStuckEmbedItems(ctx context.Context, p *Pipeline, be WireClient, key graphKey, ids []string) {
 	const reason = "embed-text-empty: ShouldEmbed=true but EmbedText returned whitespace-only"
-	slog.Warn("pipeline.embed: stuck nodes detected, stamping failure marker",
+	markEmbedItemsWithReason(ctx, p, be, key, ids, reason)
+}
+
+// markEmbedItemsWithReason is the shared durable terminal-marker write: it
+// stamps MetaKeyEmbedFailureReason=reason on every id via ONE
+// mutate(update_batch) RPC scoped to (graphType, graphName) and bumps embedFail
+// per id. The eligibility-loop circuit breaker for ANY terminal embed
+// condition — empty server-composed text (markStuckEmbedItems) and a recovered
+// batch panic (markPanickedEmbedBatch) both route here. A write error only
+// WARNs (best-effort): a missed marker re-surfaces the node next tick, which is
+// strictly safer than blocking the worker.
+func markEmbedItemsWithReason(ctx context.Context, p *Pipeline, be WireClient, key graphKey, ids []string, reason string) {
+	slog.Warn("pipeline.embed: stamping terminal failure marker",
 		"count", len(ids), "reason", reason, "graph_type", key.GraphType, "graph_name", key.GraphName)
 	items := make([]updateBatchItem, 0, len(ids))
 	for _, id := range ids {
@@ -158,7 +223,7 @@ func markStuckEmbedItems(ctx context.Context, p *Pipeline, be WireClient, key gr
 		})
 	}
 	if err := writeBatchUpdates(ctx, be, key.GraphType, key.GraphName, items); err != nil {
-		slog.Warn("pipeline.embed: stamp stuck markers failed", "items", len(items), "error", err, "graph_type", key.GraphType, "graph_name", key.GraphName)
+		slog.Warn("pipeline.embed: stamp failure markers failed", "items", len(items), "error", err, "graph_type", key.GraphType, "graph_name", key.GraphName)
 	}
 	for range ids {
 		p.metrics.embedFail()
