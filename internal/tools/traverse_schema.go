@@ -39,7 +39,7 @@ func TraverseToolDef() kgtools.MCPTool {
 				"graph":                 {Type: "string", Description: "Target graph: '' or 'knowledge' (default), 'code', 'cloud', 'cicd', 'practice', 'logs', 'linkage'."},
 				"name":                  {Type: "string", Description: "Graph identifier (e.g. query_id for graph='logs')."},
 				"language":              {Type: "string", Description: "Language slug for graph='practice' (e.g. 'go', 'python')."},
-				"account":               {Type: "string", Description: "Account name for graph='cloud' or graph='cicd'."},
+				"account":               {Type: "string", Description: "Selects which inventoried external-provider account/org's resources to traverse within your own graph — an AWS/GCP account for graph='cloud', or a CI provider org (e.g. GitHub/GitLab) for graph='cicd'. Required for graph='cloud'/'cicd'; omit to list your available graphs."},
 				"repo":                  {Type: "string", Description: "Repo name for graph='code'."},
 				"branch":                {Type: "string", Description: "Branch name for graph='code' (optional)."},
 				"overlay":               {Type: "string", Description: "Optional knowledge session overlay name; diagnostic scoping."},

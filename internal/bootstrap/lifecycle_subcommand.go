@@ -40,6 +40,22 @@ type lifecycleFlags struct {
 	timeout      time.Duration // stop-only: how long to wait for drain
 }
 
+// registerLifecycleFlags registers the lifecycle-subcommand flags on fs,
+// binding each into f. Pure register-only seam (no fs.Parse, no positional
+// validation, no tilde-expansion) — shared by parseLifecycleFlags (the live
+// CLI path) and the docs generator, which VisitAll's the FlagSet to render
+// flag tables. The `name` param drives the stop-only --timeout branch so the
+// generator can request the start/status (no --timeout) vs stop (--timeout)
+// variant. Mirrors how registerConfigFlags is shared by ParseFlags + runServe.
+func registerLifecycleFlags(fs *flag.FlagSet, f *lifecycleFlags, name string) {
+	fs.IntVar(&f.port, "port", graphclient.DefaultPort, "TCP port the graph server listens on")
+	fs.StringVar(&f.root, "root", ".", "Project root directory")
+	fs.StringVar(&f.graphStorage, "graph-storage", "~/.knowledge/", "Directory for graph storage")
+	if name == "stop" {
+		fs.DurationVar(&f.timeout, "timeout", 30*time.Second, "Max wait for graceful shutdown")
+	}
+}
+
 // parseLifecycleFlags parses a subset of flags from `args` and
 // returns the resolved lifecycleFlags. The flag set uses
 // flag.ContinueOnError so unknown flags surface as errors (rather
@@ -47,12 +63,7 @@ type lifecycleFlags struct {
 func parseLifecycleFlags(name string, args []string) (lifecycleFlags, error) {
 	fs := flag.NewFlagSet("knowledge "+name, flag.ContinueOnError)
 	var f lifecycleFlags
-	fs.IntVar(&f.port, "port", graphclient.DefaultPort, "TCP port the graph server listens on")
-	fs.StringVar(&f.root, "root", ".", "Project root directory")
-	fs.StringVar(&f.graphStorage, "graph-storage", "~/.knowledge/", "Directory for graph storage")
-	if name == "stop" {
-		fs.DurationVar(&f.timeout, "timeout", 30*time.Second, "Max wait for graceful shutdown")
-	}
+	registerLifecycleFlags(fs, &f, name)
 	if err := fs.Parse(args); err != nil {
 		return lifecycleFlags{}, err
 	}

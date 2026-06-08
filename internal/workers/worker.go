@@ -70,6 +70,14 @@ type Worker struct {
 	// empty values.
 	Model string
 
+	// BaseURL optionally overrides the resolved section's base_url for
+	// this worker — letting one dream worker target a different API
+	// endpoint than the [dream]/[default] config. OPTIONAL: Validate
+	// imposes no requirement on it (ignored for CLI providers, like the
+	// llm.Config.BaseURL contract). Empty means "use the resolved
+	// section's base_url".
+	BaseURL string
+
 	// Triggers determine when the worker fires. At least one trigger
 	// is REQUIRED in practice but Validate does not enforce that —
 	// a worker with zero triggers is parseable but only ever

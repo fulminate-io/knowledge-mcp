@@ -49,6 +49,31 @@ model = "gpt-5-mini"
 	}
 }
 
+func TestParse_BaseURL(t *testing.T) {
+	body := `
+[default]
+provider = "openai"
+model = "gpt-5-mini"
+base_url = "http://127.0.0.1:1234/v1"
+
+[summarizer]
+base_url = "http://127.0.0.1:9999/v1"
+`
+	cfg, err := Parse([]byte(body))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Default.BaseURL != "http://127.0.0.1:1234/v1" {
+		t.Errorf("Default.BaseURL = %q; want %q", cfg.Default.BaseURL, "http://127.0.0.1:1234/v1")
+	}
+	if cfg.Summarizer == nil {
+		t.Fatal("Summarizer is nil; expected populated")
+	}
+	if cfg.Summarizer.BaseURL != "http://127.0.0.1:9999/v1" {
+		t.Errorf("Summarizer.BaseURL = %q; want %q", cfg.Summarizer.BaseURL, "http://127.0.0.1:9999/v1")
+	}
+}
+
 func TestParse_Malformed(t *testing.T) {
 	// Unclosed bracket — go-toml/v2 rejects this.
 	body := `[default

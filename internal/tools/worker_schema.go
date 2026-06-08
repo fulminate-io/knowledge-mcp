@@ -71,6 +71,7 @@ func WorkerToolDef() kgtools.MCPTool {
 				"system_prompt": {Type: "string", Description: "System prompt fed verbatim to the LLM at the start of every run (used by create/update)"},
 				"provider":      {Type: "string", Description: "LLM provider: anthropic | openai | gemini | claude-cli | codex-cli (used by create/update). CLI providers cannot drive tool-use — see tool description."},
 				"model":         {Type: "string", Description: "Model identifier (provider-specific, used by create/update). Empty falls back to the [dream] section in ~/.knowledge/config."},
+				"base_url":      {Type: "string", Description: "Optional LLM endpoint override for this worker (used by create/update); overrides the [dream]/[default] base_url. Ignored for CLI providers."},
 				"tool_allowlist": {
 					Type:        "array",
 					Items:       &kgtools.Property{Type: "string"},
@@ -112,6 +113,7 @@ type workerArgs struct {
 	SystemPrompt        string          `json:"system_prompt"`
 	Provider            string          `json:"provider"`
 	Model               string          `json:"model"`
+	BaseURL             string          `json:"base_url"`
 	ToolAllowlist       flexStringSlice `json:"tool_allowlist"`
 	Triggers            json.RawMessage `json:"triggers"`
 	MaxIterations       flexInt         `json:"max_iterations"`

@@ -294,7 +294,7 @@ const helpSearchCode = `# search — Unified search across code, knowledge, prac
   language       — language slug (e.g. "go", "python"). Required for search, omit to list graphs.
 
 ## Cloud graph parameters
-  account        — cloud account key. Required for search, omit to list cloud graphs.
+  account        — selects a collected external-provider account/org within your own graph (e.g. an AWS/GCP account, or a CI provider org). Required for search, omit to list cloud graphs.
   resource_type  — resource type prefix filter (e.g. "ec2", "ec2:instance")
 
 ## Linkage graph

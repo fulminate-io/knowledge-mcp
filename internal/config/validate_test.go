@@ -38,6 +38,22 @@ func TestValidate_HappyAPI(t *testing.T) {
 	}
 }
 
+// TestValidate_BaseURLNoAPIKey proves Gate 2: a keyless API-provider
+// consumer whose resolved section carries a base_url (a local/compatible
+// endpoint handling auth out-of-band) passes Validate with no key in
+// [credentials] or the env var.
+func TestValidate_BaseURLNoAPIKey(t *testing.T) {
+	cfg := &Config{
+		Default:    Section{Provider: ProviderOpenAI, Model: "gpt-5-mini", BaseURL: "http://127.0.0.1:1234/v1"},
+		Summarizer: &Section{},
+	}
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Cleanup(SetForTest(cfg))
+	if err := cfg.Validate([]Consumer{ConsumerSummarizer}); err != nil {
+		t.Errorf("Validate with base_url and no key: %v", err)
+	}
+}
+
 func TestValidate_MissingAPIKey(t *testing.T) {
 	cfg := &Config{
 		Default: Section{Provider: ProviderAnthropic, Model: "claude-haiku-5"},

@@ -44,14 +44,23 @@ type installFlags struct {
 	check bool
 }
 
+// registerInstallFlags registers the `knowledge install` flags on fs, binding
+// each into f. Pure register-only seam (no fs.Parse, no --check branch) —
+// shared by runInstall (the live CLI path) and the docs generator, which
+// VisitAll's the FlagSet to render the flag table. Mirrors registerConfigFlags
+// / registerLifecycleFlags.
+func registerInstallFlags(fs *flag.FlagSet, f *installFlags) {
+	fs.StringVar(&f.dest, "dest", "", "Destination directory for knowledge-server (default: sibling of running stdio binary)")
+	fs.BoolVar(&f.check, "check", false, "Compare installed server version against latest release without writing")
+}
+
 // runInstall is the entry point dispatched from RunSubcommand. Parses
 // flags, branches on --check, otherwise runs the full download +
 // verify + extract + atomic-install pipeline.
 func runInstall(args []string) error {
 	fs := flag.NewFlagSet("knowledge install", flag.ContinueOnError)
 	var f installFlags
-	fs.StringVar(&f.dest, "dest", "", "Destination directory for knowledge-server (default: sibling of running stdio binary)")
-	fs.BoolVar(&f.check, "check", false, "Compare installed server version against latest release without writing")
+	registerInstallFlags(fs, &f)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}

@@ -131,6 +131,7 @@ func workerFromArgs(a workerArgs) (workers.Worker, error) {
 		SystemPrompt:        a.SystemPrompt,
 		Provider:            config.Provider(strings.TrimSpace(a.Provider)),
 		Model:               a.Model,
+		BaseURL:             a.BaseURL,
 		ToolAllowlist:       []string(a.ToolAllowlist),
 		MaxIterations:       int(a.MaxIterations),
 		MaxWallclockSeconds: int(a.MaxWallclockSeconds),

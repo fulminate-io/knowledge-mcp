@@ -24,6 +24,37 @@ func TestResolve_DefaultProvidesProvider(t *testing.T) {
 	}
 }
 
+func TestResolve_DefaultProvidesBaseURL(t *testing.T) {
+	cfg := &Config{
+		Default:    Section{Provider: ProviderOpenAI, Model: "gpt-5-mini", BaseURL: "http://d"},
+		Summarizer: &Section{Model: "gpt-5"},
+	}
+	got, err := cfg.Resolve(ConsumerSummarizer)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got.BaseURL != "http://d" {
+		t.Errorf("BaseURL = %q; want inherited %q", got.BaseURL, "http://d")
+	}
+	if got.Model != "gpt-5" {
+		t.Errorf("Model = %q; want overridden", got.Model)
+	}
+}
+
+func TestResolve_PerConsumerOverridesBaseURL(t *testing.T) {
+	cfg := &Config{
+		Default:    Section{Provider: ProviderOpenAI, Model: "gpt-5-mini", BaseURL: "http://d"},
+		Summarizer: &Section{BaseURL: "http://s"},
+	}
+	got, err := cfg.Resolve(ConsumerSummarizer)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if got.BaseURL != "http://s" {
+		t.Errorf("BaseURL = %q; want overridden %q", got.BaseURL, "http://s")
+	}
+}
+
 func TestResolve_DefaultProvidesModel(t *testing.T) {
 	cfg := &Config{
 		Default:    Section{Provider: ProviderAnthropic, Model: "claude-haiku-5"},

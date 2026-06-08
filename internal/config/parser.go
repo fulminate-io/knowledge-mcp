@@ -39,15 +39,18 @@ type parseCredentials struct {
 	GeminiAPIKey    string `toml:"gemini_api_key"`
 }
 
-// parseSection mirrors a single TOML table. Three keys:
+// parseSection mirrors a single TOML table. Four keys:
 //   - provider: stable LLM provider identifier
 //   - model:    provider-specific model name
 //   - cli_bin:  absolute path to the CLI binary (claude-cli/codex-cli only;
 //     required for CLI providers, ignored for API providers)
+//   - base_url: optional override of the API provider endpoint (API providers
+//     only; empty falls back to the provider's default URL)
 type parseSection struct {
 	Provider string `toml:"provider"`
 	Model    string `toml:"model"`
 	CLIBin   string `toml:"cli_bin"`
+	BaseURL  string `toml:"base_url"`
 }
 
 // Load reads path and parses the TOML body. Returns the wrapped
@@ -136,10 +139,11 @@ func Parse(data []byte) (*Config, error) {
 // translateSection lowercases the provider string and checks it against
 // the known Provider constants. An empty provider is allowed and
 // returned as Provider("") so per-field inheritance can fill it later.
-// CLIBin is copied verbatim — its value-level validation (must be a real
-// executable file when the provider is CLI) happens in Validate.
+// CLIBin and BaseURL are copied verbatim — CLIBin's value-level validation
+// (must be a real executable file when the provider is CLI) happens in
+// Validate; BaseURL has no required-field gate (optional for all providers).
 func translateSection(name string, raw parseSection) (Section, error) {
-	out := Section{Model: raw.Model, CLIBin: raw.CLIBin}
+	out := Section{Model: raw.Model, CLIBin: raw.CLIBin, BaseURL: raw.BaseURL}
 	if raw.Provider == "" {
 		return out, nil
 	}

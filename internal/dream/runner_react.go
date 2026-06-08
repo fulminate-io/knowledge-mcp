@@ -43,7 +43,7 @@ import (
 // applied around the agent.Generate call. The eino MaxStep cap is the
 // turn-count safety net; the wallclock cap is the runaway-LLM safety net.
 func (r *Runner) runReAct(ctx context.Context, w Worker, userPrompt string, log *WorkerLog, invocationID string) error {
-	provider, model, cliBin, err := resolveDreamSection(w)
+	provider, model, cliBin, baseURL, err := resolveDreamSection(w)
 	if err != nil {
 		return fmt.Errorf("dream: runReAct: resolve config: %w", err)
 	}
@@ -53,6 +53,7 @@ func (r *Runner) runReAct(ctx context.Context, w Worker, userPrompt string, log 
 		Provider: provider,
 		Model:    llm.Model(model),
 		APIKey:   apiKey,
+		BaseURL:  baseURL,
 		CLIBin:   cliBin,
 	})
 	if err != nil {
@@ -112,21 +113,23 @@ func (r *Runner) runReAct(ctx context.Context, w Worker, userPrompt string, log 
 	return nil
 }
 
-// resolveDreamSection picks the (provider, model) pair to drive this
-// invocation. Worker.Provider overrides the [dream] section's Provider when
-// set; Worker.Model does the same for Model. When config is unloaded (test
-// scenarios that exercise other code paths) the function returns a clear
-// error rather than panicking — the production bootstrap has already
-// loaded config before any worker fires.
-func resolveDreamSection(w Worker) (config.Provider, string, string, error) {
+// resolveDreamSection picks the (provider, model, cliBin, baseURL) tuple to
+// drive this invocation. Worker.Provider overrides the [dream] section's
+// Provider when set; Worker.Model does the same for Model; Worker.BaseURL
+// does the same for the resolved section's base_url (precedence: Worker >
+// section > [default]). When config is unloaded (test scenarios that
+// exercise other code paths) the function returns a clear error rather than
+// panicking — the production bootstrap has already loaded config before any
+// worker fires.
+func resolveDreamSection(w Worker) (config.Provider, string, string, string, error) {
 	if !config.Loaded() {
 		// Workers running before config loads is a real bug, not a
 		// degraded-not-die scenario — surface it.
-		return "", "", "", errors.New("config.LoadOrAutoDetect() not called")
+		return "", "", "", "", errors.New("config.LoadOrAutoDetect() not called")
 	}
 	sec, err := config.Active().Resolve(config.ConsumerDream)
 	if err != nil {
-		return "", "", "", fmt.Errorf("resolve dream config: %w", err)
+		return "", "", "", "", fmt.Errorf("resolve dream config: %w", err)
 	}
 	provider := sec.Provider
 	if w.Provider != "" {
@@ -136,13 +139,17 @@ func resolveDreamSection(w Worker) (config.Provider, string, string, error) {
 	if w.Model != "" {
 		model = w.Model
 	}
+	baseURL := sec.BaseURL
+	if w.BaseURL != "" {
+		baseURL = w.BaseURL
+	}
 	if provider == "" {
-		return "", "", "", errors.New("no LLM provider resolved for worker")
+		return "", "", "", "", errors.New("no LLM provider resolved for worker")
 	}
 	if model == "" {
-		return "", "", "", errors.New("no LLM model resolved for worker")
+		return "", "", "", "", errors.New("no LLM model resolved for worker")
 	}
-	return provider, model, sec.CLIBin, nil
+	return provider, model, sec.CLIBin, baseURL, nil
 }
 
 // einoBaseToolsFromInvokable upcasts InvokableTool → BaseTool for eino's

@@ -167,7 +167,12 @@ func (s *Service) doPost(ctx context.Context, url, apiKey string, payload []byte
 		return nil, 0, 0, fmt.Errorf("create request: %w", err)
 	}
 	req.Header.Set("Content-Type", "application/json")
-	req.Header.Set("x-api-key", apiKey)
+	// Send the auth header only when a key is set: a keyless local
+	// endpoint (base_url override) handles auth out-of-band. Mirrors the
+	// openai service guard.
+	if apiKey != "" {
+		req.Header.Set("x-api-key", apiKey)
+	}
 	req.Header.Set("anthropic-version", anthropicVersion)
 
 	resp, err := s.httpClient.Do(req)

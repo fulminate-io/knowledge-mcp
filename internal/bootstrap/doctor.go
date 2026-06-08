@@ -47,32 +47,49 @@ type checkResult struct {
 	detail string      // optional extra line(s) under the main msg
 }
 
+// doctorFlags holds the parsed flags for `knowledge doctor`.
+type doctorFlags struct {
+	port       int
+	configFile string
+	deep       bool
+}
+
+// registerDoctorFlags registers the `knowledge doctor` flags on fs, binding
+// each into f. Pure register-only seam (no fs.Parse) — shared by runDoctor (the
+// live CLI path) and the docs generator, which VisitAll's the FlagSet to render
+// the flag table. Mirrors registerConfigFlags / registerLifecycleFlags /
+// registerInstallFlags.
+func registerDoctorFlags(fs *flag.FlagSet, f *doctorFlags) {
+	fs.IntVar(&f.port, "port", graphclient.DefaultPort, "TCP port the graph server should be listening on")
+	fs.StringVar(&f.configFile, "config-file", "", "Path to the TOML config file (default ~/.knowledge/config)")
+	fs.BoolVar(&f.deep, "deep", false, "Exercise each configured provider's reachability/login (slower, makes network calls)")
+}
+
 // runDoctor is the CLI entry point. Walks every check, prints results,
 // returns nil with exit-1 trapped via os.Exit when any check produced
 // an error. Warnings + info don't affect exit code.
 func runDoctor(args []string) error {
 	fs := flag.NewFlagSet("knowledge doctor", flag.ContinueOnError)
-	port := fs.Int("port", graphclient.DefaultPort, "TCP port the graph server should be listening on")
-	configFile := fs.String("config-file", "", "Path to the TOML config file (default ~/.knowledge/config)")
-	deep := fs.Bool("deep", false, "Exercise each configured provider's reachability/login (slower, makes network calls)")
+	var f doctorFlags
+	registerDoctorFlags(fs, &f)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 
 	checks := []checkResult{
-		checkServer(*port),
-		checkCodeStaleness(*port),
-		checkConfig(*configFile),
+		checkServer(f.port),
+		checkCodeStaleness(f.port),
+		checkConfig(f.configFile),
 	}
-	checks = append(checks, checkConsumerCLIs(*configFile)...)
+	checks = append(checks, checkConsumerCLIs(f.configFile)...)
 	checks = append(checks,
-		checkVoyage(*configFile),
+		checkVoyage(f.configFile),
 		checkFulminateAuth(),
 		checkClaudeAssets(),
 		checkClaudeMD(),
 	)
-	if *deep {
-		checks = append(checks, checkProvidersDeep(*configFile))
+	if f.deep {
+		checks = append(checks, checkProvidersDeep(f.configFile))
 	}
 
 	fmt.Fprintln(os.Stdout, "knowledge doctor")

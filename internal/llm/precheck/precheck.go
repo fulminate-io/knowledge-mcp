@@ -87,8 +87,8 @@ type pingTuple struct {
 }
 
 // uniqueTuples resolves every consumer's section and returns one
-// representative pingTuple per (provider, model, cli_bin) key. The
-// first consumer to resolve a given tuple "wins" the label for log
+// representative pingTuple per (provider, model, cli_bin, base_url) key.
+// The first consumer to resolve a given tuple "wins" the label for log
 // output — subsequent matching consumers are skipped. Errors during
 // Resolve are returned as a joined error.
 func uniqueTuples(cfg *config.Config, consumers []config.Consumer) ([]pingTuple, error) {
@@ -101,7 +101,7 @@ func uniqueTuples(cfg *config.Config, consumers []config.Consumer) ([]pingTuple,
 			errs = append(errs, fmt.Errorf("precheck: resolve %q: %w", c, err))
 			continue
 		}
-		key := string(sec.Provider) + "|" + sec.Model + "|" + sec.CLIBin
+		key := string(sec.Provider) + "|" + sec.Model + "|" + sec.CLIBin + "|" + sec.BaseURL
 		if seen[key] {
 			continue
 		}
@@ -123,6 +123,7 @@ func ping(ctx context.Context, sec config.Section) error {
 		Provider: sec.Provider,
 		Model:    llm.Model(sec.Model),
 		APIKey:   config.APIKeyForProvider(sec.Provider),
+		BaseURL:  sec.BaseURL,
 		CLIBin:   sec.CLIBin,
 	})
 	if err != nil {

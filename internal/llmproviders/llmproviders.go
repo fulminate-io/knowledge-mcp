@@ -47,6 +47,7 @@ func BuildSummarizer(ctx context.Context) (Summarizer, error) {
 		Provider: provider,
 		Model:    model,
 		APIKey:   config.APIKeyForProvider(sec.Provider),
+		BaseURL:  sec.BaseURL,
 		CLIBin:   sec.CLIBin,
 	})
 	if err != nil {

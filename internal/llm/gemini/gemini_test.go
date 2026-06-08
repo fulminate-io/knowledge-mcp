@@ -94,6 +94,26 @@ func TestNewClient_DefaultsBaseURL(t *testing.T) {
 	}
 }
 
+// TestNewClient_KeylessBaseURL covers Gate 3: a keyless config that sets
+// BaseURL (a local/compatible endpoint handling auth out-of-band) must
+// construct a Service rather than being rejected for the empty APIKey.
+func TestNewClient_KeylessBaseURL(t *testing.T) {
+	c, err := New(context.Background(), &llm.Config{
+		Provider: llm.ProviderGemini,
+		BaseURL:  "http://127.0.0.1:1234",
+	})
+	if err != nil {
+		t.Fatalf("New (keyless base_url): %v", err)
+	}
+	svc := c.(*Service)
+	if svc.baseURL != "http://127.0.0.1:1234" {
+		t.Fatalf("baseURL = %q want %q", svc.baseURL, "http://127.0.0.1:1234")
+	}
+	if svc.apiKey != "" {
+		t.Fatalf("apiKey = %q want empty", svc.apiKey)
+	}
+}
+
 // TestGenerate_TextSuccess covers the end-to-end happy path: URL
 // construction, header auth, body shape, response decoding, usage
 // recording. Provider-specific error/translation cases live in
@@ -153,6 +173,33 @@ func TestGenerate_TextSuccess(t *testing.T) {
 	// Aggregate usage tracked.
 	if got := svc.GetUsage(); got.InputTokens != 12 || got.OutputTokens != 3 {
 		t.Errorf("GetUsage() = %+v", got)
+	}
+}
+
+// TestGenerate_NoAuthHeaderWhenKeyless asserts keyless wire parity: a
+// Service constructed with an empty APIKey (base_url-only) sends NO
+// x-goog-api-key header, so a local/compatible endpoint isn't handed a
+// bogus empty credential.
+func TestGenerate_NoAuthHeaderWhenKeyless(t *testing.T) {
+	var headerPresent bool
+	rt := roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		_, headerPresent = r.Header["X-Goog-Api-Key"]
+		return canned(http.StatusOK, `{"candidates":[{"content":{"role":"model","parts":[{"text":"ok"}]},"finishReason":"STOP"}]}`), nil
+	})
+
+	svc, err := NewWithHTTPClient(&llm.Config{
+		Provider: llm.ProviderGemini,
+		BaseURL:  "http://127.0.0.1:1234",
+		Model:    llm.Model("gemini-2.5-pro"),
+	}, &http.Client{Transport: rt})
+	if err != nil {
+		t.Fatalf("NewWithHTTPClient (keyless): %v", err)
+	}
+	if _, err := svc.Generate(context.Background(), []*schema.Message{{Role: schema.User, Content: "hi"}}); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if headerPresent {
+		t.Error("x-goog-api-key header sent on keyless request; want absent")
 	}
 }
 

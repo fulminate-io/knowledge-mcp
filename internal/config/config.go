@@ -88,10 +88,16 @@ func (c Consumer) String() string { return string(c) }
 // First-run auto-detect populates CLIBin via exec.LookPath so the
 // starter file is immediately usable; the user edits the absolute path
 // if they ever move the CLI binary.
+//
+// BaseURL is OPTIONAL for all providers. When set on an API provider it
+// overrides that provider's default endpoint (e.g. a keyless local
+// OpenAI-/anthropic-/gemini-compatible server); empty means "use the
+// provider's built-in default URL". No required-field gate.
 type Section struct {
 	Provider Provider
 	Model    string
 	CLIBin   string
+	BaseURL  string
 }
 
 // CurrentSchemaVersion is the format version this binary writes when
@@ -147,9 +153,11 @@ type Credentials struct {
 
 // Resolve returns the effective Section for consumer.
 //
-// Per-field fallback: any unset Provider or Model on the per-consumer
-// section is filled from Default. If both per-consumer and Default leave
-// a field empty, Resolve returns an error naming the missing field.
+// Per-field fallback: any unset Provider, Model, CLIBin, or BaseURL on the
+// per-consumer section is filled from Default. Provider and Model are
+// required — if both per-consumer and Default leave one empty, Resolve
+// returns an error naming the missing field. CLIBin and BaseURL are
+// optional and never trigger a missing-field error.
 func (c *Config) Resolve(consumer Consumer) (Section, error) {
 	if c == nil {
 		return Section{}, fmt.Errorf("config.Resolve: nil Config")
@@ -164,17 +172,15 @@ func (c *Config) Resolve(consumer Consumer) (Section, error) {
 		return Section{}, fmt.Errorf("config.Resolve: unknown consumer %q", consumer)
 	}
 
-	out := Section{Provider: c.Default.Provider, Model: c.Default.Model, CLIBin: c.Default.CLIBin}
+	out := Section{Provider: c.Default.Provider, Model: c.Default.Model, CLIBin: c.Default.CLIBin, BaseURL: c.Default.BaseURL}
 	if per != nil {
-		if per.Provider != "" {
-			out.Provider = per.Provider
-		}
-		if per.Model != "" {
-			out.Model = per.Model
-		}
-		if per.CLIBin != "" {
-			out.CLIBin = per.CLIBin
-		}
+		// Per-field override: a non-empty per-consumer field wins over the
+		// [default] value; empty inherits. Flat (one statement per field)
+		// to keep cyclomatic nesting low.
+		out.Provider = coalesceProvider(per.Provider, out.Provider)
+		out.Model = coalesce(per.Model, out.Model)
+		out.CLIBin = coalesce(per.CLIBin, out.CLIBin)
+		out.BaseURL = coalesce(per.BaseURL, out.BaseURL)
 	}
 	if out.Provider == "" {
 		return Section{}, fmt.Errorf("config: consumer %q has no provider (set [%s].provider or [default].provider)", consumer, consumer)
@@ -183,6 +189,23 @@ func (c *Config) Resolve(consumer Consumer) (Section, error) {
 		return Section{}, fmt.Errorf("config: consumer %q has no model (set [%s].model or [default].model)", consumer, consumer)
 	}
 	return out, nil
+}
+
+// coalesce returns override when it is non-empty, else fallback. Used by
+// Resolve for per-field [default] inheritance of optional string fields.
+func coalesce(override, fallback string) string {
+	if override != "" {
+		return override
+	}
+	return fallback
+}
+
+// coalesceProvider is coalesce for the Provider type.
+func coalesceProvider(override, fallback Provider) Provider {
+	if override != "" {
+		return override
+	}
+	return fallback
 }
 
 // active is the process-wide singleton, populated by Load /

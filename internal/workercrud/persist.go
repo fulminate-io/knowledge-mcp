@@ -33,6 +33,7 @@ import (
 const (
 	metaProvider            = "provider"
 	metaModel               = "model"
+	metaBaseURL             = "base_url"
 	metaSystemPrompt        = "system_prompt"
 	metaToolAllowlist       = "tool_allowlist"        // JSON-encoded []string
 	metaTriggers            = "triggers"              // JSON-encoded []workers.Trigger
@@ -68,6 +69,7 @@ func WorkerToNode(w workers.Worker) (*knowledgev1.Node, error) {
 	meta := map[string]string{
 		metaProvider:            string(w.Provider),
 		metaModel:               w.Model,
+		metaBaseURL:             w.BaseURL,
 		metaSystemPrompt:        w.SystemPrompt,
 		metaToolAllowlist:       string(allowlistJSON),
 		metaTriggers:            string(triggersJSON),
@@ -89,8 +91,8 @@ func WorkerToNode(w workers.Worker) (*knowledgev1.Node, error) {
 // NodeToWorker is the inverse of WorkerToNode.
 //
 // Validation is intentionally lenient — missing or empty optional fields
-// (Model, MaxIterations, MaxWallclockSeconds, Triggers) decode to their
-// zero values. Required fields (Name, Provider) round-trip verbatim;
+// (Model, BaseURL, MaxIterations, MaxWallclockSeconds, Triggers) decode to
+// their zero values. Required fields (Name, Provider) round-trip verbatim;
 // workers.Worker.Validate is the canonical post-decode check.
 func NodeToWorker(n *knowledgev1.Node) (workers.Worker, error) {
 	if kgtypes.NodeType(n.GetType()) != kgtypes.NodeWorker {
@@ -101,6 +103,7 @@ func NodeToWorker(n *knowledgev1.Node) (workers.Worker, error) {
 		Description:  n.GetDescription(),
 		Provider:     config.Provider(kgtypes.Value(n, metaProvider)),
 		Model:        kgtypes.Value(n, metaModel),
+		BaseURL:      kgtypes.Value(n, metaBaseURL),
 		SystemPrompt: kgtypes.Value(n, metaSystemPrompt),
 	}
 	if w.Name == "" {

@@ -50,6 +50,21 @@ type installCodexFlags struct {
 	noMCP        bool
 }
 
+// registerInstallCodexFlags registers the `knowledge install-codex-assets`
+// flags on fs, binding each into f. Pure register-only seam (no fs.Parse) —
+// shared by runInstallCodexAssets (the live CLI path) and the docs generator,
+// which VisitAll's the FlagSet to render the flag table. Mirrors
+// registerInstallClaudeFlags / registerInstallFlags.
+func registerInstallCodexFlags(fs *flag.FlagSet, f *installCodexFlags) {
+	fs.StringVar(&f.skillsDest, "skills-dest", "", "Skills destination root (default ~/.agents/skills)")
+	fs.StringVar(&f.agentsDest, "agents-dest", "", "Agents destination root (default ~/.codex/agents)")
+	fs.StringVar(&f.agentsMDDest, "agents-md-dest", "", "AGENTS.md destination path (default ~/.codex/AGENTS.md)")
+	fs.BoolVar(&f.dryRun, "dry-run", false, "Print what would be written without touching disk")
+	fs.BoolVar(&f.diff, "diff", false, "Print a unified diff of every file that differs (read-only; implies --dry-run)")
+	fs.BoolVar(&f.verbose, "verbose", false, "Print each file path written (default: summary only)")
+	fs.BoolVar(&f.noMCP, "no-mcp", false, "Skip registering the knowledge MCP server with the client (default: register)")
+}
+
 // codexDest pairs the resolved split roots.
 type codexDest struct {
 	skills string
@@ -72,13 +87,7 @@ type codexDest struct {
 func runInstallCodexAssets(args []string) error {
 	fs := flag.NewFlagSet("knowledge install-codex-assets", flag.ContinueOnError)
 	var f installCodexFlags
-	fs.StringVar(&f.skillsDest, "skills-dest", "", "Skills destination root (default ~/.agents/skills)")
-	fs.StringVar(&f.agentsDest, "agents-dest", "", "Agents destination root (default ~/.codex/agents)")
-	fs.StringVar(&f.agentsMDDest, "agents-md-dest", "", "AGENTS.md destination path (default ~/.codex/AGENTS.md)")
-	fs.BoolVar(&f.dryRun, "dry-run", false, "Print what would be written without touching disk")
-	fs.BoolVar(&f.diff, "diff", false, "Print a unified diff of every file that differs (read-only; implies --dry-run)")
-	fs.BoolVar(&f.verbose, "verbose", false, "Print each file path written (default: summary only)")
-	fs.BoolVar(&f.noMCP, "no-mcp", false, "Skip registering the knowledge MCP server with the client (default: register)")
+	registerInstallCodexFlags(fs, &f)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}

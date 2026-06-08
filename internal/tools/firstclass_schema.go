@@ -103,7 +103,7 @@ func SearchToolDef() kgtools.MCPTool {
 				"queries":            {Type: "array", Description: "Batch search: array of query strings. Results deduplicated and merged.", Items: &kgtools.Property{Type: "string"}},
 				"graph":              {Type: "string", Description: "Which graph to search: code (default), knowledge, practice, cloud, cicd, linkage, or logs."},
 				"name":               {Type: "string", Description: "Graph identifier. Required when graph=logs (the per-query log graph queryID). Ignored for other graph types."},
-				"account":            {Type: "string", Description: "Cloud account key to search. Required when graph=cloud (omit to list available cloud graphs)."},
+				"account":            {Type: "string", Description: "Selects which inventoried external-provider account/org's resources to search within your own graph — an AWS/GCP account for graph=cloud, or a CI provider org (e.g. GitHub/GitLab) for graph=cicd. Required for graph=cloud/cicd; omit to list your available graphs."},
 				"resource_type":      {Type: "string", Description: "Cloud resource type filter prefix (e.g. 'ec2', 'ec2:instance'). Cloud graph only."},
 				"limit":              {Type: "number", Description: "Max results per query (default: 10, max: 50)."},
 				"include_source":     {Type: "boolean", Description: "Include full source code (default: true). Code graph only."},

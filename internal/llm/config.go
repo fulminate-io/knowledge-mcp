@@ -5,7 +5,9 @@ import "fmt"
 // Config is the input to NewClient. One flat struct covers every supported
 // provider; required fields differ by Provider:
 //
-//   - ProviderOpenAI / ProviderAnthropic / ProviderGemini require APIKey.
+//   - ProviderOpenAI / ProviderAnthropic / ProviderGemini require APIKey
+//     OR BaseURL — a keyless local endpoint sets BaseURL with an empty
+//     APIKey (the compatible server handles auth out-of-band).
 //   - ProviderClaudeCLI / ProviderCodexCLI require nothing — the CLI
 //     binary is resolved via PATH lookup (CLIBin overrides if set).
 //
@@ -45,8 +47,11 @@ func (c *Config) Validate() error {
 	}
 	switch c.Provider {
 	case ProviderOpenAI, ProviderAnthropic, ProviderGemini:
-		if c.APIKey == "" {
-			return fmt.Errorf("%w: %s requires APIKey", ErrInvalidConfig, c.Provider)
+		// A keyless local endpoint (BaseURL set, empty APIKey) is valid:
+		// the override targets an OpenAI-/anthropic-/gemini-compatible
+		// server that handles auth out-of-band.
+		if c.APIKey == "" && c.BaseURL == "" {
+			return fmt.Errorf("%w: %s requires APIKey or BaseURL", ErrInvalidConfig, c.Provider)
 		}
 	case ProviderClaudeCLI, ProviderCodexCLI:
 		// No required fields; CLIBin is optional and PATH-resolved when empty.

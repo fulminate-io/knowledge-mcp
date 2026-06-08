@@ -70,8 +70,12 @@ func New(_ context.Context, cfg *llm.Config) (llm.Client, error) {
 	if cfg == nil {
 		return nil, fmt.Errorf("%w: nil config", llm.ErrInvalidConfig)
 	}
-	if cfg.APIKey == "" {
-		return nil, fmt.Errorf("%w: gemini requires APIKey", llm.ErrInvalidConfig)
+	// Defense-in-depth gate (gemini.New is also called directly from tests,
+	// bypassing llm.Config.Validate): a keyless config is valid only when it
+	// supplies a BaseURL — a local/compatible endpoint that handles auth
+	// out-of-band. Retained, not deleted.
+	if cfg.APIKey == "" && cfg.BaseURL == "" {
+		return nil, fmt.Errorf("%w: gemini requires APIKey or BaseURL", llm.ErrInvalidConfig)
 	}
 	base := cfg.BaseURL
 	if base == "" {
@@ -169,7 +173,12 @@ func (s *Service) do(ctx context.Context, body any, applied *llm.RequestOptions,
 	if apiKey == "" {
 		apiKey = s.apiKey
 	}
-	req.Header.Set("x-goog-api-key", apiKey)
+	// Send the auth header only when a key is set: a keyless local
+	// endpoint (base_url override) handles auth out-of-band. Mirrors the
+	// openai service guard.
+	if apiKey != "" {
+		req.Header.Set("x-goog-api-key", apiKey)
+	}
 
 	resp, err := s.client.Do(req)
 	if err != nil {

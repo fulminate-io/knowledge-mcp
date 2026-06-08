@@ -130,6 +130,20 @@ type statusOpts struct {
 	graphStorage string
 }
 
+// registerTriggerFlags registers the `worker trigger` flags on fs, binding
+// each into opts. Pure register-only seam (no fs.Parse, no positional
+// validation) — shared by parseTriggerArgs (the live CLI path) and the docs
+// generator, which VisitAll's the FlagSet to render the flag table. The
+// hand-written fs.Usage text stays in parseTriggerArgs (it documents
+// positional usage), not here. Mirrors registerConfigFlags / registerLifecycleFlags.
+func registerTriggerFlags(fs *flag.FlagSet, opts *triggerOpts) {
+	fs.StringVar(&opts.payload, "payload", "", "JSON payload passed to the worker")
+	fs.BoolVar(&opts.noWait, "no-wait", false, "return immediately after firing")
+	fs.DurationVar(&opts.timeout, "timeout", 30*time.Second, "max time to block on completion")
+	fs.IntVar(&opts.port, "port", graphclient.DefaultPort, "TCP port the graph server listens on")
+	fs.StringVar(&opts.graphStorage, "graph-storage", "~/.knowledge/", "directory for graph storage")
+}
+
 // parseTriggerArgs parses a `worker trigger` argv slice. Pure helper
 // — does not touch global state, does not construct a runtime — so
 // tests can exercise flag handling directly. Returns flag.ErrHelp
@@ -153,11 +167,7 @@ flags:
 	}
 
 	var opts triggerOpts
-	fs.StringVar(&opts.payload, "payload", "", "JSON payload passed to the worker")
-	fs.BoolVar(&opts.noWait, "no-wait", false, "return immediately after firing")
-	fs.DurationVar(&opts.timeout, "timeout", 30*time.Second, "max time to block on completion")
-	fs.IntVar(&opts.port, "port", graphclient.DefaultPort, "TCP port the graph server listens on")
-	fs.StringVar(&opts.graphStorage, "graph-storage", "~/.knowledge/", "directory for graph storage")
+	registerTriggerFlags(fs, &opts)
 
 	if err := fs.Parse(args); err != nil {
 		return triggerOpts{}, err
@@ -183,6 +193,17 @@ flags:
 	return opts, nil
 }
 
+// registerStatusFlags registers the `worker status` flags on fs, binding each
+// into opts. Pure register-only seam (no fs.Parse, no positional validation) —
+// shared by parseStatusArgs (the live CLI path) and the docs generator, which
+// VisitAll's the FlagSet to render the flag table. The hand-written fs.Usage
+// text stays in parseStatusArgs. Mirrors registerConfigFlags / registerTriggerFlags.
+func registerStatusFlags(fs *flag.FlagSet, opts *statusOpts) {
+	fs.IntVar(&opts.limit, "limit", 20, "number of recent records to print")
+	fs.IntVar(&opts.port, "port", graphclient.DefaultPort, "TCP port the graph server listens on")
+	fs.StringVar(&opts.graphStorage, "graph-storage", "~/.knowledge/", "directory for graph storage")
+}
+
 // parseStatusArgs parses a `worker status` argv slice. Pure helper —
 // see parseTriggerArgs for rationale.
 func parseStatusArgs(args []string) (statusOpts, error) {
@@ -200,9 +221,7 @@ flags:
 	}
 
 	var opts statusOpts
-	fs.IntVar(&opts.limit, "limit", 20, "number of recent records to print")
-	fs.IntVar(&opts.port, "port", graphclient.DefaultPort, "TCP port the graph server listens on")
-	fs.StringVar(&opts.graphStorage, "graph-storage", "~/.knowledge/", "directory for graph storage")
+	registerStatusFlags(fs, &opts)
 
 	if err := fs.Parse(args); err != nil {
 		return statusOpts{}, err

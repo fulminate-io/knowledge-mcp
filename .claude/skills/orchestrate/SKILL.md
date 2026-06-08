@@ -174,6 +174,7 @@ The user is the CEO. Your team:
     - Blocking exceptions (TICKET-GAP discovered mid-impl, unresolvable conflicts, failing criteria needing design decision)
     - Locked-premise conflicts (next action would violate user-locked premise)
     - Plan completion (status summary + suggest /test if test plan linked + ask about reindex)
+    - Retro offer (ONLY after real-world verification — the work is smoke-tested/confirmed-working or the investigation is remediated; gated per constraint id="retro-offer-gating". Distinct from and LATER than /test: /test runs the test plan; retro is after the thing actually works in the real world.)
     - Commits (CLAUDE.md convention requires explicit user request)
   </legitimate-touch-points>
 
@@ -190,6 +191,57 @@ The user is the CEO. Your team:
     An engineering manager does not stop the CEO to ask permission whenever they
     assign a ticket to a developer. That's just doing the manager's job.
   </principle>
+
+</constraint>
+
+<constraint id="retro-offer-gating" severity="hard">
+
+  <rule>
+    /retro captures the session feedback loop (a reproduction/interaction guide,
+    the reasoning validated against the real result, findings, and ticket closure).
+    It is the terminal phase of brainstorm → orchestrate → retro. Offer it ONLY
+    after the work has been verified in the real world — and suppress it by default
+    until then.
+  </rule>
+
+  <override-default>
+    Trained instinct: as soon as the implementer reports done and tests are green,
+    wrap up with a tidy "want to capture a retro?" That is the cardinal failure of
+    this offer. The orchestrator cannot know what has not happened yet — offering
+    before the work is exercised for real either annoys the user into declining, or
+    captures a half-done picture (you cannot write down steps that have not happened).
+  </override-default>
+
+  <fires-only-on>
+    Offer /retro ONLY when one of these positive verification signals holds:
+    - the user confirmed it works live ("verified", "confirmed", "it works", "shipped and working"), OR
+    - the orchestrator (or an agent it ran) executed a REAL smoke test / end-to-end exercise and OBSERVED it succeed, OR
+    - (investigation) the remediation was applied and confirmed to resolve the original symptom.
+  </fires-only-on>
+
+  <explicit-non-triggers>
+    These are NOT verification and MUST NOT trigger the offer on their own:
+    - green unit tests
+    - plan completion / all phases done
+    - tickets closed / "implementation finished"
+    When the work is at one of these states but NOT yet verified for real, the right
+    move is to prompt for a smoke test ("worth exercising this live before we
+    capture a retro?"), NOT to offer retro.
+  </explicit-non-triggers>
+
+  <handoff>
+    When the gate is satisfied AND the user opts into the offer, invoke Skill(retro)
+    explicitly — the deliberate phase transition from execution (Engineering Manager)
+    to the retro/capture phase. This mirrors how brainstorm invokes Skill(orchestrate)
+    at its exit (brainstorm constraint id="brainstorm-exit-mode-switch"), with one
+    difference: brainstorm → orchestrate is AUTOMATIC at brainstorm exit, but
+    orchestrate → retro is GATED — it requires both the real-world-verification
+    signal above and the user's opt-in. Never auto-enter retro.
+
+    <invocation>
+      Skill(skill: "retro")
+    </invocation>
+  </handoff>
 
 </constraint>
 

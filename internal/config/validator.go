@@ -106,8 +106,12 @@ func (c *Config) validateConsumer(consumer Consumer) error {
 		// set only in [credentials] passes validation as it does at runtime —
 		// previously this checked os.Getenv directly and rejected [credentials]-only
 		// keys even though the summarizer constructed fine.
-		if APIKeyForProvider(section.Provider) == "" {
-			return fmt.Errorf("config: consumer %q uses provider %q but no API key is set — set [credentials].%s_api_key or the %s env var", consumer, section.Provider, section.Provider, envVar)
+		//
+		// A non-empty base_url is the keyless alternative: pointing an API
+		// provider at a local/compatible endpoint that handles auth out-of-band
+		// needs no key, so a resolved section with BaseURL set passes.
+		if APIKeyForProvider(section.Provider) == "" && section.BaseURL == "" {
+			return fmt.Errorf("config: consumer %q uses provider %q but no API key or base_url is set — set [credentials].%s_api_key, the %s env var, or [%s].base_url", consumer, section.Provider, section.Provider, envVar, consumer)
 		}
 		return nil
 	}

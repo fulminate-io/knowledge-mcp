@@ -24,6 +24,7 @@ func sampleWorker() workers.Worker {
 		SystemPrompt:        "You are a round-trip test worker. Do nothing.",
 		Provider:            config.ProviderAnthropic,
 		Model:               "claude-haiku-4-5-20251001",
+		BaseURL:             "http://127.0.0.1:1234/v1",
 		ToolAllowlist:       []string{"search", "think", "mutate"},
 		Triggers:            []workers.Trigger{{Event: workers.EventManual}, {Event: workers.EventToolCompleted, Filter: map[string]string{"tool": "search", "status": "ok"}}},
 		MaxIterations:       12,
@@ -114,6 +115,9 @@ func assertWorkerEqual(t *testing.T, got, want workers.Worker) {
 	}
 	if got.Model != want.Model {
 		t.Errorf("Model: got %q, want %q", got.Model, want.Model)
+	}
+	if got.BaseURL != want.BaseURL {
+		t.Errorf("BaseURL: got %q, want %q", got.BaseURL, want.BaseURL)
 	}
 	if !reflect.DeepEqual(got.ToolAllowlist, want.ToolAllowlist) {
 		t.Errorf("ToolAllowlist: got %v, want %v", got.ToolAllowlist, want.ToolAllowlist)

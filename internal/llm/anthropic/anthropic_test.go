@@ -142,6 +142,35 @@ func TestGenerateBasic(t *testing.T) {
 	}
 }
 
+// TestGenerateNoAuthHeaderWhenKeyless asserts keyless wire parity: a
+// Service constructed with an empty apiKey (base_url-only) sends NO
+// x-api-key header, so a local/compatible endpoint isn't handed a bogus
+// empty credential. anthropic-version stays unconditional.
+func TestGenerateNoAuthHeaderWhenKeyless(t *testing.T) {
+	srv, cap := newFakeServer(t, http.StatusOK, `{
+		"id": "msg_01",
+		"type": "message",
+		"role": "assistant",
+		"model": "claude-3-haiku-20240307",
+		"content": [{"type":"text","text":"ok"}],
+		"stop_reason": "end_turn",
+		"usage": {"input_tokens": 1, "output_tokens": 1}
+	}`)
+	svc := New("", srv.URL, "claude-3-haiku-20240307", srv.Client())
+
+	if _, err := svc.Generate(context.Background(),
+		[]*schema.Message{{Role: schema.User, Content: "hi"}},
+	); err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if _, ok := cap.headers["X-Api-Key"]; ok {
+		t.Errorf("x-api-key header sent on keyless request; want absent")
+	}
+	if cap.headers.Get("anthropic-version") == "" {
+		t.Errorf("anthropic-version header missing; should stay unconditional")
+	}
+}
+
 func TestGenerateRequiresModel(t *testing.T) {
 	srv, _ := newFakeServer(t, http.StatusOK, `{}`)
 	svc := withClient(t, srv, "")

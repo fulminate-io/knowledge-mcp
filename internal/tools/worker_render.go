@@ -21,6 +21,7 @@ func workersAsJSON(workers []workers.Worker) []map[string]any {
 			"system_prompt":         w.SystemPrompt,
 			"provider":              string(w.Provider),
 			"model":                 w.Model,
+			"base_url":              w.BaseURL,
 			"tool_allowlist":        w.ToolAllowlist,
 			"triggers":              w.Triggers,
 			"max_iterations":        w.MaxIterations,

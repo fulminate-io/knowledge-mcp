@@ -62,7 +62,7 @@ func QueryToolDef() kgtools.MCPTool {
 				"repo":                {Type: "string", Description: "Code repository name (default: active repo). Use 'all' for all repos."},
 				"repos":               {Type: "array", Description: "Search specific repos (alternative to repo='all')", Items: &kgtools.Property{Type: "string"}},
 				"language":            {Type: "string", Description: "Language code (e.g. 'go', 'python', 'typescript'). Two uses: (1) practice graph selector — omit to list all practice graphs; (2) topology analyzer filter — code-graph analyzers like god_object scope to a single language. Empty means no filter for topology, all-graphs for practice."},
-				"account":             {Type: "string", Description: "Cloud account key to search"},
+				"account":             {Type: "string", Description: "Selects which inventoried external-provider account/org's resources to query within your own graph — an AWS/GCP account for graph=cloud, or a CI provider org (e.g. GitHub/GitLab) for graph=cicd. Required for graph=cloud/cicd; omit to list your available graphs."},
 				"resource_type":       {Type: "string", Description: "Cloud resource type filter prefix"},
 				"limit":               {Type: "number", Description: "Max results (default: 10)"},
 				"offset":              {Type: "number", Description: "Skip first N results for pagination (default: 0). Use with limit to page through results."},

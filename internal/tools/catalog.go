@@ -18,7 +18,7 @@ var falseValue = false
 // dream worker's BuildAllowedTools compose from this one builder so the advertised
 // surface and the worker allowlist can never drift apart.
 //
-// The catalog is a static set of ~23 pure schema literals; building it is
+// The catalog is a static set of 21 pure schema literals; building it is
 // constant-time and never fails, so callers can treat it as a plain value.
 //
 // Grouping mirrors the historical composition:

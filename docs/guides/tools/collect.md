@@ -1,0 +1,80 @@
+# collect
+
+## Overview
+
+`collect` pulls data from an external source into a graph. Each collector type
+handles one kind of source — `code` for a repository, `aws`/`gcp` for a cloud
+account, `logs` for a configured log backend, `web` for a crawl, `pdf` for a
+document. The collector discovers, chunks, and writes typed nodes and edges into
+the appropriate graph. It is dispatched by the `type` field rather than an
+`operation` field.
+
+Collection runs on the client side: the knowledge MCP client intercepts the call
+and runs the collector locally, streaming chunks to the server. Summarization and
+embedding then drain in the background.
+
+## When & how to use
+
+Reach for `collect` to index a source so it becomes searchable. The most common
+case is re-collecting a code repo after changes — unchanged nodes carry their
+summaries and vectors forward, so only changed files are re-summarized.
+
+`type` is always required. `id` is required for every type except `logs`:
+
+| `type` | Required | `id` is… |
+| --- | --- | --- |
+| `code` | `type`, `id` | An absolute path to the repo root (the repo name is derived from it). |
+| `aws` / `gcp` | `type`, `id` | The account/region selector the collector parses. |
+| `web` | `type`, `id` | A source slug; pair with `seed_urls` to start the crawl. |
+| `pdf` | `type`, `id` | An absolute path to the `.pdf` file. |
+| `logs` | `type` | Optional — supply `backend`/`provider` plus the logs-only filters instead. |
+
+```jsonc
+// Re-index a code repo (use an ABSOLUTE path)
+collect({ "type": "code", "id": "/Users/me/code/myrepo" })
+
+// Crawl a docs site
+collect({ "type": "web", "id": "mydocs", "seed_urls": ["https://example.com/docs"] })
+```
+
+For `type: "code"`, always pass an absolute path — a relative path (`"."`,
+`"./foo"`) is rejected, because the repo name is taken from the final path segment
+and a relative path would key a fresh graph under the wrong name. A code
+re-collection takes from tens of seconds to a couple of minutes; the chunk upload
+returns quickly while summarization continues in the background.
+
+## Parameters
+
+<!-- BEGIN GENERATED: params -->
+| Parameter | Type | Required | Enum | Description |
+| --- | --- | --- | --- | --- |
+| `auth_type` | string |  |  | Logs only: auth mechanism (bearer, basic, aws_profile, api_key, service_account, kubeconfig). |
+| `backend` | string |  |  | Logs only: name of a configured log_backend node. |
+| `credential` | string |  |  | Logs only: credential value when passing provider inline. |
+| `dry_run` | boolean |  |  | Web/PDF only, transformer="recipe" only: compute emissions but write nothing. |
+| `end` | string |  |  | Logs only: RFC3339 end timestamp. |
+| `filters` | object |  |  | Logs only: exact-match label filters applied to log entries. |
+| `follow_patterns` | array of string |  |  | Web only: regex allowlist for internal links. |
+| `follow_patterns[]` | string |  |  |  |
+| `force` | boolean |  |  | Skip safety check for existing indexed graphs. |
+| `id` | string |  |  | Opaque identifier parsed by the collector (path, account:region, web source slug, absolute path to a .pdf, etc.). Optional for type="logs". |
+| `kube_context` | string |  |  | Logs only: kubeconfig context name. |
+| `max_depth` | integer |  |  | Web only: BFS depth bound from a seed URL. |
+| `max_download_bytes` | integer |  |  | Web only: per-(owner,repo,ref) cap on github materialization downloads. 0=default (50 MiB), -1=unlimited, >0=explicit cap (uncompressed bytes). |
+| `max_entries` | integer |  |  | Logs only: cap on entries pulled from the provider. |
+| `max_pages` | integer |  |  | Web only: cap on total pages fetched across the crawl. |
+| `politeness_ms` | integer |  |  | Web only: per-host request delay in milliseconds. |
+| `provider` | string |  |  | Logs only: provider identifier (e.g., cloudwatch, loki, stackdriver, k8s). |
+| `raw_query` | string |  |  | Logs only: provider-native query overriding structured fields. |
+| `recipe` | string |  |  | Web/PDF only, transformer="recipe" only: name of a recipe node. The recipe's source_graph_type metadata must match `type`. |
+| `seed_urls` | array of string |  |  | Web only: starting URL(s) for the crawl. |
+| `seed_urls[]` | string |  |  |  |
+| `severity_min` | string |  |  | Logs only: minimum severity to include (DEBUG\|INFO\|WARN\|ERROR). |
+| `source` | string |  |  | Logs only: provider-specific log source selector. |
+| `start` | string |  |  | Logs only: RFC3339 start timestamp. |
+| `text_filter` | string |  |  | Logs only: free-text substring or pattern applied to log messages. |
+| `transformer` | string |  |  | Web/PDF only: optional transformer name. |
+| `type` | string | yes |  | Collector name (e.g., "code", "aws", "gcp", "logs", "web", "pdf"). |
+| `url` | string |  |  | Logs only: backend base URL. |
+| `user_agent` | string |  |  | Web only: override for the HTTP User-Agent header. |
+<!-- END GENERATED: params -->

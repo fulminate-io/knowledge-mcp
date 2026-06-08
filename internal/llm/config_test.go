@@ -20,6 +20,10 @@ func TestConfig_Validate(t *testing.T) {
 		{"openai with key", &Config{Provider: ProviderOpenAI, APIKey: "sk-..."}, nil},
 		{"anthropic with key", &Config{Provider: ProviderAnthropic, APIKey: "sk-..."}, nil},
 		{"gemini with key", &Config{Provider: ProviderGemini, APIKey: "..."}, nil},
+		// Keyless: a base_url-only config (local/compatible endpoint) is valid.
+		{"openai base_url no key", &Config{Provider: ProviderOpenAI, BaseURL: "http://127.0.0.1:1234/v1"}, nil},
+		{"anthropic base_url no key", &Config{Provider: ProviderAnthropic, BaseURL: "http://127.0.0.1:1234"}, nil},
+		{"gemini base_url no key", &Config{Provider: ProviderGemini, BaseURL: "http://127.0.0.1:1234"}, nil},
 		{"claude-cli no fields", &Config{Provider: ProviderClaudeCLI}, nil},
 		{"codex-cli no fields", &Config{Provider: ProviderCodexCLI}, nil},
 		{"claude-cli with override bin", &Config{Provider: ProviderClaudeCLI, CLIBin: "/tmp/claude"}, nil},

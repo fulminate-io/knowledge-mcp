@@ -35,6 +35,20 @@ type installAssetsFlags struct {
 	noMCP        bool
 }
 
+// registerInstallClaudeFlags registers the `knowledge install-claude-assets`
+// flags on fs, binding each into f. Pure register-only seam (no fs.Parse) —
+// shared by runInstallClaudeAssets (the live CLI path) and the docs generator,
+// which VisitAll's the FlagSet to render the flag table. Mirrors
+// registerInstallFlags / registerLifecycleFlags.
+func registerInstallClaudeFlags(fs *flag.FlagSet, f *installAssetsFlags) {
+	fs.StringVar(&f.dest, "dest", "", "Destination directory (default ~/.claude)")
+	fs.StringVar(&f.claudeMDDest, "claude-md-dest", "", "CLAUDE.md destination path (default ~/.claude/CLAUDE.md)")
+	fs.BoolVar(&f.dryRun, "dry-run", false, "Print what would be written without touching disk")
+	fs.BoolVar(&f.diff, "diff", false, "Print a unified diff of every file that differs (read-only; implies --dry-run)")
+	fs.BoolVar(&f.verbose, "verbose", false, "Print each file path written (default: summary only)")
+	fs.BoolVar(&f.noMCP, "no-mcp", false, "Skip registering the knowledge MCP server with the client (default: register at user scope)")
+}
+
 // runInstallClaudeAssets walks the embedded FS and copies every
 // regular file to <dest>/<embed-relative-path>. Default dest is
 // ~/.claude. Existing files are overwritten (these are project-
@@ -57,12 +71,7 @@ type installAssetsFlags struct {
 func runInstallClaudeAssets(args []string) error {
 	fs := flag.NewFlagSet("knowledge install-claude-assets", flag.ContinueOnError)
 	var f installAssetsFlags
-	fs.StringVar(&f.dest, "dest", "", "Destination directory (default ~/.claude)")
-	fs.StringVar(&f.claudeMDDest, "claude-md-dest", "", "CLAUDE.md destination path (default ~/.claude/CLAUDE.md)")
-	fs.BoolVar(&f.dryRun, "dry-run", false, "Print what would be written without touching disk")
-	fs.BoolVar(&f.diff, "diff", false, "Print a unified diff of every file that differs (read-only; implies --dry-run)")
-	fs.BoolVar(&f.verbose, "verbose", false, "Print each file path written (default: summary only)")
-	fs.BoolVar(&f.noMCP, "no-mcp", false, "Skip registering the knowledge MCP server with the client (default: register at user scope)")
+	registerInstallClaudeFlags(fs, &f)
 	if err := fs.Parse(args); err != nil {
 		return err
 	}

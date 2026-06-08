@@ -363,30 +363,36 @@ func TestRunReAct_RecoversFromToolError(t *testing.T) {
 }
 
 // TestResolveDreamSection_WorkerOverridesConfig verifies Worker.Provider /
-// Worker.Model take precedence over the [dream] section.
+// Worker.Model / Worker.BaseURL take precedence over the [dream] section.
 func TestResolveDreamSection_WorkerOverridesConfig(t *testing.T) {
 	cfg := &config.Config{
 		Default: config.Section{Provider: config.ProviderAnthropic, Model: "default-model"},
-		Dream:   &config.Section{Provider: config.ProviderOpenAI, Model: "dream-model"},
+		Dream:   &config.Section{Provider: config.ProviderOpenAI, Model: "dream-model", BaseURL: "http://dream"},
 	}
 	t.Cleanup(config.SetForTest(cfg))
 
-	// No worker override → resolves to dream section.
-	provider, model, _, err := resolveDreamSection(Worker{Name: "x"})
+	// No worker override → resolves to dream section (incl. base_url).
+	provider, model, _, baseURL, err := resolveDreamSection(Worker{Name: "x"})
 	if err != nil {
 		t.Fatalf("resolveDreamSection: %v", err)
 	}
 	if provider != config.ProviderOpenAI || model != "dream-model" {
 		t.Errorf("(%v, %v), want (openai, dream-model)", provider, model)
 	}
+	if baseURL != "http://dream" {
+		t.Errorf("baseURL = %q, want inherited %q", baseURL, "http://dream")
+	}
 
-	// Worker override → wins.
-	provider, model, _, err = resolveDreamSection(Worker{Name: "y", Provider: config.ProviderGemini, Model: "gemini-pro"})
+	// Worker override → wins (provider, model, and base_url).
+	provider, model, _, baseURL, err = resolveDreamSection(Worker{Name: "y", Provider: config.ProviderGemini, Model: "gemini-pro", BaseURL: "http://worker"})
 	if err != nil {
 		t.Fatalf("resolveDreamSection: %v", err)
 	}
 	if provider != config.ProviderGemini || model != "gemini-pro" {
 		t.Errorf("(%v, %v), want (gemini, gemini-pro)", provider, model)
+	}
+	if baseURL != "http://worker" {
+		t.Errorf("baseURL = %q, want overridden %q", baseURL, "http://worker")
 	}
 }
 
