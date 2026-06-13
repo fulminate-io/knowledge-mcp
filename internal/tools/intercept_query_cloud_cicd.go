@@ -116,6 +116,13 @@ func InterceptQueryCloudCICD(deps ClientDeps, params kgtools.CallToolParams) (bo
 	// entirely CLIENT-side via composeResourceSearchClient (Manager.Search →
 	// RRF → hydrate → RenderResourceSearch); never a server RETURN_MODE_SEARCH.
 	if query := resourceQueryText(a); query != "" {
+		// Readiness gate (bind-first startup): the mgr==nil case below is already nil-safe (no
+		// panic) but emits a permanent-degrade message that misleads during the
+		// bind-first wiring window. Add the uniform not-ready pre-check so the
+		// window is distinguishable from a genuinely-unwired pipeline.
+		if !deps.PipelineReady() {
+			return true, errorResult(kind.graph + " search: daemon still starting — LLM pipeline not ready yet, retry shortly")
+		}
 		mgr := deps.SegmentManager()
 		if mgr == nil {
 			return true, errorResult(kind.graph + " search: client segment engine unavailable")
@@ -350,4 +357,31 @@ func listGraphNamesOfType(ctx context.Context, deps ClientDeps, graphType string
 		}
 	}
 	return names, nil
+}
+
+// listOverlayKeysOfBase enumerates the OVERLAY keys of a single base graph via
+// the same Execute seam (RETURN_MODE_GRAPH_NAMES) with overlay_of set to the
+// base. Per the ListGraphsLite overlayOf contract (store/db.go:333-335, OSS
+// registry_lookup.go listOverlays, cloud lifecycle.go overlayPrefix filter), the
+// returned GraphInfo.Name values are the FULL "base@overlay" keys — NOT the base
+// graph itself and NOT every graph. The base name comes from the separate
+// listGraphNamesOfType enumeration, so this returns ONLY the overlay keys. Empty
+// names are dropped. It is a distinct call shape from listGraphNamesOfType (which
+// returns base names and filters @-keys), hence a sibling rather than an extension.
+func listOverlayKeysOfBase(ctx context.Context, deps ClientDeps, graphType, base string) ([]string, error) {
+	gc := deps.GraphCaller()
+	if gc == nil {
+		return nil, fmt.Errorf("graph client unavailable")
+	}
+	infos, err := fetchGraphNamesOfType(ctx, gc, graphType, base)
+	if err != nil {
+		return nil, err
+	}
+	var keys []string
+	for _, gi := range infos {
+		if gi.Name != "" {
+			keys = append(keys, gi.Name)
+		}
+	}
+	return keys, nil
 }

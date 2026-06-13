@@ -50,6 +50,23 @@ func TestCompileQuery_IDsBulkOnePlan(t *testing.T) {
 	assert.Empty(t, q.GetById(), "bulk uses Ids, not ById")
 }
 
+// TestCompileQuery_FieldPredicatesThreaded pins the additive threading of
+// Selection.field_predicates into the generic browse compile path: a type-browse
+// carrying a symbol_name EQ field predicate compiles to a Selection whose
+// FieldPredicates carry that exact {symbol_name, OP_EQ, "foo"} entry. This is the
+// engine's existing server-side symbol_name browse made reachable from the
+// client compile path (the session resolver builds these args programmatically).
+func TestCompileQuery_FieldPredicatesThreaded(t *testing.T) {
+	req, ok := compileQuery(json.RawMessage(
+		`{"type":"thought_session","field_predicates":[{"field":"symbol_name","op":"eq","value":"foo"}]}`))
+	require.True(t, ok)
+	preds := req.GetQuery().GetSelection().GetFieldPredicates()
+	require.Len(t, preds, 1, "the symbol_name EQ predicate is threaded onto the browse Selection")
+	assert.Equal(t, "symbol_name", preds[0].GetField())
+	assert.Equal(t, knowledgev1.MetadataPredicate_OP_EQ, preds[0].GetOp())
+	assert.Equal(t, "foo", preds[0].GetValue())
+}
+
 // TestCompileQuery_GraphReachRetired asserts the client PPR
 // (graph_reach) mode was retired: it is no longer a reducible query mode, so compileQuery
 // returns ok=false (the mode surfaces the unknown-mode deny). The server
@@ -123,6 +140,18 @@ func TestCompileQuery_GenericCrossGraph(t *testing.T) {
 	assert.Equal(t, "cloud", req.GetTarget().GetGraph())
 	assert.Equal(t, "acct", req.GetTarget().GetAccount())
 	assert.Equal(t, "x", req.GetQuery().GetById())
+}
+
+// TestCompileQuery_CustomGraph pins by-id query selector threading for a
+// registered custom graph type: graph + name reach the server-side resolver
+// (dispatch_byid gates only on isCodeGraph + graph=="logs"; a custom type
+// passes both). Guards a future closed-allowlist regression.
+func TestCompileQuery_CustomGraph(t *testing.T) {
+	req, ok := compileQuery(json.RawMessage(`{"id":"n1","graph":"hellograph","name":"demo"}`))
+	require.True(t, ok, "custom-graph by-id query is reducible (no client allowlist)")
+	assert.Equal(t, "hellograph", req.GetTarget().GetGraph())
+	assert.Equal(t, "demo", req.GetTarget().GetName())
+	assert.Equal(t, "n1", req.GetQuery().GetById())
 }
 
 func TestCompileQuery_DenyCases(t *testing.T) {
@@ -255,4 +284,17 @@ func TestCompileQuery_ModulesMode(t *testing.T) {
 	assert.Empty(t, req.GetQuery().GetQueries(), "modules carries no queries")
 	assert.Equal(t, "practice", req.GetTarget().GetGraph())
 	assert.Equal(t, "go", req.GetTarget().GetLanguage())
+}
+
+// TestCompileQuery_ModulesMode_OverlayOf asserts overlay_of threads onto the
+// RETURN_MODE_GRAPH_NAMES plan so the server restricts enumeration to the
+// overlay keys of the named base. Fails-when-absent: without the assignment
+// GetOverlayOf() is empty and the server enumerates base names only.
+func TestCompileQuery_ModulesMode_OverlayOf(t *testing.T) {
+	req, ok := compileQuery(json.RawMessage(`{"mode":"modules","graph":"code","overlay_of":"agent"}`))
+	require.True(t, ok, "modules mode must compile to Execute")
+	require.NotNil(t, req.GetQuery())
+	assert.Equal(t, knowledgev1.ReturnMode_RETURN_MODE_GRAPH_NAMES, req.GetQuery().GetReturnMode())
+	assert.Equal(t, "agent", req.GetQuery().GetOverlayOf(), "overlay_of must thread onto the QueryPlan")
+	assert.Equal(t, "code", req.GetTarget().GetGraph())
 }

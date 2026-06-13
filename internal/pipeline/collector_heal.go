@@ -41,7 +41,7 @@ func (c *collector) maybeHealCheck(ctx context.Context, ax loopAxis, items, inFl
 	if !armed || ax.axis != "embed" || c.healIfSegmentless == nil {
 		return armed
 	}
-	slog.Info("pipeline.collector: embed gap drained while heal-armed — auto-heal check (cheap zero-segments probe; rebuild only on zero)",
+	slog.Info("pipeline.collector: embed gap drained while heal-armed — auto-heal check (cheap zero-segments + coverage-ratio probe; rebuild on zero OR degraded coverage)",
 		"graph_type", c.gt, "name", c.name)
 	if err := c.healIfSegmentless(ctx); err != nil {
 		slog.Warn("pipeline.collector: auto-heal check failed (best-effort; next collect-armed drain retries)",

@@ -11,7 +11,6 @@ import (
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
-	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
 // practiceNodeResult seeds a single practice-graph node body keyed by id for the
@@ -129,114 +128,8 @@ func TestMutateComposers_CrossGraphLink_LinkageHandledClientSide(t *testing.T) {
 	assert.InDelta(t, 0.7, link.GetEdgeSpec().GetConfidence(), 1e-9)
 }
 
-// ---------------------------------------------------------------------------
-// Sub-item 4: clear_llm_failures as two MutationPlan UPDATEs.
-// ---------------------------------------------------------------------------
-
-// TestMutateComposers_ClearLLMFailures_SingleGraph asserts the composer issues
-// exactly TWO predicate UPDATEs against a single named graph: one OP_EXISTS
-// predicate + set_metadata empty clear per failure marker. Matches the server
-// clearLLMFailuresInGraph node-selection semantics via generic MutationPlans.
-func TestMutateComposers_ClearLLMFailures_SingleGraph(t *testing.T) {
-	fc := &fakeGraphCaller{mutateAffected: 3}
-	deps := interceptTestDeps{gc: fc}
-	handled, res := InterceptManage(deps, kgtools.CallToolParams{
-		Name:      "manage",
-		Arguments: json.RawMessage(`{"operation":"clear_llm_failures","graph":"code","name":"knowledge"}`),
-	})
-	require.True(t, handled, "clear_llm_failures is claimed client-side")
-	require.False(t, res.IsError, "clear: %s", toolResultText(res))
-
-	require.Len(t, fc.execMutations, 2, "exactly two predicate UPDATEs (one per failure marker)")
-	gotKeys := map[string]bool{}
-	for _, plan := range fc.execMutations {
-		assert.Equal(t, knowledgev1.MutationPlan_MUTATION_KIND_UPDATE, plan.GetKind())
-		require.NotNil(t, plan.GetSelection())
-		preds := plan.GetSelection().GetMetadataPredicates()
-		require.Len(t, preds, 1, "one OP_EXISTS predicate")
-		assert.Equal(t, knowledgev1.MetadataPredicate_OP_EXISTS, preds[0].GetOp())
-		key := preds[0].GetKey()
-		// set_metadata clears the SAME key to empty string.
-		md := plan.GetSetMetadata()
-		require.Contains(t, md, key)
-		assert.Empty(t, md[key], "clear writes empty string, not a delete")
-		gotKeys[key] = true
-	}
-	assert.True(t, gotKeys[kgtypes.MetaKeySummaryFailureReason], "summary_failure_reason cleared")
-	assert.True(t, gotKeys[kgtypes.MetaKeyEmbedFailureReason], "embed_failure_reason cleared")
-
-	// Each Execute request targets the named graph. The code graph routes its
-	// name via Repo (not Name) — the engine's resolveCode rejects sel.Name on a
-	// code selector with "graph=code requires repo: graph selector invalid",
-	// which is the bug clearTarget previously tripped silently.
-	require.Len(t, fc.execRequests, 2)
-	for _, req := range fc.execRequests {
-		require.NotNil(t, req.GetTarget())
-		assert.Equal(t, "code", req.GetTarget().GetGraph())
-		assert.Equal(t, "knowledge", req.GetTarget().GetRepo())
-		assert.Empty(t, req.GetTarget().GetName(), "code selector must NOT also carry Name")
-	}
-	// 2 markers * 3 affected each = "cleared 3 summary marker(s) + 3 embed marker(s)".
-	assert.Contains(t, toolResultText(res), "cleared 3 summary marker(s) + 3 embed marker(s)")
-}
-
-// TestMutateComposers_ClearLLMFailures_KnowledgeRootNilTarget asserts the
-// knowledge/default root graph clears with a nil GraphSelector (the engine's
-// empty-graph=knowledge default) rather than an explicit name.
-func TestMutateComposers_ClearLLMFailures_KnowledgeRootNilTarget(t *testing.T) {
-	fc := &fakeGraphCaller{mutateAffected: 1}
-	deps := interceptTestDeps{gc: fc}
-	handled, res := InterceptManage(deps, kgtools.CallToolParams{
-		Name:      "manage",
-		Arguments: json.RawMessage(`{"operation":"clear_llm_failures","graph":"knowledge","name":"knowledge"}`),
-	})
-	require.True(t, handled)
-	require.False(t, res.IsError, "clear: %s", toolResultText(res))
-	require.Len(t, fc.execRequests, 2)
-	for _, req := range fc.execRequests {
-		assert.Nil(t, req.GetTarget(), "knowledge root clears against the nil/default selector")
-	}
-}
-
-// TestMutateComposers_ClearLLMFailures_MultiGraphFanOut asserts the empty-graph
-// case resolves the loaded graphs via pipeline_list_graphs then issues the two
-// predicate UPDATEs PER resolved graph (two graphs → 4 UPDATEs).
-func TestMutateComposers_ClearLLMFailures_MultiGraphFanOut(t *testing.T) {
-	listResult := kgtools.ToolResult{Content: []kgtools.ContentBlock{{Type: "text", Text: `{"graphs":[
-		{"graph_type":"code","graph_name":"knowledge"},
-		{"graph_type":"practice","graph_name":"go"}
-	]}`}}}
-	fc := &fakeGraphCaller{mutateAffected: 1, listGraphsResult: &listResult}
-	deps := interceptTestDeps{gc: fc}
-	handled, res := InterceptManage(deps, kgtools.CallToolParams{
-		Name:      "manage",
-		Arguments: json.RawMessage(`{"operation":"clear_llm_failures"}`),
-	})
-	require.True(t, handled)
-	require.False(t, res.IsError, "clear: %s", toolResultText(res))
-	// 2 resolved graphs * 2 markers = 4 UPDATEs.
-	assert.Len(t, fc.execMutations, 4, "two markers per resolved graph")
-
-	// The practice graph routes its name via Language; code via Repo (the
-	// engine's resolveCode requires GraphSelector.Repo, not Name).
-	var sawPracticeLang, sawCodeRepo bool
-	for _, req := range fc.execRequests {
-		tgt := req.GetTarget()
-		require.NotNil(t, tgt)
-		switch tgt.GetGraph() {
-		case "practice":
-			if tgt.GetLanguage() == "go" {
-				sawPracticeLang = true
-			}
-		case "code":
-			if tgt.GetRepo() == "knowledge" {
-				sawCodeRepo = true
-			}
-		}
-	}
-	assert.True(t, sawPracticeLang, "practice target routes name via Language")
-	assert.True(t, sawCodeRepo, "code target routes name via Repo")
-}
+// The clear_llm_failures composer tests live in
+// intercept_clear_llm_failures_test.go (file-length cap; same package).
 
 // ---------------------------------------------------------------------------
 // Sub-item 2: create-time validation gate (the intercept-composer path). The

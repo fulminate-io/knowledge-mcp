@@ -332,10 +332,10 @@ func (c *collector) runLoop(ctx context.Context, ax loopAxis) {
 
 		// Auto-heal: consume the collect-armed healArmed latch on the SAME
 		// embed drain edge. Stays armed while work is present; on the armed embed
-		// drain edge it runs the cheap zero-segments probe and (only on zero) the
-		// rebuild driver, then disarms — once per collect. Independent of
-		// pendingSinceFlush: the already-embedded case has zero embed work so only
-		// this collect-driven latch fires for it.
+		// drain edge it runs the cheap zero-segments + coverage-ratio probe and (on
+		// zero OR degraded coverage) the rebuild driver, then disarms — once per
+		// collect. Independent of pendingSinceFlush: the already-embedded case has
+		// zero embed work so only this collect-driven latch fires for it.
 		healArmed = c.maybeHealCheck(ctx, ax, len(items), len(inFlight), healArmed)
 
 		// #1 idle-backoff: work found → fast base cadence; empty → grow toward

@@ -36,6 +36,7 @@ import (
 	"github.com/smacker/go-tree-sitter/svelte"
 	"github.com/smacker/go-tree-sitter/swift"
 	"github.com/smacker/go-tree-sitter/toml"
+	"github.com/smacker/go-tree-sitter/typescript/tsx"
 	"github.com/smacker/go-tree-sitter/typescript/typescript"
 	"github.com/smacker/go-tree-sitter/yaml"
 )
@@ -46,6 +47,12 @@ type Language string
 const (
 	LangGo         Language = "go"
 	LangTypeScript Language = "typescript"
+	// LangTSX is the JSX-capable TypeScript dialect (.tsx). It rides the
+	// separate tree-sitter typescript/tsx grammar (a strict superset of the
+	// typescript grammar) while reusing the same tsQueries — the only upstream
+	// library that splits JSX into a sibling grammar, so .tsx needs a distinct
+	// Language while .jsx does not (the javascript grammar is JSX-capable).
+	LangTSX        Language = "tsx"
 	LangPython     Language = "python"
 	LangJava       Language = "java"
 	LangRust       Language = "rust"
@@ -126,6 +133,10 @@ func (e *langEntry) Queries() *QuerySet {
 var registry = map[Language]*langEntry{
 	LangGo:         {lang: golang.GetLanguage(), queries: goQueries},
 	LangTypeScript: {lang: typescript.GetLanguage(), queries: tsQueries},
+	// LangTSX reuses tsQueries against the JSX-capable tsx grammar: tsx is a
+	// strict superset of typescript, so every kind tsQueries captures exists
+	// in it (TestAllLanguageQueriesCompile auto-covers this entry).
+	LangTSX:        {lang: tsx.GetLanguage(), queries: tsQueries},
 	LangPython:     {lang: python.GetLanguage(), queries: pythonQueries},
 	LangJava:       {lang: java.GetLanguage(), queries: javaQueries},
 	LangRust:       {lang: rust.GetLanguage(), queries: rustQueries},
@@ -161,7 +172,7 @@ var registry = map[Language]*langEntry{
 var extMap = map[string]Language{
 	".go":       LangGo,
 	".ts":       LangTypeScript,
-	".tsx":      LangTypeScript,
+	".tsx":      LangTSX,
 	".py":       LangPython,
 	".pyi":      LangPython,
 	".java":     LangJava,

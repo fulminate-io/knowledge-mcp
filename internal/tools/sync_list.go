@@ -3,9 +3,11 @@
 // sync_list.go — client-side `sync(operation:"list")` handler. Prints a table
 // of sync-eligible LOCAL graphs (always) joined against the user's CLOUD
 // account (when logged in), so the operator can see which graphs are synced and
-// when. Eligibility = kgtypes.SyncEligible (the !SkipsLLMProcessing complement);
-// the "Last synced" column comes from the CLOUD GraphInfo.SyncTime ONLY — never
-// the local one (local SyncTime is code-collect time, a different meaning).
+// when. Eligibility = the builtin kgtypes.SyncEligible set (the
+// !SkipsLLMProcessing complement) PLUS every registered custom graph type whose
+// GraphTypeDef behavior declares syncable=true; the "Last synced" column comes
+// from the CLOUD GraphInfo.SyncTime ONLY — never the local one (local SyncTime is
+// code-collect time, a different meaning).
 
 package tools
 
@@ -58,10 +60,17 @@ func handleSyncList(deps ClientDeps) kgtools.ToolResult {
 		gt   kgtypes.GraphType
 		name string
 	}
+	// The graph types to enumerate: the builtin sync-eligible set (UNCHANGED)
+	// plus every REGISTERED custom type whose behavior cascade declares
+	// syncable=true. A nil GraphTypeCRUD (degraded client) yields no custom types,
+	// so builtins still list. List is ONE wire call.
+	syncTypes := kgtypes.SyncEligibleGraphTypes()
+	syncTypes = append(syncTypes, syncableCustomTypes(ctx, deps)...)
+
 	cloudByKey := map[cloudKey]int64{}
 	if loggedIn {
 		cloud := deps.GraphCaller()
-		for _, gt := range kgtypes.SyncEligibleGraphTypes() {
+		for _, gt := range syncTypes {
 			infos, err := fetchGraphNamesOfType(ctx, cloud, string(gt))
 			if err != nil {
 				return errorResult(fmt.Sprintf("sync list: enumerate cloud %s graphs: %v", gt, err))
@@ -73,7 +82,7 @@ func handleSyncList(deps ClientDeps) kgtools.ToolResult {
 	}
 
 	var rows []syncListRow
-	for _, gt := range kgtypes.SyncEligibleGraphTypes() {
+	for _, gt := range syncTypes {
 		infos, err := fetchGraphNamesOfType(ctx, local, string(gt))
 		if err != nil {
 			return errorResult(fmt.Sprintf("sync list: enumerate local %s graphs: %v", gt, err))
@@ -91,6 +100,30 @@ func handleSyncList(deps ClientDeps) kgtools.ToolResult {
 	}
 
 	return textResult(renderSyncListTable(rows, loggedIn))
+}
+
+// syncableCustomTypes returns every REGISTERED custom graph type whose behavior
+// cascade declares syncable=true (GetBehavior().GetSyncable()). It is the sync
+// counterpart of kgtypes.SyncEligibleGraphTypes() for custom types: a custom type
+// is sync-eligible iff its GraphTypeDef opts in. A nil GraphTypeCRUD (degraded
+// client) or a List error yields no custom types — builtins still list. Builtins
+// never appear here (they carry no GraphTypeDef record).
+func syncableCustomTypes(ctx context.Context, deps ClientDeps) []kgtypes.GraphType {
+	crud := deps.GraphTypeCRUD()
+	if crud == nil {
+		return nil
+	}
+	defs, err := crud.List(ctx)
+	if err != nil {
+		return nil
+	}
+	var out []kgtypes.GraphType
+	for _, d := range defs {
+		if d.GetBehavior().GetSyncable() {
+			out = append(out, kgtypes.GraphType(d.GetName()))
+		}
+	}
+	return out
 }
 
 // renderSyncListTable renders the locked 4-column table via stdlib text/tabwriter:

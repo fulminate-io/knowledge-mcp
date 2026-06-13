@@ -37,7 +37,7 @@ func checkProvidersDeep(configFile string) checkResult {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 
-	consumers := []config.Consumer{config.ConsumerSummarizer, config.ConsumerDream}
+	consumers := []config.Consumer{config.ConsumerSummarizer, config.ConsumerDream, config.ConsumerHiveSupervisor}
 	if err := precheck.RunAll(ctx, cfg, consumers, config.VoyageAPIKey()); err != nil {
 		return checkResult{
 			name:   "providers",

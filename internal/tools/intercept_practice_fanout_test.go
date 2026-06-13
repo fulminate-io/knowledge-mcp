@@ -93,6 +93,12 @@ func (h *fanOutEngineHandler) Index(
 	return nil, connect.NewError(connect.CodeUnimplemented, nil)
 }
 
+func (h *fanOutEngineHandler) Hive(
+	context.Context, *connect.Request[knowledgev1.HiveRequest],
+) (*connect.Response[knowledgev1.HiveResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, nil)
+}
+
 func (h *fanOutEngineHandler) PipelineScan(
 	context.Context, *connect.Request[knowledgev1.PipelineScanRequest],
 ) (*connect.Response[knowledgev1.PipelineScanResponse], error) {

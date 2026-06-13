@@ -70,6 +70,16 @@ type Consumer string
 const (
 	ConsumerSummarizer Consumer = "summarizer"
 	ConsumerDream      Consumer = "dream"
+	// ConsumerHiveSupervisor is the Tier-2 strong-model LLM that judges a
+	// hive worker's transcript on monitor ambiguity. Resolved like dream:
+	// an absent [supervisor] section inherits fully from [default].
+	ConsumerHiveSupervisor Consumer = "supervisor"
+	// ConsumerTopics is the topic-summary LLM the similarity lever uses to
+	// produce one-line topic summaries over thought clusters. Separate from
+	// ConsumerSummarizer so the low-volume, quality-sensitive topic pass can
+	// run an opus-class model while the high-volume pipeline summarizer stays
+	// on a cheap one. An absent [topics] section inherits fully from [default].
+	ConsumerTopics Consumer = "topics"
 )
 
 // String returns c as a plain string.
@@ -126,6 +136,8 @@ type Config struct {
 	Default       Section
 	Summarizer    *Section
 	Dream         *Section
+	Supervisor    *Section
+	Topics        *Section
 	// Credentials holds the optional [credentials] section: backend/LLM
 	// API keys. nil when the section is absent (the common case — most
 	// configs rely on env vars). Each key falls back to its matching env
@@ -168,6 +180,10 @@ func (c *Config) Resolve(consumer Consumer) (Section, error) {
 		per = c.Summarizer
 	case ConsumerDream:
 		per = c.Dream
+	case ConsumerHiveSupervisor:
+		per = c.Supervisor
+	case ConsumerTopics:
+		per = c.Topics
 	default:
 		return Section{}, fmt.Errorf("config.Resolve: unknown consumer %q", consumer)
 	}

@@ -69,6 +69,7 @@ func QueryToolDef() kgtools.MCPTool {
 				"cluster":             {Type: "string", Description: "Cluster filter for reflect personality mode"},
 				"cluster_a":           {Type: "string", Description: "First cluster for reflect evolution mode"},
 				"cluster_b":           {Type: "string", Description: "Second cluster for reflect evolution mode"},
+				"sort":                {Type: "string", Description: "Display ordering for the EVIDENCED section of mode=influence. Selection is evidence-aware: charged thoughts are ranked by influence×(1+chargeWeight) into the evidenced top-N, while zero-charge structural hubs are returned in a separate labeled backfill section. 'influence' (default) keeps the influence×(1+chargeWeight) selection order; 'composite' reorders the already-selected evidenced set by influence×magnitude FOR DISPLAY — a within-set reorder that does NOT change which thoughts are selected and does not touch the backfill section.", Enum: []string{"influence", "composite"}},
 				"action":              {Type: "string", Description: "Action for simulate mode (remove_charge, invalidate_thought, add_charge)"},
 				"target":              {Type: "string", Description: "Target node ID for simulate mode"},
 				"polarity":            {Type: "string", Description: "Polarity for simulate add_charge (positive or negative)"},

@@ -79,6 +79,30 @@ func ListForeignGraphs(ctx context.Context, ex render.Executor) ([]ForeignGraph,
 	return out, nil
 }
 
+// ListForeignGraphsOfType enumerates every loaded foreign graph of the SINGLE
+// graphType as a (GraphType, GraphName) pair via ONE RETURN_MODE_GRAPH_NAMES read.
+// It is the per-type body of ListForeignGraphs lifted out of the four-type loop:
+// callers that only ever resolve against one family (the think born-link path and
+// the code-link backfill, both code-only) pay one enumeration read instead of the
+// four ListForeignGraphs issues. Empty-name entries are dropped.
+func ListForeignGraphsOfType(ctx context.Context, ex render.Executor, graphType string) ([]ForeignGraph, error) {
+	if ex == nil {
+		return nil, errors.New("crossgraph locate: Execute seam unavailable")
+	}
+	infos, err := fetchGraphNamesOfType(ctx, ex, graphType)
+	if err != nil {
+		return nil, fmt.Errorf("crossgraph locate: %w", err)
+	}
+	var out []ForeignGraph
+	for _, gi := range infos {
+		if gi.GetName() == "" {
+			continue
+		}
+		out = append(out, ForeignGraph{GraphType: graphType, GraphName: gi.GetName()})
+	}
+	return out, nil
+}
+
 // fetchGraphNamesOfType enumerates the loaded graphs of graphType via the generic
 // Execute seam (query(mode:modules) → RETURN_MODE_GRAPH_NAMES). It reads the typed
 // graph_names carrier off the response directly (the proto *knowledgev1.GraphInfo

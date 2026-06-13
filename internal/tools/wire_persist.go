@@ -12,6 +12,7 @@
 //   - LookupNode   — single query(id) with include_edges:false.
 //   - LinkOne      — single mutate(link) for one from→to edge.
 //   - TraverseDescendants — single traverse(start, edge, depth) returning hydrated nodes.
+//   - TraverseDescendantsWithEdges — like TraverseDescendants but also returns the subtree's structure edges (one RPC).
 //   - UpdateBatchStatus   — single mutate(update_batch) carrying per-id status updates.
 //
 // All return the underlying gc.Call error verbatim (no double-wrap with
@@ -56,12 +57,27 @@ type persistBatchNode struct {
 // emitted explicitly so the server's UnmarshalJSON sentinel (-1 ==
 // "use string ID") applies even when both endpoints reference an
 // existing node by ID.
+//
+// It also carries the five edge-metadata fields
+// (weight/confidence/method/evidence/last_validated) with omitempty so a
+// Method/Weight/… set on a kgwire.BatchEdge survives the PersistBatch
+// projection onto the engine create_batch edgeBody (the json keys match the
+// engine's edgeBody decode tags so engine.Compile threads them onto the
+// BatchEdgeSpec). last_validated is the RFC3339 STRING shape the edgeBody
+// decodes — NOT the int64 unix-nanos proto carrier. omitempty makes an
+// all-unset edge marshal byte-identically to the pre-metadata shape, so every
+// existing PersistBatch caller is unaffected.
 type persistBatchEdge struct {
-	FromIdx int    `json:"from_idx"`
-	ToIdx   int    `json:"to_idx"`
-	FromID  string `json:"from_id,omitempty"`
-	ToID    string `json:"to_id,omitempty"`
-	Type    string `json:"type"`
+	FromIdx       int     `json:"from_idx"`
+	ToIdx         int     `json:"to_idx"`
+	FromID        string  `json:"from_id,omitempty"`
+	ToID          string  `json:"to_id,omitempty"`
+	Type          string  `json:"type"`
+	Weight        float64 `json:"weight,omitempty"`
+	Confidence    float64 `json:"confidence,omitempty"`
+	Method        string  `json:"method,omitempty"`
+	Evidence      string  `json:"evidence,omitempty"`
+	LastValidated string  `json:"last_validated,omitempty"`
 }
 
 // persistBatchArgs is the wire-shape envelope sent to mutate(create_batch).
@@ -100,13 +116,25 @@ func PersistBatch(ctx context.Context, gc GraphCaller, nodes []*knowledgev1.Node
 	}
 	wireEdges := make([]persistBatchEdge, len(edges))
 	for i, e := range edges {
-		wireEdges[i] = persistBatchEdge{
-			FromIdx: e.FromIdx,
-			ToIdx:   e.ToIdx,
-			FromID:  e.FromID,
-			ToID:    e.ToID,
-			Type:    string(e.Type),
+		we := persistBatchEdge{
+			FromIdx:    e.FromIdx,
+			ToIdx:      e.ToIdx,
+			FromID:     e.FromID,
+			ToID:       e.ToID,
+			Type:       string(e.Type),
+			Weight:     e.Weight,
+			Confidence: e.Confidence,
+			Method:     e.Method,
+			Evidence:   e.Evidence,
 		}
+		// LastValidated bridges kgwire.BatchEdge's time.Time onto the edgeBody's
+		// RFC3339 string shape — skip-on-zero, UTC RFC3339 — mirroring
+		// postpopulate edgesToWire exactly so the two create_batch projections
+		// cannot diverge. (NOT the int64 unix-nanos proto-BatchEdge carrier.)
+		if !e.LastValidated.IsZero() {
+			we.LastValidated = e.LastValidated.UTC().Format(time.RFC3339)
+		}
+		wireEdges[i] = we
 	}
 	args, err := json.Marshal(persistBatchArgs{
 		Operation: "create_batch",
@@ -321,6 +349,72 @@ func TraverseDescendants(ctx context.Context, gc GraphCaller, rootID string, edg
 		return nil, fmt.Errorf("TraverseDescendants: decode: %w", derr)
 	}
 	return filterTraversalDescendants(results, rootID), nil
+}
+
+// TraverseDescendantsWithEdges is the edge-aware sibling of
+// TraverseDescendants: one forward traversal that returns BOTH the
+// hydrated descendant nodes (root filtered, BFS-discovery order) AND
+// the subtree's structure edges, in a single Execute. It carries the
+// same QueryPlan shape as TraverseDescendants and adds one field:
+// IncludeEdgeMetadata, which is what makes the server populate the
+// traversal_edges carrier (the edges walked during the traversal).
+// The whole flat (nodes, edges) result is the complete source a
+// client-side tree builder needs without any per-node fetch.
+//
+// It deliberately does NOT set IncludeTombstones. The structure-edge
+// carrier unconditionally drops any edge whose peer is tombstoned, so a
+// tombstoned child never reaches the index regardless of the flag; the
+// per-node walk this replaces dropped the same edges, so behavior is
+// preserved by the edge being absent. Setting the flag would only add
+// tombstoned nodes whose inbound edge is still dropped — orphans that
+// render in neither tree.
+//
+// A separate function (rather than extending TraverseDescendants) keeps
+// the two existing nodes-only callers of TraverseDescendants unchanged.
+func TraverseDescendantsWithEdges(
+	ctx context.Context,
+	gc GraphCaller,
+	rootID string,
+	edgeType kgtypes.EdgeType,
+	depth int,
+) ([]*knowledgev1.Node, []*knowledgev1.Edge, error) {
+	if gc == nil {
+		return nil, nil, fmt.Errorf("TraverseDescendantsWithEdges: graph caller unavailable")
+	}
+	ex, err := persistExecutor(gc)
+	if err != nil {
+		return nil, nil, fmt.Errorf("TraverseDescendantsWithEdges: %w", err)
+	}
+	fwd := true
+	plan := &knowledgev1.QueryPlan{
+		Selection:           &knowledgev1.Selection{FromId: []string{rootID}, EdgeTypes: []string{string(edgeType)}},
+		Forward:             &fwd,
+		ReturnMode:          knowledgev1.ReturnMode_RETURN_MODE_TRAVERSAL,
+		IncludeEdgeMetadata: true,
+	}
+	if depth > 0 {
+		plan.MaxHops = int32(depth)
+	}
+	resp, err := ex.Execute(ctx, &knowledgev1.ExecuteRequest{
+		Plan: &knowledgev1.ExecuteRequest_Query{Query: plan},
+	})
+	if err != nil {
+		return nil, nil, fmt.Errorf("TraverseDescendantsWithEdges: %w", err)
+	}
+	results, derr := engine.DecodeTraversal(resp)
+	if derr != nil {
+		return nil, nil, fmt.Errorf("TraverseDescendantsWithEdges: decode: %w", derr)
+	}
+	nodes := filterTraversalDescendants(results, rootID)
+	// engine.EdgesFromProto returns a []knowledgev1.Edge value slice;
+	// take addresses into a pointer slice so the index builder consumes
+	// the same *knowledgev1.Edge shape the wire carriers use elsewhere.
+	edgeVals := engine.EdgesFromProto(resp.GetTraversalEdges())
+	edges := make([]*knowledgev1.Edge, len(edgeVals))
+	for i := range edgeVals {
+		edges[i] = &edgeVals[i]
+	}
+	return nodes, edges, nil
 }
 
 // filterTraversalDescendants applies the skip-root / skip-empty-ID filter over a

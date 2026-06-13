@@ -11,14 +11,18 @@ import (
 
 // newPropagationLoopForTest constructs a PropagationLoop whose Start/Stop
 // lifecycle can be exercised without sleeping for an hour or invoking
-// real wire calls. interval is shrunk to milliseconds; onTick records
-// each fire into a counter the test can read. gc is left nil because
+// real wire calls. interval is shrunk to milliseconds; backstopInterval sets the
+// full-pass cadence (cadence tests pass a small value + a fake clock); onTick
+// records each fire into a counter the test can read. gc is left nil because
 // the test-injected onTick replaces the runBackgroundPropagation call
-// path that would dereference it.
-func newPropagationLoopForTest(interval time.Duration, onTick func()) *PropagationLoop {
+// path that would dereference it. The clock defaults to time.Now (cadence tests
+// overwrite p.clock directly).
+func newPropagationLoopForTest(interval, backstopInterval time.Duration, onTick func()) *PropagationLoop {
 	p := &PropagationLoop{
-		interval: interval,
-		stopCh:   make(chan struct{}),
+		interval:         interval,
+		backstopInterval: backstopInterval,
+		clock:            time.Now,
+		stopCh:           make(chan struct{}),
 	}
 	p.onTick = onTick
 	return p
@@ -37,7 +41,7 @@ func TestPropagationLoop_HourlyTick(t *testing.T) {
 	}
 
 	var ticks atomic.Int64
-	p := newPropagationLoopForTest(5*time.Millisecond, func() {
+	p := newPropagationLoopForTest(5*time.Millisecond, time.Hour, func() {
 		ticks.Add(1)
 	})
 
@@ -66,7 +70,7 @@ func TestPropagationLoop_StopUnwinds(t *testing.T) {
 
 	baseline := runtime.NumGoroutine()
 
-	p := newPropagationLoopForTest(5*time.Millisecond, func() {
+	p := newPropagationLoopForTest(5*time.Millisecond, time.Hour, func() {
 		// Simulate brief in-flight work the wg.Wait branch must drain.
 		time.Sleep(2 * time.Millisecond)
 	})
@@ -110,7 +114,7 @@ func TestPropagationLoop_StopNilSafe(t *testing.T) {
 // repeated Stop calls don't double-close stopCh.
 func TestPropagationLoop_StopIdempotent(t *testing.T) {
 	t.Parallel()
-	p := newPropagationLoopForTest(time.Hour, func() {})
+	p := newPropagationLoopForTest(time.Hour, time.Hour, func() {})
 	p.Start()
 	p.Stop(time.Second)
 	p.Stop(time.Second) // must not panic

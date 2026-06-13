@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -267,6 +268,37 @@ func TestInterceptAddCriterion_EmptyDescription_AfterStepCheck(t *testing.T) {
 	require.True(t, res.IsError)
 	assert.Contains(t, extractText(res), "description is required")
 	// Step was looked up but no upsert/link fired.
+	require.Len(t, gc.calls, 1)
+	assert.Equal(t, "query", gc.calls[0].tool)
+}
+
+// A description whose DERIVED criterion summary overflows 500 runes fails
+// FAST client-side via validate.DerivedSummary BEFORE the upsert RPC, with an
+// actionable error (criterion.summary field, "derived from", "over by", a
+// quoted prefix). Fails-when-absent: without the gate the over-long payload
+// would be upserted and die on the server's context-free exceeds-500 error.
+func TestInterceptAddCriterion_DerivedSummaryOverflow(t *testing.T) {
+	gc := seededStepGc()
+	deps := &logE2EDeps{gc: gc}
+
+	// "manual criterion: " (18 runes) + 490-rune description = 508 runes > 500.
+	longDesc := strings.Repeat("d", 490)
+	args := mustMarshal(t, map[string]any{
+		"operation":   "create",
+		"type":        "criterion",
+		"step_id":     testStepID,
+		"description": longDesc,
+	})
+	handled, res := InterceptAddCriterion(deps, kgtools.CallToolParams{Name: "mutate", Arguments: args})
+	require.True(t, handled)
+	require.True(t, res.IsError)
+	msg := extractText(res)
+	assert.Contains(t, msg, "criterion.summary")
+	assert.Contains(t, msg, "derived from")
+	assert.Contains(t, msg, "over by")
+	assert.Contains(t, msg, "Derived prefix:")
+	// The step was looked up (validation passed step+description gates) but no
+	// upsert/link fired — the derived-summary gate stopped the sequence.
 	require.Len(t, gc.calls, 1)
 	assert.Equal(t, "query", gc.calls[0].tool)
 }

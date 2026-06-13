@@ -19,12 +19,17 @@ func TestParsePeerPID_LocalSideAndSelfExclusion(t *testing.T) {
 	// selfPID = 9999 (the daemon): even though its accepted-socket line
 	// mentions :54321 (on the remote side), it must be excluded both by the
 	// self-PID guard and by the local-side requirement.
-	pid, err := parsePeerPID(lsofITCPFixture, 15023, 54321, 9999)
+	pid, comm, err := parsePeerPID(lsofITCPFixture, 15023, 54321, 9999)
 	if err != nil {
 		t.Fatalf("parsePeerPID: unexpected error: %v", err)
 	}
 	if pid != 4242 {
 		t.Fatalf("parsePeerPID: got PID %d, want 4242 (the client whose LOCAL side is :54321)", pid)
+	}
+	// The COMMAND column (fields[0]) is retained — comm selects the
+	// claude/codex transcript resolver in the hive daemon monitor.
+	if comm != "node" {
+		t.Fatalf("parsePeerPID: got comm %q, want \"node\" (the COMMAND column of the client line)", comm)
 	}
 }
 
@@ -33,13 +38,13 @@ func TestParsePeerPID_SelfExclusionWhenSelfIsLocalSide(t *testing.T) {
 	// be excluded and the resolve must fail rather than return self.
 	out := `COMMAND     PID     USER   FD   TYPE             DEVICE SIZE/OFF NODE NAME
 knowledge  9999 jonathan   12u  IPv4 0x44dd33cc22bb11aa      0t0  TCP 127.0.0.1:54321->127.0.0.1:15023 (ESTABLISHED)`
-	if _, err := parsePeerPID(out, 15023, 54321, 9999); err == nil {
+	if _, _, err := parsePeerPID(out, 15023, 54321, 9999); err == nil {
 		t.Fatal("parsePeerPID: expected error when the only local-side line is the daemon's own PID")
 	}
 }
 
 func TestParsePeerPID_NoMatch(t *testing.T) {
-	if _, err := parsePeerPID(lsofITCPFixture, 15023, 11111, 9999); err == nil {
+	if _, _, err := parsePeerPID(lsofITCPFixture, 15023, 11111, 9999); err == nil {
 		t.Fatal("parsePeerPID: expected error when no connection has the local port")
 	}
 }
@@ -82,11 +87,14 @@ func TestResolvePeerCwd_EndToEndViaSeam(t *testing.T) {
 		}
 	}
 
-	cwd, err := resolvePeerCwd(context.Background(), 15023, 54321)
+	cwd, pid, comm, err := resolvePeerCwd(context.Background(), 15023, 54321)
 	if err != nil {
 		t.Fatalf("resolvePeerCwd: unexpected error: %v", err)
 	}
 	if cwd != "/Users/jonathan/code/knowledge" {
 		t.Fatalf("resolvePeerCwd: got %q, want /Users/jonathan/code/knowledge", cwd)
+	}
+	if pid != 4242 || comm != "node" {
+		t.Fatalf("resolvePeerCwd: got pid=%d comm=%q, want pid=4242 comm=\"node\"", pid, comm)
 	}
 }

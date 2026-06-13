@@ -5,7 +5,6 @@ package tools
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"runtime"
 	"sort"
 	"strings"
@@ -163,18 +162,41 @@ func composeCodeSearch(ctx context.Context, deps ClientDeps, exec engine.Execute
 	includeSource := a.IncludeSource == nil || *a.IncludeSource
 	groupByFile := a.GroupByFile != nil && *a.GroupByFile
 
+	// Readiness gate (bind-first startup): the per-query code search dereferences the segment
+	// Manager (cdeps.mgr.Search) with NO nil-check, including INSIDE per-repo and
+	// per-query goroutines — a nil Manager there panics in a goroutine and crashes
+	// the daemon. During the bind-first wiring window deps.SegmentManager() is an
+	// untyped nil, so gate here — the single chokepoint both entry points
+	// (interceptSearchCode and InterceptQueryCodeSearch) funnel through, upstream
+	// of any goroutine fan-out — and return the uniform not-ready error rather than
+	// letting a nil Manager reach a goroutine. (deps is nil only in the exec-seam
+	// unit tests that call the sub-composers directly with a real cdeps; the
+	// chokepoint is never reached with nil deps in production.)
+	if deps != nil && !deps.PipelineReady() {
+		return errorResult("code search: daemon still starting — LLM pipeline not ready yet, retry shortly")
+	}
+
 	// GO-LIVE: the per-repo code search runs against the CLIENT engine
-	// (Manager.Search → RRF) + hydration when the segment Manager is wired,
-	// instead of a server RETURN_MODE_SEARCH Execute. Both code entry points
-	// (the search-tool arm interceptSearchCode AND the query-tool arm
-	// InterceptQueryCodeSearch) funnel through here, so threading the engine seam
-	// at this single point reroutes both. cdeps carries the engine seam + the
-	// hydration caller down to the per-query site; a nil Manager falls back to the
-	// server Execute path verbatim.
+	// (Manager.Search → RRF) + hydration. Both code entry points (the search-tool
+	// arm interceptSearchCode AND the query-tool arm InterceptQueryCodeSearch)
+	// funnel through here, so threading the engine seam at this single point
+	// reroutes both. cdeps carries the engine seam + the hydration caller down to
+	// the per-query site. The Manager is nil during the bind-first wiring window
+	// (rejected by the PipelineReady gate above) AND on a permanent pipeline
+	// degrade (PipelineReady()==true but wirePipelineRuntime built no Manager) —
+	// the latter is caught by the nil-mgr guard below. There is no server-Execute
+	// fallback (the comment that once claimed one described a path never coded).
 	cdeps := codeSearchDeps{exec: exec}
 	if deps != nil {
 		cdeps.mgr = deps.SegmentManager()
 		cdeps.gc = deps.GraphCaller()
+	}
+	// Permanent-degrade guard (bind-first startup): loud-error before any per-repo/per-query
+	// goroutine dereferences a nil Manager (a goroutine nil-deref crashes the
+	// daemon). deps==nil is the exec-seam unit-test path that drives the
+	// sub-composers directly with a real cdeps, so it is exempt.
+	if deps != nil && cdeps.mgr == nil {
+		return errorResult("code search: client segment engine unavailable (LLM pipeline degraded at boot)")
 	}
 
 	if len(a.Repos) > 0 || a.Repo == "all" {
@@ -184,9 +206,12 @@ func composeCodeSearch(ctx context.Context, deps ClientDeps, exec engine.Execute
 }
 
 // codeSearchDeps bundles the per-query search seam: the CLIENT engine Manager +
-// hydration caller (GO-LIVE path) and the server Execute fn (fallback when no
-// Manager is wired). Threaded through the code-search fan-out so each per-query
-// site picks the client engine when available.
+// hydration caller (GO-LIVE path). Threaded through the code-search fan-out so
+// each per-query site reaches the client engine. mgr is non-nil by the time a
+// codeSearchDeps is built in composeCodeSearch — the PipelineReady gate at that
+// chokepoint rejects the bind-first wiring window, when SegmentManager() is nil.
+// exec is NOT a search fallback; it carries only the staleness-footer Execute
+// (appendStalenessFooter). There is no server RETURN_MODE_SEARCH fallback.
 type codeSearchDeps struct {
 	mgr  SegmentSearcher
 	gc   GraphCaller
@@ -246,11 +271,13 @@ func appendStalenessFooter(ctx context.Context, deps ClientDeps, exec engine.Exe
 	return res
 }
 
-// pipelinePausedFooter returns the loud paused-pipeline footer line when the
-// LLM pipeline is latched paused (circuit-break or manual), or "" when running,
-// disabled, or the deps don't expose pipeline control (test fakes). The reason
-// is the breaker's own trip reason — which deliberately does not name quota/auth
-// exclusively, since repeated local timeouts also feed the zero-success window.
+// pipelinePausedFooter returns the loud paused-pipeline footer line(s) when one
+// or both axes are latched paused (circuit-break or manual), or "" when both
+// running, disabled, or the deps don't expose pipeline control (test fakes). The
+// breakers are now PER-AXIS, so the footer NAMES which axis is paused (so an
+// operator seeing this knows the OTHER axis's work is still flowing). Each line
+// PRESERVES that axis's verbatim Reason — which NAMES the dominant error class of
+// the failure window (with counts) — and only ADDS the axis label in front of it.
 func pipelinePausedFooter(deps ClientDeps) string {
 	pp, ok := deps.(pipelinePauser)
 	if !ok {
@@ -260,9 +287,17 @@ func pipelinePausedFooter(deps ClientDeps) string {
 	if !wired || !st.Paused {
 		return ""
 	}
-	return fmt.Sprintf(
-		"pipelines PAUSED (circuit-break: %s) — run manage(operation:\"resume_pipeline\") to re-enable.",
-		st.Reason)
+	var lines []string
+	if st.Summary.Paused {
+		lines = append(lines, "summary axis PAUSED (circuit-break: "+st.Summary.Reason+")")
+	}
+	if st.Embed.Paused {
+		lines = append(lines, "embed axis PAUSED (circuit-break: "+st.Embed.Reason+")")
+	}
+	if len(lines) == 0 { // aggregate Paused with neither flag set: should not happen
+		lines = append(lines, "pipelines PAUSED (circuit-break: "+st.Reason+")")
+	}
+	return strings.Join(lines, "\n") + " — run manage(operation:\"resume_pipeline\") to re-enable."
 }
 
 // composeCodeSearchSingleRepo runs one RETURN_MODE_SEARCH Execute per query
@@ -389,9 +424,11 @@ func searchAllQueries(ctx context.Context, cdeps codeSearchDeps, target *knowled
 }
 
 // searchOneCodeQuery resolves one query's hits into CodeResolvedResults
-// (path_prefix filtered, repo-tagged). Runs UNCONDITIONALLY against the
-// CLIENT per-repo engine (Manager.Search → RRF) + RETURN_MODE_NODES hydration —
-// the segment Manager is always wired in the real client, so there is no server
+// (path_prefix filtered, repo-tagged). Runs against the CLIENT per-repo engine
+// (Manager.Search → RRF) + RETURN_MODE_NODES hydration. The segment Manager is
+// guaranteed non-nil here: composeCodeSearch gates on PipelineReady at its top
+// (before cdeps.mgr is assigned), so the bind-first wiring window — when
+// SegmentManager() is nil — never reaches this deref. There is no server
 // RETURN_MODE_SEARCH fallback. An un-collected repo (no segments) yields zero hits.
 func searchOneCodeQuery(ctx context.Context, cdeps codeSearchDeps, target *knowledgev1.GraphSelector, query string, queryVec []byte, limit int, pathPrefix, repo string) []engine.CodeResolvedResult {
 	return searchOneCodeQueryClient(ctx, cdeps, target, query, queryVec, limit, pathPrefix, repo)

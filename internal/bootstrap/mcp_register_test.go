@@ -50,9 +50,11 @@ func recordedLines(t *testing.T, logPath string) []string {
 }
 
 // TestRegisterKnowledgeMCP_ClaudeArgv: claude registration emits a
-// preceding `mcp remove knowledge` then the http-transport add form
-// `mcp add -s user --transport http knowledge <daemon-url>` — no stdio
-// `-- <abs>` command.
+// preceding `mcp remove knowledge` then the add-json form
+// `mcp add-json -s user knowledge '<json>'` — no stdio `-- <abs>`
+// command and no `--transport http`. The JSON config must carry the
+// per-server "timeout" (mcpToolTimeoutMs) so long ops are not cut off by
+// the client default.
 func TestRegisterKnowledgeMCP_ClaudeArgv(t *testing.T) {
 	dir := t.TempDir()
 	log := filepath.Join(dir, "argv.log")
@@ -69,9 +71,26 @@ func TestRegisterKnowledgeMCP_ClaudeArgv(t *testing.T) {
 	if lines[0] != "mcp remove knowledge" {
 		t.Errorf("first argv = %q, want %q", lines[0], "mcp remove knowledge")
 	}
-	want := "mcp add -s user --transport http knowledge " + daemonMCPURL()
-	if lines[1] != want {
-		t.Errorf("second argv = %q, want %q", lines[1], want)
+	// The fake records space-joined argv; the JSON is the last token. Assert
+	// the verb/scope/name prefix and the timeout presence rather than exact
+	// byte equality (JSON key ordering is from claudeServerJSON).
+	add := lines[1]
+	wantPrefix := "mcp add-json -s user knowledge "
+	if !strings.HasPrefix(add, wantPrefix) {
+		t.Errorf("second argv = %q, want prefix %q", add, wantPrefix)
+	}
+	if strings.Contains(add, "--transport") {
+		t.Errorf("second argv still uses --transport: %q", add)
+	}
+	wantJSON, err := claudeServerJSON(daemonMCPURL())
+	if err != nil {
+		t.Fatalf("claudeServerJSON: %v", err)
+	}
+	if got := strings.TrimPrefix(add, wantPrefix); got != wantJSON {
+		t.Errorf("add-json payload = %q, want %q", got, wantJSON)
+	}
+	if !strings.Contains(wantJSON, `"timeout":180000`) {
+		t.Errorf("add-json payload missing timeout: %q", wantJSON)
 	}
 }
 
@@ -84,6 +103,9 @@ func TestRegisterKnowledgeMCP_CodexArgv(t *testing.T) {
 	log := filepath.Join(dir, "argv.log")
 	writeRecordingFake(t, dir, "codex", log)
 	withPATH(t, dir)
+	// Isolate HOME so the codex registration's config.toml patch writes to a
+	// throwaway dir, never the developer's real ~/.codex/config.toml.
+	withHOME(t, t.TempDir())
 
 	if err := registerKnowledgeMCP("codex", nil, false); err != nil {
 		t.Fatalf("registerKnowledgeMCP: %v", err)

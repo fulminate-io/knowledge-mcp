@@ -71,7 +71,9 @@ type syncArgs struct {
 // to the local graph via OverwriteGraph; list prints the eligibility table.
 // Returns (false, _) for any other tool so the chain falls through. promote
 // returns an error; the not-logged-in / transport-failure cases render the
-// actionable login guidance.
+// actionable login guidance. Push AND pull of a NON-builtin (custom) graph are
+// gated on its GraphTypeDef syncable flag (syncableGateRejection) before any RPC
+// fires; builtins skip that gate (SyncEligible is their only gate, unchanged).
 func InterceptSync(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	if params.Name != "sync" {
 		return false, kgtools.ToolResult{}
@@ -95,6 +97,15 @@ func InterceptSync(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtool
 	name := a.Name
 	if name == "" {
 		name = "default"
+	}
+
+	// Syncable gate for push AND pull. A builtin graph skips this gate (its
+	// SyncEligible membership is its only gate, unchanged). A NON-builtin (custom)
+	// graph must carry a registered GraphTypeDef whose behavior declares
+	// syncable=true; an unregistered type, or one with syncable false/unset, is
+	// rejected BEFORE any ExportGraph/OverwriteGraph RPC fires.
+	if msg := syncableGateRejection(context.Background(), deps, graph); msg != "" {
+		return true, errorResult(msg)
 	}
 
 	// pull: fetch the authoritative cloud copy and FULLY OVERWRITE the local
@@ -222,6 +233,28 @@ func exporterSeam(deps ClientDeps) (Exporter, error) {
 		return nil, fmt.Errorf("sync requires an ExportGraph-capable graph client")
 	}
 	return exp, nil
+}
+
+// syncableGateRejection returns a non-empty rejection message when a push/pull of
+// `graph` must be refused on the syncable axis, or "" when it may proceed. A
+// builtin graph ALWAYS proceeds here (its SyncEligible membership is its only
+// gate, unchanged). A NON-builtin (custom) graph proceeds ONLY when a registered
+// GraphTypeDef resolves (crud.ByName found) AND its behavior cascade declares
+// syncable=true; an unregistered type, a missing registry (degraded client), or a
+// syncable false/unset def is rejected. Mirrors the collect.go:192 ByName gate.
+func syncableGateRejection(ctx context.Context, deps ClientDeps, graph string) string {
+	if kgtypes.IsBuiltinGraphType(graph) {
+		return ""
+	}
+	crud := deps.GraphTypeCRUD()
+	if crud == nil {
+		return fmt.Sprintf("sync: graph type %q is not syncable (registry unavailable — cannot confirm a registered, syncable GraphTypeDef)", graph)
+	}
+	def, found, _ := crud.ByName(ctx, graph)
+	if !found || !def.GetBehavior().GetSyncable() {
+		return fmt.Sprintf("sync: graph type %q is not syncable (its GraphTypeDef sets syncable=false / unset, or the type is unregistered)", graph)
+	}
+	return ""
 }
 
 // overwriterSeam upgrades deps.LocalGraphCaller() to the Overwriter seam, or

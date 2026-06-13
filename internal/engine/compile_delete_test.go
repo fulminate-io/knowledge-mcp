@@ -96,3 +96,53 @@ func TestCompileDelete_UnknownTypeFallsThrough(t *testing.T) {
 	assert.False(t, ok, "unknown prune type must fall through to legacy")
 	assert.Nil(t, req)
 }
+
+// TestCompileDelete_HardFlag (FAILS-WHEN-ABSENT for the soft-default seam) pins
+// the `hard` opt-in semantics at compile: deletes are SOFT by default
+// (plan.HardDelete=false when the flag is absent or false), hard:true sets the
+// plan flag, the string form "true" parses (stale MCP schemas coerce unknown
+// params to strings — the force_full lesson), and a MALFORMED value DENIES the
+// compile rather than guessing in either direction on a destructive op.
+func TestCompileDelete_HardFlag(t *testing.T) {
+	t.Run("absent → soft (HardDelete=false)", func(t *testing.T) {
+		req, ok := Compile("delete", json.RawMessage(`{"ids":["a"]}`))
+		require.True(t, ok)
+		assert.False(t, req.GetMutation().GetHardDelete(), "default delete must be SOFT")
+	})
+
+	t.Run("hard:false → soft", func(t *testing.T) {
+		req, ok := Compile("delete", json.RawMessage(`{"ids":["a"],"hard":false}`))
+		require.True(t, ok)
+		assert.False(t, req.GetMutation().GetHardDelete())
+	})
+
+	t.Run("hard:true → HardDelete=true", func(t *testing.T) {
+		req, ok := Compile("delete", json.RawMessage(`{"ids":["a"],"hard":true}`))
+		require.True(t, ok)
+		assert.True(t, req.GetMutation().GetHardDelete(), "explicit hard:true opts into permanent removal")
+	})
+
+	t.Run(`string "true" → HardDelete=true (lenient coercion)`, func(t *testing.T) {
+		req, ok := Compile("delete", json.RawMessage(`{"ids":["a"],"hard":"true"}`))
+		require.True(t, ok)
+		assert.True(t, req.GetMutation().GetHardDelete())
+	})
+
+	t.Run(`string "false" → soft`, func(t *testing.T) {
+		req, ok := Compile("delete", json.RawMessage(`{"ids":["a"],"hard":"false"}`))
+		require.True(t, ok)
+		assert.False(t, req.GetMutation().GetHardDelete())
+	})
+
+	t.Run("malformed → DENY (never guess on a destructive flag)", func(t *testing.T) {
+		for _, raw := range []string{
+			`{"ids":["a"],"hard":"yes"}`,
+			`{"ids":["a"],"hard":1}`,
+			`{"ids":["a"],"hard":{"v":true}}`,
+		} {
+			req, ok := Compile("delete", json.RawMessage(raw))
+			assert.False(t, ok, "malformed hard flag must deny the compile: %s", raw)
+			assert.Nil(t, req)
+		}
+	})
+}

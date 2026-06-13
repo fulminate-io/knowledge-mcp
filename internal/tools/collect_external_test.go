@@ -54,11 +54,12 @@ func writeExternalStub(t *testing.T, body string) string {
 	return path
 }
 
-// registeredDef builds a GraphTypeDef named graphType pointing at binPath with a
-// single optional "repo" param.
-func registeredDef(graphType, binPath string) *knowledgev1.GraphTypeDef {
+// registeredDef builds a GraphTypeDef named "jira" pointing at binPath with a
+// single optional "repo" param. The fixed "jira" name matches the graph_type the
+// stub envelopes in this file emit.
+func registeredDef(binPath string) *knowledgev1.GraphTypeDef {
 	return &knowledgev1.GraphTypeDef{
-		Name: graphType,
+		Name: "jira",
 		Collector: &knowledgev1.CollectorSpec{
 			BinaryPath:     binPath,
 			ParamTransport: "stdin",
@@ -83,7 +84,7 @@ func TestInterceptCollect_RegisteredType_WithID(t *testing.T) {
 	bin := writeExternalStub(t, `cat > /dev/null
 echo '{"graph_type":"jira","graph_name":"board","nodes":[{"id":"ISSUE-1","type":"issue"}],"edges":[]}'`)
 	sink := &capturingSink{}
-	deps := &fakeDeps{sink: sink, crud: &stubGraphTypeCRUD{def: registeredDef("jira", bin)}}
+	deps := &fakeDeps{sink: sink, crud: &stubGraphTypeCRUD{def: registeredDef(bin)}}
 
 	handled, res := callCollect(deps, `{"type":"jira","id":"board","params":{"repo":"x"}}`)
 	require.True(t, handled)
@@ -95,6 +96,26 @@ echo '{"graph_type":"jira","graph_name":"board","nodes":[{"id":"ISSUE-1","type":
 	assert.Equal(t, "ISSUE-1", got.Nodes[0].GetId())
 }
 
+// TestInterceptCollect_RegisteredType_IDDefaultsGraphName confirms the
+// id→graph_name default threads end-to-end through the interceptor: a
+// registered collect with a non-empty top-level id whose stub envelope OMITS
+// graph_name yields a captured CollectResult whose GraphName equals the collect
+// id (a.ID → tryRegisteredCollect → RunExternal's defaultGraphName).
+func TestInterceptCollect_RegisteredType_IDDefaultsGraphName(t *testing.T) {
+	bin := writeExternalStub(t, `cat > /dev/null
+echo '{"graph_type":"jira","nodes":[{"id":"ISSUE-1","type":"issue"}],"edges":[]}'`)
+	sink := &capturingSink{}
+	deps := &fakeDeps{sink: sink, crud: &stubGraphTypeCRUD{def: registeredDef(bin)}}
+
+	handled, res := callCollect(deps, `{"type":"jira","id":"board","params":{"repo":"x"}}`)
+	require.True(t, handled)
+	require.False(t, res.IsError, resultText(res))
+
+	got := sink.last()
+	require.NotNil(t, got, "Sink.WriteResult should have captured a CollectResult")
+	assert.Equal(t, "board", got.GraphName, "graph_name should default to the collect id")
+}
+
 // TestInterceptCollect_RegisteredType_EmptyID confirms a params-only registered
 // collect (empty top-level id) is ACCEPTED — it does NOT return the
 // "collect <type>: 'id' is required" error; instead it resolves via ByName and
@@ -103,7 +124,7 @@ func TestInterceptCollect_RegisteredType_EmptyID(t *testing.T) {
 	bin := writeExternalStub(t, `cat > /dev/null
 echo '{"graph_type":"jira","graph_name":"board","nodes":[{"id":"ISSUE-1","type":"issue"}],"edges":[]}'`)
 	sink := &capturingSink{}
-	deps := &fakeDeps{sink: sink, crud: &stubGraphTypeCRUD{def: registeredDef("jira", bin)}}
+	deps := &fakeDeps{sink: sink, crud: &stubGraphTypeCRUD{def: registeredDef(bin)}}
 
 	handled, res := callCollect(deps, `{"type":"jira","id":"","params":{"repo":"x"}}`)
 	require.True(t, handled)
@@ -132,7 +153,7 @@ cat <<EOF
 {"graph_type":"jira","graph_name":"board","nodes":[{"id":"ISSUE-1","type":"issue","metadata":{"got_repo":"$GOT"}}],"edges":[]}
 EOF`)
 	sink := &capturingSink{}
-	deps := &fakeDeps{sink: sink, crud: &stubGraphTypeCRUD{def: registeredDef("jira", bin)}}
+	deps := &fakeDeps{sink: sink, crud: &stubGraphTypeCRUD{def: registeredDef(bin)}}
 
 	handled, res := callCollect(deps, `{"type":"jira","id":"board","params":{"repo":"acme"}}`)
 	require.True(t, handled)

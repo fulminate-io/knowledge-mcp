@@ -16,6 +16,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 	"github.com/fulminate-io/knowledge-mcp/internal/enginetest"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
@@ -76,12 +77,13 @@ func mustMarshal(t *testing.T, v any) []byte {
 //   - query(id) → return the bare node JSON for FetchNode.
 //   - query(id, include_edges:true) → return {edges:[]} for IterEdges.
 type parityGraphFixture struct {
-	nodes map[string]*knowledgev1.Node
-	edges []*knowledgev1.Edge
+	nodes      map[string]*knowledgev1.Node
+	edges      []*knowledgev1.Edge
+	tombstoned map[string]bool
 }
 
 func newParityFixture() *parityGraphFixture {
-	return &parityGraphFixture{nodes: map[string]*knowledgev1.Node{}}
+	return &parityGraphFixture{nodes: map[string]*knowledgev1.Node{}, tombstoned: map[string]bool{}}
 }
 
 func (f *parityGraphFixture) add(n *knowledgev1.Node) {
@@ -90,6 +92,13 @@ func (f *parityGraphFixture) add(n *knowledgev1.Node) {
 
 func (f *parityGraphFixture) link(from, to string) {
 	f.edges = append(f.edges, &knowledgev1.Edge{FromId: from, ToId: to, Type: string(kgtypes.EdgeKGContains)})
+}
+
+// tombstone marks a node id as tombstoned so the traversal arm drops edges
+// whose peer is tombstoned (mirroring the server's unconditional
+// edgeFilteredByTombstone) and excludes the node from the descendant set.
+func (f *parityGraphFixture) tombstone(id string) {
+	f.tombstoned[id] = true
 }
 
 // gc returns a GraphCaller backed by the fixture.
@@ -124,7 +133,16 @@ func (g *parityCaller) Call(_ context.Context, tool string, args json.RawMessage
 // RETURN_MODE_EDGES from the fixture as nodes_json / edges_json carriers.
 func (g *parityCaller) Execute(_ context.Context, req *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error) {
 	q := req.GetQuery()
+	if q.GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_TRAVERSAL {
+		return g.answerTraversal(q), nil
+	}
 	if q.GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_EDGES {
+		// node-SET form (Ids[]) → union of each pivot's OUTGOING edges
+		// filtered by Selection.EdgeTypes (the depends-on batch). The
+		// per-node ById form keeps the legacy union for any direct caller.
+		if ids := q.GetIds(); len(ids) > 0 {
+			return &knowledgev1.ExecuteResponse{Edges: g.nodeSetEdges(ids, q.GetSelection().GetEdgeTypes())}, nil
+		}
 		var out []*knowledgev1.Edge
 		for i := range g.f.edges {
 			e := g.f.edges[i]
@@ -148,6 +166,87 @@ func (g *parityCaller) Execute(_ context.Context, req *knowledgev1.ExecuteReques
 		return resp, nil
 	}
 	return &knowledgev1.ExecuteResponse{}, nil
+}
+
+// answerTraversal computes the contains-descendant set of the root (BFS up to
+// MaxHops) and, when IncludeEdgeMetadata is set, the contains edges among that
+// set — mirroring the server's traversal + CollectEdgesAlongWalk. It DROPS any
+// edge whose child peer is tombstoned and excludes tombstoned nodes from the
+// descendant set, replicating the server's unconditional edgeFilteredByTombstone
+// (OutgoingEdges) so a tombstoned child never reaches the index.
+func (g *parityCaller) answerTraversal(q *knowledgev1.QueryPlan) *knowledgev1.ExecuteResponse {
+	root := q.GetSelection().GetFromId()[0]
+	maxHops := int(q.GetMaxHops())
+	if maxHops <= 0 {
+		maxHops = 1 << 30
+	}
+	childrenOf := map[string][]string{}
+	for _, e := range g.f.edges {
+		if e.Type == string(kgtypes.EdgeKGContains) {
+			childrenOf[e.FromId] = append(childrenOf[e.FromId], e.ToId)
+		}
+	}
+	var results []engine.TraversalResult
+	var containsEdges []knowledgev1.Edge
+	visited := map[string]bool{root: true}
+	type frontier struct {
+		id   string
+		dist int
+	}
+	queue := []frontier{{root, 0}}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		if cur.dist >= maxHops {
+			continue
+		}
+		for _, childID := range childrenOf[cur.id] {
+			if g.f.tombstoned[childID] {
+				continue // edgeFilteredByTombstone: peer tombstoned → edge dropped
+			}
+			containsEdges = append(containsEdges, knowledgev1.Edge{
+				FromId: cur.id, ToId: childID, Type: string(kgtypes.EdgeKGContains),
+			})
+			if visited[childID] {
+				continue
+			}
+			visited[childID] = true
+			if n, ok := g.f.nodes[childID]; ok {
+				results = append(results, engine.TraversalResult{Node: n, Distance: cur.dist + 1})
+			}
+			queue = append(queue, frontier{childID, cur.dist + 1})
+		}
+	}
+	resp := &knowledgev1.ExecuteResponse{TraversalResults: traversalResultsToProtoForTest(results)}
+	if q.GetIncludeEdgeMetadata() {
+		resp.TraversalEdges = edgePtrsForTest(containsEdges)
+	}
+	return resp
+}
+
+// nodeSetEdges unions each pivot's OUTGOING edges (Forward=&true semantics)
+// filtered to the requested edge types.
+func (g *parityCaller) nodeSetEdges(ids []string, edgeTypes []string) []*knowledgev1.Edge {
+	want := map[string]bool{}
+	for _, et := range edgeTypes {
+		want[et] = true
+	}
+	pivots := map[string]bool{}
+	for _, id := range ids {
+		pivots[id] = true
+	}
+	var out []*knowledgev1.Edge
+	for i := range g.f.edges {
+		e := g.f.edges[i]
+		if !pivots[e.FromId] {
+			continue // outgoing-only
+		}
+		if len(want) > 0 && !want[e.Type] {
+			continue
+		}
+		out = append(out, &knowledgev1.Edge{FromId: e.FromId, ToId: e.ToId, Type: e.Type})
+	}
+	return out
 }
 
 func renderNodeWireJSON(n *knowledgev1.Node) kgtools.ToolResult {
@@ -288,6 +387,53 @@ func TestInterceptQueryPlanTree_JSONFormat_ByteIdentical_ToGolden(t *testing.T) 
 	got := scrubForParity(extractText(res))
 	want := readGolden(t, "plan_tree.json")
 	assert.Equal(t, want, got, "plan_tree.json output diverged from golden")
+}
+
+// TestInterceptQueryPlanTree_TombstonedChild_DroppedFromBothPaths is the
+// fails-when-absent test for tombstone parity: a tombstoned child must render in
+// NEITHER the text nor the json output. The parityCaller traversal arm drops
+// edges whose peer is tombstoned (mirroring the server's unconditional
+// edgeFilteredByTombstone), so a regression in BuildChildIndex or the traversal
+// that let a tombstoned peer through would surface the child here and fail.
+func TestInterceptQueryPlanTree_TombstonedChild_DroppedFromBothPaths(t *testing.T) {
+	f := newParityFixture()
+	planID := seedPlanTreeFixture(f)
+
+	// Add one extra step under phase-1 and tombstone it.
+	const phase1 = "00000000000000000000000000000010"
+	const tombStep = "00000000000000000000000000000099"
+	f.add(&knowledgev1.Node{Id: tombStep, Type: string(kgtypes.NodeStep), SymbolName: "tombstoned-step",
+		Status: "pending", Description: "should never render"})
+	f.link(phase1, tombStep)
+	f.tombstone(tombStep)
+
+	deps := &parityDeps{gc: f.gc()}
+
+	textArgs, err := json.Marshal(map[string]any{"mode": "plan_tree", "id": planID})
+	require.NoError(t, err)
+	_, textRes := InterceptQueryPlanTree(deps, kgtools.CallToolParams{Name: "query", Arguments: textArgs})
+	require.False(t, textRes.IsError)
+	require.NotContains(t, extractText(textRes), "tombstoned-step", "tombstoned child must not render in text")
+
+	jsonArgs, err := json.Marshal(map[string]any{"mode": "plan_tree", "id": planID, "format": "json"})
+	require.NoError(t, err)
+	_, jsonRes := InterceptQueryPlanTree(deps, kgtools.CallToolParams{Name: "query", Arguments: jsonArgs})
+	require.False(t, jsonRes.IsError)
+	require.NotContains(t, extractText(jsonRes), "tombstoned-step", "tombstoned child must not render in json")
+}
+
+// TestBuildPlanTreeJSON_NoChildIndexEntry_OmitsChildrenKey pins the accepted
+// post-fix contract: a node with no childIndex entry (its only structure edge
+// pointed at a tombstoned/absent node, so nothing was indexed under it) yields a
+// JSON row with NO "children" key — not an empty "children":[] array.
+func TestBuildPlanTreeJSON_NoChildIndexEntry_OmitsChildrenKey(t *testing.T) {
+	node := &knowledgev1.Node{Id: "leaf", Type: string(kgtypes.NodeStep), SymbolName: "leaf", Status: "pending"}
+	// Empty index → no entry for "leaf".
+	row := buildPlanTreeJSON(node, 0, 10, map[string][]*knowledgev1.Node{})
+
+	_, hasChildren := row["children"]
+	assert.False(t, hasChildren, "a node with no indexed children must omit the children key entirely")
+	assert.Equal(t, "leaf", row["id"])
 }
 
 func TestInterceptQueryPlanTree_WrongTool_FallsThrough(t *testing.T) {

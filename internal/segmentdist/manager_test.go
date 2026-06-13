@@ -39,7 +39,7 @@ func TestManagerShipDiffIdempotent(t *testing.T) {
 
 	mgr, cc := buildManager(eng, gc, target, t.TempDir())
 
-	_, err := mgr.ship(ctx)
+	_, err := mgr.ship(ctx, mgr.locallyShipped)
 	require.NoError(t, err)
 	firstShips := cc.shipCalls.Load()
 	firstBlobs := cc.shipBlobs.Load()
@@ -53,7 +53,7 @@ func TestManagerShipDiffIdempotent(t *testing.T) {
 	require.Equal(t, uint64(2), genAfterFirst)
 
 	// Second ship — no intervening Add → empty diff → ZERO Ship RPC, ZERO blobs.
-	_, err = mgr.ship(ctx)
+	_, err = mgr.ship(ctx, mgr.locallyShipped)
 	require.NoError(t, err)
 	require.Equal(t, firstShips, cc.shipCalls.Load(), "second ship must issue ZERO new Ship RPCs")
 	require.Equal(t, firstBlobs, cc.shipBlobs.Load(), "second ship must send ZERO new blobs")
@@ -76,7 +76,7 @@ func TestManagerShipWarmsCacheAndGen(t *testing.T) {
 	require.NoError(t, eng.Add([]searchengine.Document{doc("d2", "beta")}))
 
 	mgr, _ := buildManager(eng, gc, target, t.TempDir())
-	_, err := mgr.ship(ctx)
+	_, err := mgr.ship(ctx, mgr.locallyShipped)
 	require.NoError(t, err)
 
 	// Each shipped segment is in the L2 cache.
@@ -86,7 +86,8 @@ func TestManagerShipWarmsCacheAndGen(t *testing.T) {
 		_, ok := mgr.cache.Get(b.ID)
 		require.True(t, ok, "shipped blob %s must be warm in L2 cache", b.ID)
 	}
-	require.Equal(t, uint64(2), mgr.lastSeenGen.Load(), "lastSeenGen advances to max stamped generation")
+	require.Equal(t, uint64(2), mgr.shippedGen.Load(), "shippedGen advances to max stamped generation (ship tracking; importedGen untouched)")
+	require.Equal(t, uint64(0), mgr.importedGen.Load(), "ship-only path must NOT advance the load floor (importedGen)")
 }
 
 // TestManagerLoadDeltaCacheAndImport verifies: a fresh load() Lists 3 metas,
@@ -104,7 +105,7 @@ func TestManagerLoadDeltaCacheAndImport(t *testing.T) {
 	require.NoError(t, shipEng.Add([]searchengine.Document{doc("d2", "alpha beta")}))
 	require.NoError(t, shipEng.Add([]searchengine.Document{doc("d3", "gamma")}))
 	shipMgr, _ := buildManager(shipEng, gc, target, t.TempDir())
-	_, err := shipMgr.ship(ctx)
+	_, err := shipMgr.ship(ctx, shipMgr.locallyShipped)
 	require.NoError(t, err)
 
 	// Loader engine (distinct cache dir) loads cold.
@@ -115,7 +116,7 @@ func TestManagerLoadDeltaCacheAndImport(t *testing.T) {
 	require.Equal(t, int64(1), loadCC.fetchCalls.Load(), "cold load issues one batched Fetch for all 3 misses")
 	hits := loadEng.Search(mockQuery{term: "alpha"}, 10)
 	require.Len(t, hits, 2, "search must hit the imported segments (d1, d2)")
-	require.Equal(t, uint64(3), loadMgr.lastSeenGen.Load())
+	require.Equal(t, uint64(3), loadMgr.importedGen.Load(), "load advances the load floor (importedGen) to the max imported generation")
 
 	// Second load at advanced gen → empty delta → ZERO Fetch.
 	beforeSecond := loadCC.fetchCalls.Load()
@@ -125,7 +126,7 @@ func TestManagerLoadDeltaCacheAndImport(t *testing.T) {
 	// Ship a 4th segment; a fresh loader with 3 of 4 already cached issues ONE
 	// Fetch for the 1 miss. Pre-seed the new loader's cache with the first 3.
 	require.NoError(t, shipEng.Add([]searchengine.Document{doc("d4", "delta")}))
-	_, err = shipMgr.ship(ctx)
+	_, err = shipMgr.ship(ctx, shipMgr.locallyShipped)
 	require.NoError(t, err)
 	svc.mu.Lock()
 	require.Equal(t, uint64(4), svc.gen)
@@ -165,7 +166,7 @@ func TestManagerUnloadReloadFromL2(t *testing.T) {
 	require.NoError(t, shipEng.Add([]searchengine.Document{doc("d2", "alpha")}))
 	require.NoError(t, shipEng.Add([]searchengine.Document{doc("d3", "alpha")}))
 	shipMgr, _ := buildManager(shipEng, gc, target, t.TempDir())
-	_, err := shipMgr.ship(ctx)
+	_, err := shipMgr.ship(ctx, shipMgr.locallyShipped)
 	require.NoError(t, err)
 
 	loadEng := newMockEngine()

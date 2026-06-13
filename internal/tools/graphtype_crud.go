@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// graphtype_crud.go — per-op handlers for the graph_type tool's
+// graphtype_crud.go — per-op handlers for the custom_collector tool's
 // register/update/delete/list operations + the args->proto builder and the
 // list renderer. The dispatch entry point lives in graphtype.go::
 // InterceptGraphType; this file holds the per-op bodies.
@@ -26,17 +26,17 @@ import (
 func handleGraphTypeRegister(ctx context.Context, deps ClientDeps, a graphTypeArgs) kgtools.ToolResult {
 	cc := deps.GraphTypeCRUD()
 	if cc == nil {
-		return errorResult("graph_type:register: graphTypeCRUD not wired — constructClient degraded at boot")
+		return errorResult("custom_collector:register: graphTypeCRUD not wired — constructClient degraded at boot")
 	}
 	if strings.TrimSpace(a.Name) == "" {
-		return errorResult("graph_type:register: name is required")
+		return errorResult("custom_collector:register: name is required")
 	}
 	d, err := graphTypeDefFromArgs(a)
 	if err != nil {
-		return errorResult("graph_type:register: " + err.Error())
+		return errorResult("custom_collector:register: " + err.Error())
 	}
 	if err := cc.Create(ctx, d); err != nil {
-		return errorResult("graph_type:register: " + err.Error())
+		return errorResult("custom_collector:register: " + err.Error())
 	}
 	return textResult(fmt.Sprintf("graph type %q registered (binary=%s transport=%s)",
 		d.GetName(), d.GetCollector().GetBinaryPath(), d.GetCollector().GetParamTransport()))
@@ -48,17 +48,17 @@ func handleGraphTypeRegister(ctx context.Context, deps ClientDeps, a graphTypeAr
 func handleGraphTypeUpdate(ctx context.Context, deps ClientDeps, a graphTypeArgs) kgtools.ToolResult {
 	cc := deps.GraphTypeCRUD()
 	if cc == nil {
-		return errorResult("graph_type:update: graphTypeCRUD not wired — constructClient degraded at boot")
+		return errorResult("custom_collector:update: graphTypeCRUD not wired — constructClient degraded at boot")
 	}
 	if strings.TrimSpace(a.Name) == "" {
-		return errorResult("graph_type:update: name is required")
+		return errorResult("custom_collector:update: name is required")
 	}
 	d, err := graphTypeDefFromArgs(a)
 	if err != nil {
-		return errorResult("graph_type:update: " + err.Error())
+		return errorResult("custom_collector:update: " + err.Error())
 	}
 	if err := cc.Update(ctx, d); err != nil {
-		return errorResult("graph_type:update: " + err.Error())
+		return errorResult("custom_collector:update: " + err.Error())
 	}
 	return textResult(fmt.Sprintf("graph type %q updated", d.GetName()))
 }
@@ -68,17 +68,17 @@ func handleGraphTypeUpdate(ctx context.Context, deps ClientDeps, a graphTypeArgs
 func handleGraphTypeDelete(ctx context.Context, deps ClientDeps, a graphTypeArgs) kgtools.ToolResult {
 	cc := deps.GraphTypeCRUD()
 	if cc == nil {
-		return errorResult("graph_type:delete: graphTypeCRUD not wired — constructClient degraded at boot")
+		return errorResult("custom_collector:delete: graphTypeCRUD not wired — constructClient degraded at boot")
 	}
 	name := strings.TrimSpace(a.Name)
 	if name == "" {
-		return errorResult("graph_type:delete: name is required")
+		return errorResult("custom_collector:delete: name is required")
 	}
 	if err := cc.Delete(ctx, name); err != nil {
 		if errors.Is(err, graphclient.ErrNotFound) {
-			return errorResult(fmt.Sprintf("graph_type:delete: graph type %q not found (use graph_type(operation:\"list\") to enumerate registered types)", name))
+			return errorResult(fmt.Sprintf("custom_collector:delete: graph type %q not found (use custom_collector(operation:\"list\") to enumerate registered types)", name))
 		}
-		return errorResult("graph_type:delete: " + err.Error())
+		return errorResult("custom_collector:delete: " + err.Error())
 	}
 	return textResult(fmt.Sprintf("graph type %q deleted", name))
 }
@@ -89,11 +89,11 @@ func handleGraphTypeDelete(ctx context.Context, deps ClientDeps, a graphTypeArgs
 func handleGraphTypeList(ctx context.Context, deps ClientDeps, a graphTypeArgs) kgtools.ToolResult {
 	cc := deps.GraphTypeCRUD()
 	if cc == nil {
-		return errorResult("graph_type:list: graphTypeCRUD not wired — constructClient degraded at boot")
+		return errorResult("custom_collector:list: graphTypeCRUD not wired — constructClient degraded at boot")
 	}
 	defs, err := cc.List(ctx)
 	if err != nil {
-		return errorResult("graph_type:list: " + err.Error())
+		return errorResult("custom_collector:list: " + err.Error())
 	}
 	sort.Slice(defs, func(i, j int) bool { return defs[i].GetName() < defs[j].GetName() })
 	if a.Format == "json" {
@@ -240,7 +240,7 @@ func behaviorBool(b *knowledgev1.BehaviorDefaults, pick func(*knowledgev1.Behavi
 // worker:list / log_backend:list.
 func formatGraphTypesTable(defs []*knowledgev1.GraphTypeDef) string {
 	if len(defs) == 0 {
-		return "No graph types registered. Use graph_type(operation: \"register\", ...) to add one."
+		return "No graph types registered. Use custom_collector(operation: \"register\", ...) to add one."
 	}
 	var sb strings.Builder
 	sb.WriteString("| name | binary | transport | syncable | summarizable | embeddable | overrides |\n")

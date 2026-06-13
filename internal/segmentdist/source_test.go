@@ -57,7 +57,8 @@ func (f *fakeSegmentService) Ship(
 		}
 		f.gen++
 		stored := &knowledgev1.SegmentBlobProto{
-			Id: b.GetId(), Format: b.GetFormat(), Generation: f.gen, Bytes: b.GetBytes(),
+			Id: b.GetId(), Format: b.GetFormat(), Generation: f.gen,
+			DocCount: b.GetDocCount(), Bytes: b.GetBytes(),
 		}
 		f.byKey[k] = append(f.byKey[k], stored)
 		existing[b.GetId()] = stored
@@ -128,7 +129,11 @@ func (f *fakeSegmentService) Prune(
 }
 
 func metaOf(b *knowledgev1.SegmentBlobProto) *knowledgev1.SegmentMetaProto {
-	return &knowledgev1.SegmentMetaProto{Id: b.GetId(), Format: b.GetFormat(), Generation: b.GetGeneration()}
+	// Carry doc_count onto the meta exactly as the real server's metaFromEnvelope
+	// does — the coverage probe reads meta.DocCount off ListDelta.
+	return &knowledgev1.SegmentMetaProto{
+		Id: b.GetId(), Format: b.GetFormat(), Generation: b.GetGeneration(), DocCount: b.GetDocCount(),
+	}
 }
 
 // newSegmentHarness stands up an h2c httptest server behind the fake
@@ -188,6 +193,27 @@ func TestRPCSegmentSourceRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	require.Len(t, delta, 1)
 	require.Equal(t, "s2", delta[0].ID)
+}
+
+// TestBlobProtoRoundTripsDocCount pins the doc_count plumbing: blobToProto carries
+// SegmentBlob.DocCount into the wire carrier and blobFromProto reads it back
+// unchanged, so the per-segment live doc count survives the ship → store → list
+// round-trip the coverage levers depend on.
+func TestBlobProtoRoundTripsDocCount(t *testing.T) {
+	orig := searchengine.SegmentBlob{
+		ID:         "seg-dc",
+		Format:     "hnsw",
+		Generation: 7,
+		DocCount:   1024,
+		Bytes:      []byte("payload"),
+	}
+	p := blobToProto(orig)
+	require.Equal(t, int32(1024), p.GetDocCount(), "blobToProto carries DocCount into the proto")
+	back := blobFromProto(p)
+	require.Equal(t, orig.DocCount, back.DocCount, "blobFromProto reads DocCount back unchanged")
+	require.Equal(t, orig.ID, back.ID)
+	require.Equal(t, orig.Format, back.Format)
+	require.Equal(t, orig.Generation, back.Generation)
 }
 
 // compile-time: GraphClient and Router both satisfy segmentCaller.

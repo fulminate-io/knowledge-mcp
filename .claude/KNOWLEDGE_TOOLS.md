@@ -31,10 +31,20 @@
     <rule>Verify before citing — docstrings, comments, and READMEs rot; only the file + actual source are authoritative. If a doc says X lives in `y.go`, open `y.go` and confirm X exists before repeating it in a finding, decision, or ticket.</rule>
     <rule>Read the top candidates with `file_symbols` / source before concluding — don't trust summaries.</rule>
     <rule>Check the staleness line on `search` results before trusting them. A stale index yields wrong conclusions; re-`collect` if it's far behind HEAD.</rule>
+    <rule severity="hard" name="staleness-is-never-a-grep-license">THE #1 OBSERVED FAILURE MODE: the index goes a few commits stale → one weak search result → the session silently switches to shell grep FOR THE REST OF THE SESSION. A stale index is a reason to run `collect` (30s–2min, incremental), NEVER a reason to fall back to grep. The moment you notice staleness, re-collect and keep using the graph. Catch the tell: if you are about to grep because "the index is behind," that thought IS the failure — collect instead.</rule>
+    <rule name="mode-switch-tripwire">Log forensics and code exploration are different domains. Shell is right for log files — but a shell session does not carry over: after grep/awk over logs, the NEXT code question goes back through `search`/`ast`/`file_symbols`/`traverse`. Tool-mode inertia ("I'm already in the shell") is how grep creep starts.</rule>
   </exploration>
+  <shell-is-right note="the legitimate exceptions — named so the tools-first rule stays credible">
+    <case>Log files, build output, runtime/process state — not in any graph; grep/tail/lsof are correct.</case>
+    <case>Dotfiles, editor/CLI config, and other non-indexed local files.</case>
+    <case>Generated or binary artifacts the indexer doesn't chunk.</case>
+    <case>Reading a SPECIFIC file/range you already located — `Read` (optionally after `file_symbols`), not `sed -n`.</case>
+    <case>Anything NOT in the list above that lives in indexed source: search/ast/file_symbols/traverse first.</case>
+  </shell-is-right>
   <writes>
     <rule>`search` / `recall` BEFORE creating — decisions, findings, and research don't exist in isolation. Check for an existing node first to avoid duplicates.</rule>
     <rule>Name for retrieval. The node `name` and the first sentence of its `description` are what BM25 matches later; vague titles are search-invisible. State the concept/concern in plain terms.</rule>
+    <rule>Born linked. Pass the optional `ticket_id` / `session` / `links` params on create (mutate create, record_decision, think) so new nodes carry contains/relates-to edges to the active ticket, session, and related nodes from the start — edge density is what makes graph-walk retrieval work later. Unresolvable IDs are dropped with a warning; they never block the write.</rule>
     <rule>A decision needs `rationale` AND `alternatives`. "We decided X" with no why isn't a decision record — and if there were no alternatives, was it a decision?</rule>
   </writes>
   <thoughts>
@@ -195,7 +205,11 @@
       summary, NOT auto-derived), session, links, status (hypothesized | validated | invalidated)
     </operation>
     <operation name="charge">
-      add evidence. params: thought (id), polarity (positive | negative), weight (1-10), reasoning — all required
+      add evidence. params: thought (id), polarity (positive | negative), weight (1-10), reasoning — all required.
+      polarity = positive when the evidence SUPPORTS the thought's claim, negative when it CONTRADICTS it —
+      this is about the claim's truth, never good-vs-bad news; sentiment about the subject lives in reasoning text.
+      Cite the thought/finding node IDs the charge drew on via the evidence param — a cited thought records
+      an evidenced-by edge that feeds cross-cluster trust attribution.
     </operation>
     <operation name="recall">
       search thoughts. params: query (semantic text), session, status, valence_min/max,
@@ -215,9 +229,9 @@
                "summary": "Edge/node ID mismatch: tree-sitter pkg.Symbol vs graph filepath:Symbol",
                "session": "fix-traversal" })
   </example>
-  <example op="charge" caption="when evidence arrives">
+  <example op="charge" caption="when evidence arrives — polarity tracks the CLAIM, not the news">
     thoughts({ "operation": "charge", "thought": "t_abc", "polarity": "positive", "weight": 8,
-               "reasoning": "Tests pass — 71 callers found for store.Open after adding resolveEdges" })
+               "reasoning": "Tests pass — 71 callers resolve after adding resolveEdges; the evidence supports this thought's claim that the resolution layer fixes traversal" })
   </example>
   <when-to-use>Before implementing (planned approach) · debugging (hypothesis, then the broken→fixed transition) · design trade-offs · surprising behavior · after testing (charge with results).</when-to-use>
 </tool>

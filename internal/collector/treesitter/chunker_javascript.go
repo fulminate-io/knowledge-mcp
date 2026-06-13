@@ -140,4 +140,7 @@ func classifyTestBlockJS(
 func init() {
 	testBlockClassifiers[LangJavaScript] = classifyTestBlockJS
 	testBlockClassifiers[LangTypeScript] = classifyTestBlockJS
+	// LangTSX shares the JS/TS classifier — .tsx test files (.test.tsx /
+	// .spec.tsx) carry identical it()/describe() call shapes to .ts/.tsx.
+	testBlockClassifiers[LangTSX] = classifyTestBlockJS
 }

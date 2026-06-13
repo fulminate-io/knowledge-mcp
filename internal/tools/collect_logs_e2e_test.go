@@ -19,6 +19,8 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/remote"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
+	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	logwire "github.com/fulminate-io/knowledge-mcp/internal/logwire"
 )
@@ -29,22 +31,35 @@ import (
 type fakeDeps struct {
 	sink collector.Sink
 	crud GraphTypeCRUDAPI // optional: registered-type dispatch tests inject a stub
+	// pipelineNotReady flips PipelineReady() to false so a test can exercise the
+	// bind-first wiring-window gate (bind-first startup) on the collect intercept. Zero value
+	// keeps the pipeline ready.
+	pipelineNotReady bool
 }
 
-func (d *fakeDeps) LocalLiveness() LocalLiveness     { return nil }
-func (d *fakeDeps) Sink() collector.Sink             { return d.sink }
-func (d *fakeDeps) RootDir() string                  { return "" }
-func (d *fakeDeps) WorkerRuntime() WorkerRuntimeAPI  { return nil }
-func (d *fakeDeps) WorkerCRUD() WorkerCRUDAPI        { return nil }
-func (d *fakeDeps) GraphTypeCRUD() GraphTypeCRUDAPI  { return d.crud }
-func (d *fakeDeps) Embedder() embed.BinaryEmbedder   { return nil }
-func (d *fakeDeps) BackendResolver() BackendResolver { return nil }
-func (d *fakeDeps) GraphCaller() GraphCaller         { return nil }
-func (d *fakeDeps) LocalGraphCaller() GraphCaller    { return nil }
-func (d *fakeDeps) RepoResolver() *RepoResolver      { return nil }
-func (d *fakeDeps) SegmentManager() SegmentSearcher  { return nil }
-func (d *fakeDeps) SegmentShipper() SegmentShipper   { return nil }
-func (d *fakeDeps) PipelineScanner() PipelineScanner { return nil }
+func (d *fakeDeps) LocalLiveness() LocalLiveness                 { return nil }
+func (d *fakeDeps) Sink() collector.Sink                         { return d.sink }
+func (d *fakeDeps) RootDir() string                              { return "" }
+func (d *fakeDeps) WorkerRuntime() WorkerRuntimeAPI              { return nil }
+func (d *fakeDeps) WorkerReady() bool                            { return true }
+func (d *fakeDeps) PropReady() bool                              { return true }
+func (d *fakeDeps) PipelineReady() bool                          { return !d.pipelineNotReady }
+func (d *fakeDeps) ClaimRegistry() *hivemonitor.Registry         { return nil }
+func (d *fakeDeps) BanSet() *hivemonitor.BanSet                  { return nil }
+func (d *fakeDeps) WorkerCRUD() WorkerCRUDAPI                    { return nil }
+func (d *fakeDeps) GraphTypeCRUD() GraphTypeCRUDAPI              { return d.crud }
+func (d *fakeDeps) Embedder() embed.BinaryEmbedder               { return nil }
+func (d *fakeDeps) BackendResolver() BackendResolver             { return nil }
+func (d *fakeDeps) GraphCaller() GraphCaller                     { return nil }
+func (d *fakeDeps) LocalGraphCaller() GraphCaller                { return nil }
+func (d *fakeDeps) RepoResolver() *RepoResolver                  { return nil }
+func (d *fakeDeps) SegmentManager() SegmentSearcher              { return nil }
+func (d *fakeDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
+func (d *fakeDeps) SegmentShipper() SegmentShipper               { return nil }
+func (d *fakeDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
+func (d *fakeDeps) PipelineScanner() PipelineScanner             { return nil }
+func (d *fakeDeps) ReflectionForcer() ReflectionForcer           { return nil }
+func (d *fakeDeps) SimilarityForcer() SimilarityForcer           { return nil }
 
 // stubLogsProvider returns a fixed entry batch plus zero sources. Each
 // test registers it under a unique name to avoid colliding with other
@@ -267,4 +282,20 @@ func TestRunLogsCollect_FetchSubgraphError(t *testing.T) {
 			t.Fatalf("no dep-checker should mean no StructurallyConfirmed correlations on the wire; got %+v", e)
 		}
 	}
+}
+
+// TestInterceptCollect_NotReadyGate (FAILS-WHEN-ABSENT) proves the bind-first
+// wiring-window gate (bind-first startup): with PipelineReady()=false, a collect returns the
+// uniform "daemon still starting" error rather than uploading chunks into a
+// not-yet-draining pipeline. Dropping the gate would let the collect proceed past
+// this point.
+func TestInterceptCollect_NotReadyGate(t *testing.T) {
+	deps := &fakeDeps{pipelineNotReady: true}
+	handled, res := InterceptCollect(deps, kgtools.CallToolParams{
+		Name:      "collect",
+		Arguments: json.RawMessage(`{"type":"code","id":"/tmp/somerepo"}`),
+	})
+	require.True(t, handled, "collect must be handled client-side")
+	require.True(t, res.IsError, "a not-ready collect must be an error result")
+	require.Contains(t, toolResultText(res), "daemon still starting")
 }

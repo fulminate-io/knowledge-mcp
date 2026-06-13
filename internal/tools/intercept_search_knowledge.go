@@ -109,6 +109,12 @@ func InterceptQueryKnowledgeSearch(deps ClientDeps, params kgtools.CallToolParam
 	if gc == nil {
 		return true, errorResult(mode + " search: graph client unavailable")
 	}
+	// Readiness gate (bind-first startup): composeKnowledgeSearch dereferences the segment
+	// Manager (mgr.Search) with no nil-check; during the bind-first wiring window
+	// SegmentManager() is an untyped nil → panic. Gate before the deref.
+	if !deps.PipelineReady() {
+		return true, errorResult("knowledge search: daemon still starting — LLM pipeline not ready yet, retry shortly")
+	}
 	halfLife := 0.0
 	if mode == "recent" {
 		halfLife = recentTemporalHalfLifeDays
@@ -267,14 +273,18 @@ func params0RawForKnowledgeArgs(text string) json.RawMessage {
 // format — the InterceptSearch rerank gate then hydrates + reranks the JSON
 // envelope exactly as it did for the server path.
 // runKnowledgeOrServerSearch routes the search tail: the knowledge/default arm
-// runs UNCONDITIONALLY against the CLIENT BM25+HNSW engines (composeKnowledgeSearch
-// → Manager.Search → RRF + RETURN_MODE_NODES hydration) — the segment Manager is
-// always wired in the real client, so there is no server-dispatch fallback for
-// knowledge. Any other graph that reaches here (non-knowledge with a rewrite/embed
-// that passed the claim gate) still rides the server RETURN_MODE_SEARCH dispatch;
-// the per-graph claims own those arms upstream. The embed step upstream already set
-// query_vector so the HNSW arm is exercised; the caller's rerank gate is unchanged
-// (it hydrates the rendered JSON envelope identically either way).
+// runs against the CLIENT BM25+HNSW engines (composeKnowledgeSearch →
+// Manager.Search → RRF + RETURN_MODE_NODES hydration). The segment Manager is
+// wired for the life of the daemon EXCEPT during the bind-first wiring window
+// (bind-first startup) — the caller (search.go and InterceptQueryKnowledgeSearch) gates the
+// knowledge arm on PipelineReady before reaching here, so during the window a
+// not-ready error is returned instead of a nil-Manager deref; there is no
+// server-dispatch fallback for knowledge. Any other graph that reaches here
+// (non-knowledge with a rewrite/embed that passed the claim gate) still rides the
+// server RETURN_MODE_SEARCH dispatch; the per-graph claims own those arms upstream.
+// The embed step upstream already set query_vector so the HNSW arm is exercised;
+// the caller's rerank gate is unchanged (it hydrates the rendered JSON envelope
+// identically either way).
 func runKnowledgeOrServerSearch(
 	ctx context.Context,
 	deps ClientDeps,
@@ -283,6 +293,14 @@ func runKnowledgeOrServerSearch(
 	args json.RawMessage,
 ) (kgtools.ToolResult, error) {
 	if isKnowledgeDefaultGraph(graph) {
+		// Readiness gate (bind-first startup): composeKnowledgeSearch dereferences the segment
+		// Manager with no nil-check; during the bind-first wiring window
+		// SegmentManager() is an untyped nil → panic. Gate before the deref. This is
+		// the single chokepoint for the search-tool knowledge arm; the query-tool arm
+		// (InterceptQueryKnowledgeSearch) carries its own pre-check.
+		if !deps.PipelineReady() {
+			return errorResult("knowledge search: daemon still starting — LLM pipeline not ready yet, retry shortly"), nil
+		}
 		return composeKnowledgeSearch(ctx, gc, deps.SegmentManager(), args), nil
 	}
 	return engine.Dispatch(ctx, gc.Execute, "search", args)
@@ -297,6 +315,15 @@ func composeKnowledgeSearch(
 	var a knowledgeSearchArgs
 	if err := json.Unmarshal(args, &a); err != nil {
 		return errorResult("knowledge search: decode args: " + err.Error())
+	}
+	// Permanent-degrade guard (bind-first startup): the PipelineReady gate upstream rejects
+	// the wiring window, but markPipelineReady is set even when wirePipelineRuntime
+	// DEGRADED (no embedder/summarizer, or a wire error → segment Manager never
+	// built). In that case PipelineReady()==true but the Manager is nil here; guard
+	// the deref with a loud error instead of a nil-Search panic. There is no server
+	// search fallback for knowledge (the retired path returns 0 hits).
+	if mgr == nil {
+		return errorResult("knowledge search: client segment engine unavailable (LLM pipeline degraded at boot)")
 	}
 	k := a.Limit
 	if k <= 0 {

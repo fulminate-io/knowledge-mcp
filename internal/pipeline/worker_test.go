@@ -19,26 +19,51 @@ type fakeSummarizer struct {
 	calls   asyncCalls
 	results map[string]llmproviders.SummarizeResult
 	err     error
-	chunks  []llmproviders.BatchChunk
+	// errs sequences a distinct error per call (consumed in order, clamping to
+	// the last on overflow). When non-empty it takes precedence over err; when
+	// empty the single err field is used (preserving every pre-existing test).
+	errs   []error
+	errIdx int
+	chunks []llmproviders.BatchChunk
 }
 
 func (f *fakeSummarizer) call(_ context.Context, chunks []llmproviders.BatchChunk) (map[string]llmproviders.SummarizeResult, error) {
 	f.calls.inc()
 	f.mu.Lock()
 	f.chunks = append([]llmproviders.BatchChunk{}, chunks...)
+	err := f.nextErrLocked()
 	f.mu.Unlock()
-	if f.err != nil {
-		return nil, f.err
+	if err != nil {
+		return nil, err
 	}
 	return f.results, nil
 }
 
+// nextErrLocked returns the error to serve on this call. Caller holds f.mu so
+// the errs index advances race-free. With errs set it returns errs[min(i,len-1)]
+// and advances i; otherwise it falls back to the single err field.
+func (f *fakeSummarizer) nextErrLocked() error {
+	if len(f.errs) == 0 {
+		return f.err
+	}
+	i := f.errIdx
+	if i >= len(f.errs) {
+		i = len(f.errs) - 1
+	}
+	f.errIdx++
+	return f.errs[i]
+}
+
 // fakeEmbedder captures items and returns canned per-id vectors / errors.
 type fakeEmbedder struct {
-	mu       sync.Mutex
-	calls    asyncCalls
-	vectors  map[string][]byte
-	err      error
+	mu      sync.Mutex
+	calls   asyncCalls
+	vectors map[string][]byte
+	err     error
+	// errs sequences a distinct error per call (same semantics as
+	// fakeSummarizer.errs); empty falls back to the single err field.
+	errs     []error
+	errIdx   int
 	received []EmbedItem
 }
 
@@ -46,11 +71,26 @@ func (f *fakeEmbedder) call(_ context.Context, items []EmbedItem) (map[string][]
 	f.calls.inc()
 	f.mu.Lock()
 	f.received = append([]EmbedItem{}, items...)
+	err := f.nextErrLocked()
 	f.mu.Unlock()
-	if f.err != nil {
-		return nil, f.err
+	if err != nil {
+		return nil, err
 	}
 	return f.vectors, nil
+}
+
+// nextErrLocked returns the error to serve on this call. Caller holds f.mu so
+// the errs index advances race-free. See fakeSummarizer.nextErrLocked.
+func (f *fakeEmbedder) nextErrLocked() error {
+	if len(f.errs) == 0 {
+		return f.err
+	}
+	i := f.errIdx
+	if i >= len(f.errs) {
+		i = len(f.errs) - 1
+	}
+	f.errIdx++
+	return f.errs[i]
 }
 
 // summaryWork builds a SummaryWork carrying server-composed text. The

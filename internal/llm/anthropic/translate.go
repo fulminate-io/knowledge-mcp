@@ -19,12 +19,18 @@ type anthropicRequest struct {
 	System        string             `json:"system,omitempty"`
 	Messages      []anthropicMsg     `json:"messages"`
 	Tools         []anthropicTool    `json:"tools,omitempty"`
+	ToolChoice    json.RawMessage    `json:"tool_choice,omitempty"`
 	MaxTokens     int                `json:"max_tokens"`
 	Temperature   *float32           `json:"temperature,omitempty"`
 	TopP          *float32           `json:"top_p,omitempty"`
 	TopK          *int32             `json:"top_k,omitempty"`
 	StopSequences []string           `json:"stop_sequences,omitempty"`
 	Thinking      *anthropicThinking `json:"thinking,omitempty"`
+	// OutputConfig carries Anthropic's native Structured Outputs request
+	// (output_config.format json_schema). Set only on the native path of
+	// applyResponseFormat; omitempty keeps it off the wire for every
+	// non-structured request and for the forced-tool fallback path.
+	OutputConfig *anthropicOutputConfig `json:"output_config,omitempty"`
 }
 
 // anthropicMsg is one turn in the Messages thread.
@@ -70,6 +76,14 @@ type anthropicThinking struct {
 // buildRequest translates RequestOptions + eino messages into an
 // anthropicRequest. Returns the JSON-encoded body ready for HTTP.
 //
+// ResponseFormat (json_schema) is honored by applyResponseFormat: it renders
+// as the native output_config knob for 4.5+/5 models, or a forced tool_use
+// fallback (the synthesized structured_output tool, pinned via tool_choice)
+// for older models. An un-honorable ResponseFormat — a non-json_schema type,
+// a non-object schema root, a structurally-unrenderable keyword
+// (oneOf/anyOf/allOf/not/$ref), or extended thinking on a non-native model —
+// returns a loud translate error here; it is never silently dropped.
+//
 // Knobs intentionally NOT translated and the reason for each:
 //
 //   - ReasoningEffort: Anthropic does not have an "effort" knob — extended
@@ -77,11 +91,6 @@ type anthropicThinking struct {
 //     instead of a low/medium/high enum. ReasoningEffort is silently
 //     ignored here; callers that want thinking on Anthropic should use
 //     WithExtendedThinking.
-//   - ResponseFormat: the Messages API has no JSON-schema-mode field. The
-//     Anthropic-recommended pattern for structured output is a tool_use
-//     contract, which the caller already controls via WithTools. We pass
-//     ResponseFormat through silently rather than synthesizing a tool
-//     behind the caller's back.
 func buildRequest(model llm.Model, messages []*schema.Message, options *llm.RequestOptions) ([]byte, error) {
 	system, msgs, err := translateMessages(options.SystemPrompt, messages)
 	if err != nil {
@@ -93,10 +102,7 @@ func buildRequest(model llm.Model, messages []*schema.Message, options *llm.Requ
 		return nil, err
 	}
 
-	maxTokens := options.MaxTokens
-	if maxTokens <= 0 {
-		maxTokens = defaultMaxTokens
-	}
+	maxTokens := resolveMaxTokens(options.MaxTokens)
 
 	req := anthropicRequest{
 		Model:         string(model),
@@ -111,6 +117,16 @@ func buildRequest(model llm.Model, messages []*schema.Message, options *llm.Requ
 	}
 
 	applyThinking(&req, options)
+
+	// Translate ResponseFormat into the native output_config knob or the
+	// forced-tool fallback. Placed after applyThinking so the request is
+	// fully built before the structured-output decision; an un-honorable
+	// ResponseFormat returns a loud error here (never silently dropped),
+	// which Generate surfaces as a translate_request failure. The RESOLVED
+	// model (not options.Model) drives the native/fallback gate.
+	if err := applyResponseFormat(&req, model, options); err != nil {
+		return nil, err
+	}
 
 	return json.Marshal(req)
 }

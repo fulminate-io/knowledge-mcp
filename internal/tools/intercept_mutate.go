@@ -41,6 +41,7 @@ type mutateArgs struct {
 	Metadata    map[string]string `json:"metadata,omitempty"`
 	Graph       string            `json:"graph,omitempty"`
 	Language    string            `json:"language,omitempty"`
+	Format      string            `json:"format,omitempty"`
 	LinkGraph   string            `json:"link_graph,omitempty"`
 
 	// Link fields — claimed for the intra-practice
@@ -61,18 +62,56 @@ type mutateArgs struct {
 	LastValidated string  `json:"last_validated,omitempty"`
 
 	// Extended fields claimed for create=finding/
-	// research/rule + answer dispatch arms.
-	Evidence     string             `json:"evidence,omitempty"`
-	Source       string             `json:"source,omitempty"`
-	Scope        string             `json:"scope,omitempty"`
-	Enforcement  string             `json:"enforcement,omitempty"`
-	Alternatives string             `json:"alternatives,omitempty"`
-	Conclusion   string             `json:"conclusion,omitempty"`
-	Concludes    bool               `json:"concludes,omitempty"`
-	Findings     string             `json:"findings,omitempty"`
-	QuestionID   string             `json:"question_id,omitempty"`
-	Supports     string             `json:"supports,omitempty"`
-	References   []findingReference `json:"references,omitempty"`
+	// research/rule + answer dispatch arms, and (Command/CriterionType/
+	// Keywords) the per-type update intercept (intercept_mutate_update.go).
+	// Command + CriterionType were previously only on criterionCreateArgs; the
+	// update path needs them on this shared wire-mirror to route a criterion
+	// update's command/criterion_type into metadata + re-derive the summary.
+	Evidence      string             `json:"evidence,omitempty"`
+	Source        string             `json:"source,omitempty"`
+	Scope         string             `json:"scope,omitempty"`
+	Enforcement   string             `json:"enforcement,omitempty"`
+	Command       string             `json:"command,omitempty"`
+	CriterionType string             `json:"criterion_type,omitempty"`
+	Keywords      string             `json:"keywords,omitempty"`
+	Alternatives  string             `json:"alternatives,omitempty"`
+	Conclusion    string             `json:"conclusion,omitempty"`
+	Concludes     bool               `json:"concludes,omitempty"`
+	Findings      string             `json:"findings,omitempty"`
+	QuestionID    string             `json:"question_id,omitempty"`
+	Supports      string             `json:"supports,omitempty"`
+	References    []findingReference `json:"references,omitempty"`
+
+	// Context-linking fields: optional pass-through so a
+	// finding/research/rule create is born linked to the active ticket
+	// (ticket--contains-->node), grouped under a session
+	// (session--contains-->node), and related to touched code/knowledge
+	// nodes (node--relates-to-->target). Lowered onto the create_batch by
+	// buildContextLinks (write_context_links.go); every edge is
+	// fail-tolerant (an unresolvable target drops+warns, never blocks the
+	// write). Session reuses the think-path get-or-create.
+	TicketID string   `json:"ticket_id,omitempty"`
+	Session  string   `json:"session,omitempty"`
+	Links    []string `json:"links,omitempty"`
+
+	// ExpandToDescendants is the tri-state opt-out for the completed-status
+	// container rollup cascade. A *bool so json.Unmarshal can distinguish
+	// three caller intents: nil (key absent) and &true both cascade (the
+	// default-true contract — see cascadeToDescendants); only &false (key
+	// present and explicitly false) suppresses the cascade so the update
+	// touches only the named container. A plain bool would conflate absent
+	// with false and silently disable the cascade for every caller that omits
+	// the flag. Same explicit-false-opt-out idiom as search.go's Rerank *bool.
+	ExpandToDescendants *bool `json:"expand_to_descendants,omitempty"`
+}
+
+// cascadeToDescendants reports whether the completed-status container rollup
+// should walk the contains tree and cascade to descendants. Default-true: the
+// cascade fires when the flag is absent (nil) or explicitly true, and is
+// suppressed ONLY when the caller sets expand_to_descendants:false. This keeps
+// the long-standing cascade behavior for every caller that omits the flag.
+func (a mutateArgs) cascadeToDescendants() bool {
+	return a.ExpandToDescendants == nil || *a.ExpandToDescendants
 }
 
 // findingReference is the typed wire shape for a single finding
@@ -89,18 +128,28 @@ type findingReference struct {
 // knowledge-graph nodes. For backend-backed nodes (those carrying a
 // `backend` metadata key) it runs the Linear write-through INLINE
 // BEFORE forwarding the knowledge-graph portion of the mutate through the
-// login-routed GraphCaller (cloud when logged in). Non-backend nodes are
-// not claimed here — they return (false,_) and route through the
-// cloud-aware engine dispatch.
+// login-routed GraphCaller (cloud when logged in). A non-backend non-rollup
+// SINGLE-id update on a typed node (criterion/rule/finding) is claimed by the
+// per-type router (handleClientMutateUpdateTyped) which routes its first-class
+// params into metadata, re-derives the summary, and rejects unroutable params; a
+// non-backend single-id node the router declines returns (false,_) to route
+// through the cloud-aware engine dispatch. A MULTI-id update batch passes through
+// guardBatchUpdateShape — the locked batch contract gate — which loud-rejects
+// tracker-backed / per-type-param / source / container-status batches; a
+// plain-local-non-container batch with universal scalars survives and returns
+// (false,_) so the engine reduces it to a homogeneous Selection.Ids UPDATE.
 //
 // Returns (false, _) when:
 //   - The tool isn't `mutate`.
 //   - The graph isn't knowledge (practice / transformers fall through).
 //   - The operation isn't update or delete.
-//   - The lookup says the node is local-only.
+//   - The lookup says the node is local-only (single id), or the multi-id batch
+//     is contract-valid (passes guardBatchUpdateShape).
 //
 // Returns (true, errorResult) on:
-//   - Mixed batches containing any backend-backed node (per-OQ1' guard).
+//   - A multi-id update batch carrying any backend-backed id, a per-type param,
+//     source, or a container-status (guardBatchUpdateShape rejects).
+//   - Mixed delete batches containing any backend-backed node (delete-path guard).
 //   - Linear push failure (no local mutation; locked design).
 //   - Backend recorded on node but adapter not currently configured.
 //   - Linear-succeeded-then-forward-fail desync (operator-visible message).
@@ -194,6 +243,15 @@ func InterceptMutate(deps ClientDeps, params kgtools.CallToolParams) (bool, kgto
 	}
 }
 
+// handleInterceptMutateUpdate routes a mutate(update). A multi-id batch (a.ID==""
+// after the single-id-as-list normalize) goes through guardBatchUpdateShape — the
+// locked batch-shape gate that loud-rejects tracker-backed / per-type-param /
+// source / container-status batches and lets a contract-valid plain-local
+// batch fall through to the engine reduction. A SINGLE-id update routes in
+// precedence order: backend-backed (Linear write-through) → status=completed
+// container rollup → per-type first-class-param router (typed knowledge nodes) →
+// generic engine dispatch fall-through. Each later arm fires only when the earlier
+// ones decline.
 func handleInterceptMutateUpdate(
 	ctx context.Context,
 	deps ClientDeps,
@@ -208,12 +266,17 @@ func handleInterceptMutateUpdate(
 	}
 
 	gc := deps.GraphCaller()
-	if err := guardBatchHasNoBackendBacked(ctx, gc, a.IDs); err != nil {
-		return true, errorResult(err.Error())
-	}
 	if a.ID == "" {
-		// Non-backend multi-id batch — return (false,_) to route through the
-		// cloud-aware engine dispatch.
+		// Multi-id batch path. The single batch-shape gate enforces the locked
+		// contract (plain-local-non-container, universal scalars only): it
+		// loud-rejects tracker-backed / per-type-param / source / container-status
+		// batches BEFORE the engine fall-through. A batch that passes the gate is
+		// contract-valid, so it returns (false,_) and the cloud-aware engine
+		// dispatch reduces it via compileMutateByIDUpdate to a homogeneous
+		// MUTATION_KIND_UPDATE over Selection.Ids and Executes it.
+		if err := guardBatchUpdateShape(ctx, gc, a); err != nil {
+			return true, errorResult(err.Error())
+		}
 		return false, kgtools.ToolResult{}
 	}
 
@@ -224,12 +287,25 @@ func handleInterceptMutateUpdate(
 	if backendName == "" {
 		// Claim closure-rollup for local-only container updates
 		// (status=completed on plan/phase/ticket/project). The client owns the
-		// cascade.
-		if a.Status == kgtypes.StatusCompleted && node != nil && isClientRollupContainer(kgtypes.NodeType(node.Type)) {
+		// cascade. The cascadeToDescendants() term honors expand_to_descendants:
+		// when the caller sets it false, the rollup arm declines and the explicit-
+		// false update falls through to the typed-router/engine single-node path
+		// below (which writes status=completed to the NAMED container only — a real
+		// single-node update, not a no-op). Absent/true preserves the cascade.
+		if a.Status == kgtypes.StatusCompleted && node != nil && isClientRollupContainer(kgtypes.NodeType(node.Type)) && a.cascadeToDescendants() {
 			return true, handleClientUpdateStatusRollup(ctx, gc, a, node)
 		}
-		// Non-backend non-rollup update — return (false,_) to route through
-		// the cloud-aware engine dispatch.
+		// Per-type first-class-param routing: a typed knowledge node update
+		// (criterion/rule/finding/...) routes its create-time params
+		// (command/criterion_type/scope/enforcement/evidence/source) into metadata,
+		// re-derives the summary, re-stamps a criterion's name, and loudly rejects
+		// params unroutable for the type. Fires AFTER the backend + rollup arms so
+		// it claims only non-backend non-rollup typed updates.
+		if claimed, res := handleClientMutateUpdateTyped(ctx, deps, a, node); claimed {
+			return true, res
+		}
+		// Non-backend non-rollup update the typed router did not claim — return
+		// (false,_) to route through the cloud-aware engine dispatch.
 		return false, kgtools.ToolResult{}
 	}
 	backend := deps.BackendResolver().ByName(backendName)

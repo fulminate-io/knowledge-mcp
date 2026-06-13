@@ -107,6 +107,7 @@ cloud graphs). For the full mode catalog, run `help("query")`.
 | `rows` | string |  |  | Row label key for graph='logs' mode='pivot' (e.g. 'reporting_instance'). Defaults sniffed from the graph when omitted. |
 | `session` | string |  |  | Filter thoughts by session name |
 | `since` | string |  |  | Time filter for date-ranged queries (RFC3339 or relative like '24h', '7d') |
+| `sort` | string |  | influence, composite | Display ordering for the EVIDENCED section of mode=influence. Selection is evidence-aware: charged thoughts are ranked by influence×(1+chargeWeight) into the evidenced top-N, while zero-charge structural hubs are returned in a separate labeled backfill section. 'influence' (default) keeps the influence×(1+chargeWeight) selection order; 'composite' reorders the already-selected evidenced set by influence×magnitude FOR DISPLAY — a within-set reorder that does NOT change which thoughts are selected and does not touch the backfill section. |
 | `status` | string |  |  | Status filter for thought recall |
 | `target` | string |  |  | Target node ID for simulate mode |
 | `test_kinds` | array of string |  |  | Filter set for test classification kinds: any of test, benchmark, example, fuzz, setup, teardown, fixture, mock, helper. Empty/absent means no filter. Code graph only. Note: until per-language predicate-population tickets land, all code nodes have test_kind="" so this filter is currently a no-op. |

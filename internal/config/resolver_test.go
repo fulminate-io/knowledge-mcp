@@ -141,6 +141,36 @@ func TestResolve_DreamSection(t *testing.T) {
 	}
 }
 
+func TestResolve_SupervisorSection(t *testing.T) {
+	cfg := &Config{
+		Default:    Section{Provider: ProviderAnthropic, Model: "claude-haiku-5"},
+		Supervisor: &Section{Model: "claude-opus-4-7"},
+	}
+	got, err := cfg.Resolve(ConsumerHiveSupervisor)
+	if err != nil {
+		t.Fatalf("Resolve(supervisor): %v", err)
+	}
+	if got.Provider != ProviderAnthropic {
+		t.Errorf("Provider = %q; want inherited %q", got.Provider, ProviderAnthropic)
+	}
+	if got.Model != "claude-opus-4-7" {
+		t.Errorf("Model = %q; want per-field override", got.Model)
+	}
+}
+
+func TestResolve_NilSupervisorInheritsDefault(t *testing.T) {
+	cfg := &Config{
+		Default: Section{Provider: ProviderAnthropic, Model: "claude-haiku-5"},
+	}
+	got, err := cfg.Resolve(ConsumerHiveSupervisor)
+	if err != nil {
+		t.Fatalf("Resolve(supervisor): %v", err)
+	}
+	if got != cfg.Default {
+		t.Errorf("got %+v; want %+v (full inheritance from Default)", got, cfg.Default)
+	}
+}
+
 func TestResolve_UnknownConsumer(t *testing.T) {
 	cfg := &Config{
 		Default: Section{Provider: ProviderAnthropic, Model: "claude-haiku-5"},

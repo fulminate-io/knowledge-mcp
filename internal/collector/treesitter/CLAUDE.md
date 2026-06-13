@@ -16,10 +16,20 @@ Parses source files into semantic chunks (functions, types, imports) and extract
 
 ## Supported Languages
 
-| Language   | Extensions    | Query File              |
-| ---------- | ------------- | ----------------------- |
-| Go         | `.go`         | `queries_go.go`         |
-| TypeScript | `.ts`, `.tsx` | `queries_typescript.go` |
+| Language   | Extensions | Grammar             | Query File              |
+| ---------- | ---------- | ------------------- | ----------------------- |
+| Go         | `.go`      | `golang`            | `queries_go.go`         |
+| TypeScript | `.ts`      | `typescript/typescript` | `queries_typescript.go` |
+| TSX        | `.tsx`     | `typescript/tsx`    | `queries_typescript.go` (shared) |
+
+`.tsx` rides a SEPARATE grammar (`typescript/tsx`) from `.ts`
+(`typescript/typescript`) because tree-sitter splits JSX into a sibling
+grammar — the plain `typescript` grammar lexes `<Component>` as type syntax
+and derails JSX into ERROR nodes. The `tsx` grammar is a strict superset, so
+`LangTSX` reuses the same `tsQueries`. This is the only language pair in the
+registry where two `Language` constants share one query set across two
+grammars. (`.jsx` needs no such split — the `javascript` grammar is
+JSX-capable natively.)
 
 ## Adding a New Language
 
@@ -28,6 +38,32 @@ Parses source files into semantic chunks (functions, types, imports) and extract
 3. Add language constant and register in `registry` map in `language.go`
 4. Add file extensions in `extMap`
 5. Add language-specific helpers in `chunker_<lang>.go` if needed
+
+### Dual-grammar dialect reuse (the `LangTSX` pattern)
+
+When a new dialect rides a DIFFERENT tree-sitter grammar but shares the
+query set of an existing language — the JSX/non-JSX TypeScript split is the
+canonical case — **step 2 is skipped**: register the new `Language` const
+against the new grammar while pointing `queries:` at the existing
+`<lang>Queries` func (the superset grammar accepts every kind the shared
+queries capture). The follow-on wiring is forced by the closed-allowlist
+coverage gates, since the shared query set carries a non-empty `TestBlocks`:
+
+- `testBlockClassifiers[<NewLang>]` in `chunker_<base>.go`'s `init`,
+- `frameworkTables[<NewLang>]` in `framework_tables.go`,
+- a `testCorpusMatrix[<NewLang>]` row + at least one fixture, in
+  `chunker_corpus_test.go`,
+- the `expectedTestBlock` allowlist in `chunker_test_block_dispatch_test.go`.
+
+If the `ast` placeholder DSL must work on the dialect, also add a parallel
+`<newLang>LangConfig` in `cmd/knowledge/internal/ast/` mirroring the base
+language's config but bound to the new `Language` (registration alone gives
+`explain`/`list_node_kinds`, not first-class `match`/`replace`/`where`).
+
+The persisted node `Language` is the const string; if any behavior keys off
+that literal (e.g. the topology per-language scope filter at
+`cmd/knowledge/internal/topology/graph/god_object.go`), give it a family
+alias so the dialect isn't silently excluded from the base language's scope.
 
 ## TestBlocks Query Convention
 

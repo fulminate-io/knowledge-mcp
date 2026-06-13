@@ -107,6 +107,44 @@ func TestRecallNoSearcherYieldsNoCandidatesNoServerSearch(t *testing.T) {
 	require.False(t, caller.executed.Load(), "nil Searcher must NOT dispatch any server call")
 }
 
+// TestRecallThoughtsWidePoolSkipsTrim is Phase 1 Step 1's criterion: with
+// WidePool>0 RecallThoughts returns ALL filtered candidates untrimmed in score
+// order (so the intercept can rerank the wide pool); with WidePool=0 the result
+// is trimmed to Limit. Verifies the widen+skip-trim seam is gated on WidePool.
+func TestRecallThoughtsWidePoolSkipsTrim(t *testing.T) {
+	// Five thought hits, descending score; Limit=2 so trimming is observable.
+	nodes := map[string]*knowledgev1.Node{}
+	hits := make([]searchengine.Hit, 0, 5)
+	for i, score := range []float64{0.9, 0.8, 0.7, 0.6, 0.5} {
+		id := string(rune('a' + i))
+		nodes[id] = &knowledgev1.Node{Id: id, Type: string(kgtypes.NodeThought), SymbolName: id}
+		hits = append(hits, searchengine.Hit{ID: id, Score: score})
+	}
+	newOpts := func(widePool int) RecallOptions {
+		return RecallOptions{
+			Query:    "q",
+			Searcher: &recallFakeSearcher{hits: hits},
+			Limit:    2,
+			WidePool: widePool,
+		}
+	}
+
+	// WidePool>0: untrimmed, score-sorted (all 5).
+	wide, err := RecallThoughts(context.Background(),
+		&recallFakeCaller{nodes: nodes}, newOpts(5))
+	require.NoError(t, err)
+	require.Len(t, wide, 5, "WidePool>0 returns the full filtered pool untrimmed")
+	for i := 1; i < len(wide); i++ {
+		require.GreaterOrEqual(t, wide[i-1].Score, wide[i].Score, "wide pool is score-sorted")
+	}
+
+	// WidePool=0: trimmed to Limit.
+	trimmed, err := RecallThoughts(context.Background(),
+		&recallFakeCaller{nodes: nodes}, newOpts(0))
+	require.NoError(t, err)
+	require.Len(t, trimmed, 2, "WidePool=0 trims to Limit")
+}
+
 // recallServerProbeCaller is an Execute-only Caller that records whether any
 // server Execute was dispatched.
 type recallServerProbeCaller struct{ executed atomic.Bool }

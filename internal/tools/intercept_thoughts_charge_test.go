@@ -132,6 +132,42 @@ func TestHandleChargeClient_NoHitEvidence_RawIDPreserved(t *testing.T) {
 	assert.Equal(t, "dangling-ev", edges[1].GetToId(), "no-hit evidence id preserved as raw (outcome c)")
 }
 
+// TestHandleChargeClient_ThoughtEvidence_ResolvesToDirectEdge locks the
+// charge-evidence resolution behavior: a charge citing a THOUGHT ID as
+// evidence resolves via outcome (a) (knowledge-hit → raw id) and lands a direct
+// EdgeEvidencedBy edge targeting the thought node — no proxy materialization, no
+// drop. A thought is a knowledge-graph node, so resolveCrossGraphID returns the
+// raw id at intercept_thoughts_charge.go:193-195; this test guards against a
+// future NodeThought guard that would proxy or drop thought evidence.
+func TestHandleChargeClient_ThoughtEvidence_ResolvesToDirectEdge(t *testing.T) {
+	fc := &fakeGraphCaller{
+		queryResponses: map[string]kgtools.ToolResult{
+			"th-1": nodeResultJSON(t, "th-1", "thought", nil), // the charge parent.
+			// The EVIDENCE thought resolves in knowledge → raw id (no proxy).
+			"eth-1": nodeResultJSON(t, "eth-1", "thought", nil),
+		},
+		mutateIDs: []string{"charge-3"},
+	}
+	deps := interceptTestDeps{gc: fc}
+	res := handleChargeClient(context.Background(), deps, kgtools.CallToolParams{
+		Name:      "thoughts",
+		Arguments: json.RawMessage(`{"operation":"charge","thought":"th-1","polarity":"positive","weight":4.0,"reasoning":"a related thought confirms this","evidence":["eth-1"]}`),
+	})
+	require.False(t, res.IsError, "charge should succeed: %s", toolResultText(res))
+
+	require.Len(t, fc.execMutations, 1)
+	m := fc.execMutations[0]
+	assert.Equal(t, knowledgev1.MutationPlan_MUTATION_KIND_CREATE, m.GetKind())
+
+	// EdgeChargedBy th-1→charge(slot0); EdgeEvidencedBy charge(slot0)→eth-1 (the
+	// thought node directly — knowledge-hit outcome a, no proxy, no drop).
+	edges := m.GetEdges()
+	require.Len(t, edges, 2)
+	assert.Equal(t, int32(0), edges[1].GetFromIdx(), "evidenced-by originates at the charge slot")
+	assert.Equal(t, "eth-1", edges[1].GetToId(), "evidenced-by targets the thought node directly (raw id)")
+	assert.Equal(t, string(kgtypes.EdgeEvidencedBy), edges[1].GetType())
+}
+
 // TestTruncateAtWordCreate_RuneCorrect proves the helper counts and slices by
 // RUNES, not bytes: a multibyte input over maxLen is capped to exactly maxLen
 // runes and is always valid UTF-8 (a byte cap would slice mid-rune), while

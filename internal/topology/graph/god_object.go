@@ -127,12 +127,28 @@ func (a GodObjectAnalyzer) Run(ctx context.Context, req foundation.Request) ([]f
 	return rankGodObjectFindings(ctx, req, rows), nil
 }
 
+// languageMatchesScope reports whether a node's persisted Language nodeLang
+// falls within the requested scope. Exact equality, plus one family alias:
+// scope "typescript" includes both "typescript" and "tsx" (.tsx files
+// persist Language "tsx"), so a typescript-scoped topology run does not
+// silently drop React/JSX code. Scope "tsx" matches only "tsx" — the alias
+// is one-directional. This is the SOLE behavior-driving consumer of the
+// "tsx" Language literal; no general alias registry is warranted.
+func languageMatchesScope(nodeLang, scope string) bool {
+	if nodeLang == scope {
+		return true
+	}
+	return scope == "typescript" && nodeLang == "tsx"
+}
+
 // collectGodObjectCandidates enumerates every type-ish node in the
 // materialized graph, optionally filtered by the analyzer's language
 // scope. The language filter is applied by re-fetching each candidate's
-// node and comparing its top-level Language field — the GonumGraph adapter
-// does not carry per-node Language for analyzers in general so this is the
-// cheapest place to apply the filter without bloating the adapter.
+// node and matching its top-level Language field against the scope via
+// languageMatchesScope (which folds tsx into a typescript-family scope) —
+// the GonumGraph adapter does not carry per-node Language for analyzers in
+// general so this is the cheapest place to apply the filter without
+// bloating the adapter.
 func collectGodObjectCandidates(ctx context.Context, req foundation.Request, g *foundation.GonumGraph, language string) ([]string, error) {
 	var ids []string
 	for nt := range typeishNodeTypes {
@@ -153,7 +169,7 @@ func collectGodObjectCandidates(ctx context.Context, req foundation.Request, g *
 		if !ok || n == nil {
 			continue
 		}
-		if n.Language == language {
+		if languageMatchesScope(n.Language, language) {
 			filtered = append(filtered, id)
 		}
 	}

@@ -46,6 +46,7 @@ low-noise development.
 | `--port` | `15022` | TCP port the graph server listens on |
 | `--pprof` | `true` | Start the pprof profiling HTTP endpoint on 127.0.0.1:15021 (/debug/pprof/) at boot. Also reachable on demand via manage(pprof_start). Use to profile client-side work such as collect. Default-on during the general-stability investigation window; flip to false once the startup-timeout flake is diagnosed. |
 | `--pprof-port` | `15021` | TCP port for the pprof profiling HTTP endpoint (loopback only) |
+| `--reflect-backstop-interval` | `24h0m0s` | Client-side reflection: cadence of the full-corpus reflection backstop pass that resets DF-Leiden incremental drift. The hourly loop runs incrementally; once this interval elapses since the last full pass, the next tick forces a full Leiden recompute. Default 24h (nightly). |
 | `--root` | `.` | Project root directory (display-only; server is the one that collects from root) |
 | `--skip-llm-precheck` | `false` | Skip the live-ping check that runs against every configured (provider, model) tuple at client startup. Use for offline development or CI sandboxes; default is to fail-fast at boot rather than at first tool call. |
 | `--summary-batch-size` | `20` | Client-side LLM pipeline: items per summary worker batch |
@@ -81,6 +82,7 @@ outlives any single session.
 | `--port` | `15022` | TCP port the graph server listens on |
 | `--pprof` | `true` | Start the pprof profiling HTTP endpoint on 127.0.0.1:15021 (/debug/pprof/) at boot. Also reachable on demand via manage(pprof_start). Use to profile client-side work such as collect. Default-on during the general-stability investigation window; flip to false once the startup-timeout flake is diagnosed. |
 | `--pprof-port` | `15021` | TCP port for the pprof profiling HTTP endpoint (loopback only) |
+| `--reflect-backstop-interval` | `24h0m0s` | Client-side reflection: cadence of the full-corpus reflection backstop pass that resets DF-Leiden incremental drift. The hourly loop runs incrementally; once this interval elapses since the last full pass, the next tick forces a full Leiden recompute. Default 24h (nightly). |
 | `--root` | `.` | Project root directory (display-only; server is the one that collects from root) |
 | `--skip-llm-precheck` | `false` | Skip the live-ping check that runs against every configured (provider, model) tuple at client startup. Use for offline development or CI sandboxes; default is to fail-fast at boot rather than at first tool call. |
 | `--summary-batch-size` | `20` | Client-side LLM pipeline: items per summary worker batch |

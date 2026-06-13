@@ -31,26 +31,28 @@ const browseDefaultLimit = 10
 // weight) are intentionally omitted: a query carrying any of them is a recall/
 // reflect shape (SPECIALIZED), denied by hasThoughtFilter below.
 type queryArgs struct {
-	Graph             string            `json:"graph"`
-	Name              string            `json:"name"`
-	ID                string            `json:"id"`
-	IDs               []string          `json:"ids"`
-	Text              string            `json:"text"`
-	Type              string            `json:"type"`
-	Types             []string          `json:"types"`
-	Status            string            `json:"status"`
-	Mode              string            `json:"mode"`
-	Language          string            `json:"language"`
-	Account           string            `json:"account"`
-	Repo              string            `json:"repo"`
-	Branch            string            `json:"branch"`
-	Limit             int               `json:"limit"`
-	Offset            int               `json:"offset"`
-	Meta              map[string]string `json:"meta"`
-	IncludeEdges      *bool             `json:"include_edges"`
-	IncludeCrossLinks *bool             `json:"include_cross_links"`
-	QueryVector       string            `json:"query_vector"`
-	IncludeTombstones bool              `json:"include_tombstones"`
+	Graph             string              `json:"graph"`
+	Name              string              `json:"name"`
+	ID                string              `json:"id"`
+	IDs               []string            `json:"ids"`
+	Text              string              `json:"text"`
+	Type              string              `json:"type"`
+	Types             []string            `json:"types"`
+	Status            string              `json:"status"`
+	Mode              string              `json:"mode"`
+	Language          string              `json:"language"`
+	Account           string              `json:"account"`
+	Repo              string              `json:"repo"`
+	Branch            string              `json:"branch"`
+	OverlayOf         string              `json:"overlay_of"`
+	Limit             int                 `json:"limit"`
+	Offset            int                 `json:"offset"`
+	Meta              map[string]string   `json:"meta"`
+	FieldPredicates   []fieldPredicateArg `json:"field_predicates"`
+	IncludeEdges      *bool               `json:"include_edges"`
+	IncludeCrossLinks *bool               `json:"include_cross_links"`
+	QueryVector       string              `json:"query_vector"`
+	IncludeTombstones bool                `json:"include_tombstones"`
 
 	// ContentB64 opts the NodeList carrier into the binary-safe content_b64
 	// encode: the engine base64-encodes each non-empty Node.Content
@@ -72,6 +74,18 @@ type queryArgs struct {
 	ConsistMax   *float64 `json:"consistency_max"`
 	Session      string   `json:"session"`
 	ConnectedTo  string   `json:"connected_to"`
+}
+
+// fieldPredicateArg is the compile-local wire view of a single
+// Selection.field_predicates entry: an exact/relational filter on a universal
+// struct field (e.g. symbol_name, created_at) the engine evaluates server-side
+// via nodeMatchesField. It is an INTERNAL compile capability only — the public
+// `query` tool schema does not advertise field_predicates; the sole caller is
+// the session resolver building args programmatically.
+type fieldPredicateArg struct {
+	Field string `json:"field"`
+	Op    string `json:"op"`
+	Value string `json:"value"`
 }
 
 // reducibleQueryModes is the set of query(mode=...) values the engine read path
@@ -184,9 +198,12 @@ func buildQueryPlan(a queryArgs) (*knowledgev1.QueryPlan, bool) {
 		// List-graphs catalog enumeration: the engine's RETURN_MODE_GRAPH_NAMES
 		// arm enumerates the graph CATALOG of the target GraphType (carried by the
 		// envelope GraphSelector, built from a.Graph/Repo/Account/Name/Language).
-		// No Selection, no queries — the GraphType is the only input.
+		// overlay_of, when set, restricts the enumeration to the overlay keys of
+		// the named base ("<type>/<overlay_of>@*") via ListGraphsLite's variadic
+		// overlayOf filter; empty = base-name enumeration.
 		return &knowledgev1.QueryPlan{
 			ReturnMode: knowledgev1.ReturnMode_RETURN_MODE_GRAPH_NAMES,
+			OverlayOf:  a.OverlayOf,
 		}, true
 	}
 	// Default mode (""): id / ids / text / type / meta dispatch, mirroring the
@@ -238,7 +255,7 @@ func buildDefaultModePlan(a queryArgs) (*knowledgev1.QueryPlan, bool) {
 		// from the singular a.Type Match-index arm below: the plural set has no
 		// single index browse, so it enumerates then trims to the type set. status
 		// + meta predicates ride as on the singular arm.
-		p := &knowledgev1.QueryPlan{Selection: browsePluralSelection(a.Types, a.Status, a.Meta)}
+		p := &knowledgev1.QueryPlan{Selection: browsePluralSelection(a.Types, a.Status, a.Meta, a.FieldPredicates)}
 		applyBrowseLimitOffset(p, a.Limit, a.Offset)
 		applyTombstones(p, a.IncludeTombstones)
 		applyContentB64(p, a.ContentB64)
@@ -246,7 +263,7 @@ func buildDefaultModePlan(a queryArgs) (*knowledgev1.QueryPlan, bool) {
 	case a.Type != "":
 		// Type-browse → Match(NodeType). Selection carries node_type + status +
 		// metadata predicates; Limit/Offset ride when supplied.
-		p := &knowledgev1.QueryPlan{Selection: browseSelection(a.Type, a.Status, a.Meta)}
+		p := &knowledgev1.QueryPlan{Selection: browseSelection(a.Type, a.Status, a.Meta, a.FieldPredicates)}
 		applyBrowseLimitOffset(p, a.Limit, a.Offset)
 		applyTombstones(p, a.IncludeTombstones)
 		applyContentB64(p, a.ContentB64)
@@ -254,7 +271,7 @@ func buildDefaultModePlan(a queryArgs) (*knowledgev1.QueryPlan, bool) {
 	case len(a.Meta) > 0:
 		// Meta-only enumeration → Match("") + meta predicates (every node
 		// matching the meta filter regardless of type).
-		p := &knowledgev1.QueryPlan{Selection: browseSelection("", a.Status, a.Meta)}
+		p := &knowledgev1.QueryPlan{Selection: browseSelection("", a.Status, a.Meta, a.FieldPredicates)}
 		applyBrowseLimitOffset(p, a.Limit, a.Offset)
 		applyTombstones(p, a.IncludeTombstones)
 		return p, true
@@ -263,16 +280,19 @@ func buildDefaultModePlan(a queryArgs) (*knowledgev1.QueryPlan, bool) {
 }
 
 // browseSelection builds the Selection for a type-browse / meta-only plan:
-// node_type + statuses + metadata predicates. The meta map lowers to
-// MetadataPredicate exactly as the engine expects (value "*" → OP_EXISTS, else
-// OP_EQ — mirroring store.Meta's "*" sentinel; the engine consumes these
-// predicates, the client does NOT canonicalize).
-func browseSelection(nodeType, status string, meta map[string]string) *knowledgev1.Selection {
+// node_type + statuses + metadata predicates + universal-field predicates. The
+// meta map lowers to MetadataPredicate exactly as the engine expects (value "*"
+// → OP_EXISTS, else OP_EQ — mirroring store.Meta's "*" sentinel; the engine
+// consumes these predicates, the client does NOT canonicalize). The fields slice
+// lowers to FieldPredicate (e.g. a symbol_name EQ filter the engine evaluates
+// server-side via nodeMatchesField).
+func browseSelection(nodeType, status string, meta map[string]string, fields []fieldPredicateArg) *knowledgev1.Selection {
 	sel := &knowledgev1.Selection{NodeType: nodeType}
 	if status != "" {
 		sel.Statuses = []string{status}
 	}
 	sel.MetadataPredicates = lowerMetaPredicates(meta)
+	sel.FieldPredicates = lowerFieldPredicates(fields)
 	return sel
 }
 
@@ -281,18 +301,22 @@ func browseSelection(nodeType, status string, meta map[string]string) *knowledge
 // engine post-filters against (postFilterBrowseNodeTypes). status + metadata
 // predicates ride exactly as browseSelection sets them. DISTINCT from
 // browseSelection's singular NodeType (a single index browse).
-func browsePluralSelection(nodeTypes []string, status string, meta map[string]string) *knowledgev1.Selection {
+func browsePluralSelection(nodeTypes []string, status string, meta map[string]string, fields []fieldPredicateArg) *knowledgev1.Selection {
 	sel := &knowledgev1.Selection{NodeTypes: nodeTypes}
 	if status != "" {
 		sel.Statuses = []string{status}
 	}
 	sel.MetadataPredicates = lowerMetaPredicates(meta)
+	sel.FieldPredicates = lowerFieldPredicates(fields)
 	return sel
 }
 
 // lowerMetaPredicates maps the meta equality map onto the proto MetadataPredicate
 // vocabulary: "*" → OP_EXISTS, any other value → OP_EQ. Returns nil for an empty
-// map. Mirrors store.Meta(k, v) / Meta(k, "*") lowering (engine.proto:137-143).
+// map. The server decodes these wire ops as OP_EQ → store.Meta(k, v) (the
+// exact-match map) and OP_EXISTS → store.MetaPred(MetaOpExists) (the key-presence
+// predicate both backends render) — see the MetadataPredicate message
+// (engine.proto:395-421) and applyMetadataPredicates server-side.
 func lowerMetaPredicates(meta map[string]string) []*knowledgev1.MetadataPredicate {
 	if len(meta) == 0 {
 		return nil
@@ -305,6 +329,30 @@ func lowerMetaPredicates(meta map[string]string) []*knowledgev1.MetadataPredicat
 		} else {
 			p.Op = knowledgev1.MetadataPredicate_OP_EQ
 			p.Value = v
+		}
+		preds = append(preds, p)
+	}
+	return preds
+}
+
+// lowerFieldPredicates maps {field,op,value} args onto the proto FieldPredicate
+// vocabulary, the twin of lowerMetaPredicates for universal struct fields.
+// FieldPredicate reuses MetadataPredicate.Op (engine.proto), so "eq" → OP_EQ and
+// "exists" → OP_EXISTS for parity with lowerMetaPredicates. Returns nil for an
+// empty slice. The engine evaluates each predicate server-side via
+// nodeMatchesField (e.g. symbol_name EQ → exact-match the session name).
+func lowerFieldPredicates(fields []fieldPredicateArg) []*knowledgev1.FieldPredicate {
+	if len(fields) == 0 {
+		return nil
+	}
+	preds := make([]*knowledgev1.FieldPredicate, 0, len(fields))
+	for _, f := range fields {
+		p := &knowledgev1.FieldPredicate{Field: f.Field, Value: f.Value}
+		switch f.Op {
+		case "exists":
+			p.Op = knowledgev1.MetadataPredicate_OP_EXISTS
+		default:
+			p.Op = knowledgev1.MetadataPredicate_OP_EQ
 		}
 		preds = append(preds, p)
 	}

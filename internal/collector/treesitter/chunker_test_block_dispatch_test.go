@@ -150,6 +150,7 @@ func TestTestBlockClassifiers_RegistryCoverage(t *testing.T) {
 	expectedTestBlock := map[Language]bool{
 		LangJavaScript: true,
 		LangTypeScript: true,
+		LangTSX:        true,
 		LangRuby:       true,
 		LangKotlin:     true,
 		LangScala:      true,

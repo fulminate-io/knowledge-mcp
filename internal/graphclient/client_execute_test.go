@@ -59,6 +59,12 @@ func (s *stubEngine) Index(
 	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("stubEngine: Index not scripted"))
 }
 
+func (s *stubEngine) Hive(
+	context.Context, *connect.Request[knowledgev1.HiveRequest],
+) (*connect.Response[knowledgev1.HiveResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("stubEngine: Hive not scripted"))
+}
+
 func (s *stubEngine) PipelineScan(
 	context.Context, *connect.Request[knowledgev1.PipelineScanRequest],
 ) (*connect.Response[knowledgev1.PipelineScanResponse], error) {

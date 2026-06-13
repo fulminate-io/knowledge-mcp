@@ -4,13 +4,16 @@ package thought
 
 import (
 	"context"
-	"encoding/json"
 	"math"
 	"sort"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
-	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 )
+
+// blindSpotReportCap bounds the number of ranked blind-spot clusters
+// ReflectBlindSpots returns, keeping the surface in-context: only the top-N
+// highest-impact under-evidenced clusters are shown.
+const blindSpotReportCap = 20
 
 // ClusterPairScalar holds a scalar between two clusters with labels.
 type ClusterPairScalar struct {
@@ -29,23 +32,6 @@ type PersonalityReport struct {
 	ClusterCount int
 }
 
-// InfluenceReport shows a thought's influence on the global consensus.
-type InfluenceReport struct {
-	ThoughtID      string
-	Node           *knowledgev1.Node
-	InfluenceScore float64
-	Properties     ThoughtProperties
-}
-
-// TensionReport identifies two connected thoughts with opposing valence.
-type TensionReport struct {
-	ThoughtA     *knowledgev1.Node
-	ThoughtB     *knowledgev1.Node
-	PropertiesA  ThoughtProperties
-	PropertiesB  ThoughtProperties
-	ValenceDelta float64
-}
-
 // BridgeThought is a thought at a cluster boundary with its internal
 // edge fraction.
 type BridgeThought struct {
@@ -61,6 +47,23 @@ type BlindSpotReport struct {
 	ChargeCount    int
 	AvgMagnitude   float64
 	BridgeThoughts []BridgeThought
+	// Influence is the summed per-thought influence over the cluster's members —
+	// the structural weight of the under-evidenced region.
+	Influence float64
+	// Impact is the rank score: Size × Influence × chargeThinness. Higher = a
+	// larger, more central, charge-thinner cluster — a higher-priority blind spot.
+	Impact float64
+}
+
+// BlindSpotResult carries the ranked + capped blind-spot spots plus the totals an
+// LLM consumer needs to judge the surface in-context: how many human-genre
+// clusters were under-evidenced before the cap, and how many machine-genre
+// clusters were excluded from the denominator entirely.
+type BlindSpotResult struct {
+	Spots                []BlindSpotReport
+	TotalUnderEvidenced  int // human-genre clusters that qualified, before the cap.
+	ExcludedMachineGenre int // machine-genre clusters dropped from the denominator.
+	TotalClusters        int // all clusters considered (human + machine genre).
 }
 
 // ThoughtGraphSummary provides a high-level overview.
@@ -98,153 +101,79 @@ func ReflectPersonality(clusters []ThoughtCluster, profile *PersonalityProfile, 
 			})
 		}
 	}
-	sort.Slice(pairs, func(i, j int) bool { return pairs[i].Scalar < pairs[j].Scalar })
+	// Sort by scalar with a deterministic (ClusterA, ClusterB) tie-break: the pairs
+	// are gathered in Go map-iteration order, so without a stable secondary key the
+	// top-5 selection over tied scalars (e.g. an uncharged corpus where every pair
+	// is 1.0) would be nondeterministic across runs.
+	sort.Slice(pairs, func(i, j int) bool { return lessPairAsc(pairs[i], pairs[j]) })
 	limit := min(len(pairs), 5)
 	report.TopStubborn = append([]ClusterPairScalar(nil), pairs[:limit]...)
-	sort.Slice(pairs, func(i, j int) bool { return pairs[i].Scalar > pairs[j].Scalar })
+	sort.Slice(pairs, func(i, j int) bool { return lessPairDesc(pairs[i], pairs[j]) })
 	limit = min(len(pairs), 5)
 	report.TopGullible = append([]ClusterPairScalar(nil), pairs[:limit]...)
 	return report
 }
 
-// ReflectInfluence returns the top-N most influential thoughts. Issues
-// ONE gc.Call to list thought IDs, ONE gc.Call("thoughts", {adjacency})
-// inside BuildTrustMatrix, and ONE bulk hydrate for the top-N nodes.
-func ReflectInfluence(ctx context.Context, gc Caller, limit int, profile *PersonalityProfile) ([]InfluenceReport, error) {
-	if limit <= 0 {
-		limit = 10
+// lessPairAsc / lessPairDesc order cluster-pair scalars ascending / descending
+// with a deterministic (ClusterA, ClusterB) tie-break so equal-scalar pairs sort
+// reproducibly regardless of the map-iteration order they were gathered in.
+func lessPairAsc(a, b ClusterPairScalar) bool {
+	if a.Scalar != b.Scalar {
+		return a.Scalar < b.Scalar
 	}
-	thoughtIDs, err := listAllThoughtIDs(ctx, gc)
-	if err != nil {
-		return nil, err
+	if a.ClusterA != b.ClusterA {
+		return a.ClusterA < b.ClusterA
 	}
+	return a.ClusterB < b.ClusterB
+}
+
+func lessPairDesc(a, b ClusterPairScalar) bool {
+	if a.Scalar != b.Scalar {
+		return a.Scalar > b.Scalar
+	}
+	if a.ClusterA != b.ClusterA {
+		return a.ClusterA < b.ClusterA
+	}
+	return a.ClusterB < b.ClusterB
+}
+
+// BlindSpotInfluenceVector computes the per-thought influence vector ReflectBlindSpots
+// ranks on — ONE BuildTrustMatrix + ComputeInfluenceVector pass over the thought
+// set (the same structural eigenvector ReflectInfluence uses, no personality
+// re-weighting). A build error yields a nil vector (ranking then degrades to
+// Impact=0 for every cluster, leaving the under-evidenced gate intact) rather than
+// failing the whole surface. Shared by both ReflectBlindSpots callers (the tools
+// handler and the loop) so the influence pass is built identically.
+func BlindSpotInfluenceVector(ctx context.Context, gc Caller, thoughtIDs []string) map[string]float64 {
 	if len(thoughtIDs) == 0 {
-		return nil, nil
+		return nil
 	}
-
-	// Need cluster_id metadata for personality-adjusted matrix — pull
-	// the node bulk once.
-	var nodeByID map[string]*knowledgev1.Node
-	if profile != nil {
-		nodeByID = fetchNodesByIDs(ctx, gc, thoughtIDs)
-	}
-
-	var matrix TrustMatrix
-	if profile != nil {
-		matrix, err = BuildTrustMatrixWithPersonality(ctx, gc, thoughtIDs, *profile, nodeByID)
-	} else {
-		matrix, err = BuildTrustMatrix(ctx, gc, thoughtIDs)
-	}
+	matrix, err := BuildTrustMatrix(ctx, gc, thoughtIDs)
 	if err != nil {
-		return nil, err
+		return nil
 	}
-
-	influence := ComputeInfluenceVector(matrix)
-	type scoredID struct {
-		id    string
-		score float64
-	}
-	ranked := make([]scoredID, 0, len(thoughtIDs))
-	for _, id := range thoughtIDs {
-		ranked = append(ranked, scoredID{id: id, score: influence[id]})
-	}
-	sort.Slice(ranked, func(i, j int) bool { return ranked[i].score > ranked[j].score })
-	if len(ranked) > limit {
-		ranked = ranked[:limit]
-	}
-
-	// Hydrate only the top-N — ONE bulk query call + ONE charges_for
-	// for properties.
-	topIDs := make([]string, len(ranked))
-	for i, r := range ranked {
-		topIDs[i] = r.id
-	}
-	topNodes := fetchNodesByIDs(ctx, gc, topIDs)
-	topCharges := fetchChargesFor(ctx, gc, topIDs)
-
-	reports := make([]InfluenceReport, 0, len(ranked))
-	for _, r := range ranked {
-		n, ok := topNodes[r.id]
-		if !ok {
-			continue
-		}
-		props := computePropertiesFromCharges(topCharges[r.id])
-		reports = append(reports, InfluenceReport{
-			ThoughtID:      r.id,
-			Node:           n,
-			InfluenceScore: r.score,
-			Properties:     props,
-		})
-	}
-	return reports, nil
+	return ComputeInfluenceVector(matrix)
 }
 
-// ReflectTensions finds pairs of connected thoughts with opposing
-// valence. Issues ONE gc.Call("thoughts", {adjacency}) for the
-// thought subgraph + ONE gc.Call("thoughts", {charges_for}) for
-// property derivation (T2-3 perf lock). NO per-thought wire calls
-// inside the pair loop.
-func ReflectTensions(ctx context.Context, gc Caller) ([]TensionReport, error) {
-	nodeIDs, adj, err := fetchAdjacency(ctx, gc, "all", nil)
-	if err != nil {
-		return nil, err
-	}
-	if len(nodeIDs) == 0 {
-		return nil, nil
-	}
-	nodeByID := fetchNodesByIDs(ctx, gc, nodeIDs)
-	charges := fetchChargesFor(ctx, gc, nodeIDs)
-
-	propsCache := make(map[string]ThoughtProperties, len(nodeIDs))
-	for _, id := range nodeIDs {
-		propsCache[id] = computePropertiesFromCharges(charges[id])
-	}
-
-	seen := make(map[string]bool)
-	var tensions []TensionReport
-	for _, id := range nodeIDs {
-		pA := propsCache[id]
-		if pA.Magnitude < 0.5 {
-			continue
-		}
-		for _, nid := range adj[id] {
-			pairKey := id + ":" + nid
-			if seen[pairKey] || seen[nid+":"+id] {
-				continue
-			}
-			seen[pairKey] = true
-			pB, ok := propsCache[nid]
-			if !ok || pB.Magnitude < 0.5 {
-				continue
-			}
-			delta := math.Abs(pA.Valence - pB.Valence)
-			if delta < 0.5 {
-				continue
-			}
-			nA, okA := nodeByID[id]
-			nB, okB := nodeByID[nid]
-			if !okA || !okB {
-				continue
-			}
-			tensions = append(tensions, TensionReport{
-				ThoughtA:     nA,
-				ThoughtB:     nB,
-				PropertiesA:  pA,
-				PropertiesB:  pB,
-				ValenceDelta: delta,
-			})
-		}
-	}
-	sort.Slice(tensions, func(i, j int) bool { return tensions[i].ValenceDelta > tensions[j].ValenceDelta })
-	return tensions, nil
-}
-
-// ReflectBlindSpots finds clusters with few charges relative to
-// thought count. Issues ONE gc.Call("thoughts", {charges_for}) for
-// ALL cluster members before the per-cluster loop (T2-3 perf lock).
-// Bridge thoughts use the prebuilt adjacency map; per-bridge
-// hydration uses fetchNodesByIDs.
-func ReflectBlindSpots(ctx context.Context, gc Caller, clusters []ThoughtCluster, adj map[string][]string) []BlindSpotReport {
+// ReflectBlindSpots finds the highest-impact under-evidenced clusters, EXCLUDING
+// machine-genre clusters from the denominator, then ranks + caps the survivors.
+// Issues ONE gc.Call("thoughts", {charges_for}) + ONE fetchNodesByIDs for ALL
+// cluster members before the per-cluster loop (T2-3 perf lock); the genre
+// classification reuses that same nodeByID (no extra wire).
+//
+// influence is the per-thought influence vector (built ONCE by the caller via
+// BuildTrustMatrix+ComputeInfluenceVector) — clusterInfluence is the sum over a
+// cluster's members. sessionByThought maps a thought to its enclosing session
+// label, feeding the genre classifier's session-marker facet.
+//
+// Genre exclusion: a cluster whose MAJORITY of members classify as machine-genre
+// (dream/worker-generated) is DROPPED from the spots slice entirely and counted
+// into ExcludedMachineGenre — a machine cluster is charge-thin by construction, so
+// counting it as a blind spot is noise. Surviving human-genre clusters keep the
+// under-evidenced gate (charges/Size < 1.0 OR bridges present), then RANK by
+// Impact = Size × clusterInfluence × chargeThinness descending and CAP to
+// blindSpotReportCap.
+func ReflectBlindSpots(ctx context.Context, gc Caller, clusters []ThoughtCluster, adj map[string][]string, influence map[string]float64, sessionByThought map[string]string) BlindSpotResult {
 	// Flatten members for one bulk fetch.
 	var allMembers []string
 	for _, c := range clusters {
@@ -252,11 +181,19 @@ func ReflectBlindSpots(ctx context.Context, gc Caller, clusters []ThoughtCluster
 	}
 	charges := fetchChargesFor(ctx, gc, allMembers)
 
-	// One bulk hydrate for any bridge labels.
+	// One bulk hydrate for bridge labels AND the genre classifier's source/origin
+	// facets (reused — no extra wire).
 	nodeByID := fetchNodesByIDs(ctx, gc, allMembers)
 
+	result := BlindSpotResult{TotalClusters: len(clusters)}
 	var spots []BlindSpotReport
 	for _, c := range clusters {
+		// Genre exclusion: a majority-machine cluster never enters the denominator.
+		if clusterIsMachineGenre(c.ThoughtIDs, nodeByID, sessionByThought) {
+			result.ExcludedMachineGenre++
+			continue
+		}
+
 		totalCharges := 0
 		chargesByThought := make(map[string]int, len(c.ThoughtIDs))
 		for _, tid := range c.ThoughtIDs {
@@ -286,17 +223,42 @@ func ReflectBlindSpots(ctx context.Context, gc Caller, clusters []ThoughtCluster
 		})
 
 		if c.Size > 0 && (float64(totalCharges)/float64(c.Size) < 1.0 || len(bridges) > 0) {
+			result.TotalUnderEvidenced++
+
+			// clusterInfluence = sum of member influence; chargeThinness in [0,1]
+			// (1 = no charges, 0 = ≥1 charge/member). Impact rewards a large,
+			// central, charge-thin region.
+			var clusterInfluence float64
+			for _, tid := range c.ThoughtIDs {
+				clusterInfluence += influence[tid]
+			}
+			chargeThinness := 1.0 - math.Min(1.0, float64(totalCharges)/float64(c.Size))
+			impact := float64(c.Size) * clusterInfluence * chargeThinness
+
 			spots = append(spots, BlindSpotReport{
 				Cluster:        c,
 				ChargeCount:    totalCharges,
 				AvgMagnitude:   c.AvgMagnitude,
 				BridgeThoughts: bridges,
+				Influence:      clusterInfluence,
+				Impact:         impact,
 			})
 		}
 	}
 
-	sort.Slice(spots, func(i, j int) bool { return spots[i].ChargeCount < spots[j].ChargeCount })
-	return spots
+	// Rank by Impact descending, with a deterministic cluster-ID tie-break so
+	// equal-impact rows order reproducibly, then cap.
+	sort.Slice(spots, func(i, j int) bool {
+		if spots[i].Impact != spots[j].Impact {
+			return spots[i].Impact > spots[j].Impact
+		}
+		return spots[i].Cluster.ID < spots[j].Cluster.ID
+	})
+	if len(spots) > blindSpotReportCap {
+		spots = spots[:blindSpotReportCap]
+	}
+	result.Spots = spots
+	return result
 }
 
 // ReflectSummary returns a high-level overview of the thought store.
@@ -348,10 +310,9 @@ func ReflectSummary(ctx context.Context, gc Caller, clusters []ThoughtCluster) T
 	return summary
 }
 
-// listAllThoughtIDs pulls every thought ID via the query tool's type-browse
-// mode through the Execute carrier seam: a type=thought browse whose nodes
-// carrier carries the full *knowledgev1.Node payloads, projected to IDs via
-// engine.DecodeNodes (no text-parse of a render envelope).
+// listAllThoughtIDs pulls every thought ID via browseNodeIDs, which drains the
+// type=thought browse in bounded offset pages and projects the full
+// *knowledgev1.Node payloads to IDs (no text-parse of a render envelope).
 func listAllThoughtIDs(ctx context.Context, gc Caller) ([]string, error) {
 	if gc == nil {
 		return nil, nil
@@ -363,9 +324,9 @@ func listAllThoughtIDs(ctx context.Context, gc Caller) ([]string, error) {
 	return nodes, nil
 }
 
-// countByType returns the count of nodes of a given type via the same Execute
-// carrier browse listAllThoughtIDs uses (engine.DecodeNodes). A nil gc / error
-// yields 0 (the reflective surface is best-effort).
+// countByType returns the count of nodes of a given type via the same paged
+// browse listAllThoughtIDs uses (browseNodeIDs → drainThoughtBrowse). A nil gc /
+// error yields 0 (the reflective surface is best-effort).
 func countByType(ctx context.Context, gc Caller, nodeType string) int {
 	if gc == nil {
 		return 0
@@ -377,22 +338,15 @@ func countByType(ctx context.Context, gc Caller, nodeType string) int {
 	return len(ids)
 }
 
-// browseNodeIDs runs a type-browse through the Execute carrier seam and projects
-// the decoded *knowledgev1.Node IDs. Shared by listAllThoughtIDs + countByType.
-// limit:0 means "no cap" (the engine's unbounded browse), preserving the prior
-// large-page-size intent without a magic 100000.
+// browseNodeIDs drains the full type-browse via drainThoughtBrowse (bounded
+// offset paging) and projects the decoded *knowledgev1.Node IDs. Shared by
+// listAllThoughtIDs + countByType. Paging is required because a single limit:0
+// browse is silently rewritten to browseDefaultLimit(10) rows by the engine —
+// the drain is what makes the summary counts corpus-complete.
 func browseNodeIDs(ctx context.Context, gc Caller, nodeType string) ([]string, error) {
-	raw, err := json.Marshal(queryArgs{Type: nodeType, Limit: 0})
+	nodes, err := drainThoughtBrowse(ctx, gc, nodeType, browsePageSize)
 	if err != nil {
 		return nil, err
-	}
-	resp, err := executeViaEngine(ctx, gc, "query", raw)
-	if err != nil {
-		return nil, err
-	}
-	nodes, derr := engine.DecodeNodes(resp)
-	if derr != nil {
-		return nil, derr
 	}
 	out := make([]string, 0, len(nodes))
 	for _, n := range nodes {
@@ -403,8 +357,9 @@ func browseNodeIDs(ctx context.Context, gc Caller, nodeType string) ([]string, e
 
 // queryArgs is the typed payload for the type-browse query call. Kept as a
 // struct so json.Marshal stays errchkjson-safe (map[string]any triggers
-// the unsafe-type lint).
+// the unsafe-type lint). Offset carries the paging cursor for drainThoughtBrowse.
 type queryArgs struct {
-	Type  string `json:"type"`
-	Limit int    `json:"limit"`
+	Type   string `json:"type"`
+	Limit  int    `json:"limit"`
+	Offset int    `json:"offset"`
 }

@@ -61,17 +61,23 @@ func asExecutor(gc GraphCaller) (Executor, error) {
 }
 
 // graphTarget builds the GraphSelector for a cross-graph fetch. The MCP wire
-// uses `language` for practice-graph name selection and `name` for other graphs;
-// route per graph type so the server's resolveTargetDB dispatch lands. Empty
-// graphType → nil (the knowledge/default graph).
+// keys each graph family by its typed selector field: `language` for practice,
+// `repo` for code (the server's code resolver REQUIRES sel.Repo and rejects a
+// name-keyed selector before any graph lookup — routing code through `name`
+// silently fails every cross-graph code fetch, which broke born-linking), and
+// `name` for the rest (cloud, cicd, logs, transformers, …). Empty graphType →
+// nil (the knowledge/default graph).
 func graphTarget(graphType, graphName string) *knowledgev1.GraphSelector {
 	if graphType == "" {
 		return nil
 	}
 	sel := &knowledgev1.GraphSelector{Graph: graphType}
-	if graphType == "practice" {
+	switch graphType {
+	case "practice":
 		sel.Language = graphName
-	} else {
+	case "code":
+		sel.Repo = graphName
+	default:
 		sel.Name = graphName
 	}
 	return sel
@@ -203,4 +209,51 @@ func filterEdges(rawEdges []knowledgev1.Edge, nodeID string, direction kgwire.Ed
 		out = append(out, e)
 	}
 	return out
+}
+
+// FetchDependsOnEdges fetches the depends-on edges among nodeIDs in ONE
+// RETURN_MODE_EDGES Execute and returns a map from each dependent's ID
+// to its first depends-on target. It batches the per-child
+// firstDependsOn lookup the tree renderer otherwise does node-by-node.
+//
+// The plan pivots on the node-SET (QueryPlan.Ids) and sets Forward=&true
+// so the server unions only each pivot's OUTGOING depends-on edges. That
+// outgoing-only scoping is load-bearing: an unset Forward maps to
+// both-direction iteration, which would also surface a node's INCOMING
+// depends-on edge (a peer depending on it) and miscount it as the node's
+// own dependency. With outgoing-only, FromId is always the dependent and
+// ToId its dependency target, so no client-side direction filtering is
+// needed. When a node has more than one outgoing depends-on edge, the
+// first encountered wins — matching firstDependsOn's depEdges[0] contract.
+func FetchDependsOnEdges(ctx context.Context, gc GraphCaller, nodeIDs []string) (map[string]string, error) {
+	if gc == nil || len(nodeIDs) == 0 {
+		return nil, nil
+	}
+	ex, err := asExecutor(gc)
+	if err != nil {
+		return nil, err
+	}
+	fwd := true
+	resp, err := ex.Execute(ctx, &knowledgev1.ExecuteRequest{
+		Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
+			Ids:               nodeIDs,
+			Forward:           &fwd,
+			ReturnMode:        knowledgev1.ReturnMode_RETURN_MODE_EDGES,
+			IncludeTombstones: true,
+			Selection:         &knowledgev1.Selection{EdgeTypes: []string{string(kgtypes.EdgeDependsOn)}},
+		}},
+	})
+	if err != nil {
+		return nil, fmt.Errorf("fetch depends-on edges: %w", err)
+	}
+	edges := decodeCarrierEdges(resp)
+	dependsOn := make(map[string]string, len(edges))
+	for i := range edges {
+		e := &edges[i]
+		if _, seen := dependsOn[e.FromId]; seen {
+			continue // keep the first outgoing depends-on target per node
+		}
+		dependsOn[e.FromId] = e.ToId
+	}
+	return dependsOn, nil
 }

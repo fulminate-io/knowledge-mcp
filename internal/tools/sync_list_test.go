@@ -11,6 +11,7 @@ import (
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
+	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
@@ -41,20 +42,29 @@ type fakeSyncListDeps struct {
 	host     string
 }
 
-func (d *fakeSyncListDeps) LocalLiveness() LocalLiveness     { return nil }
-func (d *fakeSyncListDeps) Sink() collector.Sink             { return nil }
-func (d *fakeSyncListDeps) RootDir() string                  { return "" }
-func (d *fakeSyncListDeps) WorkerRuntime() WorkerRuntimeAPI  { return nil }
-func (d *fakeSyncListDeps) WorkerCRUD() WorkerCRUDAPI        { return nil }
-func (d *fakeSyncListDeps) GraphTypeCRUD() GraphTypeCRUDAPI  { return nil }
-func (d *fakeSyncListDeps) Embedder() embed.BinaryEmbedder   { return nil }
-func (d *fakeSyncListDeps) BackendResolver() BackendResolver { return nil }
-func (d *fakeSyncListDeps) GraphCaller() GraphCaller         { return d.cloud }
-func (d *fakeSyncListDeps) LocalGraphCaller() GraphCaller    { return d.local }
-func (d *fakeSyncListDeps) RepoResolver() *RepoResolver      { return nil }
-func (d *fakeSyncListDeps) SegmentManager() SegmentSearcher  { return nil }
-func (d *fakeSyncListDeps) SegmentShipper() SegmentShipper   { return nil }
-func (d *fakeSyncListDeps) PipelineScanner() PipelineScanner { return nil }
+func (d *fakeSyncListDeps) LocalLiveness() LocalLiveness                 { return nil }
+func (d *fakeSyncListDeps) Sink() collector.Sink                         { return nil }
+func (d *fakeSyncListDeps) RootDir() string                              { return "" }
+func (d *fakeSyncListDeps) WorkerRuntime() WorkerRuntimeAPI              { return nil }
+func (d *fakeSyncListDeps) WorkerReady() bool                            { return true }
+func (d *fakeSyncListDeps) PropReady() bool                              { return true }
+func (d *fakeSyncListDeps) PipelineReady() bool                          { return true }
+func (d *fakeSyncListDeps) ClaimRegistry() *hivemonitor.Registry         { return nil }
+func (d *fakeSyncListDeps) BanSet() *hivemonitor.BanSet                  { return nil }
+func (d *fakeSyncListDeps) WorkerCRUD() WorkerCRUDAPI                    { return nil }
+func (d *fakeSyncListDeps) GraphTypeCRUD() GraphTypeCRUDAPI              { return nil }
+func (d *fakeSyncListDeps) Embedder() embed.BinaryEmbedder               { return nil }
+func (d *fakeSyncListDeps) BackendResolver() BackendResolver             { return nil }
+func (d *fakeSyncListDeps) GraphCaller() GraphCaller                     { return d.cloud }
+func (d *fakeSyncListDeps) LocalGraphCaller() GraphCaller                { return d.local }
+func (d *fakeSyncListDeps) RepoResolver() *RepoResolver                  { return nil }
+func (d *fakeSyncListDeps) SegmentManager() SegmentSearcher              { return nil }
+func (d *fakeSyncListDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
+func (d *fakeSyncListDeps) SegmentShipper() SegmentShipper               { return nil }
+func (d *fakeSyncListDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
+func (d *fakeSyncListDeps) PipelineScanner() PipelineScanner             { return nil }
+func (d *fakeSyncListDeps) ReflectionForcer() ReflectionForcer           { return nil }
+func (d *fakeSyncListDeps) SimilarityForcer() SimilarityForcer           { return nil }
 
 // CloudStatusInfo satisfies the cloudStatusInfo seam (manage.go:43).
 func (d *fakeSyncListDeps) CloudStatusInfo() (bool, string) { return d.loggedIn, d.host }

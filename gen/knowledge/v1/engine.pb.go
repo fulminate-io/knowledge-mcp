@@ -156,6 +156,75 @@ func (ReturnMode) EnumDescriptor() ([]byte, []int) {
 	return file_knowledge_v1_engine_proto_rawDescGZIP(), []int{1}
 }
 
+// HiveOp is the hive work-queue operator. HIVE_OP_UNSPECIFIED=0 + the HIVE_OP_
+// prefix satisfy buf STANDARD enum lint. The first five (register/send/claim/
+// ack/fail) are the AGENT-facing ops (the LLM's whole hive surface); the last
+// two (renew/evict) are DAEMON/supervisor ops — they ride the same enum + RPC
+// but are NOT advertised in the agent-facing `hive` MCP tool schema.
+type HiveOp int32
+
+const (
+	HiveOp_HIVE_OP_UNSPECIFIED HiveOp = 0
+	HiveOp_HIVE_OP_REGISTER    HiveOp = 1 // declare self: a hive_member node (hive, name, roles), keyed by the caller's session-id.
+	HiveOp_HIVE_OP_SEND        HiveOp = 2 // put a unit of work into the hive: a pending message node (body, to, priority, reply_to).
+	HiveOp_HIVE_OP_CLAIM       HiveOp = 3 // atomic pending→leased CAS of one eligible item (FOR UPDATE SKIP LOCKED, exactly-one-wins).
+	HiveOp_HIVE_OP_ACK         HiveOp = 4 // terminal done (+ inline result + responds-to reply to reply_to).
+	HiveOp_HIVE_OP_FAIL        HiveOp = 5 // voluntary terminal blocked (+ reason); the worker itself decides it cannot finish.
+	HiveOp_HIVE_OP_RENEW       HiveOp = 6 // DAEMON renews lease_expires for a member's in-flight work (machine-health heartbeat; not agent-facing).
+	HiveOp_HIVE_OP_EVICT       HiveOp = 7 // supervisor/reaper sets member status=evicted + terminal-blocks its in-flight leased work (not agent-facing).
+)
+
+// Enum value maps for HiveOp.
+var (
+	HiveOp_name = map[int32]string{
+		0: "HIVE_OP_UNSPECIFIED",
+		1: "HIVE_OP_REGISTER",
+		2: "HIVE_OP_SEND",
+		3: "HIVE_OP_CLAIM",
+		4: "HIVE_OP_ACK",
+		5: "HIVE_OP_FAIL",
+		6: "HIVE_OP_RENEW",
+		7: "HIVE_OP_EVICT",
+	}
+	HiveOp_value = map[string]int32{
+		"HIVE_OP_UNSPECIFIED": 0,
+		"HIVE_OP_REGISTER":    1,
+		"HIVE_OP_SEND":        2,
+		"HIVE_OP_CLAIM":       3,
+		"HIVE_OP_ACK":         4,
+		"HIVE_OP_FAIL":        5,
+		"HIVE_OP_RENEW":       6,
+		"HIVE_OP_EVICT":       7,
+	}
+)
+
+func (x HiveOp) Enum() *HiveOp {
+	p := new(HiveOp)
+	*p = x
+	return p
+}
+
+func (x HiveOp) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (HiveOp) Descriptor() protoreflect.EnumDescriptor {
+	return file_knowledge_v1_engine_proto_enumTypes[2].Descriptor()
+}
+
+func (HiveOp) Type() protoreflect.EnumType {
+	return &file_knowledge_v1_engine_proto_enumTypes[2]
+}
+
+func (x HiveOp) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use HiveOp.Descriptor instead.
+func (HiveOp) EnumDescriptor() ([]byte, []int) {
+	return file_knowledge_v1_engine_proto_rawDescGZIP(), []int{2}
+}
+
 // Op is the comparison operator. OP_UNSPECIFIED=0 + the OP_ prefix satisfy
 // buf STANDARD enum lint. Ordered comparisons (LT/LTE/GT/GTE) are the
 // richer predicates beyond equality that this extension adds; their
@@ -226,11 +295,11 @@ func (x MetadataPredicate_Op) String() string {
 }
 
 func (MetadataPredicate_Op) Descriptor() protoreflect.EnumDescriptor {
-	return file_knowledge_v1_engine_proto_enumTypes[2].Descriptor()
+	return file_knowledge_v1_engine_proto_enumTypes[3].Descriptor()
 }
 
 func (MetadataPredicate_Op) Type() protoreflect.EnumType {
-	return &file_knowledge_v1_engine_proto_enumTypes[2]
+	return &file_knowledge_v1_engine_proto_enumTypes[3]
 }
 
 func (x MetadataPredicate_Op) Number() protoreflect.EnumNumber {
@@ -328,11 +397,11 @@ func (x MutationPlan_MutationKind) String() string {
 }
 
 func (MutationPlan_MutationKind) Descriptor() protoreflect.EnumDescriptor {
-	return file_knowledge_v1_engine_proto_enumTypes[3].Descriptor()
+	return file_knowledge_v1_engine_proto_enumTypes[4].Descriptor()
 }
 
 func (MutationPlan_MutationKind) Type() protoreflect.EnumType {
-	return &file_knowledge_v1_engine_proto_enumTypes[3]
+	return &file_knowledge_v1_engine_proto_enumTypes[4]
 }
 
 func (x MutationPlan_MutationKind) Number() protoreflect.EnumNumber {
@@ -380,11 +449,11 @@ func (x MigrateMetaReprSpec_TargetRepr) String() string {
 }
 
 func (MigrateMetaReprSpec_TargetRepr) Descriptor() protoreflect.EnumDescriptor {
-	return file_knowledge_v1_engine_proto_enumTypes[4].Descriptor()
+	return file_knowledge_v1_engine_proto_enumTypes[5].Descriptor()
 }
 
 func (MigrateMetaReprSpec_TargetRepr) Type() protoreflect.EnumType {
-	return &file_knowledge_v1_engine_proto_enumTypes[4]
+	return &file_knowledge_v1_engine_proto_enumTypes[5]
 }
 
 func (x MigrateMetaReprSpec_TargetRepr) Number() protoreflect.EnumNumber {
@@ -445,11 +514,11 @@ func (x IndexRequest_IndexOp) String() string {
 }
 
 func (IndexRequest_IndexOp) Descriptor() protoreflect.EnumDescriptor {
-	return file_knowledge_v1_engine_proto_enumTypes[5].Descriptor()
+	return file_knowledge_v1_engine_proto_enumTypes[6].Descriptor()
 }
 
 func (IndexRequest_IndexOp) Type() protoreflect.EnumType {
-	return &file_knowledge_v1_engine_proto_enumTypes[5]
+	return &file_knowledge_v1_engine_proto_enumTypes[6]
 }
 
 func (x IndexRequest_IndexOp) Number() protoreflect.EnumNumber {
@@ -467,7 +536,7 @@ type PipelineScanRequest struct {
 	state       protoimpl.MessageState `protogen:"open.v1"`
 	GraphType   string                 `protobuf:"bytes,1,opt,name=graph_type,json=graphType,proto3" json:"graph_type,omitempty"`          // graph type (knowledge / code / practice / cloud / cicd / transformers / ...)
 	GraphName   string                 `protobuf:"bytes,2,opt,name=graph_name,json=graphName,proto3" json:"graph_name,omitempty"`          // graph name within the type; may carry a "@overlay" suffix
-	Axis        string                 `protobuf:"bytes,3,opt,name=axis,proto3" json:"axis,omitempty"`                                     // discovery axis: "summary" (NodeIDsBySummaryGap) or "embed" (NodeIDsByEmbedGap)
+	Axis        string                 `protobuf:"bytes,3,opt,name=axis,proto3" json:"axis,omitempty"`                                     // discovery axis: "summary" (NodeIDsBySummaryGap), "embed" (NodeIDsByEmbedGap), "segment_rebuild" (NodeIDsBySegmentRebuild), or "reflect" (ReflectDirtyGen — watermark-only, returns dirty_gen + empty items)
 	Limit       int32                  `protobuf:"varint,4,opt,name=limit,proto3" json:"limit,omitempty"`                                  // max items to return; 0 = no cap
 	LastSeenGen uint64                 `protobuf:"varint,5,opt,name=last_seen_gen,json=lastSeenGen,proto3" json:"last_seen_gen,omitempty"` // client's prior dirty_gen; when non-zero AND equal to the current gen the handler short-circuits to empty items
 	// stable id-cursor for the segment_rebuild axis; the scan returns items with
@@ -2059,6 +2128,13 @@ type QueryPlan struct {
 	// supplies the flag and decodes via the b64-decoding decoder sibling.
 	// Empty/false = Content rides as the raw string (today behavior).
 	ContentB64 bool `protobuf:"varint,15,opt,name=content_b64,json=contentB64,proto3" json:"content_b64,omitempty"`
+	// overlay_of, on a RETURN_MODE_GRAPH_NAMES plan, restricts the catalog
+	// enumeration to the overlay keys of the named base ("<type>/<overlay_of>@*")
+	// rather than the base names. It mirrors store.ListGraphsLite(gt, overlayOf...)
+	// (the variadic overlayOf filter — composite_db_lifecycle.go / cloud
+	// lifecycle.go). Empty = base-name enumeration (the default). Ignored on every
+	// other return mode.
+	OverlayOf string `protobuf:"bytes,16,opt,name=overlay_of,json=overlayOf,proto3" json:"overlay_of,omitempty"`
 	// include_edge_metadata is a TRAVERSE-side flag: when set on a traversal plan
 	// the engine re-walks the traversed edges and RETURNS the per-edge metadata
 	// (Weight/Confidence/Method/Evidence/LastValidated) in
@@ -2206,6 +2282,13 @@ func (x *QueryPlan) GetContentB64() bool {
 	return false
 }
 
+func (x *QueryPlan) GetOverlayOf() string {
+	if x != nil {
+		return x.OverlayOf
+	}
+	return ""
+}
+
 func (x *QueryPlan) GetIncludeEdgeMetadata() bool {
 	if x != nil {
 		return x.IncludeEdgeMetadata
@@ -2304,8 +2387,31 @@ type MutationPlan struct {
 	// proto (execCreateBatchNodes), which the LLM cannot forge through the mutate
 	// tool surface. Flag-unset (every user create) keeps the guard fully active.
 	SystemManagedCreate bool `protobuf:"varint,11,opt,name=system_managed_create,json=systemManagedCreate,proto3" json:"system_managed_create,omitempty"`
-	unknownFields       protoimpl.UnknownFields
-	sizeCache           protoimpl.SizeCache
+	// reflect_inert_writeback marks a write txn whose effects must NOT advance the
+	// reflection dirty-gen (reflectDirtyGen). Set ONLY on the UPDATE_ITEMS plans the
+	// hourly reflection pass emits for its OWN metadata writeback (cluster_id /
+	// propagated_valence / propagated_magnitude). When set, the server wraps the txn
+	// ctx via store.WithReflectInertWriteback so the bump sites suppress the reflect
+	// bump — without this the reflection pass's own writeback re-triggers the reflect
+	// gen every tick and the quiet-tick skip never engages.
+	//
+	// SECURITY: this field is NEVER set from user mutate args. The client engine's
+	// mutate compiler builds the plan from mutateArgs only (no arg maps to this
+	// field); the reflection writeback path sets it PROGRAMMATICALLY on the compiled
+	// proto (executeReflectInertMutate), which the LLM cannot forge through the
+	// mutate tool surface. Flag-unset (every user edit / charge create) keeps the
+	// reflect bump fully active.
+	ReflectInertWriteback bool `protobuf:"varint,12,opt,name=reflect_inert_writeback,json=reflectInertWriteback,proto3" json:"reflect_inert_writeback,omitempty"`
+	// hard_delete opts a DELETE plan into PERMANENT row removal. Deletes are SOFT
+	// by default: the store tombstones the node (TombstonedAt set), every normal
+	// read on every backend hides it (recoverable; surfaced only via the explicit
+	// include-tombstones read paths), and the rows survive. hard_delete=true
+	// bypasses the tombstone and removes the rows irrecoverably — reserve it for
+	// deliberate, explicitly-requested permanent removal (retention pruning,
+	// operator cleanup). Ignored on every non-DELETE kind.
+	HardDelete    bool `protobuf:"varint,13,opt,name=hard_delete,json=hardDelete,proto3" json:"hard_delete,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *MutationPlan) Reset() {
@@ -2411,6 +2517,20 @@ func (x *MutationPlan) GetMigrateMetaRepr() *MigrateMetaReprSpec {
 func (x *MutationPlan) GetSystemManagedCreate() bool {
 	if x != nil {
 		return x.SystemManagedCreate
+	}
+	return false
+}
+
+func (x *MutationPlan) GetReflectInertWriteback() bool {
+	if x != nil {
+		return x.ReflectInertWriteback
+	}
+	return false
+}
+
+func (x *MutationPlan) GetHardDelete() bool {
+	if x != nil {
+		return x.HardDelete
 	}
 	return false
 }
@@ -3885,6 +4005,217 @@ func (x *IndexResponse) GetBranches() []*GraphInfo {
 	return nil
 }
 
+// HiveRequest is the op-dispatched hive work-queue request. The op discriminator
+// selects the operation; target routes to the per-account knowledge graph
+// (reuses GraphSelector); the string fields carry op-specific args. The CALLER's
+// member identity is the unfakeable MCP session-id read from the request CONTEXT
+// server-side, NOT a wire field — member_session is the DAEMON-op target (the
+// member a renew/evict/ack-on-behalf acts upon), distinct from the caller.
+type HiveRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Op            HiveOp                 `protobuf:"varint,1,opt,name=op,proto3,enum=knowledge.v1.HiveOp" json:"op,omitempty"`                   // operation discriminator
+	Target        *GraphSelector         `protobuf:"bytes,2,opt,name=target,proto3" json:"target,omitempty"`                                     // routes to the per-account knowledge graph (reused envelope)
+	Hive          string                 `protobuf:"bytes,3,opt,name=hive,proto3" json:"hive,omitempty"`                                         // hive name (register/send/claim) — implicit-create on first register/send
+	To            string                 `protobuf:"bytes,4,opt,name=to,proto3" json:"to,omitempty"`                                             // work routing discriminator (send): "@<role>" or "@queue" only (no */<name> in v1)
+	Body          string                 `protobuf:"bytes,5,opt,name=body,proto3" json:"body,omitempty"`                                         // work body (send)
+	Priority      string                 `protobuf:"bytes,6,opt,name=priority,proto3" json:"priority,omitempty"`                                 // work priority (send); claim is priority-first
+	MsgId         string                 `protobuf:"bytes,7,opt,name=msg_id,json=msgId,proto3" json:"msg_id,omitempty"`                          // target message node ID (ack/fail)
+	Result        string                 `protobuf:"bytes,8,opt,name=result,proto3" json:"result,omitempty"`                                     // completion result (ack) — stored inline on the done message
+	Reason        string                 `protobuf:"bytes,9,opt,name=reason,proto3" json:"reason,omitempty"`                                     // failure reason (fail) — stored on the blocked message
+	Name          string                 `protobuf:"bytes,10,opt,name=name,proto3" json:"name,omitempty"`                                        // human-friendly member label (register)
+	ReplyTo       string                 `protobuf:"bytes,11,opt,name=reply_to,json=replyTo,proto3" json:"reply_to,omitempty"`                   // message ID this work answers (send) — drives the responds-to edge on ack
+	Roles         []string               `protobuf:"bytes,12,rep,name=roles,proto3" json:"roles,omitempty"`                                      // member roles (register); claim matches @queue OR @<role> against these
+	MemberSession string                 `protobuf:"bytes,13,opt,name=member_session,json=memberSession,proto3" json:"member_session,omitempty"` // DAEMON-op target member session-id (renew/evict/ack-on-behalf) — NOT the caller's identity
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HiveRequest) Reset() {
+	*x = HiveRequest{}
+	mi := &file_knowledge_v1_engine_proto_msgTypes[37]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HiveRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HiveRequest) ProtoMessage() {}
+
+func (x *HiveRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_knowledge_v1_engine_proto_msgTypes[37]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HiveRequest.ProtoReflect.Descriptor instead.
+func (*HiveRequest) Descriptor() ([]byte, []int) {
+	return file_knowledge_v1_engine_proto_rawDescGZIP(), []int{37}
+}
+
+func (x *HiveRequest) GetOp() HiveOp {
+	if x != nil {
+		return x.Op
+	}
+	return HiveOp_HIVE_OP_UNSPECIFIED
+}
+
+func (x *HiveRequest) GetTarget() *GraphSelector {
+	if x != nil {
+		return x.Target
+	}
+	return nil
+}
+
+func (x *HiveRequest) GetHive() string {
+	if x != nil {
+		return x.Hive
+	}
+	return ""
+}
+
+func (x *HiveRequest) GetTo() string {
+	if x != nil {
+		return x.To
+	}
+	return ""
+}
+
+func (x *HiveRequest) GetBody() string {
+	if x != nil {
+		return x.Body
+	}
+	return ""
+}
+
+func (x *HiveRequest) GetPriority() string {
+	if x != nil {
+		return x.Priority
+	}
+	return ""
+}
+
+func (x *HiveRequest) GetMsgId() string {
+	if x != nil {
+		return x.MsgId
+	}
+	return ""
+}
+
+func (x *HiveRequest) GetResult() string {
+	if x != nil {
+		return x.Result
+	}
+	return ""
+}
+
+func (x *HiveRequest) GetReason() string {
+	if x != nil {
+		return x.Reason
+	}
+	return ""
+}
+
+func (x *HiveRequest) GetName() string {
+	if x != nil {
+		return x.Name
+	}
+	return ""
+}
+
+func (x *HiveRequest) GetReplyTo() string {
+	if x != nil {
+		return x.ReplyTo
+	}
+	return ""
+}
+
+func (x *HiveRequest) GetRoles() []string {
+	if x != nil {
+		return x.Roles
+	}
+	return nil
+}
+
+func (x *HiveRequest) GetMemberSession() string {
+	if x != nil {
+		return x.MemberSession
+	}
+	return ""
+}
+
+// HiveResponse is the op-dispatched hive work-queue response. The payload is
+// HETEROGENEOUS across ops: claim/register/send return the affected node(s) in
+// the typed Node carrier (reused); result_json carries any op-specific status
+// blob (mirrors IndexResponse.result_json — an inline map with no shared Go
+// type, stays bytes); affected_count reports rows the op touched.
+type HiveResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	ResultJson    []byte                 `protobuf:"bytes,1,opt,name=result_json,json=resultJson,proto3" json:"result_json,omitempty"`           // op-specific status blob (no shared Go type — stays bytes)
+	Nodes         []*Node                `protobuf:"bytes,2,rep,name=nodes,proto3" json:"nodes,omitempty"`                                       // affected node(s): the claimed message (claim), the member (register), the work (send) — reused Node carrier
+	AffectedCount int64                  `protobuf:"varint,3,opt,name=affected_count,json=affectedCount,proto3" json:"affected_count,omitempty"` // rows the op touched (e.g. 1 on a successful claim, 0 when nothing was eligible)
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *HiveResponse) Reset() {
+	*x = HiveResponse{}
+	mi := &file_knowledge_v1_engine_proto_msgTypes[38]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *HiveResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*HiveResponse) ProtoMessage() {}
+
+func (x *HiveResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_knowledge_v1_engine_proto_msgTypes[38]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use HiveResponse.ProtoReflect.Descriptor instead.
+func (*HiveResponse) Descriptor() ([]byte, []int) {
+	return file_knowledge_v1_engine_proto_rawDescGZIP(), []int{38}
+}
+
+func (x *HiveResponse) GetResultJson() []byte {
+	if x != nil {
+		return x.ResultJson
+	}
+	return nil
+}
+
+func (x *HiveResponse) GetNodes() []*Node {
+	if x != nil {
+		return x.Nodes
+	}
+	return nil
+}
+
+func (x *HiveResponse) GetAffectedCount() int64 {
+	if x != nil {
+		return x.AffectedCount
+	}
+	return 0
+}
+
 var File_knowledge_v1_engine_proto protoreflect.FileDescriptor
 
 const file_knowledge_v1_engine_proto_rawDesc = "" +
@@ -4036,7 +4367,7 @@ const file_knowledge_v1_engine_proto_rawDesc = "" +
 	"\n" +
 	"node_types\x18\x06 \x03(\tR\tnodeTypes\x12\x10\n" +
 	"\x03ids\x18\a \x03(\tR\x03ids\x12G\n" +
-	"\x10field_predicates\x18\b \x03(\v2\x1c.knowledge.v1.FieldPredicateR\x0ffieldPredicates\"\xd5\x04\n" +
+	"\x10field_predicates\x18\b \x03(\v2\x1c.knowledge.v1.FieldPredicateR\x0ffieldPredicates\"\xf4\x04\n" +
 	"\tQueryPlan\x125\n" +
 	"\tselection\x18\x01 \x01(\v2\x17.knowledge.v1.SelectionR\tselection\x12\x13\n" +
 	"\x05by_id\x18\x02 \x01(\tR\x04byId\x12\x19\n" +
@@ -4057,11 +4388,13 @@ const file_knowledge_v1_engine_proto_rawDesc = "" +
 	"returnMode\x12\x10\n" +
 	"\x03ids\x18\x0e \x03(\tR\x03ids\x12\x1f\n" +
 	"\vcontent_b64\x18\x0f \x01(\bR\n" +
-	"contentB64\x122\n" +
+	"contentB64\x12\x1d\n" +
+	"\n" +
+	"overlay_of\x18\x10 \x01(\tR\toverlayOf\x122\n" +
 	"\x15include_edge_metadata\x18\x12 \x01(\bR\x13includeEdgeMetadataB\n" +
 	"\n" +
 	"\b_forwardB\t\n" +
-	"\a_rerank\"\xc5\b\n" +
+	"\a_rerank\"\x9e\t\n" +
 	"\fMutationPlan\x12;\n" +
 	"\x04kind\x18\x01 \x01(\x0e2'.knowledge.v1.MutationPlan.MutationKindR\x04kind\x125\n" +
 	"\tselection\x18\x02 \x01(\v2\x17.knowledge.v1.SelectionR\tselection\x12H\n" +
@@ -4076,7 +4409,10 @@ const file_knowledge_v1_engine_proto_rawDesc = "" +
 	"\tbundle_id\x18\t \x01(\tR\bbundleId\x12M\n" +
 	"\x11migrate_meta_repr\x18\n" +
 	" \x01(\v2!.knowledge.v1.MigrateMetaReprSpecR\x0fmigrateMetaRepr\x122\n" +
-	"\x15system_managed_create\x18\v \x01(\bR\x13systemManagedCreate\x1a<\n" +
+	"\x15system_managed_create\x18\v \x01(\bR\x13systemManagedCreate\x126\n" +
+	"\x17reflect_inert_writeback\x18\f \x01(\bR\x15reflectInertWriteback\x12\x1f\n" +
+	"\vhard_delete\x18\r \x01(\bR\n" +
+	"hardDelete\x1a<\n" +
 	"\x0eSetFieldsEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\tR\x05value:\x028\x01\x1a>\n" +
@@ -4248,7 +4584,27 @@ const file_knowledge_v1_engine_proto_rawDesc = "" +
 	"\vresult_json\x18\x01 \x01(\fR\n" +
 	"resultJson\x12%\n" +
 	"\x0eaffected_count\x18\x02 \x01(\x03R\raffectedCount\x123\n" +
-	"\bbranches\x18\x03 \x03(\v2\x17.knowledge.v1.GraphInfoR\bbranches*p\n" +
+	"\bbranches\x18\x03 \x03(\v2\x17.knowledge.v1.GraphInfoR\bbranches\"\xef\x02\n" +
+	"\vHiveRequest\x12$\n" +
+	"\x02op\x18\x01 \x01(\x0e2\x14.knowledge.v1.HiveOpR\x02op\x123\n" +
+	"\x06target\x18\x02 \x01(\v2\x1b.knowledge.v1.GraphSelectorR\x06target\x12\x12\n" +
+	"\x04hive\x18\x03 \x01(\tR\x04hive\x12\x0e\n" +
+	"\x02to\x18\x04 \x01(\tR\x02to\x12\x12\n" +
+	"\x04body\x18\x05 \x01(\tR\x04body\x12\x1a\n" +
+	"\bpriority\x18\x06 \x01(\tR\bpriority\x12\x15\n" +
+	"\x06msg_id\x18\a \x01(\tR\x05msgId\x12\x16\n" +
+	"\x06result\x18\b \x01(\tR\x06result\x12\x16\n" +
+	"\x06reason\x18\t \x01(\tR\x06reason\x12\x12\n" +
+	"\x04name\x18\n" +
+	" \x01(\tR\x04name\x12\x19\n" +
+	"\breply_to\x18\v \x01(\tR\areplyTo\x12\x14\n" +
+	"\x05roles\x18\f \x03(\tR\x05roles\x12%\n" +
+	"\x0emember_session\x18\r \x01(\tR\rmemberSession\"\x80\x01\n" +
+	"\fHiveResponse\x12\x1f\n" +
+	"\vresult_json\x18\x01 \x01(\fR\n" +
+	"resultJson\x12(\n" +
+	"\x05nodes\x18\x02 \x03(\v2\x12.knowledge.v1.NodeR\x05nodes\x12%\n" +
+	"\x0eaffected_count\x18\x03 \x01(\x03R\raffectedCount*p\n" +
 	"\n" +
 	"SearchMode\x12\x1b\n" +
 	"\x17SEARCH_MODE_UNSPECIFIED\x10\x00\x12\x16\n" +
@@ -4263,12 +4619,22 @@ const file_knowledge_v1_engine_proto_rawDesc = "" +
 	"\x12RETURN_MODE_SEARCH\x10\x03\x12\x19\n" +
 	"\x15RETURN_MODE_TRAVERSAL\x10\x04\x12\x15\n" +
 	"\x11RETURN_MODE_EDGES\x10\x05\x12\x1b\n" +
-	"\x17RETURN_MODE_GRAPH_NAMES\x10\x062\xbd\x04\n" +
+	"\x17RETURN_MODE_GRAPH_NAMES\x10\x06*\xa5\x01\n" +
+	"\x06HiveOp\x12\x17\n" +
+	"\x13HIVE_OP_UNSPECIFIED\x10\x00\x12\x14\n" +
+	"\x10HIVE_OP_REGISTER\x10\x01\x12\x10\n" +
+	"\fHIVE_OP_SEND\x10\x02\x12\x11\n" +
+	"\rHIVE_OP_CLAIM\x10\x03\x12\x0f\n" +
+	"\vHIVE_OP_ACK\x10\x04\x12\x10\n" +
+	"\fHIVE_OP_FAIL\x10\x05\x12\x11\n" +
+	"\rHIVE_OP_RENEW\x10\x06\x12\x11\n" +
+	"\rHIVE_OP_EVICT\x10\a2\xfc\x04\n" +
 	"\rEngineService\x12F\n" +
 	"\aExecute\x12\x1c.knowledge.v1.ExecuteRequest\x1a\x1d.knowledge.v1.ExecuteResponse\x12@\n" +
 	"\x05Stats\x12\x1a.knowledge.v1.StatsRequest\x1a\x1b.knowledge.v1.StatsResponse\x12X\n" +
 	"\rMetadataStats\x12\".knowledge.v1.MetadataStatsRequest\x1a#.knowledge.v1.MetadataStatsResponse\x12@\n" +
-	"\x05Index\x12\x1a.knowledge.v1.IndexRequest\x1a\x1b.knowledge.v1.IndexResponse\x12U\n" +
+	"\x05Index\x12\x1a.knowledge.v1.IndexRequest\x1a\x1b.knowledge.v1.IndexResponse\x12=\n" +
+	"\x04Hive\x12\x19.knowledge.v1.HiveRequest\x1a\x1a.knowledge.v1.HiveResponse\x12U\n" +
 	"\fPipelineScan\x12!.knowledge.v1.PipelineScanRequest\x1a\".knowledge.v1.PipelineScanResponse\x12R\n" +
 	"\vExportGraph\x12 .knowledge.v1.ExportGraphRequest\x1a!.knowledge.v1.ExportGraphResponse\x12[\n" +
 	"\x0eOverwriteGraph\x12#.knowledge.v1.OverwriteGraphRequest\x1a$.knowledge.v1.OverwriteGraphResponseB@Z>github.com/fulminate-io/knowledge/gen/knowledge/v1;knowledgev1b\x06proto3"
@@ -4285,132 +4651,140 @@ func file_knowledge_v1_engine_proto_rawDescGZIP() []byte {
 	return file_knowledge_v1_engine_proto_rawDescData
 }
 
-var file_knowledge_v1_engine_proto_enumTypes = make([]protoimpl.EnumInfo, 6)
-var file_knowledge_v1_engine_proto_msgTypes = make([]protoimpl.MessageInfo, 47)
+var file_knowledge_v1_engine_proto_enumTypes = make([]protoimpl.EnumInfo, 7)
+var file_knowledge_v1_engine_proto_msgTypes = make([]protoimpl.MessageInfo, 49)
 var file_knowledge_v1_engine_proto_goTypes = []any{
 	(SearchMode)(0),                     // 0: knowledge.v1.SearchMode
 	(ReturnMode)(0),                     // 1: knowledge.v1.ReturnMode
-	(MetadataPredicate_Op)(0),           // 2: knowledge.v1.MetadataPredicate.Op
-	(MutationPlan_MutationKind)(0),      // 3: knowledge.v1.MutationPlan.MutationKind
-	(MigrateMetaReprSpec_TargetRepr)(0), // 4: knowledge.v1.MigrateMetaReprSpec.TargetRepr
-	(IndexRequest_IndexOp)(0),           // 5: knowledge.v1.IndexRequest.IndexOp
-	(*PipelineScanRequest)(nil),         // 6: knowledge.v1.PipelineScanRequest
-	(*PipelineScanResponse)(nil),        // 7: knowledge.v1.PipelineScanResponse
-	(*PipelineScanItem)(nil),            // 8: knowledge.v1.PipelineScanItem
-	(*Bm25Fields)(nil),                  // 9: knowledge.v1.Bm25Fields
-	(*ExecuteRequest)(nil),              // 10: knowledge.v1.ExecuteRequest
-	(*GraphSelector)(nil),               // 11: knowledge.v1.GraphSelector
-	(*GraphInfo)(nil),                   // 12: knowledge.v1.GraphInfo
-	(*Edge)(nil),                        // 13: knowledge.v1.Edge
-	(*Node)(nil),                        // 14: knowledge.v1.Node
-	(*HydratedResult)(nil),              // 15: knowledge.v1.HydratedResult
-	(*TraversalResult)(nil),             // 16: knowledge.v1.TraversalResult
-	(*ExecuteResponse)(nil),             // 17: knowledge.v1.ExecuteResponse
-	(*MetadataPredicate)(nil),           // 18: knowledge.v1.MetadataPredicate
-	(*FieldPredicate)(nil),              // 19: knowledge.v1.FieldPredicate
-	(*Selection)(nil),                   // 20: knowledge.v1.Selection
-	(*QueryPlan)(nil),                   // 21: knowledge.v1.QueryPlan
-	(*MutationPlan)(nil),                // 22: knowledge.v1.MutationPlan
-	(*MigrateMetaReprSpec)(nil),         // 23: knowledge.v1.MigrateMetaReprSpec
-	(*UpdateItem)(nil),                  // 24: knowledge.v1.UpdateItem
-	(*NodeBody)(nil),                    // 25: knowledge.v1.NodeBody
-	(*BatchEdgeSpec)(nil),               // 26: knowledge.v1.BatchEdgeSpec
-	(*EdgeSpec)(nil),                    // 27: knowledge.v1.EdgeSpec
-	(*StatsRequest)(nil),                // 28: knowledge.v1.StatsRequest
-	(*GraphStats)(nil),                  // 29: knowledge.v1.GraphStats
-	(*StatsResponse)(nil),               // 30: knowledge.v1.StatsResponse
-	(*ExportGraphRequest)(nil),          // 31: knowledge.v1.ExportGraphRequest
-	(*ExportGraphResponse)(nil),         // 32: knowledge.v1.ExportGraphResponse
-	(*OverwriteGraphRequest)(nil),       // 33: knowledge.v1.OverwriteGraphRequest
-	(*OverwriteGraphResponse)(nil),      // 34: knowledge.v1.OverwriteGraphResponse
-	(*MetadataStatsRequest)(nil),        // 35: knowledge.v1.MetadataStatsRequest
-	(*OverrideConfig)(nil),              // 36: knowledge.v1.OverrideConfig
-	(*KeyStats)(nil),                    // 37: knowledge.v1.KeyStats
-	(*MetadataStats)(nil),               // 38: knowledge.v1.MetadataStats
-	(*MetadataStatsResponse)(nil),       // 39: knowledge.v1.MetadataStatsResponse
-	(*ProxyTarget)(nil),                 // 40: knowledge.v1.ProxyTarget
-	(*IndexRequest)(nil),                // 41: knowledge.v1.IndexRequest
-	(*IndexResponse)(nil),               // 42: knowledge.v1.IndexResponse
-	nil,                                 // 43: knowledge.v1.Node.MetadataEntry
-	nil,                                 // 44: knowledge.v1.MutationPlan.SetFieldsEntry
-	nil,                                 // 45: knowledge.v1.MutationPlan.SetMetadataEntry
-	nil,                                 // 46: knowledge.v1.UpdateItem.MetadataEntry
-	nil,                                 // 47: knowledge.v1.NodeBody.MetadataEntry
-	nil,                                 // 48: knowledge.v1.GraphStats.NodesByTypeEntry
-	nil,                                 // 49: knowledge.v1.GraphStats.EdgesByTypeEntry
-	nil,                                 // 50: knowledge.v1.KeyStats.ValueDistributionEntry
-	nil,                                 // 51: knowledge.v1.MetadataStats.KeysEntry
-	nil,                                 // 52: knowledge.v1.IndexRequest.ParamsEntry
+	(HiveOp)(0),                         // 2: knowledge.v1.HiveOp
+	(MetadataPredicate_Op)(0),           // 3: knowledge.v1.MetadataPredicate.Op
+	(MutationPlan_MutationKind)(0),      // 4: knowledge.v1.MutationPlan.MutationKind
+	(MigrateMetaReprSpec_TargetRepr)(0), // 5: knowledge.v1.MigrateMetaReprSpec.TargetRepr
+	(IndexRequest_IndexOp)(0),           // 6: knowledge.v1.IndexRequest.IndexOp
+	(*PipelineScanRequest)(nil),         // 7: knowledge.v1.PipelineScanRequest
+	(*PipelineScanResponse)(nil),        // 8: knowledge.v1.PipelineScanResponse
+	(*PipelineScanItem)(nil),            // 9: knowledge.v1.PipelineScanItem
+	(*Bm25Fields)(nil),                  // 10: knowledge.v1.Bm25Fields
+	(*ExecuteRequest)(nil),              // 11: knowledge.v1.ExecuteRequest
+	(*GraphSelector)(nil),               // 12: knowledge.v1.GraphSelector
+	(*GraphInfo)(nil),                   // 13: knowledge.v1.GraphInfo
+	(*Edge)(nil),                        // 14: knowledge.v1.Edge
+	(*Node)(nil),                        // 15: knowledge.v1.Node
+	(*HydratedResult)(nil),              // 16: knowledge.v1.HydratedResult
+	(*TraversalResult)(nil),             // 17: knowledge.v1.TraversalResult
+	(*ExecuteResponse)(nil),             // 18: knowledge.v1.ExecuteResponse
+	(*MetadataPredicate)(nil),           // 19: knowledge.v1.MetadataPredicate
+	(*FieldPredicate)(nil),              // 20: knowledge.v1.FieldPredicate
+	(*Selection)(nil),                   // 21: knowledge.v1.Selection
+	(*QueryPlan)(nil),                   // 22: knowledge.v1.QueryPlan
+	(*MutationPlan)(nil),                // 23: knowledge.v1.MutationPlan
+	(*MigrateMetaReprSpec)(nil),         // 24: knowledge.v1.MigrateMetaReprSpec
+	(*UpdateItem)(nil),                  // 25: knowledge.v1.UpdateItem
+	(*NodeBody)(nil),                    // 26: knowledge.v1.NodeBody
+	(*BatchEdgeSpec)(nil),               // 27: knowledge.v1.BatchEdgeSpec
+	(*EdgeSpec)(nil),                    // 28: knowledge.v1.EdgeSpec
+	(*StatsRequest)(nil),                // 29: knowledge.v1.StatsRequest
+	(*GraphStats)(nil),                  // 30: knowledge.v1.GraphStats
+	(*StatsResponse)(nil),               // 31: knowledge.v1.StatsResponse
+	(*ExportGraphRequest)(nil),          // 32: knowledge.v1.ExportGraphRequest
+	(*ExportGraphResponse)(nil),         // 33: knowledge.v1.ExportGraphResponse
+	(*OverwriteGraphRequest)(nil),       // 34: knowledge.v1.OverwriteGraphRequest
+	(*OverwriteGraphResponse)(nil),      // 35: knowledge.v1.OverwriteGraphResponse
+	(*MetadataStatsRequest)(nil),        // 36: knowledge.v1.MetadataStatsRequest
+	(*OverrideConfig)(nil),              // 37: knowledge.v1.OverrideConfig
+	(*KeyStats)(nil),                    // 38: knowledge.v1.KeyStats
+	(*MetadataStats)(nil),               // 39: knowledge.v1.MetadataStats
+	(*MetadataStatsResponse)(nil),       // 40: knowledge.v1.MetadataStatsResponse
+	(*ProxyTarget)(nil),                 // 41: knowledge.v1.ProxyTarget
+	(*IndexRequest)(nil),                // 42: knowledge.v1.IndexRequest
+	(*IndexResponse)(nil),               // 43: knowledge.v1.IndexResponse
+	(*HiveRequest)(nil),                 // 44: knowledge.v1.HiveRequest
+	(*HiveResponse)(nil),                // 45: knowledge.v1.HiveResponse
+	nil,                                 // 46: knowledge.v1.Node.MetadataEntry
+	nil,                                 // 47: knowledge.v1.MutationPlan.SetFieldsEntry
+	nil,                                 // 48: knowledge.v1.MutationPlan.SetMetadataEntry
+	nil,                                 // 49: knowledge.v1.UpdateItem.MetadataEntry
+	nil,                                 // 50: knowledge.v1.NodeBody.MetadataEntry
+	nil,                                 // 51: knowledge.v1.GraphStats.NodesByTypeEntry
+	nil,                                 // 52: knowledge.v1.GraphStats.EdgesByTypeEntry
+	nil,                                 // 53: knowledge.v1.KeyStats.ValueDistributionEntry
+	nil,                                 // 54: knowledge.v1.MetadataStats.KeysEntry
+	nil,                                 // 55: knowledge.v1.IndexRequest.ParamsEntry
 }
 var file_knowledge_v1_engine_proto_depIdxs = []int32{
-	8,  // 0: knowledge.v1.PipelineScanResponse.items:type_name -> knowledge.v1.PipelineScanItem
-	9,  // 1: knowledge.v1.PipelineScanItem.bm25_fields:type_name -> knowledge.v1.Bm25Fields
-	21, // 2: knowledge.v1.ExecuteRequest.query:type_name -> knowledge.v1.QueryPlan
-	22, // 3: knowledge.v1.ExecuteRequest.mutation:type_name -> knowledge.v1.MutationPlan
-	11, // 4: knowledge.v1.ExecuteRequest.target:type_name -> knowledge.v1.GraphSelector
-	43, // 5: knowledge.v1.Node.metadata:type_name -> knowledge.v1.Node.MetadataEntry
-	14, // 6: knowledge.v1.HydratedResult.node:type_name -> knowledge.v1.Node
-	14, // 7: knowledge.v1.TraversalResult.node:type_name -> knowledge.v1.Node
-	15, // 8: knowledge.v1.ExecuteResponse.search_results:type_name -> knowledge.v1.HydratedResult
-	16, // 9: knowledge.v1.ExecuteResponse.traversal_results:type_name -> knowledge.v1.TraversalResult
-	13, // 10: knowledge.v1.ExecuteResponse.edges:type_name -> knowledge.v1.Edge
-	12, // 11: knowledge.v1.ExecuteResponse.graph_names:type_name -> knowledge.v1.GraphInfo
-	13, // 12: knowledge.v1.ExecuteResponse.traversal_edges:type_name -> knowledge.v1.Edge
-	14, // 13: knowledge.v1.ExecuteResponse.nodes:type_name -> knowledge.v1.Node
-	2,  // 14: knowledge.v1.MetadataPredicate.op:type_name -> knowledge.v1.MetadataPredicate.Op
-	2,  // 15: knowledge.v1.FieldPredicate.op:type_name -> knowledge.v1.MetadataPredicate.Op
-	18, // 16: knowledge.v1.Selection.metadata_predicates:type_name -> knowledge.v1.MetadataPredicate
-	19, // 17: knowledge.v1.Selection.field_predicates:type_name -> knowledge.v1.FieldPredicate
-	20, // 18: knowledge.v1.QueryPlan.selection:type_name -> knowledge.v1.Selection
+	9,  // 0: knowledge.v1.PipelineScanResponse.items:type_name -> knowledge.v1.PipelineScanItem
+	10, // 1: knowledge.v1.PipelineScanItem.bm25_fields:type_name -> knowledge.v1.Bm25Fields
+	22, // 2: knowledge.v1.ExecuteRequest.query:type_name -> knowledge.v1.QueryPlan
+	23, // 3: knowledge.v1.ExecuteRequest.mutation:type_name -> knowledge.v1.MutationPlan
+	12, // 4: knowledge.v1.ExecuteRequest.target:type_name -> knowledge.v1.GraphSelector
+	46, // 5: knowledge.v1.Node.metadata:type_name -> knowledge.v1.Node.MetadataEntry
+	15, // 6: knowledge.v1.HydratedResult.node:type_name -> knowledge.v1.Node
+	15, // 7: knowledge.v1.TraversalResult.node:type_name -> knowledge.v1.Node
+	16, // 8: knowledge.v1.ExecuteResponse.search_results:type_name -> knowledge.v1.HydratedResult
+	17, // 9: knowledge.v1.ExecuteResponse.traversal_results:type_name -> knowledge.v1.TraversalResult
+	14, // 10: knowledge.v1.ExecuteResponse.edges:type_name -> knowledge.v1.Edge
+	13, // 11: knowledge.v1.ExecuteResponse.graph_names:type_name -> knowledge.v1.GraphInfo
+	14, // 12: knowledge.v1.ExecuteResponse.traversal_edges:type_name -> knowledge.v1.Edge
+	15, // 13: knowledge.v1.ExecuteResponse.nodes:type_name -> knowledge.v1.Node
+	3,  // 14: knowledge.v1.MetadataPredicate.op:type_name -> knowledge.v1.MetadataPredicate.Op
+	3,  // 15: knowledge.v1.FieldPredicate.op:type_name -> knowledge.v1.MetadataPredicate.Op
+	19, // 16: knowledge.v1.Selection.metadata_predicates:type_name -> knowledge.v1.MetadataPredicate
+	20, // 17: knowledge.v1.Selection.field_predicates:type_name -> knowledge.v1.FieldPredicate
+	21, // 18: knowledge.v1.QueryPlan.selection:type_name -> knowledge.v1.Selection
 	0,  // 19: knowledge.v1.QueryPlan.search_mode:type_name -> knowledge.v1.SearchMode
 	1,  // 20: knowledge.v1.QueryPlan.return_mode:type_name -> knowledge.v1.ReturnMode
-	3,  // 21: knowledge.v1.MutationPlan.kind:type_name -> knowledge.v1.MutationPlan.MutationKind
-	20, // 22: knowledge.v1.MutationPlan.selection:type_name -> knowledge.v1.Selection
-	44, // 23: knowledge.v1.MutationPlan.set_fields:type_name -> knowledge.v1.MutationPlan.SetFieldsEntry
-	45, // 24: knowledge.v1.MutationPlan.set_metadata:type_name -> knowledge.v1.MutationPlan.SetMetadataEntry
-	27, // 25: knowledge.v1.MutationPlan.edge_spec:type_name -> knowledge.v1.EdgeSpec
-	25, // 26: knowledge.v1.MutationPlan.node_bodies:type_name -> knowledge.v1.NodeBody
-	26, // 27: knowledge.v1.MutationPlan.edges:type_name -> knowledge.v1.BatchEdgeSpec
-	24, // 28: knowledge.v1.MutationPlan.update_items:type_name -> knowledge.v1.UpdateItem
-	23, // 29: knowledge.v1.MutationPlan.migrate_meta_repr:type_name -> knowledge.v1.MigrateMetaReprSpec
-	4,  // 30: knowledge.v1.MigrateMetaReprSpec.target_repr:type_name -> knowledge.v1.MigrateMetaReprSpec.TargetRepr
-	46, // 31: knowledge.v1.UpdateItem.metadata:type_name -> knowledge.v1.UpdateItem.MetadataEntry
-	47, // 32: knowledge.v1.NodeBody.metadata:type_name -> knowledge.v1.NodeBody.MetadataEntry
-	20, // 33: knowledge.v1.EdgeSpec.to_selection:type_name -> knowledge.v1.Selection
-	11, // 34: knowledge.v1.StatsRequest.target:type_name -> knowledge.v1.GraphSelector
-	48, // 35: knowledge.v1.GraphStats.nodes_by_type:type_name -> knowledge.v1.GraphStats.NodesByTypeEntry
-	49, // 36: knowledge.v1.GraphStats.edges_by_type:type_name -> knowledge.v1.GraphStats.EdgesByTypeEntry
-	29, // 37: knowledge.v1.StatsResponse.graph_stats:type_name -> knowledge.v1.GraphStats
-	11, // 38: knowledge.v1.ExportGraphRequest.target:type_name -> knowledge.v1.GraphSelector
-	11, // 39: knowledge.v1.MetadataStatsRequest.target:type_name -> knowledge.v1.GraphSelector
-	50, // 40: knowledge.v1.KeyStats.value_distribution:type_name -> knowledge.v1.KeyStats.ValueDistributionEntry
-	51, // 41: knowledge.v1.MetadataStats.keys:type_name -> knowledge.v1.MetadataStats.KeysEntry
-	38, // 42: knowledge.v1.MetadataStatsResponse.metadata_stats:type_name -> knowledge.v1.MetadataStats
-	36, // 43: knowledge.v1.MetadataStatsResponse.override_config:type_name -> knowledge.v1.OverrideConfig
-	11, // 44: knowledge.v1.IndexRequest.target:type_name -> knowledge.v1.GraphSelector
-	5,  // 45: knowledge.v1.IndexRequest.operation:type_name -> knowledge.v1.IndexRequest.IndexOp
-	52, // 46: knowledge.v1.IndexRequest.params:type_name -> knowledge.v1.IndexRequest.ParamsEntry
-	12, // 47: knowledge.v1.IndexResponse.branches:type_name -> knowledge.v1.GraphInfo
-	37, // 48: knowledge.v1.MetadataStats.KeysEntry.value:type_name -> knowledge.v1.KeyStats
-	10, // 49: knowledge.v1.EngineService.Execute:input_type -> knowledge.v1.ExecuteRequest
-	28, // 50: knowledge.v1.EngineService.Stats:input_type -> knowledge.v1.StatsRequest
-	35, // 51: knowledge.v1.EngineService.MetadataStats:input_type -> knowledge.v1.MetadataStatsRequest
-	41, // 52: knowledge.v1.EngineService.Index:input_type -> knowledge.v1.IndexRequest
-	6,  // 53: knowledge.v1.EngineService.PipelineScan:input_type -> knowledge.v1.PipelineScanRequest
-	31, // 54: knowledge.v1.EngineService.ExportGraph:input_type -> knowledge.v1.ExportGraphRequest
-	33, // 55: knowledge.v1.EngineService.OverwriteGraph:input_type -> knowledge.v1.OverwriteGraphRequest
-	17, // 56: knowledge.v1.EngineService.Execute:output_type -> knowledge.v1.ExecuteResponse
-	30, // 57: knowledge.v1.EngineService.Stats:output_type -> knowledge.v1.StatsResponse
-	39, // 58: knowledge.v1.EngineService.MetadataStats:output_type -> knowledge.v1.MetadataStatsResponse
-	42, // 59: knowledge.v1.EngineService.Index:output_type -> knowledge.v1.IndexResponse
-	7,  // 60: knowledge.v1.EngineService.PipelineScan:output_type -> knowledge.v1.PipelineScanResponse
-	32, // 61: knowledge.v1.EngineService.ExportGraph:output_type -> knowledge.v1.ExportGraphResponse
-	34, // 62: knowledge.v1.EngineService.OverwriteGraph:output_type -> knowledge.v1.OverwriteGraphResponse
-	56, // [56:63] is the sub-list for method output_type
-	49, // [49:56] is the sub-list for method input_type
-	49, // [49:49] is the sub-list for extension type_name
-	49, // [49:49] is the sub-list for extension extendee
-	0,  // [0:49] is the sub-list for field type_name
+	4,  // 21: knowledge.v1.MutationPlan.kind:type_name -> knowledge.v1.MutationPlan.MutationKind
+	21, // 22: knowledge.v1.MutationPlan.selection:type_name -> knowledge.v1.Selection
+	47, // 23: knowledge.v1.MutationPlan.set_fields:type_name -> knowledge.v1.MutationPlan.SetFieldsEntry
+	48, // 24: knowledge.v1.MutationPlan.set_metadata:type_name -> knowledge.v1.MutationPlan.SetMetadataEntry
+	28, // 25: knowledge.v1.MutationPlan.edge_spec:type_name -> knowledge.v1.EdgeSpec
+	26, // 26: knowledge.v1.MutationPlan.node_bodies:type_name -> knowledge.v1.NodeBody
+	27, // 27: knowledge.v1.MutationPlan.edges:type_name -> knowledge.v1.BatchEdgeSpec
+	25, // 28: knowledge.v1.MutationPlan.update_items:type_name -> knowledge.v1.UpdateItem
+	24, // 29: knowledge.v1.MutationPlan.migrate_meta_repr:type_name -> knowledge.v1.MigrateMetaReprSpec
+	5,  // 30: knowledge.v1.MigrateMetaReprSpec.target_repr:type_name -> knowledge.v1.MigrateMetaReprSpec.TargetRepr
+	49, // 31: knowledge.v1.UpdateItem.metadata:type_name -> knowledge.v1.UpdateItem.MetadataEntry
+	50, // 32: knowledge.v1.NodeBody.metadata:type_name -> knowledge.v1.NodeBody.MetadataEntry
+	21, // 33: knowledge.v1.EdgeSpec.to_selection:type_name -> knowledge.v1.Selection
+	12, // 34: knowledge.v1.StatsRequest.target:type_name -> knowledge.v1.GraphSelector
+	51, // 35: knowledge.v1.GraphStats.nodes_by_type:type_name -> knowledge.v1.GraphStats.NodesByTypeEntry
+	52, // 36: knowledge.v1.GraphStats.edges_by_type:type_name -> knowledge.v1.GraphStats.EdgesByTypeEntry
+	30, // 37: knowledge.v1.StatsResponse.graph_stats:type_name -> knowledge.v1.GraphStats
+	12, // 38: knowledge.v1.ExportGraphRequest.target:type_name -> knowledge.v1.GraphSelector
+	12, // 39: knowledge.v1.MetadataStatsRequest.target:type_name -> knowledge.v1.GraphSelector
+	53, // 40: knowledge.v1.KeyStats.value_distribution:type_name -> knowledge.v1.KeyStats.ValueDistributionEntry
+	54, // 41: knowledge.v1.MetadataStats.keys:type_name -> knowledge.v1.MetadataStats.KeysEntry
+	39, // 42: knowledge.v1.MetadataStatsResponse.metadata_stats:type_name -> knowledge.v1.MetadataStats
+	37, // 43: knowledge.v1.MetadataStatsResponse.override_config:type_name -> knowledge.v1.OverrideConfig
+	12, // 44: knowledge.v1.IndexRequest.target:type_name -> knowledge.v1.GraphSelector
+	6,  // 45: knowledge.v1.IndexRequest.operation:type_name -> knowledge.v1.IndexRequest.IndexOp
+	55, // 46: knowledge.v1.IndexRequest.params:type_name -> knowledge.v1.IndexRequest.ParamsEntry
+	13, // 47: knowledge.v1.IndexResponse.branches:type_name -> knowledge.v1.GraphInfo
+	2,  // 48: knowledge.v1.HiveRequest.op:type_name -> knowledge.v1.HiveOp
+	12, // 49: knowledge.v1.HiveRequest.target:type_name -> knowledge.v1.GraphSelector
+	15, // 50: knowledge.v1.HiveResponse.nodes:type_name -> knowledge.v1.Node
+	38, // 51: knowledge.v1.MetadataStats.KeysEntry.value:type_name -> knowledge.v1.KeyStats
+	11, // 52: knowledge.v1.EngineService.Execute:input_type -> knowledge.v1.ExecuteRequest
+	29, // 53: knowledge.v1.EngineService.Stats:input_type -> knowledge.v1.StatsRequest
+	36, // 54: knowledge.v1.EngineService.MetadataStats:input_type -> knowledge.v1.MetadataStatsRequest
+	42, // 55: knowledge.v1.EngineService.Index:input_type -> knowledge.v1.IndexRequest
+	44, // 56: knowledge.v1.EngineService.Hive:input_type -> knowledge.v1.HiveRequest
+	7,  // 57: knowledge.v1.EngineService.PipelineScan:input_type -> knowledge.v1.PipelineScanRequest
+	32, // 58: knowledge.v1.EngineService.ExportGraph:input_type -> knowledge.v1.ExportGraphRequest
+	34, // 59: knowledge.v1.EngineService.OverwriteGraph:input_type -> knowledge.v1.OverwriteGraphRequest
+	18, // 60: knowledge.v1.EngineService.Execute:output_type -> knowledge.v1.ExecuteResponse
+	31, // 61: knowledge.v1.EngineService.Stats:output_type -> knowledge.v1.StatsResponse
+	40, // 62: knowledge.v1.EngineService.MetadataStats:output_type -> knowledge.v1.MetadataStatsResponse
+	43, // 63: knowledge.v1.EngineService.Index:output_type -> knowledge.v1.IndexResponse
+	45, // 64: knowledge.v1.EngineService.Hive:output_type -> knowledge.v1.HiveResponse
+	8,  // 65: knowledge.v1.EngineService.PipelineScan:output_type -> knowledge.v1.PipelineScanResponse
+	33, // 66: knowledge.v1.EngineService.ExportGraph:output_type -> knowledge.v1.ExportGraphResponse
+	35, // 67: knowledge.v1.EngineService.OverwriteGraph:output_type -> knowledge.v1.OverwriteGraphResponse
+	60, // [60:68] is the sub-list for method output_type
+	52, // [52:60] is the sub-list for method input_type
+	52, // [52:52] is the sub-list for extension type_name
+	52, // [52:52] is the sub-list for extension extendee
+	0,  // [0:52] is the sub-list for field type_name
 }
 
 func init() { file_knowledge_v1_engine_proto_init() }
@@ -4429,8 +4803,8 @@ func file_knowledge_v1_engine_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_knowledge_v1_engine_proto_rawDesc), len(file_knowledge_v1_engine_proto_rawDesc)),
-			NumEnums:      6,
-			NumMessages:   47,
+			NumEnums:      7,
+			NumMessages:   49,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

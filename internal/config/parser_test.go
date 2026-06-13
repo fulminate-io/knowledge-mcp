@@ -49,6 +49,107 @@ model = "gpt-5-mini"
 	}
 }
 
+func TestParse_SupervisorSection(t *testing.T) {
+	body := `
+[default]
+provider = "anthropic"
+model = "claude-haiku-5"
+
+[supervisor]
+provider = "openai"
+model = "gpt-5"
+`
+	cfg, err := Parse([]byte(body))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Supervisor == nil {
+		t.Fatal("Supervisor is nil; expected populated")
+	}
+	if cfg.Supervisor.Provider != ProviderOpenAI {
+		t.Errorf("Supervisor.Provider = %q; want %q", cfg.Supervisor.Provider, ProviderOpenAI)
+	}
+	if cfg.Supervisor.Model != "gpt-5" {
+		t.Errorf("Supervisor.Model = %q", cfg.Supervisor.Model)
+	}
+}
+
+func TestParse_SupervisorAbsentIsNil(t *testing.T) {
+	body := `
+[default]
+provider = "anthropic"
+model = "claude-haiku-5"
+`
+	cfg, err := Parse([]byte(body))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Supervisor != nil {
+		t.Errorf("Supervisor = %+v; want nil when section absent", cfg.Supervisor)
+	}
+}
+
+// TestParse_TopicsSection covers the [topics] consumer (the similarity lever's
+// topic-summary LLM): a model-only section parses, and Resolve(ConsumerTopics)
+// overrides the model while inheriting provider/cli_bin from [default] — the
+// exact "topic summaries on an opus-class model, pipeline summarizer untouched"
+// configuration shape.
+func TestParse_TopicsSection(t *testing.T) {
+	body := `
+[default]
+provider = "claude-cli"
+model = "claude-haiku-5"
+cli_bin = "/usr/local/bin/claude"
+
+[topics]
+model = "claude-opus-5"
+`
+	cfg, err := Parse([]byte(body))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Topics == nil {
+		t.Fatal("Topics is nil; expected populated")
+	}
+	sec, err := cfg.Resolve(ConsumerTopics)
+	if err != nil {
+		t.Fatalf("Resolve(topics): %v", err)
+	}
+	if sec.Model != "claude-opus-5" {
+		t.Errorf("topics Model = %q; want the [topics] override", sec.Model)
+	}
+	if sec.Provider != ProviderClaudeCLI {
+		t.Errorf("topics Provider = %q; want claude-cli inherited from [default]", sec.Provider)
+	}
+	if sec.CLIBin != "/usr/local/bin/claude" {
+		t.Errorf("topics CLIBin = %q; want inherited from [default]", sec.CLIBin)
+	}
+}
+
+// TestParse_TopicsAbsentInheritsDefault asserts an absent [topics] section
+// resolves to [default] wholesale (nil pointer → full inheritance).
+func TestParse_TopicsAbsentInheritsDefault(t *testing.T) {
+	body := `
+[default]
+provider = "anthropic"
+model = "claude-haiku-5"
+`
+	cfg, err := Parse([]byte(body))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Topics != nil {
+		t.Errorf("Topics = %+v; want nil when section absent", cfg.Topics)
+	}
+	sec, err := cfg.Resolve(ConsumerTopics)
+	if err != nil {
+		t.Fatalf("Resolve(topics): %v", err)
+	}
+	if sec.Model != "claude-haiku-5" || sec.Provider != ProviderAnthropic {
+		t.Errorf("absent [topics] must inherit [default]; got %+v", sec)
+	}
+}
+
 func TestParse_BaseURL(t *testing.T) {
 	body := `
 [default]

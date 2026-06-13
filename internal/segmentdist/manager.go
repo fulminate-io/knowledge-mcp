@@ -34,16 +34,53 @@ type distManager[Q, S any] struct {
 	// filter" (the mock-format engine in tests, which ships its own format only).
 	format string
 
-	lastSeenGen atomic.Uint64
+	// importedGen and shippedGen are the DECOUPLED generation cursors. They were
+	// once ONE shared cursor, which had an undocumented second job: after a
+	// ship() advanced it, a later load()'s List(sharedCursor) excluded this
+	// process's own just-shipped tail (strictly-greater filter) so it was not
+	// re-imported. But sharing the cursor ALSO let ship() poison the load floor:
+	// on a cold process the embed-writeback ship stamps the fresh tail at the
+	// server's monotonic generation (~N, next after the existing corpus) and
+	// advanced the shared cursor to N BEFORE any search ran — so the first lazy
+	// load()'s List(N) returned an empty delta and the N stored blobs were never
+	// imported. Search then served a ~2-doc tail until a manual rebuild.
+	//
+	//   - importedGen is the LOAD floor: the max generation load() has actually
+	//     imported into the searchable engine. load() Lists(importedGen) and
+	//     advances ONLY importedGen. A cold process has importedGen==0, so the
+	//     first load() Lists(0) and imports the FULL stored corpus. (Re-listing
+	//     this process's own shipped tail is now harmless: Import is idempotent by
+	//     segment ID — see searchengine publishImport — so a re-listed resident
+	//     segment is dropped, never double-added.)
+	//   - shippedGen is TRACKING-ONLY: the max generation shipNew has stamped this
+	//     process. It is advanced by shipNew and never read as a load floor, so a
+	//     ship can no longer poison load().
+	importedGen atomic.Uint64
+	shippedGen  atomic.Uint64
 
 	// shippedIDs is the set of content-hash segment ids already present on the
 	// server. SEEDED ONCE (seedOnce) from Source.List(0) — the server is the
 	// single source of truth for what has been shipped; the client RE-DERIVES
-	// rather than persisting a drift-prone local file. Guarded by shipMu.
-	shipMu     sync.Mutex
-	seedOnce   sync.Once
-	seedErr    error
-	shippedIDs map[searchengine.SegmentID]struct{}
+	// rather than persisting a drift-prone local file. Guarded by shipMu. Serves
+	// TWO purposes: ship-new DIFF suppression (skip re-uploading the seeded
+	// corpus), and the ROLE-A authoritative replace-prune used by the
+	// deterministic rebuild (FlushDeterministic), whose Export() IS the complete
+	// new corpus.
+	//
+	// locallyShipped is the set of ids THIS PROCESS shipped via shipNew — seeded
+	// EMPTY and never populated from the server. It is the ROLE-B prune-eligible
+	// set: the embed/tail ship path (AddAndShip/AddAndShipFields/Flush) reconciles
+	// merges against locallyShipped so a fresh process (locallyShipped empty after
+	// restart) can NEVER prune the prior server corpus it did not itself ship —
+	// only this-process merged-away ids. This per-role split is the fix for the
+	// segment-ship restart false-prune: seeding shippedIDs from the full server
+	// List(0) while Export() returns only the tail made the embed reconcile prune
+	// the whole corpus on the first ship after restart.
+	shipMu         sync.Mutex
+	seedOnce       sync.Once
+	seedErr        error
+	shippedIDs     map[searchengine.SegmentID]struct{}
+	locallyShipped map[searchengine.SegmentID]struct{}
 
 	// resident tracks the segments currently imported into the engine + an
 	// approximate resident-byte total (sum of imported blob byte lengths). Guarded
@@ -51,6 +88,12 @@ type distManager[Q, S any] struct {
 	// reload can re-Import from L2 without a network round-trip.
 	resMu    sync.Mutex
 	resident map[searchengine.SegmentID]residentSeg
+
+	// recovering single-flights the read-side degeneracy backstop (recoverIfDegenerate
+	// in manager_backstop.go): the FIRST search to find a degenerate engine CASes it
+	// true, resets the load floor, and re-imports the corpus; concurrent searches see
+	// it already set and skip (the recovery will make the corpus resident shortly).
+	recovering atomic.Bool
 }
 
 // residentSeg records one imported segment's size + format + generation so unload
@@ -73,13 +116,14 @@ func newDistManager[Q, S any](
 	format string,
 ) *distManager[Q, S] {
 	return &distManager[Q, S]{
-		engine:     engine,
-		source:     source,
-		cache:      cache,
-		target:     target,
-		format:     format,
-		shippedIDs: make(map[searchengine.SegmentID]struct{}),
-		resident:   make(map[searchengine.SegmentID]residentSeg),
+		engine:         engine,
+		source:         source,
+		cache:          cache,
+		target:         target,
+		format:         format,
+		shippedIDs:     make(map[searchengine.SegmentID]struct{}),
+		locallyShipped: make(map[searchengine.SegmentID]struct{}),
+		resident:       make(map[searchengine.SegmentID]residentSeg),
 	}
 }
 
@@ -94,6 +138,15 @@ func (m *distManager[Q, S]) keepFormat(f string) bool {
 // the first ship(). The server is the source of truth; the client re-derives.
 // Backed by the idempotent server Put, this seed is an optimization (avoid the
 // upload), not a correctness requirement.
+//
+// CRITICAL: the server keys blobs by graphKey ONLY (no format dimension), so
+// List(0) returns BOTH this graph's HNSW and BM25 blobs. shippedIDs must hold
+// ONLY THIS engine's format ids — exactly the same keepFormat filter load()
+// applies. Seeding a foreign-format id here would make reconcilePrune treat it as
+// "shipped but no longer Exported" (this engine never Exports the other format)
+// and PRUNE the other format's live segments server-side: e.g. the BM25 ship
+// would prune the just-shipped HNSW segments, leaving VectorByID with nothing to
+// resolve. The format filter is the fix for that cross-format prune.
 func (m *distManager[Q, S]) ensureShippedSeeded(ctx context.Context) error {
 	m.seedOnce.Do(func() {
 		metas, err := m.source.List(ctx, 0)
@@ -103,6 +156,9 @@ func (m *distManager[Q, S]) ensureShippedSeeded(ctx context.Context) error {
 		}
 		m.shipMu.Lock()
 		for _, meta := range metas {
+			if !m.keepFormat(meta.Format) {
+				continue
+			}
 			m.shippedIDs[meta.ID] = struct{}{}
 		}
 		m.shipMu.Unlock()
@@ -110,152 +166,23 @@ func (m *distManager[Q, S]) ensureShippedSeeded(ctx context.Context) error {
 	return m.seedErr
 }
 
-// ship exports every current segment, diffs against shippedIDs, and ships ONLY
-// the new content-hash blobs in one batched Ship. An empty diff is a NO-OP for the
-// ship leg: zero RPC, zero generation, zero bytes. On the response it warms the L2
-// cache, marks each id shipped, and advances last-seen generation.
-//
-// reconcile-on-ship: after the ship-new leg, ship() also PRUNES the
-// merged-away segments — the ids in shippedIDs the engine no longer Exports
-// (what a background merge consolidated away). Ship-new runs FIRST so the
-// consolidated blob lands before its constituents are pruned (never a server
-// gap), then Prune removes the stale ids. Both legs are independently zero-RPC
-// when there is nothing to do (steady state with no merge → Export == shippedIDs
-// → nothing new to ship AND nothing to prune).
-//
-// RETURN: the set of superseded segment ids reconcilePrune dropped server-side
-// (the merged-away ids). The deterministic rebuild path propagates these up to
-// Manager.FlushDeterministic → the driver → InvalidateLocal so the local L2
-// .seg files for the superseded ids are evicted (they would otherwise orphan
-// until LRU, which never fires on an unbounded cache). Every other (embed/
-// migration) caller discards the slice — the server-side prune is the behavior
-// they already had.
-func (m *distManager[Q, S]) ship(ctx context.Context) ([]searchengine.SegmentID, error) {
-	if err := m.ensureShippedSeeded(ctx); err != nil {
-		return nil, err
-	}
-
-	all := m.engine.Export()
-
-	m.shipMu.Lock()
-	var diff []*knowledgev1.SegmentBlobProto
-	diffBlobs := make(map[string]searchengine.SegmentBlob)
-	for _, b := range all {
-		if _, sent := m.shippedIDs[b.ID]; sent {
-			continue
-		}
-		diff = append(diff, blobToProto(b))
-		diffBlobs[b.ID] = b
-	}
-	m.shipMu.Unlock()
-
-	// Ship-new FIRST (skips the RPC when the diff is empty but does NOT return —
-	// the prune leg below must still reconcile a merge whose consolidated blob was
-	// shipped on an earlier pass).
-	if err := m.shipNew(ctx, diff, diffBlobs); err != nil {
-		return nil, err
-	}
-
-	// reconcile-on-ship prune: drop the merged-away ids the server still holds,
-	// returning the pruned id set up the stack.
-	return m.reconcilePrune(all)
-}
-
-// shipNew ships the new-content-hash blobs in one batched Ship, warms the L2
-// cache from the stamped response, marks each id shipped, and advances last-seen
-// generation. An empty diff is a NO-OP: zero RPC, zero generation, zero bytes.
-func (m *distManager[Q, S]) shipNew(
-	ctx context.Context,
-	diff []*knowledgev1.SegmentBlobProto,
-	diffBlobs map[string]searchengine.SegmentBlob,
-) error {
-	if len(diff) == 0 {
-		return nil
-	}
-
-	resp, err := m.source.caller.Ship(ctx, &knowledgev1.ShipRequest{
-		Target: m.target,
-		Blobs:  diff,
-	})
-	if err != nil {
-		return err
-	}
-
-	m.shipMu.Lock()
-	var maxGen uint64
-	for _, meta := range resp.GetStamped() {
-		m.shippedIDs[meta.GetId()] = struct{}{}
-		if b, ok := diffBlobs[meta.GetId()]; ok {
-			m.cache.Put(meta.GetId(), b.Bytes)
-		}
-		if meta.GetGeneration() > maxGen {
-			maxGen = meta.GetGeneration()
-		}
-	}
-	m.shipMu.Unlock()
-
-	m.advanceGen(maxGen)
-	return nil
-}
-
-// reconcilePrune is the INVERSE of the ship-new diff: it computes the set of ids
-// the manager still believes are shipped but the engine no longer Exports — i.e.
-// the small segments a background merge consolidated away (searchengine merges
-// engine-internal with no callback, so the merged-away set is re-derived here from
-// the Export/shippedIDs delta the manager already holds). It Prunes them on the
-// server so the server segment set stays BOUNDED across repeated ship+merge cycles,
-// then drops them from shippedIDs. Empty pruneSet → ZERO Prune RPC (mirrors the
-// empty-diff zero-Ship fast path). Runs under the already-held shipMu lifecycle —
-// no new lock; the O(shippedIDs) walk is cheap.
-//
-// RETURN: the pruneSet it computed + dropped (nil on the empty fast path). ship()
-// surfaces this up the stack so the deterministic rebuild path can invalidate the
-// superseded ids from the local L2 cache.
-func (m *distManager[Q, S]) reconcilePrune(all []searchengine.SegmentBlob) ([]searchengine.SegmentID, error) {
-	exportedIDs := make(map[searchengine.SegmentID]struct{}, len(all))
-	for _, b := range all {
-		exportedIDs[b.ID] = struct{}{}
-	}
-
-	m.shipMu.Lock()
-	var pruneSet []searchengine.SegmentID
-	for id := range m.shippedIDs {
-		if _, live := exportedIDs[id]; !live {
-			pruneSet = append(pruneSet, id)
-		}
-	}
-	m.shipMu.Unlock()
-
-	if len(pruneSet) == 0 {
-		return nil, nil
-	}
-
-	if _, err := m.source.Prune(pruneSet); err != nil {
-		return nil, err
-	}
-
-	m.shipMu.Lock()
-	for _, id := range pruneSet {
-		delete(m.shippedIDs, id)
-	}
-	m.shipMu.Unlock()
-	return pruneSet, nil
-}
-
-// load pulls the server's delta (generation > lastSeenGen) into the engine:
+// load pulls the server's delta (generation > importedGen) into the engine:
 // List the delta, serve cache HITS locally (skip network), batch-Fetch the
-// MISSES, warm the cache, and Import the full set. Advances lastSeenGen to the
-// max generation in the delta. tombstones is empty — tombstone sourcing is the
+// MISSES, warm the cache, and Import the full set. Advances importedGen (the LOAD
+// floor — NOT shippedGen) to the max generation in the delta. A cold process has
+// importedGen==0, so List(0) returns the full stored corpus and imports it all;
+// re-listing this process's own shipped tail is harmless because Import is
+// idempotent by segment id. tombstones is empty — tombstone sourcing is the
 // overlay/migration ticket's concern, not this layer.
 func (m *distManager[Q, S]) load(ctx context.Context) error {
-	listed, err := m.source.List(ctx, m.lastSeenGen.Load())
+	listed, err := m.source.List(ctx, m.importedGen.Load())
 	if err != nil {
 		return err
 	}
 	// The server bucket holds BOTH formats for this graph (no format dimension in
 	// the graphKey); keep only this engine's format so we never decode a foreign
 	// blob. Track the max generation across the FULL listed delta (incl. dropped
-	// foreign-format metas) so lastSeenGen still advances past them and a later
+	// foreign-format metas) so importedGen still advances past them and a later
 	// load does not re-list them.
 	metas := make([]searchengine.SegmentMeta, 0, len(listed))
 	var listedMaxGen uint64
@@ -268,7 +195,7 @@ func (m *distManager[Q, S]) load(ctx context.Context) error {
 		}
 	}
 	if len(metas) == 0 {
-		m.advanceGen(listedMaxGen)
+		m.advanceGen(&m.importedGen, listedMaxGen)
 		return nil
 	}
 
@@ -328,12 +255,13 @@ func (m *distManager[Q, S]) load(ctx context.Context) error {
 		return err
 	}
 	m.recordResident(blobs)
-	// Advance past the WHOLE listed delta (incl. dropped foreign-format metas) so
-	// a later load does not re-list and re-drop them.
+	// Advance the LOAD floor (importedGen) past the WHOLE listed delta (incl.
+	// dropped foreign-format metas) so a later load does not re-list and re-drop
+	// them.
 	if listedMaxGen > maxGen {
 		maxGen = listedMaxGen
 	}
-	m.advanceGen(maxGen)
+	m.advanceGen(&m.importedGen, maxGen)
 	return nil
 }
 
@@ -433,11 +361,13 @@ func (m *distManager[Q, S]) recordResident(blobs []searchengine.SegmentBlob) {
 	}
 }
 
-// advanceGen monotonically raises lastSeenGen to gen (never lowers it).
-func (m *distManager[Q, S]) advanceGen(gen uint64) {
+// advanceGen monotonically raises the given cursor to gen (never lowers it). It
+// is the ONE CAS loop both decoupled cursors share: load() passes &importedGen
+// (the load floor), shipNew passes &shippedGen (ship tracking only).
+func (m *distManager[Q, S]) advanceGen(cur *atomic.Uint64, gen uint64) {
 	for {
-		cur := m.lastSeenGen.Load()
-		if gen <= cur || m.lastSeenGen.CompareAndSwap(cur, gen) {
+		seen := cur.Load()
+		if gen <= seen || cur.CompareAndSwap(seen, gen) {
 			return
 		}
 	}

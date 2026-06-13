@@ -218,6 +218,105 @@ func TestExportImportRoundTrip(t *testing.T) {
 	}
 }
 
+// TestImportIsIdempotentBySegmentID pins the publishImport segment-ID dedup guard:
+// importing the SAME blob twice leaves Export() length unchanged and a Search
+// returns the doc exactly ONCE (not two result slots) — mergeTopK does not dedup
+// docIDs, so a double-resident segment would otherwise duplicate the hit. A
+// genuinely-distinct blob still appends (Export +1).
+func TestImportIsIdempotentBySegmentID(t *testing.T) {
+	src := newTestEngine(2)
+	defer src.Close()
+	for _, id := range []string{"a", "b"} {
+		if err := src.Add([]Document{doc(id, "x")}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	blobB := src.Export()
+	if len(blobB) != 1 {
+		t.Fatalf("source Export = %d blobs, want 1", len(blobB))
+	}
+
+	dst := newTestEngine(2)
+	defer dst.Close()
+	if err := dst.Import(blobB, nil); err != nil {
+		t.Fatal(err)
+	}
+	afterFirst := len(dst.Export())
+	if afterFirst != 1 {
+		t.Fatalf("after first Import, Export = %d, want 1", afterFirst)
+	}
+
+	// Re-import the SAME blob: idempotent — Export length unchanged.
+	if err := dst.Import(blobB, nil); err != nil {
+		t.Fatal(err)
+	}
+	if afterSecond := len(dst.Export()); afterSecond != afterFirst {
+		t.Fatalf("re-import of the same blob changed Export = %d, want %d (idempotent by id)", afterSecond, afterFirst)
+	}
+
+	// A Search for a docID in B returns it exactly once (not two slots).
+	got := searchIDs(dst.Search(mockQuery{term: "x"}, 10))
+	if fmt.Sprint(got) != "[a b]" {
+		t.Fatalf("after re-import, search = %v, want [a b] (each docID once, no duplicates)", got)
+	}
+
+	// A genuinely-distinct new blob still appends (Export +1).
+	src2 := newTestEngine(2)
+	defer src2.Close()
+	for _, id := range []string{"c", "d"} {
+		if err := src2.Add([]Document{doc(id, "x")}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	blobCD := src2.Export()
+	if len(blobCD) != 1 {
+		t.Fatalf("second source Export = %d blobs, want 1", len(blobCD))
+	}
+	if err := dst.Import(blobCD, nil); err != nil {
+		t.Fatal(err)
+	}
+	if afterNew := len(dst.Export()); afterNew != afterFirst+1 {
+		t.Fatalf("after importing a distinct blob, Export = %d, want %d (new blob appends)", afterNew, afterFirst+1)
+	}
+}
+
+// TestResidentDocCount pins the read-side coverage accessor: 0 on a fresh engine,
+// the summed sealed-segment doc count after Add+seal, and again after Import.
+func TestResidentDocCount(t *testing.T) {
+	e := newTestEngine(2) // MinSegmentDocs=2 → seals one segment per 2 docs
+	defer e.Close()
+	if got := e.ResidentDocCount(); got != 0 {
+		t.Fatalf("fresh engine ResidentDocCount = %d, want 0", got)
+	}
+
+	// Add+seal 4 docs → 2 sealed segments of 2 docs each → resident 4.
+	for _, id := range []string{"a", "b", "c", "d"} {
+		if err := e.Add([]Document{doc(id, "x")}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := e.ResidentDocCount(); got != 4 {
+		t.Fatalf("after Add+seal of 4 docs, ResidentDocCount = %d, want 4", got)
+	}
+
+	// Import a 2-doc blob into a fresh engine → resident 2.
+	dst := newTestEngine(2)
+	defer dst.Close()
+	src := newTestEngine(2)
+	defer src.Close()
+	for _, id := range []string{"e", "f"} {
+		if err := src.Add([]Document{doc(id, "x")}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := dst.Import(src.Export(), nil); err != nil {
+		t.Fatal(err)
+	}
+	if got := dst.ResidentDocCount(); got != 2 {
+		t.Fatalf("after Import of a 2-doc blob, ResidentDocCount = %d, want 2", got)
+	}
+}
+
 func TestUnload(t *testing.T) {
 	e := newTestEngine(1)
 	defer e.Close()

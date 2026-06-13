@@ -105,6 +105,8 @@ func InterceptManage(deps ClientDeps, params kgtools.CallToolParams) (bool, kgto
 		return true, handleClientRebuildCache(context.Background(), deps, a)
 	case "rebuild_segments":
 		return true, handleClientRebuildSegments(context.Background(), deps, a)
+	case "drop_graph":
+		return true, handleClientDropGraph(context.Background(), deps, a)
 	}
 	return false, kgtools.ToolResult{}
 }

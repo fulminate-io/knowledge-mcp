@@ -272,6 +272,26 @@ The user is the CEO. Your team:
 
 </constraint>
 
+<constraint id="briefs-never-poison-tools-first" severity="hard">
+
+  <rule>
+    Subagent briefs must NEVER advise shell grep/sed over the knowledge tools
+    because the index is stale. The correct brief line is: "run collect first if
+    the index is behind, then search/ast/file_symbols/traverse, and verify hits
+    against the file." A stale index is a reason to collect (30s–2min,
+    incremental) — never a reason to route a subagent to grep.
+  </rule>
+
+  <reason>
+    A brief that says "prefer grep — the index is behind" propagates the
+    staleness→shell failure mode into every agent it spawns, and those agents
+    never see the recovery instruction. The orchestrator also keeps the index
+    fresh itself: collect reflexively after every merge/pull, so briefs rarely
+    need the caveat at all.
+  </reason>
+
+</constraint>
+
 <constraint id="non-negotiation" severity="hard">
 
   <rule>

@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 	"github.com/fulminate-io/knowledge-mcp/internal/enginetest"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
@@ -66,14 +67,161 @@ func (s *scriptedGc) Call(_ context.Context, _ string, _ json.RawMessage) (kgtoo
 func (s *scriptedGc) Execute(_ context.Context, req *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error) {
 	s.calls++
 	q := req.GetQuery()
-	id := q.GetById()
-	if q.GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_EDGES {
-		return &knowledgev1.ExecuteResponse{Edges: edgesToProtoForTest(s.edges[id])}, nil
+
+	if q.GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_TRAVERSAL {
+		return s.answerTraversal(q), nil
 	}
-	if n, ok := s.nodes[id]; ok {
+	if q.GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_EDGES {
+		// node-SET form (Ids[]) → union of outgoing edges among the id set,
+		// filtered by Selection.EdgeTypes (the depends-on batch). Per-node
+		// form (ById) → that node's edges.
+		if ids := q.GetIds(); len(ids) > 0 {
+			return &knowledgev1.ExecuteResponse{Edges: s.nodeSetEdges(ids, q.GetSelection().GetEdgeTypes())}, nil
+		}
+		return &knowledgev1.ExecuteResponse{Edges: edgesToProtoForTest(s.edges[q.GetById()])}, nil
+	}
+	if n, ok := s.nodes[q.GetById()]; ok {
 		return enginetest.ResponseWithNode(n), nil
 	}
 	return &knowledgev1.ExecuteResponse{}, nil
+}
+
+// answerTraversal computes the contains-descendant set of the root over the
+// per-node edge fixtures (BFS up to MaxHops), returning the descendant nodes
+// (root excluded) and — when IncludeEdgeMetadata is set — the contains edges
+// among them, mirroring the server's traversal + CollectEdgesAlongWalk.
+func (s *scriptedGc) answerTraversal(q *knowledgev1.QueryPlan) *knowledgev1.ExecuteResponse {
+	root := q.GetSelection().GetFromId()[0]
+	maxHops := int(q.GetMaxHops())
+	if maxHops <= 0 {
+		maxHops = 1 << 30
+	}
+	var results []engine.TraversalResult
+	var containsEdges []knowledgev1.Edge
+	visited := map[string]bool{root: true}
+	type frontier struct {
+		id   string
+		dist int
+	}
+	queue := []frontier{{root, 0}}
+	for len(queue) > 0 {
+		cur := queue[0]
+		queue = queue[1:]
+		if cur.dist >= maxHops {
+			continue
+		}
+		curEdges := s.edges[cur.id]
+		for i := range curEdges {
+			e := &curEdges[i]
+			if e.FromId != cur.id || e.Type != string(kgtypes.EdgeKGContains) {
+				continue // outgoing contains edges only
+			}
+			containsEdges = append(containsEdges, knowledgev1.Edge{FromId: e.FromId, ToId: e.ToId, Type: e.Type})
+			if visited[e.ToId] {
+				continue
+			}
+			visited[e.ToId] = true
+			if n, ok := s.nodes[e.ToId]; ok {
+				results = append(results, engine.TraversalResult{Node: n, Distance: cur.dist + 1})
+			}
+			queue = append(queue, frontier{e.ToId, cur.dist + 1})
+		}
+	}
+	resp := &knowledgev1.ExecuteResponse{TraversalResults: traversalResultsToProtoForRenderTest(results)}
+	if q.GetIncludeEdgeMetadata() {
+		resp.TraversalEdges = edgesToProtoForTest(containsEdges)
+	}
+	return resp
+}
+
+// nodeSetEdges unions every pivot's OUTGOING edges (Forward=&true semantics)
+// filtered to the requested edge types.
+func (s *scriptedGc) nodeSetEdges(ids []string, edgeTypes []string) []*knowledgev1.Edge {
+	want := map[string]bool{}
+	for _, et := range edgeTypes {
+		want[et] = true
+	}
+	pivots := map[string]bool{}
+	for _, id := range ids {
+		pivots[id] = true
+	}
+	var out []*knowledgev1.Edge
+	for id := range pivots {
+		idEdges := s.edges[id]
+		for i := range idEdges {
+			e := &idEdges[i]
+			if e.FromId != id {
+				continue // outgoing-only
+			}
+			if len(want) > 0 && !want[e.Type] {
+				continue
+			}
+			out = append(out, &knowledgev1.Edge{FromId: e.FromId, ToId: e.ToId, Type: e.Type})
+		}
+	}
+	return out
+}
+
+// traversalResultsToProtoForRenderTest mirrors the tools-package helper so the
+// render-package fakes can populate the typed traversal carrier.
+func traversalResultsToProtoForRenderTest(results []engine.TraversalResult) []*knowledgev1.TraversalResult {
+	out := make([]*knowledgev1.TraversalResult, len(results))
+	for i, r := range results {
+		out[i] = &knowledgev1.TraversalResult{Node: r.Node, Distance: int32(r.Distance)}
+	}
+	return out
+}
+
+// renderViaIndex drives the FULL index pipeline against the fake — the same
+// sequence InterceptQueryPlanTree's text path runs — so the existing render-tree
+// assertions exercise RenderTreeFromIndex rather than the per-node RenderTree.
+// It fetches the root, runs the subtree traversal, builds the child index,
+// batches the depends-on edges, and renders. maxDepth mirrors RenderTree's arg.
+func renderViaIndex(gc GraphCaller, root *knowledgev1.Node, maxDepth int) string {
+	ctx := context.Background()
+	nodes, structureEdges, edges := traverseForRenderTest(ctx, gc, root.Id, maxDepth)
+	_ = edges
+	childIndex, _ := BuildChildIndex(root.Id, nodes, structureEdges)
+	allIDs := make([]string, 0, len(nodes)+1)
+	allIDs = append(allIDs, root.Id)
+	for _, n := range nodes {
+		allIDs = append(allIDs, n.Id)
+	}
+	dependsOn, _ := FetchDependsOnEdges(ctx, gc, allIDs)
+	var sb strings.Builder
+	RenderTreeFromIndex(&sb, root, 0, maxDepth, childIndex, dependsOn)
+	return sb.String()
+}
+
+// traverseForRenderTest issues the IncludeEdgeMetadata traversal against the fake
+// and decodes nodes + structure edges (the render-package analog of
+// TraverseDescendantsWithEdges, which lives in the tools package).
+func traverseForRenderTest(ctx context.Context, gc GraphCaller, rootID string, depth int) ([]*knowledgev1.Node, []*knowledgev1.Edge, []knowledgev1.Edge) {
+	fwd := true
+	plan := &knowledgev1.QueryPlan{
+		Selection:           &knowledgev1.Selection{FromId: []string{rootID}, EdgeTypes: []string{string(kgtypes.EdgeKGContains)}},
+		Forward:             &fwd,
+		ReturnMode:          knowledgev1.ReturnMode_RETURN_MODE_TRAVERSAL,
+		IncludeEdgeMetadata: true,
+	}
+	if depth > 0 {
+		plan.MaxHops = int32(depth)
+	}
+	resp, _ := gc.Execute(ctx, &knowledgev1.ExecuteRequest{Plan: &knowledgev1.ExecuteRequest_Query{Query: plan}})
+	results, _ := engine.DecodeTraversal(resp)
+	nodes := make([]*knowledgev1.Node, 0, len(results))
+	for _, r := range results {
+		if r.Node.Id == "" || r.Node.Id == rootID {
+			continue
+		}
+		nodes = append(nodes, r.Node)
+	}
+	edgeVals := engine.EdgesFromProto(resp.GetTraversalEdges())
+	edges := make([]*knowledgev1.Edge, len(edgeVals))
+	for i := range edgeVals {
+		edges[i] = &edgeVals[i]
+	}
+	return nodes, edges, edgeVals
 }
 
 // TestRenderTree_ParentChildGrandchild seeds a 3-node fixture and
@@ -100,8 +248,7 @@ func TestRenderTree_ParentChildGrandchild(t *testing.T) {
 		Description: "parent desc",
 	}
 
-	var sb strings.Builder
-	RenderTree(context.Background(), gc, &sb, parent, 0, 5)
+	got := renderViaIndex(gc, parent, 5)
 
 	expected := strings.Join([]string{
 		"parent (plan) [active]",
@@ -114,7 +261,7 @@ func TestRenderTree_ParentChildGrandchild(t *testing.T) {
 		"      ID: g",
 		"",
 	}, "\n")
-	assert.Equal(t, expected, sb.String())
+	assert.Equal(t, expected, got)
 }
 
 // TestTopoSort_FiveNodeDependencyChain pins the topo-sort
@@ -162,9 +309,7 @@ func TestRenderTree_DependsOnReordersChildren(t *testing.T) {
 		Status:     "active",
 	}
 
-	var sb strings.Builder
-	RenderTree(context.Background(), gc, &sb, parent, 0, 5)
-	out := sb.String()
+	out := renderViaIndex(gc, parent, 5)
 
 	// step-a must appear before step-b in the rendered output.
 	aPos := strings.Index(out, "step-a")
@@ -188,10 +333,8 @@ func TestRenderTree_ProxyAnnotationFallback(t *testing.T) {
 	kgtypes.SetValue(proxy, "foreign_graph", "practice")
 
 	gc := newScriptedGc().putEdges("px")
-	var sb strings.Builder
-	RenderTree(context.Background(), gc, &sb, proxy, 0, 1)
+	out := renderViaIndex(gc, proxy, 1)
 
-	out := sb.String()
 	// The output should at minimum include the proxy ID line + the
 	// proxy annotation marker. The exact annotation shape comes from
 	// helpers.proxyAnnotation; check for the bracketed marker.
@@ -214,10 +357,8 @@ func TestRenderTree_MissingChildSkipped(t *testing.T) {
 		putEdges("real")
 
 	parent := &knowledgev1.Node{Id: "p", Type: string(kgtypes.NodePhase), SymbolName: "parent", Status: "active"}
-	var sb strings.Builder
-	RenderTree(context.Background(), gc, &sb, parent, 0, 5)
+	out := renderViaIndex(gc, parent, 5)
 
-	out := sb.String()
 	assert.Contains(t, out, "real-child", "real child must render")
 	assert.NotContains(t, out, "missing", "missing-id text must not appear")
 }
@@ -237,10 +378,8 @@ func TestRenderTree_DepthCutoff(t *testing.T) {
 	gc.putEdges("n3")
 
 	root := &knowledgev1.Node{Id: "n0", Type: string(kgtypes.NodeStep), SymbolName: "node-n0"}
-	var sb strings.Builder
-	RenderTree(context.Background(), gc, &sb, root, 0, 1)
+	out := renderViaIndex(gc, root, 1)
 
-	out := sb.String()
 	assert.Contains(t, out, "ID: n0")
 	assert.Contains(t, out, "ID: n1")
 	assert.NotContains(t, out, "ID: n2", "depth=1 should cut off at n1")

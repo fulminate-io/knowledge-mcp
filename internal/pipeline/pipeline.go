@@ -64,12 +64,25 @@ type Pipeline struct {
 	// guards is global to the provider, not per-graph or per-worker.
 	backoff *errBackoff
 
-	// circuit is the shared LATCHED pause gate. Where backoff self-clears a
-	// transient window, circuit latches the WHOLE worker pool paused on a
-	// zero-success storm and stays paused until a human resumes (no self-heal).
-	// One shared instance: a success on either axis resets it, a trip pauses
-	// both. See circuit_breaker.go.
-	circuit *circuitBreaker
+	// summaryCircuit and embedCircuit are the two INDEPENDENT per-axis LATCHED
+	// pause gates. Where backoff self-clears a transient window, a circuit breaker
+	// latches its OWN axis's workers paused on a zero-success storm and stays
+	// paused until a human resumes (no self-heal). Each axis owns its own instance:
+	// a success on one axis resets only that axis's counter, and an auto-trip
+	// pauses only that axis — a failing summary axis no longer stalls healthy
+	// embeddings. The single deliberate cross-axis exception is the shared-cause
+	// escalation (escalation.go): an auth/quota trip on one axis can propagate to
+	// the other when both share the same provider. See circuit_breaker.go.
+	summaryCircuit *circuitBreaker
+	embedCircuit   *circuitBreaker
+
+	// summaryProvider and embedProvider are each axis's LLM provider identity
+	// (copied from cfg at New time). They are read ONLY by the shared-cause
+	// escalation coordinator (escalation.go) to gate a same-provider cross-trip:
+	// an auth/quota auto-trip on one axis propagates to the other ONLY when these
+	// two are equal and non-empty. Empty = unknown = no escalation for that axis.
+	summaryProvider string
+	embedProvider   string
 
 	// embedRPM is the shared PROACTIVE fixed-rate pacer for embed dispatch.
 	// One instance across all embed workers — the provider RPM limit is
@@ -171,7 +184,10 @@ func New(cfg Config, client WireClient, summarizer SummarizerFunc, embedder Embe
 		embedder:         embedder,
 		resolver:         resolver,
 		backoff:          newErrBackoff(cfg.ErrBackoffBaseOrDefault(), cfg.ErrBackoffMaxOrDefault()),
-		circuit:          newCircuitBreaker(cfg.CircuitBreakerThresholdOrDefault()),
+		summaryCircuit:   newCircuitBreaker(cfg.CircuitBreakerThresholdOrDefault()),
+		embedCircuit:     newCircuitBreaker(cfg.CircuitBreakerThresholdOrDefault()),
+		summaryProvider:  cfg.SummaryProvider,
+		embedProvider:    cfg.EmbedProvider,
 		embedRPM:         newRPMGate(cfg.EmbedRPMOrDefault()),
 		summaryCh:        make(chan SummaryWork, cfg.SummaryChannelSizeOrDefault()),
 		embedCh:          make(chan EmbedWork, cfg.EmbedChannelSizeOrDefault()),
@@ -208,8 +224,8 @@ func (p *Pipeline) summaryEnabled() bool { return p.summarizer != nil }
 // ONLY when its LLM function is configured: the summary axis on summaryEnabled,
 // the embed axis on embedEnabled. The WaitGroup Add counts are kept EXACTLY in
 // step with the goroutines actually launched so Stop never waits on a goroutine
-// that never started. When neither axis is enabled, Start launches nothing and
-// Stop still returns cleanly.
+// that never started. When no axis is enabled, Start launches nothing and Stop
+// still returns cleanly.
 func (p *Pipeline) Start(ctx context.Context) error {
 	summaryOn := p.summaryEnabled()
 	embedOn := p.embedEnabled()
@@ -267,25 +283,29 @@ func (p *Pipeline) ResetFailedCounters() {
 	p.metrics.resetFailed()
 }
 
-// PausePipeline latches the worker pool paused with an operator-supplied
-// reason. Both summary and embed workers block at their wait sites until
-// ResumePipeline is called. Manual pause and an auto-trip share the same
-// latch — there is no self-heal from either.
+// PausePipeline latches BOTH axes paused with an operator-supplied reason —
+// manual pause is deliberately WHOLE-PIPELINE (it pauses the summary AND embed
+// breakers), unlike an auto-trip which is per-axis. Both summary and embed
+// workers block at their wait sites until ResumePipeline is called. Manual pause
+// and an auto-trip share the same per-axis latch — there is no self-heal from
+// either.
 func (p *Pipeline) PausePipeline(reason string) {
-	p.circuit.pause(reason)
+	p.summaryCircuit.pause(reason)
+	p.embedCircuit.pause(reason)
 }
 
-// ResumePipeline clears the paused latch and wakes every parked worker. It is
-// the ONLY exit from a circuit break (auto-trip or manual pause).
+// ResumePipeline clears the paused latch on BOTH axes and wakes every parked
+// worker. It is the ONLY exit from a circuit break (auto-trip or manual pause),
+// and resumes whichever axis/axes are paused regardless of how they tripped.
 func (p *Pipeline) ResumePipeline() {
-	p.circuit.resume()
+	p.summaryCircuit.resume()
+	p.embedCircuit.resume()
 }
 
-// PipelineStatus returns the current paused state for operator surfacing
-// (pipeline_status manage op, search staleness footer).
-func (p *Pipeline) PipelineStatus() PipelineStatus {
-	return PipelineStatus(p.circuit.status())
-}
+// PipelineStatus returns the current per-axis paused state for operator
+// surfacing. Its per-axis aggregation lives in escalation.go alongside the
+// cross-axis escalation coordinator (both are cross-axis coordination over the
+// two breakers, kept out of pipeline.go for the 500-line cap).
 
 // EnqueueIDs pushes (gt, name, id) tuples directly onto the summary +
 // embed channels, skipping the pipeline_scan discovery latency for IDs

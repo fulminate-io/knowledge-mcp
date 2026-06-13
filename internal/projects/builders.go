@@ -82,10 +82,7 @@ func BuildPlanGraph(plan PlanArgs, unresolvedPatternIDs []string, unresolvedLang
 		qIdx := len(nodes)
 		summary := q.Summary
 		if summary == "" {
-			summary = "Question: " + q.Question
-			if q.Context != "" {
-				summary += ". Context: " + q.Context
-			}
+			summary = DeriveQuestionSummary(q.Question, q.Context)
 		}
 		nodes = append(nodes, &knowledgev1.Node{
 			Type:        string(kgtypes.NodeQuestion),
@@ -402,11 +399,10 @@ func BuildCriterionNode(c CriterionArgs) *knowledgev1.Node {
 		Source:      "llm:claude",
 		SymbolName:  c.Description,
 		Description: c.Description,
-		Summary:     cType + " criterion: " + c.Description,
+		Summary:     DeriveCriterionSummary(cType, c.Description, c.Command),
 	}
 	if c.Command != "" {
 		kgtypes.SetValue(node, "command", c.Command)
-		node.Summary = cType + " criterion: " + c.Description + " (" + c.Command + ")"
 	}
 	kgtypes.SetValue(node, "type", cType)
 	return node

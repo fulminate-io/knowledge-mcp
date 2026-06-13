@@ -150,6 +150,17 @@ func (s *hnswSegment) IDs() []searchengine.ExternalID {
 	return s.graph.ids()
 }
 
+// VectorByID returns the stored binary vector for an external id, or (nil,false)
+// when the id is not in this segment. It is the by-id stored-vector read the
+// "similar" search mode resolves a query vector from. Deliberately NOT on the
+// shared searchengine.Segment interface (segment.go) — that interface is also
+// satisfied by bm25Segment, which has no vectors; the engine's SegmentedIndex
+// reaches this concrete method via a runtime type-assert, so bm25 segments cleanly
+// resolve (nil,false) instead of being forced to implement an unsatisfiable accessor.
+func (s *hnswSegment) VectorByID(externalID string) ([]byte, bool) {
+	return s.graph.vectorByID(externalID)
+}
+
 // Encode serializes the segment to a v2 blob (topology + inline vectors) for
 // shipping/persistence.
 func (s *hnswSegment) Encode() ([]byte, error) {

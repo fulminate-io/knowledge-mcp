@@ -65,7 +65,7 @@ func TestReconcileOnShipPrunesMergedAway(t *testing.T) {
 		require.NoError(t, prodEng.Add([]searchengine.Document{
 			doc(fmt.Sprintf("d%d", i), fmt.Sprintf("body %d", i)),
 		}))
-		pruned, err := mgr.ship(ctx)
+		pruned, err := mgr.ship(ctx, mgr.locallyShipped)
 		require.NoError(t, err)
 		prunedAll = append(prunedAll, pruned...)
 	}
@@ -76,7 +76,7 @@ func TestReconcileOnShipPrunesMergedAway(t *testing.T) {
 
 	// One more ship() after the merge guarantees the final consolidated set is
 	// reconciled onto the server (re-ship consolidated FIRST, then prune merged-away).
-	postMergePruned, err := mgr.ship(ctx)
+	postMergePruned, err := mgr.ship(ctx, mgr.locallyShipped)
 	require.NoError(t, err)
 	prunedAll = append(prunedAll, postMergePruned...)
 
@@ -115,7 +115,7 @@ func TestReconcileOnShipPrunesMergedAway(t *testing.T) {
 	// zero-RPC on BOTH legs (empty diff AND empty pruneSet).
 	beforePrune := cc.pruneCalls.Load()
 	beforeShip := cc.shipCalls.Load()
-	_, err = mgr.ship(ctx)
+	_, err = mgr.ship(ctx, mgr.locallyShipped)
 	require.NoError(t, err)
 	require.Equal(t, beforePrune, cc.pruneCalls.Load(), "steady-state ship() issues ZERO Prune RPCs")
 	require.Equal(t, beforeShip, cc.shipCalls.Load(), "steady-state ship() issues ZERO Ship RPCs")

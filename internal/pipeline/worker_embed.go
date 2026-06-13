@@ -133,15 +133,16 @@ func processEmbedGroup(ctx context.Context, p *Pipeline, key groupKey, items []E
 		return
 	}
 
-	// Block here while the circuit breaker is latched paused (a prior
-	// zero-success storm), proactively pace the outbound request rate (no-op
-	// unless --embed-rpm set), THEN pause if a prior transient failure opened
-	// the reactive backoff window. waitResumed selects on ctx.Done(), so a
-	// worker parked here unblocks on Pipeline.Stop and never hangs the worker
-	// WaitGroup. The RPM gate paces steady-state dispatch; the backoff window
-	// only opens after a failure — all three must clear before the embedder is
-	// called.
-	p.circuit.waitResumed(ctx)
+	// Block here while the EMBED circuit breaker is latched paused (a prior
+	// embed-axis zero-success storm), proactively pace the outbound request rate
+	// (no-op unless --embed-rpm set), THEN pause if a prior transient failure
+	// opened the reactive backoff window. The summary axis has its own independent
+	// breaker, so a paused summary axis does not gate embed work here. waitResumed
+	// selects on ctx.Done(), so a worker parked here unblocks on Pipeline.Stop and
+	// never hangs the worker WaitGroup. The RPM gate paces steady-state dispatch;
+	// the backoff window only opens after a failure — all three must clear before
+	// the embedder is called.
+	p.embedCircuit.waitResumed(ctx)
 	p.embedRPM.wait(ctx)
 	p.backoff.wait(ctx)
 	slog.Debug("pipeline.embed: invoking embedder", "items", len(embedItems), "graph_type", gk.GraphType, "graph_name", gk.GraphName)
@@ -152,9 +153,10 @@ func processEmbedGroup(ctx context.Context, p *Pipeline, key groupKey, items []E
 		handleEmbedderError(ctx, p, be, gk, idsForMarker, err)
 		return
 	}
-	// A successful LLM call zeroes the shared zero-success-window counter on
-	// both gates: a success on either axis proves the pipeline isn't dead.
-	p.circuit.record(true)
+	// A successful embed call zeroes the EMBED axis's zero-success-window counter
+	// (and clears its per-class tally) on its own breaker; the summary axis is
+	// independent and unaffected. The shared backoff gate also clears here.
+	p.embedCircuit.recordOK()
 	p.backoff.ok()
 	slog.Debug("pipeline.embed: embedder returned",
 		"items", len(embedItems), "vectors", len(vectors), "graph_type", gk.GraphType, "graph_name", gk.GraphName)
@@ -336,10 +338,17 @@ func shipEmbedBM25(ctx context.Context, p *Pipeline, key graphKey, vectors map[s
 // log immediately. Terminal errors stamp the failure marker on every id
 // via ONE mutate(update_batch) RPC.
 func handleEmbedderError(ctx context.Context, p *Pipeline, be WireClient, key graphKey, ids []string, err error) {
-	// Every errored embedder call — transient OR terminal — feeds the
-	// zero-success window: only an actual success (recorded at the ok() site)
-	// resets it, so a full round where every call errors trips the breaker.
-	p.circuit.record(false)
+	// Every errored embedder call — transient OR terminal — feeds the EMBED
+	// breaker's zero-success window: only an actual embed success (recorded at the
+	// recordOK() site) resets it, so a full round where every embed call errors
+	// trips the EMBED breaker (the summary axis is independent). classify(err)
+	// tallies the error's class so the auto-trip reason names the dominant class.
+	// On an auto-trip THIS call caused, hand off to the shared-cause escalation
+	// coordinator, which cross-trips the summary axis ONLY when the dominant class
+	// is auth/quota AND both axes share the same provider.
+	if p.embedCircuit.recordErr(classify(err)) {
+		p.escalateOnTrip(embedBreakerAxis)
+	}
 	if llm.IsTransient(err) {
 		// Honor a provider 429/503 Retry-After when present (else exponential).
 		hint := llm.RetryAfterOf(err)

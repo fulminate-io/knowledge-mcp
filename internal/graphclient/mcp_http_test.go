@@ -343,7 +343,7 @@ func TestSessionsHoldNoPipeline(t *testing.T) {
 	injectPeerCwd(t, map[int]string{54321: "/Users/jonathan/code/knowledge"})
 	h := newTestHTTPServer()
 	for i := range 5 {
-		h.ensureSession("sess-"+strconv.Itoa(i), "/tmp")
+		h.ensureSession("sess-"+strconv.Itoa(i), "/tmp", 0, "")
 	}
 	h.mu.RLock()
 	n := len(h.sessions)

@@ -33,10 +33,12 @@ func compileMutateUpdateBatch(a mutateArgs) (*knowledgev1.ExecuteRequest, bool) 
 	}
 	// Build the request inline (rather than via mutationRequest, which targets
 	// the knowledge graph with empty repo/account/name) so the batch routes to
-	// the right per-graph backing.
+	// the right per-graph backing. a.Branch threads the overlay dimension onto the
+	// Target so an overlay-resident write-back lands on the same overlay key the
+	// gap scan read from (resolveCode Scopes repo@branch); empty → base graph.
 	return &knowledgev1.ExecuteRequest{
 		Plan:   &knowledgev1.ExecuteRequest_Mutation{Mutation: plan},
-		Target: buildTarget(a.Graph, a.Repo, a.Account, a.Name, a.Language, ""),
+		Target: buildTarget(a.Graph, a.Repo, a.Account, a.Name, a.Language, a.Branch),
 	}, true
 }
 
@@ -91,9 +93,11 @@ func compileMutateBulkMetadata(a mutateArgs) (*knowledgev1.ExecuteRequest, bool)
 	// Inline request (not via mutationRequest) so a cross-graph bulk update routes
 	// to the right per-graph backing — though the bulk_update_metadata callers
 	// (clusters.go / propagation.go) are knowledge-graph, so empty target →
-	// knowledge.
+	// knowledge. a.Branch is threaded for symmetry with compileMutateUpdateBatch
+	// (the two batch sites lower to the same UPDATE_ITEMS arm) and is empty for
+	// the current knowledge-graph callers; forward-proof for an overlay bulk write.
 	return &knowledgev1.ExecuteRequest{
 		Plan:   &knowledgev1.ExecuteRequest_Mutation{Mutation: plan},
-		Target: buildTarget(a.Graph, a.Repo, a.Account, a.Name, a.Language, ""),
+		Target: buildTarget(a.Graph, a.Repo, a.Account, a.Name, a.Language, a.Branch),
 	}, true
 }

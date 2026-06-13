@@ -15,6 +15,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/backends"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
+	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 )
 
@@ -103,24 +104,46 @@ type interceptTestDeps struct {
 	backend backends.Backend
 	byName  map[string]backends.Backend
 	gc      GraphCaller
+	crud    GraphTypeCRUDAPI
+	forcer  ReflectionForcer
+	// propNotReady flips PropReady() to false so a test can exercise the
+	// bind-first wiring-window gate (bind-first startup) on the propagate handler. Zero value
+	// keeps the reflection loop ready, so every pre-existing test exercises the
+	// wired path.
+	propNotReady bool
 }
 
-func (d interceptTestDeps) LocalLiveness() LocalLiveness    { return nil }
-func (d interceptTestDeps) Sink() collector.Sink            { return nil }
-func (d interceptTestDeps) RootDir() string                 { return "" }
-func (d interceptTestDeps) WorkerRuntime() WorkerRuntimeAPI { return nil }
-func (d interceptTestDeps) WorkerCRUD() WorkerCRUDAPI       { return nil }
-func (d interceptTestDeps) GraphTypeCRUD() GraphTypeCRUDAPI { return nil }
-func (d interceptTestDeps) Embedder() embed.BinaryEmbedder  { return nil }
+func (d interceptTestDeps) LocalLiveness() LocalLiveness         { return nil }
+func (d interceptTestDeps) Sink() collector.Sink                 { return nil }
+func (d interceptTestDeps) RootDir() string                      { return "" }
+func (d interceptTestDeps) WorkerRuntime() WorkerRuntimeAPI      { return nil }
+func (d interceptTestDeps) WorkerReady() bool                    { return true }
+func (d interceptTestDeps) PropReady() bool                      { return !d.propNotReady }
+func (d interceptTestDeps) PipelineReady() bool                  { return true }
+func (d interceptTestDeps) ClaimRegistry() *hivemonitor.Registry { return nil }
+func (d interceptTestDeps) BanSet() *hivemonitor.BanSet          { return nil }
+func (d interceptTestDeps) WorkerCRUD() WorkerCRUDAPI            { return nil }
+func (d interceptTestDeps) GraphTypeCRUD() GraphTypeCRUDAPI      { return d.crud }
+func (d interceptTestDeps) Embedder() embed.BinaryEmbedder       { return nil }
 func (d interceptTestDeps) BackendResolver() BackendResolver {
 	return fakeResolver{def: d.backend, byName: d.byName}
 }
-func (d interceptTestDeps) GraphCaller() GraphCaller         { return d.gc }
-func (d interceptTestDeps) LocalGraphCaller() GraphCaller    { return d.gc }
-func (d interceptTestDeps) RepoResolver() *RepoResolver      { return nil }
-func (d interceptTestDeps) SegmentManager() SegmentSearcher  { return nil }
-func (d interceptTestDeps) SegmentShipper() SegmentShipper   { return nil }
-func (d interceptTestDeps) PipelineScanner() PipelineScanner { return nil }
+func (d interceptTestDeps) GraphCaller() GraphCaller                     { return d.gc }
+func (d interceptTestDeps) LocalGraphCaller() GraphCaller                { return d.gc }
+func (d interceptTestDeps) RepoResolver() *RepoResolver                  { return nil }
+func (d interceptTestDeps) SegmentManager() SegmentSearcher              { return nil }
+func (d interceptTestDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
+func (d interceptTestDeps) SegmentShipper() SegmentShipper               { return nil }
+func (d interceptTestDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
+func (d interceptTestDeps) PipelineScanner() PipelineScanner             { return nil }
+func (d interceptTestDeps) ReflectionForcer() ReflectionForcer {
+	if d.forcer == nil {
+		return nil
+	}
+	return d.forcer
+}
+
+func (d interceptTestDeps) SimilarityForcer() SimilarityForcer { return nil }
 
 func TestInterceptCreateProject_NoBackend_ClaimsLocalOnly(t *testing.T) {
 	// Phase 3a: no-backend path is now claimed client-side.

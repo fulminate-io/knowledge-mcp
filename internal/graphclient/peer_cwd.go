@@ -43,28 +43,37 @@ var peerCwdRunner = func(ctx context.Context, name string, args ...string) ([]by
 //  2. `lsof -a -p <pid> -d cwd -Fn`: parse the `n`-prefixed line for the cwd.
 //
 // lsof shell-out is fine for v1 (a libproc/proc path is a later optimization).
-func resolvePeerCwd(ctx context.Context, localPort, ephemeralPort int) (string, error) {
-	pid, err := peerPIDFromPort(ctx, localPort, ephemeralPort)
+//
+// Returns the peer's cwd, PID, and comm (the lsof COMMAND column — "claude" /
+// "codex" / etc.). The PID and comm were previously discarded; they are
+// retained so the hive daemon monitor can bind the session to the right
+// per-harness transcript (comm selects the resolver; PID reads the process env).
+func resolvePeerCwd(ctx context.Context, localPort, ephemeralPort int) (cwd string, pid int, comm string, err error) {
+	pid, comm, err = peerPIDFromPort(ctx, localPort, ephemeralPort)
 	if err != nil {
-		return "", err
+		return "", 0, "", err
 	}
-	return cwdForPID(ctx, pid)
+	cwd, err = cwdForPID(ctx, pid)
+	if err != nil {
+		return "", 0, "", err
+	}
+	return cwd, pid, comm, nil
 }
 
-// peerPIDFromPort runs `lsof -nP -iTCP:<ephemeralPort>` and returns the PID of
-// the client process that owns the connection whose LOCAL side is
-// ephemeralPort and whose REMOTE side is the daemon's localPort, excluding the
-// daemon's own PID. See parsePeerPID for the parse contract.
-func peerPIDFromPort(ctx context.Context, localPort, ephemeralPort int) (int, error) {
+// peerPIDFromPort runs `lsof -nP -iTCP:<ephemeralPort>` and returns the PID and
+// comm (COMMAND column) of the client process that owns the connection whose
+// LOCAL side is ephemeralPort and whose REMOTE side is the daemon's localPort,
+// excluding the daemon's own PID. See parsePeerPID for the parse contract.
+func peerPIDFromPort(ctx context.Context, localPort, ephemeralPort int) (int, string, error) {
 	out, err := peerCwdRunner(ctx, "lsof", "-nP", "-iTCP:"+strconv.Itoa(ephemeralPort))
 	if err != nil {
-		return 0, fmt.Errorf("resolve peer cwd: lsof -iTCP:%d: %w", ephemeralPort, err)
+		return 0, "", fmt.Errorf("resolve peer cwd: lsof -iTCP:%d: %w", ephemeralPort, err)
 	}
 	return parsePeerPID(string(out), localPort, ephemeralPort, os.Getpid())
 }
 
-// parsePeerPID extracts the client PID from `lsof -nP -iTCP:<port>` output.
-// Each data line has the columns:
+// parsePeerPID extracts the client PID and comm (COMMAND column) from
+// `lsof -nP -iTCP:<port>` output. Each data line has the columns:
 //
 //	COMMAND PID USER FD TYPE DEVICE SIZE/OFF NODE NAME
 //
@@ -74,8 +83,10 @@ func peerPIDFromPort(ctx context.Context, localPort, ephemeralPort int) (int, er
 // the REMOTE side (`:<localPort>` after the arrow); a line where ephemeralPort
 // is only on the remote side (the daemon's accepted socket) is skipped. The
 // daemon's own PID (selfPID) is excluded so the daemon never resolves to
-// itself.
-func parsePeerPID(lsofOut string, localPort, ephemeralPort, selfPID int) (int, error) {
+// itself. comm is fields[0] of the matched line (the same COMMAND-column read
+// as mcp-probe's peerWorkspace) — it selects the per-harness transcript resolver
+// (claude vs codex) in the hive daemon monitor.
+func parsePeerPID(lsofOut string, localPort, ephemeralPort, selfPID int) (int, string, error) {
 	for line := range strings.SplitSeq(lsofOut, "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 9 {
@@ -90,6 +101,7 @@ func parsePeerPID(lsofOut string, localPort, ephemeralPort, selfPID int) (int, e
 		if pid == selfPID {
 			continue
 		}
+		comm := fields[0]
 		name := fields[len(fields)-1]
 		// Some lsof builds append a " (ESTABLISHED)" state after NAME; with
 		// strings.Fields that becomes its own trailing token, so re-find the
@@ -110,13 +122,13 @@ func parsePeerPID(lsofOut string, localPort, ephemeralPort, selfPID int) (int, e
 			continue
 		}
 		if strings.HasSuffix(after, ":"+strconv.Itoa(localPort)) || localPort == 0 {
-			return pid, nil
+			return pid, comm, nil
 		}
 		// Local side matched but remote port did not name the daemon — still
 		// the best available signal for this ephemeral port.
-		return pid, nil
+		return pid, comm, nil
 	}
-	return 0, fmt.Errorf("resolve peer cwd: no client connection found with local port %d", ephemeralPort)
+	return 0, "", fmt.Errorf("resolve peer cwd: no client connection found with local port %d", ephemeralPort)
 }
 
 // arrowField returns the first field containing the "->" connection arrow, or

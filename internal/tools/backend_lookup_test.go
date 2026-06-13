@@ -48,6 +48,13 @@ type fakeGraphCaller struct {
 	// NodeProxy scan (the ByID-only fake path returns nothing for a Match scan).
 	nodeMatchResults map[graphKey][]*knowledgev1.Node
 
+	// nodeMatchErr forces a Match(NodeType) scan to ERROR, keyed by the scanned
+	// node type (e.g. thought_session). Used by the context-linking tests to
+	// drive a getOrCreateThoughtSessionClient resolve failure (session browse errors)
+	// WITHOUT the blanket execErr that would also fail the node create. Consulted
+	// before nodeMatchResults. Purely additive.
+	nodeMatchErr map[string]error
+
 	// edgesByID answers a RETURN_MODE_EDGES read (render.IterEdges) keyed by the
 	// probed node id → its incident edges, encoded into the typed edges carrier.
 	// The seeded edges carry the metadata fields the migration re-point must preserve.
@@ -64,12 +71,32 @@ type fakeGraphCaller struct {
 	// additive; the generic-forward arm answers it otherwise.
 	listGraphsResult *kgtools.ToolResult
 
+	// overlayKeysByBase answers a RETURN_MODE_GRAPH_NAMES read whose QueryPlan
+	// carries overlay_of (the clear_llm_failures overlay fan-out): base name → the
+	// full "base@overlay" keys for that base. Absent → the base-name enumeration
+	// (execGraphNames) answers.
+	overlayKeysByBase map[string][]string
+
+	// mutateErrByTargetName forces a Mutation Execute to ERROR keyed by the
+	// resolved target name discriminant (Repo/Account/Language/Name). Used by the
+	// per-graph-error-surfacing test. Consulted before mutateError.
+	mutateErrByTargetName map[string]error
+
 	// mutateIDs is the carrier-path response for a Mutation Execute (the
 	// created-node IDs PersistBatch reads from resp.GetIds()). execMutations
 	// records every Mutation ExecuteRequest the carrier path issues.
 	mutateIDs     []string
 	execMutations []*knowledgev1.MutationPlan
 	execErr       error
+
+	// mutateErrByKind is the per-MutationKind error knob: keyed on
+	// MutationPlan.GetKind(), it fails ONLY mutations of the named kind while
+	// letting the others succeed. This is finer-grained than the blanket
+	// mutateError (which fails every mutation incl. the create). Seed
+	// {MUTATION_KIND_LINK: err} to prove a post-create LinkOne fails while the
+	// CREATE still lands (node ID returned, result non-error). Consulted
+	// BEFORE the blanket mutateError. Purely additive.
+	mutateErrByKind map[knowledgev1.MutationPlan_MutationKind]error
 
 	// execRequests records every full ExecuteRequest (Target + Plan) the carrier
 	// path issues — used by composers that assert the GraphSelector envelope
@@ -105,17 +132,22 @@ type graphKey struct {
 }
 
 // targetGraphKey extracts the (type,name) key from an Execute Target, mirroring
-// render.graphTarget: practice carries its name in Language, every other type in
-// Name; an empty Target defaults to knowledge.
+// the SERVER's selector contract (not the client helper): practice carries its
+// name in Language, code in Repo (the server's code resolver rejects name-keyed
+// selectors, so a code Target with only Name set deliberately misses here too),
+// every other type in Name; an empty Target defaults to knowledge.
 func targetGraphKey(target *knowledgev1.GraphSelector) graphKey {
 	gt := target.GetGraph()
-	if gt == "" {
+	switch gt {
+	case "":
 		return graphKey{Type: "knowledge"}
-	}
-	if gt == "practice" {
+	case "practice":
 		return graphKey{Type: gt, Name: target.GetLanguage()}
+	case "code":
+		return graphKey{Type: gt, Name: target.GetRepo()}
+	default:
+		return graphKey{Type: gt, Name: target.GetName()}
 	}
-	return graphKey{Type: gt, Name: target.GetName()}
 }
 
 func (f *fakeGraphCaller) Call(_ context.Context, tool string, args json.RawMessage) (kgtools.ToolResult, error) {
@@ -162,6 +194,19 @@ func (f *fakeGraphCaller) Execute(_ context.Context, req *knowledgev1.ExecuteReq
 	if m := req.GetMutation(); m != nil {
 		f.execMutations = append(f.execMutations, m)
 		f.calls = append(f.calls, recordedCall{tool: "mutate"})
+		// Per-target error: fail ONLY the named graph (by its resolved name
+		// discriminant) so the clear sweep's per-graph-error surfacing can be
+		// exercised while other graphs succeed.
+		if tname := targetNameDiscriminant(req.GetTarget()); tname != "" {
+			if terr, ok := f.mutateErrByTargetName[tname]; ok && terr != nil {
+				return nil, terr
+			}
+		}
+		// Per-kind error: fail ONLY the named MutationKind so a
+		// post-create LINK can fail while the CREATE succeeds.
+		if kindErr, ok := f.mutateErrByKind[m.GetKind()]; ok && kindErr != nil {
+			return nil, kindErr
+		}
 		if f.mutateError != nil {
 			return nil, f.mutateError
 		}
@@ -189,6 +234,11 @@ func (f *fakeGraphCaller) Execute(_ context.Context, req *knowledgev1.ExecuteReq
 		// Record a "query" call so call-shape assertions (the linker's graph-list
 		// read used to ride a query) still observe it.
 		f.calls = append(f.calls, recordedCall{tool: "query"})
+		// overlay_of read: serve the seeded overlay keys for that base when
+		// configured (the clear_llm_failures overlay fan-out path).
+		if base := q.GetOverlayOf(); base != "" {
+			return f.execOverlayKeys(base)
+		}
 		return f.execGraphNames(req.GetTarget().GetGraph())
 	}
 	id := q.GetById()
@@ -220,6 +270,9 @@ func (f *fakeGraphCaller) Execute(_ context.Context, req *knowledgev1.ExecuteReq
 	// seeded nodeMatchResults set keyed by the Target (type,name), carried in the
 	// typed Nodes field (the shape engine.DecodeNodes reads).
 	if id == "" && q.GetSelection().GetNodeType() != "" {
+		if err, ok := f.nodeMatchErr[q.GetSelection().GetNodeType()]; ok && err != nil {
+			return nil, err
+		}
 		if nodes, ok := f.nodeMatchResults[targetGraphKey(req.GetTarget())]; ok {
 			resp := enginetest.ResponseWithNodes(nodes...)
 			return resp, nil
@@ -279,30 +332,7 @@ func (f *fakeGraphCaller) MetadataStats(_ context.Context, _ *knowledgev1.Metada
 	return &knowledgev1.MetadataStatsResponse{}, nil
 }
 
-// execGraphNames serves a per-type RETURN_MODE_GRAPH_NAMES read by decoding the
-// seeded listGraphsResult body ({graphs:[{graph_type,graph_name}]}) and emitting
-// only the entries matching graphType, projected to the graph_names_json
-// []store.GraphInfo carrier. This bridges the old single pipeline_list_graphs
-// Call seeding to the new per-type Execute reads listForeignGraphs / repo
-// resolver / cloud-cicd overview now issue. An absent listGraphsResult → empty.
-func (f *fakeGraphCaller) execGraphNames(graphType string) (*knowledgev1.ExecuteResponse, error) {
-	var infos []*knowledgev1.GraphInfo
-	if f.listGraphsResult != nil && len(f.listGraphsResult.Content) > 0 {
-		var decoded struct {
-			Graphs []struct {
-				GraphType string `json:"graph_type"`
-				GraphName string `json:"graph_name"`
-			} `json:"graphs"`
-		}
-		_ = json.Unmarshal([]byte(f.listGraphsResult.Content[0].Text), &decoded)
-		for _, g := range decoded.Graphs {
-			if g.GraphType == graphType && g.GraphName != "" {
-				infos = append(infos, &knowledgev1.GraphInfo{Name: g.GraphName})
-			}
-		}
-	}
-	return &knowledgev1.ExecuteResponse{GraphNames: infos}, nil
-}
+// The RETURN_MODE_GRAPH_NAMES serving helpers live in fake_graph_caller_graphnames_test.go.
 
 // encodeNodeResult decodes a seeded single-node JSON body into a knowledgev1.Node and
 // re-emits it as the nodes_json carrier ([]knowledgev1.Node), the shape render.Fetch-

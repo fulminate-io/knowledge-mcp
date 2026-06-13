@@ -37,9 +37,9 @@ them.
 - [create_research](tools/create_research.md) — create research with questions.
 - [create_test_plan](tools/create_test_plan.md) — create a structured test plan.
 - [create_ticket](tools/create_ticket.md) — create a ticket within a project.
+- [custom_collector](tools/custom_collector.md) — register and manage custom external collectors / plugins.
 - [delete](tools/delete.md) — remove or prune nodes.
 - [file_symbols](tools/file_symbols.md) — list the symbols in a file.
-- [graph_type](tools/graph_type.md) — register and manage custom graph types.
 - [help](tools/help.md) — built-in documentation.
 - [manage](tools/manage.md) — server and pipeline operations.
 - [mutate](tools/mutate.md) — create, update, and link nodes.

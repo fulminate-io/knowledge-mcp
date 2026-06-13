@@ -24,6 +24,80 @@ type Caller interface {
 	Execute(ctx context.Context, req *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error)
 }
 
+// reflectProbe is the narrow package-local seam the quiet-tick reflection probe
+// uses to read the reflect dirty-gen over PipelineScan — deliberately NARROWER
+// than Caller (which every wire helper takes) so the loop can reach PipelineScan
+// without widening Caller or importing graphclient. The bootstrap
+// routedWireClient (which already wraps PipelineScan via router.Backend) satisfies
+// it; the loop type-asserts p.gc.(reflectProbe) at probe time, and a probe-less
+// caller (Execute-only) simply skips the quiet-tick gate (never skips the pass).
+type reflectProbe interface {
+	PipelineScan(ctx context.Context, req *knowledgev1.PipelineScanRequest) (*knowledgev1.PipelineScanResponse, error)
+}
+
+// PipelineScanner is the package-local PipelineScan seam the lever-time member
+// vector drain pages the segment_rebuild axis through. Kept package-local (a
+// twin of the narrower reflectProbe) so the thought package reaches PipelineScan
+// without importing the higher-level tools package or its identically-shaped
+// PipelineScanner — the wire contract is the generated proto, not a shared Go
+// type. The bootstrap routedWireClient satisfies it.
+type PipelineScanner interface {
+	PipelineScan(ctx context.Context, req *knowledgev1.PipelineScanRequest) (*knowledgev1.PipelineScanResponse, error)
+}
+
+// drainVectorPageSize is the segment_rebuild scan page size — mirrors the
+// rebuild_segments driver's 2048 id-cursor page (a separate const because the
+// tools package's value is unexported and this is a different package home).
+const drainVectorPageSize = 2048
+
+// drainVectorIndex pages the segment_rebuild PipelineScan axis by the stable
+// after_id id-cursor and returns a map of nodeID → stored 256-bit binary vector
+// for the named graph. It mirrors scanRebuildSegments (the rebuild_segments
+// driver) but returns a vector index keyed by nodeID rather than building
+// segments, discarding the BM25 fields the axis also ships. Termination is on an
+// EMPTY page (the segment_rebuild set is stable, so a full final page is normal;
+// only a zero-item page signals exhaustion).
+//
+// HONEST PAYLOAD COST: the segment_rebuild axis ships the full BM25 text per node
+// alongside the 32-byte vector, so this drain pulls far more than 32 bytes/node.
+// That cost is ACCEPTED only because the drain is paid at LEVER time on demand
+// (zero hourly overhead) — not because the payload is small. A vectors_only scan
+// param would avoid the BM25 payload but is a server/proto change, out of scope.
+//
+// A nil scanner returns a clear degraded-mode error (the caller is running with
+// no segment engine wired). A cold graph (empty first page) returns a non-nil
+// empty map with no error. The drain is always over the knowledge graph's
+// "default" graph — the thought corpus.
+func drainVectorIndex(ctx context.Context, scanner PipelineScanner) (map[string][]byte, error) {
+	if scanner == nil {
+		return nil, fmt.Errorf("thought: drainVectorIndex degraded — no PipelineScanner wired (segment engine absent)")
+	}
+	out := make(map[string][]byte)
+	afterID := ""
+	for {
+		resp, err := scanner.PipelineScan(ctx, &knowledgev1.PipelineScanRequest{
+			GraphType: string(kgtypes.GraphKnowledge),
+			GraphName: "default",
+			Axis:      "segment_rebuild",
+			Limit:     drainVectorPageSize,
+			AfterId:   afterID,
+		})
+		if err != nil {
+			return nil, err
+		}
+		page := resp.GetItems()
+		if len(page) == 0 {
+			break // empty page = scan exhausted
+		}
+		for _, it := range page {
+			out[it.GetNodeId()] = it.GetBinaryVector()
+		}
+		// Advance the cursor to the LAST item's id (the scan returns id-ascending).
+		afterID = page[len(page)-1].GetNodeId()
+	}
+	return out, nil
+}
+
 // executeViaEngine compiles a generic tool call (query / traverse / search) to a
 // declarative ExecuteRequest and runs it through the GraphClient.Execute carrier
 // seam — the same Compile→Execute path the bootstrap chokepoint
@@ -35,6 +109,30 @@ func executeViaEngine(ctx context.Context, gc Caller, tool string, args json.Raw
 		return nil, fmt.Errorf("thought: %s args not reducible to an ExecuteRequest", tool)
 	}
 	return gc.Execute(ctx, req)
+}
+
+// executeReflectInertMutate compiles a mutate call and marks the resulting
+// MutationPlan reflect-inert BEFORE executing — the reflection pass's OWN
+// metadata writeback (cluster_id via persistClusterAssignments,
+// propagated_valence/propagated_magnitude via bulkPersistMetadata) must NOT
+// advance the reflect dirty-gen, or it re-triggers the hourly pass forever (the
+// T1-1 self-trigger loop).
+//
+// The flag is set PROGRAMMATICALLY on the compiled proto, never via a mutate arg:
+// the bulk_update_metadata args carry no reflect_inert_writeback key, so the flag
+// is set only here, only on the reflection writeback, and is UNFORGEABLE through
+// the user mutate tool surface (the LLM supplies args, never proto fields) —
+// identical security posture to postpopulate's SystemManagedCreate.
+func executeReflectInertMutate(ctx context.Context, gc Caller, args json.RawMessage) error {
+	req, ok := engine.Compile("mutate", args)
+	if !ok {
+		return fmt.Errorf("thought: mutate args not reducible to an ExecuteRequest")
+	}
+	if mp := req.GetMutation(); mp != nil {
+		mp.ReflectInertWriteback = true
+	}
+	_, err := gc.Execute(ctx, req)
+	return err
 }
 
 // fetchChargesFor composes the per-thought charge map CLIENT-SIDE, reproducing
@@ -151,26 +249,92 @@ func FetchChargesFor(ctx context.Context, gc Caller, thoughtIDs []string) map[st
 	return fetchChargesFor(ctx, gc, thoughtIDs)
 }
 
-// fetchAllThoughtNodes returns every NodeThought in the graph. One Execute
-// round-trip: a type=thought browse whose typed Nodes carrier already carries the
-// full node payloads (the carrier path eliminates the old ID-only projection +
-// separate bulk-hydration round-trip).
-func fetchAllThoughtNodes(ctx context.Context, gc Caller) ([]*knowledgev1.Node, error) {
+// FetchEdgesForNodeSet is the exported bulk-edge wrapper around
+// fetchEdgesForNodeSet for cmd/knowledge/internal/tools/ — the context-pack
+// composer needs the ONE-round-trip both-direction edge read over a node set
+// (the N+1-avoidance bulk read) without re-exposing the unexported helper.
+func FetchEdgesForNodeSet(ctx context.Context, gc Caller, ids []string, edgeTypes []kgtypes.EdgeType) ([]knowledgev1.Edge, error) {
+	return fetchEdgesForNodeSet(ctx, gc, ids, edgeTypes)
+}
+
+// FetchNodesByIDs is the exported bulk-hydrate wrapper around fetchNodesByIDs
+// for cmd/knowledge/internal/tools/ — the context-pack composer needs the
+// one-Execute ids[] hydrate to turn collected peer IDs into nodes.
+func FetchNodesByIDs(ctx context.Context, gc Caller, ids []string) map[string]*knowledgev1.Node {
+	return fetchNodesByIDs(ctx, gc, ids)
+}
+
+// browsePageSize is the per-page row count for the offset-paging drain. 500 ≈
+// 13 pages for the current ~6102-thought corpus: a low RPC count with a bounded
+// per-page payload. A positive limit also bypasses the engine's limit<=0 →
+// browseDefaultLimit(10) rewrite (compile_query.go:354), which is exactly the
+// silent cap this paging drain exists to defeat.
+const browsePageSize = 500
+
+// drainPages is the shared offset-cursor drain core: it repeatedly invokes
+// fetchPage(offset) for an unknown-length type-browse, advancing the cursor by
+// the page length, and terminates on the first short or empty page. It carries a
+// seen-set keyed on node.Id so the returned slice has EXACTLY one entry per
+// distinct node even under concurrent writes: the local backend orders the
+// browse CreatedAt-desc, so a mid-drain insert shifts every subsequent offset by
+// one and would otherwise re-emit a page-boundary row — the seen-set drops the
+// re-emitted row rather than double-counting it. Serial by necessity: each
+// page's offset depends on the prior page's length, so the cursor cannot be
+// parallelized over an unknown total. Reused by drainThoughtBrowse (type-browse
+// closure) and the all_types adjacency drain (hand-built Selection closure).
+func drainPages(fetchPage func(offset int) ([]*knowledgev1.Node, error), pageSize int) ([]*knowledgev1.Node, error) {
+	var out []*knowledgev1.Node
+	seen := map[string]bool{}
+	for offset := 0; ; {
+		page, err := fetchPage(offset)
+		if err != nil {
+			return nil, err
+		}
+		for _, n := range page {
+			if seen[n.Id] {
+				continue
+			}
+			seen[n.Id] = true
+			out = append(out, n)
+		}
+		if len(page) < pageSize {
+			break // short (or empty) final page — corpus exhausted.
+		}
+		offset += len(page)
+	}
+	return out, nil
+}
+
+// drainThoughtBrowse drains every node of nodeType in bounded offset pages via
+// the executeViaEngine query seam. Each page sends a POSITIVE limit (pageSize),
+// which overrides the engine's browseDefaultLimit cap verbatim, plus the offset
+// cursor; the drain stops on the first short page. This is the corpus-complete
+// replacement for the old single limit:0 browse, which the engine silently
+// rewrote to 10 rows.
+func drainThoughtBrowse(ctx context.Context, gc Caller, nodeType string, pageSize int) ([]*knowledgev1.Node, error) {
 	if gc == nil {
 		return nil, nil
 	}
-	raw, err := json.Marshal(map[string]any{
-		"type":  string(kgtypes.NodeThought),
-		"limit": 0,
-	})
-	if err != nil {
-		return nil, err
-	}
-	resp, err := executeViaEngine(ctx, gc, "query", raw)
-	if err != nil {
-		return nil, err
-	}
-	return engine.DecodeNodes(resp)
+	return drainPages(func(offset int) ([]*knowledgev1.Node, error) {
+		raw, err := json.Marshal(queryArgs{Type: nodeType, Limit: pageSize, Offset: offset})
+		if err != nil {
+			return nil, err
+		}
+		resp, err := executeViaEngine(ctx, gc, "query", raw)
+		if err != nil {
+			return nil, err
+		}
+		return engine.DecodeNodes(resp)
+	}, pageSize)
+}
+
+// fetchAllThoughtNodes returns every NodeThought in the graph by draining the
+// type=thought browse in bounded offset pages (drainThoughtBrowse). The typed
+// Nodes carrier per page already carries the full node payloads. Paging is
+// required: a single limit:0 browse is silently capped to browseDefaultLimit(10)
+// rows by the engine, so the drain is what makes this read corpus-complete.
+func fetchAllThoughtNodes(ctx context.Context, gc Caller) ([]*knowledgev1.Node, error) {
+	return drainThoughtBrowse(ctx, gc, string(kgtypes.NodeThought), browsePageSize)
 }
 
 // fetchOutgoingTargets returns peer IDs reachable from nodeID over any

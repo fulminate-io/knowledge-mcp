@@ -5,6 +5,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -127,6 +128,78 @@ func TestInterceptCreatePlan_ValidateName_Empty(t *testing.T) {
 	require.True(t, handled)
 	require.True(t, res.IsError)
 	assert.Contains(t, toolResultText(res), "create_plan: name is required")
+}
+
+// TestInterceptCreatePlan_DerivedCriterionOverflow asserts an over-long DERIVED
+// criterion summary (long description deriving past 500 runes) fails create_plan
+// FAST client-side with the criteria fieldPath, the derivation explanation, the
+// overflow amount, and a quoted prefix — NOT the old context-free server error.
+// Fails-when-absent: without the criteria loop the payload passes client
+// validation and dies on the server's bare exceeds-500 error.
+func TestInterceptCreatePlan_DerivedCriterionOverflow(t *testing.T) {
+	deps := interceptTestDeps{gc: &fakeGraphCaller{}}
+	// "manual criterion: " (18 runes) + 490-char description = 508 runes > 500.
+	longDesc := strings.Repeat("d", 490)
+	handled, res := InterceptCreatePlan(deps, kgtools.CallToolParams{
+		Name: "create_plan",
+		Arguments: json.RawMessage(`{
+			"name":"p","goal":"g","summary":"s","no_patterns_reason":"x",
+			"phases":[{"name":"ph","overview":"o","summary":"s","steps":[{"name":"st","description":"step 1 description body","summary":"s","criteria":[{"description":"` + longDesc + `"}]}]}]
+		}`),
+	})
+	require.True(t, handled)
+	require.True(t, res.IsError)
+	msg := toolResultText(res)
+	assert.Contains(t, msg, "phases[0].steps[0].criteria[0].summary")
+	assert.Contains(t, msg, "derived from description + command")
+	assert.Contains(t, msg, "over by")
+	assert.Contains(t, msg, "Derived prefix:")
+}
+
+// TestInterceptCreatePlan_DerivedQuestionOverflow asserts an over-long derived
+// open_question summary fails with the open_questions fieldPath + derivation
+// explanation + prefix.
+func TestInterceptCreatePlan_DerivedQuestionOverflow(t *testing.T) {
+	deps := interceptTestDeps{gc: &fakeGraphCaller{}}
+	// "Question: " (10 runes) + 495-char question = 505 runes > 500.
+	longQ := strings.Repeat("q", 495)
+	handled, res := InterceptCreatePlan(deps, kgtools.CallToolParams{
+		Name: "create_plan",
+		Arguments: json.RawMessage(`{
+			"name":"p","goal":"g","summary":"s","no_patterns_reason":"x",
+			"phases":[{"name":"ph","overview":"o","summary":"s","steps":[{"name":"st","description":"step 1 description body","summary":"s"}]}],
+			"open_questions":[{"question":"` + longQ + `"}]
+		}`),
+	})
+	require.True(t, handled)
+	require.True(t, res.IsError)
+	msg := toolResultText(res)
+	assert.Contains(t, msg, "open_questions[0].summary")
+	assert.Contains(t, msg, "derived from question + context")
+	assert.Contains(t, msg, "over by")
+	assert.Contains(t, msg, "Derived prefix:")
+}
+
+// TestInterceptCreatePlan_UnderCapDerivedSummariesPass asserts under-cap and
+// at-cap criteria/questions are NOT falsely rejected: the create proceeds to the
+// mutate RPC. Guards against the new derived-validation loop over-rejecting.
+func TestInterceptCreatePlan_UnderCapDerivedSummariesPass(t *testing.T) {
+	fc := &fakePlanGraphCaller{
+		mutateResult: kgtools.ToolResult{
+			Content: []kgtools.ContentBlock{{Type: "text", Text: `{"ids":["plan-1","phase-1","step-1"]}`}},
+		},
+	}
+	deps := interceptTestDeps{gc: fc}
+	handled, res := InterceptCreatePlan(deps, kgtools.CallToolParams{
+		Name: "create_plan",
+		Arguments: json.RawMessage(`{
+			"name":"p","goal":"g","summary":"s","no_patterns_reason":"x",
+			"phases":[{"name":"ph","overview":"o","summary":"s","steps":[{"name":"st","description":"step 1 description body","summary":"s","criteria":[{"description":"short criterion","command":"go test ./..."}]}]}],
+			"open_questions":[{"question":"short question?","context":"some context"}]
+		}`),
+	})
+	require.True(t, handled)
+	require.False(t, res.IsError, "under-cap derived summaries must not be rejected: %s", toolResultText(res))
 }
 
 // fakePlanGraphCaller is a fake that routes mutate calls through

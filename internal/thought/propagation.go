@@ -7,266 +7,40 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"math"
+	"sort"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
-
-// TrustMatrix is a row-stochastic matrix encoding how much each thought
-// trusts (listens to) each other thought's valence/magnitude. Stored
-// per-row in sparse form (typical nnz/row 4-10 vs N=5066+).
-type TrustMatrix struct {
-	IDs     []string
-	IDIndex map[string]int
-	Rows    [][]SparseEntry
-}
-
-// SparseEntry is one (column, value) pair in a TrustMatrix row.
-type SparseEntry struct {
-	Col int
-	Val float64
-}
 
 // PropagationResult summarizes one run of the propagation engine.
 type PropagationResult struct {
 	ThoughtsProcessed int
 	Components        int
 	Iterations        int
-	Converged         bool
-	ValenceChanges    map[string]float64
-	MagnitudeChanges  map[string]float64
+	// Converged is DERIVED as len(NonConverged)==0 — it now means "every recomputed
+	// component converged", not the old global AND-flag. Kept for render/log
+	// backward-compat; the per-component detail lives in NonConverged.
+	Converged           bool
+	ComponentsConverged int                     // components that converged (both valence + magnitude).
+	NonConverged        []NonConvergedComponent // the worst non-converged components by residual (capped).
+	NonConvergedOmitted int                     // non-converged components beyond the cap, not listed.
+	ValenceChanges      map[string]float64
+	MagnitudeChanges    map[string]float64
 }
 
-const (
-	defaultMaxIterations = 100
-	defaultEpsilon       = 1e-6
-	magnitudeDecay       = 0.7
-)
-
-// BuildTrustMatrix constructs a row-stochastic trust matrix for the
-// given thoughts. Issues EXACTLY ONE gc.Call("thoughts",
-// {operation:"adjacency", thought_ids: thoughtIDs}) for the cross-edge
-// fanout + ONE gc.Call("thoughts", {operation:"charges_for"}) for
-// self-trust derivation. fillSparseRows operates entirely from those
-// two prebuilt maps.
-func BuildTrustMatrix(ctx context.Context, gc Caller, thoughtIDs []string) (TrustMatrix, error) {
-	n := len(thoughtIDs)
-	if n == 0 {
-		return TrustMatrix{}, nil
-	}
-	idIndex := make(map[string]int, n)
-	for i, id := range thoughtIDs {
-		idIndex[id] = i
-	}
-	_, adj, err := fetchAdjacency(ctx, gc, "all", thoughtIDs)
-	if err != nil {
-		return TrustMatrix{}, fmt.Errorf("thought: BuildTrustMatrix: adjacency: %w", err)
-	}
-	chargeMap := chargeMapForThoughts(ctx, gc, thoughtIDs)
-
-	rows := fillSparseRows(thoughtIDs, idIndex, adj, chargeMap)
-	normalizeSparseRows(rows)
-	return TrustMatrix{IDs: thoughtIDs, IDIndex: idIndex, Rows: rows}, nil
+// NonConvergedComponent reports one connected component that did NOT converge
+// within the iteration cap, with its size and the final valence/magnitude
+// residuals (the leftover gap at cap).
+type NonConvergedComponent struct {
+	Size              int
+	ValenceResidual   float64
+	MagnitudeResidual float64
 }
 
-// fillSparseRows builds the sparse trust-matrix rows from the prebuilt
-// adjacency map + charge map. No wire calls.
-func fillSparseRows(thoughtIDs []string, idIndex map[string]int, adj map[string][]string, chargeMap map[string][]*knowledgev1.Node) [][]SparseEntry {
-	n := len(thoughtIDs)
-	rows := make([][]SparseEntry, n)
-	seen := make([]bool, n)
-	for i, id := range thoughtIDs {
-		for k := range seen {
-			seen[k] = false
-		}
-		var row []SparseEntry
-		for _, other := range adj[id] {
-			j, ok := idIndex[other]
-			if !ok || j == i || seen[j] {
-				continue
-			}
-			seen[j] = true
-			row = append(row, SparseEntry{Col: j, Val: 1.0})
-		}
-		row = append(row, SparseEntry{Col: i, Val: computePropertiesFromCharges(chargeMap[id]).SelfTrust})
-		sortRowByCol(row)
-		rows[i] = row
-	}
-	return rows
-}
-
-func sortRowByCol(row []SparseEntry) {
-	for i := 1; i < len(row); i++ {
-		for j := i; j > 0 && row[j-1].Col > row[j].Col; j-- {
-			row[j-1], row[j] = row[j], row[j-1]
-		}
-	}
-}
-
-func normalizeSparseRows(rows [][]SparseEntry) {
-	for i, row := range rows {
-		rowSum := 0.0
-		for _, e := range row {
-			rowSum += e.Val
-		}
-		if rowSum > 0 {
-			for j := range row {
-				row[j].Val /= rowSum
-			}
-			continue
-		}
-		rows[i] = []SparseEntry{{Col: i, Val: 1.0}}
-	}
-}
-
-// PropagateValence runs DeGroot iterations on valence until convergence.
-func PropagateValence(matrix TrustMatrix, initialValence map[string]float64, maxIter int, epsilon float64) (map[string]float64, int, bool) {
-	n := len(matrix.IDs)
-	if n == 0 {
-		return nil, 0, true
-	}
-	if maxIter <= 0 {
-		maxIter = defaultMaxIterations
-	}
-	if epsilon <= 0 {
-		epsilon = defaultEpsilon
-	}
-	v := make([]float64, n)
-	for i, id := range matrix.IDs {
-		v[i] = initialValence[id]
-	}
-	vNext := make([]float64, n)
-	var iterations int
-	converged := false
-	for iter := range maxIter {
-		maxDelta := 0.0
-		for i := range n {
-			sum := 0.0
-			for _, e := range matrix.Rows[i] {
-				sum += e.Val * v[e.Col]
-			}
-			vNext[i] = sum
-			delta := math.Abs(vNext[i] - v[i])
-			if delta > maxDelta {
-				maxDelta = delta
-			}
-		}
-		copy(v, vNext)
-		iterations = iter + 1
-		if maxDelta < epsilon {
-			converged = true
-			break
-		}
-	}
-	result := make(map[string]float64, n)
-	for i, id := range matrix.IDs {
-		result[id] = v[i]
-	}
-	return result, iterations, converged
-}
-
-// PropagateMagnitude uses decay-attenuated propagation.
-func PropagateMagnitude(matrix TrustMatrix, localMagnitude map[string]float64, maxIter int, epsilon float64) (map[string]float64, int, bool) {
-	n := len(matrix.IDs)
-	if n == 0 {
-		return nil, 0, true
-	}
-	if maxIter <= 0 {
-		maxIter = defaultMaxIterations
-	}
-	if epsilon <= 0 {
-		epsilon = defaultEpsilon
-	}
-	m := make([]float64, n)
-	local := make([]float64, n)
-	for i, id := range matrix.IDs {
-		m[i] = localMagnitude[id]
-		local[i] = localMagnitude[id]
-	}
-	var iterations int
-	converged := false
-	for iter := range maxIter {
-		maxDelta := 0.0
-		for i := range n {
-			maxNeighbor := 0.0
-			for _, e := range matrix.Rows[i] {
-				if e.Col == i {
-					continue
-				}
-				if m[e.Col] > maxNeighbor {
-					maxNeighbor = m[e.Col]
-				}
-			}
-			newM := math.Max(local[i], magnitudeDecay*maxNeighbor)
-			delta := newM - m[i]
-			if delta > maxDelta {
-				maxDelta = delta
-			}
-			m[i] = newM
-		}
-		iterations = iter + 1
-		if maxDelta < epsilon {
-			converged = true
-			break
-		}
-	}
-	result := make(map[string]float64, n)
-	for i, id := range matrix.IDs {
-		result[id] = m[i]
-	}
-	return result, iterations, converged
-}
-
-// ComputeInfluenceVector computes the left eigenvector of T via power
-// iteration. Pure local computation.
-func ComputeInfluenceVector(matrix TrustMatrix) map[string]float64 {
-	n := len(matrix.IDs)
-	if n == 0 {
-		return nil
-	}
-	s := make([]float64, n)
-	for i := range s {
-		s[i] = 1.0 / float64(n)
-	}
-	sNext := make([]float64, n)
-	for range defaultMaxIterations {
-		for j := range sNext {
-			sNext[j] = 0
-		}
-		for i := range n {
-			si := s[i]
-			for _, e := range matrix.Rows[i] {
-				sNext[e.Col] += si * e.Val
-			}
-		}
-		total := 0.0
-		for _, v := range sNext {
-			total += v
-		}
-		if total > 0 {
-			for j := range sNext {
-				sNext[j] /= total
-			}
-		}
-		maxDelta := 0.0
-		for i := range n {
-			d := math.Abs(sNext[i] - s[i])
-			if d > maxDelta {
-				maxDelta = d
-			}
-		}
-		copy(s, sNext)
-		if maxDelta < defaultEpsilon {
-			break
-		}
-	}
-	result := make(map[string]float64, n)
-	for i, id := range matrix.IDs {
-		result[id] = s[i]
-	}
-	return result
-}
+// nonConvergedReportCap bounds how many non-converged components RunPropagationScoped
+// lists (the worst-K by residual); the rest are summarized via NonConvergedOmitted.
+const nonConvergedReportCap = 5
 
 // findConnectedComponents returns groups of thought IDs that are
 // connected. Pure local computation over a prebuilt adjacency map.
@@ -300,16 +74,95 @@ func findConnectedComponents(thoughtIDs []string, adj map[string][]string) [][]s
 	return components
 }
 
-// RunPropagation executes full propagation across all thoughts.
-// Single adjacency call up front; chargeMap fetched ONCE (T3 perf
-// lock); per-component matrix build uses the prebuilt adj subset and
-// chargeMap subset. Writeback is a SINGLE
-// gc.Call("mutate", {operation:"bulk_update_metadata"}) at the end —
-// O(1) RPCs regardless of N.
+// dirtyComponentClosure returns the union of every connected component that
+// contains at least one seed node, preserving each component's member order.
+// Pure local computation over the precomputed [][]string partition — no wire, no
+// DB. Components with no seed member are excluded; their converged DeGroot values
+// are provably invariant between ticks (block-diagonal per-component trust
+// matrix), so skipping them is EXACT, not approximate.
+//
+// JOIN-SAFE BOUNDARY: callers build `components` via findConnectedComponents over
+// the NEW (post-edge) adjacency, so a bridging edge that fused two previously
+// separate components yields ONE component containing both seed endpoints. The
+// closure of either endpoint then pulls in the whole fused component — the
+// bridging-edge JOIN is captured structurally, with no special-casing here.
+func dirtyComponentClosure(seed map[string]bool, components [][]string) []string {
+	var closure []string
+	for _, component := range closureComponents(seed, components) {
+		closure = append(closure, component...)
+	}
+	return closure
+}
+
+// closureComponents returns the subset of components that contain at least one
+// seed node — the [][]string grouping RunPropagationScoped iterates to recompute
+// only the dirty closure. dirtyComponentClosure flattens this for the unit-level
+// closure invariant; the recompute loop needs the per-component grouping.
+func closureComponents(seed map[string]bool, components [][]string) [][]string {
+	var touchedComponents [][]string
+	for _, component := range components {
+		for _, id := range component {
+			if seed[id] {
+				touchedComponents = append(touchedComponents, component)
+				break
+			}
+		}
+	}
+	return touchedComponents
+}
+
+// currentPropagatedAccessor builds the diffMetadataUpdates current-value accessor
+// over the already-fetched nodeByID map: it reads the persisted propagated_*
+// metadata via kgtypes.Value — no extra wire read. Returns nil when nodeByID is
+// nil (the no-personality path) so diffMetadataUpdates treats it as the cold case
+// and keeps every row, preserving the prior unconditional-write behavior there.
+func currentPropagatedAccessor(nodeByID map[string]*knowledgev1.Node) func(id, key string) string {
+	if nodeByID == nil {
+		return nil
+	}
+	return func(id, key string) string {
+		if n, ok := nodeByID[id]; ok {
+			return kgtypes.Value(n, key)
+		}
+		return ""
+	}
+}
+
+// RunPropagation executes a FULL propagation across all thoughts — every
+// connected component is recomputed. Thin wrapper over RunPropagationScoped with
+// dirtySeed=nil (the manual propagate tool and any forced/full pass want this).
+// The changed-only writeback diff still applies, so a no-change full pass writes
+// zero rows.
+//
+// Both existing callers (runBackgroundPropagation loop.go, handlePropagateClient
+// tools/thought.go) call this 4-arg form unchanged; the warm-tick scoping rides
+// RunPropagationScoped directly from runBackgroundPropagation.
 func RunPropagation(ctx context.Context, gc Caller, profile *PersonalityProfile, nodeByID map[string]*knowledgev1.Node) (PropagationResult, error) {
+	return RunPropagationScoped(ctx, gc, profile, nodeByID, nil)
+}
+
+// RunPropagationScoped executes propagation, optionally SCOPED to the
+// connected-component closure of dirtySeed. Single adjacency call up front;
+// chargeMap fetched ONCE (T3 perf lock); per-component matrix build uses the
+// prebuilt adj subset and chargeMap subset.
+//
+// When dirtySeed is non-nil, only the components the closure touches are
+// recomputed — every UNTOUCHED component is skipped and its persisted
+// propagated_valence/propagated_magnitude (read from nodeByID via kgtypes.Value)
+// carries forward EXACTLY. This is exact, not approximate: the trust matrix is
+// block-diagonal per connected component (buildComponentMatrix), so an untouched
+// component's converged DeGroot values are provably invariant between ticks. A
+// quiet warm tick passes an EMPTY non-nil seed → recompute nothing. dirtySeed=nil
+// ⇒ full pass (every component recomputed).
+//
+// Writeback rows (closure members only on a scoped pass) pass through
+// diffMetadataUpdates with a current accessor reading propagated_* from nodeByID,
+// so a single bulk_update_metadata writes only the rows whose value CHANGED —
+// O(|changed|) regardless of N.
+func RunPropagationScoped(ctx context.Context, gc Caller, profile *PersonalityProfile, nodeByID map[string]*knowledgev1.Node, dirtySeed map[string]bool) (PropagationResult, error) {
 	nodeIDs, adj, err := fetchAdjacency(ctx, gc, "all", nil)
 	if err != nil {
-		return PropagationResult{}, fmt.Errorf("thought: RunPropagation: adjacency: %w", err)
+		return PropagationResult{}, fmt.Errorf("thought: RunPropagationScoped: adjacency: %w", err)
 	}
 	if len(nodeIDs) == 0 {
 		return PropagationResult{}, nil
@@ -320,15 +173,25 @@ func RunPropagation(ctx context.Context, gc Caller, profile *PersonalityProfile,
 	result := PropagationResult{
 		ThoughtsProcessed: len(nodeIDs),
 		Components:        len(components),
-		Converged:         true,
 		ValenceChanges:    make(map[string]float64),
 		MagnitudeChanges:  make(map[string]float64),
+	}
+
+	// SCOPE: on a warm tick (non-nil seed) recompute ONLY the components the dirty
+	// closure touches; untouched components carry forward their persisted
+	// propagated_* unchanged. The gate is dirtySeed != nil, NOT len > 0: a quiet
+	// warm tick passes an EMPTY non-nil seed and must recompute NOTHING (closure of
+	// the empty set is empty), whereas a cold-start full pass passes nil and
+	// recomputes every component.
+	recomputed := components
+	if dirtySeed != nil {
+		recomputed = closureComponents(dirtySeed, components)
 	}
 
 	// Accumulate per-thought writeback rows; single bulk update at the
 	// end (T2/T3 perf lock — no per-thought wire writes).
 	var allUpdates []map[string]any
-	for _, component := range components {
+	for _, component := range recomputed {
 		if err := ctx.Err(); err != nil {
 			return result, fmt.Errorf("propagation cancelled: %w", err)
 		}
@@ -345,15 +208,22 @@ func RunPropagation(ctx context.Context, gc Caller, profile *PersonalityProfile,
 			localMagnitude[id] = props.Magnitude
 		}
 
-		propagatedValence, vIter, vConverged := PropagateValence(matrix, initialValence, defaultMaxIterations, defaultEpsilon)
+		propagatedValence, vIter, vConverged, vResidual := PropagateValence(matrix, initialValence, defaultMaxIterations, defaultEpsilon)
 		result.Iterations += vIter
-		if !vConverged {
-			result.Converged = false
-		}
-		propagatedMagnitude, mIter, mConverged := PropagateMagnitude(matrix, localMagnitude, defaultMaxIterations, defaultEpsilon)
+		propagatedMagnitude, mIter, mConverged, mResidual := PropagateMagnitude(matrix, localMagnitude, defaultMaxIterations, defaultEpsilon)
 		result.Iterations += mIter
-		if !mConverged {
-			result.Converged = false
+
+		// Per-component convergence: a component converges only when BOTH its valence
+		// and magnitude passes did. One slow clique no longer masks the converged
+		// majority — each non-converged component is recorded with its size + residuals.
+		if vConverged && mConverged {
+			result.ComponentsConverged++
+		} else {
+			result.NonConverged = append(result.NonConverged, NonConvergedComponent{
+				Size:              len(component),
+				ValenceResidual:   vResidual,
+				MagnitudeResidual: mResidual,
+			})
 		}
 
 		for _, id := range component {
@@ -371,37 +241,40 @@ func RunPropagation(ctx context.Context, gc Caller, profile *PersonalityProfile,
 		}
 	}
 
-	bulkPersistMetadata(ctx, gc, allUpdates)
+	// Derive the backward-compat Converged flag (now "every recomputed component
+	// converged") and bound the NonConverged list to the worst-K by residual,
+	// summarizing the rest via NonConvergedOmitted.
+	finalizeConvergence(&result)
+
+	// Changed-only writeback: drop rows whose recomputed propagated_* already
+	// equals the persisted value (carry-forward equality), so the bulk write is
+	// O(|changed|). nodeByID may be nil (no-personality path) — diffMetadataUpdates
+	// then keeps every row (cold case), preserving the prior full-write behavior.
+	bulkPersistMetadata(ctx, gc, diffMetadataUpdates(allUpdates, currentPropagatedAccessor(nodeByID)))
 	return result, nil
 }
 
-// buildComponentMatrix builds the TrustMatrix for one connected
-// component, reusing the prebuilt adj subset and chargeMap.
-// Personality scalars are applied if profile != nil.
-func buildComponentMatrix(component []string, adj map[string][]string, chargeMap map[string][]*knowledgev1.Node, profile *PersonalityProfile, nodeByID map[string]*knowledgev1.Node) TrustMatrix {
-	idIndex := make(map[string]int, len(component))
-	for i, id := range component {
-		idIndex[id] = i
-	}
-	rows := fillSparseRows(component, idIndex, adj, chargeMap)
-	normalizeSparseRows(rows)
-	matrix := TrustMatrix{IDs: component, IDIndex: idIndex, Rows: rows}
-	if profile != nil {
-		thoughtToCluster := make(map[string]string, len(component))
-		for _, id := range component {
-			if n, ok := nodeByID[id]; ok {
-				if cid := kgtypes.Value(n, "cluster_id"); cid != "" {
-					thoughtToCluster[id] = cid
-				}
-			}
+// finalizeConvergence derives Converged (len(NonConverged)==0) and caps the
+// NonConverged list to the worst nonConvergedReportCap components by max residual,
+// recording how many were omitted. Each component's rank residual is the larger of
+// its valence/magnitude residual.
+func finalizeConvergence(result *PropagationResult) {
+	worst := func(c NonConvergedComponent) float64 {
+		if c.ValenceResidual > c.MagnitudeResidual {
+			return c.ValenceResidual
 		}
-		n := len(matrix.IDs)
-		for i := range n {
-			applyPersonalityScalarsToRow(matrix, i, thoughtToCluster, *profile)
-			renormalizeSparseRow(matrix.Rows[i])
-		}
+		return c.MagnitudeResidual
 	}
-	return matrix
+	sort.Slice(result.NonConverged, func(i, j int) bool {
+		return worst(result.NonConverged[i]) > worst(result.NonConverged[j])
+	})
+	if len(result.NonConverged) > nonConvergedReportCap {
+		result.NonConvergedOmitted = len(result.NonConverged) - nonConvergedReportCap
+		result.NonConverged = result.NonConverged[:nonConvergedReportCap]
+	}
+	// Derive AFTER the cap using the omitted count so a capped run with omitted
+	// non-converged components is still correctly reported as not-all-converged.
+	result.Converged = len(result.NonConverged) == 0 && result.NonConvergedOmitted == 0
 }
 
 // bulkPersistMetadata wraps the mutate(bulk_update_metadata) write, routed
@@ -420,8 +293,50 @@ func bulkPersistMetadata(ctx context.Context, gc Caller, updates []map[string]an
 		return
 	}
 	// bulk_update_metadata lowers to MUTATION_KIND_UPDATE_ITEMS via the engine
-	// (compileMutateBulkMetadata) and rides the Execute carrier seam.
-	if _, err := executeViaEngine(ctx, gc, "mutate", args); err != nil {
+	// (compileMutateBulkMetadata) and rides the Execute carrier seam. Use the
+	// reflect-inert variant: this propagated_valence/propagated_magnitude writeback
+	// is the reflection pass's OWN write and must NOT advance the reflect dirty-gen
+	// (T1-1 self-trigger fix).
+	if err := executeReflectInertMutate(ctx, gc, args); err != nil {
 		slog.Warn("thought: bulkPersistMetadata: execute failed", "err", err)
 	}
+}
+
+// diffMetadataUpdates filters a desired writeback slice down to ONLY the rows
+// whose value actually changed versus what is already persisted — the O(|changed|)
+// gate shared by both metadata writeback sites (persistClusterAssignments and
+// bulkPersistMetadata). Each desired row has the bulk_update_metadata shape
+// {"id": string, "metadata": map[string]string}; a row is kept when at least one
+// of its metadata keys' desired value differs from current(id, key), and dropped
+// when every key already equals the persisted value.
+//
+// current is a caller-supplied accessor closed over the already-fetched node map
+// (via kgtypes.Value) — no extra wire read. A NIL current accessor is the COLD
+// case (no persisted values to compare against, e.g. first pass): every row is
+// kept. A row whose "metadata" is absent or not a map[string]string is passed
+// through unchanged (cannot prove it unchanged, so never silently drop it).
+func diffMetadataUpdates(desired []map[string]any, current func(id string, key string) string) []map[string]any {
+	if current == nil {
+		return desired // cold case: nothing persisted to diff against → keep all.
+	}
+	var changed []map[string]any
+	for _, row := range desired {
+		id, _ := row["id"].(string)
+		meta, ok := row["metadata"].(map[string]string)
+		if id == "" || !ok {
+			changed = append(changed, row) // unprovable → keep.
+			continue
+		}
+		rowChanged := false
+		for k, v := range meta {
+			if current(id, k) != v {
+				rowChanged = true
+				break
+			}
+		}
+		if rowChanged {
+			changed = append(changed, row)
+		}
+	}
+	return changed
 }

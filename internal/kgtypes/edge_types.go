@@ -60,6 +60,16 @@ const (
 	// isolate metadata edges cleanly.
 	EdgeMetaValue EdgeType = "meta_value" // node → value-node (metadata key on Edge.Method)
 
+	// Hive work-queue edge types (cloud-only feature). NEW edges — NOT reuse of
+	// EdgeKGContains: EdgeKGContains="contains" is parent→child (plan→phase),
+	// the OPPOSITE direction, so reusing it would invert the semantics. The wire
+	// literals mirror the server store vocabulary
+	// (cmd/knowledge-server/internal/store/edge_types_vocab.go) verbatim — a
+	// deliberate per-module duplicate (no shared package); per-module
+	// drift-guard tests pin the two copies in lockstep.
+	EdgeContainedBy EdgeType = "contained-by" // child → parent (message → hive, hive_member → hive)
+	EdgeRespondsTo  EdgeType = "responds-to"  // result message → the original message it answers (ack reply)
+
 	// Thought graph edge types.
 	EdgeNext            EdgeType = "next"             // sequential thought chain
 	EdgeBranchesFrom    EdgeType = "branches-from"    // new direction after invalidation

@@ -23,8 +23,11 @@ import (
 // instead of dispatching a server search. *segmentdist.Manager satisfies it
 // (Manager.Search). Declared here so the thought package stays import-clean of
 // the higher-level tools/bootstrap packages and so tests can inject a fake. A
-// nil searcher means "no client engine wired" — recall falls back to the
-// server-search candidate gather (fetchQueryBySearch).
+// nil searcher means "no client engine wired" — which happens in a degraded
+// harness AND during the bind-first wiring window (bind-first startup), before the segment
+// Manager is wired. Recall is UNGATED by design: a nil searcher yields zero
+// candidates and gatherRecallCandidates degrades to full-corpus iteration
+// (iterateRecallCandidates). There is no server-search gather.
 type ThoughtSearcher interface {
 	Search(ctx context.Context, gt kgtypes.GraphType, name, queryText string, queryVec []byte, k int) ([]searchengine.Hit, error)
 }
@@ -62,8 +65,17 @@ type RecallOptions struct {
 	QueryVec []byte
 	// Searcher routes candidate-gathering through the CLIENT knowledge segment
 	// engines (Manager.Search) instead of a server search dispatch. nil → recall
-	// falls back to the server-search gather (fetchQueryBySearch).
+	// degrades to full-corpus iteration (iterateRecallCandidates); nil happens in a
+	// degraded harness AND during the bind-first wiring window (bind-first startup), before
+	// the segment Manager is wired. There is no server-search gather.
 	Searcher ThoughtSearcher
+
+	// WidePool, when > 0, widens the candidate gather to this many hits AND makes
+	// RecallThoughts return the filtered+sorted pool WITHOUT its final trim-to-Limit
+	// — so the recall intercept can rerank the untrimmed wide pool and trim
+	// afterward, mirroring search's widen->rerank->trim shape. 0 (the default, and
+	// the bare Query=="" path) keeps the existing trim-to-Limit behavior verbatim.
+	WidePool int
 }
 
 // ThoughtResult is a thought with its computed properties and search score.
@@ -111,7 +123,10 @@ func RecallThoughts(ctx context.Context, gc Caller, opts RecallOptions) ([]Thoug
 		sort.Slice(results, func(i, j int) bool { return sortMag(results[i]) > sortMag(results[j]) })
 	}
 
-	if len(results) > opts.Limit {
+	// Skip the final trim when WidePool>0: the caller (recall intercept) reranks
+	// the untrimmed filtered+sorted wide pool and trims to Limit afterward. The
+	// sort above still runs, so the returned wide pool is score-sorted.
+	if opts.WidePool == 0 && len(results) > opts.Limit {
 		results = results[:opts.Limit]
 	}
 	slog.Debug("RecallThoughts", "query", opts.Query, "candidates", len(candidates), "filtered", len(results),
@@ -136,14 +151,15 @@ func gatherRecallCandidates(ctx context.Context, gc Caller, opts RecallOptions) 
 // searchRecallCandidates returns thought candidates from a semantic search
 // query, thought-only filter applied client-side.
 //
-// Candidates come UNCONDITIONALLY from the CLIENT knowledge engines
-// (Manager.Search → RRF over the BM25 + HNSW arms, the latter driven by the
-// client-embedded opts.QueryVec) + ONE bulk RETURN_MODE_NODES hydrate — NEVER a
-// server search dispatch. Thoughts are GraphKnowledge nodes, so the same client
-// knowledge segments back the corpus. The Searcher is always wired by the real
-// recall interceptor; a nil Searcher (empty/un-collected knowledge graph in a
-// degraded harness) yields zero candidates, which gatherRecallCandidates falls
-// back to full iteration over.
+// Candidates come from the CLIENT knowledge engines (Manager.Search → RRF over
+// the BM25 + HNSW arms, the latter driven by the client-embedded opts.QueryVec) +
+// ONE bulk RETURN_MODE_NODES hydrate — NEVER a server search dispatch. Thoughts
+// are GraphKnowledge nodes, so the same client knowledge segments back the corpus.
+// The Searcher is wired by the real recall interceptor for the life of the daemon
+// EXCEPT during the bind-first wiring window (bind-first startup); a nil Searcher
+// (still-wiring, OR an empty/un-collected knowledge graph in a degraded harness)
+// yields zero candidates, which gatherRecallCandidates falls back to full
+// iteration over.
 func searchRecallCandidates(ctx context.Context, gc Caller, opts RecallOptions) ([]ThoughtResult, error) {
 	if opts.Searcher == nil {
 		return nil, nil
@@ -157,7 +173,14 @@ func searchRecallCandidates(ctx context.Context, gc Caller, opts RecallOptions) 
 // id-map in ranked order, carry the fused score, and keep the thought-only type
 // filter. The HNSW arm is exercised whenever opts.QueryVec is non-empty.
 func searchRecallCandidatesClient(ctx context.Context, gc Caller, opts RecallOptions) ([]ThoughtResult, error) {
-	hits, err := opts.Searcher.Search(ctx, kgtypes.GraphKnowledge, "default", opts.Query, opts.QueryVec, opts.Limit*5)
+	// Widen the gather toward search's idiom when the intercept asks for it
+	// (WidePool>0): a buried candidate can only be promoted by a downstream rerank
+	// if it is in the pool. Default search-k is opts.Limit*5.
+	k := opts.Limit * 5
+	if opts.WidePool > 0 {
+		k = opts.WidePool
+	}
+	hits, err := opts.Searcher.Search(ctx, kgtypes.GraphKnowledge, "default", opts.Query, opts.QueryVec, k)
 	if err != nil {
 		return nil, fmt.Errorf("client search: %w", err)
 	}
@@ -321,9 +344,75 @@ func propagatedMagnitude(n *knowledgev1.Node) (float64, bool) {
 	return v, true
 }
 
-// FormatRecallResults formats recall results based on mode. Verbatim from
-// pkg/thought/query.go — pure rendering, no graph access.
-func FormatRecallResults(results []ThoughtResult, mode string) string {
+// rerankFloorThreshold is the reranked-relevance best-score below which recall
+// emits the zero-overlap floor banner. 0.30 is just above the bottom of search's
+// observed 0.27-0.80 reranked range — biases toward an honest "maybe noise" note
+// for borderline-weak reranked results; first-cut heuristic to be tuned once live
+// reranked recall scores are observed. NOT an empirically tuned cutoff: it is
+// derived from a SINGLE observed reranked range and should be recalibrated at the
+// deferred live-capstone calibration point against real recall distributions.
+//
+// Failure modes (heuristic, not exact): (a) a single highly-relevant result in an
+// otherwise-empty corpus can rank-0 in both RRF arms and read as floor (2/61) on
+// the no-rerank path — mitigated because the rerank path (when a Voyage key is
+// configured) gives the truer signal, and the banner says "showing closest
+// matches" not "nothing found"; (b) the threshold biases toward an honest
+// "maybe noise" note rather than false confidence.
+const rerankFloorThreshold = 0.30
+
+// rrfFloorBannerThreshold is the RRF (rank-fusion) best-score at/below which the
+// no-rerank semantic path emits the floor banner. The RRF floor is 2/61 = 0.03279
+// when the top thought is rank-0 in both arms with no corroboration (1/(rrfK+rank+1),
+// rrfK=60 — segmentdist/rrf.go:16,47). 0.04 sits just above 2/61 to absorb float
+// wobble. Same first-cut-heuristic caveat as rerankFloorThreshold.
+const rrfFloorBannerThreshold = 0.04
+
+// recallFloorBanner returns a one-line additive banner when the best score is at
+// the zero-overlap floor (so the rendered set reads as "closest matches, maybe
+// noise" rather than confident hits), or "" otherwise. CRITICAL: the banner is
+// ADDITIVE prose only — it NEVER suppresses a result row; a genuinely-relevant
+// low-rank result is still rendered in full beneath it. results are score-sorted
+// on the query path, so results[0].Score is the best score.
+func recallFloorBanner(results []ThoughtResult, didRerank bool) string {
+	if len(results) == 0 {
+		return "" // the "No thoughts found." path already handles empty.
+	}
+	best := results[0].Score
+	if didRerank {
+		if best < rerankFloorThreshold {
+			return "No strongly related thoughts — showing closest matches by relevance."
+		}
+		return ""
+	}
+	// No reranker: only the semantic (RRF) path carries a non-zero Score. The
+	// bare magnitude path (Score==0) gets no floor banner.
+	if best > 0 && best <= rrfFloorBannerThreshold {
+		return "No strongly related thoughts — results are at the rank-fusion floor (no clear semantic match)."
+	}
+	return ""
+}
+
+// recallModeFooter returns the honest score-scale footer mirroring search's
+// "_search mode: %s_" footer (render_search.go:306). didRerank true → the score
+// is the Voyage reranked relevance; didRerank false with a non-zero best Score →
+// the score is a raw RRF rank value (relevance not scored — no reranker); the
+// bare magnitude path (Score==0) → magnitude rank. This makes the rendered score
+// scale unambiguous to the consumer.
+func recallModeFooter(results []ThoughtResult, didRerank bool) string {
+	if didRerank {
+		return "\n_recall mode: reranked relevance_\n"
+	}
+	if len(results) > 0 && results[0].Score > 0 {
+		return "\n_recall mode: RRF rank (relevance not scored — no reranker)_\n"
+	}
+	return "\n_recall mode: magnitude rank_\n"
+}
+
+// FormatRecallResults formats recall results based on mode. didRerank threads
+// the rerank-vs-RRF state from the recall intercept so the default (search/graph/
+// clusters) render can label the score scale honestly and prepend a zero-overlap
+// floor banner. Pure rendering, no graph access.
+func FormatRecallResults(results []ThoughtResult, mode string, didRerank bool) string {
 	if len(results) == 0 {
 		return "No thoughts found."
 	}
@@ -353,6 +442,12 @@ func FormatRecallResults(results []ThoughtResult, mode string) string {
 		}
 
 	default: // "search", "graph", "clusters"
+		// Zero-overlap floor banner — additive prose, prepended after the count
+		// line. NEVER suppresses a row: every candidate below is still rendered.
+		if banner := recallFloorBanner(results, didRerank); banner != "" {
+			sb.WriteString(banner)
+			sb.WriteString("\n\n")
+		}
 		for i, r := range results {
 			scoreStr := ""
 			if r.Score > 0 {
@@ -365,6 +460,9 @@ func FormatRecallResults(results []ThoughtResult, mode string) string {
 			}
 			sb.WriteString("\n")
 		}
+		// Honest score-scale footer (mirrors search's "_search mode: %s_") so the
+		// rendered per-row score is never read as the wrong scale.
+		sb.WriteString(recallModeFooter(results, didRerank))
 	}
 
 	return sb.String()

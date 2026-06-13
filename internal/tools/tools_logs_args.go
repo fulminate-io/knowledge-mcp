@@ -79,10 +79,12 @@ type queryArgs struct {
 }
 
 // searchArgs is the client-side mirror of the server searchArgs struct
-// (cmd/knowledge-server/tools/tools_search_args.go). The client-side
-// search-logs handler reads only Query / Queries / Graph / Name / Limit /
-// Format — the rest of the fields would be redundant for the
-// graph=logs short-circuit. Kept aligned with the wire shape so future
+// (cmd/knowledge-server/tools/tools_search_args.go). InterceptSearch unmarshals
+// the search payload into this as `sniff`: the graph=logs short-circuit reads
+// Query / Queries / Graph / Name / Limit / Format, and the mode:"similar" claim
+// additionally reads Mode (gate), NodeID (the node whose stored vector seeds the
+// search), and Fields (render projection). The other wire fields are decoded into
+// the per-arm arg structs downstream. Kept aligned with the wire shape so future
 // drift is loud.
 type searchArgs struct {
 	Query   string   `json:"query"`
@@ -91,6 +93,9 @@ type searchArgs struct {
 	Name    string   `json:"name"`
 	Limit   flexInt  `json:"limit"`
 	Format  string   `json:"format"`
+	Mode    string   `json:"mode"`
+	NodeID  string   `json:"node_id"`
+	Fields  []string `json:"fields,omitempty"`
 }
 
 // traverseArgs is the client-side mirror of the server traverseArgs struct.

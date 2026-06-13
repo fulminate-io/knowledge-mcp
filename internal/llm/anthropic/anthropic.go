@@ -46,6 +46,19 @@ const anthropicVersion = "2023-06-01"
 // store/summarize_openai_agent_anthropic.go has been running in production.
 const defaultMaxTokens = 4096
 
+// resolveMaxTokens applies the default cap when the caller left MaxTokens
+// unset (<= 0). Shared by buildRequest (to set the wire field) and Generate's
+// truncation report (so the TruncatedOutputError names the cap actually sent).
+// This is the pre-thinking cap; applyThinking may bump it higher when extended
+// thinking is on, but a truncated structured response never has thinking
+// active on the same call.
+func resolveMaxTokens(requested int) int {
+	if requested <= 0 {
+		return defaultMaxTokens
+	}
+	return requested
+}
+
 // init registers Anthropic's factory at package import time. Test code can
 // rely on a side-effect import (`_ "github.com/.../domains/llm/anthropic"`)
 // to make the provider visible to llm.NewClient.
@@ -142,7 +155,52 @@ func (s *Service) Generate(ctx context.Context, messages []*schema.Message, opts
 		return nil, &llm.LLMError{Reason: "parse_response", Cause: err}
 	}
 	s.RecordUsage(resp.Usage)
+
+	if err := applyStructuredResponse(resp, options); err != nil {
+		return nil, err
+	}
+
 	return resp, nil
+}
+
+// applyStructuredResponse runs the structured-output response handling for a
+// request that asked for ResponseFormat, in order:
+//
+//  1. Truncation FIRST. A structured request that stopped on max_tokens carries
+//     a partial, unparseable JSON body — return the distinct, wrappable
+//     truncation error rather than letting the consumer choke on half a
+//     document. A NON-structured max_tokens response is a normal truncated
+//     completion the caller handles via FinishReason, so this is gated on
+//     ResponseFormat (a no-op when ResponseFormat is nil).
+//  2. The fallback content bridge. On the forced-tool path the structured
+//     output arrives as a structured_output tool_use block, which
+//     splitContentBlocks routed into resp.ToolCalls, leaving resp.Content
+//     empty. Both ResponseFormat consumers read resp.Content only, so copy the
+//     synthesized tool's arguments (already a raw JSON object string — no
+//     re-marshal) into resp.Content. Match by outputToolName so a genuine
+//     WithTools tool_use is never touched; gate on empty Content so a real text
+//     block is never clobbered; ToolCalls is left intact.
+func applyStructuredResponse(resp *llm.Response, options *llm.RequestOptions) error {
+	if options.ResponseFormat == nil {
+		return nil
+	}
+	if resp.FinishReason == llm.FinishReasonMaxTokens {
+		return &llm.LLMError{
+			Transient: false,
+			Reason:    "response_truncated",
+			Cause:     &TruncatedOutputError{StopReason: string(resp.FinishReason), MaxTokens: resolveMaxTokens(options.MaxTokens)},
+		}
+	}
+	if resp.Content != "" {
+		return nil
+	}
+	for i := range resp.ToolCalls {
+		if resp.ToolCalls[i].Function.Name == outputToolName {
+			resp.Content = resp.ToolCalls[i].Function.Arguments
+			break
+		}
+	}
+	return nil
 }
 
 // pickModel returns options.Model if set, otherwise the Service-level

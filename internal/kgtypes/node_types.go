@@ -120,6 +120,27 @@ const (
 	// knowledgeTypes so the IsCodeType classifier doesn't mistakenly
 	// route them through the code-graph summarization path.
 	NodeMetaValue NodeType = "meta_value"
+
+	// Hive work-queue node types (cloud-only feature; the OSS server fails
+	// loud on every hive op). These are graph-native operational records,
+	// NOT user/LLM knowledge — like NodeWorker / NodeGraphTypeDef they are
+	// deliberately left OUT of the knowledgeTypes map and instead carry an
+	// explicit zero-value entry in the server-side nodeTypeBehavior table so
+	// they opt out of both LLM summarization and embedding (high-churn
+	// work-queue records must never feed the pipeline). The wire literals are
+	// mirrored verbatim by the server store vocabulary
+	// (cmd/knowledge-server/internal/store/node_types_vocab.go) — a deliberate
+	// per-module duplicate (no shared package); per-module drift-guard tests
+	// pin the two copies in lockstep.
+	//
+	//   - NodeHive       : one node per named hive (implicit on first register/send).
+	//   - NodeMessage    : one unit of work; status pending|leased|done|blocked,
+	//                      contained-by → its hive, responds-to → the message it answers.
+	//   - NodeHiveMember : a member IS a session — true identity is the unfakeable
+	//                      MCP session-id; name is a human-friendly label.
+	NodeHive       NodeType = "hive"
+	NodeMessage    NodeType = "message"
+	NodeHiveMember NodeType = "hive_member"
 )
 
 // knowledgeTypes is the set of node types created by users/LLM.

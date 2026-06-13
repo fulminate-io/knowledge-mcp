@@ -26,20 +26,29 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/llm"
 )
 
-// BuildSummarizer constructs the client-side summarizer from
-// config.Active(). Returns (nil, nil) when config is unloaded — caller
-// treats this as "summarization disabled" and the pipeline degrades
-// gracefully.
+// BuildSummarizer constructs the client-side pipeline summarizer from
+// config.Active() (the [summarizer] consumer). Returns (nil, nil) when config
+// is unloaded — caller treats this as "summarization disabled" and the
+// pipeline degrades gracefully.
 //
 // Production callers: cmd/knowledge runtime that wires the pipeline.
 func BuildSummarizer(ctx context.Context) (Summarizer, error) {
+	return BuildSummarizerFor(ctx, config.ConsumerSummarizer)
+}
+
+// BuildSummarizerFor constructs a summarizer for an arbitrary config consumer
+// section — e.g. config.ConsumerTopics for the similarity lever's topic
+// summaries, which can run a stronger model than the high-volume pipeline
+// [summarizer]. Same degrade-not-die semantics as BuildSummarizer: unloaded
+// config returns (nil, nil).
+func BuildSummarizerFor(ctx context.Context, consumer config.Consumer) (Summarizer, error) {
 	if !config.Loaded() {
-		slog.Warn("llmproviders: config not loaded; summarization disabled")
+		slog.Warn("llmproviders: config not loaded; summarization disabled", "consumer", consumer)
 		return nil, nil
 	}
-	sec, err := config.Active().Resolve(config.ConsumerSummarizer)
+	sec, err := config.Active().Resolve(consumer)
 	if err != nil {
-		return nil, fmt.Errorf("resolve summarizer config: %w", err)
+		return nil, fmt.Errorf("resolve %s config: %w", consumer, err)
 	}
 	provider := sec.Provider
 	model := llm.Model(sec.Model)
@@ -51,10 +60,21 @@ func BuildSummarizer(ctx context.Context) (Summarizer, error) {
 		CLIBin:   sec.CLIBin,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("build summarizer client: %w", err)
+		return nil, fmt.Errorf("build %s client: %w", consumer, err)
 	}
-	slog.Info("llmproviders: summarizer ready", "provider", sec.Provider, "model", sec.Model)
-	return NewLLMSummarizer(client, provider, model), nil
+	slog.Info("llmproviders: summarizer ready", "consumer", consumer, "provider", sec.Provider, "model", sec.Model)
+	return NewLLMSummarizerWithPrompt(client, provider, model, promptForConsumer(consumer)), nil
+}
+
+// promptForConsumer selects the system prompt for a consumer section: the
+// topics consumer (the similarity lever's thought-cluster summaries) gets the
+// topic-purpose prompt; every other consumer (the high-volume code-chunk
+// pipeline) gets the code prompt, keeping that path byte-for-byte unchanged.
+func promptForConsumer(consumer config.Consumer) string {
+	if consumer == config.ConsumerTopics {
+		return defaultTopicSummarizePrompt
+	}
+	return defaultCodeSummarizePrompt
 }
 
 // BuildEmbedder constructs the client-side binary embedder from the

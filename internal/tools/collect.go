@@ -58,6 +58,14 @@ func InterceptCollect(deps ClientDeps, params kgtools.CallToolParams) (bool, kgt
 	if a.Type == "" {
 		return true, errorResult("collect: 'type' is required")
 	}
+	// Readiness gate (bind-first startup): a collect ships chunks the client-side LLM pipeline
+	// drains (summary + embed + segment ship). During the bind-first wiring window
+	// the pipeline is not yet wired, so a collect would upload chunks with nothing
+	// to drain them. Gate it on PipelineReady so the operator retries once the
+	// pipeline attaches rather than collecting into a not-yet-draining sink.
+	if !deps.PipelineReady() {
+		return true, errorResult("collect: daemon still starting — LLM pipeline not ready yet, retry shortly")
+	}
 	if a.Type == "logs" {
 		return true, runLogsCollect(deps, a)
 	}
@@ -193,7 +201,7 @@ func tryRegisteredCollect(ctx context.Context, deps ClientDeps, a collectArgs) (
 	if !found {
 		return false, kgtools.ToolResult{}
 	}
-	res, err := externalcollector.RunExternal(ctx, def, a.Params)
+	res, err := externalcollector.RunExternal(ctx, def, a.Params, a.ID)
 	if err != nil {
 		return true, errorResult(err.Error())
 	}

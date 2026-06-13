@@ -31,14 +31,24 @@ import (
 // Edges/Loaded fields buildLogGraphSummary needs. A missing-seam / decode failure
 // surfaces as an error so the OBJECT-shape mismatch is loud (mirroring the linker
 // helper's non-masking contract).
-func fetchGraphNamesOfType(ctx context.Context, gc GraphCaller, graphType string) ([]*knowledgev1.GraphInfo, error) {
+//
+// overlayOf is variadic and source-compatible with the base-only callers: when
+// overlayOf[0] is set, it threads onto the QueryPlan as overlay_of so
+// ListGraphsLite restricts the enumeration to the overlay keys of that base
+// ("<type>/<overlayOf[0]>@*") instead of the base names. Empty/absent = base-name
+// enumeration (today's behavior).
+func fetchGraphNamesOfType(ctx context.Context, gc GraphCaller, graphType string, overlayOf ...string) ([]*knowledgev1.GraphInfo, error) {
 	if gc == nil {
 		return nil, fmt.Errorf("fetchGraphNamesOfType: graph caller unavailable")
 	}
-	args, err := json.Marshal(map[string]any{
+	argMap := map[string]any{
 		"graph": graphType,
 		"mode":  "modules",
-	})
+	}
+	if len(overlayOf) > 0 && overlayOf[0] != "" {
+		argMap["overlay_of"] = overlayOf[0]
+	}
+	args, err := json.Marshal(argMap)
 	if err != nil {
 		return nil, fmt.Errorf("fetchGraphNamesOfType(%s): marshal: %w", graphType, err)
 	}

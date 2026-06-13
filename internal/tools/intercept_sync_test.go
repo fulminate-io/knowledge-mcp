@@ -18,6 +18,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
+	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 )
 
@@ -131,22 +132,32 @@ func (f *fakeOverwriter) OverwriteGraph(_ context.Context, req *knowledgev1.Over
 type pullDeps struct {
 	routed GraphCaller
 	local  GraphCaller
+	crud   GraphTypeCRUDAPI
 }
 
-func (d pullDeps) LocalLiveness() LocalLiveness     { return nil }
-func (d pullDeps) Sink() collector.Sink             { return nil }
-func (d pullDeps) RootDir() string                  { return "" }
-func (d pullDeps) WorkerRuntime() WorkerRuntimeAPI  { return nil }
-func (d pullDeps) WorkerCRUD() WorkerCRUDAPI        { return nil }
-func (d pullDeps) GraphTypeCRUD() GraphTypeCRUDAPI  { return nil }
-func (d pullDeps) Embedder() embed.BinaryEmbedder   { return nil }
-func (d pullDeps) BackendResolver() BackendResolver { return nil }
-func (d pullDeps) GraphCaller() GraphCaller         { return d.routed }
-func (d pullDeps) LocalGraphCaller() GraphCaller    { return d.local }
-func (d pullDeps) RepoResolver() *RepoResolver      { return nil }
-func (d pullDeps) SegmentManager() SegmentSearcher  { return nil }
-func (d pullDeps) SegmentShipper() SegmentShipper   { return nil }
-func (d pullDeps) PipelineScanner() PipelineScanner { return nil }
+func (d pullDeps) LocalLiveness() LocalLiveness                 { return nil }
+func (d pullDeps) Sink() collector.Sink                         { return nil }
+func (d pullDeps) RootDir() string                              { return "" }
+func (d pullDeps) WorkerRuntime() WorkerRuntimeAPI              { return nil }
+func (d pullDeps) WorkerReady() bool                            { return true }
+func (d pullDeps) PropReady() bool                              { return true }
+func (d pullDeps) PipelineReady() bool                          { return true }
+func (d pullDeps) ClaimRegistry() *hivemonitor.Registry         { return nil }
+func (d pullDeps) BanSet() *hivemonitor.BanSet                  { return nil }
+func (d pullDeps) WorkerCRUD() WorkerCRUDAPI                    { return nil }
+func (d pullDeps) GraphTypeCRUD() GraphTypeCRUDAPI              { return d.crud }
+func (d pullDeps) Embedder() embed.BinaryEmbedder               { return nil }
+func (d pullDeps) BackendResolver() BackendResolver             { return nil }
+func (d pullDeps) GraphCaller() GraphCaller                     { return d.routed }
+func (d pullDeps) LocalGraphCaller() GraphCaller                { return d.local }
+func (d pullDeps) RepoResolver() *RepoResolver                  { return nil }
+func (d pullDeps) SegmentManager() SegmentSearcher              { return nil }
+func (d pullDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
+func (d pullDeps) SegmentShipper() SegmentShipper               { return nil }
+func (d pullDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
+func (d pullDeps) PipelineScanner() PipelineScanner             { return nil }
+func (d pullDeps) ReflectionForcer() ReflectionForcer           { return nil }
+func (d pullDeps) SimilarityForcer() SimilarityForcer           { return nil }
 
 // TestInterceptSync_Pull_FetchesCloudAppliesLocal asserts the pull arm: the
 // cloud Exporter (routed GraphCaller) returns canned bytes, and the local

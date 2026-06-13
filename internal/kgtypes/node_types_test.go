@@ -108,3 +108,26 @@ func TestNodeGraphTypeDef_WireLiteral(t *testing.T) {
 		t.Fatalf("NodeGraphTypeDef literal = %q, want %q (must match the server store const + the proto file's documented wire string)", got, want)
 	}
 }
+
+// TestHiveNodeTypes_WireLiterals pins the client kgtypes hive node-type literals
+// to their agreed cross-module wire strings. The server store vocabulary
+// (cmd/knowledge-server/internal/store/node_types_vocab.go) carries independent
+// copies of these consts — a deliberate per-module duplicate (no shared
+// package). This drift-guard plus its server twin
+// (TestHiveNodeTypes_WireLiterals in store) fail if either module's literal
+// changes without the other.
+func TestHiveNodeTypes_WireLiterals(t *testing.T) {
+	cases := []struct {
+		got  NodeType
+		want string
+	}{
+		{NodeHive, "hive"},
+		{NodeMessage, "message"},
+		{NodeHiveMember, "hive_member"},
+	}
+	for _, c := range cases {
+		if string(c.got) != c.want {
+			t.Fatalf("hive node-type literal = %q, want %q (must match the server store const)", c.got, c.want)
+		}
+	}
+}

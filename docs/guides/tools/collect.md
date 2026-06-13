@@ -43,6 +43,26 @@ and a relative path would key a fresh graph under the wrong name. A code
 re-collection takes from tens of seconds to a couple of minutes; the chunk upload
 returns quickly while summarization continues in the background.
 
+## Registered custom collector types
+
+Beyond the built-in types (`code`, `aws`, `gcp`, `logs`, `web`, `pdf`), a
+**registered custom type** is also an accepted `type` for `collect`. Custom
+types are defined with the [`custom_collector`](custom_collector.md) tool, which
+pairs a type name with an external collector binary. Once registered, run a
+collection against it exactly like a built-in: `collect({ "type": "<your-type>", ... })`.
+
+Registered custom collectors carry their domain parameters inside the single
+`params` object: the whole object is validated against the collector's
+`param_schema` and forwarded to the binary before exec. The built-in types ignore
+`params` and read their own typed fields instead.
+
+For a registered type the collect `id` doubles as the **default `graph_name`** —
+when the collector's envelope omits `graph_name`, the collection writes into the
+named graph identified by the `id` (an envelope that sets its own `graph_name`
+overrides this). See the [`custom_collector` guide](custom_collector.md) for the
+full plugin/envelope contract, the settable node/edge field set, the param
+transport and security model, and a worked register → collect example.
+
 ## Parameters
 
 <!-- BEGIN GENERATED: params -->
@@ -63,6 +83,7 @@ returns quickly while summarization continues in the background.
 | `max_download_bytes` | integer |  |  | Web only: per-(owner,repo,ref) cap on github materialization downloads. 0=default (50 MiB), -1=unlimited, >0=explicit cap (uncompressed bytes). |
 | `max_entries` | integer |  |  | Logs only: cap on entries pulled from the provider. |
 | `max_pages` | integer |  |  | Web only: cap on total pages fetched across the crawl. |
+| `params` | object |  |  | Registered custom_collector types only: opaque param object forwarded to the external collector binary, validated against its param_schema before exec. Built-in types ignore it. |
 | `politeness_ms` | integer |  |  | Web only: per-host request delay in milliseconds. |
 | `provider` | string |  |  | Logs only: provider identifier (e.g., cloudwatch, loki, stackdriver, k8s). |
 | `raw_query` | string |  |  | Logs only: provider-native query overriding structured fields. |

@@ -108,6 +108,7 @@ func blobToProto(b searchengine.SegmentBlob) *knowledgev1.SegmentBlobProto {
 		Id:         b.ID,
 		Format:     b.Format,
 		Generation: b.Generation,
+		DocCount:   int32(b.DocCount),
 		Bytes:      b.Bytes,
 	}
 }
@@ -118,6 +119,7 @@ func blobFromProto(p *knowledgev1.SegmentBlobProto) searchengine.SegmentBlob {
 		ID:         p.GetId(),
 		Format:     p.GetFormat(),
 		Generation: p.GetGeneration(),
+		DocCount:   int(p.GetDocCount()),
 		Bytes:      p.GetBytes(),
 	}
 }

@@ -24,6 +24,7 @@ type mutateArgs struct {
 	Summary      string            `json:"summary"`
 	Content      string            `json:"content"`
 	Status       string            `json:"status"`
+	Keywords     string            `json:"keywords"`
 	Metadata     map[string]string `json:"metadata"`
 	From         string            `json:"from"`
 	To           string            `json:"to"`
@@ -38,6 +39,11 @@ type mutateArgs struct {
 	// in the right graph (the pipeline write-back's cross-graph routing).
 	Repo    string `json:"repo"`
 	Account string `json:"account"`
+	// Branch carries the overlay dimension for a branch-overlay-resident batch
+	// write. The update_batch arm threads it onto the Execute Target so an
+	// overlay-resident pipeline write-back resolves the SAME overlay layer the gap
+	// scan read from (resolveCode Scopes repo@branch). Empty → base graph.
+	Branch string `json:"branch"`
 
 	// create_batch payload.
 	Nodes []nodeBody  `json:"nodes"`
@@ -225,15 +231,28 @@ func compileMutate(args json.RawMessage) (*knowledgev1.ExecuteRequest, bool) {
 	}
 }
 
-// compileMutateByIDUpdate lowers a by-id update (operation=update, id=X) into a
-// UPDATE MutationPlan with Selection.Ids=[id] — the by-id WRITE selector T2.4c
-// added. The scalar set fields (status/name/description/summary/content) ride as
-// set_fields; metadata rides as set_metadata (the engine merges per-key). The
-// engine validates the field keys + the backend-tag guard at decode. A
-// by-id update needs an id; without one (and without items[] — that is
-// update_batch, handled in the default arm) it falls through to legacy.
+// compileMutateByIDUpdate lowers a by-id update (operation=update, id=X OR
+// ids=[X,Y,...]) into a UPDATE MutationPlan with Selection.Ids carrying the full
+// target id-set — the by-id WRITE selector T2.4c added. The scalar set fields
+// (status/name/description/summary/content) ride as set_fields applied uniformly
+// to every id by the server's applyUpdateOverSet; metadata rides as set_metadata
+// (the engine merges per-key). The engine validates the field keys + the
+// backend-tag guard at decode. This arm is contract-BLIND: it reduces whatever
+// id-set survives, regardless of node type or backing — the intercept's
+// guardBatchUpdateShape gate is what restricts WHICH ids[] batches reach this
+// fall-through (backend-backed / per-type-param / source / container-status are
+// rejected before it). A by-id update needs at least one id; without any (and
+// without items[] — that is update_batch, handled in the default arm) it falls
+// through to legacy.
 func compileMutateByIDUpdate(a mutateArgs) (*knowledgev1.ExecuteRequest, bool) {
-	if a.ID == "" || len(a.Items) > 0 {
+	// Build the target id-set: the singular id folds into the set; the plural
+	// ids[] batch rides whole. The update_batch shape (items[]) is the
+	// heterogeneous UPDATE_ITEMS arm handled separately → legacy.
+	ids := a.IDs
+	if a.ID != "" {
+		ids = []string{a.ID}
+	}
+	if len(ids) == 0 || len(a.Items) > 0 {
 		return nil, false // no id, or update_batch shape → legacy.
 	}
 	sf := updateSetFields(a)
@@ -241,12 +260,13 @@ func compileMutateByIDUpdate(a mutateArgs) (*knowledgev1.ExecuteRequest, bool) {
 		// A by-id update with NO payload (nothing to set) is a degenerate shape;
 		// leave it to the legacy handler so its "nothing to update" validation
 		// path is preserved (equivalence). The reducible by-id update needs at
-		// least one set field or metadata key.
+		// least one set field or metadata key. Covers the ids[]-with-no-payload
+		// case too (correctly legacy).
 		return nil, false
 	}
 	plan := &knowledgev1.MutationPlan{
 		Kind:      knowledgev1.MutationPlan_MUTATION_KIND_UPDATE,
-		Selection: &knowledgev1.Selection{Ids: []string{a.ID}},
+		Selection: &knowledgev1.Selection{Ids: ids},
 	}
 	if len(sf) > 0 {
 		plan.SetFields = sf
@@ -261,7 +281,8 @@ func compileMutateByIDUpdate(a mutateArgs) (*knowledgev1.ExecuteRequest, bool) {
 // set_fields map the engine UPDATE arm consumes. Only non-empty fields ride —
 // an absent field is not in the map, so the engine leaves it unchanged (the
 // per-key UPDATE semantics). Keys match setFieldsToNodeFields' allowlist
-// (name/description/summary/content/status/keywords).
+// (name/description/summary/content/status/source/keywords) — source + keywords
+// were previously declared in the schema but dropped on update; both now route.
 func updateSetFields(a mutateArgs) map[string]string {
 	set := map[string]string{}
 	if a.Status != "" {
@@ -278,6 +299,12 @@ func updateSetFields(a mutateArgs) map[string]string {
 	}
 	if a.Content != "" {
 		set["content"] = a.Content
+	}
+	if a.Keywords != "" {
+		set["keywords"] = a.Keywords
+	}
+	if a.Source != "" {
+		set["source"] = a.Source
 	}
 	return set
 }

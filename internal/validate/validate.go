@@ -51,6 +51,42 @@ func Summary(toolName, fieldPath, summary string) error {
 	return nil
 }
 
+// runePrefix returns up to the first n runes of s. When s is longer than n
+// runes the result is truncated to n runes and an ellipsis is appended,
+// signaling there is more text. It is rune-safe (never byte-slices, so it
+// never splits a multibyte rune) — callers use it to quote a bounded snippet
+// of an over-long summary in an error message.
+func runePrefix(s string, n int) string {
+	if utf8.RuneCountInString(s) <= n {
+		return s
+	}
+	runes := []rune(s)
+	return string(runes[:n]) + "…"
+}
+
+// DerivedSummary validates an AUTO-DERIVED summary (one the caller built by
+// concatenating other fields rather than authoring directly) against the same
+// rune cap as Summary, but produces an actionable error: it names the indexed
+// field path, states the summary was auto-derived from derivedFrom, reports the
+// rune count and how far over the cap it is, and quotes a bounded prefix of the
+// offending text so the author can see WHICH derivation overflowed. The caller
+// passes the ALREADY-DERIVED string plus a human-readable list of the source
+// fields, so this validator never learns the derivation shapes.
+//
+// Trim-then-count parity: the rune count matches Summary (validate.go) and the
+// server validateSummary backstop, which both TrimSpace before counting. There
+// is no empty-check branch — a derived summary always carries its literal
+// prefix, so emptiness is not a reachable failure here.
+func DerivedSummary(toolName, fieldPath, derivedFrom, derived string) error {
+	trimmed := strings.TrimSpace(derived)
+	n := utf8.RuneCountInString(trimmed)
+	if n > SummaryMaxLen {
+		return fmt.Errorf("%s: %s is an auto-derived summary (derived from %s) that exceeds %d characters (got %d, over by %d). Shorten the source fields. Derived prefix: %q",
+			toolName, fieldPath, derivedFrom, SummaryMaxLen, n, n-SummaryMaxLen, runePrefix(trimmed, 80))
+	}
+	return nil
+}
+
 // StepDescription enforces non-empty, non-trivial descriptions on
 // NodeStep creations. Single-character and all-whitespace descriptions
 // are the symptom of placeholder steps escaping into the graph.

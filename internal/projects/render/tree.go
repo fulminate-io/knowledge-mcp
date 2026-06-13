@@ -74,6 +74,65 @@ func RenderTree(
 	}
 }
 
+// RenderTreeFromIndex is the zero-RPC counterpart of RenderTree: it
+// renders the same indented tree but reads children from a prebuilt
+// parent→child index (render.BuildChildIndex) and sibling ordering from
+// a prebuilt dependsOn map (render.FetchDependsOnEdges), so it issues no
+// per-node fetches. The whole subtree is fetched up front in one
+// traversal; this walk is pure in-memory.
+//
+// The per-node line format (proxy/plain line, description truncate, ID
+// line, depth cutoff) and the depends-on topoSort are byte-identical to
+// RenderTree. RenderTree itself is left untouched because it has many
+// other live callers (the assemble* renderers and the create-*
+// interceptors) that still build their tree from per-node RPCs;
+// RenderTreeFromIndex is an additive entry used only where the whole
+// subtree was already fetched.
+//
+// The missing-child / diamond-dedup tolerances are enforced upstream in
+// BuildChildIndex (an edge to an absent node, or a second edge to an
+// already-placed node, never enters childIndex), so this walk has no
+// per-child fetch to guard.
+func RenderTreeFromIndex(
+	sb *strings.Builder,
+	node *knowledgev1.Node,
+	depth, maxDepth int,
+	childIndex map[string][]*knowledgev1.Node,
+	dependsOn map[string]string,
+) {
+	indent := strings.Repeat("  ", depth)
+	status := ""
+	if node.Status != "" {
+		status = " [" + node.Status + "]"
+	}
+	proxyLabel := proxyAnnotation(node)
+	if proxyLabel != "" {
+		fmt.Fprintf(sb, "%s%s (%s)%s %s\n", indent, node.SymbolName, node.Type, status, proxyLabel)
+	} else {
+		fmt.Fprintf(sb, "%s%s (%s)%s\n", indent, node.SymbolName, node.Type, status)
+	}
+	if node.Description != "" && depth > 0 {
+		fmt.Fprintf(sb, "%s  %s\n", indent, truncate(node.Description, 120))
+	}
+	fmt.Fprintf(sb, "%s  ID: %s\n", indent, node.Id)
+
+	if depth >= maxDepth {
+		return
+	}
+
+	indexed := childIndex[node.Id]
+	children := make([]walkChild, 0, len(indexed))
+	for _, c := range indexed {
+		children = append(children, walkChild{node: c, dependsOn: dependsOn[c.Id]})
+	}
+	// Topological sort by depends-on edges — shared with RenderTree.
+	children = topoSort(children)
+
+	for _, c := range children {
+		RenderTreeFromIndex(sb, c.node, depth+1, maxDepth, childIndex, dependsOn)
+	}
+}
+
 // walkChildrenForTree fetches the children of nodeID along followEdges
 // and pairs each with its single depends-on dependency ID. Extracted
 // from RenderTree to keep gocognit under the limit.

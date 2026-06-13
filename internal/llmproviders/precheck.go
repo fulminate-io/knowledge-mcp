@@ -57,7 +57,7 @@ func RunPrecheck(ctx context.Context, skip bool) error {
 		slog.Debug("llmproviders: precheck started (async)")
 		runCtx, cancel := context.WithTimeout(parentCtx, 90*time.Second)
 		defer cancel()
-		consumers := []config.Consumer{config.ConsumerSummarizer, config.ConsumerDream}
+		consumers := []config.Consumer{config.ConsumerSummarizer, config.ConsumerDream, config.ConsumerHiveSupervisor}
 		if err := precheck.RunAll(runCtx, active, consumers, config.VoyageAPIKey()); err != nil {
 			slog.Error("llmproviders: precheck failed",
 				"error", fmt.Errorf("LLM precheck failed: %w", err),

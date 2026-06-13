@@ -31,18 +31,28 @@ model    = "{{.Model}}"
 {{if .CLIBin}}cli_bin  = "{{.CLIBin}}"
 {{end}}
 # Per-consumer overrides inherit unset fields from [default]. Summarizers
-# do simple text extraction (haiku-class is plenty); dream phases run
-# multi-step reasoning and benefit from an opus-class model. Uncomment
-# and edit any block below to point a single consumer at a different
-# provider or model. All three fields (provider, model, cli_bin) are
-# optional inside a per-consumer section — anything you set here
-# overrides [default]; anything you leave out inherits.
+# do simple text extraction (haiku-class is plenty); dream phases, the
+# hive supervisor, and topic summaries (the low-volume thought-cluster
+# summaries the similarity lever writes) run deeper reasoning and benefit
+# from an opus-class model. Uncomment and edit any block below to point a
+# single consumer at a different provider or model. All three fields
+# (provider, model, cli_bin) are optional inside a per-consumer section —
+# anything you set here overrides [default]; anything you leave out
+# inherits.
 #
 # [summarizer]
 # provider = "anthropic"
 # model    = "claude-haiku-4-5-20251001"
 #
 # [dream]
+# provider = "anthropic"
+# model    = "claude-opus-4-7"
+#
+# [supervisor]
+# provider = "anthropic"
+# model    = "claude-opus-4-7"
+#
+# [topics]
 # provider = "anthropic"
 # model    = "claude-opus-4-7"
 

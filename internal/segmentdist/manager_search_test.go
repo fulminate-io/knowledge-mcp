@@ -14,14 +14,20 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
 
-// searchCorpus builds a 1024-doc corpus (== MinSegmentDocs, so AddAndShip seals
-// exactly one segment per format) for BOTH formats. Every doc carries a vector
-// AND BM25 fields. One designated "target" doc is the discriminator: it carries
-// a UNIQUE BM25 term that no other doc has, and its vector is returned so the
-// caller can use it as the query vector. Both arms therefore rank the target
+// searchCorpusN is the fixed corpus size every searchCorpus caller uses: ==
+// MinSegmentDocs default, so AddAndShip / the deterministic chunker seals exactly
+// one segment per format.
+const searchCorpusN = 1024
+
+// searchCorpus builds a searchCorpusN-doc corpus (== MinSegmentDocs, so AddAndShip
+// seals exactly one segment per format) for BOTH formats. Every doc carries a
+// vector AND BM25 fields. One designated "target" doc is the discriminator: it
+// carries a UNIQUE BM25 term that no other doc has, and its vector is returned so
+// the caller can use it as the query vector. Both arms therefore rank the target
 // strongly: BM25 because the unique term has maximal IDF, HNSW because the query
 // vector is the target's own (exact-match nearest neighbor).
-func searchCorpus(n int, targetIdx int) (docs []searchengine.Document, targetID string, targetVec []byte, uniqueTerm string) {
+func searchCorpus(targetIdx int) (docs []searchengine.Document, targetID string, targetVec []byte, uniqueTerm string) {
+	const n = searchCorpusN
 	rng := rand.New(rand.NewPCG(0x5EED, 0xF00D))
 	docs = make([]searchengine.Document, n)
 	uniqueTerm = "zzqqxxuniquetarget"
@@ -59,8 +65,7 @@ func TestManagerSearchFusesBothEngines(t *testing.T) {
 	_, gc := newSegmentHarness(t)
 	ctx := context.Background()
 
-	const n = 1024 // == MinSegmentDocs default → seals exactly one segment per format
-	docs, targetID, targetVec, uniqueTerm := searchCorpus(n, 7)
+	docs, targetID, targetVec, uniqueTerm := searchCorpus(7)
 
 	mgr := NewManager(gc, t.TempDir(), 0)
 
@@ -87,8 +92,7 @@ func TestManagerSearchTextOnlyArm(t *testing.T) {
 	_, gc := newSegmentHarness(t)
 	ctx := context.Background()
 
-	const n = 1024
-	docs, targetID, _, uniqueTerm := searchCorpus(n, 3)
+	docs, targetID, _, uniqueTerm := searchCorpus(3)
 
 	mgr := NewManager(gc, t.TempDir(), 0)
 	require.NoError(t, mgr.AddAndShip(ctx, kgtypes.GraphKnowledge, "kg", docs))

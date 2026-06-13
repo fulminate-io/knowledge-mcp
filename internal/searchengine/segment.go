@@ -45,11 +45,14 @@ type SegmentID = string
 
 // SegmentBlob is the shippable form of a segment: opaque bytes plus the routing
 // metadata the distribution layer needs. It is a CLIENT engine type; the server
-// stores it opaquely and stamps/orders Generation.
+// stores it opaquely and stamps/orders Generation. DocCount is the segment's live
+// doc count (carried alongside the bytes so the server can persist it for the
+// segment-coverage levers — read back via the ListDelta metas without decoding).
 type SegmentBlob struct {
 	ID         SegmentID
 	Format     string
 	Generation uint64
+	DocCount   int
 	Bytes      []byte
 }
 

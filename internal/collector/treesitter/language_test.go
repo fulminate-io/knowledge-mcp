@@ -16,7 +16,7 @@ func TestDetectLanguage(t *testing.T) {
 		{"main.go", LangGo},
 		{"pkg/foo/bar.go", LangGo},
 		{"src/app.ts", LangTypeScript},
-		{"components/App.tsx", LangTypeScript},
+		{"components/App.tsx", LangTSX},
 		{"README.md", LangMarkdown},
 		{"image.png", LangUnknown},
 		{"Makefile", LangBash},

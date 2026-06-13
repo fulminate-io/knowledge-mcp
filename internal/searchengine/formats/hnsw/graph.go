@@ -71,6 +71,20 @@ func (h *binaryGraph) nodeVector(id uint32) []byte {
 	return h.vectors[start : start+h.vecBytes]
 }
 
+// vectorByID returns the stored binary vector for an external id, or (nil,false)
+// if the id is not indexed. It composes the two existing private members — the
+// idMap external→internal lookup and nodeVector's internal-id offset read — since
+// no existing method reads a vector by EXTERNAL id. The returned slice is a view
+// into h.vectors (not a copy), matching nodeVector's own sub-slice contract; the
+// caller treats it read-only (feeding it straight into Search as a query vector).
+func (h *binaryGraph) vectorByID(externalID string) ([]byte, bool) {
+	id, ok := h.idMap[externalID]
+	if !ok {
+		return nil, false
+	}
+	return h.nodeVector(id), true
+}
+
 // randomLevel draws a random layer for a node from the inverse-log distribution.
 func (h *binaryGraph) randomLevel() int {
 	r := h.rng.Float64()

@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"sync"
 	"time"
+
+	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
 )
 
 // httpSession is the CLIENT-SIDE per-connection state for one MCP session,
@@ -25,6 +27,8 @@ import (
 type httpSession struct {
 	id        string
 	cwd       string // resolved peer-process workspace cwd ("" if resolution failed)
+	pid       int    // resolved peer-process PID (0 if resolution failed)
+	comm      string // resolved peer-process command name — "claude"/"codex"/... ("" if resolution failed)
 	createdAt time.Time
 
 	// lastSeen is bumped on every validated request and read by the idle
@@ -127,18 +131,20 @@ type cancelSink interface {
 // session.
 const defaultSessionIdleTTL = 30 * time.Minute
 
-// ensureSession stores a session for id carrying cwd, unless one already
-// exists (idempotent: a repeat initialize with the same minted id reuses the
-// stored session). Minted session ids are unique per initialize, so the
-// already-exists branch is defensive.
-func (h *HTTPServer) ensureSession(id, cwd string) {
+// ensureSession stores a session for id carrying cwd, the peer PID, and the
+// peer comm, unless one already exists (idempotent: a repeat initialize with
+// the same minted id reuses the stored session). Minted session ids are unique
+// per initialize, so the already-exists branch is defensive. The pid + comm are
+// retained for the hive daemon monitor's transcript binding (comm selects the
+// claude/codex resolver; pid reads the process env).
+func (h *HTTPServer) ensureSession(id, cwd string, pid int, comm string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if _, ok := h.sessions[id]; ok {
 		return
 	}
 	now := time.Now()
-	h.sessions[id] = &httpSession{id: id, cwd: cwd, createdAt: now, lastSeen: now}
+	h.sessions[id] = &httpSession{id: id, cwd: cwd, pid: pid, comm: comm, createdAt: now, lastSeen: now}
 }
 
 // lookupSession returns the session for id, or (nil, false) if no such
@@ -148,6 +154,30 @@ func (h *HTTPServer) lookupSession(id string) (*httpSession, bool) {
 	defer h.mu.RUnlock()
 	s, ok := h.sessions[id]
 	return s, ok
+}
+
+// SessionSnapshots returns a copy of {ID, Cwd, PID, Comm} for every live
+// session, under RLock. The hive daemon monitor consumes this each tick to bind
+// an active-claim session to its on-disk transcript: Cwd + Comm select and feed
+// the per-harness deterministic resolver (claude env→file, codex
+// session_meta.cwd match) and PID reads the process env / probes liveness. The
+// returned slice is a copy, so the monitor iterates without holding the lock.
+func (h *HTTPServer) SessionSnapshots() []hivemonitor.SessionSnapshot {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	if len(h.sessions) == 0 {
+		return nil
+	}
+	out := make([]hivemonitor.SessionSnapshot, 0, len(h.sessions))
+	for _, s := range h.sessions {
+		out = append(out, hivemonitor.SessionSnapshot{
+			ID:   s.id,
+			Cwd:  s.cwd,
+			PID:  s.pid,
+			Comm: s.comm,
+		})
+	}
+	return out
 }
 
 // deleteSession removes the session's client-side entry (cwd cache + cancel

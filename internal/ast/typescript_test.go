@@ -46,6 +46,64 @@ func runTSWalker(t *testing.T, pattern, target string) []walkerMatch {
 	return out
 }
 
+// runTSXWalker compiles pattern under tsxLangConfig, parses target as TSX
+// (the JSX-capable grammar), walks every named node, and returns the
+// matches. Mirrors runTSWalker but exercises the tsx language so JSX
+// elements parse without ERROR-soup.
+func runTSXWalker(t *testing.T, pattern, target string) []walkerMatch {
+	t.Helper()
+	pt, err := compilePattern(context.Background(), mustParse(t, pattern), tsxLangConfig)
+	if err != nil {
+		t.Fatalf("compilePattern(%q): %v", pattern, err)
+	}
+	defer pt.Close()
+
+	parser := treesitter.NewParser()
+	defer parser.Close()
+	tree, err := parser.Parse(context.Background(), []byte(target), treesitter.LangTSX)
+	if err != nil {
+		t.Fatalf("parse tsx target: %v", err)
+	}
+	defer tree.Close()
+
+	var out []walkerMatch
+	walkAll(tree.RootNode(), func(n *sitter.Node) {
+		caps := newCaptures()
+		if matchTree(pt, n, []byte(target), caps) {
+			out = append(out, walkerMatch{captures: caps.byName, outer: n.Type()})
+		}
+	})
+	return out
+}
+
+// TestTSX_JSXElementMatch proves the ast DSL works on tsx: a JSX-returning
+// component is matched and a capture over the JSX element binds non-empty.
+// Fails-when-absent: without tsxLangConfig, langConfigFor(LangTSX) misses
+// and compilePattern/parse can't drive the tsx grammar — this is what makes
+// `ast(language:"tsx")` first-class rather than explain-only.
+func TestTSX_JSXElementMatch(t *testing.T) {
+	target := `function App() {
+  return <div className="root">{label}</div>;
+}
+`
+	// The JSX expression `{label}` parses as a jsx_expression child of the
+	// jsx_element; capturing it proves the JSX subtree parsed structurally
+	// (under the plain typescript grammar this derails into ERROR nodes).
+	matches := runTSXWalker(t, "<div className=\"root\">{$CHILD}</div>", target)
+	if len(matches) == 0 {
+		t.Fatalf("matches = 0, want >= 1 (the JSX element must match under tsx)")
+	}
+	bound := false
+	for _, m := range matches {
+		if cap, ok := m.captures["CHILD"]; ok && cap.Text != "" {
+			bound = true
+		}
+	}
+	if !bound {
+		t.Errorf("CHILD capture did not bind non-empty over the JSX element")
+	}
+}
+
 func TestTypeScript_ArrowFunction(t *testing.T) {
 	target := `const inc = (x) => x + 1;
 const dbl = (y) => y * 2;

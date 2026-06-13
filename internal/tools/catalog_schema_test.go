@@ -82,6 +82,20 @@ func TestAllToolSchemas(t *testing.T) {
 	}
 }
 
+// TestAllToolSchemas_AdvertisesCustomCollector pins the custom_collector rename
+// at the catalog surface: the advertised tools/list catalog must advertise the
+// custom_collector tool and must no longer advertise the old graph_type wire
+// name. A regression that resurrected "graph_type" (or dropped custom_collector)
+// would trip here.
+func TestAllToolSchemas_AdvertisesCustomCollector(t *testing.T) {
+	names := map[string]bool{}
+	for _, tool := range AllToolSchemas() {
+		names[tool.Name] = true
+	}
+	assert.True(t, names["custom_collector"], "advertised catalog must contain custom_collector")
+	assert.False(t, names["graph_type"], "advertised catalog must NOT contain the old graph_type wire name")
+}
+
 func TestAllToolSchemas_SummaryMaxLength(t *testing.T) {
 	for _, tool := range AllToolSchemas() {
 		for name, prop := range tool.InputSchema.Properties {

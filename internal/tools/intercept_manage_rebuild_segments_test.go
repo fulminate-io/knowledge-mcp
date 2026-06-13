@@ -15,6 +15,7 @@ import (
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
+	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
@@ -25,11 +26,12 @@ import (
 // cursor. It records every requested after_id so the test can assert the cursor
 // advanced to each page's last node_id and terminated on the empty page.
 type fakeRebuildScanner struct {
-	mu       sync.Mutex
-	pages    [][]*knowledgev1.PipelineScanItem // returned in order
-	calls    int
-	cursors  []string
-	pageIter int
+	mu         sync.Mutex
+	pages      [][]*knowledgev1.PipelineScanItem // returned in order
+	calls      int
+	cursors    []string
+	graphTypes []string // the GraphType requested on each PipelineScan
+	pageIter   int
 }
 
 func (f *fakeRebuildScanner) PipelineScan(_ context.Context, req *knowledgev1.PipelineScanRequest) (*knowledgev1.PipelineScanResponse, error) {
@@ -37,6 +39,7 @@ func (f *fakeRebuildScanner) PipelineScan(_ context.Context, req *knowledgev1.Pi
 	defer f.mu.Unlock()
 	f.calls++
 	f.cursors = append(f.cursors, req.GetAfterId())
+	f.graphTypes = append(f.graphTypes, req.GetGraphType())
 	if f.pageIter >= len(f.pages) {
 		return &knowledgev1.PipelineScanResponse{Items: nil}, nil
 	}
@@ -171,6 +174,69 @@ func TestRebuildSegments_PagesChunksShipsOnce(t *testing.T) {
 	// Every scanned doc reached the engine.
 	require.Equal(t, 2*min, shipper.hnswDocTotal)
 	require.Equal(t, 2*min, shipper.bm25DocTotal)
+
+	// Report (additive partial-tail surfacing): two FULL chunks, no tail →
+	// built=2, partial=0. The all-full case must read "no partial tail" and
+	// otherwise be unchanged.
+	body := res.Content[0].Text
+	require.Contains(t, body, "2 full deterministic chunks built + shipped", "the full-chunk count is reported")
+	require.Contains(t, body, "no partial tail", "an exact-multiple rebuild has no sealed tail to name")
+}
+
+// TestRebuildSegments_SubThresholdShipsTail is the Part-2 fails-when-absent proof:
+// a PURE sub-threshold rebuild (0<N<DefaultMinSegmentDocs) builds ZERO full chunks
+// but DOES Add the tail and FlushDeterministic-seals it, and the rendered report
+// NAMES the sealed partial chunk (partial>0) so the result reads as a successful
+// ship of the tail — NOT "0 chunks built" with nothing shipped. Reverting the
+// partial-count threading makes the report assertion fail.
+func TestRebuildSegments_SubThresholdShipsTail(t *testing.T) {
+	const n = 5 // 0 < 5 < DefaultMinSegmentDocs (1024): a pure sub-threshold page
+	require.Less(t, n, searchengine.DefaultMinSegmentDocs, "fixture must be sub-threshold")
+	page := makeScanPage("a", 0, n)
+	scanner := &fakeRebuildScanner{pages: [][]*knowledgev1.PipelineScanItem{page}}
+	shipper := &fakeRebuildShipper{}
+
+	deps := rebuildClientDeps{scanner: scanner, shipper: shipper}
+	res := handleClientRebuildSegments(context.Background(), deps, manageArgs{
+		Operation: "rebuild_segments", Graph: "code", Name: "myrepo",
+	})
+	require.False(t, res.IsError, "a sub-threshold rebuild is a successful ship, not an error: %v", res.Content)
+
+	// ZERO full chunks built (n < minDocs) but the tail IS Added + sealed.
+	require.Equal(t, int64(1), shipper.addDetCalls.Load(), "exactly one tail Add (no full chunks)")
+	require.Equal(t, int64(1), shipper.flushCalls.Load(), "FlushDeterministic seals the tail once")
+	require.Equal(t, n, shipper.hnswDocTotal, "every sub-threshold vector reaches the engine via the tail")
+
+	// The report NAMES the sealed partial tail (partial>0) so built=0 reads as a
+	// successful tail ship — reverting the partial threading drops this string.
+	body := res.Content[0].Text
+	require.Contains(t, body, "0 full deterministic chunks built", "zero full chunks for a sub-threshold page")
+	require.Contains(t, body, fmt.Sprintf("%d-node partial tail chunk sealed + shipped", n),
+		"the report names the sealed partial tail so a sub-threshold rebuild reads as a successful ship")
+}
+
+// TestRebuildSegments_SubThresholdReRunNoOp proves the determinism/idempotency
+// property is unchanged by the partial-count surfacing: a second rebuild over the
+// same sub-threshold fixture whose FlushDeterministic returns an empty pruned set
+// still renders a successful (no-op) ship. The count surfacing is purely a report
+// change — it does not perturb the deterministic build.
+func TestRebuildSegments_SubThresholdReRunNoOp(t *testing.T) {
+	const n = 5
+	page := makeScanPage("a", 0, n)
+	// A re-run over an unchanged node set ships byte-identical segments → the
+	// content-hash diff is empty → FlushDeterministic prunes nothing.
+	scanner := &fakeRebuildScanner{pages: [][]*knowledgev1.PipelineScanItem{page}}
+	shipper := &fakeRebuildShipper{pruned: nil}
+
+	deps := rebuildClientDeps{scanner: scanner, shipper: shipper}
+	res := handleClientRebuildSegments(context.Background(), deps, manageArgs{Graph: "code", Name: "myrepo"})
+	require.False(t, res.IsError, "the re-run no-op still renders success: %v", res.Content)
+
+	require.Equal(t, int64(1), shipper.flushCalls.Load(), "the tail is still sealed once on the re-run")
+	require.Empty(t, shipper.invalidate[0], "an empty pruned set means nothing superseded (content-hash no-op)")
+	body := res.Content[0].Text
+	require.Contains(t, body, fmt.Sprintf("%d-node partial tail chunk sealed + shipped", n))
+	require.Contains(t, body, "content-hash no-op", "the report still describes the idempotent re-run")
 }
 
 // TestRebuildSegments_TailSealedByFlush proves a sub-threshold trailing remainder
@@ -190,6 +256,26 @@ func TestRebuildSegments_TailSealedByFlush(t *testing.T) {
 	require.Equal(t, int64(2), shipper.addDetCalls.Load(), "one full chunk + one tail Add")
 	require.Equal(t, int64(1), shipper.flushCalls.Load())
 	require.Equal(t, min+5, shipper.hnswDocTotal, "every scanned vector reaches the engine (full chunk + tail)")
+}
+
+// TestRebuildSegments_NotReadyGate (FAILS-WHEN-ABSENT) proves the bind-first
+// wiring-window gate (bind-first startup): with PipelineReady()=false, handleClientRebuildSegments
+// returns the uniform "daemon still starting" error and does NOT dispatch — even
+// with a live scanner + shipper present (the readiness check fires BEFORE the
+// nil-handle check, so the scanner is never paged). Dropping the gate would dispatch
+// the rebuild instead of returning the not-ready error.
+func TestRebuildSegments_NotReadyGate(t *testing.T) {
+	min := searchengine.DefaultMinSegmentDocs
+	page := makeScanPage("a", 0, min+5)
+	scanner := &fakeRebuildScanner{pages: [][]*knowledgev1.PipelineScanItem{page}}
+	shipper := &fakeRebuildShipper{}
+
+	deps := rebuildClientDeps{scanner: scanner, shipper: shipper, pipelineNotReady: true}
+	res := handleClientRebuildSegments(context.Background(), deps, manageArgs{Graph: "code", Name: "myrepo"})
+
+	require.True(t, res.IsError)
+	require.Contains(t, toolResultText(res), "daemon still starting")
+	require.Equal(t, int64(0), shipper.addDetCalls.Load(), "must not dispatch the rebuild when not ready")
 }
 
 // TestRebuildSegments_AddErrorAbortsBeforeFlush is the T3 fail-closed proof: a
@@ -234,6 +320,87 @@ func TestRebuildSegments_SingleFlightRejectsOverlap(t *testing.T) {
 	close(release) // let the first finish
 }
 
+// TestRebuildSegments_RegisteredCustomGraph is the Group B fails-when-absent guard:
+// rebuild_segments must accept a REGISTERED custom graph type AND the builtin
+// knowledge graph, threading that gt all the way to the PipelineScan wire
+// (GraphType=<custom>|knowledge, not the hardcoded code); a nameless knowledge
+// rebuild defaults to "default" and a knowledge "@"-overlay name is rejected
+// (base-only v1). Another builtin (practice) and an unregistered typo are rejected
+// by the registry gate. Reverting the gt threading (back to kgtypes.GraphCode)
+// makes the wire-GraphType assertion FAIL; reverting the knowledge gate makes the
+// knowledge-accepted assertion FAIL; reverting the registry gate makes the
+// custom-accepted assertion FAIL.
+func TestRebuildSegments_RegisteredCustomGraph(t *testing.T) {
+	const customType = "hellograph"
+	crud := &fakeGraphTypeCRUD{graph: map[string]*knowledgev1.GraphTypeDef{
+		customType: {Name: customType},
+	}}
+
+	t.Run("registered custom graph is accepted and gt reaches the scanner", func(t *testing.T) {
+		min := searchengine.DefaultMinSegmentDocs
+		scanner := &fakeRebuildScanner{pages: [][]*knowledgev1.PipelineScanItem{makeScanPage("a", 0, min)}}
+		shipper := &fakeRebuildShipper{}
+		deps := rebuildClientDeps{scanner: scanner, shipper: shipper, crud: crud}
+
+		res := handleClientRebuildSegments(context.Background(), deps, manageArgs{
+			Operation: "rebuild_segments", Graph: customType, Name: "demo",
+		})
+		require.False(t, res.IsError, "a registered custom graph must be accepted, not rejected as code-only: %v", res.Content)
+		require.Contains(t, res.Content[0].Text, customType, "the rendered result names the custom graph")
+
+		// The threaded gt reached the wire: every PipelineScan carried GraphType=custom.
+		require.NotEmpty(t, scanner.graphTypes)
+		for _, gt := range scanner.graphTypes {
+			require.Equal(t, customType, gt, "the threaded GraphType must reach the PipelineScan request (not hardcoded code)")
+		}
+	})
+
+	t.Run("builtin knowledge graph is accepted, name defaults to default, gt reaches the scanner", func(t *testing.T) {
+		min := searchengine.DefaultMinSegmentDocs
+		scanner := &fakeRebuildScanner{pages: [][]*knowledgev1.PipelineScanItem{makeScanPage("a", 0, min)}}
+		shipper := &fakeRebuildShipper{}
+		deps := rebuildClientDeps{scanner: scanner, shipper: shipper, crud: crud}
+
+		// No name supplied — the builtin knowledge graph defaults to its single
+		// canonical "default" instance.
+		res := handleClientRebuildSegments(context.Background(), deps, manageArgs{
+			Operation: "rebuild_segments", Graph: string(kgtypes.GraphKnowledge),
+		})
+		require.False(t, res.IsError, "the builtin knowledge graph must be accepted: %v", res.Content)
+		require.Contains(t, res.Content[0].Text, "knowledge/default",
+			"a nameless knowledge rebuild renders the default instance")
+
+		// The threaded gt reached the wire: every PipelineScan carried GraphType=knowledge.
+		require.NotEmpty(t, scanner.graphTypes)
+		for _, gt := range scanner.graphTypes {
+			require.Equal(t, string(kgtypes.GraphKnowledge), gt,
+				"the threaded GraphType must reach the PipelineScan request (knowledge, not hardcoded code)")
+		}
+	})
+
+	t.Run("knowledge overlay name is rejected (base layer only in v1)", func(t *testing.T) {
+		deps := rebuildClientDeps{scanner: &fakeRebuildScanner{}, shipper: &fakeRebuildShipper{}, crud: crud}
+		res := handleClientRebuildSegments(context.Background(), deps, manageArgs{
+			Graph: string(kgtypes.GraphKnowledge), Name: "default@session-x",
+		})
+		require.True(t, res.IsError, "a knowledge overlay (@-suffixed) name has no v1 segment rebuild and must be rejected")
+		require.Contains(t, res.Content[0].Text, "overlay rebuilds not supported in v1",
+			"the rejection names the v1 base-layer-only boundary")
+	})
+
+	t.Run("non-code builtin is rejected", func(t *testing.T) {
+		deps := rebuildClientDeps{scanner: &fakeRebuildScanner{}, shipper: &fakeRebuildShipper{}, crud: crud}
+		res := handleClientRebuildSegments(context.Background(), deps, manageArgs{Graph: "practice", Name: "go"})
+		require.True(t, res.IsError, "a non-code/non-knowledge builtin graph has no rebuildable segments and must be rejected")
+	})
+
+	t.Run("unregistered custom typo is rejected", func(t *testing.T) {
+		deps := rebuildClientDeps{scanner: &fakeRebuildScanner{}, shipper: &fakeRebuildShipper{}, crud: crud}
+		res := handleClientRebuildSegments(context.Background(), deps, manageArgs{Graph: "hellogarph", Name: "demo"})
+		require.True(t, res.IsError, "an unregistered custom graph type must be rejected")
+	})
+}
+
 // blockingScanner blocks on the first PipelineScan until released, signalling
 // `entered` so the test knows the single-flight slot is claimed.
 type blockingScanner struct {
@@ -255,23 +422,37 @@ func (b *blockingScanner) Execute(context.Context, *knowledgev1.ExecuteRequest) 
 }
 
 // rebuildClientDeps is the minimal ClientDeps the driver reads: PipelineScanner +
-// SegmentShipper. Every other accessor returns a zero value.
+// SegmentShipper + GraphTypeCRUD (for the registry gate). Every other accessor
+// returns a zero value.
 type rebuildClientDeps struct {
 	scanner PipelineScanner
 	shipper SegmentShipper
+	crud    GraphTypeCRUDAPI
+	// pipelineNotReady flips PipelineReady() to false so a test can exercise the
+	// bind-first wiring-window gate (bind-first startup). Zero value keeps the pipeline ready.
+	pipelineNotReady bool
 }
 
-func (rebuildClientDeps) LocalLiveness() LocalLiveness       { return nil }
-func (rebuildClientDeps) Sink() collector.Sink               { return nil }
-func (rebuildClientDeps) RootDir() string                    { return "" }
-func (rebuildClientDeps) WorkerRuntime() WorkerRuntimeAPI    { return nil }
-func (rebuildClientDeps) WorkerCRUD() WorkerCRUDAPI          { return nil }
-func (rebuildClientDeps) GraphTypeCRUD() GraphTypeCRUDAPI    { return nil }
-func (rebuildClientDeps) Embedder() embed.BinaryEmbedder     { return nil }
-func (rebuildClientDeps) BackendResolver() BackendResolver   { return nil }
-func (rebuildClientDeps) GraphCaller() GraphCaller           { return nil }
-func (rebuildClientDeps) LocalGraphCaller() GraphCaller      { return nil }
-func (rebuildClientDeps) RepoResolver() *RepoResolver        { return nil }
-func (rebuildClientDeps) SegmentManager() SegmentSearcher    { return nil }
-func (d rebuildClientDeps) SegmentShipper() SegmentShipper   { return d.shipper }
-func (d rebuildClientDeps) PipelineScanner() PipelineScanner { return d.scanner }
+func (rebuildClientDeps) LocalLiveness() LocalLiveness                 { return nil }
+func (rebuildClientDeps) Sink() collector.Sink                         { return nil }
+func (rebuildClientDeps) RootDir() string                              { return "" }
+func (rebuildClientDeps) WorkerRuntime() WorkerRuntimeAPI              { return nil }
+func (rebuildClientDeps) WorkerReady() bool                            { return true }
+func (rebuildClientDeps) PropReady() bool                              { return true }
+func (d rebuildClientDeps) PipelineReady() bool                        { return !d.pipelineNotReady }
+func (rebuildClientDeps) ClaimRegistry() *hivemonitor.Registry         { return nil }
+func (rebuildClientDeps) BanSet() *hivemonitor.BanSet                  { return nil }
+func (rebuildClientDeps) WorkerCRUD() WorkerCRUDAPI                    { return nil }
+func (d rebuildClientDeps) GraphTypeCRUD() GraphTypeCRUDAPI            { return d.crud }
+func (rebuildClientDeps) Embedder() embed.BinaryEmbedder               { return nil }
+func (rebuildClientDeps) BackendResolver() BackendResolver             { return nil }
+func (rebuildClientDeps) GraphCaller() GraphCaller                     { return nil }
+func (rebuildClientDeps) LocalGraphCaller() GraphCaller                { return nil }
+func (rebuildClientDeps) RepoResolver() *RepoResolver                  { return nil }
+func (rebuildClientDeps) SegmentManager() SegmentSearcher              { return nil }
+func (rebuildClientDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
+func (d rebuildClientDeps) SegmentShipper() SegmentShipper             { return d.shipper }
+func (rebuildClientDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
+func (d rebuildClientDeps) PipelineScanner() PipelineScanner           { return d.scanner }
+func (d rebuildClientDeps) ReflectionForcer() ReflectionForcer         { return nil }
+func (d rebuildClientDeps) SimilarityForcer() SimilarityForcer         { return nil }

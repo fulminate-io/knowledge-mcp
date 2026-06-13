@@ -38,10 +38,11 @@ func TestSegmentManagerAccessorNilWhenUnwired(t *testing.T) {
 
 // TestBuildHealFactoryShape is the auto-heal wiring criterion: with a
 // segment manager wired, buildHealFactory returns a non-nil factory that produces
-// a NON-NIL heal closure for a code graph (segments are code-only, so the heal is
-// armed for code) and a NIL closure for a non-code graph (the code-only gate).
-// Construction-level only — it does NOT drive a live rebuild (the probe + rebuild
-// behavior is covered by the segmentdist / tools / maybeHealCheck tests).
+// a NON-NIL heal closure for the two builtins that self-heal (code AND the builtin
+// knowledge graph) and a NIL closure for any other graph (e.g. practice — the
+// builtin-graph gate). Construction-level only — it does NOT drive a live rebuild
+// (the probe + rebuild behavior is covered by the segmentdist / tools /
+// maybeHealCheck tests).
 func TestBuildHealFactoryShape(t *testing.T) {
 	mgr := segmentdist.NewManager(nil, t.TempDir(), 0)
 	c := &client{segmentMgr: mgr}
@@ -52,8 +53,11 @@ func TestBuildHealFactoryShape(t *testing.T) {
 	codeClosure := factory(kgtypes.GraphCode, "repo")
 	require.NotNil(t, codeClosure, "a code graph gets a non-nil heal closure")
 
-	nonCodeClosure := factory(kgtypes.GraphKnowledge, "kg")
-	require.Nil(t, nonCodeClosure, "a non-code graph gets a nil closure (rebuild_segments is code-only)")
+	knowledgeClosure := factory(kgtypes.GraphKnowledge, "kg")
+	require.NotNil(t, knowledgeClosure, "the builtin knowledge graph gets a non-nil heal closure")
+
+	practiceClosure := factory(kgtypes.GraphPractice, "go")
+	require.Nil(t, practiceClosure, "a non-code/non-knowledge graph gets a nil closure (auto-heal is code+knowledge only)")
 }
 
 // TestHealFactoryNotAttachedWithoutSegmentManager asserts the bootstrap guard:

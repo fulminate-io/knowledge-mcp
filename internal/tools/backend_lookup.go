@@ -90,6 +90,110 @@ func guardBatchHasNoBackendBacked(ctx context.Context, gc GraphCaller, ids []str
 	return nil
 }
 
+// guardBatchUpdateShape is the SINGLE batch-shape gate on the mutate(update)
+// ids[] path. It enforces the locked batch contract: an ids[] update executes
+// ONLY a homogeneous status / universal-scalar update over PLAIN LOCAL
+// NON-CONTAINER nodes. Every other batch shape is rejected LOUDLY here — before
+// the (false,_) engine fall-through — so no contract-violating batch ever reaches
+// the contract-blind compileMutateByIDUpdate reduction.
+//
+// It runs at most ONE per-id lookup pass (lookupNodeBackend, the same helper +
+// loop shape guardBatchHasNoBackendBacked uses), reusing the full *knowledgev1.Node
+// each lookup returns so node.Type and the backend tag both come from the one read.
+//
+// Reject arms (all evaluated in this ONE function — the presence checks
+// short-circuit BEFORE the per-id lookup loop, deterministic order):
+//   - ARM 2  per-type first-class param (command/criterion_type/scope/
+//     enforcement/evidence): the engine compile-local mutateArgs does not declare
+//     them and the typed router is single-id-only, so on the ids[] batch they
+//     silently vanish → reject. Detected via hasFirstClassUpdateParam (no lookup).
+//   - ARM 2b source: NOT universal — finding source lands in metadata, other
+//     types in the node field; the engine batch reduction would route it through
+//     updateSetFields to the node Source FIELD for every id, a silent wrong-write
+//     for finding ids. Excluded from the batch contract entirely → reject on
+//     presence (type-independent, no lookup). hasFirstClassUpdateParam deliberately
+//     EXCLUDES source, so this is a separate check.
+//   - ARM 1  ANY backend-backed id: the batch engine path fires ZERO
+//     dispatch.Update calls (the Linear write-through in handleInterceptMutateUpdate
+//     requires a.ID != "" and is unreachable for the ids[] batch), so an
+//     all-backend batch would silently update knowledge nodes and skip every
+//     tracker sync. This SUPERSEDES guardBatchHasNoBackendBacked's mixed-only
+//     relaxation on the UPDATE path (the delete path keeps the old guard).
+//   - ARM 3  container-status: handleClientUpdateStatusRollup owns the descendant
+//     cascade and is unreachable for the ids[] batch, so a status batch over
+//     container ids would complete the containers and ORPHAN their descendants.
+//     Reject a status update of ANY value touching an isClientRollupContainer id
+//     (more conservative than the single-id rollup, which only cascades on
+//     terminal status — intentional for the batch path).
+//
+// ARMs 1 + 3 share the SAME per-id lookup pass (lookupNodeBackend returns the full
+// *knowledgev1.Node, so backendName AND node.Type both come from one read). The
+// gate does NOT pre-check id existence or empty payload — the engine owns missing-id
+// atomicity (whole-batch CodeNotFound) and the empty-payload deny.
+func guardBatchUpdateShape(ctx context.Context, gc GraphCaller, a mutateArgs) error {
+	if gc == nil {
+		return nil
+	}
+	// Presence-only arms — no per-id lookup needed, so short-circuit first.
+	if hasFirstClassUpdateParam(a) {
+		return fmt.Errorf(
+			"mutate(update, ids): per-type params (command/criterion_type/scope/enforcement/evidence) are not supported on a batch — issue a per-id update",
+		)
+	}
+	if a.Source != "" {
+		return fmt.Errorf(
+			"mutate(update, ids): source must be updated per-id (finding source lands in metadata; other types in the node field) — split this batch",
+		)
+	}
+	// ONE lookup pass collects each id's backing + type (no N+1). The arms are
+	// then evaluated in priority order across the whole batch: arm 1 (backend)
+	// DOMINATES arm 3 (container-status) because a tracker-backed node is often
+	// ALSO a container (a Linear ticket is both), and the tracker-sync skip is the
+	// more severe silent failure — so a backend-backed id anywhere in the batch is
+	// reported as the backend reject even if an earlier id is a local container.
+	type resolved struct {
+		id          string
+		backendName string
+		nodeType    kgtypes.NodeType
+	}
+	rs := make([]resolved, 0, len(a.IDs))
+	for _, id := range a.IDs {
+		node, backendName, _, _, _, lookupErr := lookupNodeBackend(ctx, gc, id)
+		if lookupErr != nil {
+			// Defensive: a transport error on lookup means we can't prove the
+			// node's backing/type — skip it and let the forwarded mutate produce
+			// its own not-found / transport error (mirrors guardBatchHasNoBackendBacked).
+			continue
+		}
+		var nt kgtypes.NodeType
+		if node != nil {
+			nt = kgtypes.NodeType(node.GetType())
+		}
+		rs = append(rs, resolved{id: id, backendName: backendName, nodeType: nt})
+	}
+	// ARM 1 — backend-backed (dominates).
+	for _, r := range rs {
+		if r.backendName != "" {
+			return fmt.Errorf(
+				"mutate(update, ids): tracker-backed nodes must be updated per-id so tracker (Linear) sync runs — split this batch and issue a per-id update for %s",
+				r.id,
+			)
+		}
+	}
+	// ARM 3 — container-status (any status value).
+	if a.Status != "" {
+		for _, r := range rs {
+			if isClientRollupContainer(r.nodeType) {
+				return fmt.Errorf(
+					"mutate(update, ids): status updates on container nodes (project/ticket/plan/phase/step) must be issued per-id so the rollup cascade runs — split this batch and issue a per-id update for %s",
+					r.id,
+				)
+			}
+		}
+	}
+	return nil
+}
+
 // lookupNodeBackend issues a single client-side `query` MCP call to
 // resolve the node by ID and extract its `backend` metadata + Linear
 // identifiers. Returns zero values + nil error when the node has no

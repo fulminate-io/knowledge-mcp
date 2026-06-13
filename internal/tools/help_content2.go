@@ -12,10 +12,12 @@ DeGroot propagation derives valence (consensus direction), magnitude
 ## Operations
 
   - think     : record a thought (hypothesis / observation / plan)
-  - charge    : add positive/negative evidence to a thought
+  - charge    : attach evidence that supports/contradicts a thought's claim
   - recall    : search thoughts with composable filters
   - trace     : follow reasoning chains forward/backward from a thought
-  - propagate : manually run DeGroot propagation across all thoughts
+  - propagate : manually run DeGroot propagation across all thoughts;
+                with similarity:true, ASYNC-trigger the topic-similarity lever
+  - similarity_report : fetch the result of the async topic-similarity pass
 
 Common cycle:  recall → think → (do work) → charge → recall again to confirm
 the hypothesis landed. Examine a single thought via query(mode: "examine",
@@ -50,18 +52,34 @@ id: thought_id). Link a thought to another node via mutate(operation:
 ## operation: "charge" — Add evidence to a thought
 
   thought   — thought node ID (required)
-  polarity  — "positive" or "negative" (required)
+  polarity  — "positive" (evidence SUPPORTS the thought's claim) or "negative"
+              (evidence CONTRADICTS it). Required. This is about the claim's
+              truth, NOT good-vs-bad news; sentiment goes in reasoning.
   weight    — significance 1-10 (required)
   reasoning — why this charge applies (required)
-  evidence  — node IDs of supporting evidence
+  evidence  — node IDs of supporting evidence: cite the SPECIFIC thought,
+              finding, decision, or charge IDs the charge actually drew on
+              (not a vague hand-wave). Citing a related thought records a
+              charge→thought evidenced-by edge that feeds cross-cluster trust
+              differentiation, so a well-cited charge strengthens exactly the
+              thoughts it relied on — leave it empty and that signal is lost.
 
   Examples:
+    // claim CONFIRMED → positive (the evidence supports the thought)
     thoughts({ "operation": "charge", "thought": "t_abc",
                "polarity": "positive", "weight": 8,
-               "reasoning": "Tests pass, behavior confirmed in prod" })
+               "reasoning": "Tests pass, behavior confirmed in prod — supports the claim",
+               "evidence": ["t_root_cause", "finding_bench_id"] })
+    // claim REFUTED → negative (the evidence contradicts the thought)
     thoughts({ "operation": "charge", "thought": "t_abc",
                "polarity": "negative", "weight": 5,
-               "reasoning": "Performance regression in benchmark" })
+               "reasoning": "Benchmark shows no regression — contradicts the claim" })
+    // polarity tracks the CLAIM, not the sentiment. Thought claims "competitor X
+    // poses a significant threat"; confirming the threat is POSITIVE because the
+    // evidence supports the claim — even though it is bad news for us.
+    thoughts({ "operation": "charge", "thought": "t_threat",
+               "polarity": "positive", "weight": 7,
+               "reasoning": "Confirmed X ships feature Y at lower price — supports the claim that the threat is real (this is bad news for us, but the charge is positive because it supports the thought)." })
 
 ## operation: "recall" — Search thoughts with composable filters
 
@@ -103,6 +121,11 @@ id: thought_id). Link a thought to another node via mutate(operation:
     - Auditing whether a hypothesis was actually charged with evidence
     - Finding all the artifacts a thought informed
 
+  A thought recorded with an origin role (the think origin param) carries an
+  agent--produced-->thought hub edge, so its trace surfaces the originating
+  agent node (e.g. the planner agent) as a provenance step — intentional
+  lineage, not noise.
+
 ## operation: "propagate" — Manually run DeGroot propagation
 
   No required parameters.
@@ -111,10 +134,51 @@ id: thought_id). Link a thought to another node via mutate(operation:
   when you want immediate convergence after a batch of charges, or in tests
   that need to observe the post-propagation state without a timer wait.
 
-  Returns: thoughts_processed, components, iterations, converged.
+  Optional:
+    force_full (bool) — Run the full-corpus backstop pass now: bypasses the
+      quiet-tick skip and incremental scoping, recomputes every component, and
+      resets the backstop cadence. Use for an on-demand full reflection (ops /
+      debug) instead of waiting for the periodic backstop tick. Errors if the
+      reflection loop is not running in this process.
+
+    similarity (bool) — ASYNC-trigger the topic-similarity lever (drain →
+      centroids → reconcile → merge cascade → summaries → drift → links →
+      densify). The pass can run many minutes — LONGER than the tool-call
+      timeout — so the trigger does NOT wait: it acquires the single-flight
+      guard, starts the pass in the background, and returns IMMEDIATELY with a
+      copy-pasteable thoughts({"operation":"similarity_report"}) fetch call and
+      a duration estimate. Only ONE pass runs at a time; a second trigger while
+      one is in flight coalesces (returns "already running" + the same fetch
+      contract, no second pass). Optional link_threshold / merge_threshold /
+      densify_threshold / densify_k / densify_edge_budget override the HIGH
+      defaults.
+
+  Returns: thoughts_processed, components, iterations, converged (plain
+  propagate); or the async-trigger contract (similarity:true).
 
   Example:
     thoughts({ "operation": "propagate" })
+    thoughts({ "operation": "propagate", "force_full": true })
+    thoughts({ "operation": "propagate", "similarity": true })
+
+## operation: "similarity_report" — Fetch the async similarity pass result
+
+  Optional:
+    id (string) — a specific past pass to fetch. Omit for the LATEST pass.
+
+  Renders by status:
+    running   — in-progress + elapsed + the duration estimate + may-take-longer
+    completed — the FULL rendered report (links, merge cascade, summaries,
+                reconciliation, densification, the threshold-tuning histogram)
+    failed    — the failure, surfaced loudly
+    no pass yet — a clear empty-state message naming how to trigger one
+
+  The report is persisted as an event node and fetched by id/marker — it is NOT
+  vector-searchable (event nodes do not embed); this op is the way to read it.
+
+  Example:
+    thoughts({ "operation": "similarity_report" })
+    thoughts({ "operation": "similarity_report", "id": "<pass-id>" })
 `
 
 const helpCreateProject = `# create_project — Create a project container node
@@ -288,7 +352,13 @@ const helpSearchCode = `# search — Unified search across code, knowledge, prac
   staleness      — show index staleness info
 
 ## Knowledge graph parameters
-  mode           — also supports "recent"/"temporal" (recency boost)
+  mode           — also supports "recent"/"temporal" (recency boost) and "similar"
+  node_id        — with mode:"similar", the node whose nearest corpus neighbors to
+                   return. mode:"similar" searches the node's OWN STORED vector (its
+                   on-disk embedding, NOT a fresh embedding of any query text) and
+                   EXCLUDES the node itself. Results are ranked by the client
+                   engine's reciprocal-rank fusion over the stored-vector (HNSW)
+                   arm — pure stored-vector proximity, NOT a raw cosine score.
 
 ## Practice graph parameters
   language       — language slug (e.g. "go", "python"). Required for search, omit to list graphs.
@@ -314,6 +384,7 @@ const helpSearchCode = `# search — Unified search across code, knowledge, prac
   search({ "query": "handleRequest", "repo": "all" })
   search({ "query": "database connection", "path_prefix": "pkg/db/" })
   search({ "query": "auth", "graph": "knowledge" })
+  search({ "graph": "knowledge", "mode": "similar", "node_id": "<node_id>" })  — nearest stored-vector neighbors of a node
   search({ "query": "concurrency", "graph": "practice" })
   search({ "query": "web server", "graph": "cloud", "account": "aws-prod" })
   search({ "query": "bucket", "graph": "cloud", "account": "aws-prod", "resource_type": "s3" })

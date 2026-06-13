@@ -128,6 +128,13 @@ func handleWorkerTrigger(ctx context.Context, deps ClientDeps, a workerArgs) kgt
 	if name == "" {
 		return errorResult("worker:trigger: name is required")
 	}
+	// Readiness gate (bind-first startup): during the bind-first wiring window the worker
+	// runtime is not yet wired. Distinguish that transient window from the
+	// permanent boot-degrade case below — emit "daemon still starting" so a
+	// retry succeeds, rather than the misleading "degraded at boot" message.
+	if !deps.WorkerReady() {
+		return errorResult("worker:trigger: daemon still starting — worker runtime not ready yet, retry shortly")
+	}
 	rt := deps.WorkerRuntime()
 	if rt == nil {
 		return errorResult("worker:trigger: dream runtime not available — wireWorkerRuntime degraded at boot (check earlier slog warnings for cause)")
@@ -151,6 +158,11 @@ func handleWorkerStatus(ctx context.Context, deps ClientDeps, a workerArgs) kgto
 	name := strings.TrimSpace(a.Name)
 	if name == "" {
 		return errorResult("worker:status: name is required")
+	}
+	// Readiness gate (bind-first startup): see handleWorkerTrigger — transient wiring
+	// window vs permanent boot-degrade.
+	if !deps.WorkerReady() {
+		return errorResult("worker:status: daemon still starting — worker runtime not ready yet, retry shortly")
 	}
 	rt := deps.WorkerRuntime()
 	if rt == nil {
@@ -181,6 +193,11 @@ func handleWorkerStatus(ctx context.Context, deps ClientDeps, a workerArgs) kgto
 // invocation_id from this output to call worker(operation:"cancel",
 // invocation:"<id>") against a specific run.
 func handleWorkerRunning(_ context.Context, deps ClientDeps, _ workerArgs) kgtools.ToolResult {
+	// Readiness gate (bind-first startup): see handleWorkerTrigger — transient wiring
+	// window vs permanent boot-degrade.
+	if !deps.WorkerReady() {
+		return errorResult("worker:running: daemon still starting — worker runtime not ready yet, retry shortly")
+	}
 	rt := deps.WorkerRuntime()
 	if rt == nil {
 		return errorResult("worker:running: dream runtime not available — wireWorkerRuntime degraded at boot (check earlier slog warnings for cause)")
@@ -195,6 +212,11 @@ func handleWorkerRunning(_ context.Context, deps ClientDeps, _ workerArgs) kgtoo
 // Returns the count cancelled. Canceling a finished or unknown id
 // returns 0 without error (idempotent).
 func handleWorkerCancel(_ context.Context, deps ClientDeps, a workerArgs) kgtools.ToolResult {
+	// Readiness gate (bind-first startup): see handleWorkerTrigger — transient wiring
+	// window vs permanent boot-degrade.
+	if !deps.WorkerReady() {
+		return errorResult("worker:cancel: daemon still starting — worker runtime not ready yet, retry shortly")
+	}
 	rt := deps.WorkerRuntime()
 	if rt == nil {
 		return errorResult("worker:cancel: dream runtime not available — wireWorkerRuntime degraded at boot (check earlier slog warnings for cause)")

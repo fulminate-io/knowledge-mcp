@@ -21,6 +21,13 @@ type TraceStep struct {
 
 // thoughtEdgeTypes are the edge types followed during thought graph
 // traversal. Verbatim from pkg/thought/query.go.
+//
+// EdgeProduced is followed INTENTIONALLY: a thought carrying a developer-origin
+// role rides an agent--produced-->thought hub edge, so traces surface the
+// originating agent node (e.g. "this thought was produced by the planner agent")
+// as a provenance step. That is a feature, not noise — do NOT add an
+// agent-endpoint filter to drop the hub from traces; the provenance lineage is
+// the point.
 var thoughtEdgeTypes = []kgtypes.EdgeType{kgtypes.EdgeNext, kgtypes.EdgeBranchesFrom, kgtypes.EdgeKGContains, kgtypes.EdgeRelatesTo, kgtypes.EdgeProduced}
 
 // traceQueueItem is a BFS queue entry used in TraceThoughts.

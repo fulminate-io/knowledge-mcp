@@ -17,6 +17,7 @@ import (
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
+	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 )
 
@@ -89,24 +90,33 @@ type graphTypeTestDeps struct {
 	crud GraphTypeCRUDAPI
 }
 
-func (d graphTypeTestDeps) LocalLiveness() LocalLiveness     { return nil }
-func (d graphTypeTestDeps) Sink() collector.Sink             { return nil }
-func (d graphTypeTestDeps) RootDir() string                  { return "" }
-func (d graphTypeTestDeps) WorkerRuntime() WorkerRuntimeAPI  { return nil }
-func (d graphTypeTestDeps) WorkerCRUD() WorkerCRUDAPI        { return nil }
-func (d graphTypeTestDeps) GraphTypeCRUD() GraphTypeCRUDAPI  { return d.crud }
-func (d graphTypeTestDeps) Embedder() embed.BinaryEmbedder   { return nil }
-func (d graphTypeTestDeps) BackendResolver() BackendResolver { return nil }
-func (d graphTypeTestDeps) GraphCaller() GraphCaller         { return nil }
-func (d graphTypeTestDeps) LocalGraphCaller() GraphCaller    { return nil }
-func (d graphTypeTestDeps) RepoResolver() *RepoResolver      { return nil }
-func (d graphTypeTestDeps) SegmentManager() SegmentSearcher  { return nil }
-func (d graphTypeTestDeps) SegmentShipper() SegmentShipper   { return nil }
-func (d graphTypeTestDeps) PipelineScanner() PipelineScanner { return nil }
+func (d graphTypeTestDeps) LocalLiveness() LocalLiveness                 { return nil }
+func (d graphTypeTestDeps) Sink() collector.Sink                         { return nil }
+func (d graphTypeTestDeps) RootDir() string                              { return "" }
+func (d graphTypeTestDeps) WorkerRuntime() WorkerRuntimeAPI              { return nil }
+func (d graphTypeTestDeps) WorkerReady() bool                            { return true }
+func (d graphTypeTestDeps) PropReady() bool                              { return true }
+func (d graphTypeTestDeps) PipelineReady() bool                          { return true }
+func (d graphTypeTestDeps) ClaimRegistry() *hivemonitor.Registry         { return nil }
+func (d graphTypeTestDeps) BanSet() *hivemonitor.BanSet                  { return nil }
+func (d graphTypeTestDeps) WorkerCRUD() WorkerCRUDAPI                    { return nil }
+func (d graphTypeTestDeps) GraphTypeCRUD() GraphTypeCRUDAPI              { return d.crud }
+func (d graphTypeTestDeps) Embedder() embed.BinaryEmbedder               { return nil }
+func (d graphTypeTestDeps) BackendResolver() BackendResolver             { return nil }
+func (d graphTypeTestDeps) GraphCaller() GraphCaller                     { return nil }
+func (d graphTypeTestDeps) LocalGraphCaller() GraphCaller                { return nil }
+func (d graphTypeTestDeps) RepoResolver() *RepoResolver                  { return nil }
+func (d graphTypeTestDeps) SegmentManager() SegmentSearcher              { return nil }
+func (d graphTypeTestDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
+func (d graphTypeTestDeps) SegmentShipper() SegmentShipper               { return nil }
+func (d graphTypeTestDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
+func (d graphTypeTestDeps) PipelineScanner() PipelineScanner             { return nil }
+func (d graphTypeTestDeps) ReflectionForcer() ReflectionForcer           { return nil }
+func (d graphTypeTestDeps) SimilarityForcer() SimilarityForcer           { return nil }
 
 func callGraphType(t *testing.T, deps ClientDeps, argsJSON string) (handled bool, body string, isErr bool) {
 	t.Helper()
-	params := kgtools.CallToolParams{Name: "graph_type", Arguments: json.RawMessage(argsJSON)}
+	params := kgtools.CallToolParams{Name: "custom_collector", Arguments: json.RawMessage(argsJSON)}
 	h, res := InterceptGraphType(deps, params)
 	if !h {
 		return false, "", false
@@ -116,14 +126,15 @@ func callGraphType(t *testing.T, deps ClientDeps, argsJSON string) (handled bool
 }
 
 // TestInterceptGraphType_NameFiltering pins that InterceptGraphType returns
-// (false, zero) for any tool other than "graph_type".
+// (false, zero) for any tool other than "custom_collector" — including the old
+// "graph_type" wire name, which is no longer recognized after the rename.
 func TestInterceptGraphType_NameFiltering(t *testing.T) {
 	deps := graphTypeTestDeps{crud: &fakeGraphTypeCRUD{}}
-	for _, name := range []string{"worker", "ast", "collect", "manage", "search", ""} {
+	for _, name := range []string{"graph_type", "worker", "ast", "collect", "manage", "search", ""} {
 		params := kgtools.CallToolParams{Name: name, Arguments: json.RawMessage(`{}`)}
 		handled, res := InterceptGraphType(deps, params)
 		assert.False(t, handled, "tool %q must not be handled by InterceptGraphType", name)
-		assert.Empty(t, res.Content, "non-graph_type call must return zero ToolResult")
+		assert.Empty(t, res.Content, "non-custom_collector call must return zero ToolResult")
 	}
 }
 

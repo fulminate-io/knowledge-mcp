@@ -21,14 +21,15 @@ import (
 // that backs the tools/list response.
 func GraphTypeToolDef() kgtools.MCPTool {
 	return kgtools.MCPTool{
-		Name: "graph_type",
-		Description: "Register and manage user-defined graph types. A graph type is one combined record: " +
-			"how to collect it (an external collector binary + its parameters) AND how to treat its graph " +
+		Name: "custom_collector",
+		Description: "Register a custom external collector / plugin: a user-defined graph type backed by your own " +
+			"collector binary. One combined record defines both how to collect the graph " +
+			"(an external collector binary + its parameters) AND how the system should treat that graph " +
 			"(summary/embed/sync behavior, with per-node-type overrides). " +
-			"register: register a new graph type. " +
-			"update: edit an existing graph type's record (full re-write — supply every field you want persisted). " +
-			"delete: remove a registered graph type. " +
-			"list: enumerate registered graph types with their collector + behavior. " +
+			"register: register a new custom collector / graph type. " +
+			"update: edit an existing record (full re-write — supply every field you want persisted). " +
+			"delete: remove a registered custom collector / graph type. " +
+			"list: enumerate registered custom collectors with their collector binary + behavior. " +
 			"Required params by operation (in addition to the always-required operation): " +
 			"register requires name + collector.binary_path (absolute) + collector.param_transport (\"stdin\" or \"flag:<name>\"); " +
 			"update requires name; delete requires name; list requires nothing further. " +
@@ -76,7 +77,7 @@ func GraphTypeToolDef() kgtools.MCPTool {
 	}
 }
 
-// graphTypeArgs holds parsed arguments for the graph_type tool. Field naming
+// graphTypeArgs holds parsed arguments for the custom_collector tool. Field naming
 // mirrors the schema property keys so json tags are 1:1. The nested objects
 // (Collector, Behavior, NodeTypes) ride as json.RawMessage so they parse without
 // bespoke arg structs — the handler unmarshals them into the gen

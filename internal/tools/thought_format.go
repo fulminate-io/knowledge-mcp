@@ -13,6 +13,7 @@ package tools
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"time"
@@ -22,10 +23,33 @@ import (
 	clientthought "github.com/fulminate-io/knowledge-mcp/internal/thought"
 )
 
-// handleReflectPersonality renders the personality profile.
+// coldClusterStateMessage is the LOUD cold-case report the persisted-cluster
+// surfaces return when the corpus is non-empty but no node carries cluster_id yet
+// (the hourly propagation loop has not completed a pass). It is deliberately
+// distinct from a healthy empty graph so a cold daemon is never mistaken for "no
+// thoughts" / "no clusters detected".
+const coldClusterStateMessage = "Reflection has not completed a pass yet — cluster_id metadata is not yet " +
+	"populated. Clusters and personality appear after the next propagation tick " +
+	"(hourly; the daemon must be logged in). This is the cold state, not an empty graph."
+
+// handleReflectPersonality renders the personality profile. Cold case (non-empty
+// corpus, no persisted cluster_id yet) → an explicit not-yet-computed report.
 func handleReflectPersonality(ctx context.Context, deps ClientDeps, a queryReflectArgs) kgtools.ToolResult {
-	clusters, profile := fetchClusterContext(ctx, deps)
+	clusters, profile, cold := fetchClusterContext(ctx, deps)
+	if cold {
+		return textResult(coldClusterStateMessage)
+	}
+	// Prefer persisted topic-summary text over the member-SymbolName label wherever
+	// a topic doc exists (lever-produced); unsummarized clusters keep their label.
+	clientthought.ApplyTopicLabels(ctx, deps.GraphCaller(), clusters, profile)
 	report := clientthought.ReflectPersonality(clusters, profile, a.Cluster)
+	// granularity:"topic" rolls the cluster-pair rows up to topic-pairs for display
+	// (labels become topic summaries; scalars unchanged). Empty/"cluster" leaves the
+	// default per-cluster report byte-identical.
+	if a.Granularity == "topic" {
+		g := clientthought.TopicGroupingByClusterID(ctx, deps.GraphCaller())
+		report = clientthought.RollupPersonalityTopics(report, g)
+	}
 	if a.Format == "json" {
 		return jsonResult(report)
 	}
@@ -70,32 +94,65 @@ func sanitizeLabel(s string) string {
 	return s
 }
 
-// handleReflectInfluence ranks the top-N most influential thoughts.
+// writeInfluenceRow renders one influence report row in the shared per-row
+// format used by both the evidenced and the backfill sections: rank, symbol
+// name, influence score, then a valence/magnitude/charge-annotation line. The
+// charge count is annotated on every row so the surface doubles as a backfill
+// worklist; a zero-charge row carries the loud backfill marker (structurally
+// central but unsupported by evidence).
+func writeInfluenceRow(sb *strings.Builder, i int, r clientthought.InfluenceReport) {
+	fmt.Fprintf(sb, "%d. **%s** (influence: %.4f)\n", i+1, r.Node.SymbolName, r.InfluenceScore)
+	chargeAnnot := fmt.Sprintf("%d charges", r.Properties.ChargeCount)
+	if r.Properties.ChargeCount == 0 {
+		chargeAnnot = "! 0 charges — backfill candidate"
+	}
+	fmt.Fprintf(sb, "   valence:%.2f mag:%.2f | %s | %s\n\n",
+		r.Properties.Valence, r.Properties.Magnitude, chargeAnnot, r.ThoughtID)
+}
+
+// handleReflectInfluence renders the evidence-aware two-section influence
+// ranking: the evidenced top-N first, then the labeled zero-charge backfill
+// candidates.
 func handleReflectInfluence(ctx context.Context, deps ClientDeps, a queryReflectArgs) kgtools.ToolResult {
 	gc := deps.GraphCaller()
 	if gc == nil {
 		return errorResult("influence: graph client unavailable")
 	}
-	_, profile := fetchClusterContext(ctx, deps)
+	_, profile, _ := fetchClusterContext(ctx, deps)
 	limit := a.Limit
 	if limit <= 0 {
 		limit = 10
 	}
-	reports, err := clientthought.ReflectInfluence(ctx, gc, limit, profile)
+	ranking, err := clientthought.ReflectInfluence(ctx, gc, limit, profile, a.Sort)
 	if err != nil {
 		return errorResult("influence computation failed: " + err.Error())
 	}
 	if a.Format == "json" {
-		return jsonResult(reports)
+		return jsonResult(ranking)
 	}
-	if len(reports) == 0 {
+	if len(ranking.Evidenced) == 0 && len(ranking.BackfillCandidates) == 0 {
 		return textResult("No thoughts to analyze.")
 	}
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "# Most Influential Thoughts (top %d)\n\n", len(reports))
-	for i, r := range reports {
-		fmt.Fprintf(&sb, "%d. **%s** (influence: %.4f)\n", i+1, r.Node.SymbolName, r.InfluenceScore)
-		fmt.Fprintf(&sb, "   valence:%.2f mag:%.2f | %s\n\n", r.Properties.Valence, r.Properties.Magnitude, r.ThoughtID)
+	// Evidenced section: the charged thoughts ranked by influence×(1+chargeWeight).
+	// When empty (no charged thoughts) the surface is honestly all-backfill — say so
+	// rather than omitting the header.
+	if len(ranking.Evidenced) > 0 {
+		fmt.Fprintf(&sb, "# Most Influential Thoughts (evidenced, top %d)\n\n", len(ranking.Evidenced))
+		for i, r := range ranking.Evidenced {
+			writeInfluenceRow(&sb, i, r)
+		}
+	} else {
+		sb.WriteString("# Most Influential Thoughts (evidenced)\n\nNo charged thoughts — every influential thought is an unevidenced backfill candidate.\n\n")
+	}
+	// Backfill section: only when zero-charge hubs are present. The explainer keeps a
+	// consumer from reading near-uniform eigenvector mass as evidence.
+	if len(ranking.BackfillCandidates) > 0 {
+		sb.WriteString("## Influential but unevidenced (backfill candidates)\n\n")
+		sb.WriteString("Structurally central but carrying zero charges — the backfill worklist, not evidence.\n\n")
+		for i, r := range ranking.BackfillCandidates {
+			writeInfluenceRow(&sb, i, r)
+		}
 	}
 	return textResult(sb.String())
 }
@@ -117,14 +174,44 @@ func handleReflectTensions(ctx context.Context, deps ClientDeps, a queryReflectA
 	if len(tensions) == 0 {
 		return textResult("No unresolved tensions found. Connected thoughts are in agreement.")
 	}
+	// Totals header: candidateCount is the sum of PairCount across the shown
+	// representatives (how many raw qualifying pairs they collapse); clusterPairs is
+	// the number of representatives shown (one per cluster-pair); shown is the
+	// rendered count. The slice is already collapsed + ranked + capped by
+	// ReflectTensions, so clusterPairs == shown here.
+	candidateCount := 0
+	for _, t := range tensions {
+		candidateCount += t.PairCount
+	}
+	clusterPairs := len(tensions)
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "# Unresolved Tensions (%d found)\n\n", len(tensions))
+	fmt.Fprintf(&sb, "# Unresolved Tensions — %d candidate tensions across %d cluster-pairs, showing top %d\n\n",
+		candidateCount, clusterPairs, len(tensions))
 	for i, t := range tensions {
-		fmt.Fprintf(&sb, "%d. **%s** (v:%.2f) vs **%s** (v:%.2f) -- delta: %.2f\n",
-			i+1, t.ThoughtA.SymbolName, t.PropertiesA.Valence,
-			t.ThoughtB.SymbolName, t.PropertiesB.Valence, t.ValenceDelta)
+		fmt.Fprintf(&sb, "%d. **%s** (v:%.2f, %d charges) vs **%s** (v:%.2f, %d charges) -- delta: %.2f\n",
+			i+1, t.ThoughtA.SymbolName, t.PropertiesA.Valence, t.PropertiesA.ChargeCount,
+			t.ThoughtB.SymbolName, t.PropertiesB.Valence, t.PropertiesB.ChargeCount, t.ValenceDelta)
+		fmt.Fprintf(&sb, "   via %s\n", tensionProvenanceLabel(t))
+		if t.PairCount > 1 {
+			fmt.Fprintf(&sb, "   collapses %d similar pairs\n", t.PairCount)
+		}
 	}
 	return textResult(sb.String())
+}
+
+// tensionProvenanceLabel renders the linking edge's provenance for a tension row:
+// the edge type, annotated [human] when no machine Method is present (machine
+// methods never reach a tension report — they are pre-filtered — so a non-empty
+// Method here is an unexpected provenance and is shown verbatim).
+func tensionProvenanceLabel(t clientthought.TensionReport) string {
+	edgeType := t.EdgeType
+	if edgeType == "" {
+		edgeType = "relates-to"
+	}
+	if t.Method == "" {
+		return edgeType + "[human]"
+	}
+	return edgeType + "[" + t.Method + "]"
 }
 
 // handleReflectBlindSpots surfaces clusters with little evidence.
@@ -133,25 +220,34 @@ func handleReflectBlindSpots(ctx context.Context, deps ClientDeps, a queryReflec
 	if gc == nil {
 		return errorResult("blind_spots: graph client unavailable")
 	}
-	clusters, _ := fetchClusterContext(ctx, deps)
+	clusters, _, _ := fetchClusterContext(ctx, deps)
 	// ReflectBlindSpots needs the thought adjacency for bridge detection;
 	// reuse the same fetch path the loop uses.
-	_, adj, err := clientthought.FetchThoughtAdjacency(ctx, gc)
+	nodeIDs, adj, err := clientthought.FetchThoughtAdjacency(ctx, gc)
 	if err != nil {
 		return errorResult("blind_spots: adjacency fetch failed: " + err.Error())
 	}
-	spots := clientthought.ReflectBlindSpots(ctx, gc, clusters, adj)
+	// Build the per-thought influence vector (ONE BuildTrustMatrix+ComputeInfluenceVector
+	// pass) + the thought→session label map ONCE, both feeding the ranked,
+	// genre-excluded blind-spot computation.
+	influence := clientthought.BlindSpotInfluenceVector(ctx, gc, nodeIDs)
+	sessionByThought := clientthought.FetchSessionLabelsByThought(ctx, gc, nodeIDs)
+	result := clientthought.ReflectBlindSpots(ctx, gc, clusters, adj, influence, sessionByThought)
 	if a.Format == "json" {
-		return jsonResult(spots)
+		return jsonResult(result)
 	}
-	if len(spots) == 0 {
+	if len(result.Spots) == 0 {
 		return textResult("No blind spots found. All clusters have adequate evidence.")
 	}
 	var sb strings.Builder
-	fmt.Fprintf(&sb, "# Blind Spots (%d clusters with low evidence)\n\n", len(spots))
-	for _, sp := range spots {
-		fmt.Fprintf(&sb, "- **%s** (%d thoughts, %d charges, avg mag: %.2f)\n",
-			sp.Cluster.Label, sp.Cluster.Size, sp.ChargeCount, sp.AvgMagnitude)
+	// Totals header: under-evidenced human-genre clusters (before cap), total
+	// clusters considered, shown count, and machine-genre clusters excluded from the
+	// denominator entirely.
+	fmt.Fprintf(&sb, "# Blind Spots — %d under-evidenced of %d clusters, showing top %d (%d machine-genre clusters excluded)\n\n",
+		result.TotalUnderEvidenced, result.TotalClusters, len(result.Spots), result.ExcludedMachineGenre)
+	for _, sp := range result.Spots {
+		fmt.Fprintf(&sb, "- **%s** (%d thoughts, %d charges, avg mag: %.2f, influence: %.4f, impact: %.4f)\n",
+			sp.Cluster.Label, sp.Cluster.Size, sp.ChargeCount, sp.AvgMagnitude, sp.Influence, sp.Impact)
 		if len(sp.BridgeThoughts) > 0 {
 			uncharged := 0
 			for _, bt := range sp.BridgeThoughts {
@@ -179,8 +275,22 @@ func handleReflectSummary(ctx context.Context, deps ClientDeps, a queryReflectAr
 	if gc == nil {
 		return errorResult("summary: graph client unavailable")
 	}
-	clusters, _ := fetchClusterContext(ctx, deps)
+	clusters, _, _ := fetchClusterContext(ctx, deps)
+	// Prefer persisted topic-summary text over the member-SymbolName label wherever
+	// a topic doc exists (lever-produced); unsummarized clusters keep their label.
+	clientthought.ApplyTopicLabels(ctx, gc, clusters, nil)
 	summary := clientthought.ReflectSummary(ctx, gc, clusters)
+	// granularity:"topic" rolls clusters sharing a topic into one TopClusters row
+	// (Size summed, valence/magnitude size-weighted, label = topic summary). Empty/
+	// "cluster" leaves the default per-cluster TopClusters byte-identical.
+	if a.Granularity == "topic" {
+		g := clientthought.TopicGroupingByClusterID(ctx, gc)
+		rolled := clientthought.RollupSummaryTopics(clusters, g)
+		if len(rolled) > 5 {
+			rolled = rolled[:5]
+		}
+		summary.TopClusters = rolled
+	}
 	if a.Format == "json" {
 		return jsonResult(summary)
 	}
@@ -219,8 +329,8 @@ func handleReflectEvolution(ctx context.Context, deps ClientDeps, a queryReflect
 	if gc == nil {
 		return errorResult("evolution: graph client unavailable")
 	}
-	clusters, _ := fetchClusterContext(ctx, deps)
-	snapshots, err := clientthought.ComputeScalarEvolution(ctx, gc, clusters, a.ClusterA, a.ClusterB, 30, nil)
+	clusters, _, _ := fetchClusterContext(ctx, deps)
+	snapshots, err := clientthought.ComputeScalarEvolution(ctx, gc, clusters, a.ClusterA, a.ClusterB, 30, clientthought.BuildEvidenceAdj(ctx, gc, clusters))
 	if err != nil {
 		return errorResult("evolution failed: " + err.Error())
 	}
@@ -248,7 +358,10 @@ func handleReflectClusters(ctx context.Context, deps ClientDeps, a queryReflectA
 	if gc == nil {
 		return errorResult("clusters: graph client unavailable")
 	}
-	clusters, err := clientthought.DetectThoughtClusters(ctx, gc, 0.5)
+	clusters, err := clientthought.DetectPersistedClusters(ctx, gc)
+	if errors.Is(err, clientthought.ErrClustersNotComputed) {
+		return textResult(coldClusterStateMessage)
+	}
 	if err != nil {
 		return errorResult("cluster detection failed: " + err.Error())
 	}
@@ -280,12 +393,14 @@ func handleRecallClusters(ctx context.Context, deps ClientDeps, allTypes bool, f
 		}
 		return textResult(formatAllClusters(clusters))
 	}
-	// Thought-only clusters mode: just surface the cluster topology.
+	// Thought-only clusters mode: surface the loop-persisted cluster topology.
 	// The prior implementation overlaid recall results on clusters,
 	// but the recall+overlay path is not part of the reflective
 	// surface's primary use case — clients call query(mode:"clusters")
 	// for cluster-only views and thoughts(recall) for text-mode recall.
-	clusters, err := clientthought.DetectThoughtClusters(ctx, gc, 0.5)
+	// Reads persisted cluster_id state (DetectPersistedClusters), not a live
+	// recompute, to stay within the tool ceiling.
+	clusters, err := clientthought.DetectPersistedClusters(ctx, gc)
 	if err != nil {
 		return errorResult("cluster detection failed: " + err.Error())
 	}
@@ -313,11 +428,21 @@ func formatAllClusters(clusters []clientthought.ThoughtCluster) string {
 	return sb.String()
 }
 
-// formatPropagationResult mirrors the prior server-side message
-// shape returned by handlePropagate.
+// formatPropagationResult mirrors the prior server-side message shape returned by
+// handlePropagate, reporting convergence PER COMPONENT — never a bare global
+// converged flag, so one slow clique no longer masks the converged majority.
 func formatPropagationResult(r clientthought.PropagationResult) string {
-	return fmt.Sprintf(
-		"Propagation complete: thoughts_processed=%d components=%d iterations=%d converged=%v",
-		r.ThoughtsProcessed, r.Components, r.Iterations, r.Converged,
+	var sb strings.Builder
+	fmt.Fprintf(&sb,
+		"Propagation complete: thoughts_processed=%d components=%d iterations=%d — %d of %d components converged",
+		r.ThoughtsProcessed, r.Components, r.Iterations, r.ComponentsConverged, r.Components,
 	)
+	for _, nc := range r.NonConverged {
+		fmt.Fprintf(&sb, "\n  non-converged: size %d, residual Δ=%.4f (valence) / %.4f (magnitude)",
+			nc.Size, nc.ValenceResidual, nc.MagnitudeResidual)
+	}
+	if r.NonConvergedOmitted > 0 {
+		fmt.Fprintf(&sb, "\n  and %d more non-converged components", r.NonConvergedOmitted)
+	}
+	return sb.String()
 }

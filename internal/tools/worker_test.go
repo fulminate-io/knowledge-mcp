@@ -22,6 +22,7 @@ import (
 	"testing"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
+	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 
 	"github.com/stretchr/testify/assert"
@@ -126,22 +127,35 @@ func (f *fakeRuntime) Cancel(invocation, name string) (int, error) {
 type workerTestDeps struct {
 	runtime WorkerRuntimeAPI
 	crud    WorkerCRUDAPI
+	// notReady flips WorkerReady() to false so a test can exercise the
+	// bind-first wiring-window gate (bind-first startup). Zero value keeps the worker
+	// runtime ready, so every pre-existing test exercises the wired path.
+	notReady bool
 }
 
-func (d workerTestDeps) LocalLiveness() LocalLiveness     { return nil }
-func (d workerTestDeps) Sink() collector.Sink             { return nil }
-func (d workerTestDeps) RootDir() string                  { return "" }
-func (d workerTestDeps) WorkerRuntime() WorkerRuntimeAPI  { return d.runtime }
-func (d workerTestDeps) WorkerCRUD() WorkerCRUDAPI        { return d.crud }
-func (d workerTestDeps) GraphTypeCRUD() GraphTypeCRUDAPI  { return nil }
-func (d workerTestDeps) Embedder() embed.BinaryEmbedder   { return nil }
-func (d workerTestDeps) BackendResolver() BackendResolver { return nil }
-func (d workerTestDeps) GraphCaller() GraphCaller         { return nil }
-func (d workerTestDeps) LocalGraphCaller() GraphCaller    { return nil }
-func (d workerTestDeps) RepoResolver() *RepoResolver      { return nil }
-func (d workerTestDeps) SegmentManager() SegmentSearcher  { return nil }
-func (d workerTestDeps) SegmentShipper() SegmentShipper   { return nil }
-func (d workerTestDeps) PipelineScanner() PipelineScanner { return nil }
+func (d workerTestDeps) LocalLiveness() LocalLiveness                 { return nil }
+func (d workerTestDeps) Sink() collector.Sink                         { return nil }
+func (d workerTestDeps) RootDir() string                              { return "" }
+func (d workerTestDeps) WorkerRuntime() WorkerRuntimeAPI              { return d.runtime }
+func (d workerTestDeps) WorkerReady() bool                            { return !d.notReady }
+func (d workerTestDeps) PropReady() bool                              { return true }
+func (d workerTestDeps) PipelineReady() bool                          { return true }
+func (d workerTestDeps) ClaimRegistry() *hivemonitor.Registry         { return nil }
+func (d workerTestDeps) BanSet() *hivemonitor.BanSet                  { return nil }
+func (d workerTestDeps) WorkerCRUD() WorkerCRUDAPI                    { return d.crud }
+func (d workerTestDeps) GraphTypeCRUD() GraphTypeCRUDAPI              { return nil }
+func (d workerTestDeps) Embedder() embed.BinaryEmbedder               { return nil }
+func (d workerTestDeps) BackendResolver() BackendResolver             { return nil }
+func (d workerTestDeps) GraphCaller() GraphCaller                     { return nil }
+func (d workerTestDeps) LocalGraphCaller() GraphCaller                { return nil }
+func (d workerTestDeps) RepoResolver() *RepoResolver                  { return nil }
+func (d workerTestDeps) SegmentManager() SegmentSearcher              { return nil }
+func (d workerTestDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
+func (d workerTestDeps) SegmentShipper() SegmentShipper               { return nil }
+func (d workerTestDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
+func (d workerTestDeps) PipelineScanner() PipelineScanner             { return nil }
+func (d workerTestDeps) ReflectionForcer() ReflectionForcer           { return nil }
+func (d workerTestDeps) SimilarityForcer() SimilarityForcer           { return nil }
 
 // callWorker invokes InterceptWorker with the given JSON args and
 // returns the (handled, body, isError) tuple. Mirrors callAst's shape.
@@ -306,6 +320,66 @@ func TestInterceptWorker_StatusRuntimeNil(t *testing.T) {
 	require.True(t, handled)
 	require.True(t, isErr)
 	assert.Contains(t, body, "dream runtime not available")
+}
+
+// TestInterceptWorker_NotReadyGate pins the bind-first wiring-window gate
+// (bind-first startup): every worker op that touches the runtime, with
+// WorkerReady()=false, returns the uniform "daemon still starting" error
+// and does NOT dispatch through the runtime — even when a live runtime is
+// present (the readiness check fires BEFORE the nil check and before any
+// dispatch). The fails-when-absent guarantee: drop the readiness gate and
+// the trigger/status/cancel cases reach the runtime (triggerCalls /
+// statusCalls / cancelCalls non-empty), and running returns the live
+// (empty) list instead of the not-ready error.
+func TestInterceptWorker_NotReadyGate(t *testing.T) {
+	for _, tc := range []struct {
+		op   string
+		args string
+	}{
+		{"trigger", `{"operation":"trigger","name":"smoke"}`},
+		{"status", `{"operation":"status","name":"smoke"}`},
+		{"running", `{"operation":"running"}`},
+		{"cancel", `{"operation":"cancel","name":"smoke"}`},
+	} {
+		t.Run(tc.op, func(t *testing.T) {
+			rt := &fakeRuntime{}
+			deps := workerTestDeps{runtime: rt, notReady: true}
+			handled, body, isErr := callWorker(t, deps, tc.args)
+			require.True(t, handled, "op must be handled client-side")
+			require.True(t, isErr, "not-ready op must be an error result")
+			assert.Contains(t, body, "daemon still starting")
+			assert.Contains(t, body, "worker:"+tc.op)
+			// No dispatch reached the runtime.
+			assert.Empty(t, rt.triggerCalls, "trigger must not dispatch when not ready")
+			assert.Empty(t, rt.statusCalls, "status must not dispatch when not ready")
+			assert.Empty(t, rt.cancelCalls, "cancel must not dispatch when not ready")
+		})
+	}
+}
+
+// TestInterceptWorker_ReadyNilRuntimeDegrades pins that with WorkerReady()=true
+// but a nil runtime (the genuine permanent boot-degrade case), every runtime
+// op falls past the readiness gate and surfaces the existing "not available"
+// degrade message — NOT the "daemon still starting" wiring-window message.
+func TestInterceptWorker_ReadyNilRuntimeDegrades(t *testing.T) {
+	for _, tc := range []struct {
+		op   string
+		args string
+	}{
+		{"trigger", `{"operation":"trigger","name":"smoke"}`},
+		{"status", `{"operation":"status","name":"smoke"}`},
+		{"running", `{"operation":"running"}`},
+		{"cancel", `{"operation":"cancel","name":"smoke"}`},
+	} {
+		t.Run(tc.op, func(t *testing.T) {
+			deps := workerTestDeps{runtime: nil} // notReady false → WorkerReady()=true
+			handled, body, isErr := callWorker(t, deps, tc.args)
+			require.True(t, handled)
+			require.True(t, isErr)
+			assert.Contains(t, body, "dream runtime not available")
+			assert.NotContains(t, body, "daemon still starting")
+		})
+	}
 }
 
 // TestInterceptWorker_UnknownOpHandledClientSide pins the

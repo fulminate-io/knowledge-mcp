@@ -13,9 +13,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"time"
 
+	"github.com/fulminate-io/knowledge-mcp/internal/config"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
+	"github.com/fulminate-io/knowledge-mcp/internal/rerank"
 
 	clientthought "github.com/fulminate-io/knowledge-mcp/internal/thought"
 )
@@ -78,6 +81,15 @@ func handleRecallClient(ctx context.Context, deps ClientDeps, params kgtools.Cal
 		return handleRecallClusters(ctx, deps, a.AllTypes, a.Format)
 	}
 
+	// Context-pack special case — mode:context composes five client-side read
+	// primitives (cross-type seed search, bounded edge expansion, charge state,
+	// recency overlay, open tickets) into one bounded, deterministically-ordered
+	// context pack. Same op-dispatch idiom as the clusters branch above: a mode
+	// arm dispatched BEFORE the thought-only RecallThoughts pipeline.
+	if a.Mode == "context" {
+		return handleRecallContext(ctx, deps, a)
+	}
+
 	gc := deps.GraphCaller()
 	if gc == nil {
 		return errorResult("recall: graph client unavailable")
@@ -94,19 +106,17 @@ func handleRecallClient(ctx context.Context, deps ClientDeps, params kgtools.Cal
 		ConnectedTo:    a.ConnectedTo,
 		Limit:          a.Limit,
 	}
-	// Route recall candidate-gathering through the CLIENT knowledge
-	// segment engines (Manager.Search) UNCONDITIONALLY for a non-empty query — the
-	// segment Manager is always wired in the real client, so there is no
-	// server-search fallback. Embed the recall query client-side here so the HNSW
-	// arm is exercised (the wire Caller is Execute-only and carries no embedder); an
-	// empty query vector degrades to the BM25 arm.
+	// Construct the rerank seam at the call site (search.go:94-108,167 precedent):
+	// an empty Voyage key gates the reranker to nil, which rerankRecallResults
+	// degrades to RRF ordering on. Done unconditionally so didRerank threading is
+	// uniform; the reranker is only used on the a.Query != "" branch below.
+	voyageKey := config.VoyageAPIKey()
+	var reranker rerank.Reranker
+	if voyageKey != "" {
+		reranker = rerank.NewVoyage(voyageKey, widePoolSize, widePoolTopK)
+	}
 	if a.Query != "" {
-		opts.Searcher = deps.SegmentManager()
-		if emb := deps.Embedder(); emb != nil {
-			if vec, err := emb.EmbedBinary(ctx, a.Query); err == nil && len(vec) > 0 {
-				opts.QueryVec = vec
-			}
-		}
+		configureRecallQueryPath(ctx, deps, a.Query, &opts)
 	}
 	if a.TimeStart != "" {
 		t, err := time.Parse("2006-01-02", a.TimeStart)
@@ -128,6 +138,15 @@ func handleRecallClient(ctx context.Context, deps ClientDeps, params kgtools.Cal
 		return errorResult("recall failed: " + err.Error())
 	}
 
+	// Rerank the untrimmed wide pool then trim to the caller-visible limit —
+	// query path only (the bare path has no query to rerank and keeps its
+	// magnitude-sorted full-corpus drain). Mirrors search's
+	// rerank-then-trim (search_rerank.go:52,62).
+	didRerank := false
+	if a.Query != "" {
+		results, didRerank = rerankAndTrimRecall(ctx, a.Query, results, reranker, a.Limit)
+	}
+
 	if a.Format == "json" {
 		return jsonResult(map[string]any{"total": len(results), "thoughts": results})
 	}
@@ -135,5 +154,50 @@ func handleRecallClient(ctx context.Context, deps ClientDeps, params kgtools.Cal
 	if mode == "" {
 		mode = "search"
 	}
-	return textResult(clientthought.FormatRecallResults(results, mode))
+	return textResult(clientthought.FormatRecallResults(results, mode, didRerank))
+}
+
+// configureRecallQueryPath wires the query-path gather options: route through
+// the CLIENT knowledge segment engines (Manager.Search) — there is no
+// server-search fallback. The segment Manager is wired for the life of the daemon
+// EXCEPT during the bind-first wiring window (bind-first startup): recall is UNGATED by
+// design, so a nil Searcher set here degrades downstream to full-corpus iteration
+// (searchRecallCandidates early-returns no candidates on a nil Searcher) rather
+// than gating on PipelineReady. This widens the gather to search's exact pool
+// width so RecallThoughts returns the UNTRIMMED filtered+sorted wide pool (the
+// rerank can then promote a buried candidate before the caller trims), and embeds
+// the query client-side so the HNSW arm is exercised. An empty query vector
+// degrades to the BM25 arm; a nil embedder is logged as the BM25-only/HNSW-down
+// diagnostic.
+func configureRecallQueryPath(ctx context.Context, deps ClientDeps, query string, opts *clientthought.RecallOptions) {
+	opts.Searcher = deps.SegmentManager()
+	opts.WidePool = widePoolSize
+	emb := deps.Embedder()
+	if emb == nil {
+		// Diagnostic residual: a logged-in daemon that lost its embedder is
+		// silently BM25-only — surface it in the log instead of leaving it to be
+		// inferred from flat scores. No behavior change: the empty QueryVec already
+		// degrades to the BM25 arm.
+		slog.Warn("recall: no embedder on query path — HNSW arm down, BM25-only gather", "query_len", len(query))
+		return
+	}
+	if vec, err := emb.EmbedBinary(ctx, query); err == nil && len(vec) > 0 {
+		opts.QueryVec = vec
+	}
+}
+
+// rerankAndTrimRecall reranks the untrimmed wide pool through the supplied
+// reranker (nil degrades to RRF, didRerank=false) and trims to the caller-visible
+// limit AFTER rerank — mirroring search's rerank-then-trim (search_rerank.go:62).
+func rerankAndTrimRecall(
+	ctx context.Context, query string, results []clientthought.ThoughtResult, reranker rerank.Reranker, limit int,
+) ([]clientthought.ThoughtResult, bool) {
+	results, didRerank := rerankRecallResults(ctx, query, results, reranker)
+	if limit <= 0 {
+		limit = 20 // matches RecallThoughts' default (query.go:90-92).
+	}
+	if len(results) > limit {
+		results = results[:limit]
+	}
+	return results, didRerank
 }

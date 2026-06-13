@@ -12,12 +12,14 @@ package thought
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"sort"
 	"strings"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
 // ThoughtCluster represents an emergent subject — a group of densely
@@ -29,6 +31,19 @@ type ThoughtCluster struct {
 	Size         int
 	AvgValence   float64
 	AvgMagnitude float64
+
+	// Centroid and MedoidID on THIS struct are computed-and-held at LEVER time
+	// (Phase 4) by ComputeClusterCentroids over the drained member-vector index — they
+	// are NOT populated on the ThoughtCluster values the hourly cluster-detection pass
+	// returns, and are never persisted on the struct itself (topic-doc persistence is
+	// the lever's job). (The hourly leaf-attachment fallback also calls
+	// ComputeClusterCentroids, but only over transient internal cluster shells to gate
+	// attachment — it never writes these fields back onto a returned cluster.) Centroid
+	// is the bit-majority 256-bit centroid (nil when no member vectors); MedoidID is
+	// the member node ID whose vector is bit-closest to the centroid (empty when no
+	// vectors).
+	Centroid []byte // bit-majority binary centroid over member vectors
+	MedoidID string // member node ID bit-closest to the centroid
 }
 
 // DetectThoughtClusters detects communities over the thought subgraph
@@ -36,6 +51,11 @@ type ThoughtCluster struct {
 // scope:"all") drives the input materialization; Leiden runs locally.
 // Persistence happens via a single mutate(bulk_update_metadata) emitted
 // by buildClusterObjects.
+//
+// This standalone helper is PURE Leiden membership — it does NOT apply the
+// post-Leiden leaf-attachment fallback. That fallback lives on the hourly
+// runClusterDetection path (loop_detection.go), which has a wired member-vector
+// scanner; this helper has no scanner and returns Leiden's partition as-is.
 //
 // gamma controls boundary sharpness; higher = smaller tighter clusters.
 func DetectThoughtClusters(ctx context.Context, gc Caller, gamma float64) ([]ThoughtCluster, error) {
@@ -72,6 +92,107 @@ func DetectAllClusters(ctx context.Context, gc Caller, gamma float64) ([]Thought
 	return groupAndBuildClusters(ctx, gc, nodeIDs, clusterOf), nil
 }
 
+// ErrClustersNotComputed is the cold-case sentinel DetectPersistedClusters
+// returns when the corpus is NON-EMPTY but no node carries cluster_id yet — i.e.
+// the hourly propagation loop has not completed a pass, so persisted cluster
+// state does not exist. The live handlers branch on this (errors.Is) to render an
+// explicit "reflection has not completed a pass yet" message instead of a silent
+// empty report (which would look like a healthy empty graph). A TRULY empty graph
+// (zero nodes drained) returns (nil, nil) — the ordinary empty case — so the two
+// are distinguishable with no extra RPC.
+var ErrClustersNotComputed = errors.New("thought: persisted cluster state not computed yet (no node carries cluster_id)")
+
+// DetectPersistedClusters reconstructs the cluster set from the cluster_id
+// metadata the hourly propagation loop persists (buildClusterObjects →
+// persistClusterAssignments) — the READ-ONLY live counterpart to
+// DetectThoughtClusters. It does NO adjacency fetch, NO Leiden, and NO persist
+// (re-persisting on a read path would be a write on a read): the loop owns
+// writes, this reader only reflects what the loop last wrote. The live
+// personality/clusters surfaces use this so they return within the tool ceiling
+// instead of recomputing the full adjacency + Leiden pass live.
+//
+// RPCs: the paged thought drain (~13 bounded pages) + one bulk fetchChargesFor +
+// the node payloads already in hand from the drain — all bounded, well within
+// the 180s ceiling. Cold case (N>0 nodes drained, none carry cluster_id) →
+// (nil, ErrClustersNotComputed) so the caller renders it loudly; truly empty
+// graph (zero nodes) → (nil, nil).
+func DetectPersistedClusters(ctx context.Context, gc Caller) ([]ThoughtCluster, error) {
+	nodes, err := fetchAllThoughtNodes(ctx, gc)
+	if err != nil {
+		return nil, fmt.Errorf("thought: detect persisted clusters: %w", err)
+	}
+	groups := make(map[string][]string)
+	nodeByID := make(map[string]*knowledgev1.Node, len(nodes))
+	for _, n := range nodes {
+		nodeByID[n.Id] = n
+		cid := kgtypes.Value(n, "cluster_id")
+		if cid == "" {
+			continue // unassigned — not yet reflected by the loop.
+		}
+		groups[cid] = append(groups[cid], n.Id)
+	}
+	if len(groups) == 0 {
+		if len(nodes) == 0 {
+			return nil, nil // truly empty graph — ordinary empty case.
+		}
+		return nil, ErrClustersNotComputed // cold case: loop hasn't run yet.
+	}
+
+	var allMembers []string
+	for _, members := range groups {
+		allMembers = append(allMembers, members...)
+	}
+	chargesByID := fetchChargesFor(ctx, gc, allMembers)
+
+	clusters := make([]ThoughtCluster, 0, len(groups))
+	for cid, members := range groups {
+		cluster := ThoughtCluster{ID: cid, ThoughtIDs: members, Size: len(members)}
+		cluster.AvgValence, cluster.AvgMagnitude, cluster.Label = computeClusterAggregatesFromMaps(members, nodeByID, chargesByID)
+		if strings.TrimSpace(cluster.Label) == "" {
+			cluster.Label = cluster.ID
+		}
+		clusters = append(clusters, cluster)
+	}
+	sort.Slice(clusters, func(i, j int) bool {
+		// Size desc with an ID tie-break so equal-size clusters order deterministically
+		// (the groups map is iterated in random order upstream).
+		if clusters[i].Size != clusters[j].Size {
+			return clusters[i].Size > clusters[j].Size
+		}
+		return clusters[i].ID < clusters[j].ID
+	})
+	return clusters, nil
+}
+
+// partitionFromPersisted reads the persisted cluster_id metadata back into a lean
+// node→cluster partition map (tid → cluster_id) for every node that carries a
+// non-empty cluster_id. It is the charge-free, partition-only core of the
+// cold-start Leiden rehydration path (graph.RehydrateLeidenState): it drains the
+// thought corpus once via fetchAllThoughtNodes and issues NO fetchChargesFor and
+// NO Leiden — rehydration needs only the equivalence classes, not labeled
+// ThoughtCluster aggregates.
+//
+// Returns an empty (non-nil) map when no node carries cluster_id, so the caller
+// distinguishes a true first run (nothing to rehydrate → full pass) from a
+// rehydratable corpus. A standalone reader rather than a refactor of
+// DetectPersistedClusters: that function groups into the INVERSE shape
+// (cluster_id → members) alongside a nodeByID map for its aggregates, so the
+// shared reuse is the fetchAllThoughtNodes drain + the kgtypes.Value accessor,
+// not the grouping loop.
+func partitionFromPersisted(ctx context.Context, gc Caller) (map[string]string, error) {
+	nodes, err := fetchAllThoughtNodes(ctx, gc)
+	if err != nil {
+		return nil, fmt.Errorf("thought: partition from persisted: %w", err)
+	}
+	communityOf := make(map[string]string, len(nodes))
+	for _, n := range nodes {
+		if cid := kgtypes.Value(n, "cluster_id"); cid != "" {
+			communityOf[n.Id] = cid
+		}
+	}
+	return communityOf, nil
+}
+
 // groupAndBuildClusters groups Leiden output into ThoughtCluster values
 // then sorts by size descending. Aggregates and persistence run inside
 // buildClusterObjects (which issues the locked single bulk_update_metadata
@@ -82,16 +203,22 @@ func groupAndBuildClusters(ctx context.Context, gc Caller, nodeIDs []string, clu
 		groups[clusterOf[id]] = append(groups[clusterOf[id]], id)
 	}
 	clusters := buildClusterObjects(ctx, gc, groups)
-	sort.Slice(clusters, func(i, j int) bool { return clusters[i].Size > clusters[j].Size })
+	sort.Slice(clusters, func(i, j int) bool {
+		// Size desc with an ID tie-break so equal-size clusters order deterministically
+		// (the groups map is iterated in random order upstream).
+		if clusters[i].Size != clusters[j].Size {
+			return clusters[i].Size > clusters[j].Size
+		}
+		return clusters[i].ID < clusters[j].ID
+	})
 	return clusters
 }
 
 // buildClusterObjects constructs ThoughtCluster values from grouped
-// node IDs. Issues EXACTLY ONE gc.Call("query", {ids: allMembers}) for
-// label resolution + ONE gc.Call("thoughts", {operation: "charges_for",
-// thought_ids: allMembers}) for charge aggregation, then constructs all
-// clusters from the two prebuilt maps. Persistence is a single
-// gc.Call("mutate", {operation: "bulk_update_metadata"}).
+// node IDs. Calls fetchNodesByIDs (one bulk node hydrate over the Execute
+// seam) for label resolution + fetchChargesFor (one bulk charge fetch) for
+// charge aggregation, then constructs all clusters from the two prebuilt
+// maps. Persistence is a single bulk_update_metadata mutate.
 func buildClusterObjects(ctx context.Context, gc Caller, groups map[string][]string) []ThoughtCluster {
 	// Flatten all members for the bulk fetches.
 	var allMembers []string
@@ -103,11 +230,16 @@ func buildClusterObjects(ctx context.Context, gc Caller, groups map[string][]str
 
 	clusters := make([]ThoughtCluster, 0, len(groups))
 	assignments := make(map[string]string, len(allMembers))
-	clusterIdx := 0
-	for _, members := range groups {
-		clusterIdx++
+	// groupKey IS the canonical community label (the min-member-node-ID assigned by
+	// renumberIntToMap/renumber via communityOf). Use it directly as cluster.ID so
+	// an UNCHANGED community keeps the SAME cluster_id every tick — independent of
+	// Go map-iteration order. The old positional fmt.Sprintf("cluster-%d") relabeled
+	// every community per tick (randomized map order), defeating the diff writeback
+	// and Case A byte-identity. This mirrors DetectPersistedClusters, which already
+	// uses the persisted cluster_id as cluster.ID, so live and persisted paths agree.
+	for groupKey, members := range groups {
 		cluster := ThoughtCluster{
-			ID:         fmt.Sprintf("cluster-%d", clusterIdx),
+			ID:         groupKey,
 			ThoughtIDs: members,
 			Size:       len(members),
 		}
@@ -120,7 +252,10 @@ func buildClusterObjects(ctx context.Context, gc Caller, groups map[string][]str
 		}
 		clusters = append(clusters, cluster)
 	}
-	persistClusterAssignments(ctx, gc, assignments)
+	// Diff-gate the cluster_id writeback against the members' persisted cluster_id
+	// (already in hand via nodeByID) so ONLY members whose canonical label changed
+	// are written — O(|changed|). Untouched members keep their persisted cluster_id.
+	persistClusterAssignments(ctx, gc, assignments, clusterIDAccessor(nodeByID))
 	return clusters
 }
 
@@ -148,20 +283,43 @@ func computeClusterAggregatesFromMaps(members []string, nodeByID map[string]*kno
 	return avgValence, avgMagnitude, label
 }
 
+// clusterIDAccessor builds the diffMetadataUpdates current-value accessor over the
+// already-fetched member node map: it reads each member's persisted cluster_id via
+// kgtypes.Value — no extra wire read. Returns nil when nodeByID is nil so the diff
+// treats it as the cold case (keep every row), preserving first-pass behavior.
+func clusterIDAccessor(nodeByID map[string]*knowledgev1.Node) func(id, key string) string {
+	if nodeByID == nil {
+		return nil
+	}
+	return func(id, key string) string {
+		if n, ok := nodeByID[id]; ok {
+			return kgtypes.Value(n, key)
+		}
+		return ""
+	}
+}
+
 // persistClusterAssignments issues one bulk_update_metadata write through the
 // Execute carrier seam (executeViaEngine → MUTATION_KIND_UPDATE_ITEMS) to write
-// cluster_id metadata into every member node. Failures are logged-and-dropped —
-// the reflective surface is best-effort and never blocks the caller.
-func persistClusterAssignments(ctx context.Context, gc Caller, assignments map[string]string) {
+// cluster_id metadata into member nodes. The desired rows pass through
+// diffMetadataUpdates with the supplied current accessor, so ONLY members whose
+// cluster_id CHANGED are written (O(|changed|)); a nil accessor (cold case) writes
+// every row. Failures are logged-and-dropped — the reflective surface is
+// best-effort and never blocks the caller.
+func persistClusterAssignments(ctx context.Context, gc Caller, assignments map[string]string, current func(id, key string) string) {
 	if len(assignments) == 0 || gc == nil {
 		return
 	}
-	updates := make([]map[string]any, 0, len(assignments))
+	desired := make([]map[string]any, 0, len(assignments))
 	for mid, cid := range assignments {
-		updates = append(updates, map[string]any{
+		desired = append(desired, map[string]any{
 			"id":       mid,
 			"metadata": map[string]string{"cluster_id": cid},
 		})
+	}
+	updates := diffMetadataUpdates(desired, current)
+	if len(updates) == 0 {
+		return // nothing changed — no writeback (O(|changed|)=0).
 	}
 	args, err := json.Marshal(map[string]any{
 		"operation": "bulk_update_metadata",
@@ -172,8 +330,10 @@ func persistClusterAssignments(ctx context.Context, gc Caller, assignments map[s
 		return
 	}
 	// bulk_update_metadata lowers to MUTATION_KIND_UPDATE_ITEMS via the engine
-	// (compileMutateBulkMetadata) and rides the Execute carrier seam.
-	if _, err := executeViaEngine(ctx, gc, "mutate", args); err != nil {
+	// (compileMutateBulkMetadata) and rides the Execute carrier seam. Use the
+	// reflect-inert variant: this cluster_id writeback is the reflection pass's
+	// OWN write and must NOT advance the reflect dirty-gen (T1-1 self-trigger fix).
+	if err := executeReflectInertMutate(ctx, gc, args); err != nil {
 		slog.Warn("thought: persistClusterAssignments: execute failed", "err", err)
 	}
 }

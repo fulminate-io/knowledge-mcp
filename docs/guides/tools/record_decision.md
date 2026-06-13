@@ -42,6 +42,10 @@ are what later searches match. For the full parameter reference, run
 | `choice` | string | yes |  | What was decided |
 | `format` | string |  |  | Output format: 'text' (default) or 'json' (structured: {id, name, warnings}). |
 | `informed_by` | string |  |  | Comma-separated node IDs of findings/research that informed this decision |
+| `links` | array of string |  |  | Node IDs to relate the decision to (node--relates-to-->target). Knowledge-graph IDs ride the atomic create; code/cloud IDs are linked post-create via the cross-graph linkage. An unresolvable ID is dropped with a warning, never blocking the write. |
+| `links[]` | string |  |  |  |
 | `name` | string | yes |  | Decision name (e.g., 'Keep HNSW in blob, drop only BM25') |
 | `rationale` | string | yes |  | Why this was chosen |
+| `session` | string |  |  | Session name to group the decision under via session--contains-->decision. Creates the session if new. |
+| `ticket_id` | string |  |  | Active ticket/project ID — born-linked as ticket--contains-->decision so the decision is grouped under the work item that produced it. An unresolvable ticket_id is dropped with a warning, never blocking the write. |
 <!-- END GENERATED: params -->

@@ -94,7 +94,7 @@ query({ "mode": "simulate", "action": "remove_charge", "target": "pivotal_charge
 
 How fragile is this belief? Simulate removing evidence.
 
-If reflection reveals an under-evidenced thought, add evidence via `thoughts(operation:"charge")`. If a thought is invalidated by current understanding, `mutate(operation:"update", id:thought_id, status:"invalidated")`.
+If reflection reveals an under-evidenced thought, add evidence via `thoughts(operation:"charge")` — polarity positive when the evidence supports the thought's claim, negative when it contradicts it (never good-vs-bad news). If a thought is invalidated by current understanding, `mutate(operation:"update", id:thought_id, status:"invalidated")`.
 
 ## Step 4: Discuss with the User
 

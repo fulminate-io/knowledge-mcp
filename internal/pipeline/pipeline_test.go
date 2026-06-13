@@ -187,3 +187,45 @@ func TestPipeline_StopIdempotent(t *testing.T) {
 		t.Errorf("second Stop returned %v, want nil (idempotent via stopOnce)", err)
 	}
 }
+
+// TestPipeline_PipelineStatusPerAxis verifies the per-axis status aggregation: a
+// SUMMARY-only auto-trip makes PipelineStatus() report aggregate Paused=true with
+// the summary sub-state paused and the embed sub-state RUNNING (independent), and
+// an all-clear pipeline reports Paused=false on both sub-states.
+func TestPipeline_PipelineStatusPerAxis(t *testing.T) {
+	ctx := context.Background()
+	wc := newFakeWireClient()
+	// Distinct providers so the summary trip does NOT cross-trip embed (the
+	// anthropic+voyage shape) — isolates the per-axis status aggregation from
+	// escalation.
+	fs := &fakeSummarizer{err: errTerminalNonDeterministic}
+	fe := &fakeEmbedder{vectors: map[string][]byte{}}
+	p := New(Config{CircuitBreakerThreshold: 3, SummaryProvider: "anthropic", EmbedProvider: "voyage"},
+		wc, fs.call, fe.call)
+
+	// All-clear: both sub-states running.
+	if st := p.PipelineStatus(); st.Paused || st.Summary.Paused || st.Embed.Paused {
+		t.Fatalf("fresh pipeline reports paused: %+v", st)
+	}
+
+	// Drive a summary-only auth/quota storm to auto-trip the summary axis.
+	for range 3 {
+		runSummaryWorkerBatch(ctx, p, []SummaryWork{summaryWork("s", `{"name":"s"}`)})
+	}
+
+	st := p.PipelineStatus()
+	if !st.Paused {
+		t.Fatalf("aggregate Paused = false after a summary-only auto-trip, want true")
+	}
+	if !st.Summary.Paused {
+		t.Fatalf("summary sub-state not paused after a summary-only auto-trip")
+	}
+	if st.Embed.Paused {
+		t.Fatalf("embed sub-state paused after a SUMMARY-only trip (distinct providers must not cross-trip)")
+	}
+	// The aggregate carries the summary axis's dominant class (auth/quota) — the
+	// representative paused axis is summary.
+	if st.DominantClass != ClassAuthQuota || st.Summary.DominantClass != ClassAuthQuota {
+		t.Fatalf("dominant class not carried per axis: aggregate=%v summary=%v", st.DominantClass, st.Summary.DominantClass)
+	}
+}

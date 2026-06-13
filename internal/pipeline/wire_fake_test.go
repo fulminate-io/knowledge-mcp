@@ -74,6 +74,24 @@ type fakeWireClient struct {
 	// axes together; this split lets a test assert that the embed axis was never
 	// scanned (the embed-gate proof) while the summary axis flowed.
 	scansByAxis map[string]int
+
+	// graphTypeDefNames seeds the discoverRegisteredGraphTypes browse: the
+	// registered custom GraphTypeDef names returned by the query(type:graph_type_def)
+	// Execute (served via the RETURN_MODE_NODES carrier, one Node per name with
+	// SymbolName=name, matching ToNode's name=ID=SymbolName invariant). nil →
+	// no registered types this tick (the browse returns an empty Nodes carrier).
+	graphTypeDefNames []string
+
+	// failGraphTypeDefBrowse, when true, makes the graph_type_def browse Execute
+	// return an error (a rollout 502 / permission_denied / decode-failure proxy).
+	// Used to prove the browse failure is non-fatal: builtins still enumerate.
+	failGraphTypeDefBrowse bool
+
+	// rateLimitGraphTypeDefBrowse, when > 0, makes the graph_type_def browse
+	// Execute return a connect.CodeUnavailable 429 carrying that many seconds as
+	// Retry-After. Used to prove a browse 429 feeds the throttle accounting WITHOUT
+	// independently forcing whole-tick backoff when builtins enumerated fine.
+	rateLimitGraphTypeDefBrowse int
 }
 
 func newFakeWireClient() *fakeWireClient {
@@ -167,14 +185,70 @@ func (f *fakeWireClient) Execute(_ context.Context, req *knowledgev1.ExecuteRequ
 		return &knowledgev1.ExecuteResponse{AffectedCount: int64(len(m.GetUpdateItems()))}, nil
 	}
 
-	// Read plans: only listLoadedGraphs (RETURN_MODE_GRAPH_NAMES) rides the
-	// Execute seam in the pipeline (the worker no longer re-fetches
-	// nodes or traverses children — it reads the server-composed text off the
-	// scan item directly).
-	if q := req.GetQuery(); q != nil && q.GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_GRAPH_NAMES {
-		return f.execGraphNames(req.GetTarget().GetGraph())
+	// Read plans: listLoadedGraphs (RETURN_MODE_GRAPH_NAMES) and
+	// discoverRegisteredGraphTypes (a graph_type_def type-browse → RETURN_MODE_NODES
+	// carrier) both ride the Execute seam in the pipeline.
+	if q := req.GetQuery(); q != nil {
+		if q.GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_GRAPH_NAMES {
+			return f.execGraphNames(req.GetTarget().GetGraph())
+		}
+		if sel := q.GetSelection(); sel != nil && sel.GetNodeType() == string(kgtypes.NodeGraphTypeDef) {
+			return f.execGraphTypeDefBrowse()
+		}
 	}
 	return &knowledgev1.ExecuteResponse{}, nil
+}
+
+// execGraphTypeDefBrowse serves the discoverRegisteredGraphTypes
+// query(type:graph_type_def) Execute from seeded graphTypeDefNames via the
+// RETURN_MODE_NODES carrier — one Node per registered name, SymbolName=name
+// (ToNode's name=ID=SymbolName invariant, which discoverRegisteredGraphTypes
+// reads back via node.GetSymbolName()). Honors failGraphTypeDefBrowse /
+// rateLimitGraphTypeDefBrowse so the non-fatal + throttle-accounting paths are
+// exercisable.
+func (f *fakeWireClient) execGraphTypeDefBrowse() (*knowledgev1.ExecuteResponse, error) {
+	f.mu.Lock()
+	failed := f.failGraphTypeDefBrowse
+	retryAfter := f.rateLimitGraphTypeDefBrowse
+	names := f.graphTypeDefNames
+	f.mu.Unlock()
+	if retryAfter > 0 {
+		ce := connect.NewError(connect.CodeUnavailable, fmt.Errorf("Too many requests. Please slow down."))
+		ce.Meta().Set("Retry-After", strconv.Itoa(retryAfter))
+		return nil, ce
+	}
+	if failed {
+		return nil, fmt.Errorf("fake: graph_type_def browse unavailable (simulated rollout)")
+	}
+	nodes := make([]*knowledgev1.Node, len(names))
+	for i, n := range names {
+		nodes[i] = &knowledgev1.Node{SymbolName: n}
+	}
+	return &knowledgev1.ExecuteResponse{Nodes: nodes}, nil
+}
+
+// seedGraphTypeDefs installs the registered custom GraphTypeDef names returned by
+// the discoverRegisteredGraphTypes browse this tick.
+func (f *fakeWireClient) seedGraphTypeDefs(names ...string) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.graphTypeDefNames = names
+}
+
+// failGraphTypeDefBrowseRead marks the graph_type_def browse Execute to error,
+// simulating a registry-browse backend failure (rollout 502 / permission_denied).
+func (f *fakeWireClient) failGraphTypeDefBrowseRead() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.failGraphTypeDefBrowse = true
+}
+
+// rateLimitGraphTypeDefBrowseRead marks the graph_type_def browse Execute to
+// return a connect.CodeUnavailable 429 carrying retryAfterSecs as Retry-After.
+func (f *fakeWireClient) rateLimitGraphTypeDefBrowseRead(retryAfterSecs int) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.rateLimitGraphTypeDefBrowse = retryAfterSecs
 }
 
 // execGraphNames serves the listLoadedGraphs query(mode:modules) per-type read
@@ -292,5 +366,18 @@ func (a *asyncCalls) load() int { return int(a.n.Load()) }
 var errTransient = &llm.LLMError{Transient: true, Reason: "http_429"}
 
 // errTerminal is a sentinel terminal *llm.LLMError used by tests that
-// exercise the terminal-error marker-write path.
+// exercise the terminal-error marker-write path. Reason "http_400" classifies to
+// ClassInvalidRequest, which IS deterministic-terminal — so two consecutive
+// errTerminal failures of one axis FAST-TRIP the breaker at
+// DefaultDeterministicFastTripThreshold. Tests that drive a multi-call
+// zero-success WINDOW (rather than the fast-trip) must use
+// errTerminalNonDeterministic instead so the deterministic streak never fires.
 var errTerminal = &llm.LLMError{Transient: false, Reason: "http_400"}
+
+// errTerminalNonDeterministic is a sentinel terminal *llm.LLMError whose Reason
+// ("http_401") classifies to ClassAuthQuota — a TERMINAL but NON-deterministic
+// class (only 429/5xx are transient, so 401 takes the terminal marker-write path
+// without a backoff delay). It is the fixture for per-axis zero-success WINDOW
+// tests (many consecutive errored calls WITHOUT the deterministic fast-trip
+// short-circuiting the run) and for the auth/quota shared-cause escalation tests.
+var errTerminalNonDeterministic = &llm.LLMError{Transient: false, Reason: "http_401"}

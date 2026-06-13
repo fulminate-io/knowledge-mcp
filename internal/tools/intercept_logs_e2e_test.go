@@ -12,6 +12,7 @@ import (
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
+	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
@@ -24,20 +25,29 @@ type logE2EDeps struct {
 	gc GraphCaller
 }
 
-func (d *logE2EDeps) LocalLiveness() LocalLiveness     { return nil }
-func (d *logE2EDeps) Sink() collector.Sink             { return nil }
-func (d *logE2EDeps) RootDir() string                  { return "" }
-func (d *logE2EDeps) WorkerRuntime() WorkerRuntimeAPI  { return nil }
-func (d *logE2EDeps) WorkerCRUD() WorkerCRUDAPI        { return nil }
-func (d *logE2EDeps) GraphTypeCRUD() GraphTypeCRUDAPI  { return nil }
-func (d *logE2EDeps) Embedder() embed.BinaryEmbedder   { return nil }
-func (d *logE2EDeps) BackendResolver() BackendResolver { return nil }
-func (d *logE2EDeps) GraphCaller() GraphCaller         { return d.gc }
-func (d *logE2EDeps) LocalGraphCaller() GraphCaller    { return d.gc }
-func (d *logE2EDeps) RepoResolver() *RepoResolver      { return nil }
-func (d *logE2EDeps) SegmentManager() SegmentSearcher  { return nil }
-func (d *logE2EDeps) SegmentShipper() SegmentShipper   { return nil }
-func (d *logE2EDeps) PipelineScanner() PipelineScanner { return nil }
+func (d *logE2EDeps) LocalLiveness() LocalLiveness                 { return nil }
+func (d *logE2EDeps) Sink() collector.Sink                         { return nil }
+func (d *logE2EDeps) RootDir() string                              { return "" }
+func (d *logE2EDeps) WorkerRuntime() WorkerRuntimeAPI              { return nil }
+func (d *logE2EDeps) WorkerReady() bool                            { return true }
+func (d *logE2EDeps) PropReady() bool                              { return true }
+func (d *logE2EDeps) PipelineReady() bool                          { return true }
+func (d *logE2EDeps) ClaimRegistry() *hivemonitor.Registry         { return nil }
+func (d *logE2EDeps) BanSet() *hivemonitor.BanSet                  { return nil }
+func (d *logE2EDeps) WorkerCRUD() WorkerCRUDAPI                    { return nil }
+func (d *logE2EDeps) GraphTypeCRUD() GraphTypeCRUDAPI              { return nil }
+func (d *logE2EDeps) Embedder() embed.BinaryEmbedder               { return nil }
+func (d *logE2EDeps) BackendResolver() BackendResolver             { return nil }
+func (d *logE2EDeps) GraphCaller() GraphCaller                     { return d.gc }
+func (d *logE2EDeps) LocalGraphCaller() GraphCaller                { return d.gc }
+func (d *logE2EDeps) RepoResolver() *RepoResolver                  { return nil }
+func (d *logE2EDeps) SegmentManager() SegmentSearcher              { return nil }
+func (d *logE2EDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
+func (d *logE2EDeps) SegmentShipper() SegmentShipper               { return nil }
+func (d *logE2EDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
+func (d *logE2EDeps) PipelineScanner() PipelineScanner             { return nil }
+func (d *logE2EDeps) ReflectionForcer() ReflectionForcer           { return nil }
+func (d *logE2EDeps) SimilarityForcer() SimilarityForcer           { return nil }
 
 // e2eSetupLogGraph seeds a small store-FREE log graph (templates + chunk +
 // stream + a correlation edge) onto a fakeLogGraphCaller. Returns the queryID

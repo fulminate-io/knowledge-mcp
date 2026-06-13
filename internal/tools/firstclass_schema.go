@@ -29,22 +29,24 @@ func ThoughtsToolDef() kgtools.MCPTool {
 		InputSchema: kgtools.InputSchema{
 			Type: "object",
 			Properties: map[string]kgtools.Property{
-				"operation": {Type: "string", Description: "Which thoughts op to run.", Enum: []string{"think", "charge", "recall", "trace", "propagate", "adjacency", "charges_for"}},
+				"operation": {Type: "string", Description: "Which thoughts op to run.", Enum: []string{"think", "charge", "recall", "trace", "propagate", "adjacency", "charges_for", "similarity_report"}},
 
 				// think
 				"content":       {Type: "string", Description: "(think) The thought content — what you're thinking and why."},
 				"summary":       {Type: "string", MaxLength: 500, Description: "(think, REQUIRED) Search-optimized one-line summary of the thought, max 500 chars. Authored deliberately — this is what makes the thought findable via recall. NOT auto-derived from content."},
 				"session":       {Type: "string", Description: "(think, recall filter) Session name to group related thoughts (e.g., 'backend-auth-design'). Creates session if new on think."},
+				"ticket_id":     {Type: "string", Description: "(think) Active ticket/project ID — born-linked as ticket--contains-->thought so the thought is grouped under the work item that produced it. An unresolvable ticket_id is dropped with a warning, never blocking the think."},
 				"branches_from": {Type: "string", Description: "(think) Thought ID this branches from (usually after invalidation of the original)."},
 				"links":         {Type: "array", Description: "(think) Node IDs to link this thought to (decisions, findings, code, etc.).", Items: &kgtools.Property{Type: "string"}},
 				"status":        {Type: "string", Description: "(think initial status / recall filter) Default hypothesized for think.", Enum: []string{"hypothesized", "validated", "invalidated"}},
+				"origin":        {Type: "string", Description: "(think) Developer-origin role of the agent recording this thought — conventional values planner|implementer|reviewer|researcher|tester|orchestrator|main; absent => main. Open string (flex-parsed, NOT an enum gate): a custom value is stored as-is. Stamped as origin metadata, and when it resolves to a seeded agent node, an agent--produced-->thought hub edge is written."},
 
 				// charge
 				"thought":   {Type: "string", Description: "(charge, trace) Thought node ID. Required for charge and trace."},
-				"polarity":  {Type: "string", Description: "(charge) Charge direction.", Enum: []string{"positive", "negative"}},
+				"polarity":  {Type: "string", Description: "(charge) Whether the evidence SUPPORTS the thought's claim (\"positive\") or CONTRADICTS it (\"negative\"). NOT good-news/bad-news about the subject — sentiment about the subject belongs in reasoning/content text.", Enum: []string{"positive", "negative"}},
 				"weight":    {Type: "number", Description: "(charge) Charge significance (1-10). Higher = stronger evidence."},
-				"reasoning": {Type: "string", Description: "(charge) WHY this charge is being applied — what evidence supports it."},
-				"evidence":  {Type: "array", Description: "(charge) Node IDs of evidence (tests, PRs, incidents, other charges).", Items: &kgtools.Property{Type: "string"}},
+				"reasoning": {Type: "string", Description: "(charge) WHY this charge applies — the specific evidence that supports or contradicts the thought's claim. Put any sentiment about the subject HERE, never in the polarity sign."},
+				"evidence":  {Type: "array", Description: "(charge) Node IDs of evidence — tests, PRs, incidents, related thoughts, or other charges. Citing a related thought records a charge→thought evidenced-by edge that feeds cross-cluster trust differentiation.", Items: &kgtools.Property{Type: "string"}},
 
 				// recall
 				"query":           {Type: "string", Description: "(recall) Semantic search text (optional — omit to browse all thoughts)."},
@@ -68,6 +70,12 @@ func ThoughtsToolDef() kgtools.MCPTool {
 				// adjacency
 				"scope":       {Type: "string", Description: "(adjacency) Which adjacency view to build. 'all' = NodeThought-filtered with session-sibling expansion (cluster detection on thoughts only). 'all_types' = every node except NodeProxy with no edge filter (cross-type cluster detection).", Enum: []string{"all", "all_types"}},
 				"thought_ids": {Type: "array", Description: "(adjacency, charges_for) Optional subset filter (adjacency) / required charge sources (charges_for). When set on adjacency, response is projected down to just these IDs.", Items: &kgtools.Property{Type: "string"}},
+
+				// propagate
+				"force_full": {Type: "boolean", Description: "(propagate) Run the full-corpus backstop pass now — bypasses the quiet-tick skip and incremental scoping, recomputes every component, and resets the backstop cadence. Use for an on-demand full reflection (ops/debug) instead of waiting for the periodic backstop tick. Errors if the reflection loop is not running in this process."},
+
+				// similarity_report
+				"id": {Type: "string", Description: "(similarity_report) Optional id of a specific past similarity pass to fetch. Omit to fetch the LATEST pass (running → in-progress + estimate; completed → the full rendered report; failed → the failure)."},
 			},
 			Required: []string{"operation"},
 		},
@@ -76,15 +84,16 @@ func ThoughtsToolDef() kgtools.MCPTool {
 
 // thoughtsToolDescription is split out so the tool def stays scannable.
 // Moved verbatim from the server-side tools_thought.go.
-const thoughtsToolDescription = `Persistent reasoning graph: hypothesize, charge with evidence, recall, trace chains, propagate. Seven operations:
+const thoughtsToolDescription = `Persistent reasoning graph: hypothesize, charge with evidence, recall, trace chains, propagate. Eight operations:
 
-  - think       : Record a thought (hypothesis / observation / plan). Required: content, summary (search-optimized one-line, max 500 chars). Optional: session, branches_from, links, status.
-  - charge      : Add positive/negative evidence to a thought. Required: thought, polarity, weight, reasoning. Optional: evidence.
+  - think       : Record a thought (hypothesis / observation / plan). Required: content, summary (search-optimized one-line, max 500 chars). Optional: session, ticket_id, branches_from, links, status, origin (developer-origin role: planner|implementer|reviewer|researcher|tester|orchestrator|main; absent => main).
+  - charge      : Attach evidence that SUPPORTS (positive) or CONTRADICTS (negative) the thought's claim. Required: thought, polarity, weight, reasoning. Optional: evidence.
   - recall      : Search thoughts by composable filters (semantic query, valence/magnitude/consistency thresholds, status, session, time, connected-to). Modes: search (default), timeline, charges, graph, clusters.
   - trace       : Follow reasoning chains forward/backward from a starting thought. Required: thought. Optional: direction, depth, include_charges, include_artifacts.
-  - propagate   : Manually trigger DeGroot valence/magnitude propagation across all thoughts. Normally runs automatically in the background.
+  - propagate   : Manually trigger DeGroot valence/magnitude propagation across all thoughts. Normally runs automatically in the background. Optional: force_full (run the full-corpus backstop pass now — bypasses the quiet-tick skip + incremental scoping, resets the backstop cadence). With similarity:true it triggers the topic-similarity lever ASYNCHRONOUSLY: it starts the pass in the background and returns immediately with a copy-pasteable thoughts({"operation":"similarity_report"}) fetch call + a duration estimate (the pass can outlive the tool-call timeout); only one pass runs at a time (a second trigger coalesces).
   - adjacency   : Bulk graph adjacency read used by client-side cluster detection. Required: scope ('all' | 'all_types'). Optional: thought_ids (subset projection).
   - charges_for : Bulk per-thought charge fetch. Required: thought_ids. Returns {charges_by_thought: {tid: [charge_node, ...]}}.
+  - similarity_report : Fetch the result of the async topic-similarity pass triggered by propagate+similarity. Optional: id (a specific past pass; omit for the latest). running → in-progress + elapsed + estimate; completed → the full rendered report; failed → the failure; no pass yet → a clear empty-state message.
 
 Common cycle: recall → think → (work) → charge → recall (again) to confirm the hypothesis landed. Examine a single thought via query(mode: "examine", id: thought_id). Link a thought to another node via mutate(operation: "link", from: thought_id, to: node_id, relationship: "informed-by"|"supports"|"contradicts"|"relates-to"|"produced").`
 
@@ -108,7 +117,8 @@ func SearchToolDef() kgtools.MCPTool {
 				"limit":              {Type: "number", Description: "Max results per query (default: 10, max: 50)."},
 				"include_source":     {Type: "boolean", Description: "Include full source code (default: true). Code graph only."},
 				"include_comments":   {Type: "boolean", Description: "Include comment nodes in code search results (default: false). Comments are excluded by default to reduce noise."},
-				"mode":               {Type: "string", Description: "Search mode: 'hybrid', 'text', 'vector' (code); 'recent'/'temporal' (knowledge recency boost)."},
+				"mode":               {Type: "string", Description: "Search mode: 'hybrid', 'text', 'vector' (code); 'recent'/'temporal' (knowledge recency boost); 'similar' (knowledge graph). mode:'similar' takes a node_id and returns that node's nearest corpus neighbors by searching the node's OWN STORED vector (its embedding already on disk — NOT a fresh embedding of any query text), with the node itself EXCLUDED from results. Results are ranked by the client engine's reciprocal-rank fusion over the stored-vector (HNSW) arm — with no query text the order is pure stored-vector proximity — NOT a raw cosine similarity score."},
+				"node_id":            {Type: "string", Description: "The node whose nearest stored-vector neighbors to return when mode:'similar' is set (knowledge graph). The named node is resolved to its on-disk embedding and excluded from its own results."},
 				"group_by_file":      {Type: "boolean", Description: "Group results by file (default: false). Code graph only."},
 				"path_prefix":        {Type: "string", Description: "Filter to files under this path. Code graph only."},
 				"repo":               repoProp,
@@ -179,6 +189,7 @@ func CollectToolDef() kgtools.MCPTool {
 				"type":               {Type: "string", Description: "Collector name (e.g., \"code\", \"aws\", \"gcp\", \"logs\", \"web\", \"pdf\")."},
 				"id":                 {Type: "string", Description: "Opaque identifier parsed by the collector (path, account:region, web source slug, absolute path to a .pdf, etc.). Optional for type=\"logs\"."},
 				"force":              {Type: "boolean", Description: "Skip safety check for existing indexed graphs."},
+				"params":             {Type: "object", Description: "Registered custom_collector types only: opaque param object forwarded to the external collector binary, validated against its param_schema before exec. Built-in types ignore it."},
 				"backend":            {Type: "string", Description: "Logs only: name of a configured log_backend node."},
 				"provider":           {Type: "string", Description: "Logs only: provider identifier (e.g., cloudwatch, loki, stackdriver, k8s)."},
 				"url":                {Type: "string", Description: "Logs only: backend base URL."},

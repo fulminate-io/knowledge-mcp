@@ -193,22 +193,33 @@ model = "claude-haiku-5"
 cli_bin = "`+claudeBin+`"
 `)
 	rows := checkConsumerCLIs(path)
-	if len(rows) != 2 {
-		t.Fatalf("got %d rows, want 2", len(rows))
+	// Three consumers: summarizer (codex-cli), dream (claude-cli), and supervisor
+	// (inherits [default]=anthropic, an API provider → an info row, no CLI binary).
+	if len(rows) != 3 {
+		t.Fatalf("got %d rows, want 3", len(rows))
 	}
-	var sawCodex, sawClaude bool
+	var sawCodex, sawClaude, sawSupervisor bool
 	for _, r := range rows {
-		if r.status != statusOK {
-			t.Errorf("row %q status = %v, want statusOK", r.name, r.status)
-		}
 		if r.name == "claude-cli" {
 			t.Errorf("row name %q is the hardcoded literal — must be provider-labeled", r.name)
 		}
-		if strings.Contains(r.name, "codex-cli") {
+		switch {
+		case strings.Contains(r.name, "codex-cli"):
 			sawCodex = true
-		}
-		if strings.Contains(r.name, "claude-cli") {
+			if r.status != statusOK {
+				t.Errorf("codex-cli row status = %v, want statusOK", r.status)
+			}
+		case strings.Contains(r.name, "claude-cli"):
 			sawClaude = true
+			if r.status != statusOK {
+				t.Errorf("claude-cli row status = %v, want statusOK", r.status)
+			}
+		case strings.Contains(r.name, "supervisor"):
+			sawSupervisor = true
+			// supervisor inherits anthropic (API provider) → info row, no CLI needed.
+			if r.status != statusInfo {
+				t.Errorf("supervisor (anthropic) row status = %v, want statusInfo", r.status)
+			}
 		}
 	}
 	if !sawCodex {
@@ -216,6 +227,9 @@ cli_bin = "`+claudeBin+`"
 	}
 	if !sawClaude {
 		t.Error("expected a row labeled with claude-cli")
+	}
+	if !sawSupervisor {
+		t.Error("expected a supervisor row (inheriting the [default] anthropic provider)")
 	}
 }
 

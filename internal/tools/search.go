@@ -12,13 +12,19 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/rerank"
 )
 
 // InterceptSearch is the cmd/knowledge stdio client's "search" interceptor.
 //
-// Three responsibilities, layered:
+// Responsibilities, layered:
 //
+//  0. mode:"similar" claim. A knowledge/default search carrying mode=similar +
+//     node_id resolves that node's STORED vector from the client-local HNSW
+//     segments and returns its nearest neighbors (composeSimilarNodeSearch),
+//     self-excluded. Claimed after the logs/code short-circuits, before the
+//     reducible-graph arms; loud-errors rather than falling through.
 //  1. graph=logs short-circuit. Log graph search runs entirely
 //     client-side: searchLogs (tools_logs_search.go) issues
 //     gc.Call("query", graph:"logs", text:..., name:..., format:"json")
@@ -71,6 +77,15 @@ func InterceptSearch(deps ClientDeps, params kgtools.CallToolParams) (bool, kgto
 		if handled, res := interceptSearchCode(ctx, deps, gc.Execute, params.Arguments); handled {
 			return true, res
 		}
+	}
+	// mode:"similar" claim. A knowledge/default search carrying mode=similar +
+	// node_id resolves that node's STORED vector from the client-local HNSW
+	// segments and returns its nearest neighbors (interceptSearchSimilar →
+	// composeSimilarNodeSearch) — NO server search, NO fresh query-text embed.
+	// Placed AFTER the logs/code short-circuits and BEFORE
+	// interceptSearchReducibleGraph so a normal (empty-mode) search flows past it.
+	if handled, res := interceptSearchSimilar(ctx, deps, sniff); handled {
+		return true, res
 	}
 	// For completeness: the SEARCH tool is a SEPARATE client
 	// compile path from the query tool. engine.compileSearch is reducible for
@@ -125,11 +140,13 @@ func InterceptSearch(deps ClientDeps, params kgtools.CallToolParams) (bool, kgto
 	slog.Debug("rerank-trace: post-embed",
 		"did_embed", didEmbed, "embedder_nil", deps.Embedder() == nil)
 	// The knowledge/default arm is CLAIMED by the client engine
-	// UNCONDITIONALLY (the segment Manager is always wired in the real client) —
-	// even with no rewrite and no client embed (BM25-only via RRF-over-one-list).
-	// Only fall through to the bare server search when this is NOT the
-	// knowledge/default arm. Other graphs keep the pre-existing fall-through
-	// contract (the SEARCH-tool practice/cloud/cicd claims are added separately).
+	// UNCONDITIONALLY — even with no rewrite and no client embed (BM25-only via
+	// RRF-over-one-list). The segment Manager is wired for the life of the daemon
+	// EXCEPT during the bind-first wiring window (bind-first startup), which the PipelineReady
+	// gate below rejects with a not-ready error before any deref. Only fall through
+	// to the bare server search when this is NOT the knowledge/default arm. Other
+	// graphs keep the pre-existing fall-through contract (the SEARCH-tool
+	// practice/cloud/cicd claims are added separately).
 	claimKnowledge := isKnowledgeDefaultGraph(sniff.Graph)
 	if !hasRewrite && !didEmbed && !claimKnowledge {
 		slog.Debug("rerank-trace: fall-through to bare search (no rewrite, no embed)")
@@ -141,6 +158,11 @@ func InterceptSearch(deps ClientDeps, params kgtools.CallToolParams) (bool, kgto
 	if gc == nil {
 		return true, errorResult("server unreachable; start it with `knowledge-server`")
 	}
+	// The knowledge-arm readiness gate (bind-first startup) lives inside
+	// runKnowledgeOrServerSearch — the single chokepoint before composeKnowledgeSearch
+	// dereferences the segment Manager — so it does not add to this function's
+	// statement budget. Other graphs ride the server Execute path and are unaffected.
+	//
 	// Route the tail through the compile-or-DENY dispatcher: a reducible search
 	// — the Router surfaces ErrNoBackend on a missing backend, which
 	// renderEngineError translates into an actionable install-or-login message,
@@ -227,6 +249,42 @@ func interceptSearchCode(ctx context.Context, deps ClientDeps, exec engine.Execu
 	return true, composeCodeSearch(ctx, deps, exec, a, queries, queryVecs)
 }
 
+// interceptSearchSimilar claims search(mode:similar) for the knowledge/default
+// graph: it resolves the named node's STORED vector from the client-local HNSW
+// segments and returns its nearest neighbors via composeSimilarNodeSearch (NO
+// server search, NO fresh embed). Returns (false,_) — flow past to the other arms —
+// when this is not a knowledge/default mode=similar search. When it IS, it is
+// CLAIMED unconditionally and loud-errors (never falls through) on: empty node_id,
+// any nil dep (GraphCaller / SegmentManager / SegmentVectorResolver), and an absent
+// stored vector (handled downstream in composeSimilarNodeSearch). similar over
+// code/cloud is out of scope — the stored-vector resolver targets GraphKnowledge.
+func interceptSearchSimilar(ctx context.Context, deps ClientDeps, sniff searchArgs) (bool, kgtools.ToolResult) {
+	if sniff.Mode != "similar" || !isKnowledgeDefaultGraph(sniff.Graph) {
+		return false, kgtools.ToolResult{}
+	}
+	if sniff.NodeID == "" {
+		return true, errorResult("similar search: node_id is required for mode:similar")
+	}
+	// Readiness gate (bind-first startup): mode:similar resolves the stored vector through the
+	// pipeline-backed SegmentVectorResolver; during the bind-first wiring window
+	// that handle is nil. Distinguish the transient window from a permanently
+	// unwired pipeline so a retry succeeds. Plain BM25 search does not reach here.
+	if !deps.PipelineReady() {
+		return true, errorResult("similar search: daemon still starting — LLM pipeline not ready yet, retry shortly")
+	}
+	gc := deps.GraphCaller()
+	mgr := deps.SegmentManager()
+	res := deps.SegmentVectorResolver()
+	if gc == nil || mgr == nil || res == nil {
+		return true, errorResult("similar search: client segment engine unavailable (the local pipeline is not wired)")
+	}
+	k := int(sniff.Limit)
+	if k <= 0 {
+		k = knowledgeSearchDefaultLimit
+	}
+	return true, composeSimilarNodeSearch(ctx, gc, mgr, res, sniff.NodeID, k, sniff.Format, sniff.Fields)
+}
+
 // searchReducibleArgs is the slice of the search payload the completeness arms
 // read: the graph instance key (account) + the query text. Mirrors the
 // engine.searchArgs fields compileSearch consumes for these graphs.
@@ -256,7 +314,24 @@ func interceptSearchReducibleGraph(ctx context.Context, deps ClientDeps, graph s
 	switch graph {
 	case "practice", "cloud", "cicd", "linkage", "web", "pdf":
 	default:
-		return false, kgtools.ToolResult{}
+		// A registered CUSTOM graph (non-empty, non-builtin) is claimed here and
+		// served by the CLIENT segment engine — its shipped segments ARE the index
+		// (the server RETURN_MODE_SEARCH path is retired and returns 0 hits for these
+		// graphs). knowledge/code/logs are handled upstream in InterceptSearch, so a
+		// non-builtin graph reaching this default is a registered custom type. Decode
+		// searchArgs (NOT searchReducibleArgs — the custom-graph instance key is the
+		// Name field, which searchReducibleArgs lacks) for the (name, query) pair.
+		// Anything still empty/builtin falls through to the knowledge/default tail.
+		if graph == "" || kgtypes.IsBuiltinGraphType(graph) {
+			return false, kgtools.ToolResult{}
+		}
+		var ca searchArgs
+		if err := json.Unmarshal(raw, &ca); err != nil {
+			return true, errorResult(graph + " search: decode args: " + err.Error())
+		}
+		query := searchReducibleQueryText(searchReducibleArgs{Query: ca.Query, Queries: ca.Queries})
+		return true, composeRegisteredGraphSearch(ctx, deps, deps.SegmentManager(),
+			kgtypes.GraphType(graph), ca.Name, query, ca.Format)
 	}
 
 	var a searchReducibleArgs

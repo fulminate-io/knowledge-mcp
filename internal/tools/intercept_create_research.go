@@ -61,7 +61,18 @@ func InterceptCreateResearch(deps ClientDeps, params kgtools.CallToolParams) (bo
 		return true, errorResult(err.Error())
 	}
 	for i, q := range a.Questions {
-		if err := validate.Summary("create_research", fmt.Sprintf("questions[%d].summary", i), q.Summary); err != nil {
+		if q.Summary != "" {
+			// Author-supplied summary: validate it directly, unchanged.
+			if err := validate.Summary("create_research", fmt.Sprintf("questions[%d].summary", i), q.Summary); err != nil {
+				return true, errorResult(err.Error())
+			}
+			continue
+		}
+		// No author summary — buildResearchGraph derives one from question +
+		// context. Validate that DERIVED text (same func, so validated text ==
+		// stored text) with an actionable over-length error.
+		derived := projects.DeriveQuestionSummary(q.Question, q.Context)
+		if err := validate.DerivedSummary("create_research", fmt.Sprintf("questions[%d].summary", i), "question + context", derived); err != nil {
 			return true, errorResult(err.Error())
 		}
 	}
@@ -130,10 +141,7 @@ func buildResearchGraph(args projects.ResearchArgs) (nodes []*knowledgev1.Node, 
 		qIdx := len(nodes)
 		summary := q.Summary
 		if summary == "" {
-			summary = "Question: " + q.Question
-			if q.Context != "" {
-				summary += ". Context: " + q.Context
-			}
+			summary = projects.DeriveQuestionSummary(q.Question, q.Context)
 		}
 		nodes = append(nodes, &knowledgev1.Node{
 			Type:        string(kgtypes.NodeQuestion),

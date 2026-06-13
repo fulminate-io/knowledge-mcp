@@ -102,13 +102,53 @@ type Metrics struct {
 	EmbedFailed      int64
 }
 
-// PipelineStatus is the operator-facing snapshot of the circuit breaker's
-// paused state. Surfaced by the pipeline_status manage op and the search
-// staleness footer. Paused is true while the worker pool is latched off
-// (manual pause or an auto-trip); Reason carries the human-readable cause and
-// Since the time it paused.
+// AxisStatus is the operator-facing snapshot of ONE axis's circuit breaker. It
+// is the EXPORTED mirror of the in-package circuitStatus (circuit_breaker.go),
+// carrying the full breaker shape per axis: Paused/Reason/Since plus the
+// dominant-class surfacing (DominantClass/DominantCount/Breakdown). The pipeline
+// builds one of these per axis (summary, embed) from that axis's breaker.status()
+// so operators see WHICH axis is paused and its dominant error class — a failing
+// summary axis no longer masquerades as a whole-pipeline pause.
+//
+// FIELD ORDER IS LOAD-BEARING: it is built from circuitStatus by field
+// (circuitStatusToAxis in escalation.go), so the field name+type+order here MUST
+// stay identical to circuitStatus (circuit_breaker.go).
+type AxisStatus struct {
+	Paused        bool
+	Reason        string
+	Since         time.Time
+	DominantClass ErrClass
+	DominantCount int
+	Breakdown     string
+}
+
+// PipelineStatus is the operator-facing snapshot of the pipeline's per-axis
+// circuit breakers. Surfaced by the pipeline_status manage op and the search
+// staleness footer.
+//
+// The TOP-LEVEL aggregate fields summarize across both axes for the existing
+// footer/degraded code paths: Paused is true while EITHER axis is latched off
+// (manual pause or an auto-trip); Reason/Since/DominantClass/DominantCount/
+// Breakdown are taken from a representative paused axis (summary preferred when
+// both are paused). A display consumer reading only Reason + Breakdown (both
+// strings) keeps working unchanged and needs no ErrClass knowledge.
+//
+// Summary and Embed carry the PER-AXIS detail so a renderer can name which axis
+// is paused and surface each axis's own dominant class / breakdown independently.
+//
+// AGGREGATE FIELD ORDER IS LOAD-BEARING: the first six fields mirror circuitStatus
+// (circuit_breaker.go) field-for-field. Summary/Embed are appended after them.
 type PipelineStatus struct {
-	Paused bool
-	Reason string
-	Since  time.Time
+	Paused        bool
+	Reason        string
+	Since         time.Time
+	DominantClass ErrClass
+	DominantCount int
+	Breakdown     string
+
+	// Summary and Embed are the per-axis sub-states (each the full AxisStatus
+	// shape) so operators see independent per-axis paused state + dominant class.
+	// The top-level aggregate fields above are derived from these.
+	Summary AxisStatus
+	Embed   AxisStatus
 }

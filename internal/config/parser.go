@@ -25,6 +25,8 @@ type parseShape struct {
 	Default       parseSection      `toml:"default"`
 	Summarizer    *parseSection     `toml:"summarizer"`
 	Dream         *parseSection     `toml:"dream"`
+	Supervisor    *parseSection     `toml:"supervisor"`
+	Topics        *parseSection     `toml:"topics"`
 	Credentials   *parseCredentials `toml:"credentials"`
 }
 
@@ -123,6 +125,20 @@ func Parse(data []byte) (*Config, error) {
 			return nil, err
 		}
 		cfg.Dream = &s
+	}
+	if raw.Supervisor != nil {
+		s, err := translateSection(string(ConsumerHiveSupervisor), *raw.Supervisor)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Supervisor = &s
+	}
+	if raw.Topics != nil {
+		s, err := translateSection(string(ConsumerTopics), *raw.Topics)
+		if err != nil {
+			return nil, err
+		}
+		cfg.Topics = &s
 	}
 	if raw.Credentials != nil {
 		cfg.Credentials = &Credentials{

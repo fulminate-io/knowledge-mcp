@@ -77,7 +77,7 @@ here and report what still needs to be exercised.
 Pull the reasoning and the work item this session produced.
 
 ```json
-thoughts({ "operation": "recall", "query": "<this session's topic / feature / fix>", "limit": 20 })
+thoughts({ "operation": "recall", "mode": "context", "query": "<this session's topic / feature / fix>", "limit": 20 })
 query({ "type": "project" })
 query({ "type": "ticket" })
 ```
@@ -128,10 +128,46 @@ The `content` MUST contain these five sections:
 - **Gotchas / limitations** — known sharp edges, things that look broken but aren't,
   what is deliberately out of scope.
 
+## Step 3.5: Persist feature knowledge as thoughts (new features + feature changes)
+
+The guide document is the operator runbook; feature knowledge must ALSO live in the
+thought graph where `recall` finds it. For **every genuinely new feature/surface the
+session delivered** — a new tool, mode, op, param, lever, or behavior — record
+**multiple thoughts, one per facet**, so the knowledge survives independently of
+this session's transcript:
+
+1. **WHAT it is** — the feature described in plain terms: what it delivers and why
+   it exists. The summary leads with the feature's name/invocation so recall matches.
+2. **HOW it works** — the mechanism: key functions/files, the data flow, the design
+   decisions that shape behavior (link the decision nodes).
+3. **HOW to use it** — the invocation shape: tool + params, example calls, expected
+   output, the failure modes a caller will actually see.
+
+```json
+thoughts({ "operation": "think",
+           "content": "<one facet — what/how-it-works/how-to-use>",
+           "summary": "<feature name + facet, recall-optimized>",
+           "session": "<this session>",
+           "links": ["<guide document id>", "<decision id>"] })
+```
+
+**For changes to an existing feature, do NOT mint duplicates.** First
+`thoughts({"operation":"recall", "query": "<feature name>"})` for the prior feature
+thoughts; if the change alters their content, update them (or supersede via
+`branches_from` when the old description is now wrong, invalidating the original).
+Only create fresh facet thoughts for facets that did not exist before.
+
+Charge each facet thought immediately with the Step 2 verification evidence — the
+feature is verified (the precondition gate passed), so these are validated knowledge,
+not hypotheses. Skip this step entirely for sessions that delivered no feature-level
+change (pure refactors, doc fixes, investigations with no new surface).
+
 ## Step 4: Charge validated thoughts + record findings
 
 The real-world result is evidence. Charge the session's key hypotheses with it so
-the broken→fixed transition is recorded as validated, not just asserted.
+the broken→fixed transition is recorded as validated, not just asserted. Polarity
+tracks the claim: positive when the observed result supports the hypothesis,
+negative when it contradicts one the session held.
 
 ```json
 thoughts({ "operation": "charge", "thought": "<session hypothesis id>",

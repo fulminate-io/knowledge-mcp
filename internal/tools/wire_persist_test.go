@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -37,6 +38,58 @@ func TestPersistBatch_OneRPC(t *testing.T) {
 	require.Len(t, fc.execMutations, 1, "PersistBatch must issue exactly one Mutation Execute")
 	assert.Equal(t, knowledgev1.MutationPlan_MUTATION_KIND_CREATE, fc.execMutations[0].GetKind())
 	require.Len(t, fc.execMutations[0].GetNodeBodies(), 3, "all three node bodies ride the create_batch plan")
+}
+
+// TestPersistBatch_EdgeMetadataSurvivesProjection is the durable guard against
+// the persistBatchEdge projection silently dropping edge metadata (the bug that
+// would have lost the born-link Method=code-ref tag). A BatchEdge with all five
+// metadata fields set, run through PersistBatch's marshal + engine.Compile,
+// yields a lowered MutationPlan whose GetEdges()[0] carries every field; an
+// all-unset edge marshals with NONE of the metadata keys (omitempty), so existing
+// callers stay byte-identical.
+func TestPersistBatch_EdgeMetadataSurvivesProjection(t *testing.T) {
+	lastVal := time.Date(2026, 6, 9, 12, 0, 0, 0, time.UTC)
+
+	t.Run("all fields survive to the decoded create_batch edge", func(t *testing.T) {
+		fc := &fakeGraphCaller{mutateIDs: []string{"n0"}}
+		nodes := []*knowledgev1.Node{{Type: string(kgtypes.NodeThought), SymbolName: "t"}}
+		edges := []kgwire.BatchEdge{{
+			FromIdx:       0,
+			ToIdx:         -1,
+			ToID:          "proxy:knowledge:tools/wire.go:PersistBatch",
+			Type:          kgtypes.EdgeRelatesTo,
+			Weight:        2.5,
+			Confidence:    0.75,
+			Method:        "code-ref",
+			Evidence:      "cited in content",
+			LastValidated: lastVal,
+		}}
+		_, err := PersistBatch(context.Background(), fc, nodes, edges, "")
+		require.NoError(t, err)
+		require.Len(t, fc.execMutations, 1)
+		specs := fc.execMutations[0].GetEdges()
+		require.Len(t, specs, 1)
+		e := specs[0]
+		assert.Equal(t, "code-ref", e.GetMethod(), "Method must survive the projection")
+		assert.InDelta(t, 2.5, e.GetWeight(), 1e-9)
+		assert.InDelta(t, 0.75, e.GetConfidence(), 1e-9)
+		assert.Equal(t, "cited in content", e.GetEvidence())
+		assert.Equal(t, lastVal.UnixNano(), e.GetLastValidated(),
+			"last_validated RFC3339 string round-trips to unix-nanos on the spec")
+	})
+
+	t.Run("all-unset edge marshals with no metadata keys (omitempty)", func(t *testing.T) {
+		// Marshal the projection envelope directly and assert the metadata keys are
+		// absent from the wire bytes — the omitempty guarantee that keeps existing
+		// PersistBatch callers (e.g. the Method-less origin EdgeProduced) byte-identical.
+		we := persistBatchEdge{FromIdx: 0, ToIdx: 1, Type: string(kgtypes.EdgeKGContains)}
+		b, err := json.Marshal(we)
+		require.NoError(t, err)
+		s := string(b)
+		for _, key := range []string{"weight", "confidence", "method", "evidence", "last_validated"} {
+			assert.NotContainsf(t, s, key, "all-unset edge must omit %q (omitempty)", key)
+		}
+	})
 }
 
 // TestUpdateBatchStatus_OneUpdate asserts UpdateBatchStatus issues a single
@@ -126,4 +179,82 @@ func (f *fakeGraphCallerWithTraverse) Execute(_ context.Context, _ *knowledgev1.
 		return nil, f.execErr
 	}
 	return &knowledgev1.ExecuteResponse{TraversalResults: traversalResultsToProtoForTest(f.results)}, nil
+}
+
+// fakeTraverseEdgesCaller answers a RETURN_MODE_TRAVERSAL Execute with seeded
+// traversal_results AND a seeded traversal_edges carrier, and captures the last
+// QueryPlan so the test can assert its shape.
+type fakeTraverseEdgesCaller struct {
+	results   []engine.TraversalResult
+	edges     []knowledgev1.Edge
+	execCalls int
+	lastPlan  *knowledgev1.QueryPlan
+}
+
+func (f *fakeTraverseEdgesCaller) Call(_ context.Context, _ string, _ json.RawMessage) (kgtools.ToolResult, error) {
+	return kgtools.TextResult(""), nil
+}
+
+func (f *fakeTraverseEdgesCaller) Execute(_ context.Context, req *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error) {
+	f.execCalls++
+	f.lastPlan = req.GetQuery()
+	return &knowledgev1.ExecuteResponse{
+		TraversalResults: traversalResultsToProtoForTest(f.results),
+		TraversalEdges:   edgePtrsForTest(f.edges),
+	}, nil
+}
+
+// edgePtrsForTest converts seeded edge values into the pointer carrier shape the
+// traversal_edges field holds.
+func edgePtrsForTest(edges []knowledgev1.Edge) []*knowledgev1.Edge {
+	out := make([]*knowledgev1.Edge, len(edges))
+	for i := range edges {
+		e := &edges[i]
+		out[i] = &knowledgev1.Edge{FromId: e.FromId, ToId: e.ToId, Type: e.Type}
+	}
+	return out
+}
+
+// TestTraverseDescendantsWithEdges asserts the new sibling issues exactly one
+// RETURN_MODE_TRAVERSAL Execute carrying Forward=&true, IncludeEdgeMetadata=true,
+// MaxHops==depth, the contains edge-type selection, and NO IncludeTombstones; and
+// that it returns the root-filtered descendant nodes plus the seeded contains
+// edges.
+func TestTraverseDescendantsWithEdges(t *testing.T) {
+	const depth = 16
+	fc := &fakeTraverseEdgesCaller{
+		results: []engine.TraversalResult{
+			{Distance: 0, Node: &knowledgev1.Node{Id: "root", Type: string(kgtypes.NodePlan)}},
+			{Distance: 1, Node: &knowledgev1.Node{Id: "child-1", Type: string(kgtypes.NodePhase), Status: "pending"}},
+			{Distance: 1, Node: &knowledgev1.Node{Id: "child-2", Type: string(kgtypes.NodeStep), Status: "pending"}},
+		},
+		edges: []knowledgev1.Edge{
+			{FromId: "root", ToId: "child-1", Type: string(kgtypes.EdgeKGContains)},
+			{FromId: "root", ToId: "child-2", Type: string(kgtypes.EdgeKGContains)},
+		},
+	}
+
+	nodes, edges, err := TraverseDescendantsWithEdges(context.Background(), fc, "root", kgtypes.EdgeKGContains, depth)
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, fc.execCalls, "exactly one traversal Execute")
+
+	plan := fc.lastPlan
+	require.NotNil(t, plan)
+	require.NotNil(t, plan.Forward)
+	assert.True(t, plan.GetForward(), "Forward must be true (outgoing walk)")
+	assert.True(t, plan.GetIncludeEdgeMetadata(), "IncludeEdgeMetadata must be set so traversal_edges is populated")
+	assert.False(t, plan.GetIncludeTombstones(), "IncludeTombstones must NOT be set")
+	assert.Equal(t, knowledgev1.ReturnMode_RETURN_MODE_TRAVERSAL, plan.GetReturnMode())
+	assert.Equal(t, int32(depth), plan.GetMaxHops())
+	assert.Equal(t, []string{"root"}, plan.GetSelection().GetFromId())
+	assert.Equal(t, []string{string(kgtypes.EdgeKGContains)}, plan.GetSelection().GetEdgeTypes())
+
+	require.Len(t, nodes, 2, "rootID must be filtered out of the node set")
+	assert.Equal(t, "child-1", nodes[0].Id)
+	assert.Equal(t, "child-2", nodes[1].Id)
+
+	require.Len(t, edges, 2, "the seeded contains edges come back via traversal_edges")
+	assert.Equal(t, "child-1", edges[0].ToId)
+	assert.Equal(t, "child-2", edges[1].ToId)
 }

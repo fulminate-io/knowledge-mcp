@@ -30,20 +30,24 @@ func TestCircuitBreakerThresholdOrDefault(t *testing.T) {
 	}
 }
 
-// TestNewConstructsCircuitBreaker verifies New() wires a non-nil circuit
-// breaker carrying the configured threshold.
+// TestNewConstructsCircuitBreaker verifies New() wires BOTH per-axis circuit
+// breakers (summary + embed), each non-nil and carrying the configured threshold.
 func TestNewConstructsCircuitBreaker(t *testing.T) {
 	p := New(Config{CircuitBreakerThreshold: 9}, nil, nil, nil)
-	if p.circuit == nil {
-		t.Fatalf("Pipeline.circuit is nil after New()")
-	}
-	if p.circuit.tripThreshold != 9 {
-		t.Fatalf("circuit.tripThreshold = %d, want 9", p.circuit.tripThreshold)
+	for name, c := range map[string]*circuitBreaker{"summary": p.summaryCircuit, "embed": p.embedCircuit} {
+		if c == nil {
+			t.Fatalf("Pipeline.%sCircuit is nil after New()", name)
+		}
+		if c.tripThreshold != 9 {
+			t.Fatalf("%sCircuit.tripThreshold = %d, want 9", name, c.tripThreshold)
+		}
 	}
 
-	// Zero-value Config -> default threshold.
+	// Zero-value Config -> default threshold on BOTH axes.
 	pd := New(Config{}, nil, nil, nil)
-	if pd.circuit.tripThreshold != DefaultCircuitBreakerThreshold {
-		t.Fatalf("default circuit.tripThreshold = %d, want %d", pd.circuit.tripThreshold, DefaultCircuitBreakerThreshold)
+	for name, c := range map[string]*circuitBreaker{"summary": pd.summaryCircuit, "embed": pd.embedCircuit} {
+		if c.tripThreshold != DefaultCircuitBreakerThreshold {
+			t.Fatalf("default %sCircuit.tripThreshold = %d, want %d", name, c.tripThreshold, DefaultCircuitBreakerThreshold)
+		}
 	}
 }

@@ -27,19 +27,26 @@ type fakeShipManager struct {
 	calls     int
 	gotIDs    []string
 	decodedID []string
+	// shipKeys records the (gt, name) every AddAndShip (HNSW) was keyed on, so the
+	// capstone can assert a custom graph's segments were shipped under its own key.
+	shipKeys []graphKey
 
 	fieldsErr     error
 	fieldsCalls   int
 	fieldDocs     []searchengine.Document
 	bm25DecodedID []string
+	// fieldsShipKeys records the (gt, name) every AddAndShipFields (BM25) was keyed
+	// on — the BM25 counterpart of shipKeys.
+	fieldsShipKeys []graphKey
 
 	flushErr   error
 	flushCalls int
 	flushKeys  []graphKey
 }
 
-func (f *fakeShipManager) AddAndShip(_ context.Context, _ kgtypes.GraphType, _ string, docs []searchengine.Document) error {
+func (f *fakeShipManager) AddAndShip(_ context.Context, gt kgtypes.GraphType, name string, docs []searchengine.Document) error {
 	f.calls++
+	f.shipKeys = append(f.shipKeys, graphKey{GraphType: gt, GraphName: name})
 	for _, d := range docs {
 		f.gotIDs = append(f.gotIDs, d.ID)
 	}
@@ -64,8 +71,9 @@ func (f *fakeShipManager) AddAndShip(_ context.Context, _ kgtypes.GraphType, _ s
 // AddAndShipFields captures the field-bearing Documents and builds a real BM25
 // segment from them (build→encode→decode) so the test asserts on the DECODED
 // (shippable) form. Returns fieldsErr to exercise the best-effort path.
-func (f *fakeShipManager) AddAndShipFields(_ context.Context, _ kgtypes.GraphType, _ string, docs []searchengine.Document) error {
+func (f *fakeShipManager) AddAndShipFields(_ context.Context, gt kgtypes.GraphType, name string, docs []searchengine.Document) error {
 	f.fieldsCalls++
+	f.fieldsShipKeys = append(f.fieldsShipKeys, graphKey{GraphType: gt, GraphName: name})
 	f.fieldDocs = append(f.fieldDocs, docs...)
 	seg, err := bm25.New().Build(docs)
 	if err != nil {

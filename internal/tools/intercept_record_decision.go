@@ -28,6 +28,16 @@ type recordDecisionArgs struct {
 	Alternatives string `json:"alternatives,omitempty"`
 	InformedBy   string `json:"informed_by,omitempty"`
 	Format       string `json:"format,omitempty"`
+
+	// Context-linking fields: optional pass-through so a decision
+	// is born linked to the active ticket (ticket--contains-->decision),
+	// grouped under a session (session--contains-->decision), and related to
+	// touched code/knowledge nodes. Lowered onto the create_batch by
+	// buildContextLinks (write_context_links.go); every edge is fail-tolerant
+	// (an unresolvable target drops+warns, never blocks the write).
+	TicketID string   `json:"ticket_id,omitempty"`
+	Session  string   `json:"session,omitempty"`
+	Links    []string `json:"links,omitempty"`
 }
 
 // recordDecisionJSONResult mirrors the JSON shape the captured golden
@@ -67,6 +77,13 @@ func InterceptRecordDecision(deps ClientDeps, params kgtools.CallToolParams) (bo
 	for _, ref := range validRefs {
 		edges = append(edges, kgwire.BatchEdge{FromIdx: 0, ToIdx: -1, ToID: ref, Type: kgtypes.EdgeInformedBy})
 	}
+	// Context links: pre-validated ticket/session/knowledge-link edges
+	// ride the same atomic create_batch as the informed-by edges; code-target
+	// links + their warnings are handled after the create. Node is slot 0.
+	cl := buildContextLinks(ctx, gc, a.TicketID, a.Session, a.Links)
+	edges = append(edges, cl.batchEdges...)
+	warnings = append(warnings, cl.warnings...)
+
 	ids, perr := PersistBatch(ctx, gc, nodes, edges, newBundleID())
 	if perr != nil {
 		return true, errorResult("record decision: " + perr.Error())
@@ -75,6 +92,7 @@ func InterceptRecordDecision(deps ClientDeps, params kgtools.CallToolParams) (bo
 		return true, errorResult("record decision: persist returned no IDs")
 	}
 	id := ids[0]
+	warnings = append(warnings, applyCodeLinks(ctx, gc, id, cl.codeLinks)...)
 	if a.Format == "json" {
 		return true, jsonResult(recordDecisionJSONResult{ID: id, Name: a.Name, Warnings: warnings})
 	}

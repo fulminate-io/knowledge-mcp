@@ -30,7 +30,7 @@ If the index is behind HEAD, tell the user and offer to reindex. Fresh search re
   <invocation>
     Agent(
       subagent_type: "researcher",
-      prompt: "Research the following topic thoroughly. Start with thoughts({ operation: 'recall' }) to check past thoughts about this area. Search both knowledge nodes (decisions, findings, research, rules) and code. Use traverse(graph: 'code', edge_types: ['calls'], direction: 'both') on key functions to understand call graphs. Check for past architectural decisions. Present findings with precise file:line references and node IDs.\n\nTopic: $ARGUMENTS",
+      prompt: "Research the following topic thoroughly. Start with thoughts({ operation: 'recall', mode: 'context', query: '<the topic>' }) to load the cross-type context pack (related decisions, findings, tickets, prior thoughts, their edge-connected neighbors, and recent activity). Search both knowledge nodes (decisions, findings, research, rules) and code. Use traverse(graph: 'code', edge_types: ['calls'], direction: 'both') on key functions to understand call graphs. Check for past architectural decisions. Present findings with precise file:line references and node IDs.\n\nTopic: $ARGUMENTS",
       description: "Research: [brief topic]",
       run_in_background: true
     )
@@ -43,7 +43,9 @@ If the index is behind HEAD, tell the user and offer to reindex. Fresh search re
 
 </spawn>
 
-The researcher will: recall past thoughts → batch-search code (3-5 queries) → deep-dive key functions via traverse → check past decisions → web-search for external context if unsure → record charged thoughts → present findings with precise references.
+The researcher will: load the context pack → batch-search code (3-5 queries) → deep-dive key functions via traverse → check past decisions → web-search for external context if unsure → record charged thoughts → present findings with precise references.
+
+**Findings charge hypotheses.** When a research finding confirms or refutes a hypothesis the session recorded as a thought, charge that thought — polarity positive if the finding's evidence SUPPORTS the hypothesis's claim, negative if it CONTRADICTS it — citing the finding node ID via the `evidence` param. A conclusion that never charges its hypothesis leaves the reasoning graph permanently under-evidenced.
 
 ## Step 2: Present Results
 

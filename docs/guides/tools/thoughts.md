@@ -4,9 +4,11 @@
 
 `thoughts` is the persistent reasoning graph. It externalizes your reasoning so it
 survives sessions, restarts, and context compaction: hypotheses become
-first-class nodes, charges attach evidence to them, and a propagation pass derives
-a valence (which way the evidence leans), a magnitude (how significant), a
-consistency score, and a self-trust score from the charge topology. It is
+first-class nodes, charges attach evidence to them — positive when the evidence
+supports the thought's claim, negative when it contradicts it — and a propagation
+pass derives a valence (which way the evidence leans on the claim), a magnitude
+(how significant), a consistency score, and a self-trust score from the charge
+topology. It is
 dispatched by the `operation` field.
 
 Think of it as memory with an opinion — not just notes, but notes that know how
@@ -25,7 +27,7 @@ Each operation has its own required inputs:
 | Operation | Required (besides `operation`) | What it does |
 | --- | --- | --- |
 | `think` | `content`, `summary` | Record a hypothesis/observation/plan. `summary` is authored deliberately — it is what makes the thought findable. |
-| `charge` | `thought`, `polarity`, `weight`, `reasoning` | Attach positive/negative evidence (weight 1-10). |
+| `charge` | `thought`, `polarity`, `weight`, `reasoning` | Attach evidence that supports (positive) or contradicts (negative) the thought's claim (weight 1-10). |
 | `recall` | — | Search/browse thoughts; filter by `query`, `session`, `status`, valence/magnitude, etc. |
 | `trace` | `thought` | Follow a reasoning chain forward/backward from a thought. |
 | `propagate` | — | Manually run propagation for immediate convergence after a batch of charges. |
@@ -39,9 +41,10 @@ thoughts({ "operation": "think",
            "summary": "Cache fix: invalidate key X on write path",
            "session": "debug-cache" })
 
-// Charge it once tests confirm
+// Charge it once tests confirm. Polarity tracks the CLAIM, not good-vs-bad news:
+// positive because the evidence SUPPORTS the thought's claim that the fix works.
 thoughts({ "operation": "charge", "thought": "t_abc", "polarity": "positive",
-           "weight": 8, "reasoning": "Tests pass; behavior confirmed" })
+           "weight": 8, "reasoning": "Tests pass; behavior confirmed — supports the claim that invalidating key X fixes the bug" })
 ```
 
 Link a thought to other nodes with `mutate(operation: "link", from: thought_id,
@@ -59,9 +62,11 @@ the full operation reference, run `help("thoughts")`.
 | `content` | string |  |  | (think) The thought content — what you're thinking and why. |
 | `depth` | number |  |  | (trace) Max hops (default 5). |
 | `direction` | string |  | forward, backward, both | (trace) Traversal direction. |
-| `evidence` | array of string |  |  | (charge) Node IDs of evidence (tests, PRs, incidents, other charges). |
+| `evidence` | array of string |  |  | (charge) Node IDs of evidence — tests, PRs, incidents, related thoughts, or other charges. Citing a related thought records a charge→thought evidenced-by edge that feeds cross-cluster trust differentiation. |
 | `evidence[]` | string |  |  |  |
+| `force_full` | boolean |  |  | (propagate) Run the full-corpus backstop pass now — bypasses the quiet-tick skip and incremental scoping, recomputes every component, and resets the backstop cadence. Use for an on-demand full reflection (ops/debug) instead of waiting for the periodic backstop tick. Errors if the reflection loop is not running in this process. |
 | `format` | string |  |  | (recall) Output format: 'text' (default) or 'json' (structured). |
+| `id` | string |  |  | (similarity_report) Optional id of a specific past similarity pass to fetch. Omit to fetch the LATEST pass (running → in-progress + estimate; completed → the full rendered report; failed → the failure). |
 | `include_artifacts` | boolean |  |  | (trace) Include linked artifacts (code, decisions, PRs). |
 | `include_charges` | boolean |  |  | (trace) Include charge nodes in the trace. |
 | `limit` | number |  |  | (recall) Max results (default 20). |
@@ -69,10 +74,11 @@ the full operation reference, run `help("thoughts")`.
 | `links[]` | string |  |  |  |
 | `magnitude_min` | number |  |  | (recall) Minimum magnitude (significance threshold). |
 | `mode` | string |  | search, timeline, charges, graph, clusters | (recall) Output format. |
-| `operation` | string | yes | think, charge, recall, trace, propagate, adjacency, charges_for | Which thoughts op to run. |
-| `polarity` | string |  | positive, negative | (charge) Charge direction. |
+| `operation` | string | yes | think, charge, recall, trace, propagate, adjacency, charges_for, similarity_report | Which thoughts op to run. |
+| `origin` | string |  |  | (think) Developer-origin role of the agent recording this thought — conventional values planner\|implementer\|reviewer\|researcher\|tester\|orchestrator\|main; absent => main. Open string (flex-parsed, NOT an enum gate): a custom value is stored as-is. Stamped as origin metadata, and when it resolves to a seeded agent node, an agent--produced-->thought hub edge is written. |
+| `polarity` | string |  | positive, negative | (charge) Whether the evidence SUPPORTS the thought's claim ("positive") or CONTRADICTS it ("negative"). NOT good-news/bad-news about the subject — sentiment about the subject belongs in reasoning/content text. |
 | `query` | string |  |  | (recall) Semantic search text (optional — omit to browse all thoughts). |
-| `reasoning` | string |  |  | (charge) WHY this charge is being applied — what evidence supports it. |
+| `reasoning` | string |  |  | (charge) WHY this charge applies — the specific evidence that supports or contradicts the thought's claim. Put any sentiment about the subject HERE, never in the polarity sign. |
 | `scope` | string |  | all, all_types | (adjacency) Which adjacency view to build. 'all' = NodeThought-filtered with session-sibling expansion (cluster detection on thoughts only). 'all_types' = every node except NodeProxy with no edge filter (cross-type cluster detection). |
 | `session` | string |  |  | (think, recall filter) Session name to group related thoughts (e.g., 'backend-auth-design'). Creates session if new on think. |
 | `status` | string |  | hypothesized, validated, invalidated | (think initial status / recall filter) Default hypothesized for think. |
@@ -80,6 +86,7 @@ the full operation reference, run `help("thoughts")`.
 | `thought` | string |  |  | (charge, trace) Thought node ID. Required for charge and trace. |
 | `thought_ids` | array of string |  |  | (adjacency, charges_for) Optional subset filter (adjacency) / required charge sources (charges_for). When set on adjacency, response is projected down to just these IDs. |
 | `thought_ids[]` | string |  |  |  |
+| `ticket_id` | string |  |  | (think) Active ticket/project ID — born-linked as ticket--contains-->thought so the thought is grouped under the work item that produced it. An unresolvable ticket_id is dropped with a warning, never blocking the think. |
 | `time_end` | string |  |  | (recall) End of time range (ISO date). |
 | `time_start` | string |  |  | (recall) Start of time range (ISO date, e.g. 2026-03-01). |
 | `valence_max` | number |  |  | (recall) Maximum valence (-1.0 to 1.0). |

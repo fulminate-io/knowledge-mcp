@@ -335,8 +335,8 @@ func (h *HTTPServer) handleHTTPInitialize(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	cwd := h.resolvePeerCwdForRequest(r)
-	h.ensureSession(sid, cwd)
+	cwd, pid, comm := h.resolvePeerCwdForRequest(r)
+	h.ensureSession(sid, cwd, pid, comm)
 
 	w.Header().Set(mcpSessionHeader, sid)
 
@@ -352,27 +352,28 @@ func (h *HTTPServer) handleHTTPInitialize(w http.ResponseWriter, r *http.Request
 }
 
 // resolvePeerCwdForRequest extracts the client's ephemeral port from the
-// request's RemoteAddr and resolves the owning process's cwd via
-// resolvePeerCwd. Returns "" (logged) on any failure so the caller stores a
-// session that falls back to deps.RootDir() for repo resolution.
-func (h *HTTPServer) resolvePeerCwdForRequest(r *http.Request) string {
+// request's RemoteAddr and resolves the owning process's cwd, PID, and comm via
+// resolvePeerCwd. Returns ("", 0, "") (logged) on any failure so the caller
+// stores a session that falls back to deps.RootDir() for repo resolution; the
+// pid + comm are retained for the hive daemon monitor's transcript binding.
+func (h *HTTPServer) resolvePeerCwdForRequest(r *http.Request) (cwd string, pid int, comm string) {
 	_, portStr, err := net.SplitHostPort(r.RemoteAddr)
 	if err != nil {
 		slog.Warn("knowledge serve: cannot parse RemoteAddr for peer-cwd resolution", "remoteAddr", r.RemoteAddr, "error", err)
-		return ""
+		return "", 0, ""
 	}
 	ephemeralPort, err := strconv.Atoi(portStr)
 	if err != nil {
 		slog.Warn("knowledge serve: non-numeric ephemeral port in RemoteAddr", "remoteAddr", r.RemoteAddr, "error", err)
-		return ""
+		return "", 0, ""
 	}
-	cwd, err := resolvePeerCwd(r.Context(), h.port, ephemeralPort)
+	cwd, pid, comm, err = resolvePeerCwd(r.Context(), h.port, ephemeralPort)
 	if err != nil {
 		slog.Warn("knowledge serve: peer-cwd resolution failed; session will fall back to --root", "ephemeralPort", ephemeralPort, "error", err)
-		return ""
+		return "", 0, ""
 	}
-	slog.Info("knowledge serve: resolved session workspace", "ephemeralPort", ephemeralPort, "cwd", cwd)
-	return cwd
+	slog.Info("knowledge serve: resolved session workspace", "ephemeralPort", ephemeralPort, "cwd", cwd, "pid", pid, "comm", comm)
+	return cwd, pid, comm
 }
 
 // validSession looks up the request's Mcp-Session-Id header in the session

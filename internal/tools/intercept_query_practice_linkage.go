@@ -139,11 +139,13 @@ func routePracticeClient(ctx context.Context, deps ClientDeps, gc statsRPC, a qu
 	}
 
 	// (3b) Route a specific-language practice search through the per-language CLIENT
-	// engine (Manager.Search → RRF) + hydration UNCONDITIONALLY — the segment Manager
-	// is always wired in the real client, so there is no server RETURN_MODE_SEARCH
-	// fallback. list-graphs (arm 1) + stats/sample shapes (arm 2) are unchanged —
-	// only the ranked search arm reroutes. An un-collected practice graph (no
-	// segments) renders zero results cleanly.
+	// engine (Manager.Search → RRF) + hydration. The segment Manager is wired for
+	// the life of the daemon EXCEPT during the bind-first wiring window (bind-first startup),
+	// which composePracticeSearchClient gates on PipelineReady at its top — so
+	// there is no server RETURN_MODE_SEARCH fallback. list-graphs (arm 1) +
+	// stats/sample shapes (arm 2) are unchanged — only the ranked search arm
+	// reroutes. An un-collected practice graph (no segments) renders zero results
+	// cleanly.
 	return composePracticeSearchClient(ctx, deps, deps.SegmentManager(), a.Language, query)
 }
 
@@ -154,6 +156,19 @@ func routePracticeClient(ctx context.Context, deps ClientDeps, gc statsRPC, a qu
 // as the server arm. A nil embedder degrades to the BM25 arm; an empty graph
 // (segments not yet built) renders zero results cleanly.
 func composePracticeSearchClient(ctx context.Context, deps ClientDeps, mgr SegmentSearcher, language, query string) kgtools.ToolResult {
+	// Readiness gate (bind-first startup): mgr.Search below dereferences the segment Manager
+	// with no nil-check; during the bind-first wiring window SegmentManager() is an
+	// untyped nil → panic. Gate before the deref. Both entry points (specific
+	// language at practice_linkage.go and the search-tool arm) funnel through here.
+	if !deps.PipelineReady() {
+		return errorResult("practice search: daemon still starting — LLM pipeline not ready yet, retry shortly")
+	}
+	// Permanent-degrade guard (bind-first startup): PipelineReady()==true but a nil Manager
+	// when wirePipelineRuntime degraded at boot — loud-error instead of a nil-Search
+	// panic. No server RETURN_MODE_SEARCH fallback exists.
+	if mgr == nil {
+		return errorResult("practice search: client segment engine unavailable (LLM pipeline degraded at boot)")
+	}
 	var queryVec []byte
 	if emb := deps.Embedder(); emb != nil && query != "" {
 		if vec, err := emb.EmbedBinary(ctx, query); err == nil && len(vec) > 0 {
@@ -182,6 +197,21 @@ func composePracticeSearchClient(ctx context.Context, deps ClientDeps, mgr Segme
 // per-graph attribution via RenderPracticeFanOut. An empty practice-graph set
 // renders a clean "no graphs" result rather than a silent zero.
 func composePracticeSearchFanOut(ctx context.Context, deps ClientDeps, mgr SegmentSearcher, query string) kgtools.ToolResult {
+	// Readiness gate (bind-first startup): the per-graph mgr.Search runs INSIDE a goroutine
+	// fan-out and dereferences the segment Manager with no nil-check — a nil
+	// Manager there panics in a goroutine and crashes the daemon. During the
+	// bind-first wiring window SegmentManager() is an untyped nil; gate before any
+	// goroutine is launched. Both entry points (language:"all" at
+	// practice_linkage.go and the search-tool practice arm) funnel through here.
+	if !deps.PipelineReady() {
+		return errorResult("practice search: daemon still starting — LLM pipeline not ready yet, retry shortly")
+	}
+	// Permanent-degrade guard (bind-first startup): PipelineReady()==true but a nil Manager
+	// when wirePipelineRuntime degraded at boot — loud-error before any goroutine
+	// fan-out dereferences it. No server RETURN_MODE_SEARCH fallback exists.
+	if mgr == nil {
+		return errorResult("practice search: client segment engine unavailable (LLM pipeline degraded at boot)")
+	}
 	names, err := listGraphNamesOfType(ctx, deps, "practice")
 	if err != nil {
 		return errorResult("practice fan-out: resolve graphs: " + err.Error())

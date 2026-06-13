@@ -36,7 +36,9 @@ import (
 	"strings"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
+	"github.com/fulminate-io/knowledge-mcp/internal/projects"
 	"github.com/fulminate-io/knowledge-mcp/internal/projects/render"
+	"github.com/fulminate-io/knowledge-mcp/internal/validate"
 )
 
 // criterionCreateArgs is the local mutate(create, type:criterion)
@@ -123,9 +125,9 @@ func upsertCriterionNode(ctx context.Context, gc GraphCaller, criterionID string
 	if criterionType == "" {
 		criterionType = "manual"
 	}
-	summary := criterionType + " criterion: " + a.Description
-	if a.Command != "" {
-		summary = criterionType + " criterion: " + a.Description + " (" + a.Command + ")"
+	summary := projects.DeriveCriterionSummary(criterionType, a.Description, a.Command)
+	if err := validate.DerivedSummary("mutate(create, type=criterion)", "criterion.summary", a.Description+" + command", summary); err != nil {
+		return err
 	}
 	metadata := map[string]string{"type": criterionType}
 	if a.Command != "" {

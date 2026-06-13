@@ -20,6 +20,7 @@ func (e *SegmentedIndex[Q, S]) Export() []SegmentBlob {
 			ID:         entry.meta.ID,
 			Format:     e.format.Name(),
 			Generation: entry.meta.Generation,
+			DocCount:   entry.meta.DocCount,
 			Bytes:      bytes,
 		})
 	}
@@ -29,6 +30,14 @@ func (e *SegmentedIndex[Q, S]) Export() []SegmentBlob {
 // Import decodes a batch of blobs into segments and publishes them in ONE CAS.
 // Each decoded segment seeds its liveDocs from the tombstones (contract: liveDocs
 // seeded from tombstones at Import), so already-deleted documents start dead.
+//
+// Import is IDEMPOTENT BY SEGMENT ID: publishImport skips any incoming entry whose
+// content-hash meta.ID is already resident in the set, so re-importing a blob the
+// engine already holds is a no-op (it does NOT add a second copy). This matters
+// because mergeTopK (topk.go) does NOT dedup docIDs across segments — a doc
+// resident in two segments would surface the SAME docID in two result slots,
+// inflating/crowding the top-k. Genuinely-new segments still ADD; only resident
+// ids are dropped.
 //
 // Imported and locally-built segments are MERGE-EQUIVALENT: background merge
 // calls format.Merge, which reads live INDEXED data directly from a decoded
@@ -94,13 +103,34 @@ func (e *SegmentedIndex[Q, S]) entryFromDecoded(seg Segment[Q, S], blob SegmentB
 }
 
 // publishImport CAS-appends the imported entries to the current set in one swap,
-// retrying on a lost CAS.
+// retrying on a lost CAS. It is IDEMPOTENT BY SEGMENT ID: the `present` skip set
+// is rebuilt from old.entries EACH iteration (a stale snapshot computed once
+// would double-add a segment that another writer published between iterations),
+// and any incoming entry whose content-hash meta.ID is already resident is
+// dropped. Same identity Unload keys on (entry.meta.ID). Genuinely-new entries
+// still append; if every incoming entry is already resident the CAS is skipped
+// entirely (nothing to publish).
 func (e *SegmentedIndex[Q, S]) publishImport(entries []*segmentEntry[Q, S]) {
 	for {
 		old := e.set.Load()
-		merged := make([]*segmentEntry[Q, S], 0, len(old.entries)+len(entries))
+		present := make(map[SegmentID]struct{}, len(old.entries))
+		for _, entry := range old.entries {
+			present[entry.meta.ID] = struct{}{}
+		}
+		fresh := make([]*segmentEntry[Q, S], 0, len(entries))
+		for _, entry := range entries {
+			if _, resident := present[entry.meta.ID]; resident {
+				continue // idempotent: already resident, do not double-add
+			}
+			present[entry.meta.ID] = struct{}{} // guard against dup ids within this batch
+			fresh = append(fresh, entry)
+		}
+		if len(fresh) == 0 {
+			return // every incoming entry already resident — nothing to publish
+		}
+		merged := make([]*segmentEntry[Q, S], 0, len(old.entries)+len(fresh))
 		merged = append(merged, old.entries...)
-		merged = append(merged, entries...)
+		merged = append(merged, fresh...)
 		next := newSegmentSet[Q, S](e.format, merged)
 		if e.set.CompareAndSwap(old, next) {
 			e.signalMerge()

@@ -24,6 +24,36 @@ type deleteArgs struct {
 	DryRun    bool     `json:"dry_run"`
 	Graph     string   `json:"graph"`
 	Language  string   `json:"language"`
+	// Hard opts into PERMANENT removal. Deletes are SOFT (tombstone, hidden
+	// from normal reads, recoverable) by default. Raw so the parse is lenient
+	// (true/false and the string forms — stale caller schemas coerce unknown
+	// params to strings) and LOUD-SAFE: an unreadable value DENIES the compile
+	// (ok=false fall-through) rather than silently defaulting either way.
+	Hard json.RawMessage `json:"hard"`
+}
+
+// parseHardFlag reads the lenient hard-delete opt-in: absent → false (soft,
+// the default), JSON true/false or the strings "true"/"false" (case-insensitive,
+// trimmed) → that value, anything else → not-ok (the caller denies the compile —
+// a malformed destructive flag must never guess in either direction).
+func parseHardFlag(raw json.RawMessage) (hard, ok bool) {
+	if len(raw) == 0 {
+		return false, true
+	}
+	var b bool
+	if err := json.Unmarshal(raw, &b); err == nil {
+		return b, true
+	}
+	var s string
+	if err := json.Unmarshal(raw, &s); err == nil {
+		switch strings.ToLower(strings.TrimSpace(s)) {
+		case "true":
+			return true, true
+		case "false":
+			return false, true
+		}
+	}
+	return false, false
 }
 
 // compileDelete lowers BOTH delete shapes onto a MUTATION_KIND_DELETE plan:
@@ -34,8 +64,12 @@ type deleteArgs struct {
 //     OP_LT, Now-older_than RFC3339}]} (+ a session_id MetadataPredicate when
 //     set). The MUTATION_KIND_DELETE + created_at OP_LT write path is proven +
 //     tested server-side (decodeDelete → selectionToQ → applyFieldPredicates;
-//     created_at in fieldPredicateAllowlist; engine_mutate_apply.go db.Delete
-//     WithHard() matches legacy handlePruneHistory).
+//     created_at in fieldPredicateAllowlist).
+//
+// Deletes are SOFT by default: the server tombstones the selected nodes
+// (hidden from normal reads, recoverable). hard:true sets the plan's
+// hard_delete flag for permanent removal; a malformed hard value DENIES the
+// compile rather than guessing.
 //
 // dry_run:true returns (nil,false): a dry-run is NEVER lowered to a DELETE
 // MutationPlan. The dispatcher claims the dry-run BEFORE Compile
@@ -57,23 +91,29 @@ func compileDelete(args json.RawMessage) (*knowledgev1.ExecuteRequest, bool) {
 	if a.DryRun {
 		return nil, false
 	}
+	hard, ok := parseHardFlag(a.Hard)
+	if !ok {
+		return nil, false // malformed hard flag → deny rather than guess on a destructive op.
+	}
 	if len(a.IDs) > 0 {
 		// By-ids: the literal write target set. Mirrors compileMutateByIDDelete's
 		// by-id branch (compile_mutate.go).
 		plan := &knowledgev1.MutationPlan{
-			Kind:      knowledgev1.MutationPlan_MUTATION_KIND_DELETE,
-			Selection: &knowledgev1.Selection{Ids: a.IDs},
+			Kind:       knowledgev1.MutationPlan_MUTATION_KIND_DELETE,
+			Selection:  &knowledgev1.Selection{Ids: a.IDs},
+			HardDelete: hard,
 		}
 		return deleteRequest(plan, a.Graph, a.Language), true
 	}
 
-	sel, ok := pruneSelection(a)
-	if !ok {
+	sel, selOK := pruneSelection(a)
+	if !selOK {
 		return nil, false // unknown prune type / unparseable duration → legacy surfaces the error.
 	}
 	plan := &knowledgev1.MutationPlan{
-		Kind:      knowledgev1.MutationPlan_MUTATION_KIND_DELETE,
-		Selection: sel,
+		Kind:       knowledgev1.MutationPlan_MUTATION_KIND_DELETE,
+		Selection:  sel,
+		HardDelete: hard,
 	}
 	return deleteRequest(plan, a.Graph, a.Language), true
 }

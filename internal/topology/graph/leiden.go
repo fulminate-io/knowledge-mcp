@@ -115,9 +115,27 @@ func buildCommWeightIn(communityOf map[string]string, adj map[string][]string) m
 	return w
 }
 
+// minMemberLabel returns the lexicographically smallest member nodeID — the
+// canonical, scope-independent community label both the full (renumberIntToMap)
+// and incremental (renumber) relabel paths assign. It depends ONLY on the SET of
+// member nodeIDs, so the same partition gets the same label regardless of which
+// path produced it, of internal walk order, or of any prior label — eliminating
+// both the full-vs-incremental sort-key divergence and the stableCommID
+// lexicographic >10-community churn. Empty input returns "" (no members).
+func minMemberLabel(members []string) string {
+	min := ""
+	for _, m := range members {
+		if min == "" || m < min {
+			min = m
+		}
+	}
+	return min
+}
+
 // stableCommID converts an integer to a short decimal string community label.
-// Used to give communities deterministic, compact IDs after the partition
-// stabilizes; both the static and incremental paths re-label via this helper.
+// Production-dead after the min-member-label unification (minMemberLabel is the
+// canonical scheme); retained only as a compact deterministic ID generator for
+// the pure-algorithm tests in leiden_test.go.
 func stableCommID(i int) string {
 	const digits = "0123456789"
 	if i < 10 {

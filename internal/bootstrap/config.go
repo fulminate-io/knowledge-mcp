@@ -61,6 +61,12 @@ type Config struct {
 	EmbedRPM           int
 	PipelineTick       time.Duration
 
+	// ReflectBackstopInterval is the cadence of the full-corpus reflection
+	// backstop pass that resets DF-Leiden incremental drift. The hourly
+	// PropagationLoop runs incrementally; once this interval elapses since the last
+	// completed full pass, the next tick forces a full Leiden + DeGroot recompute.
+	ReflectBackstopInterval time.Duration
+
 	// LocalDialer constructs the local *graphclient.GraphClient. Defaults to
 	// graphclient.NewGraphClient when nil. Test seam
 	// — tests inject a closure that points the local client at an
@@ -93,6 +99,7 @@ func registerConfigFlags(fs *flag.FlagSet, cfg *Config) {
 	fs.IntVar(&cfg.EmbedWorkers, "embed-workers", 20, "Client-side LLM pipeline: count of embed worker goroutines")
 	fs.IntVar(&cfg.EmbedRPM, "embed-rpm", 0, "Client-side LLM pipeline: max embed (Voyage) API requests per MINUTE across all embed workers; 0 = unlimited (default, preserves current 20-worker behavior). Proactive throttle for low-tier Voyage accounts — paces the opening burst so it respects the account RPM before the first 429. Companion to the reactive Retry-After backoff.")
 	fs.DurationVar(&cfg.PipelineTick, "pipeline-tick", 250*time.Millisecond, "Client-side LLM pipeline: per-graph collector poll interval")
+	fs.DurationVar(&cfg.ReflectBackstopInterval, "reflect-backstop-interval", 24*time.Hour, "Client-side reflection: cadence of the full-corpus reflection backstop pass that resets DF-Leiden incremental drift. The hourly loop runs incrementally; once this interval elapses since the last full pass, the next tick forces a full Leiden recompute. Default 24h (nightly).")
 }
 
 // ParseFlags parses args into a Config. Caller passes os.Args[1:] from

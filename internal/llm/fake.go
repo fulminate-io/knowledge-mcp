@@ -30,10 +30,12 @@ type FakeCall struct {
 // Compile-time check below ensures FakeClient continues to satisfy Client
 // as the interface evolves.
 type FakeClient struct {
-	mu        sync.Mutex
-	responses []*Response
-	err       error
-	calls     []FakeCall
+	mu          sync.Mutex
+	responses   []*Response
+	err         error
+	errOnCall   int // 1-based Generate call index that returns errOnCallErr; 0 = disabled
+	errOnCallEr error
+	calls       []FakeCall
 }
 
 var _ Client = (*FakeClient)(nil)
@@ -54,6 +56,18 @@ func (f *FakeClient) SetError(err error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.err = err
+}
+
+// SetErrorOnCall configures FakeClient to return err from the n-th Generate
+// call only (1-based), leaving every other call to drain the queued responses
+// normally. Unlike SetError (which errors EVERY subsequent call), this fires
+// once on the targeted call — useful for exercising a fail-on-retry path where
+// the primary call must succeed and a later call errors. Pass n<=0 to disable.
+func (f *FakeClient) SetErrorOnCall(n int, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.errOnCall = n
+	f.errOnCallEr = err
 }
 
 // Queue appends additional responses to the queue. Useful for tests that
@@ -78,6 +92,9 @@ func (f *FakeClient) Generate(_ context.Context, messages []*schema.Message, opt
 		Options:  applied,
 	})
 
+	if f.errOnCall > 0 && len(f.calls) == f.errOnCall {
+		return nil, f.errOnCallEr
+	}
 	if f.err != nil {
 		return nil, f.err
 	}

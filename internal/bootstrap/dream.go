@@ -181,6 +181,9 @@ func (c *client) runInterceptChainInner(ctx context.Context, params kgtools.Call
 	if handled, res := tools.InterceptAssemble(c, params); handled {
 		return params, true, res
 	}
+	if handled, res := tools.InterceptHive(ctx, c, params); handled {
+		return params, true, res
+	}
 	if handled, res := tools.InterceptWorker(c, params); handled {
 		return params, true, res
 	}
@@ -273,6 +276,15 @@ func runQueryDomainIntercepts(c *client, params kgtools.CallToolParams) (bool, k
 	// (composeKnowledgeSearch) instead of a server RETURN_MODE_SEARCH dispatch.
 	// Self-gates on graph∈{"",knowledge} + the claimed mode.
 	if handled, res := tools.InterceptQueryKnowledgeSearch(c, params); handled {
+		return true, res
+	}
+	// Registered CUSTOM graph text-search (query(graph:<custom>, mode:text|recent|
+	// default-text)) is served by the CLIENT segment engine (composeRegisteredGraphSearch)
+	// instead of a server RETURN_MODE_SEARCH dispatch. Self-gates on a non-empty,
+	// non-builtin graph + a claimed text-search shape; runs before tools.InterceptQuery
+	// (the generic embed+engine.Dispatch tail) so a custom graph never reaches the
+	// retired server search.
+	if handled, res := tools.InterceptQueryRegisteredGraphSearch(c, params); handled {
 		return true, res
 	}
 	if handled, res := tools.InterceptQueryCloudCICD(c, params); handled {

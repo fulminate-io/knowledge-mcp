@@ -25,8 +25,6 @@ package graph
 //     a dense `for i := 0; i < len(keys); i++` — no hashing, no
 //     map-iteration overhead.
 
-import "sort"
-
 // edgesToAccum is a sparse accumulator that replaces map[int32]int32
 // in the Leiden hot path. The seen slice is sized to the number of
 // communities (same as number of nodes) and records the position of
@@ -329,28 +327,25 @@ func subCommSizeInt(subComm map[int32]int32, sc int32) int {
 }
 
 // renumberIntToMap converts the int-indexed partition back to the
-// map[string]string shape callers expect, applying the same stable
-// sort-then-relabel semantics as the string-keyed renumberMap: unique
-// community reps are mapped back to their original nodeIDs string,
-// the resulting strings are sorted, and stableCommID(i) is assigned
-// in sorted order.
+// map[string]string shape callers expect, labeling each community with its
+// lexicographically smallest member nodeID (minMemberLabel). This canonical
+// scheme is scope/order/prior-label-independent BY CONSTRUCTION — it depends only
+// on each community's member SET — so the full path here and the incremental
+// renumber (leiden_incremental.go) assign IDENTICAL labels to the same partition.
 func renumberIntToMap(nodeIDs []string, commOf []int32) map[string]string {
-	seenOrder := make(map[int32]struct{}, 16)
-	var origIDs []string
-	for _, c := range commOf {
-		if _, ok := seenOrder[c]; !ok {
-			seenOrder[c] = struct{}{}
-			origIDs = append(origIDs, nodeIDs[c])
-		}
+	// Group member nodeIDs by their int community id, then label each community
+	// with its min member.
+	membersByComm := make(map[int32][]string, 16)
+	for i, c := range commOf {
+		membersByComm[c] = append(membersByComm[c], nodeIDs[i])
 	}
-	sort.Strings(origIDs)
-	origToStable := make(map[string]string, len(origIDs))
-	for i, old := range origIDs {
-		origToStable[old] = stableCommID(i)
+	commToLabel := make(map[int32]string, len(membersByComm))
+	for c, members := range membersByComm {
+		commToLabel[c] = minMemberLabel(members)
 	}
 	result := make(map[string]string, len(commOf))
 	for i, c := range commOf {
-		result[nodeIDs[i]] = origToStable[nodeIDs[c]]
+		result[nodeIDs[i]] = commToLabel[c]
 	}
 	return result
 }

@@ -184,6 +184,34 @@ func (e *SegmentedIndex[Q, S]) Delete(id ExternalID) {
 	e.activeMu.Unlock()
 }
 
+// VectorByID resolves a member's stored vector by external id, or (nil,false) when
+// no sealed segment holds it. It mirrors Delete's route-map walk (set.route → owning
+// entry) for an O(1) lookup + O(#segments) entryByID scan — no full-corpus walk —
+// then reads the vector off the segment's concrete payload via a runtime
+// type-assert to the by-id accessor. The inline-interface assert keeps the method
+// generic-safe across [Q,S]: the HNSW instantiation's payload (*hnswSegment)
+// satisfies it; a payload without the accessor (e.g. bm25) fails the assert and
+// yields (nil,false) — never a panic, never a wrong-type read. Vectors only exist
+// on sealed segments, so the un-sealed active buffer is intentionally not consulted.
+func (e *SegmentedIndex[Q, S]) VectorByID(externalID ExternalID) ([]byte, bool) {
+	set := e.set.Load()
+	sid, ok := set.route[externalID]
+	if !ok {
+		return nil, false
+	}
+	entry := set.entryByID(sid)
+	if entry == nil {
+		return nil, false
+	}
+	vb, ok := entry.payload.(interface {
+		VectorByID(string) ([]byte, bool)
+	})
+	if !ok {
+		return nil, false
+	}
+	return vb.VectorByID(externalID)
+}
+
 // Search runs a lock-free, parallel cross-segment query. It loads the immutable
 // set with a SINGLE atomic load (NO mutex, NO RLock — activeMu is never touched
 // here), fans out one goroutine per segment bounded by NumCPU, each writing a
@@ -215,6 +243,24 @@ func (e *SegmentedIndex[Q, S]) Search(q Q, k int) []Hit {
 	wg.Wait()
 
 	return mergeTopK(results, k)
+}
+
+// ResidentDocCount sums meta.DocCount across every sealed segment currently
+// resident in the searchable set — the in-memory engine's coverage. DocCount is
+// stamped on BOTH locally-sealed (seal → newEntry) and imported (entryFromDecoded)
+// segments, so the sum reflects all resident docs regardless of provenance. It is
+// the read-side coverage signal the degeneracy backstop compares against the
+// server's shipped doc count: a cold process whose load floor was poisoned ends up
+// with a near-empty set here while the server holds the full corpus. Counts the
+// SEALED set only (the lock-free atomic snapshot, same as Search/Export); the
+// sub-threshold active buffer is unsearchable and intentionally excluded.
+func (e *SegmentedIndex[Q, S]) ResidentDocCount() int {
+	set := e.set.Load()
+	total := 0
+	for _, entry := range set.entries {
+		total += entry.meta.DocCount
+	}
+	return total
 }
 
 // contentHash returns the sha256 hex digest of a segment blob — the SegmentID.

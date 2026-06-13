@@ -14,13 +14,16 @@ package tools
 
 import (
 	"context"
+	"time"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/backends"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
+	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
+	clientthought "github.com/fulminate-io/knowledge-mcp/internal/thought"
 )
 
 // SegmentSearcher is the narrow consumer-side seam the search intercepts use to
@@ -32,6 +35,20 @@ import (
 // search. Returns RRF-fused ranked Hits (ID + fused score) for hydration.
 type SegmentSearcher interface {
 	Search(ctx context.Context, gt kgtypes.GraphType, name, queryText string, queryVec []byte, k int) ([]searchengine.Hit, error)
+}
+
+// SegmentVectorResolver is the narrow consumer-side seam the mode:"similar" search
+// claim uses to resolve a node's STORED query vector from the client-local HNSW
+// segments by external id. *segmentdist.Manager satisfies it (Manager.VectorByID).
+// Kept DELIBERATELY SEPARATE from SegmentSearcher — not folded into it — so the
+// ~15 Search-only test doubles (fakeSegmentSearcher, recallFakeSearcher,
+// fanOutSegmentSearcher, every SegmentManager() stub) compile unchanged; a narrow
+// per-purpose seam over the same concrete is the established deps.go pattern
+// (SegmentShipper, PipelineScanner, ReflectionForcer). The (ok=false, err=nil)
+// tuple separates absent-id (node not embedded yet → caller loud-errors) from a
+// load failure (err!=nil).
+type SegmentVectorResolver interface {
+	VectorByID(ctx context.Context, gt kgtypes.GraphType, name, externalID string) ([]byte, bool, error)
 }
 
 // SegmentShipper is the build-concurrent / ship-once SHIP surface the
@@ -53,6 +70,17 @@ type SegmentShipper interface {
 	InvalidateLocal(gt kgtypes.GraphType, name string, ids []searchengine.SegmentID)
 }
 
+// SegmentCoverageReader is the narrow read seam the manage(status) segment-coverage
+// column uses to read a graph's segment-covered doc count (summed HNSW
+// meta.DocCount). *segmentdist.Manager satisfies it (Manager.ShippedSegmentDocCount).
+// A narrow per-purpose seam over the same concrete is the established deps.go
+// pattern (SegmentSearcher, SegmentShipper, SegmentVectorResolver). The renderer
+// consumes only the covered count; anyUnknown (the conservative-unknown signal the
+// auto-heal probe reads) is irrelevant to a display column and ignored there.
+type SegmentCoverageReader interface {
+	ShippedSegmentDocCount(ctx context.Context, gt kgtypes.GraphType, name string) (covered int, anyUnknown bool, err error)
+}
+
 // PipelineScanner is the login-routed PipelineScan + Execute wire seam the
 // rebuild_segments driver pages the segment_rebuild scan through. GraphCaller
 // exposes only Execute and the *graphclient.Router has NO PipelineScan — only the
@@ -61,6 +89,47 @@ type SegmentShipper interface {
 type PipelineScanner interface {
 	PipelineScan(ctx context.Context, req *knowledgev1.PipelineScanRequest) (*knowledgev1.PipelineScanResponse, error)
 	Execute(ctx context.Context, req *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error)
+}
+
+// ReflectionForcer is the narrow seam the manual propagate tool uses to drive an
+// on-demand full-corpus reflection backstop pass (thoughts(propagate,
+// force_full:true)). *clientthought.PropagationLoop satisfies it (ForceFullPass).
+// Declared here as an interface — not the concrete loop type — so the tools layer
+// reaches the lever without importing the loop's full surface, and so tests inject
+// a fake recording the force call. ForceFullPass claims the per-account reflection
+// single-flight guard, bypasses the cadence + quiet-skip + incremental scoping, and
+// resets the backstop clock on completion; it returns
+// clientthought.ErrReflectionInFlight (a benign coalesce, not a failure) when
+// another pass already holds the guard.
+type ReflectionForcer interface {
+	ForceFullPass(ctx context.Context) (clientthought.PropagationResult, error)
+}
+
+// SimilarityForcer is the narrow seam the manual propagate tool uses to drive the
+// now-ASYNC topic-similarity lever (thoughts(propagate, similarity:true)).
+// *clientthought.PropagationLoop satisfies it. Declared as an interface (mirroring
+// ReflectionForcer) so the tools layer reaches the lever without the loop's full
+// surface and tests inject a fake.
+//
+// The lever is async: StartSimilarityPass acquires the SAME per-account reflection
+// single-flight guard in the trigger path (coalescing onto an in-flight tick →
+// started=false, no second concurrent recompute), then runs the whole topic layer
+// (drain → centroids → reconcile → merge cascade → summaries → drift → links) on a
+// daemon-lifetime goroutine and invokes onComplete with the report — it does NOT
+// return the rendered report to the caller. The event seam persists one status
+// record per pass: BeginSimilarityEvent creates the status=running event at trigger
+// time and FinishSimilarityEvent REPLACES it at completion (re-supplying the FULL
+// metadata map — upsert is a whole-node REPLACE). The read methods back the
+// similarity_report fetch op. RunSimilarityPass stays on the interface as the worker
+// body StartSimilarityPass calls internally.
+type SimilarityForcer interface {
+	RunSimilarityPass(ctx context.Context, linkThreshold, mergeThreshold float64, densify clientthought.DensifyParams) (clientthought.SimilarityReport, error)
+	StartSimilarityPass(linkThreshold, mergeThreshold float64, densify clientthought.DensifyParams, onStarted func(), onComplete clientthought.SimilarityComplete) (started bool)
+	BeginSimilarityEvent(ctx context.Context, link, merge float64) (id string, startedAt time.Time, err error)
+	FinishSimilarityEvent(ctx context.Context, id string, startedAt time.Time, link, merge float64, status string, durationMs int64, rendered string, headline map[string]string) error
+	LatestSimilarityEvent(ctx context.Context) (*knowledgev1.Node, bool)
+	LatestCompletedSimilarityEvent(ctx context.Context) (*knowledgev1.Node, bool)
+	SimilarityEventByID(ctx context.Context, id string) (*knowledgev1.Node, bool)
 }
 
 // BackendResolver routes between configured external project/ticket
@@ -180,6 +249,20 @@ type ClientDeps interface {
 	Sink() collector.Sink
 	RootDir() string
 	WorkerRuntime() WorkerRuntimeAPI
+	// ClaimRegistry returns the client-side hive claim registry recording
+	// which MCP session holds which work claims. InterceptHive Binds on a
+	// successful claim and Clears on ack/fail; the daemon Monitor reads it each
+	// tick to renew the cloud lease for live claims. Returns nil in router-less
+	// test fixtures and degraded headless mode — InterceptHive nil-checks before
+	// using it, and the Registry methods are themselves nil-safe.
+	ClaimRegistry() *hivemonitor.Registry
+	// BanSet returns the client-side hive ban set: the harness-session-id ban
+	// keys plus the daemon-populated Mcp-Session-Id→harness-id resolver.
+	// InterceptHive consults it to refuse a banned session's hive calls
+	// CLIENT-SIDE before they reach the cloud (an unresolved session fails open).
+	// Returns nil in router-less test fixtures and degraded headless mode — the
+	// gate nil-checks, and the BanSet methods are themselves nil-safe.
+	BanSet() *hivemonitor.BanSet
 	WorkerCRUD() WorkerCRUDAPI
 	GraphTypeCRUD() GraphTypeCRUDAPI
 	Embedder() embed.BinaryEmbedder
@@ -193,14 +276,51 @@ type ClientDeps interface {
 	// was not wired (--no-llm-pipeline, or no embedder/summarizer configured);
 	// the search arms fall back to the server search path on nil.
 	SegmentManager() SegmentSearcher
+	// SegmentVectorResolver returns the SAME *segmentdist.Manager as the by-id
+	// stored-vector read seam the mode:"similar" claim resolves its query vector
+	// through. Returns nil under the same condition as SegmentManager (pipeline not
+	// wired) — the similar-mode claim loud-errors on nil rather than silently
+	// falling through to a server text search.
+	SegmentVectorResolver() SegmentVectorResolver
 	// SegmentShipper returns the SAME *segmentdist.Manager as a build-concurrent/
 	// ship-once SHIP surface for the rebuild_segments driver. Returns nil when the
 	// pipeline was not wired (same condition as SegmentManager) — the driver errors
 	// "pipeline not wired" on nil.
 	SegmentShipper() SegmentShipper
+	// SegmentCoverage returns the SAME *segmentdist.Manager as the read seam the
+	// manage(status) segment-coverage column reads segment-covered doc counts
+	// through. Returns nil when the pipeline was not wired (same condition as
+	// SegmentManager) — the column renders a placeholder on nil rather than failing.
+	SegmentCoverage() SegmentCoverageReader
 	// PipelineScanner returns the login-routed PipelineScan+Execute wire seam the
 	// rebuild_segments driver pages the segment_rebuild scan through. Returns nil
 	// when no router is wired (degraded headless mode) — the driver errors
 	// "pipeline not wired" on nil.
 	PipelineScanner() PipelineScanner
+	// ReflectionForcer returns the on-demand full-corpus reflection backstop lever
+	// (thoughts(propagate, force_full:true) drives it). Returns the live
+	// *clientthought.PropagationLoop, or nil when the reflection loop is not running
+	// in this process (--no-propagation-runtime, or a router-less test fixture) —
+	// handlePropagateClient surfaces a loud "reflection loop not running" error on
+	// nil rather than silently falling through to the incremental path.
+	ReflectionForcer() ReflectionForcer
+	// SimilarityForcer returns the on-demand topic-similarity lever
+	// (thoughts(propagate, similarity:true) drives it). Returns nil when the
+	// reflection loop is not running in this process (same condition as
+	// ReflectionForcer) — handlePropagateClient surfaces a loud error on nil.
+	SimilarityForcer() SimilarityForcer
+	// WorkerReady / PropReady / PipelineReady report whether the corresponding
+	// background-wiring stage has completed (Bind-first startup: the daemon binds the HTTP
+	// MCP listener first, then wires the worker / propagation / pipeline runtimes
+	// in a background goroutine). The runtime-dependent intercept guards consult
+	// these to distinguish the wiring window — emit "daemon still starting:
+	// <subsystem> not ready" — from a permanent boot degrade (the accessor returns
+	// nil after the flag is set). False while the subsystem has not finished
+	// wiring; a true result happens-after the wired handle is published, so a
+	// guard that sees Ready()==true may safely read the accessor. The engine ops
+	// (query / search-BM25 / mutate) have no runtime dependency and consult none
+	// of these — they serve immediately after bind.
+	WorkerReady() bool
+	PropReady() bool
+	PipelineReady() bool
 }

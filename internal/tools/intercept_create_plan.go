@@ -100,24 +100,8 @@ func InterceptCreatePlan(deps ClientDeps, params kgtools.CallToolParams) (bool, 
 		return true, errorResult("at least one phase is required")
 	}
 
-	if err := validate.Name("create_plan", a.Name); err != nil {
+	if err := validatePlanSummaries(a); err != nil {
 		return true, errorResult(err.Error())
-	}
-	if err := validate.Summary("create_plan", "summary", a.Summary); err != nil {
-		return true, errorResult(err.Error())
-	}
-	for i, ph := range a.Phases {
-		if err := validate.Summary("create_plan", fmt.Sprintf("phases[%d].summary", i), ph.Summary); err != nil {
-			return true, errorResult(err.Error())
-		}
-		for j, st := range ph.Steps {
-			if err := validate.Summary("create_plan", fmt.Sprintf("phases[%d].steps[%d].summary", i, j), st.Summary); err != nil {
-				return true, errorResult(err.Error())
-			}
-			if err := validate.StepDescription("create_plan", fmt.Sprintf("phases[%d].steps[%d].description", i, j), st.Description); err != nil {
-				return true, errorResult(err.Error())
-			}
-		}
 	}
 
 	planArgs := buildPlanArgsFromWire(a)
@@ -158,6 +142,69 @@ func InterceptCreatePlan(deps ClientDeps, params kgtools.CallToolParams) (bool, 
 		})
 	}
 	return true, renderCreatePlanText(ctx, gc, a, planID, res.warnings)
+}
+
+// validatePlanSummaries runs the indexed summary/description validation over
+// the plan tree: author-supplied plan/phase/step summaries + step descriptions
+// via validate.Summary/StepDescription, and the AUTO-DERIVED criterion and
+// open-question summaries via validate.DerivedSummary. The derived summaries
+// are never author-supplied — criteria expose only description/command/type and
+// open_questions expose only question/context — so the derived text is computed
+// here with the SAME projects.Derive* funcs the node builders use (guaranteeing
+// validated text == stored text) and an over-long derivation fails fast with an
+// indexed path instead of dying on the server's context-free exceeds-500
+// backstop. Returns the first validation error encountered, or nil.
+func validatePlanSummaries(a createPlanArgs) error {
+	if err := validate.Name("create_plan", a.Name); err != nil {
+		return err
+	}
+	if err := validate.Summary("create_plan", "summary", a.Summary); err != nil {
+		return err
+	}
+	for i, ph := range a.Phases {
+		if err := validate.Summary("create_plan", fmt.Sprintf("phases[%d].summary", i), ph.Summary); err != nil {
+			return err
+		}
+		for j, st := range ph.Steps {
+			if err := validate.Summary("create_plan", fmt.Sprintf("phases[%d].steps[%d].summary", i, j), st.Summary); err != nil {
+				return err
+			}
+			if err := validate.StepDescription("create_plan", fmt.Sprintf("phases[%d].steps[%d].description", i, j), st.Description); err != nil {
+				return err
+			}
+			if err := validateDerivedCriteria(i, j, st.Criteria); err != nil {
+				return err
+			}
+		}
+	}
+	for i, q := range a.OpenQuestions {
+		if q.Summary != "" {
+			continue
+		}
+		derived := projects.DeriveQuestionSummary(q.Question, q.Context)
+		if err := validate.DerivedSummary("create_plan", fmt.Sprintf("open_questions[%d].summary", i), "question + context", derived); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// validateDerivedCriteria validates the AUTO-DERIVED summaries of one step's
+// criteria. cType is defaulted to "manual" exactly as BuildCriterionNode does,
+// then projects.DeriveCriterionSummary produces the text the builder will
+// store, gated through validate.DerivedSummary with the indexed criteria path.
+func validateDerivedCriteria(phaseIdx, stepIdx int, criteria []createPlanCriterion) error {
+	for k, c := range criteria {
+		cType := c.Type
+		if cType == "" {
+			cType = "manual"
+		}
+		derived := projects.DeriveCriterionSummary(cType, c.Description, c.Command)
+		if err := validate.DerivedSummary("create_plan", fmt.Sprintf("phases[%d].steps[%d].criteria[%d].summary", phaseIdx, stepIdx, k), "description + command", derived); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // renderCreatePlanText builds the text-format create_plan result: the header,

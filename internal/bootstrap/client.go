@@ -7,17 +7,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"sync"
+	"sync/atomic"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/auth"
 	"github.com/fulminate-io/knowledge-mcp/internal/backends"
 	"github.com/fulminate-io/knowledge-mcp/internal/backends/provider"
 	"github.com/fulminate-io/knowledge-mcp/internal/cli"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
-	"github.com/fulminate-io/knowledge-mcp/internal/collector/remote"
 	"github.com/fulminate-io/knowledge-mcp/internal/dream"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/graphtypecrud"
+	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
 	"github.com/fulminate-io/knowledge-mcp/internal/pipeline"
 	"github.com/fulminate-io/knowledge-mcp/internal/segmentdist"
 	clientthought "github.com/fulminate-io/knowledge-mcp/internal/thought"
@@ -71,6 +72,36 @@ type client struct {
 	// tools.WorkerRuntimeAPI interface — for now the field stays concrete.
 	runtime *dream.Runner
 
+	// workerReady / propReady / pipelineReady are the per-subsystem readiness
+	// flags that distinguish the background-wiring window (Bind-first startup: the daemon
+	// binds the HTTP MCP listener first, then wires worker/propagation/pipeline
+	// runtimes in a background goroutine) from a permanent boot degrade. Each is
+	// Stored true at the END of its wiring stage in wireRuntimesBackground
+	// (daemon.go) — whether that stage wired a live runtime or degraded to nil —
+	// so the intercept guards can emit "daemon still starting: <subsystem> not
+	// ready" during the window and fall through to the existing nil-accessor
+	// degrade error once the flag is set. Zero value (false) is correct for a
+	// *client built directly in a test harness: it reports "not ready" until
+	// explicitly marked, matching the existing nil-accessor degrade contract.
+	// The atomic Store also provides the happens-before edge that safely
+	// publishes the subsystem handle written immediately before it (see the
+	// mark*Ready call sites in wireRuntimesBackground).
+	workerReady   atomic.Bool
+	propReady     atomic.Bool
+	pipelineReady atomic.Bool
+
+	// wireCtx is the cancelable ctx the background wiring goroutine
+	// (wireRuntimesBackground) runs under; runServe passes it when launching the
+	// goroutine. wireCancel cancels it so an in-flight wire stage and the
+	// propagation/pipeline loops unwind promptly on shutdown (bind-first startup). wireDone
+	// is closed by wireRuntimesBackground when the background chain finishes (even
+	// on an early degrade/return), so the cleanup closure can bounded-join it
+	// before draining. All nil in a test harness that builds *client directly and
+	// never launches the background wiring.
+	wireCtx    context.Context
+	wireCancel context.CancelFunc
+	wireDone   chan struct{}
+
 	// workerCRUD / graphTypeCRUD are the client-side CRUD clients used by
 	// InterceptWorker and InterceptGraphType. Both are wired in
 	// constructClient against the login-aware c.router (Execute routes
@@ -105,6 +136,16 @@ type client struct {
 	// wired. Holding ONE instance is load-bearing: a second Manager would build
 	// duplicate engines (double memory) and miss the producer's loaded segments.
 	segmentMgr *segmentdist.Manager
+
+	// claimRegistry + banSet are the client-side hive monitor state, created in
+	// constructClient and shared (SAME instance) with the daemon Monitor:
+	// claimRegistry maps MCP session → its work claims (InterceptHive Binds on
+	// claim / Clears on ack; the Monitor renews them); banSet holds the
+	// harness-id ban keys + the Mcp→harness resolver the Monitor populates and
+	// the InterceptHive gate consults. Both nil in test harnesses that build
+	// *client directly; their accessors + methods are nil-safe.
+	claimRegistry *hivemonitor.Registry
+	banSet        *hivemonitor.BanSet
 
 	// propLoop is the client-side reflective-surface goroutine that
 	// hourly re-detects thought clusters and propagates valence /
@@ -340,106 +381,6 @@ func (providerBackendResolver) Default() backends.Backend {
 }
 func (providerBackendResolver) ByName(name string) backends.Backend {
 	return provider.ByName(name)
-}
-
-// newAuthStoreFn is the keychain Store constructor used by constructClient.
-// Tests override it to inject an in-memory store (e.g. a logged-in fake) and
-// avoid touching the real platform keychain. Mirrors the cli.go newStoreFn
-// seam. Production callers leave the default in place so auth.NewStore runs.
-var newAuthStoreFn = auth.NewStore
-
-// startKeepaliveFn is a method-expression seam over
-// (*graphclient.GraphClient).StartKeepalive so tests can observe whether
-// constructClient launched the keepalive goroutine without driving a real
-// loopback dial. Production callers leave the default in place. Gating the call
-// on not-LoggedIn (a logged-in daemon routes cloud and must never probe :15022)
-// is what this seam lets a test assert.
-var startKeepaliveFn = (*graphclient.GraphClient).StartKeepalive
-
-// constructClient builds a stdio client that proxies to the graph server.
-// It does NOT open any .bin file and does NOT register key fragments —
-// the server binary owns graph storage. The sink is a RemoteUploadSink
-// over the IngestService client so local collection streams chunks to the
-// server.
-//
-// Also launches the background keepalive goroutine that surfaces server
-// drops to slog between user-triggered tool calls — but ONLY when not logged
-// in. A logged-in daemon routes every op to cloud and operates with no local
-// knowledge-server, so it must never probe :15022; the keepalive is gated off
-// for it. The unary reconnect interceptor redials transparently when the next
-// real request lands — keepalive is operator visibility, not recovery.
-//
-// Router wiring: builds the auth.AuthState backed by the platform keychain
-// Store (or a no-op stub on platforms where the keychain is not implemented —
-// Windows) and the bare keychain OAuth TokenSource, then wraps the local
-// *GraphClient in a *graphclient.Router. Every routed GraphCaller() call
-// dispatches per-call on the keychain auth state: cached IsLoggedIn=true →
-// cloud; false → local; neither → ErrNoBackend.
-func constructClient(f Config) *client {
-	dialLocal := f.LocalDialer
-	if dialLocal == nil {
-		dialLocal = graphclient.NewGraphClient
-	}
-	tcp := dialLocal(f.Port)
-
-	// Build the auth Store. ErrNotImplementedOS (Windows) is non-fatal:
-	// substitute a no-op Store so AuthState always returns false and the
-	// Router falls through to local. Other errors are also non-fatal —
-	// degrade to no-op so the local path still works.
-	authStore, storeErr := newAuthStoreFn()
-	if storeErr != nil {
-		authStore = noopAuthStore{}
-	}
-	tokenSource := auth.NewOAuthTokenSource(
-		authStore,
-		cli.CloudEndpoint,
-		cli.AllowedAuthHosts(),
-	)
-	// Routing is keychain-only: the bare keychain token source mints fresh
-	// access tokens on demand from the `knowledge login` refresh token. There is
-	// no per-session editor bearer — the Router routes purely on
-	// authState.IsLoggedIn.
-	authState := auth.NewAuthState(authStore, 0)
-	router := graphclient.NewRouter(tcp, cli.CloudEndpoint, tokenSource, authState)
-
-	c := &client{
-		rootDir:   f.RootDir,
-		port:      f.Port,
-		version:   Version,
-		local:     tcp,
-		router:    router,
-		authState: authState,
-	}
-	// Per-call login-aware routing: the sink re-picks the IngestService
-	// backend on every CollectChunk/Finalize/FetchCloudSubgraph via the
-	// Router (cloud when logged in, local otherwise), so a mid-session
-	// `knowledge login` flip routes the next collect to cloud without a
-	// restart. Do NOT capture a fixed tcp.IngestClient() here.
-	c.sink = remote.NewUploadSinkFunc(c.router.IngestClient)
-	// Wire the worker CRUD client through the login-aware Router so a
-	// logged-in (cloud-only, no local server) daemon serves worker CRUD
-	// from cloud instead of dialing :15022. Every CRUD call rides the
-	// Router's per-call Execute dispatch (cloud when logged in, local
-	// otherwise) so the active backend stays the source of truth for
-	// graph-resident NodeWorker rows.
-	c.workerCRUD = workercrud.New(c.router)
-	// Same login-aware Router routing for graph-resident NodeGraphTypeDef rows.
-	c.graphTypeCRUD = graphtypecrud.New(c.router)
-	// Install as the process-wide default factory too so call-sites that
-	// don't route through c.sink (e.g. codegraph.Sync in an intercept
-	// handler that forgets to set opts.Sink) still get the remote sink.
-	collector.DefaultSinkFactory = func() collector.Sink { return c.sink }
-	// Periodic local-server drop detection — but ONLY for a not-logged-in
-	// client. A logged-in daemon routes every op to cloud and runs with no local
-	// knowledge-server, so probing :15022 would only emit escalating ERROR-log
-	// spam for a server intentionally not running; gate it off. Routed through
-	// the startKeepaliveFn seam so test (b) can assert the gate without a real
-	// loopback dial. Test harnesses that build a *client directly (without this
-	// constructor) skip this — nothing else in the codebase calls StartKeepalive.
-	if !c.router.LoggedIn(context.Background()) {
-		startKeepaliveFn(tcp, context.Background())
-	}
-	return c
 }
 
 // loadSchemas returns the client-owned full tool-schema set, built once from

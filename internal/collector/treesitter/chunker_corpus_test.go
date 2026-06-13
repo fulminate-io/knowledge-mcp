@@ -87,6 +87,14 @@ var testCorpusMatrix = map[Language]map[Framework][]TestKind{
 	},
 	LangJavaScript: jsFrameworkMatrix(),
 	LangTypeScript: tsFrameworkMatrix(),
+	LangTSX: {
+		// Single cell: the .tsx corpus only attests that a JSX-bearing test
+		// file classifies cleanly under the new grammar. .tsx reuses the
+		// JS/TS classifier + framework rules, already exhaustively covered by
+		// the LangJavaScript/LangTypeScript rows, so one Jest test cell here
+		// avoids duplicating the full JS/TS fixture set.
+		FrameworkJSJest: {TestKindTest},
+	},
 	LangC: {
 		FrameworkCppUnity:  {TestKindTest},
 		FrameworkCppCMocka: {TestKindTest},

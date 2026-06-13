@@ -50,6 +50,43 @@ func TestHandleManagePromoteMetadata_RejectsDisallowedGraph(t *testing.T) {
 	}
 }
 
+// TestParseMetadataGraphTypeForBackfill_RegisteredCustom is the fails-when-absent
+// guard for the registered-custom default arm: a registered custom graph type
+// (fake ByName→found) is ACCEPTED, while an unregistered typo (ByName→not found)
+// is REJECTED with the 'unsupported graph' message. Reverting the registered-
+// custom arm makes the acceptance case FAIL (the type would reject as unsupported).
+// Builtin acceptance/rejection is covered by the sibling tests, unchanged.
+func TestParseMetadataGraphTypeForBackfill_RegisteredCustom(t *testing.T) {
+	ctx := context.Background()
+	crud := &fakeGraphTypeCRUD{graph: map[string]*knowledgev1.GraphTypeDef{
+		"hellograph": {Name: "hellograph"},
+	}}
+
+	t.Run("registered custom type is accepted", func(t *testing.T) {
+		gt, err := parseMetadataGraphTypeForBackfill(ctx, crud, "hellograph")
+		require.NoError(t, err, "a registered custom graph type must be accepted, not rejected as unsupported")
+		assert.Equal(t, kgtypes.GraphType("hellograph"), gt)
+	})
+
+	t.Run("unregistered typo is rejected", func(t *testing.T) {
+		_, err := parseMetadataGraphTypeForBackfill(ctx, crud, "hellogarph")
+		require.Error(t, err, "an unregistered custom graph type must be rejected")
+		assert.Contains(t, err.Error(), "unsupported graph")
+	})
+
+	t.Run("nil crud rejects custom (degraded client)", func(t *testing.T) {
+		_, err := parseMetadataGraphTypeForBackfill(ctx, nil, "hellograph")
+		require.Error(t, err, "with no registry available, a custom type cannot be confirmed and is rejected")
+		assert.Contains(t, err.Error(), "unsupported graph")
+	})
+
+	t.Run("builtins still resolve without consulting the registry", func(t *testing.T) {
+		gt, err := parseMetadataGraphTypeForBackfill(ctx, nil, "cloud")
+		require.NoError(t, err)
+		assert.Equal(t, kgtypes.GraphCloud, gt)
+	})
+}
+
 // TestHandleManagePromoteMetadata_PromoteAndDemote covers that
 // the composer reads metadata_stats, computes RecommendAction per key, and
 // dispatches one MIGRATE_META_REPR per promote/demote key (edge / scalar
@@ -146,8 +183,9 @@ func TestHandleManagePromoteMetadata_KeysFilter(t *testing.T) {
 
 // TestHandleManagePromoteMetadata_NarrativeFires covers the batch-level narrative
 // think() on a non-dry-run with keys processed: a thought CREATE joins the
-// T5-backfill session (EdgeKGContains) and links to the ticket (EdgeRelatesTo) —
-// the same outcome the legacy path produced, now after the client-composed pass.
+// T5-backfill session (EdgeKGContains, now riding the create_batch atomically per
+// the Phase-1 think-path fix) and links to the ticket (EdgeRelatesTo) — the same
+// outcome the legacy path produced, now after the client-composed pass.
 func TestHandleManagePromoteMetadata_NarrativeFires(t *testing.T) {
 	fc := &fakeGraphCaller{
 		metadataStatsResp: metadataStatsResp(t, map[string]*knowledgev1.KeyStats{
@@ -160,31 +198,34 @@ func TestHandleManagePromoteMetadata_NarrativeFires(t *testing.T) {
 		json.RawMessage(`{"operation":"promote_metadata","graph":"cloud","name":"x"}`))
 	require.False(t, res.IsError)
 
+	// The session ("T5-backfill") is not pre-seeded, so getOrCreateThoughtSessionClient
+	// CREATES it first (PersistBatch returns "sess-or-thought-id"); the narrative
+	// thought's CREATE batch then carries session--contains-->thought from that id.
 	var thoughtBody *knowledgev1.NodeBody
-	sawContainsLink, sawTicketLink := false, false
+	sawContains, sawTicketLink := false, false
 	for _, m := range fc.execMutations {
-		switch m.GetKind() {
-		case knowledgev1.MutationPlan_MUTATION_KIND_CREATE:
-			for _, b := range m.GetNodeBodies() {
-				if b.GetType() == "thought" {
-					thoughtBody = b
-				}
+		if m.GetKind() != knowledgev1.MutationPlan_MUTATION_KIND_CREATE {
+			continue
+		}
+		for _, b := range m.GetNodeBodies() {
+			if b.GetType() == "thought" {
+				thoughtBody = b
 			}
-			for _, e := range m.GetEdges() {
-				if e.GetType() == string(kgtypes.EdgeRelatesTo) && e.GetToId() == ticketIDPromoteMetadata {
-					sawTicketLink = true
-				}
-			}
-		case knowledgev1.MutationPlan_MUTATION_KIND_LINK:
-			if m.GetEdgeSpec().GetRelationship() == string(kgtypes.EdgeKGContains) {
-				sawContainsLink = true
+		}
+		// The session contains edge now rides the CREATE batch (hasContainsFrom).
+		if hasContainsFrom(m, "sess-or-thought-id") {
+			sawContains = true
+		}
+		for _, e := range m.GetEdges() {
+			if e.GetType() == string(kgtypes.EdgeRelatesTo) && e.GetToId() == ticketIDPromoteMetadata {
+				sawTicketLink = true
 			}
 		}
 	}
 	require.NotNil(t, thoughtBody, "narrative must create a type:thought node")
 	assert.Contains(t, thoughtBody.GetContent(), "Backfill on cloud/x: refreshed 1 keys")
 	assert.Equal(t, "T5-backfill", thoughtBody.GetMetadata()["session"])
-	assert.True(t, sawContainsLink, "narrative thought must join the T5-backfill session via EdgeKGContains")
+	assert.True(t, sawContains, "narrative thought must join the T5-backfill session via the EdgeKGContains batch edge on the CREATE plan")
 	assert.True(t, sawTicketLink, "narrative thought must link to the ticket via EdgeRelatesTo")
 }
 

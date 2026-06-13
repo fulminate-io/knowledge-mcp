@@ -140,3 +140,15 @@ func TestCompileSearch_OtherReducibleGraphs(t *testing.T) {
 		})
 	}
 }
+
+// TestCompileSearch_CustomGraph pins the graph-agnostic selector threading: a
+// registered custom graph type (no builtin allowlist gates it; only code/logs
+// are specialized) compiles reducibly and carries BOTH graph + name through
+// buildTarget to the server-side ResolveGraphDB default arm. Guards against a
+// future closed-allowlist regression on the client read path.
+func TestCompileSearch_CustomGraph(t *testing.T) {
+	req, ok := compileSearch(json.RawMessage(`{"query":"x","graph":"hellograph","name":"demo"}`))
+	require.True(t, ok, "custom-graph search is reducible (no client allowlist)")
+	assert.Equal(t, "hellograph", req.GetTarget().GetGraph())
+	assert.Equal(t, "demo", req.GetTarget().GetName())
+}

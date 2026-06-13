@@ -72,8 +72,18 @@ var manageCodeGraphOps = map[string]bool{
 // process --root (deps.RootDir(), the stdio default) — see effectiveCwd.
 // When the cwd doesn't match a loaded code graph
 // AND the caller did not pass repo: explicitly, the call short-circuits
-// with a typed error WITHOUT issuing the wire RPC. Same posture for
-// missing branch on a non-git cwd.
+// with a typed error WITHOUT issuing the wire RPC.
+//
+// Branch is auto-filled ONLY when the resolved target repo equals the
+// cwd's repo. The cwd's git HEAD is meaningful for the target only when
+// the target IS the cwd's repo, so a cross-repo target (or an unresolvable
+// cwd) leaves branch unstamped and falls through to the base graph WITHOUT
+// error — the caller passes branch: explicitly to read a cross-repo
+// overlay. "Same repo" is determined by RepoResolver basename / path-
+// component match, not git identity: a checkout whose directory name does
+// not match the graph name (a renamed or forked top-level clone) is treated
+// as cross-repo and will NOT auto-stamp a branch — pass branch: explicitly
+// to read its overlay.
 //
 // Return tuple:
 //   - rewritten: a possibly-mutated CallToolParams. When no rewrite was
@@ -95,9 +105,13 @@ var manageCodeGraphOps = map[string]bool{
 //  3. Repo injection: missing/empty args["repo"] → ResolveCwd. Hit
 //     populates args["repo"]; miss returns typed error.
 //
-//  4. Branch injection: missing/empty args["branch"] → coderun.DetectBranch.
-//     Success populates args["branch"]; error or empty result returns
-//     typed error.
+//  4. Branch injection (same-repo only): missing/empty args["branch"]
+//     auto-fills via coderun.DetectBranch ONLY when the resolved target
+//     repo equals the cwd's repo (resolveRepo reused from step 3). On that
+//     same-repo path, success populates args["branch"] and a non-git cwd
+//     returns the branch-required typed error. A cross-repo target — or an
+//     unresolvable cwd — leaves branch unstamped and falls through to base
+//     WITHOUT error.
 //
 //  5. Staleness trio: ONLY when tool == "search" AND args["staleness"]
 //     is true. Populates current_head / uncommitted_count /
@@ -145,16 +159,12 @@ func InjectRepoIfCodeGraph(ctx context.Context, deps ClientDeps, params kgtools.
 		setStringField(args, "repo", repo)
 	}
 
-	// Step 4: Branch injection.
+	// Step 4: Branch injection — confined to the same-repo case (see
+	// injectSameRepoBranch).
 	if decodeStringField(args, "branch") == "" {
-		branch, err := coderun.DetectBranch(ctx, cwd)
-		if err != nil {
-			return params, true, errorResult(params.Name + ": branch is required; run from inside a git working tree or pass branch: (" + err.Error() + ")")
+		if handled, res := injectSameRepoBranch(ctx, deps, params.Name, cwd, args); handled {
+			return params, true, res
 		}
-		if branch == "" {
-			return params, true, errorResult(params.Name + ": branch is required; run from inside a git working tree or pass branch:")
-		}
-		setStringField(args, "branch", branch)
 	}
 
 	// Step 5: Staleness trio (search only, staleness:true only).
@@ -168,6 +178,41 @@ func InjectRepoIfCodeGraph(ctx context.Context, deps ClientDeps, params kgtools.
 	}
 	params.Arguments = rewritten
 	return params, false, kgtools.ToolResult{}
+}
+
+// injectSameRepoBranch stamps args["branch"] from the cwd's git HEAD, but
+// ONLY when the resolved target repo equals the cwd's repo. The cwd's git
+// HEAD is meaningful for the target only when the target IS the cwd's repo;
+// resolveRepo reuses the same sync.Once-memoized ResolveCwd already fired in
+// step 3 (this second call is free). Three cases:
+//   - SAME-REPO, git cwd: DetectBranch succeeds → stamp branch.
+//   - SAME-REPO, non-git cwd: DetectBranch errors/empty → return the typed
+//     branch-required short-circuit (handled==true).
+//   - CROSS-REPO (target != cwdRepo, OR cwd unresolvable so cwdOK==false):
+//     no stamp AND no error — fall through (handled==false) so resolveCode
+//     Retrieves base. The caller passes branch: explicitly for a cross-repo
+//     overlay.
+//
+// A resolver load failure propagates as the typed "resolve repo" short-circuit.
+func injectSameRepoBranch(ctx context.Context, deps ClientDeps, toolName, cwd string, args map[string]json.RawMessage) (bool, kgtools.ToolResult) {
+	effectiveTarget := decodeStringField(args, "repo")
+	cwdRepo, cwdOK, err := resolveRepo(ctx, deps, cwd)
+	if err != nil {
+		return true, errorResult(toolName + ": resolve repo: " + err.Error())
+	}
+	if !cwdOK || cwdRepo != effectiveTarget {
+		// Cross-repo (or unresolvable cwd): no stamp, no error.
+		return false, kgtools.ToolResult{}
+	}
+	branch, err := coderun.DetectBranch(ctx, cwd)
+	if err != nil {
+		return true, errorResult(toolName + ": branch is required; run from inside a git working tree or pass branch: (" + err.Error() + ")")
+	}
+	if branch == "" {
+		return true, errorResult(toolName + ": branch is required; run from inside a git working tree or pass branch:")
+	}
+	setStringField(args, "branch", branch)
+	return false, kgtools.ToolResult{}
 }
 
 // resolveRepo wraps the deps.RepoResolver call with a nil-resolver guard.

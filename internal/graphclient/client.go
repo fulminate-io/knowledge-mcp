@@ -152,6 +152,21 @@ func (c *GraphClient) Index(
 	return resp.Msg, nil
 }
 
+// Hive issues one EngineService.Hive RPC and returns the typed response. Thin
+// connect-client passthrough mirroring Index. The OSS server fails loud on every
+// hive op (CodeUnimplemented); the cloud server dispatches it to the per-account
+// work-queue persistence layer.
+func (c *GraphClient) Hive(
+	ctx context.Context,
+	req *knowledgev1.HiveRequest,
+) (*knowledgev1.HiveResponse, error) {
+	resp, err := c.engine.Hive(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
 // PipelineScan issues one EngineService.PipelineScan RPC and returns the typed
 // response. Thin connect-client passthrough mirroring Index — the client-side
 // LLM pipeline's scanGaps rides this.

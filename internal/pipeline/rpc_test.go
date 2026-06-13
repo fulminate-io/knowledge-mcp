@@ -109,6 +109,152 @@ func TestListLoadedGraphs_WholeTickRateLimitedThrottles(t *testing.T) {
 	require.Equal(t, "default", refs[0].GraphName)
 }
 
+// TestListLoadedGraphs_RegisteredTypeAppears proves the dynamic enumeration: a
+// registered custom GraphTypeDef ("hellograph") discovered this tick is folded
+// onto the builtin base, so its loaded graphs (hellograph/demo) appear in the
+// returned GraphRef set alongside the builtins.
+func TestListLoadedGraphs_RegisteredTypeAppears(t *testing.T) {
+	f := newFakeWireClient()
+	f.seedGraphTypeDefs("hellograph")
+	f.seedGraphNames(kgtypes.GraphCode, "knowledge")
+	f.seedGraphNames(kgtypes.GraphType("hellograph"), "demo")
+
+	refs, succeeded, _, throttled := listLoadedGraphs(context.Background(), f)
+	require.False(t, throttled, "a fully-enumerated tick is never throttled")
+
+	got := map[string]bool{}
+	for _, r := range refs {
+		got[string(r.GraphType)+"/"+r.GraphName] = true
+	}
+	require.True(t, got["knowledge/default"], "builtin knowledge/default seed preserved")
+	require.True(t, got["code/knowledge"], "builtin code graph still enumerated")
+	require.True(t, got["hellograph/demo"], "registered custom type's loaded graph appears")
+	// The registered type enumerated cleanly, so it is marked succeeded — making it
+	// eligible for collector unregistration the same as a builtin.
+	require.True(t, succeeded[kgtypes.GraphType("hellograph")], "registered type marked succeeded")
+}
+
+// TestListLoadedGraphs_DeletedTypeDropsOut proves a previously-registered type
+// that is no longer in the registry (the browse returns an empty set this tick)
+// is NOT enumerated — only the builtins remain.
+func TestListLoadedGraphs_DeletedTypeDropsOut(t *testing.T) {
+	f := newFakeWireClient()
+	// No seedGraphTypeDefs call → the registry browse returns zero custom types
+	// (the "deleted" state). Even if a graph were seeded under the custom type, it
+	// must not be iterated because the type is no longer discovered.
+	f.seedGraphNames(kgtypes.GraphType("hellograph"), "demo")
+	f.seedGraphNames(kgtypes.GraphCode, "knowledge")
+
+	refs, succeeded, _, throttled := listLoadedGraphs(context.Background(), f)
+	require.False(t, throttled)
+
+	got := map[string]bool{}
+	for _, r := range refs {
+		got[string(r.GraphType)+"/"+r.GraphName] = true
+	}
+	require.True(t, got["code/knowledge"], "builtin still enumerated")
+	require.False(t, got["hellograph/demo"], "deleted custom type is not iterated")
+	require.False(t, succeeded[kgtypes.GraphType("hellograph")], "deleted custom type not in succeeded")
+}
+
+// TestListLoadedGraphs_BuiltinsUnchangedByBrowse proves the builtin enumeration is
+// identical to the no-custom-types baseline: with an empty registry, every builtin
+// type still enumerates and is marked succeeded exactly as before.
+func TestListLoadedGraphs_BuiltinsUnchangedByBrowse(t *testing.T) {
+	f := newFakeWireClient()
+	f.seedGraphNames(kgtypes.GraphCode, "knowledge", "agent")
+	f.seedGraphNames(kgtypes.GraphPractice, "go")
+
+	refs, succeeded, _, throttled := listLoadedGraphs(context.Background(), f)
+	require.False(t, throttled)
+
+	for _, gt := range pipelineEligibleGraphTypes {
+		require.True(t, succeeded[gt], "builtin type %s enumerated successfully", gt)
+	}
+	got := map[string]bool{}
+	for _, r := range refs {
+		got[string(r.GraphType)+"/"+r.GraphName] = true
+	}
+	require.True(t, got["knowledge/default"])
+	require.True(t, got["code/knowledge"])
+	require.True(t, got["code/agent"])
+	require.True(t, got["practice/go"])
+}
+
+// TestListLoadedGraphs_BrowseFailureIsNonFatal proves a graph_type_def browse
+// failure (a rollout 502 / permission_denied) does NOT abort the tick: builtins
+// still enumerate and `succeeded` still reports the builtin types. Custom types
+// are simply skipped this tick. Also proves a browse rate-limit alone does NOT
+// force a whole-tick throttle when the builtins enumerated fine.
+func TestListLoadedGraphs_BrowseFailureIsNonFatal(t *testing.T) {
+	t.Run("browse error skips custom types, builtins unaffected", func(t *testing.T) {
+		f := newFakeWireClient()
+		f.failGraphTypeDefBrowseRead()
+		f.seedGraphNames(kgtypes.GraphCode, "knowledge")
+		f.seedGraphNames(kgtypes.GraphPractice, "go")
+
+		refs, succeeded, _, throttled := listLoadedGraphs(context.Background(), f)
+		require.False(t, throttled, "a browse error with healthy builtins is not a whole-tick throttle")
+
+		got := map[string]bool{}
+		for _, r := range refs {
+			got[string(r.GraphType)+"/"+r.GraphName] = true
+		}
+		require.True(t, got["knowledge/default"], "seed survives a browse failure")
+		require.True(t, got["code/knowledge"], "builtin code enumerated despite browse failing")
+		require.True(t, got["practice/go"], "builtin practice enumerated despite browse failing")
+		for _, gt := range pipelineEligibleGraphTypes {
+			require.True(t, succeeded[gt], "builtin type %s still marked succeeded", gt)
+		}
+	})
+
+	t.Run("browse rate-limit alone does not throttle when builtins enumerate", func(t *testing.T) {
+		f := newFakeWireClient()
+		f.rateLimitGraphTypeDefBrowseRead(5) // browse 429s with a Retry-After
+		f.seedGraphNames(kgtypes.GraphCode, "knowledge")
+
+		_, succeeded, _, throttled := listLoadedGraphs(context.Background(), f)
+		// sawRateLimit is true (the browse 429'd) but at least one builtin enumerated,
+		// so len(succeeded) > 0 → the whole-tick-throttle predicate is false.
+		require.False(t, throttled, "a registry-browse 429 must not force backoff when builtins are healthy")
+		require.True(t, succeeded[kgtypes.GraphCode], "builtin enumerated under a browse-only rate-limit")
+	})
+}
+
+// TestListLoadedGraphs_IncludesRegisteredType proves a registered type is
+// enumerated REGARDLESS of its behavior config — the client applies no behavior
+// gate; the server's gap shims cheaply no-op a both-false type. The fake serves the
+// type name from the registry browse (the behavior axes live in the node metadata
+// the client never inspects here), so a both-false type still folds into the set.
+func TestListLoadedGraphs_IncludesRegisteredType(t *testing.T) {
+	f := newFakeWireClient()
+	f.seedGraphTypeDefs("noopgraph") // registered, axes irrelevant to the client
+	f.seedGraphNames(kgtypes.GraphType("noopgraph"), "inst")
+
+	refs, succeeded, _, _ := listLoadedGraphs(context.Background(), f)
+	got := map[string]bool{}
+	for _, r := range refs {
+		got[string(r.GraphType)+"/"+r.GraphName] = true
+	}
+	require.True(t, got["noopgraph/inst"], "a both-false registered type is still enumerated (server no-ops it)")
+	require.True(t, succeeded[kgtypes.GraphType("noopgraph")])
+}
+
+// TestListLoadedGraphs_BuiltinNamedDefIsDeduped proves the defensive dedupe: a
+// GraphTypeDef whose name collides with a builtin (which registration normally
+// rejects, but is filtered here defensively) is not double-iterated.
+func TestListLoadedGraphs_BuiltinNamedDefIsDeduped(t *testing.T) {
+	f := newFakeWireClient()
+	f.seedGraphTypeDefs("code") // collides with a builtin — must be filtered out
+	f.seedGraphNames(kgtypes.GraphCode, "knowledge")
+
+	_, succeeded, _, _ := listLoadedGraphs(context.Background(), f)
+	// "code" appears exactly once in the iterated set (as the builtin); the
+	// builtin-named registered entry was dropped, so succeeded["code"] reflects the
+	// single builtin enumeration, not a duplicate.
+	require.True(t, succeeded[kgtypes.GraphCode])
+}
+
 // TestWriteBatchUpdates_PassesGraphContext mirrors the fetchNodes test
 // for the write side. Same selector shape, same incident class: without
 // these fields the server's mutate handler defaulted to the knowledge
@@ -176,6 +322,49 @@ func TestWriteBatchUpdates_PassesGraphContext(t *testing.T) {
 			require.Equal(t, "n1", m.GetUpdateItems()[0].GetId())
 		})
 	}
+}
+
+// TestWriteBatchUpdates_OverlayQualifiedGraphName is the client RED→GREEN
+// witness for the overlay-resident writeback bug. The gap scan tags an
+// overlay-resident GapItem with the overlay-qualified GraphName "repo@branch";
+// writeBatchUpdates must split that and thread the branch onto the Execute Target
+// (Repo==base, Branch==branch) so the server resolveCode Scopes the overlay and
+// the by-id write lands on the same layer the scan read from.
+//
+// Pre-fix (the bug) writeBatchUpdates passed "repo@branch" whole to
+// ApplyInstanceKey → Target.Repo=="repo@branch", Target.Branch=="", so the server
+// resolved the base graph and the write failed not_found — discarding the
+// already-billed summary/vector. This test is RED on HEAD (Branch=="", Repo
+// carries the "@") and GREEN after the Cut + Branch threading. The bare-base case
+// (no "@") must leave Branch empty so base/default-branch writes are unchanged.
+func TestWriteBatchUpdates_OverlayQualifiedGraphName(t *testing.T) {
+	t.Run("overlay-qualified repo@branch → Repo=base, Branch=branch", func(t *testing.T) {
+		f := newFakeWireClient()
+		s := "composed summary"
+		items := []updateBatchItem{{ID: "ov-1", Summary: &s}}
+		require.NoError(t, writeBatchUpdates(context.Background(), f, kgtypes.GraphCode, "myrepo@feat", items))
+
+		req := f.lastExecRequest()
+		require.NotNil(t, req, "writeBatchUpdates must issue an Execute")
+		require.Equal(t, "code", req.GetTarget().GetGraph())
+		require.Equal(t, "myrepo", req.GetTarget().GetRepo(),
+			"the bare base must route to Repo (the '@branch' must NOT bleed into Repo)")
+		require.Equal(t, "feat", req.GetTarget().GetBranch(),
+			"the overlay branch must thread onto Target.Branch so resolveCode Scopes the overlay")
+	})
+
+	t.Run("bare base (no @) → Branch empty (base/default-branch write unchanged)", func(t *testing.T) {
+		f := newFakeWireClient()
+		s := "composed summary"
+		items := []updateBatchItem{{ID: "n1", Summary: &s}}
+		require.NoError(t, writeBatchUpdates(context.Background(), f, kgtypes.GraphCode, "myrepo", items))
+
+		req := f.lastExecRequest()
+		require.NotNil(t, req)
+		require.Equal(t, "myrepo", req.GetTarget().GetRepo())
+		require.Empty(t, req.GetTarget().GetBranch(),
+			"a bare base name must leave Branch empty — no regression for base writes")
+	})
 }
 
 // TestWriteBatchUpdates_EmptyItemsIsNoOp pins the no-op contract: zero

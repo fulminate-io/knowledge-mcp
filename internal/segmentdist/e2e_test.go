@@ -36,7 +36,7 @@ func TestSegmentDistributionE2E(t *testing.T) {
 	require.NoError(t, prodEng.Add([]searchengine.Document{doc("d2", "alpha beta")}))
 	require.NoError(t, prodEng.Add([]searchengine.Document{doc("d3", "gamma")}))
 	prodMgr, _ := buildManager(prodEng, gc, target, t.TempDir())
-	_, err := prodMgr.ship(ctx)
+	_, err := prodMgr.ship(ctx, prodMgr.locallyShipped)
 	require.NoError(t, err)
 
 	svc.mu.Lock()
@@ -45,7 +45,7 @@ func TestSegmentDistributionE2E(t *testing.T) {
 
 	// Belt-and-suspenders idempotency: a second ship of the full corpus writes
 	// ZERO new generations because every content-hash id already exists.
-	_, err = prodMgr.ship(ctx)
+	_, err = prodMgr.ship(ctx, prodMgr.locallyShipped)
 	require.NoError(t, err)
 	svc.mu.Lock()
 	require.Equal(t, uint64(3), svc.gen, "idempotent: second ship stamps zero new generations")

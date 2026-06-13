@@ -142,3 +142,26 @@ func TestGodObject_NonCodeGraphSkips(t *testing.T) {
 		t.Errorf("god_object on a knowledge graph should return nil, got %v", findings)
 	}
 }
+
+// TestLanguageMatchesScope locks the topology per-language scope filter's
+// family alias: scope "typescript" includes tsx (so a typescript-scoped run
+// does not drop .tsx/JSX nodes), but scope "tsx" is exact-only.
+func TestLanguageMatchesScope(t *testing.T) {
+	cases := []struct {
+		nodeLang string
+		scope    string
+		want     bool
+	}{
+		{"tsx", "typescript", true},        // family alias: tsx folds into typescript scope
+		{"typescript", "typescript", true}, // exact match
+		{"tsx", "tsx", true},               // exact match
+		{"typescript", "tsx", false},       // alias is one-directional
+		{"go", "typescript", false},        // unrelated language excluded
+	}
+	for _, tc := range cases {
+		if got := languageMatchesScope(tc.nodeLang, tc.scope); got != tc.want {
+			t.Errorf("languageMatchesScope(%q, %q) = %t, want %t",
+				tc.nodeLang, tc.scope, got, tc.want)
+		}
+	}
+}

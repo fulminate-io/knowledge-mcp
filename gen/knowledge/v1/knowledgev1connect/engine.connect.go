@@ -44,6 +44,8 @@ const (
 	EngineServiceMetadataStatsProcedure = "/knowledge.v1.EngineService/MetadataStats"
 	// EngineServiceIndexProcedure is the fully-qualified name of the EngineService's Index RPC.
 	EngineServiceIndexProcedure = "/knowledge.v1.EngineService/Index"
+	// EngineServiceHiveProcedure is the fully-qualified name of the EngineService's Hive RPC.
+	EngineServiceHiveProcedure = "/knowledge.v1.EngineService/Hive"
 	// EngineServicePipelineScanProcedure is the fully-qualified name of the EngineService's
 	// PipelineScan RPC.
 	EngineServicePipelineScanProcedure = "/knowledge.v1.EngineService/PipelineScan"
@@ -76,6 +78,17 @@ type EngineServiceClient interface {
 	// graph-type *policy* (parseMetadataGraphTypeForBackfill) is client-side; the
 	// server runs only the generic per-key apply.
 	Index(context.Context, *connect.Request[v1.IndexRequest]) (*connect.Response[v1.IndexResponse], error)
+	// Hive is the cloud-only work-queue op surface. A single op-dispatched RPC
+	// carries every hive operation (register/send/claim/ack/fail agent ops +
+	// renew/evict daemon ops) keyed by HiveRequest.op. The load-bearing op is
+	// CLAIM: an atomic pending→leased compare-and-set (FOR UPDATE SKIP LOCKED,
+	// exactly-one-wins) over the per-account knowledge graph. The OSS server
+	// FAILS LOUD on every hive op — the shared connectAdapter.Hive handler returns
+	// CodeUnimplemented unless the cloud build installs the dispatcher hook
+	// (build-tag seam; zero cloud symbols leak into the OSS binary). It reuses the
+	// GraphSelector envelope for account routing and the Node carrier for returned
+	// work/member nodes.
+	Hive(context.Context, *connect.Request[v1.HiveRequest]) (*connect.Response[v1.HiveResponse], error)
 	// PipelineScan is index-gap-discovery infra for the client LLM pipeline. The
 	// client calls it on every collector tick to discover nodes still needing
 	// summary or embedding (NodeIDsBySummaryGap / NodeIDsByEmbedGap), and uses the
@@ -143,6 +156,12 @@ func NewEngineServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(engineServiceMethods.ByName("Index")),
 			connect.WithClientOptions(opts...),
 		),
+		hive: connect.NewClient[v1.HiveRequest, v1.HiveResponse](
+			httpClient,
+			baseURL+EngineServiceHiveProcedure,
+			connect.WithSchema(engineServiceMethods.ByName("Hive")),
+			connect.WithClientOptions(opts...),
+		),
 		pipelineScan: connect.NewClient[v1.PipelineScanRequest, v1.PipelineScanResponse](
 			httpClient,
 			baseURL+EngineServicePipelineScanProcedure,
@@ -170,6 +189,7 @@ type engineServiceClient struct {
 	stats          *connect.Client[v1.StatsRequest, v1.StatsResponse]
 	metadataStats  *connect.Client[v1.MetadataStatsRequest, v1.MetadataStatsResponse]
 	index          *connect.Client[v1.IndexRequest, v1.IndexResponse]
+	hive           *connect.Client[v1.HiveRequest, v1.HiveResponse]
 	pipelineScan   *connect.Client[v1.PipelineScanRequest, v1.PipelineScanResponse]
 	exportGraph    *connect.Client[v1.ExportGraphRequest, v1.ExportGraphResponse]
 	overwriteGraph *connect.Client[v1.OverwriteGraphRequest, v1.OverwriteGraphResponse]
@@ -193,6 +213,11 @@ func (c *engineServiceClient) MetadataStats(ctx context.Context, req *connect.Re
 // Index calls knowledge.v1.EngineService.Index.
 func (c *engineServiceClient) Index(ctx context.Context, req *connect.Request[v1.IndexRequest]) (*connect.Response[v1.IndexResponse], error) {
 	return c.index.CallUnary(ctx, req)
+}
+
+// Hive calls knowledge.v1.EngineService.Hive.
+func (c *engineServiceClient) Hive(ctx context.Context, req *connect.Request[v1.HiveRequest]) (*connect.Response[v1.HiveResponse], error) {
+	return c.hive.CallUnary(ctx, req)
 }
 
 // PipelineScan calls knowledge.v1.EngineService.PipelineScan.
@@ -231,6 +256,17 @@ type EngineServiceHandler interface {
 	// graph-type *policy* (parseMetadataGraphTypeForBackfill) is client-side; the
 	// server runs only the generic per-key apply.
 	Index(context.Context, *connect.Request[v1.IndexRequest]) (*connect.Response[v1.IndexResponse], error)
+	// Hive is the cloud-only work-queue op surface. A single op-dispatched RPC
+	// carries every hive operation (register/send/claim/ack/fail agent ops +
+	// renew/evict daemon ops) keyed by HiveRequest.op. The load-bearing op is
+	// CLAIM: an atomic pending→leased compare-and-set (FOR UPDATE SKIP LOCKED,
+	// exactly-one-wins) over the per-account knowledge graph. The OSS server
+	// FAILS LOUD on every hive op — the shared connectAdapter.Hive handler returns
+	// CodeUnimplemented unless the cloud build installs the dispatcher hook
+	// (build-tag seam; zero cloud symbols leak into the OSS binary). It reuses the
+	// GraphSelector envelope for account routing and the Node carrier for returned
+	// work/member nodes.
+	Hive(context.Context, *connect.Request[v1.HiveRequest]) (*connect.Response[v1.HiveResponse], error)
 	// PipelineScan is index-gap-discovery infra for the client LLM pipeline. The
 	// client calls it on every collector tick to discover nodes still needing
 	// summary or embedding (NodeIDsBySummaryGap / NodeIDsByEmbedGap), and uses the
@@ -294,6 +330,12 @@ func NewEngineServiceHandler(svc EngineServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(engineServiceMethods.ByName("Index")),
 		connect.WithHandlerOptions(opts...),
 	)
+	engineServiceHiveHandler := connect.NewUnaryHandler(
+		EngineServiceHiveProcedure,
+		svc.Hive,
+		connect.WithSchema(engineServiceMethods.ByName("Hive")),
+		connect.WithHandlerOptions(opts...),
+	)
 	engineServicePipelineScanHandler := connect.NewUnaryHandler(
 		EngineServicePipelineScanProcedure,
 		svc.PipelineScan,
@@ -322,6 +364,8 @@ func NewEngineServiceHandler(svc EngineServiceHandler, opts ...connect.HandlerOp
 			engineServiceMetadataStatsHandler.ServeHTTP(w, r)
 		case EngineServiceIndexProcedure:
 			engineServiceIndexHandler.ServeHTTP(w, r)
+		case EngineServiceHiveProcedure:
+			engineServiceHiveHandler.ServeHTTP(w, r)
 		case EngineServicePipelineScanProcedure:
 			engineServicePipelineScanHandler.ServeHTTP(w, r)
 		case EngineServiceExportGraphProcedure:
@@ -351,6 +395,10 @@ func (UnimplementedEngineServiceHandler) MetadataStats(context.Context, *connect
 
 func (UnimplementedEngineServiceHandler) Index(context.Context, *connect.Request[v1.IndexRequest]) (*connect.Response[v1.IndexResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("knowledge.v1.EngineService.Index is not implemented"))
+}
+
+func (UnimplementedEngineServiceHandler) Hive(context.Context, *connect.Request[v1.HiveRequest]) (*connect.Response[v1.HiveResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("knowledge.v1.EngineService.Hive is not implemented"))
 }
 
 func (UnimplementedEngineServiceHandler) PipelineScan(context.Context, *connect.Request[v1.PipelineScanRequest]) (*connect.Response[v1.PipelineScanResponse], error) {

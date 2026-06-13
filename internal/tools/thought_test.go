@@ -19,6 +19,7 @@ import (
 	"testing"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
+	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 
 	"github.com/stretchr/testify/assert"
@@ -32,20 +33,29 @@ import (
 // unavailable" error, which the tests assert.
 type thoughtTestDeps struct{}
 
-func (thoughtTestDeps) LocalLiveness() LocalLiveness     { return nil }
-func (thoughtTestDeps) Sink() collector.Sink             { return nil }
-func (thoughtTestDeps) RootDir() string                  { return "" }
-func (thoughtTestDeps) WorkerRuntime() WorkerRuntimeAPI  { return nil }
-func (thoughtTestDeps) WorkerCRUD() WorkerCRUDAPI        { return nil }
-func (thoughtTestDeps) GraphTypeCRUD() GraphTypeCRUDAPI  { return nil }
-func (thoughtTestDeps) Embedder() embed.BinaryEmbedder   { return nil }
-func (thoughtTestDeps) BackendResolver() BackendResolver { return nil }
-func (thoughtTestDeps) GraphCaller() GraphCaller         { return nil }
-func (thoughtTestDeps) LocalGraphCaller() GraphCaller    { return nil }
-func (thoughtTestDeps) RepoResolver() *RepoResolver      { return nil }
-func (thoughtTestDeps) SegmentManager() SegmentSearcher  { return nil }
-func (thoughtTestDeps) SegmentShipper() SegmentShipper   { return nil }
-func (thoughtTestDeps) PipelineScanner() PipelineScanner { return nil }
+func (thoughtTestDeps) LocalLiveness() LocalLiveness                 { return nil }
+func (thoughtTestDeps) Sink() collector.Sink                         { return nil }
+func (thoughtTestDeps) RootDir() string                              { return "" }
+func (thoughtTestDeps) WorkerRuntime() WorkerRuntimeAPI              { return nil }
+func (thoughtTestDeps) WorkerReady() bool                            { return true }
+func (thoughtTestDeps) PropReady() bool                              { return true }
+func (thoughtTestDeps) PipelineReady() bool                          { return true }
+func (thoughtTestDeps) ClaimRegistry() *hivemonitor.Registry         { return nil }
+func (thoughtTestDeps) BanSet() *hivemonitor.BanSet                  { return nil }
+func (thoughtTestDeps) WorkerCRUD() WorkerCRUDAPI                    { return nil }
+func (thoughtTestDeps) GraphTypeCRUD() GraphTypeCRUDAPI              { return nil }
+func (thoughtTestDeps) Embedder() embed.BinaryEmbedder               { return nil }
+func (thoughtTestDeps) BackendResolver() BackendResolver             { return nil }
+func (thoughtTestDeps) GraphCaller() GraphCaller                     { return nil }
+func (thoughtTestDeps) LocalGraphCaller() GraphCaller                { return nil }
+func (thoughtTestDeps) RepoResolver() *RepoResolver                  { return nil }
+func (thoughtTestDeps) SegmentManager() SegmentSearcher              { return nil }
+func (thoughtTestDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
+func (thoughtTestDeps) SegmentShipper() SegmentShipper               { return nil }
+func (thoughtTestDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
+func (thoughtTestDeps) PipelineScanner() PipelineScanner             { return nil }
+func (thoughtTestDeps) ReflectionForcer() ReflectionForcer           { return nil }
+func (thoughtTestDeps) SimilarityForcer() SimilarityForcer           { return nil }
 
 // TestInterceptThoughts_NameFiltering pins that non-thoughts /
 // non-query tool calls fall through unchanged so the intercept chain's
@@ -61,17 +71,16 @@ func TestInterceptThoughts_NameFiltering(t *testing.T) {
 	}
 }
 
-// TestInterceptThoughts_ThoughtsFallthroughUnknownOp pins that the
-// thoughts ops left server-side (adjacency, charges_for, the
-// unrecognized ones) fall through unchanged. think,
-// charge, recall, trace are ALL claimed client-side; only adjacency
-// and charges_for remain server-side bulk reads.
+// TestInterceptThoughts_ThoughtsFallthroughUnknownOp pins that an
+// UNRECOGNIZED thoughts op falls through unchanged so the server can
+// surface its own error. Every documented op — think, charge, recall,
+// trace, propagate, similarity_report, adjacency, charges_for — is
+// claimed client-side; the dispatch-claim of adjacency + charges_for is
+// asserted positively in their own intercept tests.
 func TestInterceptThoughts_ThoughtsFallthroughUnknownOp(t *testing.T) {
 	t.Parallel()
 	deps := thoughtTestDeps{}
 	cases := []string{
-		`{"operation":"adjacency","scope":"all"}`,
-		`{"operation":"charges_for","thought_ids":["id"]}`,
 		`{"operation":"unknown-op"}`,
 	}
 	for _, args := range cases {

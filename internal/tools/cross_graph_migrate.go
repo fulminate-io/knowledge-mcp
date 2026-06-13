@@ -238,7 +238,8 @@ func rekeySlugLessPracticeProxy(ctx context.Context, gc GraphCaller, ex render.E
 	}
 
 	// (5) DELETE the slug-less proxy — STRICTLY after every edge is re-pointed.
-	// The by-id DELETE removes the node and its own (now-superseded) edges only.
+	// The by-id DELETE soft-tombstones the node (the wire default), hiding it —
+	// and its now-superseded edges — from every read.
 	if _, derr := ex.Execute(ctx, &knowledgev1.ExecuteRequest{
 		Plan: &knowledgev1.ExecuteRequest_Mutation{Mutation: &knowledgev1.MutationPlan{
 			Kind:      knowledgev1.MutationPlan_MUTATION_KIND_DELETE,

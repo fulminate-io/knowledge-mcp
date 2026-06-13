@@ -129,6 +129,23 @@ func TestCompileMutate_ByIDArmsReduce(t *testing.T) {
 		assert.Equal(t, map[string]string{"k": "v"}, m.GetSetMetadata())
 	})
 
+	t.Run("update by ids[] → UPDATE with Selection.Ids[multi] + set_fields", func(t *testing.T) {
+		req, ok := compileMutate(json.RawMessage(`{"operation":"update","ids":["a","b"],"status":"completed"}`))
+		require.True(t, ok)
+		m := req.GetMutation()
+		assert.Equal(t, knowledgev1.MutationPlan_MUTATION_KIND_UPDATE, m.GetKind())
+		assert.Equal(t, []string{"a", "b"}, m.GetSelection().GetIds(), "the full multi-id set rides Selection.Ids, order-preserving")
+		assert.Equal(t, "completed", m.GetSetFields()["status"])
+	})
+
+	t.Run("update by ids[] with no payload → legacy", func(t *testing.T) {
+		// Degenerate-shape parity with the singular empty-payload case
+		// (compile_mutate.go) — no set_fields, no metadata → legacy fall-through.
+		req, ok := compileMutate(json.RawMessage(`{"operation":"update","ids":["a","b"]}`))
+		assert.False(t, ok, "ids[] with no payload falls through to legacy")
+		assert.Nil(t, req)
+	})
+
 	t.Run("delete by ids → DELETE with Selection.Ids", func(t *testing.T) {
 		req, ok := compileMutate(json.RawMessage(`{"operation":"delete","ids":["a","b"]}`))
 		require.True(t, ok)
@@ -167,6 +184,47 @@ func TestCompileMutate_ByIDArmsReduce(t *testing.T) {
 		assert.Equal(t, knowledgev1.MutationPlan_MUTATION_KIND_UPDATE_ITEMS, m.GetKind())
 		require.Len(t, m.GetUpdateItems(), 2)
 	})
+}
+
+// TestCompileMutate_UpdateForwardsKeywordsAndSource pins the generic-path
+// widening: a by-id update carrying keywords + source compiles to an UPDATE
+// MutationPlan whose set_fields contains BOTH keys. On HEAD (pre-widening)
+// updateSetFields dropped both — the schema declared them but they never rode
+// the wire. setFieldsToNodeFields already accepts both server-side.
+func TestCompileMutate_UpdateForwardsKeywordsAndSource(t *testing.T) {
+	tests := []struct {
+		name string
+		args string
+		want map[string]string
+	}{
+		{
+			name: "keywords + source both ride set_fields",
+			args: `{"operation":"update","id":"n1","keywords":"foo bar","source":"manual"}`,
+			want: map[string]string{"keywords": "foo bar", "source": "manual"},
+		},
+		{
+			name: "keywords alone rides",
+			args: `{"operation":"update","id":"n1","keywords":"only-kw"}`,
+			want: map[string]string{"keywords": "only-kw"},
+		},
+		{
+			name: "source alone rides",
+			args: `{"operation":"update","id":"n1","source":"git"}`,
+			want: map[string]string{"source": "git"},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			req, ok := compileMutate(json.RawMessage(tt.args))
+			require.True(t, ok)
+			m := req.GetMutation()
+			assert.Equal(t, knowledgev1.MutationPlan_MUTATION_KIND_UPDATE, m.GetKind())
+			assert.Equal(t, []string{"n1"}, m.GetSelection().GetIds())
+			for k, v := range tt.want {
+				assert.Equal(t, v, m.GetSetFields()[k], "set_fields[%q]", k)
+			}
+		})
+	}
 }
 
 // TestCompileMutate_Upsert covers the upsert contract: a mutate(upsert) with id +
@@ -243,6 +301,44 @@ func TestCompileMutate_UpdateBatch(t *testing.T) {
 		req, ok := compileMutate(json.RawMessage(`{"operation":"update_batch","items":[]}`))
 		assert.False(t, ok, "empty update_batch → legacy")
 		assert.Nil(t, req)
+	})
+}
+
+// TestCompileMutate_UpdateBatchBranch is the wire-contract round trip between
+// the pipeline's overlay-qualified writeback and the engine compiler: a
+// mutate(update_batch, graph:code, repo:myrepo, branch:feat) must thread the
+// branch onto the Execute Target so the server resolveCode Scopes the overlay
+// (repo@branch) instead of resolving the base graph. The branch json tag must
+// be exactly "branch" — the same tag rpc.go's updateBatchArgs marshals — or the
+// overlay dimension is silently dropped and overlay-resident writebacks fail
+// not_found.
+func TestCompileMutate_UpdateBatchBranch(t *testing.T) {
+	t.Run("branch threads onto the Execute Target", func(t *testing.T) {
+		// Marshal the SAME wire shape rpc.go's updateBatchArgs produces (the json
+		// tags are the contract), through the public engine.Compile entrypoint.
+		args, err := json.Marshal(map[string]any{
+			"operation": "update_batch",
+			"graph":     "code",
+			"repo":      "myrepo",
+			"branch":    "feat",
+			"items":     []map[string]any{{"id": "a", "summary": "sum-a"}},
+		})
+		require.NoError(t, err)
+		req, ok := Compile("mutate", args)
+		require.True(t, ok, "update_batch with branch lowers to UPDATE_ITEMS")
+		require.NotNil(t, req.GetTarget())
+		assert.Equal(t, "code", req.GetTarget().GetGraph())
+		assert.Equal(t, "myrepo", req.GetTarget().GetRepo())
+		assert.Equal(t, "feat", req.GetTarget().GetBranch(),
+			"branch must thread onto the Target so resolveCode Scopes the overlay")
+	})
+
+	t.Run("absent branch → empty Target.Branch (base/default-branch write)", func(t *testing.T) {
+		args := `{"operation":"update_batch","graph":"code","repo":"myrepo","items":[{"id":"a","summary":"s"}]}`
+		req, ok := Compile("mutate", json.RawMessage(args))
+		require.True(t, ok)
+		require.NotNil(t, req.GetTarget())
+		assert.Empty(t, req.GetTarget().GetBranch(), "no branch → base graph write, Branch stays empty")
 	})
 }
 

@@ -24,6 +24,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
+	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
@@ -100,6 +101,12 @@ func (h *dispatchEngineHandler) Index(
 	return nil, connect.NewError(connect.CodeUnimplemented, nil)
 }
 
+func (h *dispatchEngineHandler) Hive(
+	context.Context, *connect.Request[knowledgev1.HiveRequest],
+) (*connect.Response[knowledgev1.HiveResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, nil)
+}
+
 func (h *dispatchEngineHandler) PipelineScan(
 	context.Context, *connect.Request[knowledgev1.PipelineScanRequest],
 ) (*connect.Response[knowledgev1.PipelineScanResponse], error) {
@@ -157,22 +164,37 @@ type interceptDeps struct {
 	gc     *graphclient.GraphClient
 	emb    embed.BinaryEmbedder
 	segMgr SegmentSearcher
+	segRes SegmentVectorResolver
+	// pipelineNotReady flips PipelineReady() to false so a test can exercise the
+	// bind-first wiring-window gate (bind-first startup) on the segment-engine search arms.
+	// Zero value keeps the pipeline ready, so every pre-existing test exercises
+	// the wired path.
+	pipelineNotReady bool
 }
 
-func (d *interceptDeps) LocalLiveness() LocalLiveness     { return d.gc }
-func (d *interceptDeps) Sink() collector.Sink             { return nil }
-func (d *interceptDeps) RootDir() string                  { return "" }
-func (d *interceptDeps) WorkerRuntime() WorkerRuntimeAPI  { return nil }
-func (d *interceptDeps) WorkerCRUD() WorkerCRUDAPI        { return nil }
-func (d *interceptDeps) GraphTypeCRUD() GraphTypeCRUDAPI  { return nil }
-func (d *interceptDeps) Embedder() embed.BinaryEmbedder   { return d.emb }
-func (d *interceptDeps) BackendResolver() BackendResolver { return nil }
-func (d *interceptDeps) GraphCaller() GraphCaller         { return d.gc }
-func (d *interceptDeps) LocalGraphCaller() GraphCaller    { return d.gc }
-func (d *interceptDeps) RepoResolver() *RepoResolver      { return nil }
-func (d *interceptDeps) SegmentManager() SegmentSearcher  { return d.segMgr }
-func (d *interceptDeps) SegmentShipper() SegmentShipper   { return nil }
-func (d *interceptDeps) PipelineScanner() PipelineScanner { return nil }
+func (d *interceptDeps) LocalLiveness() LocalLiveness                 { return d.gc }
+func (d *interceptDeps) Sink() collector.Sink                         { return nil }
+func (d *interceptDeps) RootDir() string                              { return "" }
+func (d *interceptDeps) WorkerRuntime() WorkerRuntimeAPI              { return nil }
+func (d *interceptDeps) WorkerReady() bool                            { return true }
+func (d *interceptDeps) PropReady() bool                              { return true }
+func (d *interceptDeps) PipelineReady() bool                          { return !d.pipelineNotReady }
+func (d *interceptDeps) ClaimRegistry() *hivemonitor.Registry         { return nil }
+func (d *interceptDeps) BanSet() *hivemonitor.BanSet                  { return nil }
+func (d *interceptDeps) WorkerCRUD() WorkerCRUDAPI                    { return nil }
+func (d *interceptDeps) GraphTypeCRUD() GraphTypeCRUDAPI              { return nil }
+func (d *interceptDeps) Embedder() embed.BinaryEmbedder               { return d.emb }
+func (d *interceptDeps) BackendResolver() BackendResolver             { return nil }
+func (d *interceptDeps) GraphCaller() GraphCaller                     { return d.gc }
+func (d *interceptDeps) LocalGraphCaller() GraphCaller                { return d.gc }
+func (d *interceptDeps) RepoResolver() *RepoResolver                  { return nil }
+func (d *interceptDeps) SegmentManager() SegmentSearcher              { return d.segMgr }
+func (d *interceptDeps) SegmentVectorResolver() SegmentVectorResolver { return d.segRes }
+func (d *interceptDeps) SegmentShipper() SegmentShipper               { return nil }
+func (d *interceptDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
+func (d *interceptDeps) PipelineScanner() PipelineScanner             { return nil }
+func (d *interceptDeps) ReflectionForcer() ReflectionForcer           { return nil }
+func (d *interceptDeps) SimilarityForcer() SimilarityForcer           { return nil }
 
 func newInterceptHarness(t *testing.T, execHits *atomic.Int64, resp *knowledgev1.ExecuteResponse) *graphclient.GraphClient {
 	t.Helper()

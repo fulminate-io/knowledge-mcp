@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/config"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/llmproviders"
@@ -122,6 +123,15 @@ func wirePipelineRuntime(c *client, f Config) error {
 		return nil
 	}
 
+	// Per-axis provider identity for the shared-cause escalation: the summary
+	// provider is resolved from the SAME config consumer BuildSummarizer uses; the
+	// embed provider is the constant 'voyage' (BuildEmbedder always constructs the
+	// Voyage embedder) but only when an embedder is actually wired. Distinct
+	// providers (the anthropic-summaries + voyage-embeddings case) never cross-trip.
+	embedProvider := ""
+	if emb != nil {
+		embedProvider = "voyage"
+	}
 	pcfg := pipeline.Config{
 		SummaryChannelSize: f.SummaryChannelSize,
 		SummaryBatchSize:   f.SummaryBatchSize,
@@ -131,6 +141,8 @@ func wirePipelineRuntime(c *client, f Config) error {
 		EmbedWorkers:       f.EmbedWorkers,
 		EmbedRPM:           f.EmbedRPM,
 		Tick:               f.PipelineTick,
+		SummaryProvider:    resolveSummaryProvider(),
+		EmbedProvider:      embedProvider,
 	}
 
 	// Login-aware routing: the pipeline scans + writes back through the Router
@@ -179,6 +191,22 @@ func wirePipelineRuntime(c *client, f Config) error {
 	go p.RefreshLoadedGraphs(ctx)
 
 	return nil
+}
+
+// resolveSummaryProvider returns the summary axis's LLM provider identity for the
+// shared-cause escalation gate, resolved from the SAME config consumer
+// BuildSummarizer uses (config.ConsumerSummarizer). Degrade-not-die: an unloaded
+// config or a resolve error yields "" (unknown) so that axis never participates
+// in a cross-trip — never an error that blocks pipeline wiring.
+func resolveSummaryProvider() string {
+	if !config.Loaded() {
+		return ""
+	}
+	sec, err := config.Active().Resolve(config.ConsumerSummarizer)
+	if err != nil {
+		return ""
+	}
+	return sec.Provider.String()
 }
 
 // adaptSummarizer converts an llmproviders.Summarizer to the pipeline

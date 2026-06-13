@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/pipeline"
@@ -119,7 +120,9 @@ func TestManagePipelineControlDegradedDeps(t *testing.T) {
 
 // TestStalenessFooterSurfacesPausedPipeline verifies the search staleness
 // footer emits the loud paused line when the pipeline is paused, even with NO
-// code-staleness metadata (nil exec + empty repo => empty code footer).
+// code-staleness metadata (nil exec + empty repo => empty code footer). Manual
+// pause is whole-pipeline (both axes), so the footer names BOTH axes while
+// preserving the verbatim reason.
 func TestStalenessFooterSurfacesPausedPipeline(t *testing.T) {
 	deps := newPipelineControlDeps()
 	deps.p.PausePipeline("circuit-break test reason")
@@ -127,7 +130,7 @@ func TestStalenessFooterSurfacesPausedPipeline(t *testing.T) {
 	res := textResult("search results body")
 	out := appendStalenessFooter(context.Background(), deps, nil, "", res)
 	txt := resultTextLocal(out)
-	for _, want := range []string{"search results body", "PAUSED", "circuit-break test reason", "resume_pipeline"} {
+	for _, want := range []string{"search results body", "PAUSED", "circuit-break test reason", "resume_pipeline", "summary axis", "embed axis"} {
 		if !strings.Contains(txt, want) {
 			t.Fatalf("paused footer = %q, missing %q", txt, want)
 		}
@@ -143,5 +146,78 @@ func TestStalenessFooterNoSpuriousLineWhenRunning(t *testing.T) {
 	out := appendStalenessFooter(context.Background(), deps, nil, "", res)
 	if txt := resultTextLocal(out); txt != "search results body" {
 		t.Fatalf("running-pipeline footer mutated body: %q", txt)
+	}
+}
+
+// fixedStatusDeps is a pipelinePauser fake that returns a hand-built per-axis
+// PipelineStatus, so the renderers can be exercised against a SUMMARY-only
+// auto-trip (the embed axis running) without driving the worker pool.
+type fixedStatusDeps struct {
+	*fakeDeps
+	st pipeline.PipelineStatus
+}
+
+func (d *fixedStatusDeps) PausePipeline(string) {}
+func (d *fixedStatusDeps) ResumePipeline()      {}
+func (d *fixedStatusDeps) PipelineStatus() (pipeline.PipelineStatus, bool) {
+	return d.st, true
+}
+
+// summaryAutoTripStatus builds a status snapshot for a SUMMARY-axis auth/quota
+// auto-trip while the embed axis runs: summary paused with a dominant-class
+// reason + breakdown, embed clear, aggregate taken from the summary axis.
+func summaryAutoTripStatus() pipeline.PipelineStatus {
+	summary := pipeline.AxisStatus{
+		Paused:        true,
+		Reason:        "full error round — 18/20 auth/quota",
+		Since:         time.Unix(1700000000, 0),
+		DominantClass: pipeline.ClassAuthQuota,
+		DominantCount: 18,
+		Breakdown:     "auth=18, timeout=2",
+	}
+	return pipeline.PipelineStatus{
+		Paused:        true,
+		Reason:        summary.Reason,
+		Since:         summary.Since,
+		DominantClass: summary.DominantClass,
+		DominantCount: summary.DominantCount,
+		Breakdown:     summary.Breakdown,
+		Summary:       summary,
+		Embed:         pipeline.AxisStatus{}, // running
+	}
+}
+
+// TestPipelineStatusNamesSummaryAxisOnly is the fails-when-absent guard for the
+// per-axis carry-through: with the SUMMARY axis auto-tripped on an auth/quota
+// window, pipeline_status names the SUMMARY axis paused AND carries its dominant
+// class + breakdown (the dominant-class surfacing), while the embed axis renders
+// RUNNING. RED if the carry-through drops the DominantClass/Breakdown or fails to
+// name the per-axis state.
+func TestPipelineStatusNamesSummaryAxisOnly(t *testing.T) {
+	deps := &fixedStatusDeps{fakeDeps: &fakeDeps{}, st: summaryAutoTripStatus()}
+
+	txt := resultTextLocal(handlePipelineStatus(deps))
+	for _, want := range []string{"summary: PAUSED", "auth/quota", "auth=18, timeout=2", "embed: RUNNING"} {
+		if !strings.Contains(txt, want) {
+			t.Fatalf("pipeline_status = %q, missing %q", txt, want)
+		}
+	}
+}
+
+// TestPipelinePausedFooterNamesSummaryAxisOnly is the search-footer counterpart:
+// the footer names the SUMMARY axis paused (so an operator knows embeddings still
+// flow) and preserves the verbatim reason, with no embed-axis paused line.
+func TestPipelinePausedFooterNamesSummaryAxisOnly(t *testing.T) {
+	deps := &fixedStatusDeps{fakeDeps: &fakeDeps{}, st: summaryAutoTripStatus()}
+
+	footer := pipelinePausedFooter(deps)
+	if !strings.Contains(footer, "summary axis PAUSED") {
+		t.Fatalf("footer %q does not name the summary axis paused", footer)
+	}
+	if !strings.Contains(footer, "full error round — 18/20 auth/quota") {
+		t.Fatalf("footer %q dropped the verbatim summary reason", footer)
+	}
+	if strings.Contains(footer, "embed axis PAUSED") {
+		t.Fatalf("footer %q names the embed axis paused, but only summary tripped", footer)
 	}
 }

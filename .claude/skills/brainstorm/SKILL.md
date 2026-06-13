@@ -61,20 +61,20 @@ If the status shows the index is behind HEAD (e.g., "3 commits behind"), tell th
 If the user says yes, run:
 
 ```json
-manage({ "operation": "reindex" })
+collect({ "type": "code", "id": "<absolute-path-to-repo>" })
 ```
 
 If the user declines or the index is fresh, proceed to Step 0.5.
 
-## Step 0.5: Check Past Thoughts
+## Step 0.5: Load the Context Pack
 
-Before spawning a researcher, check what you've already reasoned about:
+Before spawning a researcher, load the cross-type context pack for the topic:
 
 ```json
-thoughts({ "operation": "recall", "query": "topic keywords from the brainstorm request" })
+thoughts({ "operation": "recall", "mode": "context", "query": "topic keywords from the brainstorm request" })
 ```
 
-Past thoughts often contain hypotheses, trade-offs, and insights from previous sessions that should inform the brainstorm.
+The context pack surfaces related decisions, findings, tickets, and prior thoughts (cross-type, not just thoughts), plus their edge-connected neighborhood, charge state, recent activity, and open tickets touching the topic. Prior decisions and contested thoughts here should directly inform the brainstorm's framing.
 
 ## Step 0.7: Surface and verify framing assumptions — BEFORE spawning the researcher
 
@@ -446,7 +446,7 @@ For simple topics, use `mutate(operation: "create", type: "research", ...)` for 
    })
    ```
 
-   Use `think` for raw reasoning (hypotheses, intuitions, connections). Use `mutate(operation: "create", type: "finding")` for confirmed conclusions. Thoughts can be charged later when evidence arrives.
+   Use `think` for raw reasoning (hypotheses, intuitions, connections). Use `mutate(operation: "create", type: "finding")` for confirmed conclusions. When evidence lands DURING the brainstorm (a researcher verifies or refutes a hypothesis you recorded), charge the thought then — don't defer: polarity positive if the evidence supports the hypothesis's claim, negative if it contradicts it.
 
 4. **Record findings** when you reach conclusions:
 
@@ -616,6 +616,16 @@ record_decision({
 ```
 
 **Don't rush to decisions.** The user should explicitly signal they've decided. If they haven't, keep exploring.
+
+**Charge the hypotheses the decision rests on.** A recorded decision IS evidence arriving — charge the session thoughts that drove it instead of leaving them uncharged forever:
+
+```json
+thoughts({ "operation": "charge", "thought": "driving_hypothesis_id", "polarity": "positive", "weight": 7,
+           "reasoning": "Decision <name> rests on this hypothesis; the deciding evidence supports its claim",
+           "evidence": ["finding_id_1"] })
+```
+
+Polarity is supports/contradicts-the-claim: positive for the hypothesis the decision rests on, negative for a rejected alternative's hypothesis the evidence contradicted.
 
 ## Step 5: Bridge to Action
 

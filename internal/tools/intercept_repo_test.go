@@ -17,6 +17,7 @@ import (
 
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
+	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/session"
 )
@@ -33,25 +34,34 @@ type repoTestDeps struct {
 	gc       GraphCaller
 }
 
-func (d *repoTestDeps) LocalLiveness() LocalLiveness     { return nil }
-func (d *repoTestDeps) Sink() collector.Sink             { return nil }
-func (d *repoTestDeps) RootDir() string                  { return d.rootDir }
-func (d *repoTestDeps) WorkerRuntime() WorkerRuntimeAPI  { return nil }
-func (d *repoTestDeps) WorkerCRUD() WorkerCRUDAPI        { return nil }
-func (d *repoTestDeps) GraphTypeCRUD() GraphTypeCRUDAPI  { return nil }
-func (d *repoTestDeps) Embedder() embed.BinaryEmbedder   { return nil }
-func (d *repoTestDeps) BackendResolver() BackendResolver { return nil }
+func (d *repoTestDeps) LocalLiveness() LocalLiveness         { return nil }
+func (d *repoTestDeps) Sink() collector.Sink                 { return nil }
+func (d *repoTestDeps) RootDir() string                      { return d.rootDir }
+func (d *repoTestDeps) WorkerRuntime() WorkerRuntimeAPI      { return nil }
+func (d *repoTestDeps) WorkerReady() bool                    { return true }
+func (d *repoTestDeps) PropReady() bool                      { return true }
+func (d *repoTestDeps) PipelineReady() bool                  { return true }
+func (d *repoTestDeps) ClaimRegistry() *hivemonitor.Registry { return nil }
+func (d *repoTestDeps) BanSet() *hivemonitor.BanSet          { return nil }
+func (d *repoTestDeps) WorkerCRUD() WorkerCRUDAPI            { return nil }
+func (d *repoTestDeps) GraphTypeCRUD() GraphTypeCRUDAPI      { return nil }
+func (d *repoTestDeps) Embedder() embed.BinaryEmbedder       { return nil }
+func (d *repoTestDeps) BackendResolver() BackendResolver     { return nil }
 func (d *repoTestDeps) GraphCaller() GraphCaller {
 	if d.gcCount != nil {
 		atomic.AddInt32(d.gcCount, 1)
 	}
 	return d.gc
 }
-func (d *repoTestDeps) LocalGraphCaller() GraphCaller    { return d.gc }
-func (d *repoTestDeps) RepoResolver() *RepoResolver      { return d.resolver }
-func (d *repoTestDeps) SegmentManager() SegmentSearcher  { return nil }
-func (d *repoTestDeps) SegmentShipper() SegmentShipper   { return nil }
-func (d *repoTestDeps) PipelineScanner() PipelineScanner { return nil }
+func (d *repoTestDeps) LocalGraphCaller() GraphCaller                { return d.gc }
+func (d *repoTestDeps) RepoResolver() *RepoResolver                  { return d.resolver }
+func (d *repoTestDeps) SegmentManager() SegmentSearcher              { return nil }
+func (d *repoTestDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
+func (d *repoTestDeps) SegmentShipper() SegmentShipper               { return nil }
+func (d *repoTestDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
+func (d *repoTestDeps) PipelineScanner() PipelineScanner             { return nil }
+func (d *repoTestDeps) ReflectionForcer() ReflectionForcer           { return nil }
+func (d *repoTestDeps) SimilarityForcer() SimilarityForcer           { return nil }
 
 // buildResolver returns a RepoResolver pre-loaded with the given graph
 // names. listGraphsCaller backs the resolver; the first ResolveCwd call
@@ -240,18 +250,82 @@ func TestInjectRepoIfCodeGraph_ExplicitRepo_NotOverwritten(t *testing.T) {
 	assert.Equal(t, "myrepo", got["repo"], "explicit repo must not be overwritten")
 }
 
-func TestInjectRepoIfCodeGraph_MissingBranch_NonGitCwd_ErrorsBeforeRPC(t *testing.T) {
-	// file_symbols WITH explicit repo: but missing branch: from a non-git
-	// cwd must return a client-side "branch is required" error WITHOUT
-	// invoking GraphCaller.
+func TestInjectRepoIfCodeGraph_CrossRepoExplicit_NoBranchStamp(t *testing.T) {
+	// A cross-repo read — explicit repo:"agent" issued from a session whose
+	// cwd resolves to repoA — must NOT stamp repoA's git branch onto the
+	// agent target. The cwd's git HEAD is meaningless for a different repo,
+	// so branch is left UNSET and the call falls through to the wire RPC
+	// (handled==false) with repo:"agent" and no branch. The caller passes
+	// branch: explicitly if it wants a cross-repo overlay.
+	dir := gitRepoFixture(t)
+	repoA := filepath.Base(dir)
+	deps := &repoTestDeps{rootDir: dir, resolver: buildResolver(t, repoA, "agent")}
+	out, handled, _ := InjectRepoIfCodeGraph(context.Background(), deps,
+		paramsFor("search", `{"query":"x","repo":"agent"}`))
+	assert.False(t, handled, "cross-repo read must not short-circuit")
+	got := callArgs(t, out.Arguments)
+	assert.Equal(t, "agent", got["repo"], "explicit cross-repo target preserved")
+	_, hasBranch := got["branch"]
+	assert.False(t, hasBranch, "cross-repo read must not stamp the cwd repo's branch")
+}
+
+func TestInjectRepoIfCodeGraph_SameRepoExplicit_StampsBranch(t *testing.T) {
+	// A same-repo read — explicit repo: equal to the cwd's resolved repo —
+	// still auto-fills branch via DetectBranch (the legitimate same-repo
+	// overlay flow: knowledge session → knowledge@<branch>, real data).
+	dir := gitRepoFixture(t)
+	repoA := filepath.Base(dir)
+	deps := &repoTestDeps{rootDir: dir, resolver: buildResolver(t, repoA)}
+	out, handled, _ := InjectRepoIfCodeGraph(context.Background(), deps,
+		paramsFor("search", `{"query":"x","repo":"`+repoA+`"}`))
+	assert.False(t, handled)
+	got := callArgs(t, out.Arguments)
+	assert.Equal(t, repoA, got["repo"])
+	assert.Equal(t, "main", got["branch"], "same-repo explicit read still stamps the cwd git branch")
+}
+
+func TestInjectRepoIfCodeGraph_CrossRepoUnresolvableCwd_FallsThroughNoError(t *testing.T) {
+	// An explicit repo: that does not resolve from the cwd is a CROSS-REPO
+	// read: the cwd basename (random t.TempDir()) matches no loaded graph,
+	// so cwdRepo="" != the explicit target. Under the same-repo stamp
+	// boundary this falls through to base WITHOUT a branch-required error —
+	// branch is left unstamped and GraphCaller is reached normally
+	// (handled==false). (Previously this scenario produced a branch-required
+	// short-circuit; that contract moved to the same-repo non-git path.)
 	var gcCount int32
 	deps := &repoTestDeps{
-		rootDir:  t.TempDir(), // no .git here
+		rootDir:  t.TempDir(), // basename matches no loaded graph → unresolvable cwd
 		resolver: buildResolver(t, "knowledge"),
 		gcCount:  &gcCount,
 	}
-	_, handled, res := InjectRepoIfCodeGraph(context.Background(), deps,
+	out, handled, _ := InjectRepoIfCodeGraph(context.Background(), deps,
 		paramsFor("file_symbols", `{"file_path":"foo.go","repo":"knowledge"}`))
+	assert.False(t, handled, "cross-repo unresolvable-cwd read must fall through, not error")
+	got := callArgs(t, out.Arguments)
+	_, hasBranch := got["branch"]
+	assert.False(t, hasBranch, "cross-repo read must not stamp a branch")
+	assert.Equal(t, int32(0), atomic.LoadInt32(&gcCount), "GraphCaller is invoked downstream, not inside the intercept")
+}
+
+func TestInjectRepoIfCodeGraph_SameRepoNonGitCwd_BranchRequired(t *testing.T) {
+	// A SAME-REPO non-git cwd still errors with "branch is required": the
+	// cwd basename equals the target repo name (resolver match → same-repo),
+	// but the .git dir was removed so DetectBranch fails. The same-repo flow
+	// needs a branch, so the client-side branch-required short-circuit fires
+	// (handled==true) WITHOUT invoking GraphCaller. This preserves the
+	// branch-required contract that the cross-repo re-characterization no
+	// longer covers.
+	dir := gitRepoFixture(t)
+	repoName := filepath.Base(dir)
+	require.NoError(t, os.RemoveAll(filepath.Join(dir, ".git"))) // basename match survives; DetectBranch now fails
+	var gcCount int32
+	deps := &repoTestDeps{
+		rootDir:  dir,
+		resolver: buildResolver(t, repoName),
+		gcCount:  &gcCount,
+	}
+	_, handled, res := InjectRepoIfCodeGraph(context.Background(), deps,
+		paramsFor("file_symbols", `{"file_path":"foo.go","repo":"`+repoName+`"}`))
 	assert.True(t, handled)
 	assert.True(t, res.IsError)
 	assert.Contains(t, res.Content[0].Text, "branch is required")

@@ -5,6 +5,7 @@ package validate
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // TestSummary covers the contract of Summary (ticket
@@ -188,5 +189,69 @@ func TestName(t *testing.T) {
 				t.Errorf("Name error must name the field path: got %q", err.Error())
 			}
 		})
+	}
+}
+
+// TestDerivedSummary covers the actionable over-length error for an
+// AUTO-DERIVED summary: a 501-rune derived string errors naming the indexed
+// fieldPath, the "derived from" source list, the rune count ("got 501"), the
+// overflow ("over by 1"), and a quoted bounded prefix of the offending text;
+// a 500-rune derived string passes (at-cap), proving the trim-then-count cap
+// matches Summary.
+func TestDerivedSummary(t *testing.T) {
+	// Distinctive long body so the quoted prefix assertion is meaningful.
+	body := "automated criterion: " + strings.Repeat("z", 480)
+	// body is 21 + 480 = 501 runes (ASCII).
+	if got := len([]rune(body)); got != 501 {
+		t.Fatalf("test fixture sanity: want 501-rune body, got %d", got)
+	}
+
+	err := DerivedSummary("create_plan", "phases[0].steps[1].criteria[2].summary", "description + command", body)
+	if err == nil {
+		t.Fatal("expected non-nil error for a 501-rune derived summary")
+	}
+	msg := err.Error()
+	for _, want := range []string{
+		"phases[0].steps[1].criteria[2].summary", // indexed field path
+		"derived from",                           // derivation explanation
+		"description + command",                  // the source-field list
+		"got 501",                                // rune count
+		"over by 1",                              // overflow amount
+		"automated criterion: zzz",               // quoted prefix of offending text
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("DerivedSummary error missing %q: got %q", want, msg)
+		}
+	}
+
+	// At-cap (exactly 500 runes) passes.
+	if err := DerivedSummary("create_plan", "f", "x", strings.Repeat("a", 500)); err != nil {
+		t.Errorf("500-rune derived summary should pass (at-cap), got: %v", err)
+	}
+	// Under-cap passes.
+	if err := DerivedSummary("create_plan", "f", "x", "Question: short"); err != nil {
+		t.Errorf("under-cap derived summary should pass, got: %v", err)
+	}
+	// Trim parity: trailing whitespace pushing byte-length over but trimmed
+	// rune count at 500 must pass.
+	if err := DerivedSummary("create_plan", "f", "x", "  "+strings.Repeat("a", 500)+"  "); err != nil {
+		t.Errorf("trimmed-500 derived summary should pass, got: %v", err)
+	}
+}
+
+// TestDerivedSummary_RuneSafePrefix confirms the quoted prefix never splits a
+// multibyte rune: an over-cap derived summary built from em-dashes (3 bytes
+// each) reports a rune count and a quoted prefix that is itself valid UTF-8.
+func TestDerivedSummary_RuneSafePrefix(t *testing.T) {
+	err := DerivedSummary("create_plan", "f", "x", strings.Repeat("—", 501))
+	if err == nil {
+		t.Fatal("expected non-nil error for a 501-rune multibyte derived summary")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "got 501") {
+		t.Errorf("multibyte derived summary must report rune count (got 501): %q", msg)
+	}
+	if !utf8.ValidString(msg) {
+		t.Errorf("error message (incl. quoted prefix) must be valid UTF-8 — prefix byte-sliced a rune: %q", msg)
 	}
 }

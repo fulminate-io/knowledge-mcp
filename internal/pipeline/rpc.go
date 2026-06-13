@@ -87,10 +87,15 @@ func scanGaps(ctx context.Context, c WireClient, gt kgtypes.GraphType, name, axi
 	return resp.GetItems(), resp.GetDirtyGen(), nil
 }
 
-// pipelineEligibleGraphTypes is the set of graph types the LLM pipeline drains —
-// mirrored verbatim from the server's pipelineEligibleGraphTypes
-// (tools_pipeline_scan.go:87). The eligible-type filter is a client concern (the
-// pipeline already owns which types it summarizes/embeds), so it lives here.
+// pipelineEligibleGraphTypes is the BUILTIN base of the set of graph types the
+// LLM pipeline drains. The eligible-type filter is a client concern (the pipeline
+// owns which types it summarizes/embeds), so it lives here. Registered custom
+// GraphTypeDef types are discovered dynamically each tick
+// (discoverRegisteredGraphTypes) and folded in on top of this base — the server's
+// per-axis gap shims no-op a both-false custom type cheaply, so the client
+// enumerates every registered type unconditionally and lets the server gate
+// per-behavior (the registered behavior-config is honored server-side; the
+// client applies no behavior gate).
 var pipelineEligibleGraphTypes = []kgtypes.GraphType{
 	kgtypes.GraphKnowledge,
 	kgtypes.GraphCode,
@@ -100,6 +105,64 @@ var pipelineEligibleGraphTypes = []kgtypes.GraphType{
 	kgtypes.GraphTransformers,
 }
 
+// discoverRegisteredGraphTypes issues ONE query(type:graph_type_def) Execute and
+// returns the registered custom graph type names discovered this tick. It
+// replicates graphtypecrud.Client.List's browse+decode shape (compile a
+// type-browse query, Execute, DecodeNodes, read node.SymbolName — ToNode stores
+// the registered name as both ID and SymbolName) WITHOUT importing graphtypecrud,
+// whose CRUD/validation surface the pipeline does not need.
+//
+// Returns (discovered, rlHint, sawRateLimit). A browse error is NON-FATAL: it is
+// logged and the empty slice is returned so the tick proceeds with builtins only
+// (identical to the per-type modules skip below). A rate-limit on the browse is
+// surfaced via (rlHint, sawRateLimit) so it can feed the SAME whole-tick-throttle
+// accounting listLoadedGraphs already runs — but the CALLER must NOT add this
+// browse to `succeeded`, so a registry-browse 429 alone never forces backoff when
+// the builtin types enumerated fine. Builtin-named types are filtered out
+// (defensive dedupe) so a registered type can never duplicate a builtin tick.
+func discoverRegisteredGraphTypes(ctx context.Context, c WireClient) (discovered []kgtypes.GraphType, rlHint time.Duration, sawRateLimit bool) {
+	rawArgs, err := json.Marshal(map[string]any{
+		"type":  string(kgtypes.NodeGraphTypeDef),
+		"limit": graphTypeDefListLimit,
+	})
+	if err != nil {
+		slog.Warn("pipeline.rpc: marshal graph_type_def browse args failed; skipping custom types this tick", "error", err)
+		return nil, 0, false
+	}
+	req, ok := engine.Compile("query", rawArgs)
+	if !ok {
+		slog.Warn("pipeline.rpc: graph_type_def browse query did not compile; skipping custom types this tick")
+		return nil, 0, false
+	}
+	resp, err := c.Execute(ctx, req)
+	if err != nil {
+		if hint, isRL := rateLimitHint(err); isRL {
+			rlHint = hint
+			sawRateLimit = true
+		}
+		slog.Warn("pipeline.rpc: graph_type_def browse failed; skipping custom types this tick", "error", err)
+		return nil, rlHint, sawRateLimit
+	}
+	nodes, derr := engine.DecodeNodes(resp)
+	if derr != nil {
+		slog.Warn("pipeline.rpc: graph_type_def browse decode failed; skipping custom types this tick", "error", derr)
+		return nil, 0, false
+	}
+	for _, n := range nodes {
+		name := n.GetSymbolName()
+		if name == "" || kgtypes.IsBuiltinGraphType(name) {
+			continue
+		}
+		discovered = append(discovered, kgtypes.GraphType(name))
+	}
+	return discovered, 0, false
+}
+
+// graphTypeDefListLimit caps the graph_type_def browse. Mirrors
+// graphtypecrud.graphTypeListLimit — a large explicit limit so the registry
+// enumeration is never silently truncated by a small default.
+const graphTypeDefListLimit = 100000
+
 // listLoadedGraphs returns every (gt, name) pair the pipeline should drain,
 // composed CLIENT-SIDE over the generic RETURN_MODE_GRAPH_NAMES read (a
 // pure all-types graph enumeration, not pipeline floor). It reproduces the
@@ -107,9 +170,13 @@ var pipelineEligibleGraphTypes = []kgtypes.GraphType{
 // entry (ListGraphsLite(GraphKnowledge) enumerates only the situation-overlay
 // subdir, so the root knowledge graph would otherwise be missed), then one
 // query(mode:modules) Execute per eligible type, appending each decoded
-// GraphInfo.Name. Used by the refresh goroutine, which dedupes by graphKey —
-// set membership, not order, is the invariant. Mirrors the D6 in-package
-// engine.Compile+Execute+DecodeGraphNames template.
+// GraphInfo.Name. The eligible-type set is the builtin base
+// (pipelineEligibleGraphTypes) PLUS the registered custom GraphTypeDef types
+// discovered this tick (discoverRegisteredGraphTypes), so a registered custom
+// graph's loaded names are drained alongside the builtins. Used by the refresh
+// goroutine, which dedupes by graphKey — set membership, not order, is the
+// invariant. Mirrors the D6 in-package engine.Compile+Execute+DecodeGraphNames
+// template.
 //
 // Throttle reporting: when EVERY eligible type fails to enumerate AND at least
 // one of those failures is a remote rate-limit (429), the tick made zero
@@ -122,6 +189,17 @@ var pipelineEligibleGraphTypes = []kgtypes.GraphType{
 // limiter (the bug class backoff.go documents for the worker pool).
 func listLoadedGraphs(ctx context.Context, c WireClient) ([]GraphRef, map[kgtypes.GraphType]bool, time.Duration, bool) {
 	out := []GraphRef{{GraphType: kgtypes.GraphKnowledge, GraphName: "default"}}
+	// Discover registered custom GraphTypeDef types this tick and fold them onto
+	// the builtin base. A discovery failure is non-fatal (custom types skipped,
+	// builtins still enumerate); a discovery rate-limit seeds the SAME
+	// sawRateLimit/rlHint accounting the per-type loop uses, but the browse is
+	// deliberately NOT added to `succeeded` — a registry-browse 429 alone must
+	// never force whole-tick backoff when the builtin types enumerated fine.
+	discovered, discRLHint, discSawRateLimit := discoverRegisteredGraphTypes(ctx, c)
+	graphTypes := make([]kgtypes.GraphType, 0, len(pipelineEligibleGraphTypes)+len(discovered))
+	graphTypes = append(graphTypes, pipelineEligibleGraphTypes...)
+	graphTypes = append(graphTypes, discovered...)
+
 	// succeeded records which graph types this tick actually enumerated. A type's
 	// per-type failure (a rollout 502, a permission_denied, a decode error) is
 	// NON-FATAL: we skip that type this tick rather than abort the whole refresh —
@@ -130,10 +208,10 @@ func listLoadedGraphs(ctx context.Context, c WireClient) ([]GraphRef, map[kgtype
 	// caller (refreshOnce) only unregisters collectors within successfully-
 	// enumerated types, so a failing type's existing collectors are preserved and
 	// re-converge on a later clean tick.
-	succeeded := make(map[kgtypes.GraphType]bool, len(pipelineEligibleGraphTypes))
-	var rlHint time.Duration
-	sawRateLimit := false
-	for _, gt := range pipelineEligibleGraphTypes {
+	succeeded := make(map[kgtypes.GraphType]bool, len(graphTypes))
+	rlHint := discRLHint
+	sawRateLimit := discSawRateLimit
+	for _, gt := range graphTypes {
 		rawArgs, err := json.Marshal(map[string]any{
 			"graph":  string(gt),
 			"mode":   "modules",
@@ -201,6 +279,12 @@ type updateBatchItem struct {
 // without them, mutate defaults to the knowledge graph and code-graph
 // summary/embed writes silently land in the wrong place. Same routing
 // shape as fetchNodes; mirrors server's graphSelectorFromArgs.
+//
+// Branch carries the overlay dimension a branch-overlay-resident write must
+// target. The gap scan tags overlay-resident GapItems with the overlay-qualified
+// GraphName ("repo@branch"); writeBatchUpdates splits that, routing the bare base
+// to Repo and the overlay to Branch so the write lands on the SAME overlay layer
+// the scan read from. Empty for base/default-branch writes.
 type updateBatchArgs struct {
 	Operation string            `json:"operation"`
 	Graph     string            `json:"graph,omitempty"`
@@ -208,6 +292,7 @@ type updateBatchArgs struct {
 	Account   string            `json:"account,omitempty"`
 	Name      string            `json:"name,omitempty"`
 	Language  string            `json:"language,omitempty"`
+	Branch    string            `json:"branch,omitempty"`
 	Items     []updateBatchItem `json:"items"`
 }
 
@@ -219,6 +304,16 @@ type updateBatchArgs struct {
 // backing DB or the write lands on the knowledge graph default and the
 // pipeline silently never makes progress.
 //
+// graphName may be overlay-qualified ("repo@branch") when the gap scan read
+// from a branch overlay. We split it on "@": the bare base routes to the
+// instance key (Repo for code) and the branch threads through args.Branch →
+// the Execute Target so the write lands on the SAME overlay layer the scan
+// read from. Without the split the overlay dimension is lost and the write
+// resolves the base graph, failing not_found for overlay-resident nodes (and
+// discarding the already-billed summary/embed on a repeat-billing loop). A
+// bare base name (no "@") leaves Branch empty — base/default-branch writes are
+// unchanged.
+//
 // Load-bearing perf criterion: this function MUST issue exactly 1 RPC per
 // call. The integration test asserts the wire-client call counter equals
 // the number of write groups, NOT the number of items.
@@ -226,8 +321,13 @@ func writeBatchUpdates(ctx context.Context, c WireClient, gt kgtypes.GraphType, 
 	if len(items) == 0 {
 		return nil
 	}
-	args := updateBatchArgs{Operation: "update_batch", Graph: string(gt), Items: items}
-	graphsel.ApplyInstanceKey(gt, graphName, &args.Repo, &args.Account, &args.Name, &args.Language, true)
+	// Split the overlay-qualified graphName ("repo@branch") into its base and
+	// branch. strings.Cut returns the whole string + "" branch when there is no
+	// "@" (the base/default-branch case). This is the canonical established split
+	// (mirrors composite_db_lifecycle.go / engine_pipeline_scan.go).
+	base, branch, _ := strings.Cut(graphName, "@")
+	args := updateBatchArgs{Operation: "update_batch", Graph: string(gt), Branch: branch, Items: items}
+	graphsel.ApplyInstanceKey(gt, base, &args.Repo, &args.Account, &args.Name, &args.Language, true)
 	// Compile the update_batch to a MUTATION_KIND_UPDATE_ITEMS MutationPlan and
 	// run it through the Execute seam (the same engine.Compile+Execute shape
 	// wire_persist.executeMutate uses) — NOT the legacy gc.Call(mutate) path.

@@ -440,13 +440,17 @@ func (x *PruneResponse) GetDeleted() uint64 {
 // opaque encoded segment — the server stores it verbatim and never decodes it.
 // generation is the server-stamped ordering value on a RESPONSE carrier; on a
 // Ship REQUEST the server DISCARDS the inbound value and stamps its own
-// (decision 09ce4090 caveat 3).
+// (the server is the ordering point). doc_count rides the ship carrier (additive
+// field 5) so the server can PERSIST the per-segment live doc count alongside
+// the opaque bytes — the segment-coverage levers read it back via ListDelta
+// metas without fetching/decoding any blob.
 type SegmentBlobProto struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`                  // content-hash SegmentID
-	Format        string                 `protobuf:"bytes,2,opt,name=format,proto3" json:"format,omitempty"`          // format tag (e.g. "bm25", "hnsw") — opaque routing string
-	Generation    uint64                 `protobuf:"varint,3,opt,name=generation,proto3" json:"generation,omitempty"` // server-stamped ordering value (response); discarded on Ship request
-	Bytes         []byte                 `protobuf:"bytes,4,opt,name=bytes,proto3" json:"bytes,omitempty"`            // opaque encoded segment — never decoded server-side
+	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`                              // content-hash SegmentID
+	Format        string                 `protobuf:"bytes,2,opt,name=format,proto3" json:"format,omitempty"`                      // format tag (e.g. "bm25", "hnsw") — opaque routing string
+	Generation    uint64                 `protobuf:"varint,3,opt,name=generation,proto3" json:"generation,omitempty"`             // server-stamped ordering value (response); discarded on Ship request
+	Bytes         []byte                 `protobuf:"bytes,4,opt,name=bytes,proto3" json:"bytes,omitempty"`                        // opaque encoded segment — never decoded server-side
+	DocCount      int32                  `protobuf:"varint,5,opt,name=doc_count,json=docCount,proto3" json:"doc_count,omitempty"` // searchengine.SegmentBlob.DocCount — persisted for coverage
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -507,6 +511,13 @@ func (x *SegmentBlobProto) GetBytes() []byte {
 		return x.Bytes
 	}
 	return nil
+}
+
+func (x *SegmentBlobProto) GetDocCount() int32 {
+	if x != nil {
+		return x.DocCount
+	}
+	return 0
 }
 
 // SegmentMetaProto mirrors searchengine.SegmentMeta (segment.go:58-64)
@@ -614,14 +625,15 @@ const file_knowledge_v1_segment_proto_rawDesc = "" +
 	"\x06target\x18\x01 \x01(\v2\x1b.knowledge.v1.GraphSelectorR\x06target\x12\x10\n" +
 	"\x03ids\x18\x02 \x03(\tR\x03ids\")\n" +
 	"\rPruneResponse\x12\x18\n" +
-	"\adeleted\x18\x01 \x01(\x04R\adeleted\"p\n" +
+	"\adeleted\x18\x01 \x01(\x04R\adeleted\"\x8d\x01\n" +
 	"\x10SegmentBlobProto\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x16\n" +
 	"\x06format\x18\x02 \x01(\tR\x06format\x12\x1e\n" +
 	"\n" +
 	"generation\x18\x03 \x01(\x04R\n" +
 	"generation\x12\x14\n" +
-	"\x05bytes\x18\x04 \x01(\fR\x05bytes\"\x96\x01\n" +
+	"\x05bytes\x18\x04 \x01(\fR\x05bytes\x12\x1b\n" +
+	"\tdoc_count\x18\x05 \x01(\x05R\bdocCount\"\x96\x01\n" +
 	"\x10SegmentMetaProto\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x16\n" +
 	"\x06format\x18\x02 \x01(\tR\x06format\x12\x1e\n" +

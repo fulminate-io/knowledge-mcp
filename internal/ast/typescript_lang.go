@@ -38,6 +38,25 @@ var tsLangConfig = LangConfig{
 	IdentRule: isJSIdent,
 }
 
+// tsxLangConfig is the registered LangConfig for the JSX-capable TypeScript
+// dialect (.tsx). It mirrors tsLangConfig in every field except Lang — the
+// tsx grammar is a strict superset of typescript, so the same wrapper order
+// and identifier rule apply. A distinct config is required because the DSL
+// engine keys LangConfigs by treesitter.Language: without it, langConfigFor
+// (lang_config.go:91) misses for LangTSX and ast match/replace/where on tsx
+// error out even though Phase 1 registration already resolves the grammar
+// (which alone is enough for explain/list_node_kinds, not pattern support).
+var tsxLangConfig = LangConfig{
+	Lang:     treesitter.LangTSX,
+	Reserved: "__META_AST_",
+	Wrappers: []ContextWrapper{
+		{Name: "decl", Prefix: "", Suffix: "\n"},
+		{Name: "stmt", Prefix: "function __metaWrapper__() {\n", Suffix: "\n}\n"},
+		{Name: "expr", Prefix: "const __metaValue__ = ", Suffix: ";\n"},
+	},
+	IdentRule: isJSIdent,
+}
+
 // isJSIdent reports whether s is a valid ASCII JavaScript / TypeScript
 // identifier (the subset the engine generates for substituted
 // placeholders). The full JS identifier grammar accepts broader Unicode
@@ -48,4 +67,5 @@ func isJSIdent(s string) bool { return asciiGoIdent(s) }
 
 func init() {
 	registerLangConfig(tsLangConfig)
+	registerLangConfig(tsxLangConfig)
 }

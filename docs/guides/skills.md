@@ -32,6 +32,7 @@ for verification.
 | `/retro` | Capture the session feedback loop after work is verified — reproduction guide, real-world evidence, findings, ticket close. | an optional focus on what was delivered |
 | `/ingest-patterns` | Ingest design patterns from an authoritative source into the design-patterns library graph. | a source slug, PDF path, or ticket id |
 | `/orchestrate` | Orchestration discipline — the team hierarchy, signal routing, and drift detection that govern running work end to end. | (loads at the brainstorm-to-execute boundary) |
+| `/hive` | Join a hive as a worker (claim work, do it, report the result) or coordinate (dispatch role-targeted work and read outcomes) over the cloud work-queue. | `join <hive> as <role>…` or `dispatch <hive>` |
 
 The skills are designed to be run in order — `/retro` only makes sense after the
 work it reflects on is verified, and `/implement` only after a plan exists. Follow

@@ -20,6 +20,17 @@ const helpMutate = `# mutate — Create, update, and link knowledge nodes
   Q5 locked: rule and criterion KEEP auto-synthesized Summary (no summary required).
   Q2 locked: research goes through handleRecordResearch (auto-synthesized).
 
+  Naming for retrieval: the node "name" and the first sentence of "description"
+  are what BM25 matches when this node is recalled later. State the concept in
+  plain, searchable terms — a vague title ("Notes", "Fix", "Update") is
+  search-invisible; name for the thing a future reader would type to find it.
+
+  Context links (optional, born-linked, fail-tolerant): on finding/research/rule
+  create, pass ticket_id to group the node under its work item
+  (ticket--contains-->node), session to group it under a working session, and
+  links (node IDs) to relate it to the touched code/knowledge. An unresolvable
+  target is dropped with a warning, never blocking the write.
+
   Special fields:
     criterion:  step_id (required), criterion_type (automated|manual), command
     finding:    question_id (auto-links via "answers" edge)
@@ -90,8 +101,13 @@ const helpMutate = `# mutate — Create, update, and link knowledge nodes
 
 const helpDelete = `# delete — Remove nodes or prune history
 
+Deletes are SOFT by default: the node is tombstoned — hidden from every normal
+read, but the data survives and is recoverable. Pass hard:true for PERMANENT,
+irrecoverable removal (reserve for deliberate cleanup).
+
 ## Delete specific nodes
-  delete({ "ids": ["node_id1", "node_id2"] })
+  delete({ "ids": ["node_id1", "node_id2"] })            — soft (tombstone)
+  delete({ "ids": ["node_id1"], "hard": true })          — permanent removal
 
 ## Prune by age
   delete({ "older_than": "7d", "dry_run": true })  — preview
@@ -104,5 +120,6 @@ const helpDelete = `# delete — Remove nodes or prune history
   - Deleting a node does NOT delete its edges
   - Pruning runs against creation time, not update time
   - Use dry_run first on large prunes
+  - A malformed hard value DENIES the delete (it never guesses on a destructive op)
   - graph:"practice" requires language param
 `

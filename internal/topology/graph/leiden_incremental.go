@@ -22,8 +22,6 @@ package graph
 // applySubsetRefine, cpmBestMoveLocal) live in leiden_static.go and are
 // reused via applySubsetRefine when refining moved communities.
 
-import "sort"
-
 // NewLeidenState runs a full Leiden pass and caches the result.
 // The returned state is ready to receive UpdateIncremental calls when the
 // underlying graph changes.
@@ -35,6 +33,29 @@ func NewLeidenState(nodeIDs []string, adj map[string][]string, gamma float64) *L
 	s.CommSize = buildCommSize(s.CommunityOf)
 	s.CommWeightIn = buildCommWeightIn(s.CommunityOf, adj)
 	return s
+}
+
+// RehydrateLeidenState reconstructs a LeidenState from an already-computed
+// partition WITHOUT re-running Leiden. Sibling of NewLeidenState minus the
+// runLeidenFull call: it IMPORTS the supplied communityOf verbatim (e.g. the
+// persisted cluster_id partition read back on cold start) and rebuilds the
+// auxiliary CommSize/CommWeightIn maps PURELY from (communityOf, adj) via the
+// same buildCommSize/buildCommWeightIn helpers NewLeidenState uses.
+//
+// Community labels are arbitrary strings — only the partition (the equivalence
+// classes of communityOf) is load-bearing. Because buildCommSize and
+// buildCommWeightIn are deterministic pure functions of (communityOf, adj), the
+// rehydrated aux maps are identical to what an in-memory NewLeidenState held for
+// the same partition, so subsequent UpdateIncremental calls behave identically.
+func RehydrateLeidenState(communityOf map[string]string, adj map[string][]string, gamma float64) *LeidenState {
+	cfg := defaultLeidenConfig()
+	cfg.Gamma = gamma
+	return &LeidenState{
+		cfg:          cfg,
+		CommunityOf:  communityOf,
+		CommSize:     buildCommSize(communityOf),
+		CommWeightIn: buildCommWeightIn(communityOf, adj),
+	}
 }
 
 // UpdateIncremental re-clusters only the nodes affected by changedEdges (DF strategy).
@@ -156,23 +177,24 @@ func (ls *LeidenState) bestMove(node string, neighbors []string) string {
 	return best
 }
 
-// renumber re-labels communities to stable sorted IDs in-place.
-// Called after every UpdateIncremental so callers see deterministic community
-// labels regardless of internal walk order.
+// renumber re-labels each community with its lexicographically smallest member
+// nodeID (minMemberLabel) in-place. Called after every UpdateIncremental so
+// callers see deterministic community labels regardless of internal walk order.
+// Shares the canonical min-member scheme with the full path (renumberIntToMap):
+// because the label depends only on each community's member SET, a partition
+// produced incrementally here gets the SAME labels a full pass would assign —
+// no full-vs-incremental divergence, and (labels being nodeID strings, never
+// re-sorted as decimal) no lexicographic >10-community relabel churn.
 func (ls *LeidenState) renumber() {
-	seen := make(map[string]string)
-	var ids []string
-	for _, c := range ls.CommunityOf {
-		if _, ok := seen[c]; !ok {
-			seen[c] = ""
-			ids = append(ids, c)
-		}
+	membersByComm := make(map[string][]string, len(ls.CommunityOf))
+	for n, c := range ls.CommunityOf {
+		membersByComm[c] = append(membersByComm[c], n)
 	}
-	sort.Strings(ids)
-	for i, old := range ids {
-		seen[old] = stableCommID(i)
+	oldToNew := make(map[string]string, len(membersByComm))
+	for c, members := range membersByComm {
+		oldToNew[c] = minMemberLabel(members)
 	}
 	for n, old := range ls.CommunityOf {
-		ls.CommunityOf[n] = seen[old]
+		ls.CommunityOf[n] = oldToNew[old]
 	}
 }

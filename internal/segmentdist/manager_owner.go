@@ -81,7 +81,9 @@ func (m *Manager) AddAndShip(ctx context.Context, gt kgtypes.GraphType, name str
 	if err := dm.engine.Add(docs); err != nil {
 		return err
 	}
-	_, err := dm.ship(ctx)
+	// ROLE B (embed): reconcile-prune against locallyShipped only — restart-safe,
+	// never prunes the prior corpus this process did not ship.
+	_, err := dm.ship(ctx, dm.locallyShipped)
 	return err
 }
 
@@ -100,7 +102,8 @@ func (m *Manager) AddAndShipFields(ctx context.Context, gt kgtypes.GraphType, na
 	if err := dm.engine.Add(docs); err != nil {
 		return err
 	}
-	_, err := dm.ship(ctx)
+	// ROLE B (embed): reconcile-prune against locallyShipped only — restart-safe.
+	_, err := dm.ship(ctx, dm.locallyShipped)
 	return err
 }
 
@@ -121,14 +124,16 @@ func (m *Manager) Flush(ctx context.Context, gt kgtypes.GraphType, name string) 
 	if err := hnsw.engine.Flush(); err != nil {
 		return err
 	}
-	if _, err := hnsw.ship(ctx); err != nil {
+	// ROLE B (embed force-seal of the sub-threshold tail, NOT a complete corpus):
+	// reconcile-prune against locallyShipped only — restart-safe.
+	if _, err := hnsw.ship(ctx, hnsw.locallyShipped); err != nil {
 		return err
 	}
 	bm := m.bm25ManagerFor(gt, name)
 	if err := bm.engine.Flush(); err != nil {
 		return err
 	}
-	_, err := bm.ship(ctx)
+	_, err := bm.ship(ctx, bm.locallyShipped)
 	return err
 }
 
@@ -175,6 +180,16 @@ func (m *Manager) AddFields(ctx context.Context, gt kgtypes.GraphType, name stri
 // merged-away ids, never a live sibling: this is the fix for the concurrent-ship
 // data-loss race). It then seals + ships the BM25 tail once.
 //
+// PRUNE ROLE A (replace-prune): both ships pass shippedIDs (the server-seeded
+// full set), NOT locallyShipped. The deterministic Export() IS the complete
+// rebuilt corpus, so shippedIDs − Export() is exactly the old (possibly
+// degenerate) corpus this rebuild supersedes — the rebuild MUST prune it to
+// replace a degenerate pool. The driver error-gates the rebuild BEFORE calling
+// FlushDeterministic, so a partial Export can never reach this prune. (A
+// locallyShipped-only mechanic would orphan the old corpus here: a fresh
+// process's locallyShipped is empty, so the rebuild would ship the new corpus
+// alongside the stale old one and never prune it.)
+//
 // RETURNS the HNSW pruned []SegmentID (the merged-away ids reconcilePrune dropped
 // server-side) so the driver feeds them to InvalidateLocal for local L2 .seg
 // eviction. The BM25 ship's prune set is irrelevant to local embed-cache
@@ -184,7 +199,7 @@ func (m *Manager) FlushDeterministic(ctx context.Context, gt kgtypes.GraphType, 
 	if err := hnswDM.engine.Flush(); err != nil {
 		return nil, err
 	}
-	pruned, err := hnswDM.ship(ctx)
+	pruned, err := hnswDM.ship(ctx, hnswDM.shippedIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -192,7 +207,7 @@ func (m *Manager) FlushDeterministic(ctx context.Context, gt kgtypes.GraphType, 
 	if err := bm.engine.Flush(); err != nil {
 		return nil, err
 	}
-	if _, err := bm.ship(ctx); err != nil {
+	if _, err := bm.ship(ctx, bm.shippedIDs); err != nil {
 		return nil, err
 	}
 	return pruned, nil
@@ -228,6 +243,48 @@ func (m *Manager) HasShippedSegments(ctx context.Context, gt kgtypes.GraphType, 
 		return false, err
 	}
 	return len(metas) > 0, nil
+}
+
+// ShippedSegmentDocCount is the coverage-ratio probe's data source: it sums the
+// per-segment live doc count across the graph's HNSW-format shipped segments
+// (covered) from a single ListDelta(sinceGen=0) — the same cheap, engine-free,
+// blob-free presence list HasShippedSegments uses. It returns:
+//
+//   - covered: the summed HNSW meta.DocCount — "segment-covered docs". ONLY the
+//     HNSW format is summed: BM25 metas index the SAME nodes, so summing both
+//     would double-count; HNSW is the per-node vector coverage that mirrors the
+//     graph's binary_vector_count denominator the coverage ratio compares against.
+//   - anyUnknown: true when ANY summed HNSW meta has DocCount==0. A zero doc count
+//     means that segment predates the doc_count wire plumbing (an old blob written
+//     before the field existed), so its real coverage is UNKNOWN. The coverage
+//     probe treats anyUnknown as the conservative-unknown signal and DISARMS the
+//     ratio trigger (falling back to the zero-only heal) — without this guard a
+//     fleet mid-migration, whose every shipped meta still reports doc_count=0,
+//     would read covered=0 on every graph and trigger a fleet-wide rebuild storm.
+//
+// Does NOT Fetch any blob and does NOT touch the per-graph engines/maps — same
+// presence-probe contract as HasShippedSegments (a fresh rpcSegmentSource per
+// call, no engine, no cache).
+func (m *Manager) ShippedSegmentDocCount(
+	ctx context.Context, gt kgtypes.GraphType, name string,
+) (covered int, anyUnknown bool, err error) {
+	source := newRPCSegmentSource(m.caller, graphSelector(gt, name), context.Background())
+	metas, err := source.List(ctx, 0)
+	if err != nil {
+		return 0, false, err
+	}
+	hnswFormat := hnsw.New().Name()
+	for _, meta := range metas {
+		if meta.Format != hnswFormat {
+			continue
+		}
+		if meta.DocCount == 0 {
+			anyUnknown = true
+			continue
+		}
+		covered += meta.DocCount
+	}
+	return covered, anyUnknown, nil
 }
 
 // managerFor lazily constructs (check-construct-store under the mutex) the

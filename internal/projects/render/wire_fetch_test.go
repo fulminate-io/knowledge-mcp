@@ -192,3 +192,28 @@ func TestTruncate(t *testing.T) {
 	assert.Equal(t, "short", truncate("short", 10))
 	assert.Equal(t, "tru...", truncate("truncated", 3))
 }
+
+// TestGraphTarget_PerFamilySelectorField: each graph family routes its instance
+// name into the selector field the server's resolver actually keys on — practice
+// via Language, code via REPO (the code resolver rejects name-keyed selectors
+// before any lookup, so routing code through Name silently fails every
+// cross-graph code fetch and drops every born-link referent), everything else
+// via Name. Fails-when-absent: reverting code to the Name branch turns the Repo
+// assertion red.
+func TestGraphTarget_PerFamilySelectorField(t *testing.T) {
+	assert.Nil(t, graphTarget("", "ignored"), "empty graph type targets knowledge/default")
+
+	prac := graphTarget("practice", "go")
+	assert.Equal(t, "go", prac.GetLanguage())
+	assert.Empty(t, prac.GetName())
+	assert.Empty(t, prac.GetRepo())
+
+	code := graphTarget("code", "knowledge")
+	assert.Equal(t, "knowledge", code.GetRepo(), "code graphs are Repo-keyed on the server")
+	assert.Empty(t, code.GetName(), "a name-keyed code selector fails server-side validation")
+	assert.Empty(t, code.GetLanguage())
+
+	logs := graphTarget("logs", "query-123")
+	assert.Equal(t, "query-123", logs.GetName())
+	assert.Empty(t, logs.GetRepo())
+}

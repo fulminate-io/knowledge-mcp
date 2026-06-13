@@ -86,10 +86,13 @@ func fetchDecisionsTopic(ctx context.Context, deps ClientDeps, topic string, lim
 	// KNOWLEDGE-graph search and must NOT dispatch a server RETURN_MODE_SEARCH.
 	// Route it through the CLIENT knowledge segment engine (mgr.Search → RRF → bulk
 	// hydrate) — the same path composeKnowledgeSearch uses — then keep the
-	// decision-type narrow. The Manager is always wired in the real client.
+	// decision-type narrow. The Manager is wired for the life of the daemon EXCEPT
+	// during the bind-first wiring window (bind-first startup) and in a degraded harness; this
+	// consumer is UNGATED by design and DEGRADES to no candidates (graceful empty)
+	// when the Manager is nil, rather than gating on PipelineReady.
 	mgr := deps.SegmentManager()
 	if mgr == nil {
-		return nil, nil // un-wired/degraded harness → no candidates (graceful empty).
+		return nil, nil // un-wired/degraded/still-wiring → no candidates (graceful empty).
 	}
 	query := topic + " decision"
 	var queryVec []byte

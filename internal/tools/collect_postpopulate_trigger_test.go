@@ -15,6 +15,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 	"github.com/fulminate-io/knowledge-mcp/internal/collectorwire"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
+	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/postpopulate"
@@ -51,20 +52,29 @@ type ppTriggerDeps struct {
 	gc   GraphCaller
 }
 
-func (d *ppTriggerDeps) LocalLiveness() LocalLiveness     { return nil }
-func (d *ppTriggerDeps) Sink() collector.Sink             { return d.sink }
-func (d *ppTriggerDeps) RootDir() string                  { return "" }
-func (d *ppTriggerDeps) WorkerRuntime() WorkerRuntimeAPI  { return nil }
-func (d *ppTriggerDeps) WorkerCRUD() WorkerCRUDAPI        { return nil }
-func (d *ppTriggerDeps) GraphTypeCRUD() GraphTypeCRUDAPI  { return nil }
-func (d *ppTriggerDeps) Embedder() embed.BinaryEmbedder   { return nil }
-func (d *ppTriggerDeps) BackendResolver() BackendResolver { return nil }
-func (d *ppTriggerDeps) GraphCaller() GraphCaller         { return d.gc }
-func (d *ppTriggerDeps) LocalGraphCaller() GraphCaller    { return d.gc }
-func (d *ppTriggerDeps) RepoResolver() *RepoResolver      { return nil }
-func (d *ppTriggerDeps) SegmentManager() SegmentSearcher  { return nil }
-func (d *ppTriggerDeps) SegmentShipper() SegmentShipper   { return nil }
-func (d *ppTriggerDeps) PipelineScanner() PipelineScanner { return nil }
+func (d *ppTriggerDeps) LocalLiveness() LocalLiveness                 { return nil }
+func (d *ppTriggerDeps) Sink() collector.Sink                         { return d.sink }
+func (d *ppTriggerDeps) RootDir() string                              { return "" }
+func (d *ppTriggerDeps) WorkerRuntime() WorkerRuntimeAPI              { return nil }
+func (d *ppTriggerDeps) WorkerReady() bool                            { return true }
+func (d *ppTriggerDeps) PropReady() bool                              { return true }
+func (d *ppTriggerDeps) PipelineReady() bool                          { return true }
+func (d *ppTriggerDeps) ClaimRegistry() *hivemonitor.Registry         { return nil }
+func (d *ppTriggerDeps) BanSet() *hivemonitor.BanSet                  { return nil }
+func (d *ppTriggerDeps) WorkerCRUD() WorkerCRUDAPI                    { return nil }
+func (d *ppTriggerDeps) GraphTypeCRUD() GraphTypeCRUDAPI              { return nil }
+func (d *ppTriggerDeps) Embedder() embed.BinaryEmbedder               { return nil }
+func (d *ppTriggerDeps) BackendResolver() BackendResolver             { return nil }
+func (d *ppTriggerDeps) GraphCaller() GraphCaller                     { return d.gc }
+func (d *ppTriggerDeps) LocalGraphCaller() GraphCaller                { return d.gc }
+func (d *ppTriggerDeps) RepoResolver() *RepoResolver                  { return nil }
+func (d *ppTriggerDeps) SegmentManager() SegmentSearcher              { return nil }
+func (d *ppTriggerDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
+func (d *ppTriggerDeps) SegmentShipper() SegmentShipper               { return nil }
+func (d *ppTriggerDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
+func (d *ppTriggerDeps) PipelineScanner() PipelineScanner             { return nil }
+func (d *ppTriggerDeps) ReflectionForcer() ReflectionForcer           { return nil }
+func (d *ppTriggerDeps) SimilarityForcer() SimilarityForcer           { return nil }
 
 // TestInterceptCollect_FiresPostPopulateHookOnLivePath proves the
 // gate: PostPopulate edge enrichment demonstrably runs on the live collect path

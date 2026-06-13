@@ -6,6 +6,7 @@ import (
 	"fmt"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
+	"github.com/fulminate-io/knowledge-mcp/internal/pipeline"
 )
 
 // manualPauseReason is the default reason stamped when an operator runs
@@ -46,10 +47,12 @@ func handleResumePipeline(deps ClientDeps) kgtools.ToolResult {
 	return textResult("Pipeline RESUMED: the summary + embed workers are re-enabled and will resume processing on the next batch.")
 }
 
-// handlePipelineStatus reports whether the worker pool is running or latched
-// paused, including the breaker's reason and how to resume. Degrades to
-// "(pipeline disabled)" when no pipeline is wired (--no-llm-pipeline, or
-// neither summarizer nor embedder configured at boot).
+// handlePipelineStatus reports the PER-AXIS paused/running state of the summary
+// and embed breakers, including each paused axis's reason, since, and
+// dominant-class breakdown, plus how to resume. The breakers are independent, so
+// one axis can be paused while the other runs — the render names each axis
+// explicitly. Degrades to "(pipeline disabled)" when no pipeline is wired
+// (--no-llm-pipeline, or neither summarizer nor embedder configured at boot).
 func handlePipelineStatus(deps ClientDeps) kgtools.ToolResult {
 	pp, ok := deps.(pipelinePauser)
 	if !ok {
@@ -63,6 +66,26 @@ func handlePipelineStatus(deps ClientDeps) kgtools.ToolResult {
 		return textResult("Pipeline: RUNNING — summary + embed workers are processing normally.")
 	}
 	return textResult(fmt.Sprintf(
-		"Pipeline: PAUSED since %s\n  Reason: %s\n  %s",
-		st.Since.Format("2006-01-02 15:04:05 MST"), st.Reason, resumeHint))
+		"Pipeline: PAUSED\n%s%s  %s",
+		renderAxisStatus("summary", st.Summary),
+		renderAxisStatus("embed", st.Embed),
+		resumeHint))
+}
+
+// renderAxisStatus renders one axis's status block. A running axis reads as a
+// single RUNNING line; a paused axis renders its since, reason, and (when more
+// than one error class is present) its PRE-RENDERED per-class Breakdown. The
+// breakdown is the pipeline-side string tally — tools reads only the string
+// fields (Reason, Breakdown) and never the typed error-class enum.
+func renderAxisStatus(axis string, a pipeline.AxisStatus) string {
+	if !a.Paused {
+		return fmt.Sprintf("  %s: RUNNING\n", axis)
+	}
+	breakdownLine := ""
+	if a.Breakdown != "" {
+		breakdownLine = fmt.Sprintf("    Breakdown: %s\n", a.Breakdown)
+	}
+	return fmt.Sprintf(
+		"  %s: PAUSED since %s\n    Reason: %s\n%s",
+		axis, a.Since.Format("2006-01-02 15:04:05 MST"), a.Reason, breakdownLine)
 }

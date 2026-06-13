@@ -16,6 +16,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
+	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
 )
 
 // cloudStatusDeps satisfies ClientDeps AND the optional cloudStatusInfo
@@ -33,20 +34,29 @@ type cloudStatusDeps struct {
 	host     string
 }
 
-func (d *cloudStatusDeps) LocalLiveness() LocalLiveness     { return d.local }
-func (d *cloudStatusDeps) Sink() collector.Sink             { return nil }
-func (d *cloudStatusDeps) RootDir() string                  { return "" }
-func (d *cloudStatusDeps) WorkerRuntime() WorkerRuntimeAPI  { return nil }
-func (d *cloudStatusDeps) WorkerCRUD() WorkerCRUDAPI        { return nil }
-func (d *cloudStatusDeps) GraphTypeCRUD() GraphTypeCRUDAPI  { return nil }
-func (d *cloudStatusDeps) Embedder() embed.BinaryEmbedder   { return nil }
-func (d *cloudStatusDeps) BackendResolver() BackendResolver { return nil }
-func (d *cloudStatusDeps) GraphCaller() GraphCaller         { return d.gc }
-func (d *cloudStatusDeps) LocalGraphCaller() GraphCaller    { return d.gc }
-func (d *cloudStatusDeps) RepoResolver() *RepoResolver      { return nil }
-func (d *cloudStatusDeps) SegmentManager() SegmentSearcher  { return nil }
-func (d *cloudStatusDeps) SegmentShipper() SegmentShipper   { return nil }
-func (d *cloudStatusDeps) PipelineScanner() PipelineScanner { return nil }
+func (d *cloudStatusDeps) LocalLiveness() LocalLiveness                 { return d.local }
+func (d *cloudStatusDeps) Sink() collector.Sink                         { return nil }
+func (d *cloudStatusDeps) RootDir() string                              { return "" }
+func (d *cloudStatusDeps) WorkerRuntime() WorkerRuntimeAPI              { return nil }
+func (d *cloudStatusDeps) WorkerReady() bool                            { return true }
+func (d *cloudStatusDeps) PropReady() bool                              { return true }
+func (d *cloudStatusDeps) PipelineReady() bool                          { return true }
+func (d *cloudStatusDeps) ClaimRegistry() *hivemonitor.Registry         { return nil }
+func (d *cloudStatusDeps) BanSet() *hivemonitor.BanSet                  { return nil }
+func (d *cloudStatusDeps) WorkerCRUD() WorkerCRUDAPI                    { return nil }
+func (d *cloudStatusDeps) GraphTypeCRUD() GraphTypeCRUDAPI              { return nil }
+func (d *cloudStatusDeps) Embedder() embed.BinaryEmbedder               { return nil }
+func (d *cloudStatusDeps) BackendResolver() BackendResolver             { return nil }
+func (d *cloudStatusDeps) GraphCaller() GraphCaller                     { return d.gc }
+func (d *cloudStatusDeps) LocalGraphCaller() GraphCaller                { return d.gc }
+func (d *cloudStatusDeps) RepoResolver() *RepoResolver                  { return nil }
+func (d *cloudStatusDeps) SegmentManager() SegmentSearcher              { return nil }
+func (d *cloudStatusDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
+func (d *cloudStatusDeps) SegmentShipper() SegmentShipper               { return nil }
+func (d *cloudStatusDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
+func (d *cloudStatusDeps) PipelineScanner() PipelineScanner             { return nil }
+func (d *cloudStatusDeps) ReflectionForcer() ReflectionForcer           { return nil }
+func (d *cloudStatusDeps) SimilarityForcer() SimilarityForcer           { return nil }
 
 func (d *cloudStatusDeps) CloudStatusInfo() (bool, string) { return d.loggedIn, d.host }
 

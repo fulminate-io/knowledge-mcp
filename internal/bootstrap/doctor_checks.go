@@ -101,7 +101,7 @@ func checkConfig(configFile string) checkResult {
 			msg: fmt.Sprintf("%s: %v", path, err),
 		}
 	}
-	if err := cfg.Validate([]config.Consumer{config.ConsumerSummarizer, config.ConsumerDream}); err != nil {
+	if err := cfg.Validate([]config.Consumer{config.ConsumerSummarizer, config.ConsumerDream, config.ConsumerHiveSupervisor}); err != nil {
 		return checkResult{
 			name: "config", status: statusErr,
 			msg:    path,
@@ -134,7 +134,7 @@ func checkConsumerCLIs(configFile string) []checkResult {
 	if err != nil {
 		return []checkResult{{name: "cli", status: statusInfo, msg: "config not loadable; see config check above"}}
 	}
-	consumers := []config.Consumer{config.ConsumerSummarizer, config.ConsumerDream}
+	consumers := []config.Consumer{config.ConsumerSummarizer, config.ConsumerDream, config.ConsumerHiveSupervisor}
 	out := make([]checkResult, 0, len(consumers))
 	for _, consumer := range consumers {
 		out = append(out, checkConsumerCLI(cfg, consumer))

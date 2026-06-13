@@ -68,6 +68,66 @@ func TestHandleThinkClient_BasicForward(t *testing.T) {
 	assert.Contains(t, body2, "Branches from: parent-id-7")
 }
 
+// TestHandleThinkClient_TicketContains asserts a think() with a resolvable
+// ticket_id emits a ticket--contains-->thought edge on the SAME create
+// MutationPlan as the thought node + branches_from/links edges. The
+// ticket is the existing-node FROM endpoint; the new thought is slot 0.
+func TestHandleThinkClient_TicketContains(t *testing.T) {
+	fc := &fakeGraphCaller{
+		queryResponses: map[string]kgtools.ToolResult{
+			"tkt-7": nodeResultJSON(t, "tkt-7", "ticket", nil),
+		},
+		mutateIDs: []string{"th-ticketed"},
+	}
+	deps := interceptTestDeps{gc: fc}
+	res := handleThinkClient(context.Background(), deps, kgtools.CallToolParams{
+		Name: "thoughts",
+		Arguments: json.RawMessage(`{
+			"operation": "think",
+			"content": "a ticketed thought",
+			"summary": "a ticketed thought, searchable gist",
+			"ticket_id": "tkt-7"
+		}`),
+	})
+	require.False(t, res.IsError, "ticketed think must succeed: %s", toolResultText(res))
+
+	require.Len(t, fc.execMutations, 1, "single CREATE plan (no session)")
+	m := fc.execMutations[0]
+	assert.Equal(t, knowledgev1.MutationPlan_MUTATION_KIND_CREATE, m.GetKind())
+	var sawTicketContains bool
+	for _, e := range m.GetEdges() {
+		if e.GetType() == string(kgtypes.EdgeKGContains) && e.GetFromId() == "tkt-7" && e.GetToIdx() == 0 {
+			sawTicketContains = true
+		}
+	}
+	assert.True(t, sawTicketContains, "ticket--contains-->thought must ride the create_batch")
+}
+
+// TestHandleThinkClient_AbsentTicket_ThoughtStillCreated is the never-blocks
+// guard for think's ticket arm: an unresolvable ticket_id is dropped (no
+// contains edge) and the thought is still created (non-error, ID returned).
+func TestHandleThinkClient_AbsentTicket_ThoughtStillCreated(t *testing.T) {
+	fc := &fakeGraphCaller{mutateIDs: []string{"th-noticket"}} // ticket resolves nowhere.
+	deps := interceptTestDeps{gc: fc}
+	res := handleThinkClient(context.Background(), deps, kgtools.CallToolParams{
+		Name: "thoughts",
+		Arguments: json.RawMessage(`{
+			"operation": "think",
+			"content": "an orphan-ticket thought",
+			"summary": "orphan-ticket thought gist",
+			"ticket_id": "ghost-ticket"
+		}`),
+	})
+	require.False(t, res.IsError, "an absent ticket must NOT fail the think")
+	assert.Contains(t, toolResultText(res), "th-noticket", "thought ID still returned")
+
+	require.Len(t, fc.execMutations, 1)
+	for _, e := range fc.execMutations[0].GetEdges() {
+		assert.NotEqual(t, "ghost-ticket", e.GetFromId(),
+			"no ticket--contains edge may ride the batch for an unresolvable ticket")
+	}
+}
+
 func TestHandleThinkClient_EmptyContent_Errors(t *testing.T) {
 	fc := &fakeGraphCaller{}
 	deps := interceptTestDeps{gc: fc}
@@ -178,10 +238,15 @@ func TestHandleThinkClient_StatusOverride_FollowsUpWithUpdate(t *testing.T) {
 	assert.Equal(t, "validated", upd.GetSetFields()["status"])
 }
 
-// TestHandleThinkClient_SessionLineage covers the session invariants: an
-// EXISTING NodeThoughtSession (found by name) gets an EdgeKGContains session→
-// thought edge, and when the session already holds a prior thought an EdgeNext
-// prev→thought lineage edge is added. NO ThoughtLatestTSKey watermark is written.
+// TestHandleThinkClient_SessionLineage covers the session invariants under the
+// ATOMIC think-path fix: an EXISTING NodeThoughtSession (found by name) gets an
+// EdgeKGContains session→thought edge that RIDES THE CREATE MutationPlan (batch
+// edge, not a separate post-create LINK), and when the session already holds a
+// prior thought an EdgeNext prev→thought lineage edge is added as a separate
+// LINK. The containment assertion is the fails-when-absent regression guard:
+// reverting the Phase-1 source edit (which appends the contains batch edge)
+// makes the create-batch contains edge absent and turns this test RED. NO
+// ThoughtLatestTSKey watermark is written.
 func TestHandleThinkClient_SessionLineage(t *testing.T) {
 	fc := &fakeGraphCaller{
 		// The session Match (knowledge type-browse) returns the existing session.
@@ -204,13 +269,21 @@ func TestHandleThinkClient_SessionLineage(t *testing.T) {
 	require.False(t, res.IsError, "session think should succeed: %s", toolResultText(res))
 	assert.Contains(t, toolResultText(res), "Session: design")
 
-	// Mutations: [0] the thought CREATE, then the session lineage LINKs.
-	require.GreaterOrEqual(t, len(fc.execMutations), 3, "create + EdgeKGContains + EdgeNext")
-	assert.Equal(t, knowledgev1.MutationPlan_MUTATION_KIND_CREATE, fc.execMutations[0].GetKind())
+	// Mutations: [0] the thought CREATE (carrying the session contains batch edge),
+	// then only the EdgeNext lineage LINK.
+	require.GreaterOrEqual(t, len(fc.execMutations), 2, "create (with contains batch edge) + EdgeNext link")
+	createPlan := fc.execMutations[0]
+	assert.Equal(t, knowledgev1.MutationPlan_MUTATION_KIND_CREATE, createPlan.GetKind())
 
-	// Collect the LINK plans and assert both lineage edges landed with the right
-	// direction + type.
-	sawContains, sawNext := false, false
+	// FAILS-WHEN-ABSENT: the session→thought containment edge must ride the CREATE
+	// batch (the atomic shape). hasContainsFrom checks the contains-->slot0 batch
+	// edge from sess-1; reverting the Phase-1 append makes this false → RED.
+	assert.True(t, hasContainsFrom(createPlan, "sess-1"),
+		"EdgeKGContains session→thought must ride the CREATE batch (atomic), not a post-create LINK")
+
+	// The contains edge must NOT also be emitted as a standalone post-create LINK
+	// plan (the redundant LinkOne was removed from linkSessionLineage).
+	sawContainsLink, sawNext := false, false
 	for _, m := range fc.execMutations[1:] {
 		if m.GetKind() != knowledgev1.MutationPlan_MUTATION_KIND_LINK {
 			continue
@@ -223,15 +296,13 @@ func TestHandleThinkClient_SessionLineage(t *testing.T) {
 		to := m.GetEdgeSpec().GetToId()
 		switch rel {
 		case string(kgtypes.EdgeKGContains):
-			assert.Equal(t, "sess-1", from, "EdgeKGContains from session")
-			assert.Equal(t, "th-new", to)
-			sawContains = true
+			sawContainsLink = true
 		case string(kgtypes.EdgeNext):
 			assert.Equal(t, "th-prev", from, "EdgeNext from prior thought")
 			assert.Equal(t, "th-new", to)
 			sawNext = true
 		}
 	}
-	assert.True(t, sawContains, "EdgeKGContains session→thought must be linked")
-	assert.True(t, sawNext, "EdgeNext prev→thought must be linked")
+	assert.False(t, sawContainsLink, "no standalone EdgeKGContains LINK plan — contains rides the create batch")
+	assert.True(t, sawNext, "EdgeNext prev→thought must be linked post-create")
 }

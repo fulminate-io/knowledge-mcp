@@ -74,6 +74,17 @@ func TestCompileTraverse_CrossGraphTarget(t *testing.T) {
 	assert.Equal(t, "knowledge", req.GetTarget().GetRepo())
 }
 
+// TestCompileTraverse_CustomGraph pins traverse selector threading for a
+// registered custom graph type: graph + name reach the server-side resolver
+// (compileTraverse gates only on graph=="logs"; a custom type passes). Guards a
+// future closed-allowlist regression on the client read path.
+func TestCompileTraverse_CustomGraph(t *testing.T) {
+	req, ok := compileTraverse(json.RawMessage(`{"start":"n1","graph":"hellograph","name":"demo"}`))
+	require.True(t, ok, "custom-graph traverse is reducible (no client allowlist)")
+	assert.Equal(t, "hellograph", req.GetTarget().GetGraph())
+	assert.Equal(t, "demo", req.GetTarget().GetName())
+}
+
 func TestCompileTraverse_DepthNotInjectedWhenAbsent(t *testing.T) {
 	req, ok := compileTraverse(json.RawMessage(`{"start":"n1"}`))
 	require.True(t, ok)

@@ -18,6 +18,7 @@ import (
 	"testing"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
+	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 
 	"github.com/stretchr/testify/assert"
@@ -35,20 +36,29 @@ type astTestDeps struct {
 	resolver *RepoResolver
 }
 
-func (d astTestDeps) LocalLiveness() LocalLiveness     { return nil }
-func (d astTestDeps) Sink() collector.Sink             { return nil }
-func (d astTestDeps) RootDir() string                  { return d.rootDir }
-func (d astTestDeps) WorkerRuntime() WorkerRuntimeAPI  { return nil }
-func (d astTestDeps) WorkerCRUD() WorkerCRUDAPI        { return nil }
-func (d astTestDeps) GraphTypeCRUD() GraphTypeCRUDAPI  { return nil }
-func (d astTestDeps) Embedder() embed.BinaryEmbedder   { return nil }
-func (d astTestDeps) BackendResolver() BackendResolver { return nil }
-func (d astTestDeps) GraphCaller() GraphCaller         { return nil }
-func (d astTestDeps) LocalGraphCaller() GraphCaller    { return nil }
-func (d astTestDeps) RepoResolver() *RepoResolver      { return d.resolver }
-func (d astTestDeps) SegmentManager() SegmentSearcher  { return nil }
-func (d astTestDeps) SegmentShipper() SegmentShipper   { return nil }
-func (d astTestDeps) PipelineScanner() PipelineScanner { return nil }
+func (d astTestDeps) LocalLiveness() LocalLiveness                 { return nil }
+func (d astTestDeps) Sink() collector.Sink                         { return nil }
+func (d astTestDeps) RootDir() string                              { return d.rootDir }
+func (d astTestDeps) WorkerRuntime() WorkerRuntimeAPI              { return nil }
+func (d astTestDeps) WorkerReady() bool                            { return true }
+func (d astTestDeps) PropReady() bool                              { return true }
+func (d astTestDeps) PipelineReady() bool                          { return true }
+func (d astTestDeps) ClaimRegistry() *hivemonitor.Registry         { return nil }
+func (d astTestDeps) BanSet() *hivemonitor.BanSet                  { return nil }
+func (d astTestDeps) WorkerCRUD() WorkerCRUDAPI                    { return nil }
+func (d astTestDeps) GraphTypeCRUD() GraphTypeCRUDAPI              { return nil }
+func (d astTestDeps) Embedder() embed.BinaryEmbedder               { return nil }
+func (d astTestDeps) BackendResolver() BackendResolver             { return nil }
+func (d astTestDeps) GraphCaller() GraphCaller                     { return nil }
+func (d astTestDeps) LocalGraphCaller() GraphCaller                { return nil }
+func (d astTestDeps) RepoResolver() *RepoResolver                  { return d.resolver }
+func (d astTestDeps) SegmentManager() SegmentSearcher              { return nil }
+func (d astTestDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
+func (d astTestDeps) SegmentShipper() SegmentShipper               { return nil }
+func (d astTestDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
+func (d astTestDeps) PipelineScanner() PipelineScanner             { return nil }
+func (d astTestDeps) ReflectionForcer() ReflectionForcer           { return nil }
+func (d astTestDeps) SimilarityForcer() SimilarityForcer           { return nil }
 
 // astFixtureRepo writes a single Go file with N function declarations under
 // t.TempDir() and returns the directory. The fixture mirrors the prior

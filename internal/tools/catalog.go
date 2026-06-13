@@ -64,5 +64,8 @@ func AllToolSchemas() []kgtools.MCPTool {
 		CreateResearchToolDef(),
 		CreateTestPlanToolDef(),
 		AssembleToolDef(),
+
+		// Cloud work-queue (agent ops only; daemon ops absent from the schema).
+		HiveToolDef(),
 	}
 }

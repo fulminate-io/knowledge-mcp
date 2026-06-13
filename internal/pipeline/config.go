@@ -14,18 +14,54 @@
 //     pulling batches from the dispatcher's sub-channel and writing back
 //     Summary / vector via the existing setter paths.
 //
+// Cache-blindness — why the fresh-summary path needs its own synthetic gate:
+// the gap-scan a collector runs first consults a content-hash summary cache
+// (the implementation is summaryCacheHit in the server store's
+// composite_db_pipeline_gaps_cache.go; an equivalent hit path exists for the
+// hosted backend, described here backend-neutrally). A byte-identical
+// node — re-collected with the same content, or merged from a branch that
+// already earned a summary — is served from that cache and SKIPPED: it never
+// reaches the summary worker, never reaches any LLM provider. This is CORRECT,
+// and on any established graph the overwhelming majority of nodes take it. The
+// consequence is that the FRESH path — the worker actually calling a provider,
+// threading the structured-output schema onto the wire, and parsing the reply —
+// is exercised almost never in normal operation. A provider whose translate or
+// parse layer regressed could ship and stay invisible for a long time, because
+// cache-replay keeps the regressed fresh path from ever running on a mature
+// graph (this is the mechanism behind the recorded Markdown-instead-of-JSON
+// regression: the cache hid it). The per-provider conformance suite in
+// cmd/knowledge/internal/llmproviders (conformance_test.go and its siblings) is
+// the SYNTHETIC fresh-path coverage that closes this gap — it drives every
+// registered provider's real fresh-summary path (wire shape, success parse, and
+// loud failure on a Markdown reply) against fake endpoints, so a fresh-path
+// regression is caught by that suite rather than by users on a cache miss.
+//
 // See the design doc, Section C, for the full design.
 package pipeline
 
 import "time"
 
-// DefaultCircuitBreakerThreshold is the default number of consecutive errored
-// LLM calls (with zero intervening success across either axis) that latches the
-// worker pool paused. 20 ≈ half the default in-flight worker set (25 summary +
-// 20 embed = 45), so it reads as a clear majority-failing signal while still
-// being unreachable from an isolated failure: any single success zeroes the
-// shared counter, so only a genuine zero-success storm climbs to 20.
+// DefaultCircuitBreakerThreshold is the default PER-AXIS number of consecutive
+// errored LLM calls (with zero intervening success on THAT axis) that latches
+// that axis's workers paused. Each axis (summary, embed) owns its own breaker and
+// its own counter. 20 ≈ half the default in-flight worker set per axis (25
+// summary / 20 embed), so it reads as a clear majority-failing signal for that
+// axis while still being unreachable from an isolated failure: any single success
+// on the axis zeroes that axis's counter, so only a genuine zero-success storm on
+// the axis climbs to 20.
 const DefaultCircuitBreakerThreshold = 20
+
+// DefaultDeterministicFastTripThreshold is the number of CONSECUTIVE, SAME-CLASS,
+// deterministic-terminal batch failures (a class IsDeterministicTerminal reports
+// true for: ClassParse / ClassInvalidRequest / ClassTruncation) that trips the
+// breaker immediately — well before the class-agnostic zero-success window
+// (DefaultCircuitBreakerThreshold, 20) would. A deterministic-terminal failure
+// reproduces identically for the same batch + config, so the SECOND identical
+// failure proves the third would fail too: there is no value in burning the full
+// 20-call window, where every call is a full-billed discarded API round. 2 is the
+// minimum that still demands a confirming repeat — a single isolated parse failure
+// must NOT fast-trip, only a same-class streak of 2.
+const DefaultDeterministicFastTripThreshold = 2
 
 // Config controls the pipeline's worker counts, batch sizes, channel
 // capacities, and tick cadence. Zero values fall back to defaults via the
@@ -97,12 +133,24 @@ type Config struct {
 	// ErrBackoffMax caps the exponential backoff window. Default 60s.
 	ErrBackoffMax time.Duration
 
-	// CircuitBreakerThreshold is the number of consecutive errored LLM calls
-	// (with zero intervening success across either the summary or embed axis)
-	// that latches the whole worker pool PAUSED. Default 20. The breaker is the
-	// latched companion to the self-clearing ErrBackoff gate: once tripped it
-	// stays paused until a human runs resume_pipeline — there is no self-heal.
+	// CircuitBreakerThreshold is the PER-AXIS number of consecutive errored LLM
+	// calls (with zero intervening success on that axis) that latches the TRIPPING
+	// axis's workers PAUSED — the summary and embed axes each have an independent
+	// breaker at this threshold, so a storm on one axis pauses only that axis.
+	// Default 20. The breaker is the latched companion to the self-clearing
+	// ErrBackoff gate: once tripped it stays paused until a human runs
+	// resume_pipeline — there is no self-heal.
 	CircuitBreakerThreshold int
+
+	// SummaryProvider and EmbedProvider carry each axis's LLM provider identity
+	// (e.g. "anthropic" for summaries, "voyage" for embeddings). They are used
+	// ONLY by the shared-cause escalation (escalation.go) to decide whether a
+	// same-provider cross-trip applies: an auth/quota auto-trip on one axis
+	// propagates to the other ONLY when both providers are equal and non-empty.
+	// Empty = unknown = that axis never participates in escalation (the safe
+	// default, and the test default). Provider-distinct axes never cross-trip.
+	SummaryProvider string
+	EmbedProvider   string
 }
 
 // SummaryChannelSizeOrDefault returns cfg.SummaryChannelSize or 10000.

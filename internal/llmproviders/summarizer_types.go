@@ -38,3 +38,16 @@ type Summarizer = summarizer
 const defaultCodeSummarizePrompt = "For each code chunk, produce a one-sentence summary (under 30 words, specific to domain purpose) " +
 	"AND a list of 5-10 search keywords (identifiers, domain terms, operations — no stop words). " +
 	"Each chunk is a JSON object with language, type, file, name, and content."
+
+// defaultTopicSummarizePrompt is the system prompt used by the summarizer
+// implementation for thought-cluster topic summaries. Each input is a digest
+// of RELATED THOUGHTS drawn from a persistent reasoning graph — hypotheses,
+// observations, and debugging notes that clustered together — NOT a code
+// chunk. The summary must name the shared theme or concern of the cluster in
+// plain, searchable terms (it feeds BM25 and name visibility), and the
+// keywords must be domain terms rather than code identifiers.
+const defaultTopicSummarizePrompt = "For each item, produce a one-line topic summary (under 200 characters) that names the shared theme or concern " +
+	"of a cluster of related thoughts in plain, searchable terms — NOT code-chunk wording. " +
+	"AND a list of 3-15 keywords that are domain terms describing the topic (no code identifiers, no stop words). " +
+	"Each item is a digest of related thoughts (hypotheses, observations, debugging notes) from a persistent reasoning graph; " +
+	"produce exactly one summary per item, in the same order as the input."

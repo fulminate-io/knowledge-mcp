@@ -12,6 +12,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgwire"
+	"github.com/fulminate-io/knowledge-mcp/internal/projects"
 	"github.com/fulminate-io/knowledge-mcp/internal/validate"
 )
 
@@ -32,6 +33,12 @@ func handleClientMutateCreateFinding(ctx context.Context, deps ClientDeps, a mut
 	edges := buildFindingFixedEdges(a)
 	nodes, edges = appendFindingReferenceEdges(nodes, edges, a.References)
 
+	// Context links: pre-validated ticket/session/knowledge-link edges
+	// ride the same atomic create_batch; code-target links + warnings are handled
+	// after the create. Node is slot 0.
+	cl := buildContextLinks(ctx, gc, a.TicketID, a.Session, a.Links)
+	edges = append(edges, cl.batchEdges...)
+
 	bundleID := newBundleID()
 	ids, perr := PersistBatch(ctx, gc, nodes, edges, bundleID)
 	if perr != nil {
@@ -43,17 +50,18 @@ func handleClientMutateCreateFinding(ctx context.Context, deps ClientDeps, a mut
 	if a.Concludes && a.QuestionID != "" {
 		_ = UpdateBatchStatus(ctx, gc, []string{a.QuestionID}, "answered", bundleID)
 	}
-	return textResult(fmt.Sprintf("Finding recorded: %s → ID: %s (%d references) [graph: knowledge/default]", a.Name, ids[0], len(a.References)))
+	warnings := append(cl.warnings, applyCodeLinks(ctx, gc, ids[0], cl.codeLinks)...)
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Finding recorded: %s → ID: %s (%d references) [graph: knowledge/default]", a.Name, ids[0], len(a.References))
+	writeClientWarningsSection(&sb, warnings, "\n\n")
+	return textResult(sb.String())
 }
 
 // buildFindingNode constructs the finding node with metadata.
 func buildFindingNode(a mutateArgs) *knowledgev1.Node {
 	summary := a.Summary
 	if summary == "" {
-		summary = a.Description
-		if a.Evidence != "" {
-			summary += ". Evidence: " + a.Evidence
-		}
+		summary = projects.DeriveFindingSummary(a.Description, a.Evidence)
 	}
 	node := &knowledgev1.Node{
 		Type:        string(kgtypes.NodeFinding),
@@ -154,15 +162,22 @@ func handleClientMutateCreateResearch(ctx context.Context, deps ClientDeps, a mu
 		Content:     bgContext,
 		Status:      "open",
 	}
+	// Context links: pre-validated ticket/session/knowledge-link edges
+	// ride the create_batch; code links + warnings handled after. Node is slot 0.
+	cl := buildContextLinks(ctx, gc, a.TicketID, a.Session, a.Links)
 	bundleID := newBundleID()
-	ids, perr := PersistBatch(ctx, gc, []*knowledgev1.Node{&node}, nil, bundleID)
+	ids, perr := PersistBatch(ctx, gc, []*knowledgev1.Node{&node}, cl.batchEdges, bundleID)
 	if perr != nil {
 		return errorResult("record research: " + perr.Error())
 	}
 	if len(ids) == 0 {
 		return errorResult("record research: persist returned no IDs")
 	}
-	return textResult(fmt.Sprintf("Research question recorded: %s → ID: %s [graph: knowledge/default]", question, ids[0]))
+	warnings := append(cl.warnings, applyCodeLinks(ctx, gc, ids[0], cl.codeLinks)...)
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Research question recorded: %s → ID: %s [graph: knowledge/default]", question, ids[0])
+	writeClientWarningsSection(&sb, warnings, "\n\n")
+	return textResult(sb.String())
 }
 
 // handleClientMutateCreateRule handles mutate(create, type:rule).
@@ -176,10 +191,7 @@ func handleClientMutateCreateRule(ctx context.Context, deps ClientDeps, a mutate
 	}
 	summary := a.Summary
 	if summary == "" {
-		summary = "Rule: " + a.Name
-		if a.Scope != "" {
-			summary += " (scope: " + a.Scope + ")"
-		}
+		summary = projects.DeriveRuleSummary(a.Name, a.Scope)
 	}
 	node := knowledgev1.Node{
 		Type:        string(kgtypes.NodeRule),
@@ -194,15 +206,22 @@ func handleClientMutateCreateRule(ctx context.Context, deps ClientDeps, a mutate
 	if a.Enforcement != "" {
 		kgtypes.SetValue(&node, "enforcement", a.Enforcement)
 	}
+	// Context links: pre-validated ticket/session/knowledge-link edges
+	// ride the create_batch; code links + warnings handled after. Node is slot 0.
+	cl := buildContextLinks(ctx, gc, a.TicketID, a.Session, a.Links)
 	bundleID := newBundleID()
-	ids, perr := PersistBatch(ctx, gc, []*knowledgev1.Node{&node}, nil, bundleID)
+	ids, perr := PersistBatch(ctx, gc, []*knowledgev1.Node{&node}, cl.batchEdges, bundleID)
 	if perr != nil {
 		return errorResult("add rule: " + perr.Error())
 	}
 	if len(ids) == 0 {
 		return errorResult("add rule: persist returned no IDs")
 	}
-	return textResult(fmt.Sprintf("Rule added: %s → ID: %s [graph: knowledge/default]", a.Name, ids[0]))
+	warnings := append(cl.warnings, applyCodeLinks(ctx, gc, ids[0], cl.codeLinks)...)
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Rule added: %s → ID: %s [graph: knowledge/default]", a.Name, ids[0])
+	writeClientWarningsSection(&sb, warnings, "\n\n")
+	return textResult(sb.String())
 }
 
 // handleClientMutateAnswer handles mutate(answer): mark a research

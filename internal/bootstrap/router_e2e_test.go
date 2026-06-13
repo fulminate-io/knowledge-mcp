@@ -112,6 +112,12 @@ func (e *countingEngine) Index(
 	return connect.NewResponse(&knowledgev1.IndexResponse{}), nil
 }
 
+func (e *countingEngine) Hive(
+	context.Context, *connect.Request[knowledgev1.HiveRequest],
+) (*connect.Response[knowledgev1.HiveResponse], error) {
+	return connect.NewResponse(&knowledgev1.HiveResponse{}), nil
+}
+
 func (e *countingEngine) PipelineScan(
 	context.Context, *connect.Request[knowledgev1.PipelineScanRequest],
 ) (*connect.Response[knowledgev1.PipelineScanResponse], error) {

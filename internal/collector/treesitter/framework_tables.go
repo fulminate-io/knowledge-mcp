@@ -24,6 +24,7 @@ type frameworkRule struct {
 var frameworkTables = map[Language][]frameworkRule{
 	LangJavaScript: jsFrameworkRules,
 	LangTypeScript: jsFrameworkRules,
+	LangTSX:        jsFrameworkRules, // .tsx shares the JS/TS import-matcher rules.
 	LangJava:       javaFrameworkRules,
 	LangKotlin:     kotlinFrameworkRules,
 	LangScala:      scalaFrameworkRules,

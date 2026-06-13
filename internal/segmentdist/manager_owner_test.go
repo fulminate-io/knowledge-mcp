@@ -69,7 +69,7 @@ func TestManagerAddAndShipSealsOneBlob(t *testing.T) {
 	// deterministic mock format; the segment-level diff no-op is the true property.)
 	beforeShips := cc.shipCalls.Load()
 	beforeBlobs := cc.shipBlobs.Load()
-	_, shipErr := dm.ship(ctx)
+	_, shipErr := dm.ship(ctx, dm.locallyShipped)
 	require.NoError(t, shipErr)
 	require.Equal(t, beforeShips, cc.shipCalls.Load(), "re-ship without Add issues ZERO new Ship RPCs")
 	require.Equal(t, beforeBlobs, cc.shipBlobs.Load(), "re-ship without Add sends ZERO new blobs")
@@ -189,7 +189,7 @@ func TestManagerAddAndShipFieldsSealsBM25Blob(t *testing.T) {
 	// so the diff against shippedIDs is empty → ZERO new Ship RPC, ZERO new blobs.
 	beforeShips := cc.shipCalls.Load()
 	beforeBlobs := cc.shipBlobs.Load()
-	_, shipErr := dm.ship(ctx)
+	_, shipErr := dm.ship(ctx, dm.locallyShipped)
 	require.NoError(t, shipErr)
 	require.Equal(t, beforeShips, cc.shipCalls.Load(), "re-ship without Add issues ZERO new Ship RPCs")
 	require.Equal(t, beforeBlobs, cc.shipBlobs.Load(), "re-ship without Add sends ZERO new blobs")
@@ -259,6 +259,51 @@ func TestHasShippedSegments(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, has, "a graph with one+ shipped segments probes as present")
 	require.Equal(t, int64(0), cc.fetchCalls.Load(), "the presence probe must NOT Fetch any blob")
+}
+
+// TestShippedSegmentDocCount is the coverage-probe data-source criterion: the
+// probe sums HNSW-format meta.DocCount (covered), EXCLUDES BM25 metas (they index
+// the same nodes — double-counting), flags anyUnknown only when an HNSW meta has
+// DocCount==0, and never Fetches a blob.
+func TestShippedSegmentDocCount(t *testing.T) {
+	_, gc := newSegmentHarness(t)
+	cc := &countingCaller{inner: gc}
+	ctx := context.Background()
+	mgr := NewManager(cc, t.TempDir(), 0)
+
+	// Graph A: two HNSW segments (doc_count 1000 + 24) + one BM25 segment (doc_count
+	// 2048 — must be EXCLUDED). All non-zero HNSW → covered=1024, anyUnknown=false.
+	_, err := gc.Ship(ctx, &knowledgev1.ShipRequest{
+		Target: &knowledgev1.GraphSelector{Graph: "code", Repo: "covRepo"},
+		Blobs: []*knowledgev1.SegmentBlobProto{
+			blobToProto(searchengine.SegmentBlob{ID: "h1", Format: "hnsw", DocCount: 1000, Bytes: []byte("a")}),
+			blobToProto(searchengine.SegmentBlob{ID: "h2", Format: "hnsw", DocCount: 24, Bytes: []byte("b")}),
+			blobToProto(searchengine.SegmentBlob{ID: "b1", Format: "bm25", DocCount: 2048, Bytes: []byte("c")}),
+		},
+	})
+	require.NoError(t, err)
+
+	covered, anyUnknown, err := mgr.ShippedSegmentDocCount(ctx, kgtypes.GraphCode, "covRepo")
+	require.NoError(t, err)
+	require.Equal(t, 1024, covered, "covered sums HNSW doc_counts only (BM25 excluded — no double-count)")
+	require.False(t, anyUnknown, "all HNSW metas have non-zero doc_count → anyUnknown is false")
+	require.Equal(t, int64(0), cc.fetchCalls.Load(), "the coverage probe must NOT Fetch any blob")
+
+	// Graph B: one HNSW segment with DocCount==0 (an old pre-doc_count blob) →
+	// anyUnknown=true, covered counts only the non-zero HNSW metas.
+	_, err = gc.Ship(ctx, &knowledgev1.ShipRequest{
+		Target: &knowledgev1.GraphSelector{Graph: "code", Repo: "unknownRepo"},
+		Blobs: []*knowledgev1.SegmentBlobProto{
+			blobToProto(searchengine.SegmentBlob{ID: "h3", Format: "hnsw", DocCount: 512, Bytes: []byte("d")}),
+			blobToProto(searchengine.SegmentBlob{ID: "h4", Format: "hnsw", DocCount: 0, Bytes: []byte("e")}),
+		},
+	})
+	require.NoError(t, err)
+
+	covered, anyUnknown, err = mgr.ShippedSegmentDocCount(ctx, kgtypes.GraphCode, "unknownRepo")
+	require.NoError(t, err)
+	require.Equal(t, 512, covered, "covered sums only the non-zero HNSW metas")
+	require.True(t, anyUnknown, "an HNSW meta with doc_count==0 sets anyUnknown (conservative-unknown signal)")
 }
 
 // TestGraphSelectorMapping asserts the per-graph-type field routing mirrors the

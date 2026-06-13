@@ -45,12 +45,11 @@ type thoughtChargeCache struct {
 }
 
 // buildChargeCache fetches all charges and their evidence mappings
-// once upfront. Issues ONE gc.Call("thoughts", {operation:"charges_for"})
-// for the bulk thought→charges map (chargeMapForThoughts), then one
-// gc.Call("thoughts", {operation:"adjacency", thought_ids: chargeIDs})
-// is NOT issued — instead, evidence resolution uses the prebuilt
-// thoughtToCluster map (so a charge's EvidencedBy edge is mapped via
-// the cluster the evidence target lives in). The full evidence-edge
+// once upfront. Calls chargeMapForThoughts (one bulk thought→charges
+// read over the Execute seam) for the bulk thought→charges map; it does
+// NOT fetch a separate adjacency — instead, evidence resolution uses the
+// prebuilt thoughtToCluster map (so a charge's EvidencedBy edge is mapped
+// via the cluster the evidence target lives in). The full evidence-edge
 // walk happens on the client by reusing the adj from a prior fetch;
 // if the caller didn't supply it, we skip the evidence resolution and
 // leave every charge's evidenceCluster as "" (degraded — affects
@@ -131,6 +130,53 @@ func buildChargeEvidenceMap(chargeMap map[string][]*knowledgev1.Node, thoughtToC
 	return out
 }
 
+// BuildEvidenceAdj builds the charge→evidence-target adjacency map that
+// ComputePersonalityScalars / ComputeScalarEvolution consume as evidenceAdj:
+// map[chargeID][]evidenceTargetID. It is the cross-cluster ATTRIBUTION leg —
+// only charges whose evidence resolves to a clustered thought sharpen a specific
+// A→B pair (buildChargeEvidenceMap checks thoughtToCluster[target]). The base
+// charged-by leg needs no evidenceAdj, so trust differentiation holds even when
+// the corpus has near-zero thought-targeted evidence edges.
+//
+// Two bounded bulk Execute round-trips, no per-node traversal (fits the live
+// 180s ceiling): (1) chargeMapForThoughts over every clustered thought ID (the
+// same bulk charges_for the scalar compute runs), then (2) ONE
+// fetchEdgesForNodeSet over the collected charge IDs filtered to EdgeEvidencedBy.
+// EdgeEvidencedBy is charge→evidence, so FromId is the charge and ToId the
+// evidence target.
+func BuildEvidenceAdj(ctx context.Context, gc Caller, clusters []ThoughtCluster) map[string][]string {
+	out := map[string][]string{}
+	if gc == nil || len(clusters) == 0 {
+		return out
+	}
+	var allThoughtIDs []string
+	for _, c := range clusters {
+		allThoughtIDs = append(allThoughtIDs, c.ThoughtIDs...)
+	}
+	chargeMap := chargeMapForThoughts(ctx, gc, allThoughtIDs)
+	var chargeIDs []string
+	for _, charges := range chargeMap {
+		for _, ch := range charges {
+			chargeIDs = append(chargeIDs, ch.Id)
+		}
+	}
+	if len(chargeIDs) == 0 {
+		return out
+	}
+	edges, err := fetchEdgesForNodeSet(ctx, gc, chargeIDs, []kgtypes.EdgeType{kgtypes.EdgeEvidencedBy})
+	if err != nil {
+		return out
+	}
+	for i := range edges {
+		e := &edges[i]
+		if kgtypes.EdgeType(e.Type) != kgtypes.EdgeEvidencedBy {
+			continue
+		}
+		out[e.FromId] = append(out[e.FromId], e.ToId)
+	}
+	return out
+}
+
 // ComputePersonalityScalars derives per-cluster-pair trust scalars
 // from the track record of cross-cluster charge accuracy.
 // evidenceAdj is the optional charge→evidence-target adjacency map
@@ -182,22 +228,44 @@ func computeClusterPairScalar(clusterA ThoughtCluster, clusterBID string, cache 
 	return 0.2 + 1.6*accuracy
 }
 
-// accumulateChargeAccuracy accumulates confirmed/contradicted weights
-// for charges evidenced by clusterBID.
+// evidenceReinforcementBoost is how much MORE a graph-evidenced charge weighs
+// than an otherwise-identical non-evidenced one. It is deliberately MODEST and
+// must never dominate the caller-asserted charge weight (1-10): a charge without
+// a graph evidenced-by edge is NOT a weaker confirmation — its evidence is
+// usually real but extra-graph (an API behaving exactly as the thought
+// predicted, worked-first-time, an unrelated source confirming a theory, the
+// user reinforcing the conclusion). The caller weight already encodes
+// confirmation strength. What a graph evidenced-by edge uniquely adds is in-graph
+// TRACEABILITY + cross-cluster ATTRIBUTION, not greater validity — hence a small
+// re-enforcement, not a gate.
+const evidenceReinforcementBoost = 1.2
+
+// accumulateChargeAccuracy accumulates confirmed/contradicted weights toward
+// clusterBID. RE-ENFORCER semantics (not a gate): EVERY charge on the thought
+// contributes its same-thought track record to the pair via the universal
+// charged-by anchor at full caller-asserted weight (factor 1.0, identical across
+// every B for a given thought — this is what lifts a thought's scalars off the
+// 1.000 default once it has any charge history). When a charge's evidence target
+// lives in clusterBID, its contribution to THAT specific pair is scaled by the
+// modest evidenceReinforcementBoost — sharpening A→B (the attributed pair) over
+// A→other without dominating the weight. The evidenced/non-evidenced delta is
+// (boost-1) of one charge's track record: bounded, sub-weight, never
+// order-of-magnitude.
 func accumulateChargeAccuracy(charges []chargeInfo, clusterBID string, cutoff time.Time) (confirmedWeight, contradictedWeight float64) {
 	for _, ci := range charges {
-		if ci.evidenceCluster != clusterBID {
-			continue
-		}
 		if !cutoff.IsZero() && nanosToTime(ci.node.CreatedAt).After(cutoff) {
 			continue
 		}
 		confirmed, contradicted := weighSubsequentChargesFromCache(charges, ci.node.Id, nanosToTime(ci.node.CreatedAt), ci.polarity, cutoff)
-		confirmedWeight += confirmed
-		contradictedWeight += contradicted
 		if confirmed == 0 && contradicted == 0 {
-			confirmedWeight += ci.weight * 0.5
+			confirmed += ci.weight * 0.5
 		}
+		factor := 1.0
+		if ci.evidenceCluster == clusterBID {
+			factor = evidenceReinforcementBoost
+		}
+		confirmedWeight += confirmed * factor
+		contradictedWeight += contradicted * factor
 	}
 	return confirmedWeight, contradictedWeight
 }
@@ -310,23 +378,30 @@ func sampleTimestamps(sorted []time.Time, n int) []time.Time {
 	return out
 }
 
+// externalChargeStats mirrors accumulateChargeAccuracy's RE-ENFORCER semantics
+// for the evolution surface: EVERY charge on clusterA's thoughts participates
+// (count and accuracy) via its charged-by track record at full weight; a charge
+// whose evidence targets clusterB is scaled by the modest evidenceReinforcementBoost
+// in the accuracy numerator/denominator. Count reflects real participation (every
+// contributing charge), not just evidence-target charges.
 func externalChargeStats(clusterA ThoughtCluster, clusterB string, cache thoughtChargeCache, cutoff time.Time) (count int, accuracy float64) {
 	var confirmed, contradicted float64
 	for _, tid := range clusterA.ThoughtIDs {
 		for _, ci := range cache.charges[tid] {
-			if ci.evidenceCluster != clusterB {
-				continue
-			}
 			if !cutoff.IsZero() && nanosToTime(ci.node.CreatedAt).After(cutoff) {
 				continue
 			}
 			count++
 			c, ct := weighSubsequentChargesFromCache(cache.charges[tid], ci.node.Id, nanosToTime(ci.node.CreatedAt), ci.polarity, cutoff)
-			confirmed += c
-			contradicted += ct
 			if c == 0 && ct == 0 {
-				confirmed += ci.weight * 0.5
+				c += ci.weight * 0.5
 			}
+			factor := 1.0
+			if ci.evidenceCluster == clusterB {
+				factor = evidenceReinforcementBoost
+			}
+			confirmed += c * factor
+			contradicted += ct * factor
 		}
 	}
 	if total := confirmed + contradicted; total > 0 {

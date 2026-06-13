@@ -239,6 +239,21 @@ func (r *Router) Index(
 	return gc.Index(ctx, req)
 }
 
+// Hive is the per-call-routed EngineService.Hive forwarder. Mirrors
+// (*GraphClient).Hive so the hive intercept's GraphCaller.Hive call routes cloud
+// when logged in via r.pick. The hive work-queue is cloud-only — a self-hosted
+// (unauthenticated) caller routes to the local OSS server, which fails loud.
+func (r *Router) Hive(
+	ctx context.Context,
+	req *knowledgev1.HiveRequest,
+) (*knowledgev1.HiveResponse, error) {
+	gc, err := r.pick(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return gc.Hive(ctx, req)
+}
+
 // MetadataStats is the per-call-routed EngineService.MetadataStats forwarder.
 // Mirrors (*GraphClient).MetadataStats (client.go:124) so the
 // metadataStatsCaller type assertion at intercept_manage_promote.go:42

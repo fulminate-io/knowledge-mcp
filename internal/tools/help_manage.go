@@ -49,14 +49,17 @@ const helpManage = `# manage — Server operations
 ## Content-hash cache rebuild (free re-derivation)
   manage({ "operation": "rebuild_cache", "graph": "code", "name": "myrepo" })  — drop + re-derive a repo's summary/embed caches from base nodes
 
-  rebuild_cache DROPS a code repo's per-repo content-hash caches (summary + embed)
-  and RE-DERIVES them from the CURRENT base-graph nodes with ZERO model calls. It
-  is a FREE re-derivation, NOT a "clear" (a clear would guarantee a full re-pay for
-  LLM/Voyage). The caches let a merged-and-recollected node reuse the summary/
-  embedding it earned on a branch overlay instead of re-summarizing/re-embedding
-  byte-identical content. Use rebuild_cache for: recovery (lost/corrupted cache),
-  manual invalidation (the model/prompt-change lever), or backfill/migration (repos
-  collected before the feature shipped). Code-only: requires graph=code + name=repo.
+  rebuild_cache DROPS a builtin graph's per-graph content-hash caches (summary +
+  embed) and RE-DERIVES them from the CURRENT base-graph nodes with ZERO model
+  calls. It is a FREE re-derivation, NOT a "clear" (a clear would guarantee a full
+  re-pay for LLM/Voyage). The caches let a merged-and-recollected node reuse the
+  summary/embedding it earned on a branch overlay instead of re-summarizing/
+  re-embedding byte-identical content. Use rebuild_cache for: recovery (lost/
+  corrupted cache), manual invalidation (the model/prompt-change lever), or
+  backfill/migration (graphs populated before the feature shipped). Builtin-graph
+  only: requires graph=code (name=repo) or graph=knowledge (name defaults to
+  "default" — BASE layer only, no "@"-overlay names in v1); practice/cloud/cicd are
+  not supported.
   ASYNC: the server drops + re-derives on a background goroutine and returns a
   STARTED acknowledgement immediately (a large repo's walk would otherwise exceed
   the edge timeout); confirm completion via the server logs ("rebuild_cache.complete").
@@ -70,8 +73,10 @@ const helpManage = `# manage — Server operations
   The server is engine-free, so the WORK is CLIENT-driven: the client pages the
   already-embedded nodes (with their stored vector + server-composed BM25 fields),
   rebuilds the segments DETERMINISTICALLY (fixed seed + serial-within / concurrent-
-  across), and ships them to the server SegmentStore. Code-only: requires graph=code
-  + name=repo. Single-flight per repo. IDEMPOTENT: a deterministic build means a
+  across), and ships them to the server SegmentStore. Requires graph=code (name=repo),
+  the builtin knowledge graph (name defaults to "default" — BASE layer only, no
+  "@"-overlay names in v1), or a registered custom graph type + name. Single-flight
+  per (graph,name). IDEMPOTENT: a deterministic build means a
   re-run over an unchanged node set is a byte-identical, content-hash-diffed NO-OP
   (the first rebuild over an embed-segmented graph ships the deterministic segments
   and prunes the superseded embed ones; every rebuild after is a no-op). Runs
