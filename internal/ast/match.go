@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// Package ast (match executor) — walks files in scope, parses each via the
-// shared treesitter.Parser, runs the v2 manual walker (matchTree) plus the
-// JSON where-tree evaluator (evalWhere), and returns RawMatch results.
+// Package ast (match executor) — walks files in scope, parses each via a
+// per-worker treesitter.Parser, runs the v2 manual walker (matchTree) plus
+// the JSON where-tree evaluator (evalWhere), and returns RawMatch results.
 //
 // Reuse:
 //
@@ -20,10 +20,11 @@
 // parsed file's matches. Mirrors ChunkFiles at parser/indexer_chunk.go.
 //
 // CGO discipline (smacker issue #181): every Match call applies defer
-// Close on Parser (per-worker), Tree (per-file), and pt (the
-// PatternTree owned by the caller's CompiledPattern). Sub-pattern trees
-// allocated inside evalWhere are owned by the per-call sub-pattern compile
-// cache; their Close fires at the end of Match via closeSubPatternCache.
+// Close on the Parser (per-worker), the source Tree (per-file), and the
+// pattern PatternTree (per-worker — each worker compiles its own from
+// cp.Source so no *Tree crosses a goroutine boundary). Sub-pattern trees
+// allocated inside evalWhere are owned by the per-worker sub-pattern
+// compile cache; their Close fires at worker exit via closeSubPatternCache.
 
 package ast
 
@@ -148,19 +149,17 @@ func Match(
 		limit = defaultLimit
 	}
 
-	cache := map[string]*PatternTree{}
-	cacheMu := &sync.Mutex{}
-	defer closeSubPatternCache(cache, cacheMu)
-
+	// cp is used here only for the nil-gate above and as the DSL-source
+	// reader below — it is never walked by a worker. Each worker re-compiles
+	// cp.Source into its own pattern tree + sub-pattern cache so no
+	// tree-sitter *Tree is shared across goroutines (see runWorkers).
 	matches, scanned, skipped, walkErr := runWorkers(ctx, runWorkerArgs{
-		repoDir: repoDir,
-		lang:    lang,
-		cp:      cp,
-		where:   where,
-		cache:   cache,
-		cacheMu: cacheMu,
-		files:   files,
-		limit:   limit,
+		repoDir:       repoDir,
+		lang:          lang,
+		patternSource: cp.Source,
+		where:         where,
+		files:         files,
+		limit:         limit,
 	})
 	stats.FilesScanned = scanned
 	stats.FilesSkipped = skipped
@@ -176,8 +175,10 @@ func Match(
 }
 
 // closeSubPatternCache releases every sub-pattern PatternTree allocated by
-// evalWhere during one Match() call. Mu-protected because Match is the
-// last user of the cache; concurrent workers have already drained.
+// evalWhere into one worker's cache. Called at worker exit (deferred in the
+// runWorkers worker closure). Each worker owns its own cache, so the lock
+// is uncontended here — it is held only to satisfy the map's access
+// discipline shared with getOrCompileSubPattern.
 func closeSubPatternCache(cache map[string]*PatternTree, mu *sync.Mutex) {
 	mu.Lock()
 	defer mu.Unlock()
@@ -239,7 +240,10 @@ func isGoTestFile(rel string) bool {
 type CompiledPattern struct {
 	// Tree is the v2 PatternTree built by Compile.
 	Tree *PatternTree
-	// Source retains the raw DSL source for explain/debug output.
+	// Source retains the raw DSL source for explain/debug output and as the
+	// re-compile source for Match's per-worker pattern compilation (each
+	// worker re-Parses+Compiles Source so no *Tree is shared across
+	// goroutines).
 	Source string
 	// RootKind is the effective root node's grammar type (e.g.
 	// "defer_statement", "call_expression"). Empty when the root is a

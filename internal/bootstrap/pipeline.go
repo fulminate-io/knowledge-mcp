@@ -62,6 +62,17 @@ func (a routedWireClient) PipelineScan(
 	return gc.PipelineScan(ctx, req)
 }
 
+func (a routedWireClient) PipelineGenPoll(
+	ctx context.Context,
+	req *knowledgev1.PipelineGenPollRequest,
+) (*knowledgev1.PipelineGenPollResponse, error) {
+	gc, err := a.router.Backend(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return gc.PipelineGenPoll(ctx, req)
+}
+
 func (a routedWireClient) Execute(
 	ctx context.Context,
 	req *knowledgev1.ExecuteRequest,
@@ -189,6 +200,12 @@ func wirePipelineRuntime(c *client, f Config) error {
 
 	// Continuous refresh in background.
 	go p.RefreshLoadedGraphs(ctx)
+
+	// Central two-phase bulk gen-poll in background: ONE PipelineGenPoll RPC per
+	// tick samples every loaded graph's dirty-gen (Phase 1) and selectively pokes
+	// only the collectors whose gen advanced to issue their Phase-2 detail
+	// PipelineScan — replacing the prior up-to-2N PipelineScan fan-out per tick.
+	go p.RunGenPollLoop(ctx)
 
 	return nil
 }

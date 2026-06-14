@@ -100,7 +100,8 @@ func InterceptCreatePlan(deps ClientDeps, params kgtools.CallToolParams) (bool, 
 		return true, errorResult("at least one phase is required")
 	}
 
-	if err := validatePlanSummaries(a); err != nil {
+	clampWarnings, err := validatePlanSummaries(&a)
+	if err != nil {
 		return true, errorResult(err.Error())
 	}
 
@@ -120,6 +121,7 @@ func InterceptCreatePlan(deps ClientDeps, params kgtools.CallToolParams) (bool, 
 	}
 	planArgs.PatternIDs = res.effectivePatternIDs
 	planArgs.LanguagePatterns = res.effectiveLangIDs
+	res.warnings = append(res.warnings, clampWarnings...)
 
 	nodes, edges := projects.BuildPlanGraph(planArgs, res.unresolvedIDs, res.unresolvedLangIDs)
 
@@ -145,35 +147,54 @@ func InterceptCreatePlan(deps ClientDeps, params kgtools.CallToolParams) (bool, 
 }
 
 // validatePlanSummaries runs the indexed summary/description validation over
-// the plan tree: author-supplied plan/phase/step summaries + step descriptions
-// via validate.Summary/StepDescription, and the AUTO-DERIVED criterion and
-// open-question summaries via validate.DerivedSummary. The derived summaries
-// are never author-supplied — criteria expose only description/command/type and
-// open_questions expose only question/context — so the derived text is computed
-// here with the SAME projects.Derive* funcs the node builders use (guaranteeing
-// validated text == stored text) and an over-long derivation fails fast with an
-// indexed path instead of dying on the server's context-free exceeds-500
-// backstop. Returns the first validation error encountered, or nil.
-func validatePlanSummaries(a createPlanArgs) error {
+// the plan tree: author-supplied plan/phase/step summaries are CLAMPED at a word
+// boundary (with a non-fatal warning) via validate.ClampSummary, step
+// descriptions are validated via validate.StepDescription, and the AUTO-DERIVED
+// criterion and open-question summaries are hard-validated via
+// validate.DerivedSummary. The derived summaries are never author-supplied —
+// criteria expose only description/command/type and open_questions expose only
+// question/context — so the derived text is computed here with the SAME
+// projects.Derive* funcs the node builders use (guaranteeing validated text ==
+// stored text) and an over-long derivation fails fast with an indexed path
+// instead of dying on the server's context-free exceeds-500 backstop. Author
+// clamps mutate a in place (the receiver is a pointer) so the clamped summaries
+// flow into buildPlanArgsFromWire; emptiness still hard-rejects. Returns the
+// accumulated clamp warnings plus the first hard validation error encountered.
+func validatePlanSummaries(a *createPlanArgs) (warnings []string, err error) {
 	if err := validate.Name("create_plan", a.Name); err != nil {
-		return err
+		return nil, err
 	}
-	if err := validate.Summary("create_plan", "summary", a.Summary); err != nil {
-		return err
+	clamped, w, cerr := validate.ClampSummary("create_plan", "summary", a.Summary)
+	if cerr != nil {
+		return nil, cerr
 	}
-	for i, ph := range a.Phases {
-		if err := validate.Summary("create_plan", fmt.Sprintf("phases[%d].summary", i), ph.Summary); err != nil {
-			return err
+	a.Summary = clamped
+	if w != "" {
+		warnings = append(warnings, w)
+	}
+	for i := range a.Phases {
+		clamped, w, cerr := validate.ClampSummary("create_plan", fmt.Sprintf("phases[%d].summary", i), a.Phases[i].Summary)
+		if cerr != nil {
+			return nil, cerr
 		}
-		for j, st := range ph.Steps {
-			if err := validate.Summary("create_plan", fmt.Sprintf("phases[%d].steps[%d].summary", i, j), st.Summary); err != nil {
-				return err
+		a.Phases[i].Summary = clamped
+		if w != "" {
+			warnings = append(warnings, w)
+		}
+		for j := range a.Phases[i].Steps {
+			clamped, w, cerr := validate.ClampSummary("create_plan", fmt.Sprintf("phases[%d].steps[%d].summary", i, j), a.Phases[i].Steps[j].Summary)
+			if cerr != nil {
+				return nil, cerr
 			}
-			if err := validate.StepDescription("create_plan", fmt.Sprintf("phases[%d].steps[%d].description", i, j), st.Description); err != nil {
-				return err
+			a.Phases[i].Steps[j].Summary = clamped
+			if w != "" {
+				warnings = append(warnings, w)
 			}
-			if err := validateDerivedCriteria(i, j, st.Criteria); err != nil {
-				return err
+			if err := validate.StepDescription("create_plan", fmt.Sprintf("phases[%d].steps[%d].description", i, j), a.Phases[i].Steps[j].Description); err != nil {
+				return nil, err
+			}
+			if err := validateDerivedCriteria(i, j, a.Phases[i].Steps[j].Criteria); err != nil {
+				return nil, err
 			}
 		}
 	}
@@ -183,10 +204,10 @@ func validatePlanSummaries(a createPlanArgs) error {
 		}
 		derived := projects.DeriveQuestionSummary(q.Question, q.Context)
 		if err := validate.DerivedSummary("create_plan", fmt.Sprintf("open_questions[%d].summary", i), "question + context", derived); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return nil
+	return warnings, nil
 }
 
 // validateDerivedCriteria validates the AUTO-DERIVED summaries of one step's

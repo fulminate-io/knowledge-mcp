@@ -22,8 +22,10 @@
 //     sequence captures via outer-byte-span (Q5).
 //   - Cross-scope `$outer.X` capture references walk the scope.parent
 //     chain (Q11); unresolved references return an explicit error.
-//   - Per-Match-call sub-pattern compile cache keyed by sub-pattern
-//     source string, mu-protected (T3-3).
+//   - Per-WORKER sub-pattern compile cache keyed by sub-pattern source
+//     string. Each match worker owns its own cache (a worker never shares
+//     a tree-sitter *Tree with another goroutine); the mutex guards the
+//     map against the depth-first recursion within that single worker.
 
 package ast
 
@@ -140,8 +142,9 @@ type SubPatternLeaf struct {
 
 // evalScope is the per-evaluation scope chain. captures holds the local
 // match's bindings; parent points at the surrounding evaluation (nil for
-// the outermost). cache is the per-Match-call sub-pattern compile cache;
-// it is shared across the scope chain.
+// the outermost). cache is the per-WORKER sub-pattern compile cache (owned
+// by the one match worker that built this scope); it is shared across the
+// scope chain within that worker.
 type evalScope struct {
 	captures *Captures
 	parent   *evalScope
@@ -155,8 +158,9 @@ type evalScope struct {
 	nodeByName map[string]*sitter.Node
 }
 
-// newOuterScope builds the outermost evalScope. cache + cacheMu are shared
-// across one outer Match() call; the caller owns them.
+// newOuterScope builds the outermost evalScope. cache + cacheMu are owned
+// by a single match worker (one per worker goroutine); the worker passes
+// them in and closes the cache at its exit.
 func newOuterScope(lang treesitter.Language, cache map[string]*PatternTree, cacheMu *sync.Mutex) *evalScope {
 	return &evalScope{
 		captures:   newCaptures(),

@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -200,6 +201,58 @@ func TestInterceptCreatePlan_UnderCapDerivedSummariesPass(t *testing.T) {
 	})
 	require.True(t, handled)
 	require.False(t, res.IsError, "under-cap derived summaries must not be rejected: %s", toolResultText(res))
+}
+
+// TestInterceptCreatePlan_AuthorSummariesClampAndWarn proves the pointer-receiver
+// validatePlanSummaries clamps the top-level, phase, and step AUTHOR summaries in
+// place and the create SUCCEEDS, with a warning naming each clamped field path.
+// It also inspects the persisted MutationPlan node bodies to prove the clamp
+// mutated the PERSISTED fields (slice-index assign-back), not range-value copies:
+// every node body summary is <=500 runes. Fails-when-absent: a range-value
+// assign-back would leave the phase/step node bodies over-cap, and a hard-reject
+// would make res.IsError true. format:"json" skips the post-create FetchNode walk
+// so the shared fakeGraphCaller (which records execMutations + returns the seeded
+// ids) is sufficient.
+func TestInterceptCreatePlan_AuthorSummariesClampAndWarn(t *testing.T) {
+	fc := &fakeGraphCaller{mutateResult: kgtools.ToolResult{
+		Content: []kgtools.ContentBlock{{Type: "text", Text: `{"ids":["plan-1","phase-1","step-1"]}`}},
+	}}
+	deps := interceptTestDeps{gc: fc}
+	over := strings.Repeat("a", 600)
+	args := `{
+		"name":"p","goal":"g","summary":"` + over + `","no_patterns_reason":"x",
+		"phases":[{"name":"ph","overview":"o","summary":"` + over + `","steps":[{"name":"st","description":"step 1 description body","summary":"` + over + `"}]}],
+		"format":"json"
+	}`
+	handled, res := InterceptCreatePlan(deps, kgtools.CallToolParams{
+		Name:      "create_plan",
+		Arguments: json.RawMessage(args),
+	})
+	require.True(t, handled)
+	require.False(t, res.IsError, "over-cap author summaries must clamp + create, not error: %s", toolResultText(res))
+	// The JSON result carries a warnings array naming each clamped field path.
+	var parsed struct {
+		Warnings []string `json:"warnings"`
+	}
+	require.NoError(t, json.Unmarshal([]byte(toolResultText(res)), &parsed))
+	joined := strings.Join(parsed.Warnings, "\n")
+	assert.Contains(t, joined, "summary", "top-level summary clamp warning expected")
+	assert.Contains(t, joined, "phases[0].summary", "phase summary clamp warning expected")
+	assert.Contains(t, joined, "phases[0].steps[0].summary", "step summary clamp warning expected")
+	for _, w := range parsed.Warnings {
+		assert.Contains(t, w, "clamped")
+	}
+	// Every persisted node body summary must be clamped to <=500 runes, proving
+	// the slice-index assign-back mutated the persisted fields (not copies).
+	require.Len(t, fc.execMutations, 1)
+	bodies := fc.execMutations[0].GetNodeBodies()
+	require.NotEmpty(t, bodies)
+	for _, b := range bodies {
+		if s := b.GetSummary(); s != "" {
+			assert.LessOrEqual(t, utf8.RuneCountInString(s), 500,
+				"persisted node %q summary must be clamped to <=500 runes", b.GetName())
+		}
+	}
 }
 
 // fakePlanGraphCaller is a fake that routes mutate calls through

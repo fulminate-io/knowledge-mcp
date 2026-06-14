@@ -113,6 +113,12 @@ func (h *dispatchEngineHandler) PipelineScan(
 	return nil, connect.NewError(connect.CodeUnimplemented, nil)
 }
 
+func (h *dispatchEngineHandler) PipelineGenPoll(
+	context.Context, *connect.Request[knowledgev1.PipelineGenPollRequest],
+) (*connect.Response[knowledgev1.PipelineGenPollResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, nil)
+}
+
 func (h *dispatchEngineHandler) ExportGraph(
 	context.Context, *connect.Request[knowledgev1.ExportGraphRequest],
 ) (*connect.Response[knowledgev1.ExportGraphResponse], error) {

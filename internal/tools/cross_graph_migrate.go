@@ -29,13 +29,11 @@ import (
 )
 
 // practiceProxyMigrationOnce gates the slug-less→slug-ful practice-proxy
-// migration to ONCE PER CLIENT SESSION, mirroring the verified RepoResolver
-// sync.Once precedent (repo_resolve.go:35-41,77 — the resolver's own once gates
-// its pipeline_list_graphs RPC, so one-per-session is exactly what we want).
-// There is NO persistent client done-flag in the tree, so the once-per-session
-// gate IS the lifecycle: the scan + re-key chain is idempotent, so a second
-// session re-scans, finds zero slug-less proxies (re-keyed in the first), and
-// no-ops. Recurring cost is one practice-narrowed proxy scan Execute per session.
+// migration to ONCE PER CLIENT SESSION. There is NO persistent client
+// done-flag in the tree, so the once-per-session gate IS the lifecycle: the
+// scan + re-key chain is idempotent, so a second session re-scans, finds zero
+// slug-less proxies (re-keyed in the first), and no-ops. Recurring cost is one
+// practice-narrowed proxy scan Execute per session.
 var practiceProxyMigrationOnce sync.Once
 
 // migratePracticeProxiesOnce fires migratePracticeProxies at most once per client

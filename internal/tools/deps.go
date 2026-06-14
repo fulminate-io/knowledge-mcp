@@ -237,9 +237,10 @@ type LocalLiveness interface {
 //     degraded-mode error.
 //   - RepoResolver: client-side cwd → code-graph-name resolver used by
 //     the InjectRepoIfCodeGraph intercept. One resolver
-//     per MCP session; sync.Once inside the resolver gates the
-//     underlying code-graph catalog read so a 100-call burst still
-//     produces exactly one wire read. Returns nil only in test
+//     per MCP session; a sync.Mutex + loaded flag inside the resolver
+//     gates the underlying code-graph catalog read so a 100-call burst
+//     still produces exactly one wire read once it succeeds (a failed
+//     load is not cached and is retried). Returns nil only in test
 //     harnesses that don't exercise repo injection — InjectRepoIfCodeGraph
 //     falls through (returns false) on nil, which is safe because the
 //     server-side handlers already reject empty repo: with a typed

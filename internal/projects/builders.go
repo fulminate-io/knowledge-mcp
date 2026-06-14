@@ -114,6 +114,7 @@ func wirePatternEdges(planIdx int, plan PlanArgs, nodes []*knowledgev1.Node, edg
 			Source:      "llm:claude",
 			SymbolName:  p.Name,
 			Description: p.Sketch,
+			Summary:     DerivePatternSummary(p.Name, p.Sketch),
 			Status:      "emerging",
 		}
 		if p.Sketch != "" {
@@ -372,6 +373,7 @@ func wireTicketPatternEdges(ticketIdx int, args TicketArgs, nodes []*knowledgev1
 			Source:      "llm:claude",
 			SymbolName:  p.Name,
 			Description: p.Sketch,
+			Summary:     DerivePatternSummary(p.Name, p.Sketch),
 			Status:      "emerging",
 		}
 		if p.Sketch != "" {

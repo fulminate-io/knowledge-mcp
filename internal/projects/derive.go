@@ -61,3 +61,17 @@ func DeriveQuestionSummary(question, context string) string {
 	}
 	return summary
 }
+
+// DerivePatternSummary produces the auto-derived summary for an eager-created
+// "emerging" pattern node from its name and optional sketch. proposed_patterns
+// supply only name + sketch (no summary), but pattern nodes are summary-required
+// (embed-only) — an empty summary fails create-time validation and rolls back
+// the whole create_batch. Derive a non-empty one here. Mirrors the other
+// Derive*Summary helpers; do NOT change the format.
+func DerivePatternSummary(name, sketch string) string {
+	summary := "Proposed pattern: " + name
+	if sketch != "" {
+		summary += ". Sketch: " + sketch
+	}
+	return summary
+}

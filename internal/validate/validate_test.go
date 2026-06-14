@@ -255,3 +255,97 @@ func TestDerivedSummary_RuneSafePrefix(t *testing.T) {
 		t.Errorf("error message (incl. quoted prefix) must be valid UTF-8 — prefix byte-sliced a rune: %q", msg)
 	}
 }
+
+// TestClampSummary covers the forgiving-clamp contract: empty/whitespace-only
+// summaries still hard-reject (emptiness cannot be clamped), under-cap and
+// exactly-cap summaries pass through trimmed with no warning, and over-cap
+// summaries are rune-safe word-boundary clamped to SummaryMaxLen with a
+// non-fatal warning naming the tool and field path. The multibyte case proves
+// the clamp never splits a UTF-8 rune.
+func TestClampSummary(t *testing.T) {
+	tests := []struct {
+		name        string
+		summary     string
+		wantErr     string // substring expected in the error, or "" for nil
+		wantWarn    bool   // whether a non-empty warning is expected
+		wantClamped string // expected clamped value when err is nil; "" means "don't check exact value"
+	}{
+		{name: "empty", summary: "", wantErr: "is required"},
+		{name: "whitespace only", summary: "   ", wantErr: "is required"},
+		{name: "under cap passthrough", summary: "a concise summary", wantWarn: false, wantClamped: "a concise summary"},
+		{name: "trims then passes through", summary: "  a concise summary  ", wantWarn: false, wantClamped: "a concise summary"},
+		{name: "exactly 500 passthrough", summary: strings.Repeat("a", 500), wantWarn: false, wantClamped: strings.Repeat("a", 500)},
+		{name: "501 ascii clamps with warning", summary: strings.Repeat("a", 501), wantWarn: true},
+		{name: "501 multibyte rune-safe clamp", summary: strings.Repeat("—", 501), wantWarn: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			clamped, warning, err := ClampSummary("create_research", "questions[0].summary", tt.summary)
+			if tt.wantErr != "" {
+				if err == nil {
+					t.Fatalf("expected error containing %q, got nil", tt.wantErr)
+				}
+				if !strings.Contains(err.Error(), tt.wantErr) {
+					t.Errorf("error %q does not contain %q", err.Error(), tt.wantErr)
+				}
+				if clamped != "" || warning != "" {
+					t.Errorf("on error want empty clamped+warning, got clamped=%q warning=%q", clamped, warning)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tt.wantWarn && warning == "" {
+				t.Errorf("expected a non-empty clamp warning, got empty")
+			}
+			if !tt.wantWarn && warning != "" {
+				t.Errorf("expected no warning, got %q", warning)
+			}
+			if tt.wantWarn {
+				// The warning must name the tool, the field path, and say it was clamped.
+				if !strings.Contains(warning, "create_research") || !strings.Contains(warning, "questions[0].summary") {
+					t.Errorf("warning must name the tool + field path: %q", warning)
+				}
+				if !strings.Contains(warning, "clamped") {
+					t.Errorf("warning must say the summary was clamped: %q", warning)
+				}
+				// The clamped value must be within the cap and valid UTF-8.
+				if rc := utf8.RuneCountInString(clamped); rc > SummaryMaxLen {
+					t.Errorf("clamped rune count %d exceeds cap %d", rc, SummaryMaxLen)
+				}
+				if !utf8.ValidString(clamped) {
+					t.Errorf("clamped value byte-sliced a multibyte rune (not valid UTF-8): %q", clamped)
+				}
+			}
+			if tt.wantClamped != "" && clamped != tt.wantClamped {
+				t.Errorf("clamped=%q want=%q", clamped, tt.wantClamped)
+			}
+		})
+	}
+}
+
+// TestClampSummary_WordBoundary confirms an over-cap multi-word ascii summary is
+// cut at a word boundary: the clamped result has no trailing space, is a prefix
+// of the trimmed input, and is at most SummaryMaxLen runes.
+func TestClampSummary_WordBoundary(t *testing.T) {
+	// 100 words of "word " (5 chars each) = 500 chars, then one more word pushes
+	// over the cap so the last space before rune 500 is the boundary.
+	in := strings.Repeat("word ", 110) // 550 runes, spaces throughout
+	clamped, warning, err := ClampSummary("create_plan", "summary", in)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if warning == "" {
+		t.Fatal("expected a clamp warning for a 550-rune summary")
+	}
+	if rc := utf8.RuneCountInString(clamped); rc > SummaryMaxLen {
+		t.Errorf("clamped rune count %d exceeds cap %d", rc, SummaryMaxLen)
+	}
+	if strings.HasSuffix(clamped, " ") {
+		t.Errorf("clamp should cut at a word boundary, leaving no trailing space: %q", clamped)
+	}
+	if !strings.HasPrefix(strings.TrimSpace(in), clamped) {
+		t.Errorf("clamped value must be a prefix of the trimmed input: %q", clamped)
+	}
+}

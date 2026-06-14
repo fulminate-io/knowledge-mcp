@@ -124,6 +124,12 @@ func (e *countingEngine) PipelineScan(
 	return connect.NewResponse(&knowledgev1.PipelineScanResponse{}), nil
 }
 
+func (e *countingEngine) PipelineGenPoll(
+	context.Context, *connect.Request[knowledgev1.PipelineGenPollRequest],
+) (*connect.Response[knowledgev1.PipelineGenPollResponse], error) {
+	return connect.NewResponse(&knowledgev1.PipelineGenPollResponse{}), nil
+}
+
 func (e *countingEngine) ExportGraph(
 	context.Context, *connect.Request[knowledgev1.ExportGraphRequest],
 ) (*connect.Response[knowledgev1.ExportGraphResponse], error) {

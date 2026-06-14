@@ -27,13 +27,14 @@ import (
 // two of these (local + cloud) so we can assert which backend serviced a
 // given call.
 type countingEngine struct {
-	execute       atomic.Int32
-	index         atomic.Int32
-	hive          atomic.Int32
-	metadataStats atomic.Int32
-	exportGraph   atomic.Int32
-	stats         atomic.Int32
-	pipelineScan  atomic.Int32
+	execute         atomic.Int32
+	index           atomic.Int32
+	hive            atomic.Int32
+	metadataStats   atomic.Int32
+	exportGraph     atomic.Int32
+	stats           atomic.Int32
+	pipelineScan    atomic.Int32
+	pipelineGenPoll atomic.Int32
 }
 
 func (e *countingEngine) Execute(
@@ -82,6 +83,14 @@ func (e *countingEngine) PipelineScan(
 ) (*connect.Response[knowledgev1.PipelineScanResponse], error) {
 	e.pipelineScan.Add(1)
 	return connect.NewResponse(&knowledgev1.PipelineScanResponse{}), nil
+}
+
+func (e *countingEngine) PipelineGenPoll(
+	_ context.Context,
+	_ *connect.Request[knowledgev1.PipelineGenPollRequest],
+) (*connect.Response[knowledgev1.PipelineGenPollResponse], error) {
+	e.pipelineGenPoll.Add(1)
+	return connect.NewResponse(&knowledgev1.PipelineGenPollResponse{}), nil
 }
 
 func (e *countingEngine) ExportGraph(_ context.Context, _ *connect.Request[knowledgev1.ExportGraphRequest]) (*connect.Response[knowledgev1.ExportGraphResponse], error) {

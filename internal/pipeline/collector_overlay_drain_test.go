@@ -91,6 +91,12 @@ func (f *statefulEmbedGapFake) Execute(_ context.Context, _ *knowledgev1.Execute
 	return &knowledgev1.ExecuteResponse{}, nil
 }
 
+// PipelineGenPoll is unused by this loop-level test (it drives the collector
+// directly via PipelineScan); the empty response satisfies WireClient.
+func (f *statefulEmbedGapFake) PipelineGenPoll(_ context.Context, _ *knowledgev1.PipelineGenPollRequest) (*knowledgev1.PipelineGenPollResponse, error) {
+	return &knowledgev1.PipelineGenPollResponse{}, nil
+}
+
 // TestCollectorRunLoop_OverlayBacklogDrainsAcrossWavesAndQuiesces drives the
 // REAL collector embed loop (runEmbedLoop → runLoop → discover) against a
 // stateful fake whose PipelineScan mirrors EmbedGaps. The backlog is seeded
@@ -126,6 +132,7 @@ func TestCollectorRunLoop_OverlayBacklogDrainsAcrossWavesAndQuiesces(t *testing.
 		kgtypes.GraphCode, "agent", cfg,
 		nil, embedCh, &metricsState{}, fake,
 		cfg.Tick, cfg.Tick, nil, nil, false, true, // summaryEnabled=false, embedEnabled=true: this test drives runEmbedLoop directly
+		nil, // nil genSnapshot: no central gen-poll in this test → discover always scanGaps (the pre-two-phase drain path this test exercises)
 	)
 
 	ctx, cancel := context.WithCancel(context.Background())

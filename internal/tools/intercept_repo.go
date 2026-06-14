@@ -183,8 +183,8 @@ func InjectRepoIfCodeGraph(ctx context.Context, deps ClientDeps, params kgtools.
 // injectSameRepoBranch stamps args["branch"] from the cwd's git HEAD, but
 // ONLY when the resolved target repo equals the cwd's repo. The cwd's git
 // HEAD is meaningful for the target only when the target IS the cwd's repo;
-// resolveRepo reuses the same sync.Once-memoized ResolveCwd already fired in
-// step 3 (this second call is free). Three cases:
+// resolveRepo reuses the same mutex-memoized ResolveCwd already fired in
+// step 3 (this second call is free once the load has succeeded). Three cases:
 //   - SAME-REPO, git cwd: DetectBranch succeeds → stamp branch.
 //   - SAME-REPO, non-git cwd: DetectBranch errors/empty → return the typed
 //     branch-required short-circuit (handled==true).

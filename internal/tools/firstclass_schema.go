@@ -189,6 +189,7 @@ func CollectToolDef() kgtools.MCPTool {
 				"type":               {Type: "string", Description: "Collector name (e.g., \"code\", \"aws\", \"gcp\", \"logs\", \"web\", \"pdf\")."},
 				"id":                 {Type: "string", Description: "Opaque identifier parsed by the collector (path, account:region, web source slug, absolute path to a .pdf, etc.). Optional for type=\"logs\"."},
 				"force":              {Type: "boolean", Description: "Skip safety check for existing indexed graphs."},
+				"promote":            {Type: "boolean", Description: "Code only: promote this branch to the base graph — land in base regardless of the recorded default branch, overwrite the recorded default branch to the collected branch, and delete the now-redundant same-name overlay. No effect for non-code collectors."},
 				"params":             {Type: "object", Description: "Registered custom_collector types only: opaque param object forwarded to the external collector binary, validated against its param_schema before exec. Built-in types ignore it."},
 				"backend":            {Type: "string", Description: "Logs only: name of a configured log_backend node."},
 				"provider":           {Type: "string", Description: "Logs only: provider identifier (e.g., cloudwatch, loki, stackdriver, k8s)."},

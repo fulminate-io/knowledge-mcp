@@ -51,6 +51,48 @@ func Summary(toolName, fieldPath, summary string) error {
 	return nil
 }
 
+// clampAtWord truncates s to at most maxLen RUNES at a word boundary, never
+// splitting a multibyte UTF-8 sequence (so the result is always valid UTF-8).
+// No ellipsis is appended — it returns a clean prefix. This is a re-home of the
+// client-side tools.truncateAtWordCreate clamp idiom into the validate package:
+// the validate package cannot import tools (tools imports validate), so the
+// logic is duplicated here to give ClampSummary a cycle-free home. The two
+// copies are deliberately kept in lock-step.
+func clampAtWord(s string, maxLen int) string {
+	if utf8.RuneCountInString(s) <= maxLen {
+		return s
+	}
+	prefix := string([]rune(s)[:maxLen])
+	idx := strings.LastIndex(prefix, " ")
+	if idx <= 0 {
+		return prefix
+	}
+	return prefix[:idx]
+}
+
+// ClampSummary is the forgiving counterpart to Summary for AUTHOR-supplied
+// summaries: an over-cap summary is rune-safe word-boundary CLAMPED to
+// SummaryMaxLen and a non-fatal warning is returned, so the write succeeds
+// instead of hard-rejecting. An EMPTY summary still hard-rejects — emptiness
+// cannot be clamped — with a message byte-identical to Summary's required
+// message, so empty-summary behavior is unchanged. An in-range summary passes
+// through trimmed with no warning. Counting matches Summary/DerivedSummary
+// (TrimSpace then RuneCountInString). Callers assign the clamped value back into
+// the field the node builder reads, and surface a non-empty warning to the user.
+func ClampSummary(toolName, fieldPath, summary string) (clamped string, warning string, err error) {
+	trimmed := strings.TrimSpace(summary)
+	if trimmed == "" {
+		return "", "", fmt.Errorf("%s: %s is required and must be non-empty (search-optimized one-line summary)", toolName, fieldPath)
+	}
+	n := utf8.RuneCountInString(trimmed)
+	if n > SummaryMaxLen {
+		c := clampAtWord(trimmed, SummaryMaxLen)
+		w := fmt.Sprintf("%s: %s exceeded %d characters (got %d) and was clamped to %d at a word boundary. Author shorter summaries to avoid losing detail", toolName, fieldPath, SummaryMaxLen, n, utf8.RuneCountInString(c))
+		return c, w, nil
+	}
+	return trimmed, "", nil
+}
+
 // runePrefix returns up to the first n runes of s. When s is longer than n
 // runes the result is truncated to n runes and an ellipsis is appended,
 // signaling there is more text. It is rune-safe (never byte-slices, so it

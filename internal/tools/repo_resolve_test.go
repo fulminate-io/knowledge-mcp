@@ -28,7 +28,12 @@ type listGraphsCaller struct {
 	mu           sync.Mutex
 	callCount    atomic.Int32
 	graphsByType map[string][]*knowledgev1.GraphInfo
-	callErr      error
+	// errOnCalls scripts per-call failures keyed by 1-based Execute ordinal:
+	// if errOnCalls[n] is non-nil, the nth Execute returns that error instead
+	// of the graphsByType success path. This lets a test fail the FIRST load
+	// and succeed a LATER one (which a single static error field cannot express)
+	// — exactly the retry-after-transient-failure case the resolver must handle.
+	errOnCalls map[int32]error
 }
 
 func newListGraphsCaller(graphsByType map[string][]*knowledgev1.GraphInfo) *listGraphsCaller {
@@ -42,11 +47,11 @@ func (l *listGraphsCaller) Call(_ context.Context, tool string, _ json.RawMessag
 }
 
 func (l *listGraphsCaller) Execute(_ context.Context, req *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error) {
-	l.callCount.Add(1)
+	n := l.callCount.Add(1)
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.callErr != nil {
-		return nil, l.callErr
+	if err := l.errOnCalls[n]; err != nil {
+		return nil, err
 	}
 	gt := req.GetTarget().GetGraph()
 	infos := l.graphsByType[gt]
@@ -111,23 +116,35 @@ func TestResolveCwd_BareSuffixMatch(t *testing.T) {
 	assert.Equal(t, "knowledge", name)
 }
 
-func TestResolveCwd_LoadErrorReturnedOnlyOnFirstCall(t *testing.T) {
+// TestResolveCwd_RetriesAfterFailedLoad is the regression guard for the
+// session-poisoning bug: a transient first-load failure (e.g. a
+// context-canceled request while the server was wedged) must NOT be latched.
+// The resolver memoizes a SUCCESSFUL load only; a failed load returns the error
+// and leaves the resolver un-loaded, so the next ResolveCwd retries the read.
+// The old error-latching memoization cached the failure and never re-fired —
+// this test fails against that code (callCount stays 1, second call returns the
+// cached error) and passes after the success-only-memoization fix (callCount==2,
+// second call resolves).
+func TestResolveCwd_RetriesAfterFailedLoad(t *testing.T) {
 	wantErr := errors.New("connection refused")
-	gc := &listGraphsCaller{callErr: wantErr}
+	gc := newListGraphsCaller(codeGraphs("knowledge"))
+	// Fail the FIRST Execute only; the second succeeds.
+	gc.errOnCalls = map[int32]error{1: wantErr}
 	r := NewRepoResolver(gc)
 
-	// First call returns the underlying error (wrapped).
-	_, _, err1 := r.ResolveCwd(context.Background(), "/some/cwd")
+	// First call surfaces the underlying error (wrapped) and must NOT latch it.
+	_, _, err1 := r.ResolveCwd(context.Background(), "/Users/jonathan/code/knowledge")
 	require.Error(t, err1)
 	require.ErrorIs(t, err1, wantErr)
 
-	// Second call returns the cached error (same wrapped form) WITHOUT
-	// re-firing the RPC — sync.Once semantics.
-	_, _, err2 := r.ResolveCwd(context.Background(), "/some/cwd")
-	require.Error(t, err2)
-	require.ErrorIs(t, err2, wantErr)
+	// Second call retries the load (the failure was not cached): it re-fires the
+	// RPC, succeeds, and resolves the cwd to the "knowledge" code graph.
+	name, ok, err2 := r.ResolveCwd(context.Background(), "/Users/jonathan/code/knowledge")
+	require.NoError(t, err2)
+	assert.True(t, ok)
+	assert.Equal(t, "knowledge", name)
 
-	assert.Equal(t, int32(1), gc.callCount.Load(), "Once.Do should fire Execute exactly once")
+	assert.Equal(t, int32(2), gc.callCount.Load(), "failed load must not be cached: the second ResolveCwd must re-fire Execute")
 }
 
 func TestResolveCwd_EmptyCwd(t *testing.T) {
@@ -179,7 +196,7 @@ func TestResolveCwd_ConcurrentCallsFireOnce(t *testing.T) {
 	for i, ok := range results {
 		assert.True(t, ok, "goroutine %d did not see a match", i)
 	}
-	assert.Equal(t, int32(1), gc.callCount.Load(), "sync.Once: Execute must fire exactly once across 100 parallel ResolveCwd calls")
+	assert.Equal(t, int32(1), gc.callCount.Load(), "mutex + loaded flag: Execute must fire exactly once across 100 parallel ResolveCwd calls when the load succeeds")
 }
 
 func TestResolveCwd_NilGraphCaller(t *testing.T) {

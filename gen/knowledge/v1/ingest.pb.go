@@ -40,6 +40,13 @@ const (
 // sync_commit is the git HEAD SHA the client collected at; sync_time is the
 // collection wall-clock as unix nanos. The server persists both onto
 // code-graph metadata (SyncCommitKey / SyncTimeKey).
+//
+// promote, when true, FORCES the collect into the base graph regardless of
+// the recorded default branch — a code-graph-only override of the
+// current_branch comparison above (the server short-circuits the
+// overlay-vs-base decision to base). It also makes the server overwrite the
+// recorded default branch (SyncDefaultBranchKey) to current_branch. Ignored
+// for non-code graph types.
 type CollectChunkRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Epoch         uint64                 `protobuf:"varint,1,opt,name=epoch,proto3" json:"epoch,omitempty"`
@@ -48,8 +55,9 @@ type CollectChunkRequest struct {
 	CurrentBranch string                 `protobuf:"bytes,4,opt,name=current_branch,json=currentBranch,proto3" json:"current_branch,omitempty"`
 	SyncCommit    string                 `protobuf:"bytes,5,opt,name=sync_commit,json=syncCommit,proto3" json:"sync_commit,omitempty"`
 	SyncTime      int64                  `protobuf:"varint,6,opt,name=sync_time,json=syncTime,proto3" json:"sync_time,omitempty"`
-	Nodes         []*Node                `protobuf:"bytes,7,rep,name=nodes,proto3" json:"nodes,omitempty"` // INLINE typed Node bodies (engine.proto)
-	Edges         []*BatchEdge           `protobuf:"bytes,8,rep,name=edges,proto3" json:"edges,omitempty"` // ID-addressed edges for this chunk
+	Nodes         []*Node                `protobuf:"bytes,7,rep,name=nodes,proto3" json:"nodes,omitempty"`      // INLINE typed Node bodies (engine.proto)
+	Edges         []*BatchEdge           `protobuf:"bytes,8,rep,name=edges,proto3" json:"edges,omitempty"`      // ID-addressed edges for this chunk
+	Promote       bool                   `protobuf:"varint,9,opt,name=promote,proto3" json:"promote,omitempty"` // code-only: force base + repoint default branch to current_branch
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -140,6 +148,13 @@ func (x *CollectChunkRequest) GetEdges() []*BatchEdge {
 	return nil
 }
 
+func (x *CollectChunkRequest) GetPromote() bool {
+	if x != nil {
+		return x.Promote
+	}
+	return false
+}
+
 type CollectChunkResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -179,13 +194,17 @@ func (*CollectChunkResponse) Descriptor() ([]byte, []int) {
 // FinalizeRequest ends a collection. epoch matches the CollectChunk epoch;
 // the server tombstones every node whose collect_epoch differs (the
 // prior-collection set). graph_type/graph_name/current_branch select the
-// graph + overlay arm exactly as CollectChunk did.
+// graph + overlay arm exactly as CollectChunk did. promote must agree with
+// the CollectChunk promote: when true it selects the base completion arm
+// (matching the chunk write-target) and triggers deletion of the now-redundant
+// same-name <base>@<current_branch> overlay after a successful finalize.
 type FinalizeRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Epoch         uint64                 `protobuf:"varint,1,opt,name=epoch,proto3" json:"epoch,omitempty"`
 	GraphType     string                 `protobuf:"bytes,2,opt,name=graph_type,json=graphType,proto3" json:"graph_type,omitempty"`
 	GraphName     string                 `protobuf:"bytes,3,opt,name=graph_name,json=graphName,proto3" json:"graph_name,omitempty"`
 	CurrentBranch string                 `protobuf:"bytes,4,opt,name=current_branch,json=currentBranch,proto3" json:"current_branch,omitempty"`
+	Promote       bool                   `protobuf:"varint,5,opt,name=promote,proto3" json:"promote,omitempty"` // code-only: select base completion arm + delete the same-name overlay
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -246,6 +265,13 @@ func (x *FinalizeRequest) GetCurrentBranch() string {
 		return x.CurrentBranch
 	}
 	return ""
+}
+
+func (x *FinalizeRequest) GetPromote() bool {
+	if x != nil {
+		return x.Promote
+	}
+	return false
 }
 
 type FinalizeResponse struct {
@@ -579,7 +605,7 @@ var File_knowledge_v1_ingest_proto protoreflect.FileDescriptor
 
 const file_knowledge_v1_ingest_proto_rawDesc = "" +
 	"\n" +
-	"\x19knowledge/v1/ingest.proto\x12\fknowledge.v1\x1a\x19knowledge/v1/engine.proto\"\xa7\x02\n" +
+	"\x19knowledge/v1/ingest.proto\x12\fknowledge.v1\x1a\x19knowledge/v1/engine.proto\"\xc1\x02\n" +
 	"\x13CollectChunkRequest\x12\x14\n" +
 	"\x05epoch\x18\x01 \x01(\x04R\x05epoch\x12\x1d\n" +
 	"\n" +
@@ -591,15 +617,17 @@ const file_knowledge_v1_ingest_proto_rawDesc = "" +
 	"syncCommit\x12\x1b\n" +
 	"\tsync_time\x18\x06 \x01(\x03R\bsyncTime\x12(\n" +
 	"\x05nodes\x18\a \x03(\v2\x12.knowledge.v1.NodeR\x05nodes\x12-\n" +
-	"\x05edges\x18\b \x03(\v2\x17.knowledge.v1.BatchEdgeR\x05edges\"\x16\n" +
-	"\x14CollectChunkResponse\"\x8c\x01\n" +
+	"\x05edges\x18\b \x03(\v2\x17.knowledge.v1.BatchEdgeR\x05edges\x12\x18\n" +
+	"\apromote\x18\t \x01(\bR\apromote\"\x16\n" +
+	"\x14CollectChunkResponse\"\xa6\x01\n" +
 	"\x0fFinalizeRequest\x12\x14\n" +
 	"\x05epoch\x18\x01 \x01(\x04R\x05epoch\x12\x1d\n" +
 	"\n" +
 	"graph_type\x18\x02 \x01(\tR\tgraphType\x12\x1d\n" +
 	"\n" +
 	"graph_name\x18\x03 \x01(\tR\tgraphName\x12%\n" +
-	"\x0ecurrent_branch\x18\x04 \x01(\tR\rcurrentBranch\"\x12\n" +
+	"\x0ecurrent_branch\x18\x04 \x01(\tR\rcurrentBranch\x12\x18\n" +
+	"\apromote\x18\x05 \x01(\bR\apromote\"\x12\n" +
 	"\x10FinalizeResponse\"\x92\x02\n" +
 	"\tBatchEdge\x12\x19\n" +
 	"\bfrom_idx\x18\x01 \x01(\x05R\afromIdx\x12\x15\n" +

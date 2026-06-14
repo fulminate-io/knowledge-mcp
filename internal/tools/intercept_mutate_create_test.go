@@ -4,7 +4,9 @@ package tools
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -29,6 +31,37 @@ func TestInterceptMutate_CreateFinding_HappyPath(t *testing.T) {
 	assert.Contains(t, body, "Finding recorded: fixture-finding")
 	assert.Contains(t, body, "(0 references)")
 	assert.Contains(t, body, "[graph: knowledge/default]")
+}
+
+// TestInterceptMutate_CreateFinding_SummaryClampsAndWarns proves the
+// mutate(create, type=finding) handler clamps an over-cap author summary (with a
+// warning in the result body) rather than hard-rejecting, AND persists the
+// clamped summary. Fails-when-absent: an over-cap summary would error, the
+// persisted node body summary would exceed 500 runes, or the warning would be
+// missing from the existing warnings channel.
+func TestInterceptMutate_CreateFinding_SummaryClampsAndWarns(t *testing.T) {
+	fc := &fakeGraphCaller{
+		mutateResult: kgtools.ToolResult{
+			Content: []kgtools.ContentBlock{{Type: "text", Text: `{"ids":["fnd-1"]}`}},
+		},
+	}
+	deps := interceptTestDeps{gc: fc}
+	over := strings.Repeat("a", 600)
+	handled, res := InterceptMutate(deps, kgtools.CallToolParams{
+		Name:      "mutate",
+		Arguments: json.RawMessage(`{"operation":"create","type":"finding","name":"fixture-finding","summary":"` + over + `","description":"desc"}`),
+	})
+	require.True(t, handled)
+	require.False(t, res.IsError, "over-cap finding summary must clamp + create, not error: %s", toolResultText(res))
+	body := toolResultText(res)
+	assert.Contains(t, body, "summary")
+	assert.Contains(t, body, "clamped")
+	assert.NotContains(t, body, "exceeds 500 characters", "over-cap author summary must clamp, not hard-reject")
+	// The persisted finding node body must carry the clamped summary.
+	require.Len(t, fc.execMutations, 1)
+	require.Len(t, fc.execMutations[0].GetNodeBodies(), 1)
+	assert.LessOrEqual(t, utf8.RuneCountInString(fc.execMutations[0].GetNodeBodies()[0].GetSummary()), 500,
+		"persisted finding summary must be clamped to <=500 runes")
 }
 
 func TestInterceptMutate_CreateResearch_HappyPath(t *testing.T) {

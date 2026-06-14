@@ -111,7 +111,7 @@ func handleClientCrossGraphLink(ctx context.Context, deps ClientDeps, a mutateAr
 
 	// Cross-graph confirmed. Run the slug-less→slug-ful practice-proxy migration
 	// once per session (lazy-on-first-cross-graph-link, mirroring RepoResolver's
-	// lazy once). Best-effort: never blocks the link being composed.
+	// lazy-on-first-use shape). Best-effort: never blocks the link being composed.
 	migratePracticeProxiesOnce(ctx, gc)
 
 	// INTRA-PRACTICE fast path: a pattern tree living entirely in one practice

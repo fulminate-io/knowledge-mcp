@@ -6,7 +6,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -270,4 +272,67 @@ func TestInterceptCreateProject_ForwardError_NamesLinearID(t *testing.T) {
 	assert.Contains(t, body, "proj-uuid")
 	assert.Contains(t, body, "https://example.invalid/p")
 	assert.Contains(t, body, "local mirror failed")
+}
+
+// TestInterceptCreateProject_LocalOnly_SummaryClampsAndWarns asserts the
+// no-backend (local-only) path clamps an over-cap author summary and surfaces a
+// warning in the result, AND that the persisted project node carries the clamped
+// summary. Fails-when-absent: an over-cap summary would error, the persisted
+// node body Summary would exceed 500 runes, or the (newly added) warnings
+// channel would drop the warning.
+func TestInterceptCreateProject_LocalOnly_SummaryClampsAndWarns(t *testing.T) {
+	fc := &fakeGraphCaller{mutateResult: kgtools.ToolResult{
+		Content: []kgtools.ContentBlock{{Type: "text", Text: `{"ids":["proj-local-id"]}`}},
+	}}
+	deps := interceptTestDeps{gc: fc}
+	longSummary := strings.Repeat("a", 600)
+	handled, res := InterceptCreateProject(deps, kgtools.CallToolParams{
+		Name:      "create_project",
+		Arguments: json.RawMessage(`{"name":"p","description":"d","summary":"` + longSummary + `","format":"json"}`),
+	})
+	require.True(t, handled)
+	require.False(t, res.IsError, "over-cap summary must clamp + create on the local-only path: %s", toolResultText(res))
+	msg := toolResultText(res)
+	assert.Contains(t, msg, "summary")
+	assert.Contains(t, msg, "clamped")
+	// The persisted node body must carry the CLAMPED summary, not the original.
+	require.Len(t, fc.execMutations, 1)
+	require.Len(t, fc.execMutations[0].GetNodeBodies(), 1)
+	stored := fc.execMutations[0].GetNodeBodies()[0].GetSummary()
+	assert.LessOrEqual(t, utf8.RuneCountInString(stored), 500, "persisted summary must be clamped to <=500 runes")
+}
+
+// TestInterceptCreateProject_Backend_ClampsBeforeLinearPush is the MANDATORY
+// reviewer-required test: it proves the clamp runs BEFORE buildAndPushProjectToLinear,
+// so the Linear CreateProject receives the clamped (<=500 rune) summary — keeping
+// the remote and local mirror consistent. It also asserts the persisted node body
+// is clamped and the result carries the clamp warning. Fails-when-absent: if the
+// clamp ran after (or only on) the local path, fb.createProjectArg.Summary would
+// be the full 600-rune string and exceed 500.
+func TestInterceptCreateProject_Backend_ClampsBeforeLinearPush(t *testing.T) {
+	fb := &fakeBackend{
+		groupsResult:     []backends.Group{{Key: "FUL", ID: "team-uuid"}},
+		createProjectRef: backends.RemoteRef{ID: "proj-uuid", URL: "https://example.invalid/p"},
+	}
+	fc := &fakeGraphCaller{mutateResult: kgtools.ToolResult{
+		Content: []kgtools.ContentBlock{{Type: "text", Text: `{"ids":["proj-local-id"]}`}},
+	}}
+	deps := interceptTestDeps{backend: fb, gc: fc}
+	longSummary := strings.Repeat("a", 600)
+	handled, res := InterceptCreateProject(deps, kgtools.CallToolParams{
+		Name:      "create_project",
+		Arguments: json.RawMessage(`{"name":"p","description":"d","summary":"` + longSummary + `","group":"FUL","format":"json"}`),
+	})
+	require.True(t, handled)
+	require.False(t, res.IsError, "over-cap summary must clamp + create on the backend path: %s", toolResultText(res))
+	// Linear must receive the CLAMPED summary (clamp ran before the push).
+	assert.LessOrEqual(t, utf8.RuneCountInString(fb.createProjectArg.Summary), 500,
+		"Linear CreateProject must receive the clamped (<=500 rune) summary")
+	assert.NotEmpty(t, fb.createProjectArg.Summary, "Linear summary should be the clamped value, not empty")
+	// The persisted node body must also be clamped, and the result must warn.
+	require.Len(t, fc.execMutations, 1)
+	require.Len(t, fc.execMutations[0].GetNodeBodies(), 1)
+	assert.LessOrEqual(t, utf8.RuneCountInString(fc.execMutations[0].GetNodeBodies()[0].GetSummary()), 500,
+		"persisted summary must be clamped to <=500 runes")
+	assert.Contains(t, toolResultText(res), "clamped")
 }

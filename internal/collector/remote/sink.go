@@ -104,6 +104,7 @@ func (s *UploadSink) WriteResult(ctx context.Context, collectorName string, resu
 			GraphType:     string(result.GraphType),
 			GraphName:     result.GraphName,
 			CurrentBranch: result.CurrentBranch,
+			Promote:       result.Promote,
 			SyncCommit:    result.SyncCommit,
 			SyncTime:      result.SyncTime,
 			Nodes:         chunk,
@@ -119,6 +120,7 @@ func (s *UploadSink) WriteResult(ctx context.Context, collectorName string, resu
 		GraphType:     string(result.GraphType),
 		GraphName:     result.GraphName,
 		CurrentBranch: result.CurrentBranch,
+		Promote:       result.Promote,
 	})
 	if _, err := client.Finalize(ctx, finReq); err != nil {
 		return fmt.Errorf("remote sink: Finalize: %w", err)

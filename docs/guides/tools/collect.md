@@ -85,6 +85,7 @@ transport and security model, and a worked register → collect example.
 | `max_pages` | integer |  |  | Web only: cap on total pages fetched across the crawl. |
 | `params` | object |  |  | Registered custom_collector types only: opaque param object forwarded to the external collector binary, validated against its param_schema before exec. Built-in types ignore it. |
 | `politeness_ms` | integer |  |  | Web only: per-host request delay in milliseconds. |
+| `promote` | boolean |  |  | Code only: promote this branch to the base graph — land in base regardless of the recorded default branch, overwrite the recorded default branch to the collected branch, and delete the now-redundant same-name overlay. No effect for non-code collectors. |
 | `provider` | string |  |  | Logs only: provider identifier (e.g., cloudwatch, loki, stackdriver, k8s). |
 | `raw_query` | string |  |  | Logs only: provider-native query overriding structured fields. |
 | `recipe` | string |  |  | Web/PDF only, transformer="recipe" only: name of a recipe node. The recipe's source_graph_type metadata must match `type`. |

@@ -28,28 +28,55 @@ func debugLogGapItems(axis string, items []*knowledgev1.PipelineScanItem) {
 	slog.Debug("pipeline.collector: gap node ids", "axis", axis, "count", len(toks), "ids", strings.Join(toks, " "))
 }
 
-// discover issues one pipeline_scan call for this collector's
-// (graph_type, graph_name, axis) and updates the per-axis dirty-gen
-// cache. axis must be "summary" or "embed". Returns empty + skip when
-// the server-reported dirty_gen has not advanced since the last
-// empty-result scan.
+// discover decides whether this collector's (graph_type, graph_name, axis) has new
+// work and, when it does, issues the Phase-2 PipelineScan detail fetch for it. axis
+// must be "summary" or "embed". Returns (nil, nil) — and issues ZERO RPCs — when
+// the SHARED bulk gen-poll snapshot shows the per-axis dirty-gen has not advanced
+// past the per-axis watermark (last).
 //
-// Single-axis dispatch lives here rather than duplicated in the two
-// loops so the dirty-gen cache update happens in exactly one place per
-// axis (the test fixture's call counter can assert exact RPC counts).
+// Two-phase protocol: the per-tick dirty-gen is sampled ONCE for every
+// loaded graph by the central RunGenPollLoop (genpoll.go), which writes the shared
+// genSnapshot and pokes this collector's wake when its gen advances. discover reads
+// that snapshot rather than self-issuing a PipelineScan just to learn the gen, so a
+// no-change tick costs ZERO collector RPCs (the only per-tick RPC is the one bulk
+// gen-poll). When the snapshot gen HAS advanced (or the snapshot is not yet known —
+// first scan — or a backlog is still draining, in which case the watermark sits
+// below the snapshot gen), discover issues the EXISTING scanGaps PipelineScan to
+// pull the detail items + the authoritative gen.
 //
-// The cache is intentionally pinned to the floor while a backlog drains
+// The watermark (last) is intentionally pinned to the floor while a backlog drains
 // (items > 0): advancing it sooner would let the next tick's cheap-tick
-// short-circuit while the queue still has work, starving the workers.
-// `cached_gen` in the log line below stays at its floor value for the
-// whole drain window — that is by design, NOT a stuck pipeline. The
-// items count is the real progress signal.
+// short-circuit while the queue still has work, starving the workers. `cached_gen`
+// in the log line below stays at its floor value for the whole drain window — that
+// is by design, NOT a stuck pipeline. The items count is the real progress signal.
 func (c *collector) discover(ctx context.Context, axis string, last *atomic.Uint64) ([]*knowledgev1.PipelineScanItem, error) {
 	limit := c.cfg.SummaryBatchSizeOrDefault() * c.cfg.SummaryWorkersOrDefault()
 	if axis == "embed" {
 		limit = c.cfg.EmbedBatchSizeOrDefault() * c.cfg.EmbedWorkersOrDefault()
 	}
 	cachedGen := last.Load()
+
+	// Phase-1 cheap-tick: consult the shared bulk-poll snapshot. When the central
+	// loop has sampled this graph AND the snapshot gen matches the watermark, there
+	// is no new work — return WITHOUT any PipelineScan (the 0-RPC no-change tick).
+	// While a backlog drains, the watermark sits below the snapshot gen (last.Store
+	// fires only on an empty fetch), so this guard does NOT fire mid-drain and the
+	// detail fetch below keeps paging. nil genSnapshot (test fakes without the
+	// central loop) falls through to always scan — the pre-two-phase behavior.
+	if c.genSnapshot != nil {
+		summaryGen, embedGen, ok := c.genSnapshot(graphKey{GraphType: c.gt, GraphName: c.name})
+		snapGen := summaryGen
+		if axis == "embed" {
+			snapGen = embedGen
+		}
+		if ok && snapGen == cachedGen {
+			return nil, nil
+		}
+	}
+
+	// Phase-2 detail fetch: the gen advanced (or is unknown / mid-drain) — pull the
+	// gap items via the EXISTING PipelineScan. last_seen_gen is still passed so the
+	// server's own cheap-tick short-circuit stays a backstop.
 	items, gen, err := scanGaps(ctx, c.client, c.gt, c.name, axis, limit, cachedGen)
 	if err != nil {
 		// Surface the error to the caller so the loop can apply scan-error

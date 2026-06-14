@@ -265,17 +265,21 @@ func handleThinkClient(ctx context.Context, deps ClientDeps, params kgtools.Call
 		return errorResult("thoughts(think): content is required and must be non-empty (the hypothesis / observation / plan being recorded)")
 	}
 	// Summary is REQUIRED for think — the author-supplied search-optimized one-line
-	// that makes the thought findable via recall. Reject missing/empty/whitespace
-	// (and over-length) client-side BEFORE the wire, mirroring the content gate
-	// above. validate.Summary enforces the same non-empty + SummaryMaxLen rule the
-	// server applies to embed-only nodes, with the "summary is required" phrasing.
-	if err := validate.Summary("thoughts(think)", "summary", a.Summary); err != nil {
-		return errorResult(err.Error())
+	// that makes the thought findable via recall. Missing/empty/whitespace is
+	// rejected client-side BEFORE the wire, mirroring the content gate above. An
+	// over-length summary is NOT rejected: validate.ClampSummary clamps it to
+	// SummaryMaxLen at a word boundary and returns a non-fatal warning, so the
+	// think still succeeds with a clamped (findable) summary.
+	clamped, clampWarn, serr := validate.ClampSummary("thoughts(think)", "summary", a.Summary)
+	if serr != nil {
+		return errorResult(serr.Error())
 	}
+	a.Summary = clamped
 
 	id, err := composeThoughtCreate(ctx, gc, composeThoughtArgs{
-		Content:      a.Content,
-		Summary:      strings.TrimSpace(a.Summary),
+		Content: a.Content,
+		// a.Summary is already trimmed + clamped by validate.ClampSummary.
+		Summary:      a.Summary,
 		Source:       "llm:claude",
 		Session:      a.Session,
 		BranchesFrom: a.BranchesFrom,
@@ -288,7 +292,12 @@ func handleThinkClient(ctx context.Context, deps ClientDeps, params kgtools.Call
 		return errorResult("think: " + err.Error())
 	}
 
-	return textResult(renderThinkTail(id, a))
+	var sb strings.Builder
+	sb.WriteString(renderThinkTail(id, a))
+	if clampWarn != "" {
+		writeClientWarningsSection(&sb, []string{clampWarn}, "\n\n")
+	}
+	return textResult(sb.String())
 }
 
 // chaseThinkStatus applies a non-default caller status via a by-id UPDATE over

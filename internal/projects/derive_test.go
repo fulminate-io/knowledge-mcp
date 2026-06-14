@@ -154,3 +154,33 @@ func TestDeriveQuestionSummary(t *testing.T) {
 		})
 	}
 }
+
+// TestDerivePatternSummary pins the pattern-summary derivation. proposed_patterns
+// supply name + optional sketch; the derived summary must be non-empty so the
+// eager-created pattern node passes create-time summary validation.
+func TestDerivePatternSummary(t *testing.T) {
+	tests := []struct {
+		name   string
+		pName  string
+		sketch string
+		want   string
+	}{
+		{
+			name:   "empty sketch branch",
+			pName:  "Cache-Aside",
+			sketch: "",
+			want:   "Proposed pattern: " + "Cache-Aside",
+		},
+		{
+			name:   "with sketch branch",
+			pName:  "Cache-Aside",
+			sketch: "interface X { Y() }",
+			want:   "Proposed pattern: " + "Cache-Aside" + ". Sketch: " + "interface X { Y() }",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Equal(t, tt.want, DerivePatternSummary(tt.pName, tt.sketch))
+		})
+	}
+}

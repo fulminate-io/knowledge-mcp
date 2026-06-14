@@ -15,6 +15,7 @@ package ast
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
@@ -45,23 +46,29 @@ func withMatchRecover(site string, fn func()) func() {
 	}
 }
 
-// runWorkerArgs bundles inputs threaded through the worker pool.
+// runWorkerArgs bundles inputs threaded through the worker pool. The
+// compiled pattern is NOT shared across workers — each worker re-compiles
+// it from patternSource so no tree-sitter *Tree ever crosses a goroutine
+// boundary (go-tree-sitter Trees are not safe for concurrent use; the
+// per-Tree cachedNode map is unsynchronized). where is shared safely (its
+// only lazy state is a sync.Once-guarded regexp, not a tree).
 type runWorkerArgs struct {
-	repoDir string
-	lang    treesitter.Language
-	cp      *CompiledPattern
-	where   *WhereNode
-	cache   map[string]*PatternTree
-	cacheMu *sync.Mutex
-	files   []string
-	limit   int
+	repoDir       string
+	lang          treesitter.Language
+	patternSource string
+	where         *WhereNode
+	files         []string
+	limit         int
 }
 
 // runWorkers fans out file processing across NumCPU workers. Each worker
-// owns its own treesitter.Parser (parsers are not thread-safe per the
-// package CLAUDE.md). Returns the aggregated RawMatch slice plus per-call
-// scanned / skipped counters and the first per-worker error encountered
-// (where-tree evaluation errors propagate; parse errors silently skip).
+// owns its own treesitter.Parser AND its own compiled pattern (re-parsed +
+// re-compiled from a.patternSource) plus its own sub-pattern compile cache
+// — nothing tree-sitter is shared between goroutines, since go-tree-sitter
+// Trees (pattern tree, sub-pattern trees) are not safe for concurrent use.
+// Returns the aggregated RawMatch slice plus per-call scanned / skipped
+// counters and the first per-worker error encountered (worker compile and
+// where-tree evaluation errors propagate; parse errors silently skip).
 func runWorkers(ctx context.Context, a runWorkerArgs) ([]RawMatch, int, int, error) {
 	if len(a.files) == 0 {
 		return nil, 0, 0, nil
@@ -97,14 +104,36 @@ func runWorkers(ctx context.Context, a runWorkerArgs) ([]RawMatch, int, int, err
 		wg.Go(withMatchRecover("Match.worker", func() {
 			tsp := treesitter.NewParser()
 			defer tsp.Close()
+
+			// Per-worker compiled pattern + sub-pattern cache. Mirrors the
+			// per-worker parser above: each worker owns its own pattern
+			// *Tree, rootQuery, and sub-pattern trees so no tree-sitter
+			// state is walked concurrently across goroutines. The extra
+			// Parse+Compile is one small, amortized cost per worker (not
+			// per file); the caller already validated the source compiles.
+			pat, perr := Parse(a.patternSource)
+			if perr != nil {
+				firstErr.CompareAndSwap(nil, &errBox{err: fmt.Errorf("ast/match: worker re-parse pattern: %w", perr)})
+				return
+			}
+			cp, cerr := Compile(pat, a.lang)
+			if cerr != nil {
+				firstErr.CompareAndSwap(nil, &errBox{err: fmt.Errorf("ast/match: worker compile pattern: %w", cerr)})
+				return
+			}
+			defer cp.Close()
+			cache := map[string]*PatternTree{}
+			cacheMu := &sync.Mutex{}
+			defer closeSubPatternCache(cache, cacheMu)
+
 			for relPath := range fileCh {
 				processFile(ctx, processArgs{
 					repoDir:  a.repoDir,
 					lang:     a.lang,
-					cp:       a.cp,
+					cp:       cp,
 					where:    a.where,
-					cache:    a.cache,
-					cacheMu:  a.cacheMu,
+					cache:    cache,
+					cacheMu:  cacheMu,
 					tsp:      tsp,
 					relPath:  relPath,
 					limit:    a.limit,
@@ -133,7 +162,11 @@ func runWorkers(ctx context.Context, a runWorkerArgs) ([]RawMatch, int, int, err
 type errBox struct{ err error }
 
 // processArgs bundles the per-file processing inputs so processFile keeps
-// runWorkers' cognitive complexity below the lint cap.
+// runWorkers' cognitive complexity below the lint cap. cp, cache, and
+// cacheMu are the WORKER-LOCAL compiled pattern + sub-pattern cache
+// (populated inside the worker goroutine), not shared across workers — so
+// the tree-sitter trees they reference are only ever walked by this one
+// goroutine.
 type processArgs struct {
 	repoDir  string
 	lang     treesitter.Language

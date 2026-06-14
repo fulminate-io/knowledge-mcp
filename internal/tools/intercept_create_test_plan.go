@@ -57,16 +57,9 @@ func InterceptCreateTestPlan(deps ClientDeps, params kgtools.CallToolParams) (bo
 	if len(a.Steps) == 0 {
 		return true, errorResult("at least one step is required")
 	}
-	if err := validate.Name("create_test_plan", a.Name); err != nil {
-		return true, errorResult(err.Error())
-	}
-	if err := validate.Summary("create_test_plan", "summary", a.Summary); err != nil {
-		return true, errorResult(err.Error())
-	}
-	for i, st := range a.Steps {
-		if err := validate.Summary("create_test_plan", fmt.Sprintf("steps[%d].summary", i), st.Summary); err != nil {
-			return true, errorResult(err.Error())
-		}
+	warnings, verr := clampTestPlanSummaries(&a)
+	if verr != nil {
+		return true, errorResult(verr.Error())
 	}
 
 	planArgs := projects.TestPlanArgs{
@@ -106,14 +99,50 @@ func InterceptCreateTestPlan(deps ClientDeps, params kgtools.CallToolParams) (bo
 			"id":       planID,
 			"name":     a.Name,
 			"step_ids": ids[1:],
+			"warnings": orNilWarnings(warnings),
 		})
 	}
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Test plan created: %s → ID: %s\n\n", a.Name, planID)
 	root, ferr := render.FetchNode(ctx, gc, planID)
 	if ferr != nil || root == nil || root.Id == "" {
-		return true, textResult(fmt.Sprintf("Test plan created: %s → ID: %s [graph: knowledge/default]", a.Name, planID))
+		var oneLine strings.Builder
+		fmt.Fprintf(&oneLine, "Test plan created: %s → ID: %s", a.Name, planID)
+		writeClientWarningsSection(&oneLine, warnings, "\n")
+		return true, textResult(oneLine.String() + " [graph: knowledge/default]")
 	}
 	render.RenderTree(ctx, gc, &sb, root, 0, 3)
+	writeClientWarningsSection(&sb, warnings, "\n")
 	return true, textResult(sb.String() + " [graph: knowledge/default]")
+}
+
+// clampTestPlanSummaries validates the test-plan name and clamps the
+// author-supplied plan + step summaries in place (a is a pointer so the clamped
+// values flow into BuildTestPlanGraph). Each author summary is clamped at a word
+// boundary with a non-fatal warning rather than hard-rejected; emptiness still
+// hard-rejects. Returns the accumulated clamp warnings plus the first hard
+// validation error.
+func clampTestPlanSummaries(a *createTestPlanArgs) (warnings []string, err error) {
+	if err := validate.Name("create_test_plan", a.Name); err != nil {
+		return nil, err
+	}
+	clamped, w, cerr := validate.ClampSummary("create_test_plan", "summary", a.Summary)
+	if cerr != nil {
+		return nil, cerr
+	}
+	a.Summary = clamped
+	if w != "" {
+		warnings = append(warnings, w)
+	}
+	for i := range a.Steps {
+		c, sw, scerr := validate.ClampSummary("create_test_plan", fmt.Sprintf("steps[%d].summary", i), a.Steps[i].Summary)
+		if scerr != nil {
+			return nil, scerr
+		}
+		a.Steps[i].Summary = c
+		if sw != "" {
+			warnings = append(warnings, sw)
+		}
+	}
+	return warnings, nil
 }

@@ -118,6 +118,7 @@ func (c *CodeCollector) Collect(ctx context.Context, id string, opts collector.C
 		Nodes:         pop.Nodes,
 		Edges:         batchEdges,
 		CurrentBranch: branch,
+		Promote:       opts.Promote,
 		SyncCommit:    headSHA,
 		SyncTime:      syncTime,
 		ModulePath:    modulePath,

@@ -117,6 +117,7 @@ func TestInterceptCreateTicket_ProposedPatterns_Accepted(t *testing.T) {
 			patIdx = i
 			assert.Equal(t, "emerging", nb.GetStatus())
 			assert.Equal(t, "interface X { Y() }", nb.GetMetadata()["shape"])
+			assert.NotEmpty(t, nb.GetSummary(), "pattern node must carry a non-empty Summary — an empty summary fails create-time validation and rolls back the whole batch")
 		}
 	}
 	require.GreaterOrEqual(t, patIdx, 0, "expected an emerging NodePattern named NewThing in the batch")

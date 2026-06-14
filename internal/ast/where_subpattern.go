@@ -5,8 +5,9 @@
 // files under the 500-LOC fail threshold.
 //
 // Sub-patterns recurse back through compilePattern + matchTree under a
-// per-Match-call compile cache. Recursion depth is hard-capped at
-// subPatternMaxDepth (= 8) per Q10. Cross-language sub-patterns are
+// per-WORKER compile cache (each match worker owns its own, so sub-pattern
+// trees are never walked across goroutines). Recursion depth is hard-capped
+// at subPatternMaxDepth (= 8) per Q10. Cross-language sub-patterns are
 // deferred in v1 per Q7 (error on Language != scope.lang).
 
 package ast
@@ -104,8 +105,10 @@ func bindAs(scope *evalScope, name string, node *sitter.Node) {
 }
 
 // getOrCompileSubPattern returns the cached compile of source, or compiles
-// it under scope.lang and stores in the cache. The cache is mu-protected
-// because evalWhere runs concurrently per-file in match orchestration.
+// it under scope.lang and stores in the cache. The cache + mutex are owned
+// by a single match worker; the mutex guards the map against the worker's
+// own depth-first sub-pattern recursion (and the lost-race discard below),
+// not against other goroutines — workers never share a cache.
 func getOrCompileSubPattern(ctx context.Context, scope *evalScope, source string) (*PatternTree, error) {
 	scope.cacheMu.Lock()
 	if pt, ok := scope.cache[source]; ok {

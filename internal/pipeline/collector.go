@@ -101,19 +101,30 @@ type collector struct {
 	summaryWake chan struct{}
 	embedWake   chan struct{}
 
-	// lastSummaryGen / lastEmbedGen cache the server-side dirty-gen
-	// value from the most recent scan that returned zero eligible IDs.
-	// On the next tick, if the scan returns the same gen, we skip
-	// pushing anything (the scan call itself was still cheap on the
-	// server — base-graph dirty gen check + early-return).
+	// lastSummaryGen / lastEmbedGen cache the per-axis dirty-gen value from the
+	// most recent scan that returned zero eligible IDs (the per-axis watermark).
+	// On the next tick, discover compares this against the SHARED gen snapshot
+	// (genSnapshot, below) and skips the Phase-2 detail PipelineScan entirely when
+	// the snapshot gen has not advanced past it — the no-change tick costs ZERO
+	// collector RPCs.
 	lastSummaryGen atomic.Uint64
 	lastEmbedGen   atomic.Uint64
+
+	// genSnapshot reads the central bulk gen-poll's last-sampled per-(graph,axis)
+	// dirty-gens for THIS collector's graph (returns summary, embed, and whether
+	// the central loop has sampled it yet). Set by RegisterGraph to
+	// Pipeline.genSnapshotFor. discover consults it to decide whether to issue a
+	// Phase-2 detail PipelineScan. nil for test fakes that construct a collector
+	// without the central loop → discover falls back to always issuing scanGaps
+	// (the pre-two-phase behavior), so the existing collector state-machine tests
+	// stay valid.
+	genSnapshot func(key graphKey) (summary, embed uint64, ok bool)
 }
 
 // newCollector constructs a collector. The actual goroutine launch is
 // done by Pipeline.RegisterGraph so the WaitGroup accounting stays
 // centralized.
-func newCollector(gt kgtypes.GraphType, name string, cfg Config, summaryCh chan<- SummaryWork, embedCh chan<- EmbedWork, metrics *metricsState, client WireClient, baseTick, idleTick time.Duration, flush func(ctx context.Context) error, healIfSegmentless func(ctx context.Context) error, summaryEnabled, embedEnabled bool) *collector {
+func newCollector(gt kgtypes.GraphType, name string, cfg Config, summaryCh chan<- SummaryWork, embedCh chan<- EmbedWork, metrics *metricsState, client WireClient, baseTick, idleTick time.Duration, flush func(ctx context.Context) error, healIfSegmentless func(ctx context.Context) error, summaryEnabled, embedEnabled bool, genSnapshot func(key graphKey) (summary, embed uint64, ok bool)) *collector {
 	return &collector{
 		gt:                gt,
 		name:              name,
@@ -130,6 +141,7 @@ func newCollector(gt kgtypes.GraphType, name string, cfg Config, summaryCh chan<
 		embedEnabled:      embedEnabled,
 		summaryWake:       make(chan struct{}, 1),
 		embedWake:         make(chan struct{}, 1),
+		genSnapshot:       genSnapshot,
 	}
 }
 

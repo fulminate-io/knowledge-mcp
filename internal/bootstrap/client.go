@@ -172,7 +172,8 @@ type client struct {
 	// resolver. Constructed lazily on first RepoResolver()
 	// call via repoResolverOnce so test harnesses that build *client
 	// without a GraphClient don't trip on the nil-graph path. The
-	// resolver's own sync.Once gates the code-graph catalog read, so
+	// resolver's own mutex + loaded flag gates the code-graph catalog
+	// read (memoizing a successful load, retrying a failed one), so
 	// one resolver-per-session is exactly what we want.
 	repoResolverOnce sync.Once
 	repoResolver     *tools.RepoResolver

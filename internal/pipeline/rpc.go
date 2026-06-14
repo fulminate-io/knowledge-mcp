@@ -32,18 +32,23 @@ func debugLogWriteback(axis, graphName string, items []updateBatchItem) {
 
 // WireClient is the narrow surface the pipeline uses to issue RPCs against
 // the graph server. *server.GraphClient satisfies this interface naturally
-// (it has both PipelineScan and Execute); the package exposes only the two
-// methods to keep the test seam small. Tests inject a fake WireClient with a
-// call counter + canned response map.
+// (it has PipelineGenPoll, PipelineScan, and Execute); the package exposes only
+// these methods to keep the test seam small. Tests inject a fake WireClient with
+// a call counter + canned response map.
 //
 // Execute is the engine seam: writeBatchUpdates compiles its update_batch
 // into a MUTATION_KIND_UPDATE_ITEMS MutationPlan (engine.Compile) and runs it
 // through Execute, so the per-item batch write rides the engine arm rather than
-// the legacy mutate(update_batch) handler. PipelineScan is the dedicated
-// index-gap-discovery RPC — gap discovery is NOT engine.Compile-
-// reducible (it needs the server's per-axis dirty-gen state), so it rides its
-// own typed EngineService.PipelineScan RPC rather than the Execute seam.
+// the legacy mutate(update_batch) handler. The two gap-discovery RPCs are NOT
+// engine.Compile-reducible (they need the server's per-axis dirty-gen state), so
+// each rides its own typed EngineService RPC rather than the Execute seam:
+//   - PipelineGenPoll is the bulk Phase-1 poll — ONE call per tick returns the
+//     per-(graph,axis) dirty-gen for every loaded graph (no gap walk). The
+//     central gen-poll loop diffs each gen against its watermark.
+//   - PipelineScan is the Phase-2 detail fetch — the central loop fires it only
+//     for the (graph,axis) pairs whose gen advanced, to pull the gap items.
 type WireClient interface {
+	PipelineGenPoll(ctx context.Context, req *knowledgev1.PipelineGenPollRequest) (*knowledgev1.PipelineGenPollResponse, error)
 	PipelineScan(ctx context.Context, req *knowledgev1.PipelineScanRequest) (*knowledgev1.PipelineScanResponse, error)
 	Execute(ctx context.Context, req *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error)
 }

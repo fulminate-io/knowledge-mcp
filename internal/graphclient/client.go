@@ -181,6 +181,21 @@ func (c *GraphClient) PipelineScan(
 	return resp.Msg, nil
 }
 
+// PipelineGenPoll issues one EngineService.PipelineGenPoll RPC and returns the
+// typed response. Thin connect-client passthrough mirroring PipelineScan — the
+// client-side LLM pipeline's central gen-poll loop (one bulk poll per tick) rides
+// this.
+func (c *GraphClient) PipelineGenPoll(
+	ctx context.Context,
+	req *knowledgev1.PipelineGenPollRequest,
+) (*knowledgev1.PipelineGenPollResponse, error) {
+	resp, err := c.engine.PipelineGenPoll(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
 // ExportGraph issues one EngineService.ExportGraph RPC and returns the typed
 // response. Thin connect-client passthrough mirroring Sync — the client-side
 // push orchestration (InterceptSync) fetches the serialized OSS graph bytes via

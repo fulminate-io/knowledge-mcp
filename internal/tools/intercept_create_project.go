@@ -58,9 +58,14 @@ func InterceptCreateProject(deps ClientDeps, params kgtools.CallToolParams) (boo
 	if err := validate.Name("create_project", a.Name); err != nil {
 		return true, errorResult(err.Error())
 	}
-	if err := validate.Summary("create_project", "summary", a.Summary); err != nil {
-		return true, errorResult(err.Error())
+	// Clamp an over-cap author summary (with a warning) BEFORE the backend
+	// branch so BOTH the local mirror AND the Linear write receive the clamped
+	// (<=500 rune) summary — keeping remote and local storage consistent.
+	clamped, clampWarn, serr := validate.ClampSummary("create_project", "summary", a.Summary)
+	if serr != nil {
+		return true, errorResult(serr.Error())
 	}
+	a.Summary = clamped
 
 	ctx := context.Background()
 	backend := deps.BackendResolver().Default()
@@ -68,7 +73,7 @@ func InterceptCreateProject(deps ClientDeps, params kgtools.CallToolParams) (boo
 		// No backend configured — compose the local-only project node
 		// client-side. Server-side handleCreateProject
 		// now has no server-side dispatch so we MUST claim this case.
-		return true, createProjectLocalOnly(ctx, gc, a)
+		return true, createProjectLocalOnly(ctx, gc, a, clampWarn)
 	}
 
 	ref, group, err := buildAndPushProjectToLinear(ctx, backend, a)
@@ -101,20 +106,30 @@ func InterceptCreateProject(deps ClientDeps, params kgtools.CallToolParams) (boo
 		return true, errorResult("create_project: persist returned no IDs")
 	}
 	projectID := ids[0]
+	var warnings []string
+	if clampWarn != "" {
+		warnings = append(warnings, clampWarn)
+	}
 	if a.Format == "json" {
 		return true, jsonResult(map[string]any{
-			"id":   projectID,
-			"name": a.Name,
+			"id":       projectID,
+			"name":     a.Name,
+			"warnings": orNilWarnings(warnings),
 		})
 	}
-	return true, textResult(fmt.Sprintf("Project created: %s → ID: %s [graph: knowledge/default]", a.Name, projectID))
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Project created: %s → ID: %s", a.Name, projectID)
+	writeClientWarningsSection(&sb, warnings, "\n")
+	return true, textResult(sb.String() + " [graph: knowledge/default]")
 }
 
 // createProjectLocalOnly composes a local-only project node (no
 // backend write-through) and persists it via PersistBatch under one
 // bundle_anchor. Server-side handleCreateProject's local-only branch
-// was stubbed so the client owns this path now.
-func createProjectLocalOnly(ctx context.Context, gc GraphCaller, a createProjectArgs) kgtools.ToolResult {
+// was stubbed so the client owns this path now. clampWarn carries a
+// non-empty warning when the author summary was clamped, surfaced in the
+// result so the local-only path reports the clamp like the backend path.
+func createProjectLocalOnly(ctx context.Context, gc GraphCaller, a createProjectArgs, clampWarn string) kgtools.ToolResult {
 	projectArgs := projects.ProjectArgs{
 		Name:        a.Name,
 		Description: a.Description,
@@ -130,13 +145,21 @@ func createProjectLocalOnly(ctx context.Context, gc GraphCaller, a createProject
 		return errorResult("create project: persist returned no IDs")
 	}
 	projectID := ids[0]
+	var warnings []string
+	if clampWarn != "" {
+		warnings = append(warnings, clampWarn)
+	}
 	if a.Format == "json" {
 		return jsonResult(map[string]any{
-			"id":   projectID,
-			"name": a.Name,
+			"id":       projectID,
+			"name":     a.Name,
+			"warnings": orNilWarnings(warnings),
 		})
 	}
-	return textResult(fmt.Sprintf("Project created: %s → ID: %s [graph: knowledge/default]", a.Name, projectID))
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "Project created: %s → ID: %s", a.Name, projectID)
+	writeClientWarningsSection(&sb, warnings, "\n")
+	return textResult(sb.String() + " [graph: knowledge/default]")
 }
 
 // buildAndPushProjectToLinear is the pure-function inner of

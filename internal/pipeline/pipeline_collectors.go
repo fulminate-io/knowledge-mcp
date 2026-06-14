@@ -70,31 +70,29 @@ func (p *Pipeline) RegisterGraph(ctx context.Context, gt kgtypes.GraphType, name
 	if p.healFactory != nil {
 		heal = p.healFactory(gt, name)
 	}
-	c := newCollector(gt, name, p.cfg, p.summaryCh, p.embedCh, p.metrics, backend, base, idleMax, flush, heal, p.summaryEnabled(), p.embedEnabled())
+	c := newCollector(gt, name, p.cfg, p.summaryCh, p.embedCh, p.metrics, backend, base, idleMax, flush, heal, p.summaryEnabled(), p.embedEnabled(), p.genSnapshotFor)
 	p.collectorWakes[key] = []chan struct{}{c.summaryWake, c.embedWake}
 	p.collectorWG.Go(func() {
 		c.run(cctx)
 	})
 }
 
-// WakeAll cuts every live collector's idle-backoff sleep short so each re-scans
-// within one base tick. Fired after a collect (or any bulk write) so a graph
-// that had backed off toward IdleTickMax does not wait out its (hour-long) idle
-// interval before discovering the freshly-collected nodes. Non-blocking + per-
-// axis coalescing: a wake already queued is a no-op, so repeated collects don't
-// pile up. A graph with no new work simply does one extra scan and re-idles —
-// cheap, since collects are infrequent. Safe to call before Start / with no
-// collectors (no-op).
+// WakeAll triggers ONE immediate central bulk gen-poll (genPollWake) so a collect
+// (or any bulk write) re-polls every loaded graph's dirty-gen in a SINGLE RPC and
+// selectively pokes only the (graph,axis) collectors whose gen advanced — rather
+// than fanning out a wake to all 2N per-collector loops (which previously each
+// then issued their own PipelineScan, the flood this two-phase protocol removes).
+// A graph that had backed off toward IdleTickMax is roused within one poll only if
+// its gen actually moved; an unchanged graph stays idle (no wasted scan).
+//
+// Non-blocking + coalescing: the send on the buffered(1) genPollWake is a no-op
+// when a poll is already queued, so repeated collects don't pile up. Safe to call
+// before Start / with no central loop running (test fakes): the buffered signal
+// simply sits until the loop drains it, or is harmlessly never consumed.
 func (p *Pipeline) WakeAll() {
-	p.collectorMu.Lock()
-	defer p.collectorMu.Unlock()
-	for _, wakes := range p.collectorWakes {
-		for _, w := range wakes {
-			select {
-			case w <- struct{}{}:
-			default: // already signaled — coalesce
-			}
-		}
+	select {
+	case p.genPollWake <- struct{}{}:
+	default: // a poll is already queued — coalesce
 	}
 }
 

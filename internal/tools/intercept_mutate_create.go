@@ -25,9 +25,11 @@ func handleClientMutateCreateFinding(ctx context.Context, deps ClientDeps, a mut
 	if err := validate.Name("mutate(create, type=finding)", a.Name); err != nil {
 		return errorResult(err.Error())
 	}
-	if err := validate.Summary("mutate(create, type=finding)", "summary", a.Summary); err != nil {
-		return errorResult(err.Error())
+	clamped, clampWarn, serr := validate.ClampSummary("mutate(create, type=finding)", "summary", a.Summary)
+	if serr != nil {
+		return errorResult(serr.Error())
 	}
+	a.Summary = clamped
 	node := buildFindingNode(a)
 	nodes := []*knowledgev1.Node{node}
 	edges := buildFindingFixedEdges(a)
@@ -51,6 +53,9 @@ func handleClientMutateCreateFinding(ctx context.Context, deps ClientDeps, a mut
 		_ = UpdateBatchStatus(ctx, gc, []string{a.QuestionID}, "answered", bundleID)
 	}
 	warnings := append(cl.warnings, applyCodeLinks(ctx, gc, ids[0], cl.codeLinks)...)
+	if clampWarn != "" {
+		warnings = append(warnings, clampWarn)
+	}
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Finding recorded: %s → ID: %s (%d references) [graph: knowledge/default]", a.Name, ids[0], len(a.References))
 	writeClientWarningsSection(&sb, warnings, "\n\n")
@@ -141,9 +146,11 @@ func handleClientMutateCreateResearch(ctx context.Context, deps ClientDeps, a mu
 	if err := validate.Name("mutate(create, type=research)", a.Name); err != nil {
 		return errorResult(err.Error())
 	}
-	if err := validate.Summary("mutate(create, type=research)", "summary", a.Summary); err != nil {
-		return errorResult(err.Error())
+	clamped, clampWarn, serr := validate.ClampSummary("mutate(create, type=research)", "summary", a.Summary)
+	if serr != nil {
+		return errorResult(serr.Error())
 	}
+	a.Summary = clamped
 	question := a.Name
 	bgContext := a.Content
 	summary := a.Summary
@@ -174,6 +181,9 @@ func handleClientMutateCreateResearch(ctx context.Context, deps ClientDeps, a mu
 		return errorResult("record research: persist returned no IDs")
 	}
 	warnings := append(cl.warnings, applyCodeLinks(ctx, gc, ids[0], cl.codeLinks)...)
+	if clampWarn != "" {
+		warnings = append(warnings, clampWarn)
+	}
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Research question recorded: %s → ID: %s [graph: knowledge/default]", question, ids[0])
 	writeClientWarningsSection(&sb, warnings, "\n\n")
@@ -186,9 +196,11 @@ func handleClientMutateCreateRule(ctx context.Context, deps ClientDeps, a mutate
 	if err := validate.Name("mutate(create, type=rule)", a.Name); err != nil {
 		return errorResult(err.Error())
 	}
-	if err := validate.Summary("mutate(create, type=rule)", "summary", a.Summary); err != nil {
-		return errorResult(err.Error())
+	clamped, clampWarn, serr := validate.ClampSummary("mutate(create, type=rule)", "summary", a.Summary)
+	if serr != nil {
+		return errorResult(serr.Error())
 	}
+	a.Summary = clamped
 	summary := a.Summary
 	if summary == "" {
 		summary = projects.DeriveRuleSummary(a.Name, a.Scope)
@@ -218,6 +230,9 @@ func handleClientMutateCreateRule(ctx context.Context, deps ClientDeps, a mutate
 		return errorResult("add rule: persist returned no IDs")
 	}
 	warnings := append(cl.warnings, applyCodeLinks(ctx, gc, ids[0], cl.codeLinks)...)
+	if clampWarn != "" {
+		warnings = append(warnings, clampWarn)
+	}
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "Rule added: %s → ID: %s [graph: knowledge/default]", a.Name, ids[0])
 	writeClientWarningsSection(&sb, warnings, "\n\n")

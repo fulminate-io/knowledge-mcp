@@ -71,6 +71,12 @@ func (s *stubEngine) PipelineScan(
 	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("stubEngine: PipelineScan not scripted"))
 }
 
+func (s *stubEngine) PipelineGenPoll(
+	context.Context, *connect.Request[knowledgev1.PipelineGenPollRequest],
+) (*connect.Response[knowledgev1.PipelineGenPollResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("stubEngine: PipelineGenPoll not scripted"))
+}
+
 func (s *stubEngine) ExportGraph(
 	context.Context, *connect.Request[knowledgev1.ExportGraphRequest],
 ) (*connect.Response[knowledgev1.ExportGraphResponse], error) {

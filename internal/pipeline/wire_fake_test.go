@@ -62,6 +62,12 @@ type fakeWireClient struct {
 	// results set it via seedScan.
 	scanResp *knowledgev1.PipelineScanResponse
 
+	// genPollResp seeds the bulk PipelineGenPoll RPC. Default nil → an empty
+	// PipelineGenPollResponse (no entries → no (graph,axis) advances → 0 Phase-2
+	// detail fetches). Tests that need the gen-poll to report advanced gens set it
+	// via seedGenPoll.
+	genPollResp *knowledgev1.PipelineGenPollResponse
+
 	// embedScanResp / summaryScanResp, when non-nil, are returned for the
 	// matching axis's scans (req.axis == "embed" / "summary") INSTEAD of scanResp.
 	// Lets a test seed eligible items on ONE axis only while the other returns
@@ -125,6 +131,31 @@ func (f *fakeWireClient) PipelineScan(_ context.Context, req *knowledgev1.Pipeli
 		return &knowledgev1.PipelineScanResponse{}, nil
 	}
 	return resp, nil
+}
+
+// PipelineGenPoll satisfies WireClient's bulk Phase-1 gen-poll seam: the central
+// gen-poll loop issues ONE of these per tick. Counts the call under
+// "pipeline_gen_poll" and returns the seeded response (default: an empty response
+// → no entries → no advances → 0 Phase-2 detail fetches).
+func (f *fakeWireClient) PipelineGenPoll(_ context.Context, _ *knowledgev1.PipelineGenPollRequest) (*knowledgev1.PipelineGenPollResponse, error) {
+	f.mu.Lock()
+	f.calls["pipeline_gen_poll"]++
+	resp := f.genPollResp
+	f.mu.Unlock()
+	if resp == nil {
+		return &knowledgev1.PipelineGenPollResponse{}, nil
+	}
+	return resp, nil
+}
+
+// seedGenPoll installs the response returned for the bulk PipelineGenPoll RPC,
+// modeling a server that reports the given per-(graph,axis) dirty-gen entries.
+// The central gen-poll loop diffs each entry's gen against its watermark and
+// fires a Phase-2 PipelineScan for every pair that advanced.
+func (f *fakeWireClient) seedGenPoll(entries ...*knowledgev1.PipelineGenPollEntry) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.genPollResp = &knowledgev1.PipelineGenPollResponse{Entries: entries}
 }
 
 // scanCountForAxis returns how many pipeline_scan RPCs the fake observed for the

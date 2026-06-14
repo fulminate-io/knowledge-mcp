@@ -62,6 +62,11 @@ func InterceptCreateTicket(deps ClientDeps, params kgtools.CallToolParams) (bool
 	if err := validateCreateTicketArgs(a); err != nil {
 		return true, errorResult(err.Error())
 	}
+	clamped, clampWarn, serr := validate.ClampSummary("create_ticket", "summary", a.Summary)
+	if serr != nil {
+		return true, errorResult(serr.Error())
+	}
+	a.Summary = clamped
 
 	ctx := context.Background()
 
@@ -76,6 +81,9 @@ func InterceptCreateTicket(deps ClientDeps, params kgtools.CallToolParams) (bool
 	}
 	ticketArgs.PatternIDs = res.effectivePatternIDs
 	ticketArgs.LanguagePatterns = res.effectiveLangIDs
+	if clampWarn != "" {
+		res.warnings = append(res.warnings, clampWarn)
+	}
 
 	_, parentBackendName, parentURL, parentBackendID, parentMeta, lookupErr := lookupNodeBackend(ctx, gc, a.ProjectID)
 	if lookupErr != nil {
@@ -162,19 +170,18 @@ func createTicketBackendBacked(ctx context.Context, gc GraphCaller, a createTick
 	return textResult(sb.String() + " [graph: knowledge/default]")
 }
 
-// validateCreateTicketArgs runs the same validation gates the server's
+// validateCreateTicketArgs runs the hard validation gates the server's
 // handleCreateTicket previously ran (a prior phase stubbed those out
-// server-side, so the client owns this now). Order matches the server-
-// side ordering: name, project_id present, summary.
+// server-side, so the client owns this now): name and project_id present.
+// The summary is NOT gated here — InterceptCreateTicket clamps an over-cap
+// author summary (with a warning) via validate.ClampSummary rather than
+// hard-rejecting it.
 func validateCreateTicketArgs(a createTicketArgs) error {
 	if err := validate.Name("create_ticket", a.Name); err != nil {
 		return err
 	}
 	if strings.TrimSpace(a.ProjectID) == "" {
 		return fmt.Errorf("project_id is required")
-	}
-	if err := validate.Summary("create_ticket", "summary", a.Summary); err != nil {
-		return err
 	}
 	return nil
 }

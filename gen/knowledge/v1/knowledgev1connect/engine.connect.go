@@ -49,6 +49,9 @@ const (
 	// EngineServicePipelineScanProcedure is the fully-qualified name of the EngineService's
 	// PipelineScan RPC.
 	EngineServicePipelineScanProcedure = "/knowledge.v1.EngineService/PipelineScan"
+	// EngineServicePipelineGenPollProcedure is the fully-qualified name of the EngineService's
+	// PipelineGenPoll RPC.
+	EngineServicePipelineGenPollProcedure = "/knowledge.v1.EngineService/PipelineGenPoll"
 	// EngineServiceExportGraphProcedure is the fully-qualified name of the EngineService's ExportGraph
 	// RPC.
 	EngineServiceExportGraphProcedure = "/knowledge.v1.EngineService/ExportGraph"
@@ -98,6 +101,23 @@ type EngineServiceClient interface {
 	// (graph_type, graph_name) with overlay-suffix base-name splitting, so it keeps
 	// its native arg shape.
 	PipelineScan(context.Context, *connect.Request[v1.PipelineScanRequest]) (*connect.Response[v1.PipelineScanResponse], error)
+	// PipelineGenPoll is the cheap BULK Phase-1 poll the client LLM pipeline issues
+	// ONCE per collector tick. Given the account's loaded graph set it reads the
+	// __graphs registry ONCE and returns the per-(graph,axis) dirty_gen for every
+	// (graph, {summary, embed}) pair — sampling dirty-gen via the existing
+	// GetPipelineGen path. It does NO gap walk (no NodeIDsBy*Gap): it is
+	// gen-sample-only, the defining property that keeps it off the expensive path.
+	// The client diffs each returned dirty_gen against its per-(graph,axis)
+	// last-seen watermark and issues the EXISTING PipelineScan (Phase-2 detail
+	// fetch) only for the pairs that advanced — replacing the prior up-to-2N
+	// PipelineScan fan-out per tick with one bulk poll. An EMPTY graphs list means
+	// "all eligible graphs the server enumerates"; the production client always
+	// sends an explicit set (the graphs it drains). Like PipelineScan it does NOT
+	// use the GraphSelector envelope — it carries a flat (graph_type, graph_name)
+	// pair per graph. The axis vocabulary is "summary" and "embed" only (the two
+	// axes the collector pipeline drains); the reflect + segment_rebuild axes stay
+	// on the existing PipelineScan RPC.
+	PipelineGenPoll(context.Context, *connect.Request[v1.PipelineGenPollRequest]) (*connect.Response[v1.PipelineGenPollResponse], error)
 	// ExportGraph is the bulk-graph-export read serving BOTH build flavors: it
 	// serializes the target graph's full byte image and returns the bytes. It
 	// mirrors the Stats read shape exactly (resolveTargetDB(target) → serialize →
@@ -168,6 +188,12 @@ func NewEngineServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(engineServiceMethods.ByName("PipelineScan")),
 			connect.WithClientOptions(opts...),
 		),
+		pipelineGenPoll: connect.NewClient[v1.PipelineGenPollRequest, v1.PipelineGenPollResponse](
+			httpClient,
+			baseURL+EngineServicePipelineGenPollProcedure,
+			connect.WithSchema(engineServiceMethods.ByName("PipelineGenPoll")),
+			connect.WithClientOptions(opts...),
+		),
 		exportGraph: connect.NewClient[v1.ExportGraphRequest, v1.ExportGraphResponse](
 			httpClient,
 			baseURL+EngineServiceExportGraphProcedure,
@@ -185,14 +211,15 @@ func NewEngineServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 
 // engineServiceClient implements EngineServiceClient.
 type engineServiceClient struct {
-	execute        *connect.Client[v1.ExecuteRequest, v1.ExecuteResponse]
-	stats          *connect.Client[v1.StatsRequest, v1.StatsResponse]
-	metadataStats  *connect.Client[v1.MetadataStatsRequest, v1.MetadataStatsResponse]
-	index          *connect.Client[v1.IndexRequest, v1.IndexResponse]
-	hive           *connect.Client[v1.HiveRequest, v1.HiveResponse]
-	pipelineScan   *connect.Client[v1.PipelineScanRequest, v1.PipelineScanResponse]
-	exportGraph    *connect.Client[v1.ExportGraphRequest, v1.ExportGraphResponse]
-	overwriteGraph *connect.Client[v1.OverwriteGraphRequest, v1.OverwriteGraphResponse]
+	execute         *connect.Client[v1.ExecuteRequest, v1.ExecuteResponse]
+	stats           *connect.Client[v1.StatsRequest, v1.StatsResponse]
+	metadataStats   *connect.Client[v1.MetadataStatsRequest, v1.MetadataStatsResponse]
+	index           *connect.Client[v1.IndexRequest, v1.IndexResponse]
+	hive            *connect.Client[v1.HiveRequest, v1.HiveResponse]
+	pipelineScan    *connect.Client[v1.PipelineScanRequest, v1.PipelineScanResponse]
+	pipelineGenPoll *connect.Client[v1.PipelineGenPollRequest, v1.PipelineGenPollResponse]
+	exportGraph     *connect.Client[v1.ExportGraphRequest, v1.ExportGraphResponse]
+	overwriteGraph  *connect.Client[v1.OverwriteGraphRequest, v1.OverwriteGraphResponse]
 }
 
 // Execute calls knowledge.v1.EngineService.Execute.
@@ -223,6 +250,11 @@ func (c *engineServiceClient) Hive(ctx context.Context, req *connect.Request[v1.
 // PipelineScan calls knowledge.v1.EngineService.PipelineScan.
 func (c *engineServiceClient) PipelineScan(ctx context.Context, req *connect.Request[v1.PipelineScanRequest]) (*connect.Response[v1.PipelineScanResponse], error) {
 	return c.pipelineScan.CallUnary(ctx, req)
+}
+
+// PipelineGenPoll calls knowledge.v1.EngineService.PipelineGenPoll.
+func (c *engineServiceClient) PipelineGenPoll(ctx context.Context, req *connect.Request[v1.PipelineGenPollRequest]) (*connect.Response[v1.PipelineGenPollResponse], error) {
+	return c.pipelineGenPoll.CallUnary(ctx, req)
 }
 
 // ExportGraph calls knowledge.v1.EngineService.ExportGraph.
@@ -276,6 +308,23 @@ type EngineServiceHandler interface {
 	// (graph_type, graph_name) with overlay-suffix base-name splitting, so it keeps
 	// its native arg shape.
 	PipelineScan(context.Context, *connect.Request[v1.PipelineScanRequest]) (*connect.Response[v1.PipelineScanResponse], error)
+	// PipelineGenPoll is the cheap BULK Phase-1 poll the client LLM pipeline issues
+	// ONCE per collector tick. Given the account's loaded graph set it reads the
+	// __graphs registry ONCE and returns the per-(graph,axis) dirty_gen for every
+	// (graph, {summary, embed}) pair — sampling dirty-gen via the existing
+	// GetPipelineGen path. It does NO gap walk (no NodeIDsBy*Gap): it is
+	// gen-sample-only, the defining property that keeps it off the expensive path.
+	// The client diffs each returned dirty_gen against its per-(graph,axis)
+	// last-seen watermark and issues the EXISTING PipelineScan (Phase-2 detail
+	// fetch) only for the pairs that advanced — replacing the prior up-to-2N
+	// PipelineScan fan-out per tick with one bulk poll. An EMPTY graphs list means
+	// "all eligible graphs the server enumerates"; the production client always
+	// sends an explicit set (the graphs it drains). Like PipelineScan it does NOT
+	// use the GraphSelector envelope — it carries a flat (graph_type, graph_name)
+	// pair per graph. The axis vocabulary is "summary" and "embed" only (the two
+	// axes the collector pipeline drains); the reflect + segment_rebuild axes stay
+	// on the existing PipelineScan RPC.
+	PipelineGenPoll(context.Context, *connect.Request[v1.PipelineGenPollRequest]) (*connect.Response[v1.PipelineGenPollResponse], error)
 	// ExportGraph is the bulk-graph-export read serving BOTH build flavors: it
 	// serializes the target graph's full byte image and returns the bytes. It
 	// mirrors the Stats read shape exactly (resolveTargetDB(target) → serialize →
@@ -342,6 +391,12 @@ func NewEngineServiceHandler(svc EngineServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(engineServiceMethods.ByName("PipelineScan")),
 		connect.WithHandlerOptions(opts...),
 	)
+	engineServicePipelineGenPollHandler := connect.NewUnaryHandler(
+		EngineServicePipelineGenPollProcedure,
+		svc.PipelineGenPoll,
+		connect.WithSchema(engineServiceMethods.ByName("PipelineGenPoll")),
+		connect.WithHandlerOptions(opts...),
+	)
 	engineServiceExportGraphHandler := connect.NewUnaryHandler(
 		EngineServiceExportGraphProcedure,
 		svc.ExportGraph,
@@ -368,6 +423,8 @@ func NewEngineServiceHandler(svc EngineServiceHandler, opts ...connect.HandlerOp
 			engineServiceHiveHandler.ServeHTTP(w, r)
 		case EngineServicePipelineScanProcedure:
 			engineServicePipelineScanHandler.ServeHTTP(w, r)
+		case EngineServicePipelineGenPollProcedure:
+			engineServicePipelineGenPollHandler.ServeHTTP(w, r)
 		case EngineServiceExportGraphProcedure:
 			engineServiceExportGraphHandler.ServeHTTP(w, r)
 		case EngineServiceOverwriteGraphProcedure:
@@ -403,6 +460,10 @@ func (UnimplementedEngineServiceHandler) Hive(context.Context, *connect.Request[
 
 func (UnimplementedEngineServiceHandler) PipelineScan(context.Context, *connect.Request[v1.PipelineScanRequest]) (*connect.Response[v1.PipelineScanResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("knowledge.v1.EngineService.PipelineScan is not implemented"))
+}
+
+func (UnimplementedEngineServiceHandler) PipelineGenPoll(context.Context, *connect.Request[v1.PipelineGenPollRequest]) (*connect.Response[v1.PipelineGenPollResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("knowledge.v1.EngineService.PipelineGenPoll is not implemented"))
 }
 
 func (UnimplementedEngineServiceHandler) ExportGraph(context.Context, *connect.Request[v1.ExportGraphRequest]) (*connect.Response[v1.ExportGraphResponse], error) {

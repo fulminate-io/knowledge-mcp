@@ -40,26 +40,29 @@ func TestInterceptCreateResearch_DerivedQuestionOverflow(t *testing.T) {
 	assert.Contains(t, msg, "Derived prefix:")
 }
 
-// TestInterceptCreateResearch_AuthorSummaryPathUnchanged asserts the
-// author-supplied summary path is preserved: an over-long AUTHOR summary fails
-// with the ORIGINAL validate.Summary message (no "derived from"), proving the
-// derived branch is not taken when q.Summary is set.
-func TestInterceptCreateResearch_AuthorSummaryPathUnchanged(t *testing.T) {
-	deps := interceptTestDeps{gc: &fakeGraphCaller{}}
+// TestInterceptCreateResearch_AuthorSummaryClampsAndWarns asserts the
+// author-supplied summary path is FORGIVING: an over-cap AUTHOR question summary
+// is clamped at a word boundary (with a non-fatal warning naming the field), and
+// the create SUCCEEDS rather than hard-rejecting. Fails-when-absent: if the
+// over-cap author summary still errored, res.IsError would be true and the body
+// would carry "exceeds 500 characters" instead of a clamp warning.
+func TestInterceptCreateResearch_AuthorSummaryClampsAndWarns(t *testing.T) {
+	fc := &fakeGraphCaller{mutateIDs: []string{"research-1", "question-1"}}
+	deps := interceptTestDeps{gc: fc}
 	longSummary := strings.Repeat("a", 501)
 	handled, res := InterceptCreateResearch(deps, kgtools.CallToolParams{
 		Name: "create_research",
 		Arguments: json.RawMessage(`{
-			"name":"r","goal":"g","summary":"s",
+			"name":"r","goal":"g","summary":"s","format":"json",
 			"questions":[{"question":"short q","summary":"` + longSummary + `"}]
 		}`),
 	})
 	require.True(t, handled)
-	require.True(t, res.IsError)
+	require.False(t, res.IsError, "over-cap author summary must clamp + create, not error: %s", toolResultText(res))
 	msg := toolResultText(res)
 	assert.Contains(t, msg, "questions[0].summary")
-	assert.Contains(t, msg, "exceeds 500 characters")
-	assert.NotContains(t, msg, "derived from", "author summary path must NOT use the derived-summary error")
+	assert.Contains(t, msg, "clamped")
+	assert.NotContains(t, msg, "exceeds 500 characters", "over-cap author summary must clamp, not hard-reject")
 }
 
 // TestInterceptCreateResearch_ValidAuthorSummaryCreates asserts a valid

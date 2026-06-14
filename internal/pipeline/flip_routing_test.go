@@ -50,6 +50,12 @@ func (f *flippableBackend) PipelineScan(ctx context.Context, req *knowledgev1.Pi
 	return f.current().PipelineScan(ctx, req)
 }
 
+func (f *flippableBackend) PipelineGenPoll(ctx context.Context, req *knowledgev1.PipelineGenPollRequest) (*knowledgev1.PipelineGenPollResponse, error) {
+	// Delegate to the current concrete backend for WireClient completeness (the
+	// gen-poll path is not exercised by the flip-routing tests).
+	return f.current().PipelineGenPoll(ctx, req)
+}
+
 // cloudSawGenZeroScan reports whether the cloud backend ever served a scan with
 // LastSeenGen==0 (a fresh, non-short-circuiting scan — proof a flipped survivor
 // re-scans the cloud backend from gen 0).
@@ -87,6 +93,10 @@ func (r *recordingBackend) PipelineScan(ctx context.Context, req *knowledgev1.Pi
 		r.parent.mu.Unlock()
 	}
 	return r.inner.PipelineScan(ctx, req)
+}
+
+func (r *recordingBackend) PipelineGenPoll(ctx context.Context, req *knowledgev1.PipelineGenPollRequest) (*knowledgev1.PipelineGenPollResponse, error) {
+	return r.inner.PipelineGenPoll(ctx, req)
 }
 
 func (r *recordingBackend) Execute(ctx context.Context, req *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error) {

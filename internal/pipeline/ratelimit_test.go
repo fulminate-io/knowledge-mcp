@@ -81,6 +81,10 @@ func (c *scriptedExecClient) PipelineScan(_ context.Context, _ *knowledgev1.Pipe
 	return &knowledgev1.PipelineScanResponse{}, nil
 }
 
+func (c *scriptedExecClient) PipelineGenPoll(_ context.Context, _ *knowledgev1.PipelineGenPollRequest) (*knowledgev1.PipelineGenPollResponse, error) {
+	return &knowledgev1.PipelineGenPollResponse{}, nil
+}
+
 func (c *scriptedExecClient) Execute(_ context.Context, _ *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

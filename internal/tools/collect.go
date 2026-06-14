@@ -103,12 +103,12 @@ func InterceptCollect(deps ClientDeps, params kgtools.CallToolParams) (bool, kgt
 	// provider-canonical resource ID downstream. AKS subcollectors
 	// populate CollectTarget.ResolutionID; cascade dispatch loops call
 	// rm.Record(t.Id, t.ResolutionID) before invoking the cascade.
-	cloudRM := cloud.NewResolutionMap()
-	ctx = cloud.WithResolutionMap(ctx, cloudRM)
+	ctx = cloud.WithResolutionMap(ctx, cloud.NewResolutionMap())
 
 	opts := collector.CollectOptions{
-		Force: a.Force,
-		Sink:  deps.Sink(),
+		Force:   a.Force,
+		Promote: a.Promote,
+		Sink:    deps.Sink(),
 	}
 
 	if a.Type == "web" || a.Type == "pdf" {
@@ -327,14 +327,15 @@ func runPostCollectLinker(ctx context.Context, deps ClientDeps, collectorType st
 	}
 }
 
-// collectArgs mirrors the server-side collectArgs struct. Replicated to
-// avoid dragging domains/tools into the client binary. Type-specific fields
-// are zero-valued when type does not match and ignored by other dispatch
-// paths.
+// collectArgs is the client-side collect command argument contract. It lives
+// only in the client binary (collection runs client-side after the binary
+// split). Type-specific fields are zero-valued when type does not match and
+// ignored by other dispatch paths.
 type collectArgs struct {
-	Type  string `json:"type"`
-	ID    string `json:"id"`
-	Force bool   `json:"force"`
+	Type    string `json:"type"`
+	ID      string `json:"id"`
+	Force   bool   `json:"force"`
+	Promote bool   `json:"promote,omitempty"` // code only: force base + repoint default branch to the collected branch
 
 	// Params is the generic param passthrough for a registered (non-builtin)
 	// graph-type collector: the registered external binary carries all of its

@@ -15,6 +15,7 @@ type ProgressFunc func(current, total int, message string)
 type CollectOptions struct {
 	OnProgress ProgressFunc
 	Force      bool // skip safety check for existing indexed graphs
+	Promote    bool // code-only: force this collect into the base graph + repoint the recorded default branch
 	Sink       Sink // terminal destination; nil = buildSink(DefaultSinkConfig())
 }
 

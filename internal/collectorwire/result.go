@@ -36,6 +36,11 @@ type CollectResult struct {
 	// server (Sink.WriteResult) decides overlay-vs-full-replace by
 	// comparing against the existing graph's recorded default.
 	CurrentBranch string
+	// Promote, when true (code-only), tells the server to land this collect in
+	// the base graph regardless of the recorded default branch and to overwrite
+	// the recorded default branch to CurrentBranch. Threaded onto
+	// CollectChunkRequest + FinalizeRequest by the sink.
+	Promote bool
 	// SyncCommit is the git HEAD SHA the collector ran against; SyncTime is
 	// the collection wall-clock as unix nanos. The server persists both onto
 	// code-graph metadata (SyncCommitKey / SyncTimeKey) so a later catalog
