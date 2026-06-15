@@ -202,6 +202,7 @@ testing).
 | Flag | Default | Description |
 | --- | --- | --- |
 | `--claude-md-dest` |  | CLAUDE.md destination path (default ~/.claude/CLAUDE.md) |
+| `--claude-settings-dest` |  | settings.json destination path (default ~/.claude/settings.json) |
 | `--dest` |  | Destination directory (default ~/.claude) |
 | `--diff` | `false` | Print a unified diff of every file that differs (read-only; implies --dry-run) |
 | `--dry-run` | `false` | Print what would be written without touching disk |

@@ -1,0 +1,9 @@
+{
+  "matcher": "mcp__knowledge__collect",
+  "hooks": [
+    {
+      "type": "command",
+      "command": "bash -c ': knowledge-managed:promote-guard; PROMOTE=$(jq -r \".tool_input.promote // empty\"); if [ \"$PROMOTE\" = \"true\" ]; then jq -n \"{hookSpecificOutput: {hookEventName: \\\"PreToolUse\\\", permissionDecision: \\\"ask\\\", permissionDecisionReason: \\\"collect promote:true overwrites the base graph default branch and deletes the same-name overlay — confirm\\\"}}\"; fi; exit 0'"
+    }
+  ]
+}

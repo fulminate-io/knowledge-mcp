@@ -15,6 +15,11 @@
 // TRANSLATES each agent .md into a codex .toml at install time (see
 // cmd/knowledge/internal/codexassets.TranslateAgent) — there is no
 // second embed for the codex shapes.
+//
+// ClaudeHooks is the canonical promote-guard PreToolUse hook entry. Unlike
+// Files, it is NEVER walked into ~/.claude as a standalone file — it is the
+// single source merged into the user's global ~/.claude/settings.json by
+// install-claude-assets (a JSON deep-merge, see bootstrap/settings_merge.go).
 package assets
 
 import "embed"
@@ -42,3 +47,15 @@ var Files embed.FS
 //
 //go:embed KNOWLEDGE_TOOLS.md
 var KnowledgeTools []byte
+
+// ClaudeHooks is the canonical knowledge-managed PreToolUse hook entry
+// (cmd/knowledge/internal/assets/claude_hooks.json), embedded as a SEPARATE
+// var — deliberately NOT part of Files. Neither installer walks it into a
+// standalone file under ~/.claude; it is the source for the single hook
+// entry that install-claude-assets idempotently merges into the user's
+// global ~/.claude/settings.json under hooks.PreToolUse. Unlike the synced
+// agents/skills/KNOWLEDGE_TOOLS.md trees (gitignored, populated by
+// scripts/sync-assets.sh), this asset is checked in and ships verbatim.
+//
+//go:embed claude_hooks.json
+var ClaudeHooks []byte

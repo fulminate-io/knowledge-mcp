@@ -87,6 +87,7 @@ func runDoctor(args []string) error {
 		checkFulminateAuth(),
 		checkClaudeAssets(),
 		checkClaudeMD(),
+		checkClaudeSettings(),
 	)
 	if f.deep {
 		checks = append(checks, checkProvidersDeep(f.configFile))

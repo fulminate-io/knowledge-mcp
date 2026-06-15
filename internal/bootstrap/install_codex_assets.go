@@ -21,6 +21,19 @@
 // the user's live dirs in development).
 //
 // CLI mode, not MCP mode: writing to stdout is legitimate here.
+//
+// SCOPE NOTE — no permission hooks here (deliberate): the Claude installer
+// merges a promote-guard PreToolUse hook into ~/.claude/settings.json that
+// gates `collect promote:true` behind a confirmation prompt (see
+// settings_merge.go). The codex installer intentionally installs NO
+// equivalent: codex per-tool permission-hook support (a hook that can
+// inspect a tool's input params, the way Claude Code's PreToolUse can read
+// .tool_input.promote) is unverified, so the promote-guard is Claude-only.
+// The codex config touch points are MCP-server registration and the
+// tool_timeout_sec patch (mcp_register.go) — neither is a permission gate.
+// This is a deferred follow-up, not an omission; if codex gains a verified
+// per-tool permission-hook mechanism, wiring the promote-guard for codex is
+// a separate ticket.
 
 package bootstrap
 

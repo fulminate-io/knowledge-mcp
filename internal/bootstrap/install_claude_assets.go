@@ -27,12 +27,13 @@ import (
 
 // installAssetsFlags holds the parsed flags for the subcommand.
 type installAssetsFlags struct {
-	dest         string
-	claudeMDDest string
-	dryRun       bool
-	verbose      bool
-	diff         bool
-	noMCP        bool
+	dest               string
+	claudeMDDest       string
+	claudeSettingsDest string
+	dryRun             bool
+	verbose            bool
+	diff               bool
+	noMCP              bool
 }
 
 // registerInstallClaudeFlags registers the `knowledge install-claude-assets`
@@ -43,6 +44,7 @@ type installAssetsFlags struct {
 func registerInstallClaudeFlags(fs *flag.FlagSet, f *installAssetsFlags) {
 	fs.StringVar(&f.dest, "dest", "", "Destination directory (default ~/.claude)")
 	fs.StringVar(&f.claudeMDDest, "claude-md-dest", "", "CLAUDE.md destination path (default ~/.claude/CLAUDE.md)")
+	fs.StringVar(&f.claudeSettingsDest, "claude-settings-dest", "", "settings.json destination path (default ~/.claude/settings.json)")
 	fs.BoolVar(&f.dryRun, "dry-run", false, "Print what would be written without touching disk")
 	fs.BoolVar(&f.diff, "diff", false, "Print a unified diff of every file that differs (read-only; implies --dry-run)")
 	fs.BoolVar(&f.verbose, "verbose", false, "Print each file path written (default: summary only)")
@@ -84,15 +86,23 @@ func runInstallClaudeAssets(args []string) error {
 	if err != nil {
 		return err
 	}
+	claudeSettings, err := resolveClaudeSettings(f.claudeSettingsDest)
+	if err != nil {
+		return err
+	}
 
 	if f.diff {
 		// --diff is strictly preview; run the dedicated path that
 		// prints diffs without writing anything, then report the
-		// CLAUDE.md managed-block state via the shared reporter.
+		// CLAUDE.md managed-block state and the settings.json hook diff
+		// via the shared reporters. All three are read-only.
 		if err := runDiff(dest); err != nil {
 			return err
 		}
-		return diffManagedFile(claudeMD, string(assets.KnowledgeTools), "CLAUDE.md")
+		if err := diffManagedFile(claudeMD, string(assets.KnowledgeTools), "CLAUDE.md"); err != nil {
+			return err
+		}
+		return diffClaudeSettings(claudeSettings)
 	}
 
 	written, err := installAssets(dest, f.dryRun, f.verbose)
@@ -105,6 +115,11 @@ func runInstallClaudeAssets(args []string) error {
 		return err
 	}
 
+	settingsChanged, err := writeClaudeSettings(claudeSettings, assets.ClaudeHooks, f.dryRun)
+	if err != nil {
+		return err
+	}
+
 	verb := "wrote"
 	if f.dryRun {
 		verb = "would write"
@@ -113,7 +128,12 @@ func runInstallClaudeAssets(args []string) error {
 	if mdChanged {
 		mdNote = fmt.Sprintf("%s CLAUDE.md managed block in %s", verb, claudeMD)
 	}
-	fmt.Fprintf(os.Stdout, "knowledge install-claude-assets: %s %d files under %s; %s\n", verb, written, dest, mdNote)
+	settingsNote := "settings.json hook in sync"
+	if settingsChanged {
+		settingsNote = fmt.Sprintf("%s promote-guard hook in %s", verb, claudeSettings)
+	}
+	fmt.Fprintf(os.Stdout, "knowledge install-claude-assets: %s %d files under %s; %s; %s\n",
+		verb, written, dest, mdNote, settingsNote)
 
 	if f.noMCP {
 		fmt.Fprintln(os.Stdout, "  --no-mcp: skipped MCP registration")
@@ -215,6 +235,36 @@ func printUnifiedDiff(existingPath string, embedded []byte) error {
 	return nil
 }
 
+// diffClaudeSettings reports, in read-only --diff mode, whether the
+// knowledge-managed promote-guard hook at path would change if installed.
+// Because settings.json is a structured MERGE (not a verbatim copy), it
+// computes the merged bytes via mergeClaudeSettings and diffs them against
+// the on-disk file. It never writes. Mirrors diffManagedFile's three-outcome
+// reporting (managed_block.go:136): NEW (file absent) / a unified diff via
+// printUnifiedDiff (merge differs) / in-sync.
+func diffClaudeSettings(path string) error {
+	existing, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			fmt.Fprintf(os.Stdout, "NEW: %s (knowledge-managed promote-guard hook)\n", path)
+			return nil
+		}
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+	merged, err := mergeClaudeSettings(existing, assets.ClaudeHooks)
+	if err != nil {
+		return err
+	}
+	if bytes.Equal(merged, existing) {
+		fmt.Fprintf(os.Stdout, "settings.json hook in sync: %s\n", path)
+		return nil
+	}
+	// Merge differs — render a real unified diff of the would-be result
+	// against the current file. printUnifiedDiff is root-agnostic (takes an
+	// existing path + the bytes to compare).
+	return printUnifiedDiff(path, merged)
+}
+
 // resolveClaudeDest returns the destination directory for the install.
 // When the flag is empty (the common case), defaults to ~/.claude.
 // Tilde expansion uses the existing expandTilde helper so behavior
@@ -243,6 +293,22 @@ func resolveClaudeMD(flagDest string) (string, error) {
 		return "", fmt.Errorf("resolve home directory: %w", err)
 	}
 	return filepath.Join(home, ".claude", "CLAUDE.md"), nil
+}
+
+// resolveClaudeSettings returns the destination settings.json path. Empty
+// flag defaults to ~/.claude/settings.json; a non-empty flag is tilde-
+// expanded. Mirrors resolveClaudeMD — tests redirect off the live
+// ~/.claude/settings.json via --claude-settings-dest exactly as
+// --claude-md-dest redirects CLAUDE.md.
+func resolveClaudeSettings(flagDest string) (string, error) {
+	if flagDest != "" {
+		return expandTilde(flagDest), nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve home directory: %w", err)
+	}
+	return filepath.Join(home, ".claude", "settings.json"), nil
 }
 
 // installAssets walks the embedded FS and writes regular files to

@@ -313,6 +313,39 @@ func checkClaudeMD() checkResult {
 	return checkResult{name: "claude-md", status: statusOK, msg: "managed block in sync with embedded reference"}
 }
 
+// checkClaudeSettings reports whether the knowledge-managed promote-guard
+// hook in ~/.claude/settings.json matches the embedded asset. statusOK when
+// the managed entry equals assets.ClaudeHooks; statusWarn (with the
+// install-claude-assets remediation) when it drifts or the file is absent.
+// Only the managed entry is compared (via settingsInSync), so a user's own
+// settings and other hooks never trip the warning. Mirrors checkClaudeMD.
+func checkClaudeSettings() checkResult {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return checkResult{name: "claude-settings", status: statusWarn, msg: "cannot resolve home dir: " + err.Error()}
+	}
+	path := filepath.Join(home, ".claude", "settings.json")
+	inSync, exists, err := settingsInSync(path, assets.ClaudeHooks)
+	if err != nil {
+		return checkResult{name: "claude-settings", status: statusWarn, msg: err.Error()}
+	}
+	if !exists {
+		return checkResult{
+			name: "claude-settings", status: statusWarn,
+			msg:    "no knowledge-managed collect-promote hook in ~/.claude/settings.json",
+			detail: "run `knowledge install-claude-assets` to install it",
+		}
+	}
+	if !inSync {
+		return checkResult{
+			name: "claude-settings", status: statusWarn,
+			msg:    "knowledge-managed collect-promote hook out of date",
+			detail: "run `knowledge install-claude-assets` to update",
+		}
+	}
+	return checkResult{name: "claude-settings", status: statusOK, msg: "collect-promote hook in sync"}
+}
+
 // hashEqual returns true when the two byte slices have the same
 // SHA-256 digest. Used by checkClaudeAssets to determine drift
 // without doing a byte-by-byte compare on every file (the digest
