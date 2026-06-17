@@ -221,3 +221,36 @@ func TestPipelinePausedFooterNamesSummaryAxisOnly(t *testing.T) {
 		t.Fatalf("footer %q names the embed axis paused, but only summary tripped", footer)
 	}
 }
+
+// TestRenderAxisStatus_ActiveSummarizerOnRunningPath asserts the live active
+// summarizer entry is surfaced on the summary axis even while it is RUNNING —
+// failover happens during normal operation, so an operator must see the current
+// entry without waiting for a pause. The paused path also carries it.
+func TestRenderAxisStatus_ActiveSummarizerOnRunningPath(t *testing.T) {
+	running := renderAxisStatus("summary", pipeline.AxisStatus{
+		Paused:           false,
+		ActiveSummarizer: "openai/gpt-5-mini",
+	})
+	if !strings.Contains(running, "RUNNING") {
+		t.Fatalf("running render = %q; want RUNNING", running)
+	}
+	if !strings.Contains(running, "Active summarizer: openai/gpt-5-mini") {
+		t.Fatalf("running render = %q; want the active-summarizer line", running)
+	}
+
+	paused := renderAxisStatus("summary", pipeline.AxisStatus{
+		Paused:           true,
+		Reason:           "chain exhausted",
+		Since:            time.Now(),
+		ActiveSummarizer: "gemini/gemini-2.5-flash",
+	})
+	if !strings.Contains(paused, "Active summarizer: gemini/gemini-2.5-flash") {
+		t.Fatalf("paused render = %q; want the active-summarizer line", paused)
+	}
+
+	// No chain wired (embed axis / single entry): no active-summarizer line.
+	plain := renderAxisStatus("embed", pipeline.AxisStatus{Paused: false})
+	if strings.Contains(plain, "Active summarizer") {
+		t.Fatalf("plain render = %q; want NO active-summarizer line when empty", plain)
+	}
+}

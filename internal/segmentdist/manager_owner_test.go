@@ -306,6 +306,32 @@ func TestShippedSegmentDocCount(t *testing.T) {
 	require.True(t, anyUnknown, "an HNSW meta with doc_count==0 sets anyUnknown (conservative-unknown signal)")
 }
 
+// TestManagerResidentDocCount is the live-resident accessor criterion: after a
+// graph seals a segment locally, Manager.ResidentDocCount returns the SAME figure
+// the underlying engine's ResidentDocCount reports (the in-memory searchable
+// coverage), and a graph that was never added/loaded returns 0.
+func TestManagerResidentDocCount(t *testing.T) {
+	_, gc := newSegmentHarness(t)
+	ctx := context.Background()
+	mgr := NewManager(gc, t.TempDir(), 0)
+
+	// Seal exactly one segment (1024 docs == MinSegmentDocs) locally — AddAndShip
+	// both seals it into the engine (resident) and ships it.
+	docs := hnswVecDocs(1024)
+	require.NoError(t, mgr.AddAndShip(ctx, kgtypes.GraphCode, "residentRepo", docs))
+
+	// The Manager accessor matches the engine's own resident snapshot.
+	engineResident := mgr.managerFor(kgtypes.GraphCode, "residentRepo").engine.ResidentDocCount()
+	require.Equal(t, 1024, engineResident, "the sealed segment's docs are resident in the engine")
+	require.Equal(t, engineResident, mgr.ResidentDocCount(kgtypes.GraphCode, "residentRepo"),
+		"Manager.ResidentDocCount mirrors the live engine resident count")
+
+	// A never-added (never-searched/loaded) graph lazily constructs an empty engine
+	// → zero resident.
+	require.Equal(t, 0, mgr.ResidentDocCount(kgtypes.GraphCode, "neverTouchedRepo"),
+		"an unloaded graph has zero resident docs")
+}
+
 // TestGraphSelectorMapping asserts the per-graph-type field routing mirrors the
 // canonical graphTarget mapping.
 func TestGraphSelectorMapping(t *testing.T) {

@@ -38,8 +38,8 @@ func renderLLMCoverage(ctx context.Context, deps ClientDeps) string {
 
 	var rows []string
 	addRow := func(label string, gt kgtypes.GraphType, name string, st *knowledgev1.GraphStats) {
-		segCovered, hasSeg := segCoveredFor(ctx, deps, gt, name)
-		rows = append(rows, formatCoverageRow(label, st, segCovered, hasSeg))
+		segCovered, liveResident, hasSeg := segCoveredFor(ctx, deps, gt, name)
+		rows = append(rows, formatCoverageRow(label, st, segCovered, liveResident, hasSeg))
 	}
 
 	// Knowledge row — emitted explicitly with the empty-name selector because
@@ -87,7 +87,11 @@ func renderLLMCoverage(ctx context.Context, deps ClientDeps) string {
 	// segment coverage = HNSW-segment-covered docs of embedded (the same
 	// BinaryVectorCount denominator the coverage-ratio auto-heal compares against —
 	// T3-2 single definition); a degenerate pool shows few-of-many here, which is
-	// the same signal lever 2 heals on. Non-segment graphs render "—".
+	// the same signal lever 2 heals on. The "(live N)" suffix is the LIVE in-memory
+	// engine resident doc count — when it reads 0 (or far below covered) the live
+	// searchable pool has collapsed even though the server-shipped corpus is intact,
+	// the post-restart incident the startup/periodic reconcile heals. Non-segment
+	// graphs render "—".
 	sb.WriteString("| graph | total | summarized | embedded | segment coverage | summary-fail | embed-fail |\n")
 	sb.WriteString("| --- | --- | --- | --- | --- | --- | --- |\n")
 	for _, r := range rows {
@@ -129,37 +133,42 @@ func GraphEmbeddedCount(ctx context.Context, gc GraphCaller, gt kgtypes.GraphTyp
 	return int(resp.GetGraphStats().GetBinaryVectorCount()), nil
 }
 
-// segCoveredFor reads the HNSW-segment-covered doc count for a row's graph via the
-// nil-safe SegmentCoverage seam. Segments exist ONLY for the two builtin graphs the
+// segCoveredFor reads the SERVER-shipped HNSW-segment-covered doc count AND the
+// LIVE in-memory engine resident doc count for a row's graph via the nil-safe
+// SegmentCoverage seam. Segments exist ONLY for the two builtin graphs the
 // auto-heal arm scopes to (GraphCode + GraphKnowledge — the same gate
 // buildHealFactory uses); every other graph type has no segment pool, so it returns
-// (0, false) and the column renders "—". When the seam is unwired (degraded
-// headless mode) or the probe errs, it also returns (0, false) — a placeholder, not
-// a hard failure of the status table.
-func segCoveredFor(ctx context.Context, deps ClientDeps, gt kgtypes.GraphType, name string) (covered int, hasSeg bool) {
+// (0, 0, false) and the column renders "—". When the seam is unwired (degraded
+// headless mode) or the shipped probe errs, it also returns (0, 0, false) — a
+// placeholder, not a hard failure of the status table. The live resident read is a
+// single atomic snapshot (no RPC); it is surfaced so a live-pool collapse (live 0
+// while covered is N) is detectable instead of masked behind the shipped figure.
+func segCoveredFor(ctx context.Context, deps ClientDeps, gt kgtypes.GraphType, name string) (covered, liveResident int, hasSeg bool) {
 	if gt != kgtypes.GraphCode && gt != kgtypes.GraphKnowledge {
-		return 0, false
+		return 0, 0, false
 	}
 	sr := deps.SegmentCoverage()
 	if sr == nil {
-		return 0, false
+		return 0, 0, false
 	}
 	c, _, err := sr.ShippedSegmentDocCount(ctx, gt, name)
 	if err != nil {
-		return 0, false
+		return 0, 0, false
 	}
-	return c, true
+	return c, sr.ResidentDocCount(gt, name), true
 }
 
 // formatCoverageRow renders one Markdown table row. An empty (zero-denominator)
 // graph renders "(empty graph)" so a never-populated graph is visibly distinct
 // from a covered one; otherwise summarized/embedded render as "X of N" so
 // "0 of N summarized" is unambiguous against "N of N summarized". The segment-
-// coverage cell renders "covered of embedded" for a segment-bearing graph
-// (hasSeg) — the embedded denominator is the SAME GraphStats.BinaryVectorCount the
-// coverage-ratio auto-heal compares against (T3-2 single definition; do not fork
-// it) — and "—" for a graph with no segment pool.
-func formatCoverageRow(label string, st *knowledgev1.GraphStats, segCovered int, hasSeg bool) string {
+// coverage cell renders "covered of embedded (live resident)" for a segment-bearing
+// graph (hasSeg) — the embedded denominator is the SAME GraphStats.BinaryVectorCount
+// the coverage-ratio auto-heal compares against (T3-2 single definition; do not fork
+// it), and the "(live N)" suffix is the in-memory engine resident count so a
+// collapsed live pool reads "covered of embedded (live 0)" instead of being masked
+// behind the intact shipped figure — and "—" for a graph with no segment pool.
+func formatCoverageRow(label string, st *knowledgev1.GraphStats, segCovered, liveResident int, hasSeg bool) string {
 	total := int(st.GetNonProxyNodeCount())
 	if total == 0 {
 		return fmt.Sprintf("| %s | (empty graph) | | | | | |", label)
@@ -168,7 +177,7 @@ func formatCoverageRow(label string, st *knowledgev1.GraphStats, segCovered int,
 	embedded := int(st.GetBinaryVectorCount())
 	segCell := "—"
 	if hasSeg {
-		segCell = fmt.Sprintf("%d of %d", segCovered, embedded)
+		segCell = fmt.Sprintf("%d of %d (live %d)", segCovered, embedded, liveResident)
 	}
 	return fmt.Sprintf("| %s | %d | %d of %d | %d of %d | %s | %d | %d |",
 		label, total,

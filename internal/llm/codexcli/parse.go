@@ -238,3 +238,40 @@ func parseTurnFailedError(raw json.RawMessage) string {
 	}
 	return string(raw)
 }
+
+// extractCodexError mines codex's --json STDOUT for the diagnostic it emits on
+// a failed turn. Codex writes the real cause (rate/usage limit, model
+// unavailable, auth) as a `type:"error"` or `turn.failed` event on STDOUT and
+// exits NON-ZERO without writing anything to stderr — so runCLI's non-zero-exit
+// path (which short-circuits before parseResponse ever sees stdout) must call
+// this to surface the cause instead of a bare "codex exited 1:". Returns the
+// last error message found (single-lined), or "" when stdout carried none.
+func extractCodexError(stdout []byte) string {
+	if len(stdout) == 0 {
+		return ""
+	}
+	scanner := bufio.NewScanner(bytes.NewReader(stdout))
+	scanner.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
+	var msg string
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(bytes.TrimSpace(line)) == 0 || line[0] != '{' {
+			continue
+		}
+		var ev codexEvent
+		if json.Unmarshal(line, &ev) != nil {
+			continue
+		}
+		switch ev.Type {
+		case "error":
+			if ev.Message != "" {
+				msg = ev.Message
+			}
+		case "turn.failed":
+			if m := parseTurnFailedError(ev.Error); m != "" && m != "(no error detail)" {
+				msg = m
+			}
+		}
+	}
+	return trimToLine(msg)
+}

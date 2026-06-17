@@ -34,6 +34,37 @@ func driveSummaryAuthStorm(t *testing.T, summaryProvider, embedProvider string) 
 	return p
 }
 
+// TestPipelineStatus_ActiveSummarizer asserts the live-active summarizer entry
+// is surfaced in PipelineStatus().Summary.ActiveSummarizer: it reads the wired
+// callback (which here reads a chainHealth) so it reports the primary's label
+// before failover and the fallback's label after the primary is marked limited —
+// the LIVE entry, not the static configured provider.
+func TestPipelineStatus_ActiveSummarizer(t *testing.T) {
+	wc := newFakeWireClient()
+	fs := &fakeSummarizer{}
+	fe := &fakeEmbedder{vectors: map[string][]byte{}}
+	p := New(Config{}, wc, fs.call, fe.call)
+
+	// Stand in for the chain's health + labels without importing llmproviders:
+	// a tiny index+labels closure mirrors FallbackChain.ActiveEntry.
+	active := 0
+	labels := []string{"claude-cli/primary-model", "openai/fallback-model"}
+	p.SetActiveSummarizer(func() string {
+		if active < 0 || active >= len(labels) {
+			return ""
+		}
+		return labels[active]
+	})
+
+	if got := p.PipelineStatus().Summary.ActiveSummarizer; got != "claude-cli/primary-model" {
+		t.Errorf("before failover ActiveSummarizer = %q; want the primary", got)
+	}
+	active = 1 // simulate failover (chainHealth.MarkLimited(0) shifting ActiveIndex)
+	if got := p.PipelineStatus().Summary.ActiveSummarizer; got != "openai/fallback-model" {
+		t.Errorf("after failover ActiveSummarizer = %q; want the fallback", got)
+	}
+}
+
 // TestEscalation_SameProviderAuthQuotaCrossTrips proves the lone deliberate
 // cross-axis exception: when the summary axis auto-trips on an auth/quota window
 // AND both axes share the SAME (non-empty) provider, the embed axis is

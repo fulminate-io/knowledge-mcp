@@ -162,6 +162,16 @@ type Pipeline struct {
 	// embed-drain heal-check no-ops.
 	healFactory func(gt kgtypes.GraphType, name string) func(ctx context.Context) error
 
+	// activeSummarizer, when set, returns the "provider/model" label of the LIVE
+	// active summarizer entry (the fallback chain's highest-priority healthy
+	// entry). PipelineStatus reads it to surface the current summarizer rather
+	// than the static configured one. nil when no chain is wired (single entry /
+	// no summarizer / tests) — PipelineStatus then leaves the field empty. Set
+	// once at wiring time via SetActiveSummarizer; read concurrently by status
+	// calls, but the callback itself owns its synchronization (the production
+	// callback reads a thread-safe chainHealth).
+	activeSummarizer func() string
+
 	stopOnce sync.Once
 	stopErr  error
 }
@@ -328,6 +338,14 @@ func (p *Pipeline) PausePipeline(reason string) {
 func (p *Pipeline) ResumePipeline() {
 	p.summaryCircuit.resume()
 	p.embedCircuit.resume()
+}
+
+// SetActiveSummarizer installs the live active-summarizer accessor the wiring
+// layer builds over the fallback chain's health state. fn returns the
+// "provider/model" label of the highest-priority healthy entry (or "" when the
+// chain is exhausted). Called once at wiring time, before status calls begin.
+func (p *Pipeline) SetActiveSummarizer(fn func() string) {
+	p.activeSummarizer = fn
 }
 
 // PipelineStatus returns the current per-axis paused state for operator

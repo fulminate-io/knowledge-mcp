@@ -1875,7 +1875,18 @@ type ExecuteResponse struct {
 	// the nodes_json=1 blob: the client consumes this field directly. store.Node
 	// value-embeds knowledgev1.Node (decision f21640fb), so the server populates each
 	// element from &node.Node with zero conversion.
-	Nodes         []*Node `protobuf:"bytes,10,rep,name=nodes,proto3" json:"nodes,omitempty"`
+	Nodes []*Node `protobuf:"bytes,10,rep,name=nodes,proto3" json:"nodes,omitempty"`
+	// skipped_count is the number of selected nodes a predicate MutationPlan
+	// TOLERATED-AND-SKIPPED instead of applying — the not_found-in-write-layer
+	// count for a predicate UPDATE. A failure marker can outlive its
+	// node (moved / tombstoned / shadowed by an overlay), so clear_llm_failures'
+	// generic UPDATE over the marker set must skip the absent ids rather than
+	// abort the whole graph's clear on the first one. The executor counts every
+	// store.ErrNotFound it skipped (all other error classes still abort) and
+	// surfaces the total here so the operator sees how many phantom markers were
+	// passed over. Mirrors affected_count (field 6): 0 for reads and for an
+	// UPDATE that found every selected node.
+	SkippedCount  int64 `protobuf:"varint,11,opt,name=skipped_count,json=skippedCount,proto3" json:"skipped_count,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1971,6 +1982,13 @@ func (x *ExecuteResponse) GetNodes() []*Node {
 		return x.Nodes
 	}
 	return nil
+}
+
+func (x *ExecuteResponse) GetSkippedCount() int64 {
+	if x != nil {
+		return x.SkippedCount
+	}
+	return 0
 }
 
 // MetadataPredicate is IR extension #3 (richer metadata predicates). Today
@@ -4559,7 +4577,7 @@ const file_knowledge_v1_engine_proto_rawDesc = "" +
 	"\x04node\x18\x03 \x01(\v2\x12.knowledge.v1.NodeR\x04node\"U\n" +
 	"\x0fTraversalResult\x12\x1a\n" +
 	"\bdistance\x18\x02 \x01(\x05R\bdistance\x12&\n" +
-	"\x04node\x18\x03 \x01(\v2\x12.knowledge.v1.NodeR\x04node\"\xbc\x03\n" +
+	"\x04node\x18\x03 \x01(\v2\x12.knowledge.v1.NodeR\x04node\"\xe1\x03\n" +
 	"\x0fExecuteResponse\x12\x10\n" +
 	"\x03ids\x18\x02 \x03(\tR\x03ids\x12C\n" +
 	"\x0esearch_results\x18\x03 \x03(\v2\x1c.knowledge.v1.HydratedResultR\rsearchResults\x12J\n" +
@@ -4571,7 +4589,8 @@ const file_knowledge_v1_engine_proto_rawDesc = "" +
 	"graphNames\x12;\n" +
 	"\x0ftraversal_edges\x18\t \x03(\v2\x12.knowledge.v1.EdgeR\x0etraversalEdges\x12(\n" +
 	"\x05nodes\x18\n" +
-	" \x03(\v2\x12.knowledge.v1.NodeR\x05nodes\"\xeb\x01\n" +
+	" \x03(\v2\x12.knowledge.v1.NodeR\x05nodes\x12#\n" +
+	"\rskipped_count\x18\v \x01(\x03R\fskippedCount\"\xeb\x01\n" +
 	"\x11MetadataPredicate\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x122\n" +
 	"\x02op\x18\x02 \x01(\x0e2\".knowledge.v1.MetadataPredicate.OpR\x02op\x12\x14\n" +

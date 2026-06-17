@@ -78,6 +78,13 @@ func (p *Pipeline) PipelineStatus() PipelineStatus {
 		Summary: circuitStatusToAxis(summary),
 		Embed:   circuitStatusToAxis(embed),
 	}
+	// ActiveSummarizer is a SUMMARY-axis-only field that circuitStatus does not
+	// carry — set it post-conversion from the wired callback (the fallback
+	// chain's live active entry). nil callback (no chain / single entry / tests)
+	// leaves it empty. The embed axis never has a summarizer entry.
+	if p.activeSummarizer != nil {
+		st.Summary.ActiveSummarizer = p.activeSummarizer()
+	}
 	// Aggregate top-level fields from a representative paused axis: summary when
 	// it is paused (preferred), else embed when only embed is paused. When neither
 	// is paused the aggregate stays zero-valued (Paused == false).
@@ -96,11 +103,19 @@ func (p *Pipeline) PipelineStatus() PipelineStatus {
 }
 
 // circuitStatusToAxis converts an in-package circuitStatus snapshot to the
-// EXPORTED per-axis AxisStatus carrier. The two structs are identical
-// field-for-field (AxisStatus mirrors circuitStatus by design — see the
-// load-bearing field-order notes on both types), so a direct struct conversion
-// crosses one axis's breaker state to the operator-facing PipelineStatus while
-// keeping the dominant-class fields intact per axis.
+// EXPORTED per-axis AxisStatus carrier. AxisStatus's first six fields mirror
+// circuitStatus, but AxisStatus ALSO carries ActiveSummarizer (which
+// circuitStatus lacks), so this is an explicit field-by-field construction
+// rather than a direct AxisStatus(c) conversion — a struct conversion requires
+// identical field sequences and would no longer compile. ActiveSummarizer is
+// left zero here and set post-conversion in PipelineStatus.
 func circuitStatusToAxis(c circuitStatus) AxisStatus {
-	return AxisStatus(c)
+	return AxisStatus{
+		Paused:        c.Paused,
+		Reason:        c.Reason,
+		Since:         c.Since,
+		DominantClass: c.DominantClass,
+		DominantCount: c.DominantCount,
+		Breakdown:     c.Breakdown,
+	}
 }

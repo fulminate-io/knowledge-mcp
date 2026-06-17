@@ -17,8 +17,9 @@ import (
 // llmFailureKeys are the two LLM-pipeline failure markers cleared by
 // clear_llm_failures. Stored as inline metadata; clearing means writing the
 // empty string (the explicit "no failure" state the discovery shim looks for —
-// NOT a delete). Mirrors the server's clearLLMFailuresInGraph
-// (tools_manage_clear_llm_failures.go).
+// NOT a delete). clear_llm_failures is fully CLIENT-SIDE: it composes generic
+// MutationPlan UPDATEs over the failure-marker predicate (clearLLMFailuresInGraph
+// below) — there is no server-side clear handler.
 var llmFailureKeys = []string{
 	kgtypes.MetaKeySummaryFailureReason,
 	kgtypes.MetaKeyEmbedFailureReason,
@@ -40,9 +41,9 @@ var llmFailureGraphTypes = []string{
 // (summary_failure_reason + embed_failure_reason) across the resolved graph
 // target(s) by composing TWO generic MutationPlan UPDATEs per graph — each an
 // OP_EXISTS predicate write-WHERE (select nodes carrying the marker) plus a
-// set_metadata empty-string clear. This reproduces the server
-// handleClearLLMFailures semantics (same nodes selected + cleared) using only
-// the generic Execute toolbox; NOT an Index/manage server op.
+// set_metadata empty-string clear. The clear is entirely client-composed from
+// the generic Execute toolbox (the predicate UPDATE engine path); there is NO
+// server-side clear handler — NOT an Index/manage server op.
 //
 // Scoping (resolveClearLLMFailureTargets) follows the server's base-resolution
 // shape AND additionally fans each resolved base out across its overlay keys so
@@ -77,11 +78,12 @@ func handleClientClearLLMFailures(ctx context.Context, deps ClientDeps, a manage
 	var (
 		totalSummaryCleared int64
 		totalEmbedCleared   int64
+		totalSkipped        int64
 		perGraph            []string
 		perGraphErrors      []string
 	)
 	for _, tgt := range targets {
-		sum, emb, cerr := clearLLMFailuresInGraph(ctx, ex, tgt)
+		sum, emb, skipped, cerr := clearLLMFailuresInGraph(ctx, ex, tgt)
 		if cerr != nil {
 			// Per-graph failures do not abort the sweep — operator usually wants
 			// partial results when one graph is unrecoverable (parity with the
@@ -96,6 +98,7 @@ func handleClientClearLLMFailures(ctx context.Context, deps ClientDeps, a manage
 		}
 		totalSummaryCleared += sum
 		totalEmbedCleared += emb
+		totalSkipped += skipped
 		if sum > 0 || emb > 0 {
 			perGraph = append(perGraph, fmt.Sprintf("%s/%s=%d/%d", tgt.graphType, targetLabel(tgt), sum, emb))
 		}
@@ -108,6 +111,14 @@ func handleClientClearLLMFailures(ctx context.Context, deps ClientDeps, a manage
 			return errorResult(fmt.Sprintf("clear_llm_failures: no markers cleared and %d graph(s) errored: %v",
 				len(perGraphErrors), perGraphErrors))
 		}
+		// A graph whose ONLY markers were phantom (not_found nodes) clears nothing
+		// but skips them — surface the skip count so the operator sees the stale
+		// markers were passed over rather than a misleading bare "nothing to clear".
+		if totalSkipped > 0 {
+			return textResult(fmt.Sprintf(
+				"clear_llm_failures: no failure markers cleared across %d graph(s); skipped %d not_found marker(s)",
+				len(targets), totalSkipped))
+		}
 		return textResult(fmt.Sprintf("clear_llm_failures: no failure markers found across %d graph(s)", len(targets)))
 	}
 	if pr, ok := deps.(pipelineResetter); ok {
@@ -115,6 +126,11 @@ func handleClientClearLLMFailures(ctx context.Context, deps ClientDeps, a manage
 	}
 	summary := fmt.Sprintf("clear_llm_failures: cleared %d summary marker(s) + %d embed marker(s) across %d graph(s): %v",
 		totalSummaryCleared, totalEmbedCleared, len(perGraph), perGraph)
+	if totalSkipped > 0 {
+		// not_found markers tolerated-and-skipped: surface the count so the
+		// operator knows phantom markers on moved/tombstoned nodes were passed over.
+		summary += fmt.Sprintf("; skipped %d not_found marker(s)", totalSkipped)
+	}
 	if len(perGraphErrors) > 0 {
 		// Partial success: cleared some markers but other graphs errored. Append the
 		// errors to the operator-visible text so they are not swallowed.
@@ -263,25 +279,31 @@ func atSplit(s string) (string, string, bool) {
 
 // clearLLMFailuresInGraph issues the TWO predicate UPDATEs (one per failure
 // marker) against a single graph and returns the (summaryCleared, embedCleared)
-// affected counts. Each UPDATE is an OP_EXISTS predicate write-WHERE +
-// set_metadata empty clear.
-func clearLLMFailuresInGraph(ctx context.Context, ex render.Executor, tgt clearLLMFailureTarget) (sumCleared int64, embCleared int64, err error) {
+// affected counts plus the combined skipped total across both UPDATEs. Each
+// UPDATE is an OP_EXISTS predicate write-WHERE + set_metadata empty clear; the
+// skipped total is the count of phantom markers the engine tolerated-and-skipped
+// (not_found in the write-target layer).
+func clearLLMFailuresInGraph(ctx context.Context, ex render.Executor, tgt clearLLMFailureTarget) (sumCleared int64, embCleared int64, skipped int64, err error) {
 	counts := make([]int64, len(llmFailureKeys))
 	for i, key := range llmFailureKeys {
-		n, cerr := execClearMarkerUpdate(ctx, ex, tgt, key)
+		n, sk, cerr := execClearMarkerUpdate(ctx, ex, tgt, key)
 		if cerr != nil {
-			return 0, 0, cerr
+			return 0, 0, 0, cerr
 		}
 		counts[i] = n
+		skipped += sk
 	}
-	return counts[0], counts[1], nil
+	return counts[0], counts[1], skipped, nil
 }
 
 // execClearMarkerUpdate runs ONE predicate UPDATE clearing a single failure
 // marker key across the target graph: Selection.metadata_predicates carries the
 // OP_EXISTS predicate (select nodes with the marker set) and set_metadata writes
-// the empty string. Returns the affected_count the engine reports.
-func execClearMarkerUpdate(ctx context.Context, ex render.Executor, tgt clearLLMFailureTarget, key string) (int64, error) {
+// the empty string. Returns (cleared, skipped): the affected_count the engine
+// reports plus the skipped_count — selected markers on a node that is not_found
+// in the write-target layer (a phantom marker that outlived its node),
+// which the engine tolerates-and-skips instead of aborting the whole clear.
+func execClearMarkerUpdate(ctx context.Context, ex render.Executor, tgt clearLLMFailureTarget, key string) (cleared int64, skipped int64, err error) {
 	plan := &knowledgev1.MutationPlan{
 		Kind: knowledgev1.MutationPlan_MUTATION_KIND_UPDATE,
 		Selection: &knowledgev1.Selection{
@@ -296,9 +318,9 @@ func execClearMarkerUpdate(ctx context.Context, ex render.Executor, tgt clearLLM
 		Target: clearTarget(tgt),
 	})
 	if err != nil {
-		return 0, fmt.Errorf("clear %s in %s/%s: %w", key, tgt.graphType, tgt.name, err)
+		return 0, 0, fmt.Errorf("clear %s in %s/%s: %w", key, tgt.graphType, tgt.name, err)
 	}
-	return resp.GetAffectedCount(), nil
+	return resp.GetAffectedCount(), resp.GetSkippedCount(), nil
 }
 
 // clearTarget builds the GraphSelector for one clear target. The knowledge

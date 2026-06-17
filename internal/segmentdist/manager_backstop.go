@@ -52,33 +52,20 @@ func (m *distManager[Q, S]) recoverIfDegenerate(ctx context.Context) error {
 	}
 
 	// Below the floor: read the server's shipped doc count for THIS graph over the
-	// EXISTING source (do NOT build a new rpcSegmentSource). Sum keepFormat metas;
-	// a pre-doc_count blob (DocCount==0) DISARMS the ratio (conservative-unknown,
-	// mirroring segmentPoolDegenerate).
-	metas, err := m.source.List(ctx, 0)
+	// EXISTING source (do NOT build a new rpcSegmentSource) and apply the shared
+	// disarm rules (List error, pre-doc_count blob, sub-floor corpus).
+	shipped, disarm, err := m.shippedDocCountForRatio(ctx)
 	if err != nil {
 		slog.Warn("segmentdist: read-side backstop List probe failed (search continues uncorrected)",
 			"error", err)
 		return nil
 	}
-	shipped := 0
-	for _, meta := range metas {
-		if !m.keepFormat(meta.Format) {
-			continue
-		}
-		if meta.DocCount == 0 {
-			// Conservative-unknown: an old pre-doc_count blob is present, so the
-			// shipped denominator is not trustworthy — disarm rather than churn.
-			return nil
-		}
-		shipped += meta.DocCount
+	if disarm {
+		return nil
 	}
 
 	// Degeneracy: the server holds a real corpus (>= floor) but the in-memory engine
 	// covers far less than the ratio of it.
-	if shipped < residentBackstopFloor {
-		return nil
-	}
 	if float64(resident) >= residentBackstopRatio*float64(shipped) {
 		return nil
 	}
@@ -93,4 +80,44 @@ func (m *distManager[Q, S]) recoverIfDegenerate(ctx context.Context) error {
 	// corpus (Import dedup drops any already-resident segment), then force that load.
 	m.importedGen.Store(0)
 	return m.load(ctx)
+}
+
+// shippedDocCountForRatio sums this engine's keepFormat shipped doc count from one
+// List(0) over the EXISTING source and reports whether the ratio should be
+// DISARMED. It is the shared shipped-denominator probe both the read-side
+// recoverIfDegenerate and the startup/periodic ReconcileResidentDegenerate use, so
+// the disarm rules cannot drift between the two:
+//
+//   - disarm=true when ANY kept meta has DocCount==0 (a pre-doc_count blob: the
+//     denominator is not trustworthy — conservative-unknown, mirroring
+//     segmentPoolDegenerate / ShippedSegmentDocCount's anyUnknown), OR when the
+//     summed shipped corpus is below residentBackstopFloor (too small for the ratio
+//     to mean anything — a tiny graph never churns).
+//   - err is the List error (best-effort: the caller logs and no-ops, never failing
+//     its parent operation).
+//
+// When disarm=false the returned shipped count is a trustworthy denominator (>=
+// floor, all kept metas carry a real DocCount) the caller compares resident
+// against via residentBackstopRatio.
+func (m *distManager[Q, S]) shippedDocCountForRatio(ctx context.Context) (shipped int, disarm bool, err error) {
+	metas, err := m.source.List(ctx, 0)
+	if err != nil {
+		return 0, false, err
+	}
+	for _, meta := range metas {
+		if !m.keepFormat(meta.Format) {
+			continue
+		}
+		if meta.DocCount == 0 {
+			// Conservative-unknown: an old pre-doc_count blob is present, so the
+			// shipped denominator is not trustworthy — disarm rather than churn.
+			return 0, true, nil
+		}
+		shipped += meta.DocCount
+	}
+	if shipped < residentBackstopFloor {
+		// Too small for the ratio to be meaningful — disarm.
+		return shipped, true, nil
+	}
+	return shipped, false, nil
 }

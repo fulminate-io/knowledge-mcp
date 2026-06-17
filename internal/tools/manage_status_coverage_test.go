@@ -57,20 +57,30 @@ func (f *coverageFake) Stats(_ context.Context, req *knowledgev1.StatsRequest) (
 }
 
 // coverageSegReader is a SegmentCoverageReader stub: it serves a per-graph covered
-// doc count keyed by (graphType, name), so the renderer's segment-coverage column
-// reads real numbers for the segment-bearing graphs (knowledge + code).
+// doc count AND live resident doc count keyed by (graphType, name), so the
+// renderer's segment-coverage column reads real numbers — shipped covered and live
+// resident — for the segment-bearing graphs (knowledge + code).
 type coverageSegReader struct {
-	coveredByKey map[string]int
+	coveredByKey  map[string]int
+	residentByKey map[string]int
+}
+
+func (r *coverageSegReader) segKey(gt kgtypes.GraphType, name string) string {
+	key := string(gt)
+	if name != "" {
+		key += "/" + name
+	}
+	return key
 }
 
 func (r *coverageSegReader) ShippedSegmentDocCount(
 	_ context.Context, gt kgtypes.GraphType, name string,
 ) (int, bool, error) {
-	key := string(gt)
-	if name != "" {
-		key += "/" + name
-	}
-	return r.coveredByKey[key], false, nil
+	return r.coveredByKey[r.segKey(gt, name)], false, nil
+}
+
+func (r *coverageSegReader) ResidentDocCount(gt kgtypes.GraphType, name string) int {
+	return r.residentByKey[r.segKey(gt, name)]
 }
 
 // coverageDeps is the minimal ClientDeps whose GraphCaller is the coverageFake and
@@ -118,12 +128,13 @@ func TestRenderLLMCoverage_Table(t *testing.T) {
 		"code/myrepo": {NonProxyNodeCount: 8, SummarizedCount: 8, BinaryVectorCount: 8},
 	}}
 	// Segment-coverage stub: code/myrepo's segments cover 6 of its 8 embedded docs
-	// (a degenerate-looking pool, the lever-3 operator signal); knowledge has 0
-	// embedded so its segment cell is "0 of 0".
-	seg := &coverageSegReader{coveredByKey: map[string]int{
-		"knowledge":   0,
-		"code/myrepo": 6,
-	}}
+	// (a degenerate-looking pool, the lever-3 operator signal) and the live engine is
+	// resident with all 6 (a healthy live≈covered row); knowledge has 0 embedded so
+	// its segment cell is "0 of 0 (live 0)".
+	seg := &coverageSegReader{
+		coveredByKey:  map[string]int{"knowledge": 0, "code/myrepo": 6},
+		residentByKey: map[string]int{"knowledge": 0, "code/myrepo": 6},
+	}
 	deps := &coverageDeps{gc: fake, segCov: seg}
 
 	out := renderLLMCoverage(context.Background(), deps)
@@ -144,15 +155,38 @@ func TestRenderLLMCoverage_Table(t *testing.T) {
 	assert.Contains(t, out, "0 of 10", "never-summarized knowledge graph renders 0 of N")
 	assert.Contains(t, out, "8 of 8", "fully-covered code graph renders N of N")
 
-	// Segment coverage renders real covered-of-embedded for the code graph (6 of 8,
-	// the same BinaryVectorCount denominator lever 2 uses).
-	assert.Contains(t, out, "6 of 8", "code graph renders segment-covered of embedded")
+	// Segment coverage renders real covered-of-embedded WITH the live resident suffix
+	// for the code graph (6 of 8 (live 6), the same BinaryVectorCount denominator
+	// lever 2 uses); a healthy row shows live≈covered.
+	assert.Contains(t, out, "6 of 8 (live 6)", "code graph renders segment-covered of embedded with live resident")
 
 	// T2: every issued StatsRequest set IncludeCoverage.
 	require.NotEmpty(t, fake.reqs, "renderer must issue at least one Stats RPC")
 	for i, r := range fake.reqs {
 		assert.True(t, r.GetIncludeCoverage(), "StatsRequest %d must set IncludeCoverage (the coverage trigger)", i)
 	}
+}
+
+// TestRenderLLMCoverage_LiveResidentCollapse is the masking-fix criterion: a graph
+// whose server-shipped corpus is intact (covered=N) but whose LIVE engine resident
+// has collapsed to 0 renders a cell surfacing both — "N of N (live 0)" — so the
+// post-restart collapse is visible instead of masked behind the intact shipped
+// figure. Dropping the live-resident suffix makes the "live 0" assertion fail.
+func TestRenderLLMCoverage_LiveResidentCollapse(t *testing.T) {
+	fake := &coverageFake{statsByKey: map[string]*knowledgev1.GraphStats{
+		"knowledge":   {NonProxyNodeCount: 10, SummarizedCount: 10, BinaryVectorCount: 10},
+		"code/myrepo": {NonProxyNodeCount: 80, SummarizedCount: 80, BinaryVectorCount: 80},
+	}}
+	// code/myrepo: server holds the full corpus (covered=80) but the live searchable
+	// pool has collapsed (resident=0) — the masked post-restart incident.
+	seg := &coverageSegReader{
+		coveredByKey:  map[string]int{"knowledge": 0, "code/myrepo": 80},
+		residentByKey: map[string]int{"knowledge": 0, "code/myrepo": 0},
+	}
+	out := renderLLMCoverage(context.Background(), &coverageDeps{gc: fake, segCov: seg})
+
+	assert.Contains(t, out, "80 of 80 (live 0)",
+		"a collapsed live pool surfaces live 0 against the intact shipped corpus — the masking fix")
 }
 
 // TestRenderLLMCoverage_EmptyGraph pins the (empty graph) rendering for a

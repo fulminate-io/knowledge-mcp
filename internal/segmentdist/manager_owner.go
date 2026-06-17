@@ -287,6 +287,20 @@ func (m *Manager) ShippedSegmentDocCount(
 	return covered, anyUnknown, nil
 }
 
+// ResidentDocCount returns the LIVE in-memory HNSW engine resident doc count for
+// one graph: the summed sealed-segment DocCount currently imported into the
+// searchable set. It is the read-side coverage operand the degeneracy probe
+// compares against the server's shipped doc count (the SAME operand
+// recoverIfDegenerate uses internally) — distinct from ShippedSegmentDocCount,
+// which reads the SERVER's shipped count. A graph that has never been searched or
+// loaded returns 0 (the lazily-constructed engine's set is empty). It is a single
+// atomic snapshot (SegmentedIndex.ResidentDocCount) with no RPC and no load — the
+// caller decides whether to load() first (the reconcile probe does; the status
+// column reads raw current resident).
+func (m *Manager) ResidentDocCount(gt kgtypes.GraphType, name string) int {
+	return m.managerFor(gt, name).engine.ResidentDocCount()
+}
+
 // managerFor lazily constructs (check-construct-store under the mutex) the
 // per-graph distManager: a SegmentedIndex over the HNSW format, an
 // rpcSegmentSource for the graph's selector, and a content-addressed L2 cache

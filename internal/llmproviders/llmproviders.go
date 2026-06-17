@@ -50,6 +50,90 @@ func BuildSummarizerFor(ctx context.Context, consumer config.Consumer) (Summariz
 	if err != nil {
 		return nil, fmt.Errorf("resolve %s config: %w", consumer, err)
 	}
+	return buildOneSummarizer(ctx, sec, consumer)
+}
+
+// BuildSummarizerChainFor constructs the ordered summarizer chain (primary
+// followed by each configured fallback) for consumer from config.Active()'s
+// ResolveChain. Each entry is built through the SAME buildOneSummarizer path as
+// the single-section BuildSummarizerFor, so the two cannot drift; every entry
+// gets the one shared prompt for the consumer (no per-entry override).
+//
+// Same degrade-not-die contract as BuildSummarizerFor: an unloaded config
+// returns (nil, nil) so the pipeline disables summarization. A build error on
+// ANY entry fails the whole wire (returns the error) — the wiring layer decides
+// how to degrade, exactly as it does for the single-section build error.
+func BuildSummarizerChainFor(ctx context.Context, consumer config.Consumer) ([]Summarizer, error) {
+	entries, err := buildChainEntries(ctx, consumer)
+	if err != nil {
+		return nil, err
+	}
+	if entries == nil {
+		return nil, nil
+	}
+	out := make([]Summarizer, 0, len(entries))
+	for _, e := range entries {
+		out = append(out, e.summarizer)
+	}
+	return out, nil
+}
+
+// buildChainEntries resolves consumer's ordered chain (ResolveChain) and builds
+// one fully-constructed entry (summarizer + client + labels) per section through
+// the SHARED buildOneEntry path. It is the SINGLE resolve-and-build loop behind
+// both BuildSummarizerChainFor (the []Summarizer view) and
+// BuildSummarizerWithFallback (the facade that also needs clients + labels), so
+// the two cannot drift. Degrade-not-die: an unloaded config returns (nil, nil).
+func buildChainEntries(ctx context.Context, consumer config.Consumer) ([]builtEntry, error) {
+	if !config.Loaded() {
+		slog.Warn("llmproviders: config not loaded; summarization disabled", "consumer", consumer)
+		return nil, nil
+	}
+	chain, err := config.Active().ResolveChain(consumer)
+	if err != nil {
+		return nil, fmt.Errorf("resolve %s chain: %w", consumer, err)
+	}
+	out := make([]builtEntry, 0, len(chain))
+	for i, sec := range chain {
+		e, err := buildOneEntry(ctx, sec, consumer)
+		if err != nil {
+			return nil, fmt.Errorf("build %s chain entry %d: %w", consumer, i, err)
+		}
+		out = append(out, e)
+	}
+	return out, nil
+}
+
+// buildOneSummarizer builds ONE summarizer from an already-resolved Section: the
+// IDENTICAL llm.NewClient → NewLLMSummarizerWithPrompt sequence shared by the
+// single-section (BuildSummarizerFor) and chain (BuildSummarizerChainFor) paths,
+// so neither path can drift from the other. The prompt is the one shared prompt
+// for the consumer; sec must already carry its inherited Provider/Model (the
+// caller resolves via Resolve / ResolveChain).
+func buildOneSummarizer(ctx context.Context, sec config.Section, consumer config.Consumer) (Summarizer, error) {
+	e, err := buildOneEntry(ctx, sec, consumer)
+	if err != nil {
+		return nil, err
+	}
+	return e.summarizer, nil
+}
+
+// builtEntry is one fully-constructed chain entry: its summarizer plus the
+// underlying client + provider/model labels. The client and labels are what the
+// fallback facade needs to build a per-entry recovery probe and report the live
+// active entry in status — beyond the bare Summarizer the []Summarizer chain
+// builder returns.
+type builtEntry struct {
+	summarizer Summarizer
+	client     llm.Client
+	provider   config.Provider
+	model      llm.Model
+}
+
+// buildOneEntry is the shared single-entry construction used by buildOneSummarizer
+// (which discards the extra fields) and the fallback facade (which keeps the
+// client + labels). Same llm.NewClient → NewLLMSummarizerWithPrompt sequence.
+func buildOneEntry(ctx context.Context, sec config.Section, consumer config.Consumer) (builtEntry, error) {
 	provider := sec.Provider
 	model := llm.Model(sec.Model)
 	client, err := llm.NewClient(ctx, &llm.Config{
@@ -60,10 +144,15 @@ func BuildSummarizerFor(ctx context.Context, consumer config.Consumer) (Summariz
 		CLIBin:   sec.CLIBin,
 	})
 	if err != nil {
-		return nil, fmt.Errorf("build %s client: %w", consumer, err)
+		return builtEntry{}, fmt.Errorf("build %s client: %w", consumer, err)
 	}
 	slog.Info("llmproviders: summarizer ready", "consumer", consumer, "provider", sec.Provider, "model", sec.Model)
-	return NewLLMSummarizerWithPrompt(client, provider, model, promptForConsumer(consumer)), nil
+	return builtEntry{
+		summarizer: NewLLMSummarizerWithPrompt(client, provider, model, promptForConsumer(consumer)),
+		client:     client,
+		provider:   provider,
+		model:      model,
+	}, nil
 }
 
 // promptForConsumer selects the system prompt for a consumer section: the

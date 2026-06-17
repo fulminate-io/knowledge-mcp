@@ -120,13 +120,31 @@ func wirePipelineRuntime(c *client, f Config) error {
 	}
 	ctx := context.Background()
 
-	sum, err := llmproviders.BuildSummarizer(ctx)
+	// Build the ordered summarizer chain (primary + configured fallbacks). The
+	// returned FallbackChain is nil when config is unloaded (degrade-not-die);
+	// non-nil carries the composite selection summarizer + background prober for
+	// the multi-entry case and the single bare summarizer for the len==1 case.
+	fc, err := llmproviders.BuildSummarizerWithFallback(ctx, config.ConsumerSummarizer, pipeline.ShouldAdvanceFallback)
 	if err != nil {
 		// Don't bubble — degrade-not-die. The client keeps serving
 		// non-LLM tools so a misconfigured summarizer doesn't take down
 		// the entire MCP loop.
 		slog.Warn("client pipeline: summarizer build failed; skipping pipeline wire", "error", err)
 		return nil
+	}
+	// chained is the multi-entry chain (len>1): only then do we wire the
+	// selection wrapper + background prober + live-active status. A nil chain
+	// (unloaded config) or a single entry uses the plain summarizer path.
+	var sum llmproviders.Summarizer
+	var chained *llmproviders.FallbackChain
+	switch {
+	case fc == nil:
+		sum = nil
+	case fc.Len() == 1:
+		sum = fc.FirstSummarizer()
+	default:
+		sum = fc.Summarizer()
+		chained = fc
 	}
 	emb := llmproviders.BuildEmbedder()
 	if sum == nil && emb == nil {
@@ -188,6 +206,14 @@ func wirePipelineRuntime(c *client, f Config) error {
 		p.AttachHealFactory(c.buildHealFactory())
 	}
 
+	// Surface the LIVE active summarizer entry in pipeline status when a fallback
+	// chain is wired: the callback reads the chain's health so status reports the
+	// CURRENT entry (shifting on failover/recovery), not the static configured
+	// provider. Set before Start so any early status call sees it.
+	if chained != nil {
+		p.SetActiveSummarizer(chained.ActiveEntry)
+	}
+
 	c.pipeline = p
 	if err := p.Start(ctx); err != nil {
 		return err
@@ -198,14 +224,38 @@ func wirePipelineRuntime(c *client, f Config) error {
 	// subsequent ticks (worst-case lag: one tick).
 	p.RefreshOnceForBoot(ctx) //nolint:errcheck // best-effort initial seed
 
+	// Startup segment-coverage reconcile: now that RefreshOnceForBoot has registered
+	// the builtin collectors, the code-repo enumeration sees the loaded repos. Probe
+	// each segment-bearing builtin for the post-restart live-resident collapse and
+	// heal a degenerate one via RebuildSegments — the recovery lever NOT gated on a
+	// search or a collect (the regression: both prior levers are event-triggered and
+	// neither fires for a fully-embedded, never-re-collected graph). Best-effort and
+	// cheap on the healthy path; runs in this bind-first background wiring stage so it
+	// does not block the MCP listener bind.
+	c.reconcileSegmentCoverage(ctx)
+
 	// Continuous refresh in background.
 	go p.RefreshLoadedGraphs(ctx)
+
+	// Periodic segment-coverage reconcile in background: re-runs the same probe-heal
+	// on a fixed cadence so a graph that collapses (or is never re-collected)
+	// mid-session self-heals WITHOUT a search or collect. Shares the one reconcile
+	// body with the startup trigger; exits on ctx.Done (no leak).
+	go c.runSegmentReconcileLoop(ctx, segmentReconcileInterval)
 
 	// Central two-phase bulk gen-poll in background: ONE PipelineGenPoll RPC per
 	// tick samples every loaded graph's dirty-gen (Phase 1) and selectively pokes
 	// only the collectors whose gen advanced to issue their Phase-2 detail
 	// PipelineScan — replacing the prior up-to-2N PipelineScan fan-out per tick.
 	go p.RunGenPollLoop(ctx)
+
+	// Background summarizer-chain health prober (multi-entry chains only): every
+	// configured interval it re-checks each limited entry with a cheap ping and
+	// shifts traffic back to the highest-priority recovered entry. Shares the same
+	// ctx lifecycle as the other background loops (exits on ctx.Done — no leak).
+	if chained != nil {
+		go chained.RunHealthProbeLoop(ctx)
+	}
 
 	return nil
 }

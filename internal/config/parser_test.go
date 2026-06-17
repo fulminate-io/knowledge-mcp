@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestParse_RoundTrip(t *testing.T) {
@@ -175,6 +176,84 @@ base_url = "http://127.0.0.1:9999/v1"
 	}
 }
 
+// TestParse_SummarizerFallbackChain covers the additive [[summarizer.fallback]]
+// ordered chain: a [summarizer] table with two nested fallback tables parses
+// into Section.Fallback as a len-2 slice IN ORDER, each entry carrying its own
+// provider/model and the per-field inheritance contract (an entry that omits
+// cli_bin keeps it empty so ResolveChain fills it from [default] later).
+func TestParse_SummarizerFallbackChain(t *testing.T) {
+	body := `
+[default]
+provider = "claude-cli"
+model = "claude-haiku-5"
+cli_bin = "/usr/local/bin/claude"
+
+[summarizer]
+model = "claude-opus-5"
+
+[[summarizer.fallback]]
+provider = "openai"
+model = "gpt-5-mini"
+
+[[summarizer.fallback]]
+provider = "gemini"
+model = "gemini-2.5-flash"
+`
+	cfg, err := Parse([]byte(body))
+	if err != nil {
+		t.Fatalf("Parse: %v", err)
+	}
+	if cfg.Summarizer == nil {
+		t.Fatal("Summarizer is nil; expected populated")
+	}
+	if got := len(cfg.Summarizer.Fallback); got != 2 {
+		t.Fatalf("Fallback len = %d; want 2", got)
+	}
+	if cfg.Summarizer.Fallback[0].Provider != ProviderOpenAI {
+		t.Errorf("Fallback[0].Provider = %q; want %q", cfg.Summarizer.Fallback[0].Provider, ProviderOpenAI)
+	}
+	if cfg.Summarizer.Fallback[0].Model != "gpt-5-mini" {
+		t.Errorf("Fallback[0].Model = %q; want gpt-5-mini", cfg.Summarizer.Fallback[0].Model)
+	}
+	if cfg.Summarizer.Fallback[1].Provider != ProviderGemini {
+		t.Errorf("Fallback[1].Provider = %q; want %q", cfg.Summarizer.Fallback[1].Provider, ProviderGemini)
+	}
+	if cfg.Summarizer.Fallback[1].Model != "gemini-2.5-flash" {
+		t.Errorf("Fallback[1].Model = %q; want gemini-2.5-flash", cfg.Summarizer.Fallback[1].Model)
+	}
+	// cli_bin is omitted on both fallback entries — it stays empty here and is
+	// inherited from [default] only at ResolveChain time.
+	if cfg.Summarizer.Fallback[0].CLIBin != "" {
+		t.Errorf("Fallback[0].CLIBin = %q; want empty (inherited at resolve time)", cfg.Summarizer.Fallback[0].CLIBin)
+	}
+}
+
+// TestParse_FallbackUnknownProvider asserts a fallback entry with an
+// unrecognized provider trips the SAME unknown-provider error the single-section
+// translate already produces — the per-entry loop reuses translateSection, so
+// validation is not duplicated.
+func TestParse_FallbackUnknownProvider(t *testing.T) {
+	body := `
+[default]
+provider = "anthropic"
+model = "claude-haiku-5"
+
+[summarizer]
+model = "claude-opus-5"
+
+[[summarizer.fallback]]
+provider = "bogus"
+model = "x"
+`
+	_, err := Parse([]byte(body))
+	if err == nil {
+		t.Fatal("Parse(fallback unknown provider): want error, got nil")
+	}
+	if !strings.Contains(err.Error(), "unknown provider") {
+		t.Errorf("error does not mention unknown provider: %v", err)
+	}
+}
+
 func TestParse_Malformed(t *testing.T) {
 	// Unclosed bracket — go-toml/v2 rejects this.
 	body := `[default
@@ -288,6 +367,61 @@ model = "claude-haiku-5"
 	if !strings.Contains(err.Error(), "newer than this binary supports") {
 		t.Errorf("error should name the version mismatch: %v", err)
 	}
+}
+
+// TestParse_HealthProbeInterval covers the top-level health_probe_interval key
+// (a Go duration string): a valid value parses to that Duration, an absent key
+// leaves the field zero (the consumer defaults it downstream), and a malformed
+// value returns a Parse error that names the key so the operator can fix it.
+func TestParse_HealthProbeInterval(t *testing.T) {
+	t.Run("valid", func(t *testing.T) {
+		body := `
+health_probe_interval = "5m"
+
+[default]
+provider = "anthropic"
+model = "claude-haiku-5"
+`
+		cfg, err := Parse([]byte(body))
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		if cfg.HealthProbeInterval != 5*time.Minute {
+			t.Errorf("HealthProbeInterval = %s; want 5m", cfg.HealthProbeInterval)
+		}
+	})
+
+	t.Run("absent", func(t *testing.T) {
+		body := `
+[default]
+provider = "anthropic"
+model = "claude-haiku-5"
+`
+		cfg, err := Parse([]byte(body))
+		if err != nil {
+			t.Fatalf("Parse: %v", err)
+		}
+		if cfg.HealthProbeInterval != 0 {
+			t.Errorf("HealthProbeInterval = %s; want 0 (defaulted downstream)", cfg.HealthProbeInterval)
+		}
+	})
+
+	t.Run("malformed", func(t *testing.T) {
+		body := `
+health_probe_interval = "nope"
+
+[default]
+provider = "anthropic"
+model = "claude-haiku-5"
+`
+		_, err := Parse([]byte(body))
+		if err == nil {
+			t.Fatal("Parse(malformed duration): want error, got nil")
+		}
+		if !strings.Contains(err.Error(), "health_probe_interval") {
+			t.Errorf("error does not name the key: %v", err)
+		}
+	})
 }
 
 func TestLoad_FileNotFound(t *testing.T) {

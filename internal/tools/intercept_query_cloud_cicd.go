@@ -359,6 +359,14 @@ func listGraphNamesOfType(ctx context.Context, deps ClientDeps, graphType string
 	return names, nil
 }
 
+// ListGraphNamesOfType is the exported cross-package seam over listGraphNamesOfType
+// (the same RETURN_MODE_GRAPH_NAMES enumeration the status coverage table uses):
+// the bootstrap segment-coverage reconcile enumerates code repos through it so it
+// probes exactly the graph set manage(status) reports. Empty names are dropped.
+func ListGraphNamesOfType(ctx context.Context, deps ClientDeps, graphType string) ([]string, error) {
+	return listGraphNamesOfType(ctx, deps, graphType)
+}
+
 // listOverlayKeysOfBase enumerates the OVERLAY keys of a single base graph via
 // the same Execute seam (RETURN_MODE_GRAPH_NAMES) with overlay_of set to the
 // base. Per the ListGraphsLite overlayOf contract (store/db.go:333-335, OSS

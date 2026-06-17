@@ -5,6 +5,7 @@ package hivemonitor
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -34,10 +35,7 @@ func claudeAttachment() string {
 func writeTranscript(t *testing.T, lines ...string) string {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "transcript.jsonl")
-	var body string
-	for _, l := range lines {
-		body += l + "\n"
-	}
+	body := strings.Join(lines, "\n") + "\n"
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}

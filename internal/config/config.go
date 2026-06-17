@@ -5,6 +5,7 @@ package config
 import (
 	"fmt"
 	"sync"
+	"time"
 )
 
 // Provider names an LLM backend by stable string identifier.
@@ -108,6 +109,17 @@ type Section struct {
 	Model    string
 	CLIBin   string
 	BaseURL  string
+
+	// Fallback is the ordered list of alternate sections this consumer
+	// shifts to when the primary (the fields above) fails on a
+	// non-deterministic-terminal condition (quota / rate-limit / overload /
+	// timeout). It is populated ONLY on a primary section from its nested
+	// TOML fallback tables ([[summarizer.fallback]]); a Default section and
+	// a fallback entry itself never carry their own Fallback. Empty (the
+	// common case) means "no chain" — the single-section behavior is
+	// unchanged. Each entry inherits unset fields from [default] at
+	// ResolveChain time, exactly like the primary section.
+	Fallback []Section
 }
 
 // CurrentSchemaVersion is the format version this binary writes when
@@ -138,6 +150,13 @@ type Config struct {
 	Dream         *Section
 	Supervisor    *Section
 	Topics        *Section
+	// HealthProbeInterval is how often the background health-prober re-checks a
+	// summarizer chain entry that was marked limited, shifting traffic back to a
+	// higher-priority entry once it recovers. Parsed from the top-level
+	// health_probe_interval Go-duration string. Zero (the common case — key
+	// absent) means "use the built-in default" downstream (the prober defaults
+	// to a conservative interval); it is NOT an instant re-probe.
+	HealthProbeInterval time.Duration
 	// Credentials holds the optional [credentials] section: backend/LLM
 	// API keys. nil when the section is absent (the common case — most
 	// configs rely on env vars). Each key falls back to its matching env
@@ -203,6 +222,87 @@ func (c *Config) Resolve(consumer Consumer) (Section, error) {
 	}
 	if out.Model == "" {
 		return Section{}, fmt.Errorf("config: consumer %q has no model (set [%s].model or [default].model)", consumer, consumer)
+	}
+	return out, nil
+}
+
+// ResolveChain returns the ordered effective Section chain for consumer:
+// the fully-inherited PRIMARY section followed by each configured fallback
+// entry, every one resolved through the SAME per-field [default] inheritance
+// and Provider/Model required-field gate as Resolve.
+//
+// The result is [primary, fallback0, fallback1, ...]. A consumer with no
+// fallback entries yields a len-1 chain identical to []Section{Resolve(...)},
+// so ResolveChain is a strict superset of the single-section path and Resolve
+// stays UNCHANGED for every existing single-section caller.
+//
+// Fallback entries live only on the per-consumer section (populated from
+// [[<consumer>.fallback]] at parse time); each is inherited against c.Default
+// exactly like the primary, and a fallback that supplies neither its own nor
+// Default's model/provider returns the same required-field error.
+func (c *Config) ResolveChain(consumer Consumer) ([]Section, error) {
+	if c == nil {
+		return nil, fmt.Errorf("config.ResolveChain: nil Config")
+	}
+	primary, err := c.Resolve(consumer)
+	if err != nil {
+		return nil, err
+	}
+	chain := []Section{primary}
+
+	per, err := c.perConsumerSection(consumer)
+	if err != nil {
+		return nil, err
+	}
+	if per == nil {
+		return chain, nil
+	}
+	for i, fb := range per.Fallback {
+		sec, err := c.inheritSection(fb)
+		if err != nil {
+			return nil, fmt.Errorf("config: consumer %q fallback[%d]: %w", consumer, i, err)
+		}
+		chain = append(chain, sec)
+	}
+	return chain, nil
+}
+
+// perConsumerSection returns the per-consumer *Section pointer (nil when the
+// section is absent) for consumer, or an error for an unknown consumer. It is
+// the single switch shared by Resolve's inline lookup and ResolveChain's
+// fallback walk.
+func (c *Config) perConsumerSection(consumer Consumer) (*Section, error) {
+	switch consumer {
+	case ConsumerSummarizer:
+		return c.Summarizer, nil
+	case ConsumerDream:
+		return c.Dream, nil
+	case ConsumerHiveSupervisor:
+		return c.Supervisor, nil
+	case ConsumerTopics:
+		return c.Topics, nil
+	default:
+		return nil, fmt.Errorf("config.ResolveChain: unknown consumer %q", consumer)
+	}
+}
+
+// inheritSection applies per-field [default] inheritance to a single section
+// (a fallback entry) and enforces the Provider/Model required-field gate —
+// the same inheritance + validation Resolve runs on the primary. CLIBin and
+// BaseURL are optional and never trigger a missing-field error. The returned
+// Section carries no nested Fallback (a fallback entry never chains further).
+func (c *Config) inheritSection(sec Section) (Section, error) {
+	out := Section{
+		Provider: coalesceProvider(sec.Provider, c.Default.Provider),
+		Model:    coalesce(sec.Model, c.Default.Model),
+		CLIBin:   coalesce(sec.CLIBin, c.Default.CLIBin),
+		BaseURL:  coalesce(sec.BaseURL, c.Default.BaseURL),
+	}
+	if out.Provider == "" {
+		return Section{}, fmt.Errorf("no provider (set the entry's provider or [default].provider)")
+	}
+	if out.Model == "" {
+		return Section{}, fmt.Errorf("no model (set the entry's model or [default].model)")
 	}
 	return out, nil
 }

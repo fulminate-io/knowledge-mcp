@@ -5,6 +5,7 @@ package bootstrap
 import (
 	"context"
 	"log/slog"
+	"time"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/tools"
@@ -160,6 +161,99 @@ func (c *client) buildHealFactory() func(kgtypes.GraphType, string) func(context
 			slog.Info("bootstrap: auto-heal rebuilt missing or degenerate segments for builtin graph",
 				"graph_type", gt, "name", name, "ran", ran, "scanned", scanned, "built", built, "partial", partial, "pruned", len(pruned))
 			return nil
+		}
+	}
+}
+
+// reconcileSegmentCoverage is the startup + periodic read-side reconcile: it
+// enumerates the two segment-bearing builtins (knowledge/default + every code
+// repo), probes each for the LIVE-resident-vs-shipped degeneracy a daemon restart
+// can leave behind (a fully-embedded, un-recollected graph whose searchable pool
+// collapsed to empty with no embed-drain or search to re-trigger a heal), and
+// heals a degenerate one through the PROVEN RebuildSegments path — the SAME
+// single-flight the manual rebuild op and the embed-drain auto-heal share, so the
+// three triggers coalesce onto one run rather than racing three rebuilds.
+//
+// It is the recovery lever the prior two fixes left a gap for: the read-side
+// recoverIfDegenerate only runs lazily inside a Search, and the write-side
+// auto-heal only fires on the collect-armed embed-drain edge — neither event fires
+// for a graph that is fully embedded and never re-collected, so its empty pool had
+// no trigger to repopulate. This reconcile is INDEPENDENT of both events.
+//
+// Best-effort throughout: a nil segment manager (headless/--no-llm-pipeline) is a
+// no-op; a per-graph probe or rebuild error WARNs and continues to the next graph,
+// never blocking boot or the periodic tick. The probe is cheap (the healthy graphs
+// each pay one cache-first load + one atomic resident count + at most one
+// ListDelta(0); only a genuinely degenerate graph pays a rebuild).
+func (c *client) reconcileSegmentCoverage(ctx context.Context) {
+	if c.segmentMgr == nil {
+		return // headless / degraded — no segment engine to reconcile.
+	}
+
+	// The two segment-bearing builtins: knowledge/default + every code repo. This
+	// mirrors the segCoveredFor builtin gate (manage_status_coverage.go) — segments
+	// exist ONLY for code + knowledge. Code repos enumerate via the SAME seam the
+	// status coverage table uses; the *client satisfies tools.ClientDeps.
+	type graphRef struct {
+		gt   kgtypes.GraphType
+		name string
+	}
+	graphs := []graphRef{{gt: kgtypes.GraphKnowledge, name: "default"}}
+	if codeRepos, err := tools.ListGraphNamesOfType(ctx, c, string(kgtypes.GraphCode)); err != nil {
+		slog.Warn("bootstrap: segment reconcile could not enumerate code repos (skipping code graphs this pass)",
+			"error", err)
+	} else {
+		for _, repo := range codeRepos {
+			graphs = append(graphs, graphRef{gt: kgtypes.GraphCode, name: repo})
+		}
+	}
+
+	for _, g := range graphs {
+		degenerate, err := c.segmentMgr.ReconcileResidentDegenerate(ctx, g.gt, g.name)
+		if err != nil {
+			slog.Warn("bootstrap: segment reconcile probe failed (continuing)",
+				"graph_type", g.gt, "name", g.name, "error", err)
+			continue
+		}
+		if !degenerate {
+			continue // healthy (or disarmed) — no rebuild.
+		}
+		// Degenerate live pool: heal via the PROVEN rebuild path (single-flight shared
+		// with the manual op + embed-drain auto-heal — NOT a bare load).
+		ran, scanned, built, partial, pruned, rerr := tools.RebuildSegments(
+			ctx, c.PipelineScanner(), c.segmentMgr, g.gt, g.name)
+		if rerr != nil {
+			slog.Warn("bootstrap: segment reconcile rebuild failed (continuing)",
+				"graph_type", g.gt, "name", g.name, "error", rerr)
+			continue
+		}
+		slog.Info("bootstrap: segment reconcile rebuilt a degenerate live pool",
+			"graph_type", g.gt, "name", g.name,
+			"ran", ran, "scanned", scanned, "built", built, "partial", partial, "pruned", len(pruned))
+	}
+}
+
+// segmentReconcileInterval is the periodic cadence of runSegmentReconcileLoop — a
+// fixed default for v1 (not config-driven). The probe is cheap (count compare +
+// floor gate before the List RPC), so a few-minute cadence catches a mid-session
+// collapse promptly without meaningful steady-state cost.
+const segmentReconcileInterval = 5 * time.Minute
+
+// runSegmentReconcileLoop fires reconcileSegmentCoverage on a fixed-interval ticker
+// until ctx is canceled — the PERIODIC trigger (independent of embed-drain and
+// search) for a graph that collapses, or was never re-collected, mid-session. It
+// shares the one reconcile body with the startup trigger, so the startup-vs-periodic
+// fork is just two call sites of the same function. Mirrors the RefreshLoadedGraphs
+// select{ctx.Done / timer} loop shape; exits promptly on ctx.Done (no leak).
+func (c *client) runSegmentReconcileLoop(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			c.reconcileSegmentCoverage(ctx)
 		}
 	}
 }

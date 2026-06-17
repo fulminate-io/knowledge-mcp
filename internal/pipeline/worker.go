@@ -279,6 +279,13 @@ func handleSummarizerError(ctx context.Context, p *Pipeline, be WireClient, key 
 	if p.summaryCircuit.recordErr(classify(err)) {
 		p.escalateOnTrip(summaryBreakerAxis)
 	}
+	// Interaction with the fallback summarizer chain (client wiring): when a
+	// multi-entry chain is exhausted it returns its LAST entry's error here. If
+	// that last error is TRANSIENT, the branch below backs off and re-tries next
+	// tick with NO durable mark — correct: an all-transient exhaustion is a
+	// momentary wall, not a permanent failure. A NON-transient last error (the
+	// quota-class subprocess exit case) falls through to the durable terminal
+	// mark below, exactly as a single-summarizer terminal error does today.
 	if llm.IsTransient(err) {
 		// Honor a provider 429/503 Retry-After when present (else exponential).
 		hint := llm.RetryAfterOf(err)

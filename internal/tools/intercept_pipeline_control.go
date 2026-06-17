@@ -77,15 +77,25 @@ func handlePipelineStatus(deps ClientDeps) kgtools.ToolResult {
 // than one error class is present) its PRE-RENDERED per-class Breakdown. The
 // breakdown is the pipeline-side string tally — tools reads only the string
 // fields (Reason, Breakdown) and never the typed error-class enum.
+//
+// The live ACTIVE summarizer entry (set only on the summary axis when a fallback
+// chain is wired) is surfaced on BOTH the RUNNING and PAUSED paths: failover
+// happens during normal operation, so an operator must see which entry is
+// serving even while the axis is running. Empty (no chain / single entry / embed
+// axis) renders nothing.
 func renderAxisStatus(axis string, a pipeline.AxisStatus) string {
+	activeLine := ""
+	if a.ActiveSummarizer != "" {
+		activeLine = fmt.Sprintf("    Active summarizer: %s\n", a.ActiveSummarizer)
+	}
 	if !a.Paused {
-		return fmt.Sprintf("  %s: RUNNING\n", axis)
+		return fmt.Sprintf("  %s: RUNNING\n%s", axis, activeLine)
 	}
 	breakdownLine := ""
 	if a.Breakdown != "" {
 		breakdownLine = fmt.Sprintf("    Breakdown: %s\n", a.Breakdown)
 	}
 	return fmt.Sprintf(
-		"  %s: PAUSED since %s\n    Reason: %s\n%s",
-		axis, a.Since.Format("2006-01-02 15:04:05 MST"), a.Reason, breakdownLine)
+		"  %s: PAUSED since %s\n    Reason: %s\n%s%s",
+		axis, a.Since.Format("2006-01-02 15:04:05 MST"), a.Reason, breakdownLine, activeLine)
 }

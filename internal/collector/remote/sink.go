@@ -5,6 +5,7 @@ package remote
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"sync/atomic"
 	"time"
 
@@ -94,6 +95,14 @@ func (s *UploadSink) WriteResult(ctx context.Context, collectorName string, resu
 	if len(chunks) == 0 {
 		chunks = [][]*knowledgev1.Node{nil}
 	}
+	// Timing instrumentation: the CollectChunk upload loop + Finalize are the
+	// foreground of the collect tool call (the client blocks here until the
+	// server acks each RPC). Logged at debug so a slow collect can be traced to
+	// the exact chunk or the Finalize, not an unattributed silent gap.
+	uploadStart := time.Now()
+	slog.Debug("remote sink: upload start", "collector", collectorName,
+		"graph_type", result.GraphType, "graph", result.GraphName, "branch", result.CurrentBranch,
+		"epoch", epoch, "chunks", len(chunks), "nodes", len(result.Nodes), "edges", len(result.Edges))
 	for i, chunk := range chunks {
 		var edges []*knowledgev1.BatchEdge
 		if i == len(chunks)-1 {
@@ -110,10 +119,15 @@ func (s *UploadSink) WriteResult(ctx context.Context, collectorName string, resu
 			Nodes:         chunk,
 			Edges:         edges,
 		}
+		chunkStart := time.Now()
 		if err := s.collectChunkWithRetry(ctx, req); err != nil {
 			return fmt.Errorf("remote sink: CollectChunk %d/%d: %w", i+1, len(chunks), err)
 		}
+		slog.Debug("remote sink: chunk sent", "i", i+1, "of", len(chunks),
+			"nodes", len(chunk), "edges", len(edges), "dur", time.Since(chunkStart).Round(time.Millisecond))
 	}
+	slog.Debug("remote sink: all chunks uploaded", "graph", result.GraphName, "branch", result.CurrentBranch,
+		"epoch", epoch, "chunks", len(chunks), "dur", time.Since(uploadStart).Round(time.Millisecond))
 
 	finReq := connect.NewRequest(&knowledgev1.FinalizeRequest{
 		Epoch:         epoch,
@@ -122,9 +136,12 @@ func (s *UploadSink) WriteResult(ctx context.Context, collectorName string, resu
 		CurrentBranch: result.CurrentBranch,
 		Promote:       result.Promote,
 	})
+	finStart := time.Now()
 	if _, err := client.Finalize(ctx, finReq); err != nil {
 		return fmt.Errorf("remote sink: Finalize: %w", err)
 	}
+	slog.Debug("remote sink: finalize done", "graph", result.GraphName, "branch", result.CurrentBranch,
+		"epoch", epoch, "dur", time.Since(finStart).Round(time.Millisecond))
 	return nil
 }
 

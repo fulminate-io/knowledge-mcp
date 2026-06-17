@@ -182,6 +182,24 @@ func (c ErrClass) shortLabel() string {
 	}
 }
 
+// ShouldAdvanceFallback reports whether a fallback summarizer chain should
+// ADVANCE to the next entry on this error, versus failing the node directly. It
+// is the single exported seam the (client-side) summarizer-chain selection
+// wrapper consults — defined HERE, over the same classify + IsDeterministicTerminal
+// the breaker uses, so the classifier stays the single source of truth and the
+// wrapper duplicates no classification.
+//
+// Advance == !IsDeterministicTerminal(classify(err)): a quota / rate-limit /
+// overload / timeout / unclassified failure is NOT deterministic-terminal, so it
+// advances (a different provider may serve the batch); a parse / invalid-request
+// / truncation failure IS deterministic-terminal, so it fails directly (a retry
+// on another entry would fail identically). The classifier discards the
+// transient/terminal axis, so this decision is on the error CLASS alone — exactly
+// the design's "advance on any non-deterministic-terminal failure" rule.
+func ShouldAdvanceFallback(err error) bool {
+	return !IsDeterministicTerminal(classify(err))
+}
+
 // IsDeterministicTerminal reports whether an error class reproduces identically
 // for the same batch + config — i.e. a retry of the same input is futile. True
 // for ClassParse, ClassInvalidRequest, and ClassTruncation (truncation

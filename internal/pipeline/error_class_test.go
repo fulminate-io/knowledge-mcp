@@ -9,6 +9,31 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/llm"
 )
 
+// TestShouldAdvanceFallback covers the exported advance predicate the fallback
+// summarizer chain consults: it advances (true) on a non-deterministic-terminal
+// class (quota/rate-limit via http_429→AuthQuota, transport via
+// subprocess_failed→TimeoutTransport) and does NOT advance (false) on a
+// deterministic-terminal class (parse via parse_summaries_json→Parse, invalid
+// request via http_400→InvalidRequest). It is the single seam over
+// classify+IsDeterministicTerminal — no classification is duplicated.
+func TestShouldAdvanceFallback(t *testing.T) {
+	cases := []struct {
+		reason string
+		want   bool
+	}{
+		{"http_429", true},              // AuthQuota — advance
+		{"subprocess_failed", true},     // TimeoutTransport — advance
+		{"parse_summaries_json", false}, // Parse — deterministic-terminal, no advance
+		{"http_400", false},             // InvalidRequest — deterministic-terminal, no advance
+	}
+	for _, tc := range cases {
+		err := &llm.LLMError{Reason: tc.reason}
+		if got := ShouldAdvanceFallback(err); got != tc.want {
+			t.Errorf("ShouldAdvanceFallback(%q) = %v; want %v", tc.reason, got, tc.want)
+		}
+	}
+}
+
 // TestClassify_MapsRealReasonVocabulary is the EXHAUSTIVE antidote to silent
 // ClassOther fallthrough: it enumerates every live LLMError.Reason literal found
 // by the grep census over internal/llm + internal/llmproviders + internal/embed.

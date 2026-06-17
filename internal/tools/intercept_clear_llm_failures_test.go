@@ -87,6 +87,78 @@ func TestMutateComposers_ClearLLMFailures_SingleGraph(t *testing.T) {
 	assert.Contains(t, toolResultText(res), "cleared 3 summary marker(s) + 3 embed marker(s)")
 }
 
+// TestMutateComposers_ClearLLMFailures_SkippedCountSurfaced asserts the
+// not_found skip count (ExecuteResponse.skipped_count) is aggregated
+// across the per-marker UPDATEs and surfaced in the operator-visible result text
+// when > 0. The fake reports mutateSkipped=2 per UPDATE; with TWO marker UPDATEs
+// the total reaches "skipped 4 not_found marker(s)". Fails-when-absent: drop the
+// totalSkipped accumulation/append and this assertion goes red.
+func TestMutateComposers_ClearLLMFailures_SkippedCountSurfaced(t *testing.T) {
+	fc := &fakeGraphCaller{
+		mutateAffected:   3,
+		mutateSkipped:    2, // each of the two marker UPDATEs skips 2 not_found nodes.
+		listGraphsResult: listGraphsResultJSON(t, [2]string{"code", "knowledge"}),
+	}
+	deps := interceptTestDeps{gc: fc}
+	handled, res := InterceptManage(deps, kgtools.CallToolParams{
+		Name:      "manage",
+		Arguments: json.RawMessage(`{"operation":"clear_llm_failures","graph":"code","name":"knowledge"}`),
+	})
+	require.True(t, handled)
+	require.False(t, res.IsError, "clear: %s", toolResultText(res))
+	txt := toolResultText(res)
+	// 2 marker UPDATEs * 2 skipped each = 4 skipped surfaced in the result.
+	assert.Contains(t, txt, "skipped 4 not_found marker(s)",
+		"the aggregated skipped count must surface in the operator-visible result")
+	assert.Contains(t, txt, "cleared 3 summary marker(s) + 3 embed marker(s)",
+		"the cleared counts are still reported alongside the skip count")
+}
+
+// TestMutateComposers_ClearLLMFailures_NoSkipNoSkipText asserts the skip clause
+// is ABSENT from the result when nothing was skipped (the common case — every
+// marker found its node). Guards against an always-on "skipped 0" noise line.
+func TestMutateComposers_ClearLLMFailures_NoSkipNoSkipText(t *testing.T) {
+	fc := &fakeGraphCaller{
+		mutateAffected:   3,
+		mutateSkipped:    0, // no not_found markers.
+		listGraphsResult: listGraphsResultJSON(t, [2]string{"code", "knowledge"}),
+	}
+	deps := interceptTestDeps{gc: fc}
+	handled, res := InterceptManage(deps, kgtools.CallToolParams{
+		Name:      "manage",
+		Arguments: json.RawMessage(`{"operation":"clear_llm_failures","graph":"code","name":"knowledge"}`),
+	})
+	require.True(t, handled)
+	require.False(t, res.IsError, "clear: %s", toolResultText(res))
+	assert.NotContains(t, toolResultText(res), "skipped",
+		"no skip clause when nothing was skipped")
+}
+
+// TestMutateComposers_ClearLLMFailures_OnlyPhantomMarkers asserts the all-zero-
+// cleared path STILL surfaces the skip count when a graph's only markers were
+// phantom (cleared 0, skipped N) — rather than the misleading bare "nothing to
+// clear". Fails-when-absent: the totalSkipped > 0 branch in the zero-cleared
+// path is the only thing that distinguishes this from a clean no-op.
+func TestMutateComposers_ClearLLMFailures_OnlyPhantomMarkers(t *testing.T) {
+	fc := &fakeGraphCaller{
+		mutateAffected:   0, // nothing actually cleared.
+		mutateSkipped:    1, // each UPDATE skips one phantom marker.
+		listGraphsResult: listGraphsResultJSON(t, [2]string{"code", "knowledge"}),
+	}
+	deps := interceptTestDeps{gc: fc}
+	handled, res := InterceptManage(deps, kgtools.CallToolParams{
+		Name:      "manage",
+		Arguments: json.RawMessage(`{"operation":"clear_llm_failures","graph":"code","name":"knowledge"}`),
+	})
+	require.True(t, handled)
+	require.False(t, res.IsError, "an all-skip sweep is not an error")
+	txt := toolResultText(res)
+	assert.Contains(t, txt, "skipped 2 not_found marker(s)",
+		"the zero-cleared path must still surface the skip count")
+	assert.NotContains(t, txt, "no failure markers found",
+		"a pure-phantom sweep must NOT read as a clean nothing-to-clear")
+}
+
 // TestMutateComposers_ClearLLMFailures_KnowledgeRootNilTarget asserts the
 // knowledge/default root graph clears with a nil GraphSelector (the engine's
 // empty-graph=knowledge default) rather than an explicit name.

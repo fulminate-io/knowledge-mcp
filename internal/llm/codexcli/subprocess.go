@@ -74,11 +74,15 @@ func runCLI(ctx context.Context, cliBin string, args []string, stdin string, inh
 			}
 		}
 		if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
+			// Classification stays terminal (Transient:false) to match the
+			// codex-cli quota contract pinned by
+			// TestParseResponse_TurnFailedQuotaIsTerminal — a quota wall is shed,
+			// not retried forever. codexFailureDetail mines stdout for the cause.
 			return nil, &llm.LLMError{
 				Transient: false,
 				Reason:    "subprocess_failed",
 				Cause: fmt.Errorf("codex exited %d: %s",
-					exitErr.ExitCode(), trimToLine(stderrBuf.String())),
+					exitErr.ExitCode(), codexFailureDetail(stdoutBuf.Bytes(), stderrBuf.String())),
 			}
 		}
 		return nil, &llm.LLMError{
@@ -89,6 +93,25 @@ func runCLI(ctx context.Context, cliBin string, args []string, stdin string, inh
 	}
 
 	return stdoutBuf.Bytes(), nil
+}
+
+// codexFailureDetail builds the diagnostic for a non-zero codex exit. Codex
+// emits its real cause (usage/rate limit, model unavailable, auth) as a --json
+// `error`/`turn.failed` event on STDOUT and exits non-zero WITHOUT writing
+// stderr, so the bare stderr capture surfaced an empty "codex exited 1:".
+// Mine stdout for the cause (parseResponse never runs on a non-zero exit) and
+// fold it together with stderr when both are present.
+func codexFailureDetail(stdout []byte, stderr string) string {
+	detail := trimToLine(stderr)
+	stdoutErr := extractCodexError(stdout)
+	switch {
+	case stdoutErr == "":
+		return detail
+	case detail == "":
+		return stdoutErr
+	default:
+		return stdoutErr + " | stderr: " + detail
+	}
 }
 
 // trimToLine collapses stderr into a compact single-line representation so

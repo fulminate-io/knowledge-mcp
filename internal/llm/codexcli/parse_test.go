@@ -205,3 +205,33 @@ func TestParseResponse_IgnoresBannerLines(t *testing.T) {
 		t.Errorf("Content = %q, want %q", resp.Content, "hello back")
 	}
 }
+
+// TestExtractCodexError_FromStdoutOnNonZeroExit pins the capture fix: codex
+// writes its real failure (usage limit, model unavailable, auth) as a --json
+// error/turn.failed event on STDOUT and exits non-zero without touching stderr,
+// so the non-zero-exit path must mine stdout to surface the cause instead of a
+// bare "codex exited 1:".
+func TestExtractCodexError_FromStdoutOnNonZeroExit(t *testing.T) {
+	stdout := `{"type":"thread.started","thread_id":"x"}
+{"type":"turn.started"}
+{"type":"error","message":"You've hit your usage limit for the configured model. Switch to another model now, or try again later."}
+{"type":"turn.failed","error":{"message":"You've hit your usage limit for the configured model."}}
+`
+	got := extractCodexError([]byte(stdout))
+	if !strings.Contains(got, "usage limit") {
+		t.Fatalf("extractCodexError = %q, want the usage-limit message surfaced", got)
+	}
+	if strings.Contains(got, "\n") {
+		t.Errorf("extractCodexError must be single-lined for log-friendliness, got %q", got)
+	}
+}
+
+// TestExtractCodexError_EmptyOnCleanStream confirms a successful stream yields
+// no spurious error detail (so a clean exit never fabricates a failure string).
+func TestExtractCodexError_EmptyOnCleanStream(t *testing.T) {
+	stdout := `{"type":"item.completed","item":{"item_type":"agent_message","text":"ok"}}
+{"type":"turn.completed","usage":{"input_tokens":1,"output_tokens":1}}`
+	if got := extractCodexError([]byte(stdout)); got != "" {
+		t.Fatalf("extractCodexError on a clean stream = %q, want empty", got)
+	}
+}

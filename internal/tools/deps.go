@@ -79,6 +79,13 @@ type SegmentShipper interface {
 // auto-heal probe reads) is irrelevant to a display column and ignored there.
 type SegmentCoverageReader interface {
 	ShippedSegmentDocCount(ctx context.Context, gt kgtypes.GraphType, name string) (covered int, anyUnknown bool, err error)
+	// ResidentDocCount returns the LIVE in-memory engine resident doc count for one
+	// graph — the searchable pool's actual size, distinct from the SERVER's shipped
+	// count above. The status column renders both so a collapse (server intact, live
+	// pool empty) shows "live 0 of N" instead of being masked behind the shipped
+	// figure. Satisfied by *segmentdist.Manager.ResidentDocCount (a single atomic
+	// read, no RPC).
+	ResidentDocCount(gt kgtypes.GraphType, name string) int
 }
 
 // PipelineScanner is the login-routed PipelineScan + Execute wire seam the

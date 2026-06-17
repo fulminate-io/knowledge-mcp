@@ -26,20 +26,16 @@ type fakeGraphCaller struct {
 	mutateResult   kgtools.ToolResult
 	mutateError    error
 
-	// queryResponsesByGraph is the graph-aware variant: graphType → id →
-	// result. When set, an Execute ByID query consults it FIRST keyed on the
-	// request's Target graph (empty Target → "knowledge"), so a test can make a
-	// node resolve in one graph but not another (the cross-graph-proxy branch
-	// needs FROM-in-knowledge / not-in-practice). Falls back to the flat
+	// queryResponsesByGraph: graphType → id → result. An Execute ByID query
+	// consults it FIRST keyed on the request's Target graph (empty → "knowledge"),
+	// so a node can resolve in one graph but not another. Falls back to the flat
 	// queryResponses when the (graph,id) pair is absent. Purely additive.
 	queryResponsesByGraph map[string]map[string]kgtools.ToolResult
 
-	// queryResponsesByGraphName is the NAME-aware variant: (graphType,graphName) →
-	// id → result, a FLAT map keyed by graphKey (not a 3-level nested map). When
-	// set, an Execute ByID query consults it BEFORE queryResponsesByGraph so a
-	// test can distinguish two graphs of the SAME type by name (code-FROM vs
-	// cloud-FROM resolution, or a specific practice/<slug>). Purely additive —
-	// falls back to the type-only path when the (type,name,id) triple is absent.
+	// queryResponsesByGraphName: (graphType,graphName) → id → result, a FLAT map
+	// keyed by graphKey. Consulted BEFORE queryResponsesByGraph so a test can
+	// distinguish two graphs of the SAME type by name; falls back to the type-only
+	// path when the (type,name,id) triple is absent. Purely additive.
 	queryResponsesByGraphName map[graphKey]map[string]kgtools.ToolResult
 
 	// nodeMatchResults answers a Match(NodeType) scan Execute (q.GetById()=="" and
@@ -106,7 +102,10 @@ type fakeGraphCaller struct {
 
 	// mutateAffected, when non-zero, is returned as the Mutation Execute
 	// affected_count (clear_llm_failures reads it to tally cleared markers).
+	// mutateSkipped is the skipped_count (not_found markers the engine
+	// tolerated-and-skipped) — both zero by default.
 	mutateAffected int64
+	mutateSkipped  int64
 
 	// metadataStatsResp, when set, is returned for a MetadataStats RPC (the
 	// promote_metadata composer's stats+override read). metadataStatsErr forces a
@@ -222,7 +221,7 @@ func (f *fakeGraphCaller) Execute(_ context.Context, req *knowledgev1.ExecuteReq
 		if affected == 0 {
 			affected = int64(len(ids))
 		}
-		return &knowledgev1.ExecuteResponse{Ids: ids, AffectedCount: affected}, nil
+		return &knowledgev1.ExecuteResponse{Ids: ids, AffectedCount: affected, SkippedCount: f.mutateSkipped}, nil
 	}
 	q := req.GetQuery()
 	if q.GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_GRAPH_NAMES {

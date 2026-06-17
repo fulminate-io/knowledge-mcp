@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/pelletier/go-toml/v2"
 )
@@ -21,13 +22,18 @@ import (
 // the upper bound; configs that declare a version higher than this
 // binary supports are rejected with an upgrade message.
 type parseShape struct {
-	SchemaVersion int               `toml:"schema_version"`
-	Default       parseSection      `toml:"default"`
-	Summarizer    *parseSection     `toml:"summarizer"`
-	Dream         *parseSection     `toml:"dream"`
-	Supervisor    *parseSection     `toml:"supervisor"`
-	Topics        *parseSection     `toml:"topics"`
-	Credentials   *parseCredentials `toml:"credentials"`
+	SchemaVersion int `toml:"schema_version"`
+	// HealthProbeInterval is the top-level health_probe_interval key (a Go
+	// duration string like "10m"). Kept as a raw string here and parsed via
+	// time.ParseDuration in Parse so a malformed value surfaces a clear,
+	// key-named error rather than a generic TOML type error. Empty = absent.
+	HealthProbeInterval string            `toml:"health_probe_interval"`
+	Default             parseSection      `toml:"default"`
+	Summarizer          *parseSection     `toml:"summarizer"`
+	Dream               *parseSection     `toml:"dream"`
+	Supervisor          *parseSection     `toml:"supervisor"`
+	Topics              *parseSection     `toml:"topics"`
+	Credentials         *parseCredentials `toml:"credentials"`
 }
 
 // parseCredentials mirrors the optional [credentials] TOML table. Pointer
@@ -53,6 +59,11 @@ type parseSection struct {
 	Model    string `toml:"model"`
 	CLIBin   string `toml:"cli_bin"`
 	BaseURL  string `toml:"base_url"`
+	// Fallback nests the ordered [[summarizer.fallback]] tables under a
+	// consumer's [section] table. go-toml/v2 maps an array-of-tables to a
+	// slice, so two [[summarizer.fallback]] blocks become a len-2 slice in
+	// document order. Absent (the common case) leaves this nil.
+	Fallback []parseSection `toml:"fallback"`
 }
 
 // Load reads path and parses the TOML body. Returns the wrapped
@@ -106,6 +117,17 @@ func Parse(data []byte) (*Config, error) {
 
 	cfg := &Config{SchemaVersion: version}
 
+	// health_probe_interval: a Go duration string. Empty leaves the field zero
+	// (the prober defaults it downstream); a malformed value is a hard Parse
+	// error that names the key so the operator knows what to fix.
+	if raw.HealthProbeInterval != "" {
+		d, err := time.ParseDuration(raw.HealthProbeInterval)
+		if err != nil {
+			return nil, fmt.Errorf("config.Parse: health_probe_interval %q is not a valid duration: %w", raw.HealthProbeInterval, err)
+		}
+		cfg.HealthProbeInterval = d
+	}
+
 	def, err := translateSection("default", raw.Default)
 	if err != nil {
 		return nil, err
@@ -158,15 +180,28 @@ func Parse(data []byte) (*Config, error) {
 // CLIBin and BaseURL are copied verbatim — CLIBin's value-level validation
 // (must be a real executable file when the provider is CLI) happens in
 // Validate; BaseURL has no required-field gate (optional for all providers).
+//
+// Nested raw.Fallback entries are translated through this SAME primitive (one
+// recursive call per entry) so each fallback entry gets the identical
+// provider-normalize + IsValid gate — validation is not duplicated. A fallback
+// entry with an unknown provider returns the same unknown-provider error as a
+// top-level section. Each entry is named "<name>.fallback[i]" so the error
+// pinpoints which entry is bad.
 func translateSection(name string, raw parseSection) (Section, error) {
 	out := Section{Model: raw.Model, CLIBin: raw.CLIBin, BaseURL: raw.BaseURL}
-	if raw.Provider == "" {
-		return out, nil
+	if raw.Provider != "" {
+		p := Provider(strings.ToLower(raw.Provider))
+		if !p.IsValid() {
+			return Section{}, fmt.Errorf("config: section [%s]: unknown provider %q (want one of: anthropic, openai, gemini, claude-cli, codex-cli)", name, raw.Provider)
+		}
+		out.Provider = p
 	}
-	p := Provider(strings.ToLower(raw.Provider))
-	if !p.IsValid() {
-		return Section{}, fmt.Errorf("config: section [%s]: unknown provider %q (want one of: anthropic, openai, gemini, claude-cli, codex-cli)", name, raw.Provider)
+	for i, fb := range raw.Fallback {
+		sec, err := translateSection(fmt.Sprintf("%s.fallback[%d]", name, i), fb)
+		if err != nil {
+			return Section{}, err
+		}
+		out.Fallback = append(out.Fallback, sec)
 	}
-	out.Provider = p
 	return out, nil
 }

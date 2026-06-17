@@ -110,9 +110,11 @@ type Metrics struct {
 // so operators see WHICH axis is paused and its dominant error class — a failing
 // summary axis no longer masquerades as a whole-pipeline pause.
 //
-// FIELD ORDER IS LOAD-BEARING: it is built from circuitStatus by field
-// (circuitStatusToAxis in escalation.go), so the field name+type+order here MUST
-// stay identical to circuitStatus (circuit_breaker.go).
+// FIRST SIX FIELDS ARE LOAD-BEARING: they mirror circuitStatus
+// (circuit_breaker.go) field-for-field so circuitStatusToAxis can build the
+// breaker-derived fields explicitly. ActiveSummarizer is APPENDED AFTER that
+// mirrored block — circuitStatus has no such field, so it is set SEPARATELY
+// (post-conversion in PipelineStatus), never inside the mirrored construction.
 type AxisStatus struct {
 	Paused        bool
 	Reason        string
@@ -120,6 +122,14 @@ type AxisStatus struct {
 	DominantClass ErrClass
 	DominantCount int
 	Breakdown     string
+
+	// ActiveSummarizer is the "provider/model" label of the LIVE active
+	// summarizer entry on the summary axis (the highest-priority healthy entry
+	// of the fallback chain). Empty when no chain is wired, on the embed axis,
+	// or when the chain is fully exhausted. Set post-conversion in
+	// PipelineStatus from the pipeline's activeSummarizer callback — NOT carried
+	// from circuitStatus.
+	ActiveSummarizer string
 }
 
 // PipelineStatus is the operator-facing snapshot of the pipeline's per-axis
