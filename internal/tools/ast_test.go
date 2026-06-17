@@ -60,6 +60,8 @@ func (d astTestDeps) PipelineScanner() PipelineScanner             { return nil 
 func (d astTestDeps) ReflectionForcer() ReflectionForcer           { return nil }
 func (d astTestDeps) SimilarityForcer() SimilarityForcer           { return nil }
 
+func (d astTestDeps) BlindSpotProvider() BlindSpotProvider { return nil }
+
 // astFixtureRepo writes a single Go file with N function declarations under
 // t.TempDir() and returns the directory. The fixture mirrors the prior
 // server-side astFixture's shape so the bypass-path / repo-relative-key

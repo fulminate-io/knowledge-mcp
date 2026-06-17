@@ -19,6 +19,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
 	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
+	clientthought "github.com/fulminate-io/knowledge-mcp/internal/thought"
 )
 
 // fakeBackend is a scripted backends.Backend implementation used by
@@ -108,12 +109,26 @@ type interceptTestDeps struct {
 	gc      GraphCaller
 	crud    GraphTypeCRUDAPI
 	forcer  ReflectionForcer
+	// blindSpots is the faceted report the fake BlindSpotProvider returns. The zero
+	// value (Computed=false) is the cold sentinel, so a test exercising the
+	// cold-start path leaves it unset. blindSpotProviderNil flips BlindSpotProvider()
+	// to return a nil interface so a test can exercise the loop-not-running path.
+	blindSpots           clientthought.BlindSpotReport
+	blindSpotProviderNil bool
 	// propNotReady flips PropReady() to false so a test can exercise the
 	// bind-first wiring-window gate (bind-first startup) on the propagate handler. Zero value
 	// keeps the reflection loop ready, so every pre-existing test exercises the
 	// wired path.
 	propNotReady bool
 }
+
+// fakeBlindSpotProvider serves a constructed faceted report for the cache-serve
+// handler tests — a pure value return, no graph reads.
+type fakeBlindSpotProvider struct {
+	report clientthought.BlindSpotReport
+}
+
+func (f fakeBlindSpotProvider) GetBlindSpots() clientthought.BlindSpotReport { return f.report }
 
 func (d interceptTestDeps) LocalLiveness() LocalLiveness         { return nil }
 func (d interceptTestDeps) Sink() collector.Sink                 { return nil }
@@ -146,6 +161,13 @@ func (d interceptTestDeps) ReflectionForcer() ReflectionForcer {
 }
 
 func (d interceptTestDeps) SimilarityForcer() SimilarityForcer { return nil }
+
+func (d interceptTestDeps) BlindSpotProvider() BlindSpotProvider {
+	if d.blindSpotProviderNil {
+		return nil
+	}
+	return fakeBlindSpotProvider{report: d.blindSpots}
+}
 
 func TestInterceptCreateProject_NoBackend_ClaimsLocalOnly(t *testing.T) {
 	// Phase 3a: no-backend path is now claimed client-side.

@@ -115,6 +115,8 @@ func (d *coverageDeps) PipelineScanner() PipelineScanner             { return ni
 func (d *coverageDeps) ReflectionForcer() ReflectionForcer           { return nil }
 func (d *coverageDeps) SimilarityForcer() SimilarityForcer           { return nil }
 
+func (d *coverageDeps) BlindSpotProvider() BlindSpotProvider { return nil }
+
 // TestRenderLLMCoverage_Table pins the per-graph coverage rendering:
 //   - the knowledge row is present even though its enumerated name is empty (T3-2)
 //   - a fully-covered code graph renders distinctly from a 0-of-N knowledge graph

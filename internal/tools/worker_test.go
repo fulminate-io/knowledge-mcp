@@ -157,6 +157,8 @@ func (d workerTestDeps) PipelineScanner() PipelineScanner             { return n
 func (d workerTestDeps) ReflectionForcer() ReflectionForcer           { return nil }
 func (d workerTestDeps) SimilarityForcer() SimilarityForcer           { return nil }
 
+func (d workerTestDeps) BlindSpotProvider() BlindSpotProvider { return nil }
+
 // callWorker invokes InterceptWorker with the given JSON args and
 // returns the (handled, body, isError) tuple. Mirrors callAst's shape.
 func callWorker(t *testing.T, deps ClientDeps, argsJSON string) (handled bool, body string, isErr bool) {

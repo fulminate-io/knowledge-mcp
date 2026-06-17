@@ -127,6 +127,8 @@ func (d ctxPackDeps) PipelineScanner() PipelineScanner             { return nil 
 func (d ctxPackDeps) ReflectionForcer() ReflectionForcer           { return nil }
 func (d ctxPackDeps) SimilarityForcer() SimilarityForcer           { return nil }
 
+func (d ctxPackDeps) BlindSpotProvider() BlindSpotProvider { return nil }
+
 // --- decoded-pack helpers ----------------------------------------------------
 
 // ctxPack is the decoded json shape of renderContextPack's json output.

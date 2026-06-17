@@ -76,6 +76,8 @@ func (d *ppTriggerDeps) PipelineScanner() PipelineScanner             { return n
 func (d *ppTriggerDeps) ReflectionForcer() ReflectionForcer           { return nil }
 func (d *ppTriggerDeps) SimilarityForcer() SimilarityForcer           { return nil }
 
+func (d *ppTriggerDeps) BlindSpotProvider() BlindSpotProvider { return nil }
+
 // TestInterceptCollect_FiresPostPopulateHookOnLivePath proves the
 // gate: PostPopulate edge enrichment demonstrably runs on the live collect path
 // via wire calls. A stub collector + a stub postpopulate hook registered under

@@ -159,6 +159,8 @@ func (d pullDeps) PipelineScanner() PipelineScanner             { return nil }
 func (d pullDeps) ReflectionForcer() ReflectionForcer           { return nil }
 func (d pullDeps) SimilarityForcer() SimilarityForcer           { return nil }
 
+func (d pullDeps) BlindSpotProvider() BlindSpotProvider { return nil }
+
 // TestInterceptSync_Pull_FetchesCloudAppliesLocal asserts the pull arm: the
 // cloud Exporter (routed GraphCaller) returns canned bytes, and the local
 // Overwriter (LocalGraphCaller) receives those EXACT bytes for the (gt, name),

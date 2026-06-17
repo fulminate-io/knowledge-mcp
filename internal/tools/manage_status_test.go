@@ -58,6 +58,8 @@ func (d *cloudStatusDeps) PipelineScanner() PipelineScanner             { return
 func (d *cloudStatusDeps) ReflectionForcer() ReflectionForcer           { return nil }
 func (d *cloudStatusDeps) SimilarityForcer() SimilarityForcer           { return nil }
 
+func (d *cloudStatusDeps) BlindSpotProvider() BlindSpotProvider { return nil }
+
 func (d *cloudStatusDeps) CloudStatusInfo() (bool, string) { return d.loggedIn, d.host }
 
 // statsCallRecorder is a statsRPC whose Stats records whether it was ever

@@ -49,6 +49,8 @@ func (d *tailRoutingDeps) PipelineScanner() PipelineScanner             { return
 func (d *tailRoutingDeps) ReflectionForcer() ReflectionForcer           { return nil }
 func (d *tailRoutingDeps) SimilarityForcer() SimilarityForcer           { return nil }
 
+func (d *tailRoutingDeps) BlindSpotProvider() BlindSpotProvider { return nil }
+
 // TestPostCollectTail_RoutesThroughGraphCaller proves Phase 2: the post-collect
 // linker + postpopulate tail follow the data through deps.GraphCaller() (the
 // login-routed caller), NOT deps.LocalGraphCaller(). Both accessors return

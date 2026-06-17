@@ -126,21 +126,3 @@ func FetchSessionLabelsByThought(ctx context.Context, gc Caller, thoughtIDs []st
 	}
 	return out
 }
-
-// clusterIsMachineGenre reports whether a cluster is machine-genre: true when a
-// MAJORITY of its members classify as machine-genre. members are thought IDs;
-// nodeByID hydrates the member nodes; sessionByThought maps a thought ID to its
-// enclosing session label (built once via a bulk EdgeKGContains read). An empty
-// member set is not machine-genre.
-func clusterIsMachineGenre(members []string, nodeByID map[string]*knowledgev1.Node, sessionByThought map[string]string) bool {
-	if len(members) == 0 {
-		return false
-	}
-	machine := 0
-	for _, id := range members {
-		if isMachineGenreThought(nodeByID[id], sessionByThought[id]) {
-			machine++
-		}
-	}
-	return machine*2 > len(members)
-}

@@ -63,6 +63,8 @@ func (d *repoTestDeps) PipelineScanner() PipelineScanner             { return ni
 func (d *repoTestDeps) ReflectionForcer() ReflectionForcer           { return nil }
 func (d *repoTestDeps) SimilarityForcer() SimilarityForcer           { return nil }
 
+func (d *repoTestDeps) BlindSpotProvider() BlindSpotProvider { return nil }
+
 // buildResolver returns a RepoResolver pre-loaded with the given graph
 // names. listGraphsCaller backs the resolver; the first ResolveCwd call
 // triggers the canned response.

@@ -166,7 +166,7 @@ func (p *PropagationLoop) runClusterDetection() {
 		slog.Warn("tension computation failed", "error", err)
 		tensions = nil
 	}
-	blindSpots := p.computeBlindSpots(ctx, clusters, adj, nodeIDs)
+	blindSpots := p.computeBlindSpots(ctx, nodeIDs, clusters)
 
 	// 7. Store all results (incl. the dirty seed + watermark) under lock.
 	p.storeDetectionResults(detectionResults{
@@ -181,14 +181,33 @@ func (p *PropagationLoop) runClusterDetection() {
 		"duration", time.Since(start))
 }
 
-// computeBlindSpots builds the per-thought influence vector (one
-// BuildTrustMatrix+ComputeInfluenceVector pass) + the thought→session label map,
-// then runs the ranked, genre-excluded blind-spot computation, returning only the
-// Spots slice the loop stores (p.lastBlindSpots stays []BlindSpotReport).
-func (p *PropagationLoop) computeBlindSpots(ctx context.Context, clusters []ThoughtCluster, adj map[string][]string, nodeIDs []string) []BlindSpotReport {
+// computeBlindSpots builds the faceted epistemic-risk report for the on-demand
+// blind_spots surface to serve from cache. It does the bulk-read shape the
+// per-thought facets need — ONE influence pass + one bulk session-label read + one
+// bulk charges read + one bulk node hydrate over nodeIDs — plus ONE bulk topic-doc
+// browse (TopicGroupingByClusterID) for the topic rollup unit of the cluster-level
+// belief-reversal view. The pooled cluster reversal REUSES the same charges map (no
+// extra per-thought fetch); clusters come from the tick's Leiden partition. No
+// per-thought fan-out, no N+1 — every read is a single bulk call.
+func (p *PropagationLoop) computeBlindSpots(ctx context.Context, nodeIDs []string, clusters []ThoughtCluster) BlindSpotReport {
 	influence := BlindSpotInfluenceVector(ctx, p.gc, nodeIDs)
 	sessionByThought := FetchSessionLabelsByThought(ctx, p.gc, nodeIDs)
-	return ReflectBlindSpots(ctx, p.gc, clusters, adj, influence, sessionByThought).Spots
+	charges := fetchChargesFor(ctx, p.gc, nodeIDs)
+	nodeByID := fetchNodesByIDs(ctx, p.gc, nodeIDs)
+	// Topic rollup for the cluster-level reversal unit: one bulk topic-doc browse,
+	// loop-safe (in-package, Caller-based, no handler deps). Clusters sharing a
+	// topic-summary doc roll into one unit; topicless clusters stay raw.
+	topics := TopicGroupingByClusterID(ctx, p.gc)
+	return classifyBlindSpots(blindSpotInputs{
+		thoughtIDs:       nodeIDs,
+		charges:          charges,
+		influence:        influence,
+		nodeByID:         nodeByID,
+		sessionByThought: sessionByThought,
+		clusters:         clusters,
+		topics:           topics,
+		now:              p.clockNow(),
+	})
 }
 
 // runLeafAttachment drains the member-vector index at detection time (GATED on a
@@ -264,7 +283,7 @@ type detectionResults struct {
 	clusters   []ThoughtCluster
 	profile    *PersonalityProfile
 	tensions   []TensionReport
-	blindSpots []BlindSpotReport
+	blindSpots BlindSpotReport
 	watermark  int64
 	dirtySeed  map[string]bool
 	isFull     bool

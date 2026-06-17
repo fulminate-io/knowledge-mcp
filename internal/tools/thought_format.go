@@ -214,59 +214,37 @@ func tensionProvenanceLabel(t clientthought.TensionReport) string {
 	return edgeType + "[" + t.Method + "]"
 }
 
-// handleReflectBlindSpots surfaces clusters with little evidence.
-func handleReflectBlindSpots(ctx context.Context, deps ClientDeps, a queryReflectArgs) kgtools.ToolResult {
-	gc := deps.GraphCaller()
-	if gc == nil {
-		return errorResult("blind_spots: graph client unavailable")
+// blindSpotColdMessage is the not-yet-computed report query(mode:blind_spots)
+// returns when the reflection loop has not completed a tick (report.Computed=false,
+// including right after a daemon restart). The faceted report is produced by the
+// background propagation loop and served from cache O(1) — the on-demand call
+// NEVER recomputes synchronously, so a cold cache returns this rather than blocking
+// on a full pass.
+const blindSpotColdMessage = "Reflection has not completed a pass yet — the blind-spots report is not yet " +
+	"computed. The faceted epistemic-risk diagnostic appears after the next propagation tick " +
+	"(hourly; the daemon must be logged in). This is the cold state, not an empty result."
+
+// handleReflectBlindSpots serves the loop's cached faceted epistemic-risk report
+// in O(1): it reads the BlindSpotProvider seam (the live PropagationLoop's
+// GetBlindSpots) and renders it. It issues NO graph reads on this path — no
+// adjacency fetch, no influence pass, no charge/node hydrate — because the
+// background tick already computed the report. A nil provider (reflection loop not
+// running) or a not-yet-computed report (Computed=false) returns a clear message,
+// never a synchronous recompute.
+func handleReflectBlindSpots(_ context.Context, deps ClientDeps, a queryReflectArgs) kgtools.ToolResult {
+	provider := deps.BlindSpotProvider()
+	if provider == nil {
+		return textResult("blind_spots: the reflection loop is not running in this process — " +
+			"no cached report to serve. Start the daemon with the propagation runtime enabled.")
 	}
-	clusters, _, _ := fetchClusterContext(ctx, deps)
-	// ReflectBlindSpots needs the thought adjacency for bridge detection;
-	// reuse the same fetch path the loop uses.
-	nodeIDs, adj, err := clientthought.FetchThoughtAdjacency(ctx, gc)
-	if err != nil {
-		return errorResult("blind_spots: adjacency fetch failed: " + err.Error())
+	report := provider.GetBlindSpots()
+	if !report.Computed {
+		return textResult(blindSpotColdMessage)
 	}
-	// Build the per-thought influence vector (ONE BuildTrustMatrix+ComputeInfluenceVector
-	// pass) + the thought→session label map ONCE, both feeding the ranked,
-	// genre-excluded blind-spot computation.
-	influence := clientthought.BlindSpotInfluenceVector(ctx, gc, nodeIDs)
-	sessionByThought := clientthought.FetchSessionLabelsByThought(ctx, gc, nodeIDs)
-	result := clientthought.ReflectBlindSpots(ctx, gc, clusters, adj, influence, sessionByThought)
 	if a.Format == "json" {
-		return jsonResult(result)
+		return jsonResult(report)
 	}
-	if len(result.Spots) == 0 {
-		return textResult("No blind spots found. All clusters have adequate evidence.")
-	}
-	var sb strings.Builder
-	// Totals header: under-evidenced human-genre clusters (before cap), total
-	// clusters considered, shown count, and machine-genre clusters excluded from the
-	// denominator entirely.
-	fmt.Fprintf(&sb, "# Blind Spots — %d under-evidenced of %d clusters, showing top %d (%d machine-genre clusters excluded)\n\n",
-		result.TotalUnderEvidenced, result.TotalClusters, len(result.Spots), result.ExcludedMachineGenre)
-	for _, sp := range result.Spots {
-		fmt.Fprintf(&sb, "- **%s** (%d thoughts, %d charges, avg mag: %.2f, influence: %.4f, impact: %.4f)\n",
-			sp.Cluster.Label, sp.Cluster.Size, sp.ChargeCount, sp.AvgMagnitude, sp.Influence, sp.Impact)
-		if len(sp.BridgeThoughts) > 0 {
-			uncharged := 0
-			for _, bt := range sp.BridgeThoughts {
-				if !bt.HasCharges {
-					uncharged++
-				}
-			}
-			fmt.Fprintf(&sb, "  Bridge thoughts: %d (%d without evidence)\n", len(sp.BridgeThoughts), uncharged)
-			for _, bt := range sp.BridgeThoughts {
-				icon := "~"
-				if !bt.HasCharges {
-					icon = "!"
-				}
-				fmt.Fprintf(&sb, "    [%s] %s (internal: %.0f%%, %s)\n",
-					icon, bt.Name, bt.InternalFraction*100, bt.ThoughtID)
-			}
-		}
-	}
-	return textResult(sb.String())
+	return textResult(renderBlindSpots(report))
 }
 
 // handleReflectSummary renders the overall thought-graph summary.

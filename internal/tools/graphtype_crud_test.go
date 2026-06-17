@@ -114,6 +114,8 @@ func (d graphTypeTestDeps) PipelineScanner() PipelineScanner             { retur
 func (d graphTypeTestDeps) ReflectionForcer() ReflectionForcer           { return nil }
 func (d graphTypeTestDeps) SimilarityForcer() SimilarityForcer           { return nil }
 
+func (d graphTypeTestDeps) BlindSpotProvider() BlindSpotProvider { return nil }
+
 func callGraphType(t *testing.T, deps ClientDeps, argsJSON string) (handled bool, body string, isErr bool) {
 	t.Helper()
 	params := kgtools.CallToolParams{Name: "custom_collector", Arguments: json.RawMessage(argsJSON)}

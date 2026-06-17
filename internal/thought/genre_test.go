@@ -48,19 +48,3 @@ func TestIsMachineGenre(t *testing.T) {
 	// A nil node is not machine-genre (defensive).
 	assert.False(t, isMachineGenreThought(nil, ""), "nil node is not machine-genre")
 }
-
-// TestClusterIsMachineGenre (FAILS-WHEN-ABSENT) asserts cluster-level classification
-// requires a MAJORITY of machine-genre members.
-func TestClusterIsMachineGenre(t *testing.T) {
-	nodeByID := map[string]*knowledgev1.Node{
-		"m1": mkGenreNode(map[string]string{"source": "dream:analyze"}),
-		"m2": mkGenreNode(map[string]string{"origin": "worker:scan"}),
-		"h1": mkGenreNode(map[string]string{"origin": "main"}),
-	}
-	// 2 of 3 machine → majority → machine-genre cluster.
-	assert.True(t, clusterIsMachineGenre([]string{"m1", "m2", "h1"}, nodeByID, nil))
-	// 1 of 3 machine → minority → human-genre cluster.
-	assert.False(t, clusterIsMachineGenre([]string{"m1", "h1", "h1"}, nodeByID, nil))
-	// Empty cluster → not machine.
-	assert.False(t, clusterIsMachineGenre(nil, nodeByID, nil))
-}

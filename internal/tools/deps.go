@@ -112,6 +112,20 @@ type ReflectionForcer interface {
 	ForceFullPass(ctx context.Context) (clientthought.PropagationResult, error)
 }
 
+// BlindSpotProvider is the narrow READ seam the on-demand query(mode:blind_spots)
+// handler serves the loop's cached faceted report through. *clientthought.
+// PropagationLoop satisfies it (GetBlindSpots). Declared as an interface — not the
+// concrete loop type — so the tools layer reads the cache without importing the
+// loop's full surface, and so tests inject a fake returning a constructed report.
+// GetBlindSpots is O(1) (a p.mu-guarded field read): the handler serves the report
+// the background tick already computed and NEVER recomputes on the call path. A
+// zero-value report (Computed=false) is the cold sentinel before the first tick —
+// the handler renders a not-yet-computed message rather than a synchronous
+// recompute.
+type BlindSpotProvider interface {
+	GetBlindSpots() clientthought.BlindSpotReport
+}
+
 // SimilarityForcer is the narrow seam the manual propagate tool uses to drive the
 // now-ASYNC topic-similarity lever (thoughts(propagate, similarity:true)).
 // *clientthought.PropagationLoop satisfies it. Declared as an interface (mirroring
@@ -317,6 +331,13 @@ type ClientDeps interface {
 	// reflection loop is not running in this process (same condition as
 	// ReflectionForcer) — handlePropagateClient surfaces a loud error on nil.
 	SimilarityForcer() SimilarityForcer
+	// BlindSpotProvider returns the read seam query(mode:blind_spots) serves the
+	// loop's cached faceted report through (GetBlindSpots, O(1)). Returns the live
+	// *clientthought.PropagationLoop, or nil when the reflection loop is not running
+	// in this process (--no-propagation-runtime, or a router-less test fixture) —
+	// handleReflectBlindSpots renders a "reflection loop not running" message on nil
+	// rather than recomputing.
+	BlindSpotProvider() BlindSpotProvider
 	// WorkerReady / PropReady / PipelineReady report whether the corresponding
 	// background-wiring stage has completed (Bind-first startup: the daemon binds the HTTP
 	// MCP listener first, then wires the worker / propagation / pipeline runtimes

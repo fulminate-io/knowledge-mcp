@@ -50,6 +50,8 @@ func (d *fakeAssembleDeps) PipelineScanner() PipelineScanner             { retur
 func (d *fakeAssembleDeps) ReflectionForcer() ReflectionForcer           { return nil }
 func (d *fakeAssembleDeps) SimilarityForcer() SimilarityForcer           { return nil }
 
+func (d *fakeAssembleDeps) BlindSpotProvider() BlindSpotProvider { return nil }
+
 // scriptGcAssemble is a tiny GraphCaller that answers query(id:)
 // calls with canned node JSON keyed by ID. Sufficient for the
 // fallback (rule/document) path that the integration test

@@ -57,6 +57,8 @@ func (thoughtTestDeps) PipelineScanner() PipelineScanner             { return ni
 func (thoughtTestDeps) ReflectionForcer() ReflectionForcer           { return nil }
 func (thoughtTestDeps) SimilarityForcer() SimilarityForcer           { return nil }
 
+func (thoughtTestDeps) BlindSpotProvider() BlindSpotProvider { return nil }
+
 // TestInterceptThoughts_NameFiltering pins that non-thoughts /
 // non-query tool calls fall through unchanged so the intercept chain's
 // other handlers see them.
@@ -137,16 +139,20 @@ func TestInterceptThoughts_QueryFallthroughUnknownMode(t *testing.T) {
 // returns (true, _) — modes that need a GraphClient surface an
 // IsError result; the pure ReflectPersonality path returns a valid
 // (empty) text body because clusters/profile are nil.
+//
+// blind_spots is NOT in this group: it is served O(1) from the reflection-loop
+// cache via BlindSpotProvider (not a gc read), so a nil provider returns a clear
+// non-error "loop not running" message rather than an IsError. It is asserted
+// separately below.
 func TestInterceptThoughts_QueryReflectiveModesHandled(t *testing.T) {
 	t.Parallel()
 	deps := thoughtTestDeps{}
 	requiresGC := map[string]bool{
-		"influence":   true,
-		"tensions":    true,
-		"blind_spots": true,
-		"summary":     true,
-		"evolution":   true,
-		"clusters":    true,
+		"influence": true,
+		"tensions":  true,
+		"summary":   true,
+		"evolution": true,
+		"clusters":  true,
 		// personality is pure — no GC required.
 		"personality": false,
 	}
@@ -161,6 +167,21 @@ func TestInterceptThoughts_QueryReflectiveModesHandled(t *testing.T) {
 			assert.False(t, res.IsError, "pure mode %q must succeed with empty graph", mode)
 		}
 	}
+}
+
+// TestInterceptThoughts_BlindSpotsCacheServed pins the cache-serve contract for
+// blind_spots: it is handled client-side and, with no reflection loop wired (nil
+// BlindSpotProvider), returns a NON-error "loop not running" message — never an
+// IsError and never a synchronous recompute.
+func TestInterceptThoughts_BlindSpotsCacheServed(t *testing.T) {
+	t.Parallel()
+	deps := thoughtTestDeps{} // BlindSpotProvider() returns nil.
+	params := kgtools.CallToolParams{Name: "query", Arguments: json.RawMessage(`{"mode":"blind_spots"}`)}
+	handled, res := InterceptThoughts(deps, params)
+	assert.True(t, handled, "blind_spots is handled client-side")
+	assert.False(t, res.IsError, "nil provider returns a non-error cold/loop-not-running message, not an error")
+	assert.Contains(t, res.Content[0].Text, "reflection loop is not running",
+		"the message names the not-running reflection loop")
 }
 
 // TestInterceptThoughts_MalformedArgsFallthrough pins that JSON parse

@@ -61,6 +61,8 @@ func (d *fakeDeps) PipelineScanner() PipelineScanner             { return nil }
 func (d *fakeDeps) ReflectionForcer() ReflectionForcer           { return nil }
 func (d *fakeDeps) SimilarityForcer() SimilarityForcer           { return nil }
 
+func (d *fakeDeps) BlindSpotProvider() BlindSpotProvider { return nil }
+
 // stubLogsProvider returns a fixed entry batch plus zero sources. Each
 // test registers it under a unique name to avoid colliding with other
 // tests' provider registrations (logwire.Register panics on duplicates).

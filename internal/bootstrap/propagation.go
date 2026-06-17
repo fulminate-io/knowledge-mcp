@@ -201,3 +201,17 @@ func (c *client) SimilarityForcer() tools.SimilarityForcer {
 	}
 	return c.propLoop
 }
+
+// BlindSpotProvider returns the live PropagationLoop as the read seam
+// query(mode:blind_spots) serves its cached faceted report through (via
+// GetBlindSpots, O(1)). Returns a nil interface (not a typed-nil pointer) when the
+// loop was not wired so handleReflectBlindSpots's nil-check fires and renders the
+// "reflection loop not running" message rather than wrapping a nil pointer in a
+// non-nil interface. *PropagationLoop satisfies it via the GetBlindSpots method.
+// Satisfies tools.ClientDeps. Mirrors ReflectionForcer.
+func (c *client) BlindSpotProvider() tools.BlindSpotProvider {
+	if c.propLoop == nil {
+		return nil
+	}
+	return c.propLoop
+}

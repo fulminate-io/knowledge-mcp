@@ -89,7 +89,7 @@ type PropagationLoop struct {
 	leidenState    *graph.LeidenState
 	lastAdj        map[string][]string
 	lastTensions   []TensionReport
-	lastBlindSpots []BlindSpotReport
+	lastBlindSpots BlindSpotReport
 
 	// lastDirtySeed is the dirty seed derived by the most recent
 	// runClusterDetection tick (UpdatedAt>watermark thoughts UNION edge-change
@@ -169,12 +169,16 @@ func (p *PropagationLoop) GetClusters() ([]ThoughtCluster, *PersonalityProfile) 
 	return p.lastClusters, p.lastProfile
 }
 
-// GetTensionsAndBlindSpots returns the most recently computed tension
-// and blind spot reports.
-func (p *PropagationLoop) GetTensionsAndBlindSpots() ([]TensionReport, []BlindSpotReport) {
+// GetBlindSpots returns the most recently computed faceted blind-spot report.
+// A zero-value report (Computed=false) is the cold sentinel returned before the
+// propagation loop has completed a tick (including right after a daemon restart);
+// the on-demand handler reads Computed to render the not-yet-computed message.
+// This is the seam the blind_spots handler serves the cache through — p.mu-guarded,
+// mirroring GetClusters.
+func (p *PropagationLoop) GetBlindSpots() BlindSpotReport {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.lastTensions, p.lastBlindSpots
+	return p.lastBlindSpots
 }
 
 // TriggerClusterDetection runs cluster detection synchronously and

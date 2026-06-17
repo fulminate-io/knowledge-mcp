@@ -202,6 +202,8 @@ func (d *interceptDeps) PipelineScanner() PipelineScanner             { return n
 func (d *interceptDeps) ReflectionForcer() ReflectionForcer           { return nil }
 func (d *interceptDeps) SimilarityForcer() SimilarityForcer           { return nil }
 
+func (d *interceptDeps) BlindSpotProvider() BlindSpotProvider { return nil }
+
 func newInterceptHarness(t *testing.T, execHits *atomic.Int64, resp *knowledgev1.ExecuteResponse) *graphclient.GraphClient {
 	t.Helper()
 	gc, _ := newInterceptHarnessWithHandler(t, execHits, resp)

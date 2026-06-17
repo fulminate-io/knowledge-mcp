@@ -49,6 +49,8 @@ func (d *logE2EDeps) PipelineScanner() PipelineScanner             { return nil 
 func (d *logE2EDeps) ReflectionForcer() ReflectionForcer           { return nil }
 func (d *logE2EDeps) SimilarityForcer() SimilarityForcer           { return nil }
 
+func (d *logE2EDeps) BlindSpotProvider() BlindSpotProvider { return nil }
+
 // e2eSetupLogGraph seeds a small store-FREE log graph (templates + chunk +
 // stream + a correlation edge) onto a fakeLogGraphCaller. Returns the queryID
 // and a Deps that routes through the fake — the intercept chain reads the same

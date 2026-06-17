@@ -260,7 +260,7 @@ Design: query is a generic primitive. It dispatches on params: 'id' → direct l
   query({ "mode": "personality" })   — reasoning personality profile
   query({ "mode": "influence" })     — most influential thoughts
   query({ "mode": "tensions" })      — conflicting thoughts
-  query({ "mode": "blind_spots" })   — weakly-supported areas
+  query({ "mode": "blind_spots" })   — per-thought epistemic-risk facets (confident-but-untested, foundational-but-unexamined, fragile single-point, stale confidence, belief reversal); served O(1) from the reflection-loop cache
   query({ "mode": "summary" })       — concise thought summary
 
 ### Pre-embedded query vector (client-side LLM pipeline)

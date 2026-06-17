@@ -456,3 +456,5 @@ func (rebuildClientDeps) SegmentCoverage() SegmentCoverageReader       { return 
 func (d rebuildClientDeps) PipelineScanner() PipelineScanner           { return d.scanner }
 func (d rebuildClientDeps) ReflectionForcer() ReflectionForcer         { return nil }
 func (d rebuildClientDeps) SimilarityForcer() SimilarityForcer         { return nil }
+
+func (d rebuildClientDeps) BlindSpotProvider() BlindSpotProvider { return nil }

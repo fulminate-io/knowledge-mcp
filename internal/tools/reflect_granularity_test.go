@@ -72,6 +72,8 @@ func (d reflectTestDeps) PipelineScanner() PipelineScanner             { return 
 func (d reflectTestDeps) ReflectionForcer() ReflectionForcer           { return nil }
 func (d reflectTestDeps) SimilarityForcer() SimilarityForcer           { return nil }
 
+func (d reflectTestDeps) BlindSpotProvider() BlindSpotProvider { return nil }
+
 func reflectThought(id, clusterID string) *knowledgev1.Node {
 	n := &knowledgev1.Node{Id: id, Type: string(kgtypes.NodeThought), SymbolName: "member-" + id}
 	kgtypes.SetValue(n, "cluster_id", clusterID)

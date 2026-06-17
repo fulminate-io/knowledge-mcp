@@ -81,6 +81,8 @@ func (d listDeps) PipelineScanner() PipelineScanner             { return nil }
 func (d listDeps) ReflectionForcer() ReflectionForcer           { return nil }
 func (d listDeps) SimilarityForcer() SimilarityForcer           { return nil }
 
+func (d listDeps) BlindSpotProvider() BlindSpotProvider { return nil }
+
 // TestSyncList_SyncableCustomTypes is the Group C list guard: the syncable:true
 // custom type's instances appear in the rendered table; the syncable:false custom
 // type does NOT (it is never enumerated); builtin sync-eligible types still appear.
