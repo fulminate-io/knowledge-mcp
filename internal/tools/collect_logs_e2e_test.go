@@ -62,6 +62,8 @@ func (d *fakeDeps) ReflectionForcer() ReflectionForcer           { return nil }
 func (d *fakeDeps) SimilarityForcer() SimilarityForcer           { return nil }
 
 func (d *fakeDeps) BlindSpotProvider() BlindSpotProvider { return nil }
+func (d *fakeDeps) ClusterProvider() ClusterProvider     { return nil }
+func (d *fakeDeps) TensionsProvider() TensionsProvider   { return nil }
 
 // stubLogsProvider returns a fixed entry batch plus zero sources. Each
 // test registers it under a unique name to avoid colliding with other

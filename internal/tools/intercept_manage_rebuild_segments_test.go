@@ -458,3 +458,5 @@ func (d rebuildClientDeps) ReflectionForcer() ReflectionForcer         { return 
 func (d rebuildClientDeps) SimilarityForcer() SimilarityForcer         { return nil }
 
 func (d rebuildClientDeps) BlindSpotProvider() BlindSpotProvider { return nil }
+func (d rebuildClientDeps) ClusterProvider() ClusterProvider     { return nil }
+func (d rebuildClientDeps) TensionsProvider() TensionsProvider   { return nil }

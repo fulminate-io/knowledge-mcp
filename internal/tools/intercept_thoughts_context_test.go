@@ -128,6 +128,8 @@ func (d ctxPackDeps) ReflectionForcer() ReflectionForcer           { return nil 
 func (d ctxPackDeps) SimilarityForcer() SimilarityForcer           { return nil }
 
 func (d ctxPackDeps) BlindSpotProvider() BlindSpotProvider { return nil }
+func (d ctxPackDeps) ClusterProvider() ClusterProvider     { return nil }
+func (d ctxPackDeps) TensionsProvider() TensionsProvider   { return nil }
 
 // --- decoded-pack helpers ----------------------------------------------------
 

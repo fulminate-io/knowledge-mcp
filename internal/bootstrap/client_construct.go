@@ -66,17 +66,30 @@ func constructClient(f Config) *client {
 	if storeErr != nil {
 		authStore = noopAuthStore{}
 	}
-	tokenSource := auth.NewOAuthTokenSource(
-		authStore,
-		cli.CloudEndpoint,
-		cli.AllowedAuthHosts(),
-	)
-	// Routing is keychain-only: the bare keychain token source mints fresh
-	// access tokens on demand from the `knowledge login` refresh token. There is
-	// no per-session editor bearer — the Router routes purely on
-	// authState.IsLoggedIn.
+	// TokenSource selection — the coexistence rule for the two auth paths:
+	//   - machine token present (--auth-token / KNOWLEDGE_AUTH_TOKEN) → a
+	//     zero-IO StaticTokenSource bearing the caller-supplied opaque token.
+	//     No browser login, no keychain refresh. Permissions are left nil: the
+	//     token is opaque to the client and the backend enforces its scopes.
+	//   - no machine token → the interactive keychain OAuth source, which mints
+	//     fresh access tokens on demand from the `knowledge login` refresh token.
+	machineAuth := f.AuthToken != ""
+	var tokenSource auth.TokenSource
+	if machineAuth {
+		tokenSource = auth.StaticTokenSource{AccessToken: f.AuthToken}
+	} else {
+		tokenSource = auth.NewOAuthTokenSource(
+			authStore,
+			cli.CloudEndpoint,
+			cli.AllowedAuthHosts(),
+		)
+	}
 	authState := auth.NewAuthState(authStore, 0)
-	router := graphclient.NewRouter(tcp, cli.CloudEndpoint, tokenSource, authState)
+	// machineAuth forces cloud selection without keychain involvement: a
+	// machine-token client routes every op to cloud and runs with no local
+	// server. The endpoint is always the canonical pinned cloud endpoint — never
+	// overridden; in-cluster routing is handled by infrastructure, out of scope.
+	router := graphclient.NewRouterWithMachineAuth(tcp, cli.CloudEndpoint, tokenSource, authState, machineAuth)
 
 	c := &client{
 		rootDir:   f.RootDir,

@@ -50,8 +50,10 @@ func (f *tensionFake) Execute(_ context.Context, req *knowledgev1.ExecuteRequest
 		// EdgeKGContains (the session-sibling expansion is gone), so there is no
 		// session read to answer here — that absence is the predicate fix.
 		wantCharged := false
+		requested := map[string]bool{}
 		if sel := q.GetSelection(); sel != nil {
 			for _, et := range sel.GetEdgeTypes() {
+				requested[et] = true
 				if et == string(kgtypes.EdgeChargedBy) {
 					wantCharged = true
 				}
@@ -60,7 +62,24 @@ func (f *tensionFake) Execute(_ context.Context, req *knowledgev1.ExecuteRequest
 		if wantCharged {
 			return &knowledgev1.ExecuteResponse{Edges: f.chargeEdges}, nil
 		}
-		return &knowledgev1.ExecuteResponse{Edges: f.tensionEdges}, nil
+		// Honor the requested edge-type set exactly as the real
+		// fetchEdgesForNodeSet does: it writes the tensionEdgeTypes strings into
+		// Selection.EdgeTypes (wire.go), so the fake must return ONLY edges whose
+		// Type is in that set. This is what makes the next-only test
+		// fix-sensitive — after EdgeNext/EdgeBranchesFrom were dropped from
+		// tensionEdgeTypes, a "next" edge is no longer requested and the fake
+		// omits it. An empty requested set (no Selection) is a passthrough,
+		// preserving the cases that read with no edge-type filter.
+		if len(requested) == 0 {
+			return &knowledgev1.ExecuteResponse{Edges: f.tensionEdges}, nil
+		}
+		filtered := make([]*knowledgev1.Edge, 0, len(f.tensionEdges))
+		for _, e := range f.tensionEdges {
+			if requested[e.GetType()] {
+				filtered = append(filtered, e)
+			}
+		}
+		return &knowledgev1.ExecuteResponse{Edges: filtered}, nil
 	}
 
 	if q.GetById() != "" {
@@ -159,4 +178,39 @@ func TestReflectTensions_MachineEdge_NoPair(t *testing.T) {
 	require.NoError(t, err)
 	assert.Empty(t, tensions,
 		"a machine topic-densify relates-to edge must NOT pair thoughts (machine links are clustering signal, not tension)")
+}
+
+// TestReflectTensions_NextEdge_NoPair (FAILS-WHEN-ABSENT) proves the temporal-edge
+// exclusion: two opposite-valence thoughts joined ONLY by a `next` edge yield ZERO
+// tensions. EdgeNext is auto-wired between consecutive same-session thoughts by
+// creation order with zero semantic evaluation, so a same-session plan→blocker arc
+// is a temporal sequence, not a propositional disagreement. Goes red if EdgeNext is
+// re-added to tensionEdgeTypes: fetchTensionEdges would then request "next", the
+// fake would return the edge, and the qualifying pair would surface.
+func TestReflectTensions_NextEdge_NoPair(t *testing.T) {
+	f := newTensionFake([]*knowledgev1.Edge{
+		{Type: string(kgtypes.EdgeNext), FromId: "A", ToId: "B"},
+	})
+	tensions, err := ReflectTensions(context.Background(), f)
+	require.NoError(t, err)
+	assert.Empty(t, tensions,
+		"a next-only opposing-valence pair is a same-session temporal arc, not a tension — the temporal edge types are excluded from tensionEdgeTypes")
+}
+
+// TestReflectTensions_RelatesToEdge_PairsOnce (FAILS-WHEN-ABSENT) is the positive
+// control matching the next-removal change: a human-authored `relates-to` edge
+// (empty Method, so it survives isMachineTensionMethod) between the same two
+// opposite-valence thoughts DOES pair them — exactly one TensionReport with
+// ValenceDelta ~2.0. Proves a genuine semantic edge still surfaces while the
+// temporal type does not.
+func TestReflectTensions_RelatesToEdge_PairsOnce(t *testing.T) {
+	f := newTensionFake([]*knowledgev1.Edge{
+		{Type: string(kgtypes.EdgeRelatesTo), FromId: "A", ToId: "B"},
+	})
+	tensions, err := ReflectTensions(context.Background(), f)
+	require.NoError(t, err)
+	require.Len(t, tensions, 1,
+		"a human relates-to edge between opposite-valence thoughts must yield exactly one tension")
+	assert.InDelta(t, 2.0, tensions[0].ValenceDelta, 1e-9,
+		"the tension's valence delta is the full +1/-1 swing")
 }

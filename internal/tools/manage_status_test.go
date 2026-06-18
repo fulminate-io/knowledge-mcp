@@ -59,6 +59,8 @@ func (d *cloudStatusDeps) ReflectionForcer() ReflectionForcer           { return
 func (d *cloudStatusDeps) SimilarityForcer() SimilarityForcer           { return nil }
 
 func (d *cloudStatusDeps) BlindSpotProvider() BlindSpotProvider { return nil }
+func (d *cloudStatusDeps) ClusterProvider() ClusterProvider     { return nil }
+func (d *cloudStatusDeps) TensionsProvider() TensionsProvider   { return nil }
 
 func (d *cloudStatusDeps) CloudStatusInfo() (bool, string) { return d.loggedIn, d.host }
 

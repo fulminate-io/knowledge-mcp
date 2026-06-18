@@ -175,6 +175,22 @@ func buildE2EClient(local *graphclient.GraphClient, cloudURL string, store auth.
 	}
 }
 
+// buildE2EClientMachineAuth mirrors buildE2EClient but wires the Router via
+// NewRouterWithMachineAuth(..., machineAuth=true) — the exact constructor shape
+// constructClient uses for a machine-token client. The cloudURL is an injectable
+// test stub here ONLY because production pins it to the canonical endpoint;
+// the wiring (StaticTokenSource bearer + machineAuth selection) is identical.
+func buildE2EClientMachineAuth(local *graphclient.GraphClient, cloudURL string, store auth.Store) *client {
+	authState := auth.NewAuthState(store, time.Hour)
+	router := graphclient.NewRouterWithMachineAuth(
+		local, cloudURL, auth.StaticTokenSource{AccessToken: "machine-tok"}, authState, true)
+	return &client{
+		local:     local,
+		router:    router,
+		authState: authState,
+	}
+}
+
 // TestRouterE2E_FourStates_PlusSwapAndSyncAndUnreachable exercises the
 // dispatcher path END-TO-END through c.engineDispatch (the same
 // closure production threads MCP tool calls through). The 7 subtests:
@@ -321,5 +337,77 @@ func TestRouterE2E_FourStates_PlusSwapAndSyncAndUnreachable(t *testing.T) {
 		assert.NotContains(t, body, "engine:", "no leaked engine: prefix")
 		assert.NotContains(t, body, "dial tcp", "no leaked dial tcp leak")
 		assert.NotContains(t, body, "connection refused", "no leaked connect: connection refused leak")
+	})
+}
+
+// TestConstructClient_Coexistence proves the two auth paths coexist end-to-end:
+// the headless machine-token path selects cloud with NO keychain, and the
+// interactive (keychain login) path is unchanged by the feature. The cloud
+// endpoint is the canonical pinned cli.CloudEndpoint in every case — there is
+// no override to vary; the cloud-reaching subtest injects a stub cloudURL only
+// through the test seam, with the production wiring shape preserved.
+func TestConstructClient_Coexistence(t *testing.T) {
+	ctx := context.Background()
+
+	// withConstructClientSeams overrides the keychain store + keepalive package
+	// vars so constructClient never touches the real keychain or dials loopback,
+	// then builds a *client via the production constructor. Mirrors
+	// client_keepalive_gate_test.go.
+	withConstructClientSeams := func(t *testing.T, cfg Config, store auth.Store) *client {
+		t.Helper()
+		cfg.LocalDialer = func(int) *graphclient.GraphClient {
+			return graphclient.NewGraphClientForURL("http://local.invalid")
+		}
+		origStore := newAuthStoreFn
+		newAuthStoreFn = func() (auth.Store, error) { return store, nil }
+		t.Cleanup(func() { newAuthStoreFn = origStore })
+		origKeepalive := startKeepaliveFn
+		startKeepaliveFn = func(_ *graphclient.GraphClient, _ context.Context) {}
+		t.Cleanup(func() { startKeepaliveFn = origKeepalive })
+		c := constructClient(cfg)
+		require.NotNil(t, c)
+		return c
+	}
+
+	t.Run("MachineToken_SelectsCloud_NoKeychain", func(t *testing.T) {
+		// Through the real constructor: a machine-token Config over an empty
+		// keychain reports LoggedIn==true (cloud selected without any login).
+		c := withConstructClientSeams(t, Config{AuthToken: "machine-tok"}, newFakeAuthStore())
+		assert.True(t, c.router.LoggedIn(ctx),
+			"machine-token config must select cloud (LoggedIn==true) over an empty keychain")
+	})
+
+	t.Run("MachineToken_ExecuteReachesCloudStub", func(t *testing.T) {
+		// The wiring constructClient produces (StaticTokenSource bearer +
+		// machineAuth) routed against a cloud stub: Execute lands on cloud, the
+		// local engine stays at 0, with an empty keychain.
+		localURL, localEng := startCountingEngine(t)
+		cloudURL, cloudEng := startCountingEngine(t)
+		localGC := graphclient.NewGraphClientForURL(localURL)
+		c := buildE2EClientMachineAuth(localGC, cloudURL, newFakeAuthStore()) // empty keychain
+
+		searchArgs := json.RawMessage(`{"query":"x","graph":"knowledge"}`)
+		_, err := c.engineDispatch(ctx, "search", searchArgs)
+		require.NoError(t, err)
+		assert.Equal(t, int32(0), localEng.execute.Load(), "machine-auth must not route to local")
+		assert.Equal(t, int32(1), cloudEng.execute.Load(), "machine-auth Execute reaches the cloud stub with no keychain")
+	})
+
+	t.Run("NoToken_SeededKeychain_SelectsCloud", func(t *testing.T) {
+		// Interactive path unchanged: no machine token, keychain seeded with a
+		// refresh token → LoggedIn==true (WorkOS selection retained).
+		store := newFakeAuthStore()
+		require.NoError(t, store.Set(ctx, auth.KeyRefreshToken, "frt-stub"))
+		c := withConstructClientSeams(t, Config{}, store)
+		assert.True(t, c.router.LoggedIn(ctx),
+			"no-token config with a seeded keychain must follow the unchanged login selection (LoggedIn==true)")
+	})
+
+	t.Run("NoToken_EmptyKeychain_SelectsLocal", func(t *testing.T) {
+		// Interactive path unchanged: no machine token, empty keychain →
+		// LoggedIn==false (routes local).
+		c := withConstructClientSeams(t, Config{}, newFakeAuthStore())
+		assert.False(t, c.router.LoggedIn(ctx),
+			"no-token config with an empty keychain selects local (LoggedIn==false)")
 	})
 }

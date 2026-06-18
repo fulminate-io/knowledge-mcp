@@ -61,6 +61,8 @@ If the description is vague, ask:
 
 Optionally use `thoughts(operation:"think")` to record reasoning before committing — creates a chargeable trail linkable to the decision later.
 
+**Recording a decision IS evidence arriving — charge the thoughts that drove it.** The hypotheses the session weighed on the way to this decision should not stay uncharged: charge each driving thought (polarity positive for the option chosen, negative for one the decision rejects), and cite the new decision node as `evidence`. A decision node itself is not chargeable (charges are thought-only); the chargeable trail is the thoughts behind it. Skipping this is the most common way load-bearing rationale ends up at zero charges.
+
 ## Step 2: Search for Context
 
 ```json
@@ -86,7 +88,7 @@ record_decision({
 
   <field-quality name="name">
     Write as if someone searches "why did we choose X" or "how does Y work".
-    Good: "Use Badger v4 for graph storage instead of SQLite"
+    Good: "Serve reflect modes from the loop cache instead of recomputing per call"
     Bad: "Database decision"
   </field-quality>
 

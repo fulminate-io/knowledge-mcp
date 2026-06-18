@@ -115,6 +115,18 @@ type interceptTestDeps struct {
 	// to return a nil interface so a test can exercise the loop-not-running path.
 	blindSpots           clientthought.BlindSpotReport
 	blindSpotProviderNil bool
+	// clusters/clusterProfile/clusterComputed back the fake ClusterProvider; tensions/
+	// tensionsComputed back the fake TensionsProvider. clusterProviderNil/
+	// tensionsProviderNil flip the respective accessor to return a nil interface so a
+	// test can exercise the loop-not-running path. Zero values (computed=false) are the
+	// cold sentinel for the cold-start tests.
+	clusters            []clientthought.ThoughtCluster
+	clusterProfile      *clientthought.PersonalityProfile
+	tensions            []clientthought.TensionReport
+	clusterComputed     bool
+	tensionsComputed    bool
+	clusterProviderNil  bool
+	tensionsProviderNil bool
 	// propNotReady flips PropReady() to false so a test can exercise the
 	// bind-first wiring-window gate (bind-first startup) on the propagate handler. Zero value
 	// keeps the reflection loop ready, so every pre-existing test exercises the
@@ -129,6 +141,29 @@ type fakeBlindSpotProvider struct {
 }
 
 func (f fakeBlindSpotProvider) GetBlindSpots() clientthought.BlindSpotReport { return f.report }
+
+// fakeClusterProvider serves constructed clusters + a personality profile for the
+// cache-serve personality/summary handler tests — a pure value return, no graph reads.
+type fakeClusterProvider struct {
+	clusters []clientthought.ThoughtCluster
+	profile  *clientthought.PersonalityProfile
+	computed bool
+}
+
+func (f fakeClusterProvider) GetClustersCached() ([]clientthought.ThoughtCluster, *clientthought.PersonalityProfile, bool) {
+	return f.clusters, f.profile, f.computed
+}
+
+// fakeTensionsProvider serves constructed tension reports for the cache-serve
+// tensions handler tests — a pure value return, no graph reads.
+type fakeTensionsProvider struct {
+	tensions []clientthought.TensionReport
+	computed bool
+}
+
+func (f fakeTensionsProvider) GetTensions() ([]clientthought.TensionReport, bool) {
+	return f.tensions, f.computed
+}
 
 func (d interceptTestDeps) LocalLiveness() LocalLiveness         { return nil }
 func (d interceptTestDeps) Sink() collector.Sink                 { return nil }
@@ -167,6 +202,20 @@ func (d interceptTestDeps) BlindSpotProvider() BlindSpotProvider {
 		return nil
 	}
 	return fakeBlindSpotProvider{report: d.blindSpots}
+}
+
+func (d interceptTestDeps) ClusterProvider() ClusterProvider {
+	if d.clusterProviderNil {
+		return nil
+	}
+	return fakeClusterProvider{clusters: d.clusters, profile: d.clusterProfile, computed: d.clusterComputed}
+}
+
+func (d interceptTestDeps) TensionsProvider() TensionsProvider {
+	if d.tensionsProviderNil {
+		return nil
+	}
+	return fakeTensionsProvider{tensions: d.tensions, computed: d.tensionsComputed}
 }
 
 func TestInterceptCreateProject_NoBackend_ClaimsLocalOnly(t *testing.T) {

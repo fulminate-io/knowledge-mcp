@@ -58,6 +58,8 @@ func (thoughtTestDeps) ReflectionForcer() ReflectionForcer           { return ni
 func (thoughtTestDeps) SimilarityForcer() SimilarityForcer           { return nil }
 
 func (thoughtTestDeps) BlindSpotProvider() BlindSpotProvider { return nil }
+func (thoughtTestDeps) ClusterProvider() ClusterProvider     { return nil }
+func (thoughtTestDeps) TensionsProvider() TensionsProvider   { return nil }
 
 // TestInterceptThoughts_NameFiltering pins that non-thoughts /
 // non-query tool calls fall through unchanged so the intercept chain's
@@ -137,24 +139,27 @@ func TestInterceptThoughts_QueryFallthroughUnknownMode(t *testing.T) {
 // TestInterceptThoughts_QueryReflectiveModesHandled pins that the
 // reflective query modes route through InterceptThoughts. Each call
 // returns (true, _) — modes that need a GraphClient surface an
-// IsError result; the pure ReflectPersonality path returns a valid
-// (empty) text body because clusters/profile are nil.
+// IsError result; the cache-served modes return a non-error cold/loop-not-running
+// message on the nil-provider thoughtTestDeps fixture.
 //
-// blind_spots is NOT in this group: it is served O(1) from the reflection-loop
-// cache via BlindSpotProvider (not a gc read), so a nil provider returns a clear
-// non-error "loop not running" message rather than an IsError. It is asserted
-// separately below.
+// blind_spots, tensions, summary, and personality are NOT in the requiresGC error
+// group: they are served from the reflection-loop cache (BlindSpotProvider /
+// TensionsProvider / ClusterProvider), so a nil provider returns a clear non-error
+// "loop not running" message rather than an IsError. blind_spots is asserted
+// separately below. influence + evolution + clusters still hit gc / fetchClusterContext
+// / DetectPersistedClusters directly and error on a nil gc.
 func TestInterceptThoughts_QueryReflectiveModesHandled(t *testing.T) {
 	t.Parallel()
 	deps := thoughtTestDeps{}
 	requiresGC := map[string]bool{
 		"influence": true,
-		"tensions":  true,
-		"summary":   true,
 		"evolution": true,
 		"clusters":  true,
-		// personality is pure — no GC required.
+		// personality, tensions, and summary are cache-served via their providers —
+		// a nil provider returns a non-error cold/loop-not-running message, not an error.
 		"personality": false,
+		"tensions":    false,
+		"summary":     false,
 	}
 	for mode, wantErr := range requiresGC {
 		args := `{"mode":"` + mode + `","cluster_a":"A","cluster_b":"B"}`

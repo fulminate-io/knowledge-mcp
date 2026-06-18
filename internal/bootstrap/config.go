@@ -39,9 +39,15 @@ var Version = "dev"
 // callers either let bootstrap.ParseFlags populate the struct from argv or
 // build it by hand (tests).
 type Config struct {
-	GraphStorage         string
-	RootDir              string
-	Port                 int
+	GraphStorage string
+	RootDir      string
+	Port         int
+	// AuthToken is an opaque machine bearer token presented on every request,
+	// bypassing the interactive browser-based login flow and the platform
+	// keychain. Populated from the --auth-token flag (defaulting to the
+	// KNOWLEDGE_AUTH_TOKEN environment variable) for headless/automated
+	// callers. Empty leaves the interactive login path fully intact.
+	AuthToken            string
 	LogLevel             string
 	LogFile              string
 	NoWorkerRuntime      bool
@@ -83,6 +89,7 @@ func registerConfigFlags(fs *flag.FlagSet, cfg *Config) {
 	fs.StringVar(&cfg.GraphStorage, "graph-storage", "~/.knowledge/", "Directory for graph storage (display-only; server owns the bin file)")
 	fs.StringVar(&cfg.RootDir, "root", ".", "Project root directory (display-only; server is the one that collects from root)")
 	fs.IntVar(&cfg.Port, "port", graphclient.DefaultPort, "TCP port the graph server listens on")
+	fs.StringVar(&cfg.AuthToken, "auth-token", os.Getenv("KNOWLEDGE_AUTH_TOKEN"), "Opaque machine bearer token presented on every request, bypassing the interactive browser login and the platform keychain. Defaults to the KNOWLEDGE_AUTH_TOKEN environment variable; an explicit flag value wins. Empty leaves the interactive login path intact.")
 	fs.StringVar(&cfg.LogLevel, "log-level", "info", "Log level: debug, info, warn, error")
 	fs.StringVar(&cfg.LogFile, "log-file", "", "Log file path (logs to both stderr and file when set)")
 	fs.BoolVar(&cfg.NoWorkerRuntime, "no-worker-runtime", false, "Skip dream Runner wiring. Run knowledge purely to serve/exercise the graph (e.g. the bench harness) without starting its own background worker runtime.")

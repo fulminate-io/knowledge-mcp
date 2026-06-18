@@ -12,6 +12,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
 	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	clientthought "github.com/fulminate-io/knowledge-mcp/internal/thought"
 )
 
 // reflectFakeCaller serves a tiny deterministic thought corpus + topic docs so the
@@ -46,7 +47,37 @@ func (c *reflectFakeCaller) Execute(_ context.Context, req *knowledgev1.ExecuteR
 }
 
 // reflectTestDeps is a minimal ClientDeps whose GraphCaller returns the fake.
-type reflectTestDeps struct{ gc GraphCaller }
+// clusters/profile back the ClusterProvider seam personality/summary now read from
+// (post cache-serve repoint). reflectGranularityDeps builds them from the same
+// reflectCorpus() the gc serves, so they are byte-identical to what the pre-cache
+// fetchClusterContext path produced — keeping the granularity assertions unchanged.
+type reflectTestDeps struct {
+	gc       GraphCaller
+	clusters []clientthought.ThoughtCluster
+	profile  *clientthought.PersonalityProfile
+}
+
+// reflectGranularityDeps wires reflectTestDeps with a ClusterProvider whose clusters
+// + personality profile are derived from the supplied gc via the SAME
+// DetectPersistedClusters + ComputePersonalityScalars path fetchClusterContext used
+// before the cache-serve repoint, so the granularity tests see byte-identical
+// clusters/profile through the provider seam.
+func reflectGranularityDeps(gc *reflectFakeCaller) reflectTestDeps {
+	ctx := context.Background()
+	clusters, err := clientthought.DetectPersistedClusters(ctx, gc)
+	if err != nil {
+		panic("reflectGranularityDeps: DetectPersistedClusters: " + err.Error())
+	}
+	var profile *clientthought.PersonalityProfile
+	if len(clusters) > 0 {
+		p, err := clientthought.ComputePersonalityScalars(ctx, gc, clusters, clientthought.BuildEvidenceAdj(ctx, gc, clusters))
+		if err != nil {
+			panic("reflectGranularityDeps: ComputePersonalityScalars: " + err.Error())
+		}
+		profile = &p
+	}
+	return reflectTestDeps{gc: gc, clusters: clusters, profile: profile}
+}
 
 func (d reflectTestDeps) LocalLiveness() LocalLiveness                 { return nil }
 func (d reflectTestDeps) Sink() collector.Sink                         { return nil }
@@ -73,6 +104,11 @@ func (d reflectTestDeps) ReflectionForcer() ReflectionForcer           { return 
 func (d reflectTestDeps) SimilarityForcer() SimilarityForcer           { return nil }
 
 func (d reflectTestDeps) BlindSpotProvider() BlindSpotProvider { return nil }
+
+func (d reflectTestDeps) ClusterProvider() ClusterProvider {
+	return fakeClusterProvider{clusters: d.clusters, profile: d.profile, computed: true}
+}
+func (d reflectTestDeps) TensionsProvider() TensionsProvider { return nil }
 
 func reflectThought(id, clusterID string) *knowledgev1.Node {
 	n := &knowledgev1.Node{Id: id, Type: string(kgtypes.NodeThought), SymbolName: "member-" + id}
@@ -109,7 +145,7 @@ func reflectCorpus() *reflectFakeCaller {
 // output for both summary and personality (the cluster path is the untouched
 // default code).
 func TestReflectGranularity_ClusterDefaultByteCompatible(t *testing.T) {
-	deps := reflectTestDeps{gc: reflectCorpus()}
+	deps := reflectGranularityDeps(reflectCorpus())
 	ctx := context.Background()
 
 	sumEmpty := resultText(handleReflectSummary(ctx, deps, queryReflectArgs{Granularity: ""}))
@@ -130,7 +166,7 @@ func TestReflectGranularity_ClusterDefaultByteCompatible(t *testing.T) {
 // and a topicless cluster appears as its own row; PERSONALITY relabels cluster-pair
 // rows to topic summaries with the scalar unchanged.
 func TestReflectGranularity_TopicRollup(t *testing.T) {
-	deps := reflectTestDeps{gc: reflectCorpus()}
+	deps := reflectGranularityDeps(reflectCorpus())
 	ctx := context.Background()
 
 	// SUMMARY topic view.

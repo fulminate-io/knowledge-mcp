@@ -82,6 +82,8 @@ func (d listDeps) ReflectionForcer() ReflectionForcer           { return nil }
 func (d listDeps) SimilarityForcer() SimilarityForcer           { return nil }
 
 func (d listDeps) BlindSpotProvider() BlindSpotProvider { return nil }
+func (d listDeps) ClusterProvider() ClusterProvider     { return nil }
+func (d listDeps) TensionsProvider() TensionsProvider   { return nil }
 
 // TestSyncList_SyncableCustomTypes is the Group C list guard: the syncable:true
 // custom type's instances appear in the rendered table; the syncable:false custom

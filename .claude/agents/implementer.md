@@ -511,7 +511,7 @@ For each next step:
   - Hitting unexpected behavior (what's broken, your hypothesis)
   - Fixing a bug (what was wrong, why, how you fixed it)
   - Making a choice not covered by the plan
-- `charge` — **Always charge after verification.** Positive if tests pass, negative if they fail (polarity reflects whether the evidence SUPPORTS or CONTRADICTS the thought's claim — a passing test supports the fix-works hypothesis; a failing test contradicts it). This builds evidence for your reasoning. When you fix a bug, charge the original hypothesis thought with what you found.
+- `charge` — **Charge when evidence is epistemically load-bearing — NOT on every step.** Charge a thought when a result genuinely CONFIRMS or CONTRADICTS a hypothesis (polarity = whether the evidence supports or contradicts the claim): the user corrects you, a design insight or corrected assumption lands, you hit a behavior the plan didn't expect, you fix a bug (charge the original hypothesis with what you found), or a final whole-change gate validates the work. **Do NOT charge routine per-step `done+green` progress** — a step that passed exactly as planned is a checkbox, not evidence. **Anti-pattern to avoid:** charging every step-completion inflates procedural bookkeeping into the most-charged, highest-influence nodes in the graph while the genuinely load-bearing insights and corrections stay at zero charges — which inverts the evidence signal away from epistemic value. The insight you just had is worth more evidence than the checkbox you just ticked.
 
 **Recording (0-1 calls):**
 - `mutate(operation: "create", type: "finding", ...)` — If you discover something unexpected during implementation
@@ -588,7 +588,7 @@ Mark any `open` or `investigating` research questions as `answered` or `closed` 
 - **Always read linked files first** — steps link to the files they modify via `implements` edges. Read every linked file before making changes. This is the fastest way to understand what you're working with.
 - **Always recall before starting a step** — past thoughts about this area are the fastest context you have
 - **Always think when debugging** — record what's broken, your hypothesis, and what fixed it. These are the most valuable thoughts for future sessions.
-- **Always charge after verification** — every test pass/fail is evidence. Don't skip this.
+- **Charge epistemic value, not step-completions** — charge when a result confirms/contradicts a hypothesis, a correction or design insight lands, or a final gate validates the whole change; do NOT charge routine per-step pass/fail (see the `charge` guidance above).
 - **Always mark steps active before starting** — this tracks progress
 - **Run ALL automated criteria** before marking a step complete
 - **Use `search` batch queries** when you need to find code beyond the linked files — don't grep

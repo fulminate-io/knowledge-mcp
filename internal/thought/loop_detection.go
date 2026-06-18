@@ -301,6 +301,12 @@ func (p *PropagationLoop) storeDetectionResults(r detectionResults) {
 	p.lastProfile = r.profile
 	p.lastTensions = r.tensions
 	p.lastBlindSpots = r.blindSpots
+	// A tick that reaches storeDetectionResults has successfully computed
+	// clusters+profile+tensions+blindSpots; the early-return failure paths
+	// (loop_detection.go adjacency/browse/personality errors) never reach this call,
+	// so lastComputed stays false on a failed/never-run tick — the cold sentinel the
+	// cache-serve handlers read.
+	p.lastComputed = true
 	p.lastWatermark = r.watermark
 	if r.isFull {
 		p.lastDirtySeed = nil

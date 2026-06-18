@@ -50,6 +50,8 @@ func (d *tailRoutingDeps) ReflectionForcer() ReflectionForcer           { return
 func (d *tailRoutingDeps) SimilarityForcer() SimilarityForcer           { return nil }
 
 func (d *tailRoutingDeps) BlindSpotProvider() BlindSpotProvider { return nil }
+func (d *tailRoutingDeps) ClusterProvider() ClusterProvider     { return nil }
+func (d *tailRoutingDeps) TensionsProvider() TensionsProvider   { return nil }
 
 // TestPostCollectTail_RoutesThroughGraphCaller proves Phase 2: the post-collect
 // linker + postpopulate tail follow the data through deps.GraphCaller() (the

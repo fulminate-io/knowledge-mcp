@@ -215,3 +215,31 @@ func (c *client) BlindSpotProvider() tools.BlindSpotProvider {
 	}
 	return c.propLoop
 }
+
+// ClusterProvider returns the live PropagationLoop as the read seam
+// query(mode:personality) and query(mode:summary) serve their cached clusters +
+// personality profile through (via GetClustersCached, O(1)). Returns a nil
+// interface (not a typed-nil pointer) when the loop was not wired so the handlers'
+// nil-check fires and renders the "reflection loop not running" message rather than
+// wrapping a nil pointer in a non-nil interface. *PropagationLoop satisfies it via
+// the GetClustersCached method. Satisfies tools.ClientDeps. Mirrors BlindSpotProvider.
+func (c *client) ClusterProvider() tools.ClusterProvider {
+	if c.propLoop == nil {
+		return nil
+	}
+	return c.propLoop
+}
+
+// TensionsProvider returns the live PropagationLoop as the read seam
+// query(mode:tensions) serves its cached tension reports through (via GetTensions,
+// O(1)). Returns a nil interface (not a typed-nil pointer) when the loop was not
+// wired so handleReflectTensions's nil-check fires and renders the "reflection loop
+// not running" message rather than wrapping a nil pointer in a non-nil interface.
+// *PropagationLoop satisfies it via the GetTensions method. Satisfies
+// tools.ClientDeps. Mirrors BlindSpotProvider.
+func (c *client) TensionsProvider() tools.TensionsProvider {
+	if c.propLoop == nil {
+		return nil
+	}
+	return c.propLoop
+}

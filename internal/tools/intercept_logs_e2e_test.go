@@ -50,6 +50,8 @@ func (d *logE2EDeps) ReflectionForcer() ReflectionForcer           { return nil 
 func (d *logE2EDeps) SimilarityForcer() SimilarityForcer           { return nil }
 
 func (d *logE2EDeps) BlindSpotProvider() BlindSpotProvider { return nil }
+func (d *logE2EDeps) ClusterProvider() ClusterProvider     { return nil }
+func (d *logE2EDeps) TensionsProvider() TensionsProvider   { return nil }
 
 // e2eSetupLogGraph seeds a small store-FREE log graph (templates + chunk +
 // stream + a correlation edge) onto a fakeLogGraphCaller. Returns the queryID

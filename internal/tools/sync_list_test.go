@@ -67,6 +67,8 @@ func (d *fakeSyncListDeps) ReflectionForcer() ReflectionForcer           { retur
 func (d *fakeSyncListDeps) SimilarityForcer() SimilarityForcer           { return nil }
 
 func (d *fakeSyncListDeps) BlindSpotProvider() BlindSpotProvider { return nil }
+func (d *fakeSyncListDeps) ClusterProvider() ClusterProvider     { return nil }
+func (d *fakeSyncListDeps) TensionsProvider() TensionsProvider   { return nil }
 
 // CloudStatusInfo satisfies the cloudStatusInfo seam (manage.go:43).
 func (d *fakeSyncListDeps) CloudStatusInfo() (bool, string) { return d.loggedIn, d.host }

@@ -7,11 +7,32 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// hermeticGitEnv returns os.Environ() with every GIT_* entry stripped, then
+// re-adds GIT_TERMINAL_PROMPT=0. Test fixtures that spawn git subprocesses MUST
+// use this instead of raw os.Environ(): inside a worktree or a git hook, git
+// exports GIT_DIR / GIT_INDEX_FILE / GIT_WORK_TREE / etc. into child processes,
+// and those override `git -C <dir>` and cmd.Dir — so a fixture's `git init`
+// would re-init the host worktree gitdir (flipping core.bare=true) and its
+// commits would land on the host branch. Scrubbing GIT_* makes the fixture
+// operate only in its own temp dir regardless of the ambient env.
+func hermeticGitEnv() []string {
+	base := os.Environ()
+	out := make([]string, 0, len(base)+1)
+	for _, kv := range base {
+		if strings.HasPrefix(kv, "GIT_") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return append(out, "GIT_TERMINAL_PROMPT=0")
+}
 
 // gitInitFixture creates a temp directory, runs `git init`, configures a
 // throwaway author identity (so the test process doesn't depend on the
@@ -34,7 +55,7 @@ func mustRun(t *testing.T, dir string, args ...string) {
 	t.Helper()
 	cmd := exec.Command("git", args...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+	cmd.Env = hermeticGitEnv()
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %v: %v\n%s", args, err, out)
@@ -47,9 +68,112 @@ func commitFile(t *testing.T, dir, name, body, message string) string {
 	require.NoError(t, os.WriteFile(p, []byte(body), 0o600))
 	mustRun(t, dir, "add", name)
 	mustRun(t, dir, "commit", "-m", message)
-	out, err := exec.Command("git", "-C", dir, "rev-parse", "HEAD").Output()
+	revParse := exec.Command("git", "-C", dir, "rev-parse", "HEAD")
+	revParse.Env = hermeticGitEnv()
+	out, err := revParse.Output()
 	require.NoError(t, err)
 	return string(out)
+}
+
+// probeHost runs a git command against an explicit --git-dir with a hermetic
+// env (so the probe itself reads the named gitdir, not whatever the ambient
+// GIT_DIR points at) and returns combined output + error.
+func probeHost(t *testing.T, hostGitDir string, args ...string) (string, error) {
+	t.Helper()
+	full := append([]string{"--git-dir=" + hostGitDir}, args...)
+	cmd := exec.Command("git", full...)
+	cmd.Env = hermeticGitEnv()
+	out, err := cmd.CombinedOutput()
+	return strings.TrimSpace(string(out)), err
+}
+
+// TestGitFixture_HermeticUnderSimulatedWorktreeEnv proves the coderun git
+// fixtures (gitInitFixture / commitFile / mustRun) are hermetic: even when the
+// ambient env carries a leaked GIT_DIR / GIT_INDEX_FILE pointing at a "host"
+// gitdir (exactly what git exports into hooks from inside a worktree), the
+// fixtures must operate only in their own temp dir — NOT re-init the host gitdir
+// (flipping core.bare=true) and NOT leak commits onto the host branch.
+//
+// RED without the Phase-1 hermeticGitEnv() scrub: the leaked GIT_DIR overrides
+// `git -C <tmp> init`, so gitInitFixture re-inits hostGitDir (core.bare=true)
+// and commitFile's commits land on the host branch — both assertions below fail.
+func TestGitFixture_HermeticUnderSimulatedWorktreeEnv(t *testing.T) {
+	if _, err := exec.LookPath("git"); err != nil {
+		t.Skip("git not on PATH")
+	}
+
+	// Build a throwaway "simulated host" working copy as a real, NON-bare repo
+	// with one commit, using hermetic git so this setup is itself unaffected by
+	// the ambient env.
+	hostDir := t.TempDir()
+	for _, args := range [][]string{
+		{"-C", hostDir, "init", "--initial-branch=main"},
+		{"-C", hostDir, "config", "user.email", "host@example.invalid"},
+		{"-C", hostDir, "config", "user.name", "host"},
+		{"-C", hostDir, "config", "commit.gpgsign", "false"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Env = hermeticGitEnv()
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("host setup git %v: %v\n%s", args, err, out)
+		}
+	}
+	require.NoError(t, os.WriteFile(filepath.Join(hostDir, "host.txt"), []byte("host"), 0o600))
+	for _, args := range [][]string{
+		{"-C", hostDir, "add", "host.txt"},
+		{"-C", hostDir, "commit", "-m", "host-initial"},
+	} {
+		cmd := exec.Command("git", args...)
+		cmd.Env = hermeticGitEnv()
+		if out, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("host setup git %v: %v\n%s", args, err, out)
+		}
+	}
+
+	hostGitDir := filepath.Join(hostDir, ".git")
+
+	// Capture the simulated host's HEAD + commit count BEFORE running the
+	// fixtures, via explicit --git-dir probes.
+	hostHEADBefore, err := probeHost(t, hostGitDir, "rev-parse", "HEAD")
+	require.NoError(t, err, "host should have a HEAD before the fixtures run")
+	hostCountBefore, err := probeHost(t, hostGitDir, "rev-list", "--count", "HEAD")
+	require.NoError(t, err)
+
+	// Simulate the leaked hook env: this is what git exports into hooks from
+	// inside a worktree. t.Setenv auto-restores at test end.
+	t.Setenv("GIT_DIR", hostGitDir)
+	t.Setenv("GIT_INDEX_FILE", filepath.Join(hostGitDir, "index"))
+
+	// Exercise the fixtures under that polluted env. With hermetic fixtures
+	// these touch only fixtureDir; without the scrub they corrupt hostGitDir.
+	fixtureDir := gitInitFixture(t)
+	commitFile(t, fixtureDir, "x.txt", "body", "fixture-commit")
+
+	// Assertion 1: core.bare on the simulated host was NOT flipped. `config
+	// --get core.bare` exits non-zero when the key is absent (acceptable); a
+	// present value must NOT be "true".
+	bare, _ := probeHost(t, hostGitDir, "config", "--get", "core.bare")
+	assert.NotEqual(t, "true", bare,
+		"leaked GIT_DIR flipped host core.bare=true — fixture re-inited the host gitdir")
+
+	// Assertion 2: no fixture commit leaked onto the host branch — HEAD and the
+	// commit count are unchanged.
+	hostHEADAfter, err := probeHost(t, hostGitDir, "rev-parse", "HEAD")
+	require.NoError(t, err)
+	assert.Equal(t, hostHEADBefore, hostHEADAfter,
+		"a fixture commit leaked onto the simulated host HEAD")
+	hostCountAfter, err := probeHost(t, hostGitDir, "rev-list", "--count", "HEAD")
+	require.NoError(t, err)
+	assert.Equal(t, hostCountBefore, hostCountAfter,
+		"the host commit count changed — fixture commits leaked onto the host branch")
+
+	// Assertion 3 (positive): the fixture did its work in its OWN temp dir. The
+	// probe runs hermetically (via probeHost) so it reads the fixture's gitdir
+	// rather than the leaked ambient GIT_DIR.
+	fixtureHEAD, err := probeHost(t, filepath.Join(fixtureDir, ".git"), "rev-parse", "HEAD")
+	require.NoError(t, err, "fixture dir should be a working repo with a commit")
+	assert.NotEqual(t, hostHEADBefore, fixtureHEAD,
+		"fixture HEAD should differ from the host HEAD (fixture committed in its own dir)")
 }
 
 func TestHeadCommit_HappyPath(t *testing.T) {

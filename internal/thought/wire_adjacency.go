@@ -5,6 +5,7 @@ package thought
 import (
 	"context"
 	"fmt"
+	"sort"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
@@ -50,20 +51,29 @@ var adjacencyEdgeTypes = []kgtypes.EdgeType{
 	kgtypes.EdgeBecause,
 }
 
-// tensionEdgeTypes is the set of EXPLICIT thought↔thought reasoning edges that
-// count as a tension link. ReflectTensions pairs two thoughts only when an edge
-// of one of these types joins them — bare co-session membership is NOT a tension.
-// It mirrors the server's reflection-relevant thought↔thought edge set
-// (composite_db_dirty_gen.go reflectionEdges) but is a deliberate per-module
-// duplicate: the client cannot import the server store, exactly like the
-// adjacencyEdgeTypes var above. Two reflectionEdges members are intentionally
-// EXCLUDED — EdgeChargedBy and EdgeEvidencedBy join a thought to a CHARGE, not
-// thought↔thought, so they can never form a tension pair. "contradicts" has no
-// EdgeType constant (it is a documented mutate(link) relationship taken as-given
-// on the wire), so it is keyed as the EdgeType("contradicts") string literal.
+// tensionEdgeTypes is the set of EXPLICIT, SEMANTIC thought↔thought reasoning
+// edges that count as a tension link. ReflectTensions pairs two thoughts only
+// when an edge of one of these types joins them — bare co-session membership is
+// NOT a tension. It is a deliberate per-module duplicate of the server's
+// reflection-relevant thought↔thought edge set: the client cannot import the
+// server store, exactly like the adjacencyEdgeTypes var above. Several edge
+// types are intentionally EXCLUDED:
+//
+//   - EdgeNext and EdgeBranchesFrom (the TEMPORAL types) are excluded because
+//     they carry no propositional content. EdgeNext is auto-created between
+//     consecutive same-session thoughts purely by creation order, with zero
+//     semantic evaluation, so an opposing-valence plan→blocker arc inside one
+//     task's normal progression would otherwise register as a false tension.
+//     A temporal sequence is not a disagreement. (Clustering's adjacencyEdgeTypes
+//     above deliberately KEEPS both temporal types — that set is a separate
+//     concern.)
+//   - EdgeChargedBy and EdgeEvidencedBy join a thought to a CHARGE, not
+//     thought↔thought, so they can never form a tension pair.
+//
+// "contradicts" has no EdgeType constant (it is a documented mutate(link)
+// relationship taken as-given on the wire), so it is keyed as the
+// EdgeType("contradicts") string literal.
 var tensionEdgeTypes = []kgtypes.EdgeType{
-	kgtypes.EdgeNext,
-	kgtypes.EdgeBranchesFrom,
 	kgtypes.EdgeRelatesTo,
 	kgtypes.EdgeProduced,
 	kgtypes.EdgeBecause,
@@ -72,6 +82,28 @@ var tensionEdgeTypes = []kgtypes.EdgeType{
 	kgtypes.EdgeInformedBy,
 	kgtypes.EdgeSynthesizedFrom,
 }
+
+// sessionCliqueCap is the band HALF-WIDTH K bounding the per-session sibling
+// expansion in deriveSessionSiblings. A session of N members would otherwise
+// emit an O(N²) full clique; instead each member is connected only to the
+// members within ±K positions of it in sorted (sort.Strings) order — a
+// symmetric sliding band. Per-session edge count is O(K·N) instead of O(N²).
+//
+// HUB-FREE by construction: every interior member gets exactly 2K sibling
+// edges and NO member exceeds 2K, so no member becomes a high-degree hub. This
+// is the load-bearing property — a fully-connected-core scheme would instead
+// concentrate ~N edges on the core members, making them artificial influence
+// hubs (the centrality artifact this band avoids).
+//
+// K=50 is chosen empirically against the observed session-size distribution:
+// the typical session holds 1-30 members (the everyday body of the corpus),
+// while a heavy tail of long-running sessions reaches dozens-to-hundreds of
+// members and is what drove cluster detection to its time budget. K=50 sits
+// ABOVE the typical body and BELOW the pathological tail, so for sessions of
+// ≤ K+1 (=51) members the band spans the whole set and degenerates to a full
+// clique — an exact no-op (zero behavior change) — and only the runaway
+// long-running sessions are bounded.
+const sessionCliqueCap = 50
 
 // isMachineTensionMethod reports whether an edge Method tag is one of the four
 // MACHINE relates-to writer provenances — i.e. a programmatically densified or
@@ -328,8 +360,8 @@ func buildAdjacencyFromEdges(edges []knowledgev1.Edge, idSet map[string]bool) ma
 // returns BOTH directions, so a session→thought edge surfaces even though the
 // session node itself is not in nodeIDs (only its To endpoint, a thought, is).
 // Grouping the thought endpoints by their session From-ID yields every session's
-// member set; the pairwise expansion among co-members (self-excluded) is the
-// sibling adjacency.
+// member set; the symmetric sorted-band expansion among co-members (self-excluded,
+// see the band loop below) is the sibling adjacency.
 //
 // POLLUTION GUARD: EdgeKGContains is ALSO the generic plan→phase→step containment
 // edge, so the idSet[e.ToId] filter drops any non-thought member — a
@@ -351,12 +383,38 @@ func deriveSessionSiblings(ctx context.Context, gc Caller, nodeIDs []string, idS
 			bySession[e.FromId] = append(bySession[e.FromId], e.ToId)
 		}
 	}
-	// Pairwise siblings per session: every ordered (a,b) with a!=b adds b to a.
+	// Per-session siblings via a SYMMETRIC SORTED BAND of half-width
+	// sessionCliqueCap (K): instead of the full O(N²) clique, connect each member
+	// only to the members within ±K positions of it in sorted order — O(K·N) edges.
+	//
+	// HUB-FREE (load-bearing): each interior member gets exactly 2K sibling edges
+	// and NO member exceeds 2K, so degree is uniform and bounded — no member
+	// becomes a high-degree hub. A fully-connected-core scheme would instead pile
+	// ~N edges onto the core members, turning them into artificial influence hubs
+	// (the centrality artifact this band is the fix for).
+	//
+	// DETERMINISM (load-bearing): sort.Strings(members) BEFORE banding. The band is
+	// defined by sorted position, and the edge-read order is NOT a guaranteed-stable
+	// function across ticks. Sorting the stable hex node IDs makes the band a
+	// deterministic function of the member SET, so adjacency is byte-identical
+	// across ticks — the invariant the incremental-clustering baseline and stable
+	// cluster IDs depend on.
+	//
+	// SYMMETRY: |i-j| ≤ K is symmetric in i and j, so a→b implies b→a — the band is
+	// undirected by construction.
+	//
+	// Sessions with ≤ K+1 members keep the full clique (the band is a no-op): the
+	// band spans the whole member set (every |i-j| ≤ K), so the emitted edges are
+	// identical to the old pairwise expansion. Within a band the members form a
+	// connected chain, so a banded session stays one connected component.
 	for _, members := range bySession {
-		for _, a := range members {
-			for _, b := range members {
-				if a != b {
-					sibAdj[a] = append(sibAdj[a], b)
+		sort.Strings(members)
+		for i := range members {
+			lo := max(0, i-sessionCliqueCap)
+			hi := min(len(members)-1, i+sessionCliqueCap)
+			for j := lo; j <= hi; j++ {
+				if j != i {
+					sibAdj[members[i]] = append(sibAdj[members[i]], members[j])
 				}
 			}
 		}

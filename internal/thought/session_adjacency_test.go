@@ -4,6 +4,8 @@ package thought
 
 import (
 	"context"
+	"fmt"
+	"reflect"
 	"sort"
 	"testing"
 
@@ -167,4 +169,129 @@ func TestDeriveSessionSiblings_EqualsTraversal(t *testing.T) {
 	for tid, sibs := range got {
 		assert.NotContains(t, sibs, "plan1", "the non-thought member must never be a sibling (thought %s)", tid)
 	}
+}
+
+// TestDeriveSessionSiblings_CliqueCapped (FAILS-WHEN-ABSENT) proves the hub-free
+// symmetric band on a session far larger than sessionCliqueCap: each member is
+// connected to the members within ±K positions of it in sorted order, so the
+// per-session edge count is bounded by O(K·size), NO member becomes a hub (the
+// anti-hub property — max per-node sibling degree ≤ 2K), the derivation is
+// byte-identical across repeated runs (the sort.Strings determinism the
+// incremental-clustering baseline depends on), and the band stays a SINGLE
+// connected component (the sorted chain links every member to its neighbors).
+//
+// ANTI-HUB GUARD (the load-bearing assertion): max per-node sibling degree is
+// ≤ 2K. This is what proves the centrality artifact is gone — the rejected
+// fully-connected-core scheme gave its core members degree ≈ size-1 (≫ 2K),
+// concentrating eigenvector mass on an arbitrary ID-sorted block, so this
+// assertion would have FAILED on that scheme and PASSES on the band.
+//
+// EDGE-COUNT BOUND: the band emits ≤ 2·K directed edges per member, i.e.
+// ≤ 2·K·size total — strictly O(K·size), the bound the ticket requires (a
+// 500-member session drops from ~250k full-clique edges to ~50k).
+//
+// CLUSTERING NOTE — a single Leiden community is INTENTIONALLY not asserted on
+// this isolated synthetic. Under pure sibling adjacency the band is a chain-like
+// topology that Leiden CPM at gamma=0.5 may split into multiple communities once
+// the session far outgrows the band width. In production the sibling adjacency is
+// merged with the thought-cluster edges (next/branches_from path + relates_to/
+// produced/because) into one adjacency map, which densifies large sessions and
+// keeps them co-clustered — covered by the live-corpus cluster-count check, not
+// this isolated-sibling synthetic. The single-connected-component assertion below
+// is the band's universal structural co-membership guarantee.
+func TestDeriveSessionSiblings_CliqueCapped(t *testing.T) {
+	ctx := context.Background()
+
+	// One session with 200 members — well above K=50 — deterministically named
+	// t000..t199 so the sort order is well-defined.
+	const size = 200
+	tIDs := make([]string, size)
+	for i := range tIDs {
+		tIDs[i] = fmt.Sprintf("t%03d", i)
+	}
+	newFake := func() *sessionAdjacencyFake {
+		return &sessionAdjacencyFake{
+			members: map[string][]string{"big": append([]string(nil), tIDs...)},
+		}
+	}
+	nodeIDs := append([]string(nil), tIDs...)
+	idSet := make(map[string]bool, len(nodeIDs))
+	for _, id := range nodeIDs {
+		idSet[id] = true
+	}
+
+	got := deriveSessionSiblings(ctx, newFake(), nodeIDs, idSet)
+
+	// (1) ANTI-HUB MAX DEGREE: no member exceeds 2K sibling edges. This is the
+	// load-bearing regression guard — the rejected fully-connected-core scheme gave
+	// its core members degree ≈ size-1 (here 199 ≫ 100), so this assertion would
+	// have FAILED on that scheme. The band caps every member at ≤ 2K, proving the
+	// centrality artifact is structurally impossible.
+	maxDegree := 0
+	for _, sibs := range got {
+		if len(sibs) > maxDegree {
+			maxDegree = len(sibs)
+		}
+	}
+	assert.LessOrEqual(t, maxDegree, 2*sessionCliqueCap,
+		"no member may exceed 2K sibling edges — the band is hub-free (anti-centrality-artifact guard)")
+
+	// (2) BOUNDED EDGES: total directed edges ≤ 2·K·size (the band's bound, see the
+	// doc comment), AND strictly below the uncapped full clique (size·(size-1)) —
+	// proving the band actually bounded the expansion.
+	total := 0
+	for _, sibs := range got {
+		total += len(sibs)
+	}
+	assert.LessOrEqual(t, total, 2*sessionCliqueCap*size,
+		"per-session sibling edges must be bounded by O(K·size) under the band")
+	assert.Less(t, total, size*(size-1),
+		"the band must bound the expansion — total edges must be strictly below the uncapped full clique")
+
+	// (3) DETERMINISM: a second independent derivation over the same fixture is
+	// byte-identical (raw slice order, not just set-equality) — the sort.Strings
+	// makes the band a stable function of the member set across ticks.
+	got2 := deriveSessionSiblings(ctx, newFake(), nodeIDs, idSet)
+	assert.True(t, reflect.DeepEqual(got, got2),
+		"the banded derivation must be byte-identical across runs (deterministic band)")
+
+	// (4) SINGLE CONNECTED COMPONENT: the band is one reachability island — the
+	// sorted chain links every member to its immediate neighbors, so every member
+	// reaches every other through the band. This is the band's structural
+	// co-membership guarantee, and it holds at every session size (including this
+	// 200-member one). It is what keeps co-session thoughts co-clustered once the
+	// sibling adjacency is merged with the thought-cluster edges in production.
+	assert.Len(t, findConnectedComponents(nodeIDs, got), 1,
+		"the banded session must remain one connected component at any size")
+
+	// (5) SMALL-SESSION FULL-CLIQUE NO-OP: a session of ≤ K+1 members spans the band
+	// entirely (every |i-j| ≤ K), so it derives to a FULL pairwise clique —
+	// byte-identical to the pre-band behavior. Verify each member's sibling multiset
+	// equals all other members, compared via sortedSiblingMap against an inline
+	// full-clique reference. This proves the band is the exact no-op for the everyday
+	// sub-K corpus.
+	const smallSize = sessionCliqueCap + 1 // 51 — the largest full-clique session.
+	smallIDs := make([]string, smallSize)
+	for i := range smallIDs {
+		smallIDs[i] = fmt.Sprintf("s%03d", i)
+	}
+	smallIDSet := make(map[string]bool, smallSize)
+	for _, id := range smallIDs {
+		smallIDSet[id] = true
+	}
+	smallFake := &sessionAdjacencyFake{
+		members: map[string][]string{"small": append([]string(nil), smallIDs...)},
+	}
+	smallGot := deriveSessionSiblings(ctx, smallFake, smallIDs, smallIDSet)
+	// Inline full-clique reference: every member is a sibling of every other.
+	wantClique := make(map[string][]string, smallSize)
+	for _, a := range smallIDs {
+		for _, b := range smallIDs {
+			if a != b {
+				wantClique[a] = append(wantClique[a], b)
+			}
+		}
+	}
+	assert.Equal(t, sortedSiblingMap(wantClique), sortedSiblingMap(smallGot),
+		"a session of ≤ K+1 members must derive to a full pairwise clique (band no-op)")
 }

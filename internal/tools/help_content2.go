@@ -316,10 +316,10 @@ const helpRecordDecision = `# record_decision — Record a design decision with 
 
 ## Example
   record_decision({
-    "name": "Use Badger v4 for graph storage",
-    "choice": "Badger v4 with custom serialization",
-    "rationale": "Concurrent read performance 3x better than SQLite. No file locks.",
-    "alternatives": "SQLite: rejected due to file locking incompatible with MCP server",
+    "name": "Cache-serve reflect modes from the propagation loop",
+    "choice": "Compute per tick, serve O(1) from cache",
+    "rationale": "Recomputing over the full corpus on every call blocks the tool past its timeout; serving the loop's cached result makes the call O(1).",
+    "alternatives": "Recompute per call: rejected — full-corpus recompute times out under load",
     "informed_by": "finding_id1,finding_id2"
   })
 `

@@ -61,6 +61,8 @@ func (d astTestDeps) ReflectionForcer() ReflectionForcer           { return nil 
 func (d astTestDeps) SimilarityForcer() SimilarityForcer           { return nil }
 
 func (d astTestDeps) BlindSpotProvider() BlindSpotProvider { return nil }
+func (d astTestDeps) ClusterProvider() ClusterProvider     { return nil }
+func (d astTestDeps) TensionsProvider() TensionsProvider   { return nil }
 
 // astFixtureRepo writes a single Go file with N function declarations under
 // t.TempDir() and returns the directory. The fixture mirrors the prior

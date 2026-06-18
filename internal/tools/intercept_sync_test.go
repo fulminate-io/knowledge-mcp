@@ -160,6 +160,8 @@ func (d pullDeps) ReflectionForcer() ReflectionForcer           { return nil }
 func (d pullDeps) SimilarityForcer() SimilarityForcer           { return nil }
 
 func (d pullDeps) BlindSpotProvider() BlindSpotProvider { return nil }
+func (d pullDeps) ClusterProvider() ClusterProvider     { return nil }
+func (d pullDeps) TensionsProvider() TensionsProvider   { return nil }
 
 // TestInterceptSync_Pull_FetchesCloudAppliesLocal asserts the pull arm: the
 // cloud Exporter (routed GraphCaller) returns canned bytes, and the local

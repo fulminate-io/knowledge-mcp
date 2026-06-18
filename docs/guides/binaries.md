@@ -32,6 +32,7 @@ low-noise development.
 <!-- BEGIN GENERATED: flags-client -->
 | Flag | Default | Description |
 | --- | --- | --- |
+| `--auth-token` |  | Opaque machine bearer token presented on every request, bypassing the interactive browser login and the platform keychain. Defaults to the KNOWLEDGE_AUTH_TOKEN environment variable; an explicit flag value wins. Empty leaves the interactive login path intact. |
 | `--embed-batch-size` | `100` | Client-side LLM pipeline: items per embed worker batch (under voyageEmbedder's 128 internal cap) |
 | `--embed-channel-size` | `10000` | Client-side LLM pipeline: EmbedWork channel buffer size (full = collector blocks) |
 | `--embed-rpm` | `0` | Client-side LLM pipeline: max embed (Voyage) API requests per MINUTE across all embed workers; 0 = unlimited (default, preserves current 20-worker behavior). Proactive throttle for low-tier Voyage accounts — paces the opening burst so it respects the account RPM before the first 429. Companion to the reactive Retry-After backoff. |
@@ -67,6 +68,7 @@ outlives any single session.
 <!-- BEGIN GENERATED: flags-serve -->
 | Flag | Default | Description |
 | --- | --- | --- |
+| `--auth-token` |  | Opaque machine bearer token presented on every request, bypassing the interactive browser login and the platform keychain. Defaults to the KNOWLEDGE_AUTH_TOKEN environment variable; an explicit flag value wins. Empty leaves the interactive login path intact. |
 | `--embed-batch-size` | `100` | Client-side LLM pipeline: items per embed worker batch (under voyageEmbedder's 128 internal cap) |
 | `--embed-channel-size` | `10000` | Client-side LLM pipeline: EmbedWork channel buffer size (full = collector blocks) |
 | `--embed-rpm` | `0` | Client-side LLM pipeline: max embed (Voyage) API requests per MINUTE across all embed workers; 0 = unlimited (default, preserves current 20-worker behavior). Proactive throttle for low-tier Voyage accounts — paces the opening burst so it respects the account RPM before the first 429. Companion to the reactive Retry-After backoff. |

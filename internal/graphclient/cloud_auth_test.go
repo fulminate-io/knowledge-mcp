@@ -143,6 +143,33 @@ func TestNewCloudGraphClient_RetriesOn401(t *testing.T) {
 	assert.Equal(t, "Bearer tok-rotated", got[1], "retry must carry the rotated token")
 }
 
+// TestCloudAuth_StaticTokenSource_NoRetryOn401 proves the headless
+// machine-auth contract: a StaticTokenSource does NOT implement
+// RefreshingTokenSource, so a 401 from the backend is surfaced to the caller
+// with exactly ONE upstream request — the bearerRoundTripper has no
+// force-refresh capability to exercise and must not retry. The machine bearer
+// is opaque to the client; recovering from a rejected token is the operator's
+// job (rotate the token), not a client-side refresh loop.
+func TestCloudAuth_StaticTokenSource_NoRetryOn401(t *testing.T) {
+	h := &cloudCaptureHandler{}
+	h.first401.Store(true) // armed, but a non-refreshing source must NOT retry past it
+	srv := httptest.NewServer(h)
+	t.Cleanup(srv.Close)
+
+	src := auth.StaticTokenSource{AccessToken: "machine-tok"}
+	gc := NewCloudGraphClient(srv.URL, src)
+
+	// The Execute returns an error (the 401 surfaces, the payload never decodes);
+	// the assertion is purely on the upstream request count + bearer attachment.
+	_, _ = gc.Execute(context.Background(), &knowledgev1.ExecuteRequest{})
+
+	got := h.observed()
+	require.Len(t, got, 1,
+		"a 401 under a non-refreshing StaticTokenSource must surface with exactly one upstream request (no force-refresh retry)")
+	assert.Equal(t, "Bearer machine-tok", got[0],
+		"the single request carries the machine bearer token")
+}
+
 // protoCapture wraps a downstream handler and records, for the FIRST request it
 // observes, the protocol major version, HTTP method, and Content-Type header —
 // the wire facts the HTTP/1.1-determinism assertions inspect. It is the only new

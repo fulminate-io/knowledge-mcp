@@ -51,6 +51,14 @@ type Router struct {
 	tokenSource auth.TokenSource
 	authState   *auth.AuthState
 
+	// machineAuth, when true, forces cloud selection unconditionally —
+	// independent of the keychain auth state. It is set when the client was
+	// started with a machine bearer token (the headless, non-interactive auth
+	// path): such a client routes every op to cloud and runs with no local
+	// server, exactly like a logged-in interactive client, but without any
+	// keychain involvement. Reached only via NewRouterWithMachineAuth.
+	machineAuth bool
+
 	mu    sync.Mutex
 	cloud *GraphClient
 }
@@ -66,11 +74,35 @@ func NewRouter(
 	tokenSource auth.TokenSource,
 	authState *auth.AuthState,
 ) *Router {
+	return NewRouterWithMachineAuth(local, cloudURL, tokenSource, authState, false)
+}
+
+// NewRouterWithMachineAuth wires a Router that forces cloud selection when
+// machineAuth is true, bypassing the keychain auth state entirely. This is the
+// constructor for the headless machine-bearer path: the client presents a
+// caller-supplied token and routes every op to cloud with no local server and
+// no interactive login.
+//
+// cloudURL stays the canonical build-tag-pinned cloud endpoint at every call
+// site — this constructor exists ONLY to carry the machine-token selection
+// signal, never to vary the endpoint. The endpoint is not overridable;
+// in-cluster routing is handled by infrastructure, out of this client's scope.
+//
+// The same local/cloudURL/tokenSource/authState contract as NewRouter applies:
+// local may be nil; tokenSource and authState must be non-nil.
+func NewRouterWithMachineAuth(
+	local *GraphClient,
+	cloudURL string,
+	tokenSource auth.TokenSource,
+	authState *auth.AuthState,
+	machineAuth bool,
+) *Router {
 	return &Router{
 		local:       local,
 		cloudURL:    cloudURL,
 		tokenSource: tokenSource,
 		authState:   authState,
+		machineAuth: machineAuth,
 	}
 }
 
@@ -105,10 +137,12 @@ func (r *Router) IngestClient(ctx context.Context) (knowledgev1connect.IngestSer
 // caches so a survivor graphKey re-scans the new backend from gen 0). Mirrors
 // the cloud-routing decision pick(ctx) makes internally.
 //
-// Routing consults ONLY the keychain auth state (KeyRefreshToken presence, set
-// by the user-run `knowledge login` CLI). There is no per-session override.
+// Returns true when EITHER a machine bearer token was supplied at construction
+// (headless auth — always cloud) OR the keychain reports a live login
+// (KeyRefreshToken presence, set by the user-run `knowledge login` CLI). The
+// machine-auth signal is fixed at construction; the keychain signal is live.
 func (r *Router) LoggedIn(ctx context.Context) bool {
-	return r.authState != nil && r.authState.IsLoggedIn(ctx)
+	return r.machineAuth || (r.authState != nil && r.authState.IsLoggedIn(ctx))
 }
 
 // Backend is the per-call-routed concrete-backend resolver. It returns the
@@ -126,16 +160,18 @@ func (r *Router) Backend(ctx context.Context) (*GraphClient, error) {
 }
 
 // pick returns the *GraphClient that should service this call.
-//   - AuthState=true  → cloud (built lazily on first auth-true call).
-//   - AuthState=false → local (when non-nil).
-//   - Neither         → ErrNoBackend.
+//   - machine-auth OR AuthState=true → cloud (built lazily on first cloud call).
+//   - otherwise, local non-nil        → local.
+//   - neither                         → ErrNoBackend.
 //
-// Routing consults ONLY the keychain auth state (set by `knowledge login`).
+// Cloud selection fires when EITHER a machine bearer token was supplied at
+// construction (headless auth — fixed) OR the keychain reports a live login
+// (set by `knowledge login`).
 //
 // pick must be called per-RPC; forwarders MUST NOT cache the *GraphClient
 // across calls or the mid-session login swap would not land.
 func (r *Router) pick(ctx context.Context) (*GraphClient, error) {
-	if r.authState != nil && r.authState.IsLoggedIn(ctx) {
+	if r.machineAuth || (r.authState != nil && r.authState.IsLoggedIn(ctx)) {
 		return r.ensureCloud(), nil
 	}
 	if r.local != nil {

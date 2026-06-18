@@ -50,8 +50,9 @@ import (
 // bareLocalCallAllowlist is the set of callee function names a bare-local
 // expression MAY legitimately be passed to as a call argument.
 var bareLocalCallAllowlist = map[string]struct{}{
-	"NewRouter":        {}, // graphclient.NewRouter(tcp, ...) — wraps the local handle in the Router
-	"startKeepaliveFn": {}, // gated liveness keepalive over the bare local
+	"NewRouter":                {}, // graphclient.NewRouter(tcp, ...) — wraps the local handle in the Router
+	"NewRouterWithMachineAuth": {}, // graphclient.NewRouterWithMachineAuth(tcp, ...) — wraps the local handle in the Router
+	"startKeepaliveFn":         {}, // gated liveness keepalive over the bare local
 }
 
 // livenessSelectors are the method names that are pure liveness probes — a

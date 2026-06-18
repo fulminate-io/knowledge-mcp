@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -64,6 +65,8 @@ func (d *repoTestDeps) ReflectionForcer() ReflectionForcer           { return ni
 func (d *repoTestDeps) SimilarityForcer() SimilarityForcer           { return nil }
 
 func (d *repoTestDeps) BlindSpotProvider() BlindSpotProvider { return nil }
+func (d *repoTestDeps) ClusterProvider() ClusterProvider     { return nil }
+func (d *repoTestDeps) TensionsProvider() TensionsProvider   { return nil }
 
 // buildResolver returns a RepoResolver pre-loaded with the given graph
 // names. listGraphsCaller backs the resolver; the first ResolveCwd call
@@ -71,6 +74,29 @@ func (d *repoTestDeps) BlindSpotProvider() BlindSpotProvider { return nil }
 func buildResolver(_ *testing.T, names ...string) *RepoResolver {
 	gc := newListGraphsCaller(codeGraphs(names...))
 	return NewRepoResolver(gc)
+}
+
+// hermeticGitEnv returns os.Environ() with every GIT_* entry stripped, then
+// re-adds GIT_TERMINAL_PROMPT=0. Test fixtures that spawn git subprocesses MUST
+// use this instead of raw os.Environ(): inside a worktree or a git hook, git
+// exports GIT_DIR / GIT_INDEX_FILE / GIT_WORK_TREE / etc. into child processes,
+// and those override `git -C <dir>`, so a fixture's `git init` would re-init the
+// host worktree gitdir (flipping core.bare=true) and its commits would land on
+// the host branch. Scrubbing GIT_* makes the fixture operate only in its own
+// temp dir regardless of the ambient env. Intentionally duplicated
+// from the coderun package: the no-shared-packages-outside-gen-proto invariant
+// (AGENTS.md) forbids a hand-written shared test-helper package between these
+// two internal packages.
+func hermeticGitEnv() []string {
+	base := os.Environ()
+	out := make([]string, 0, len(base)+1)
+	for _, kv := range base {
+		if strings.HasPrefix(kv, "GIT_") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return append(out, "GIT_TERMINAL_PROMPT=0")
 }
 
 // gitRepoFixture creates a temp directory, runs `git init`, and writes a
@@ -88,7 +114,7 @@ func gitRepoFixture(t *testing.T) string {
 		{"config", "commit.gpgsign", "false"},
 	} {
 		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
-		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+		cmd.Env = hermeticGitEnv()
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}
@@ -99,7 +125,7 @@ func gitRepoFixture(t *testing.T) string {
 		{"commit", "-m", "initial"},
 	} {
 		cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
-		cmd.Env = append(os.Environ(), "GIT_TERMINAL_PROMPT=0")
+		cmd.Env = hermeticGitEnv()
 		if out, err := cmd.CombinedOutput(); err != nil {
 			t.Fatalf("git %v: %v\n%s", args, err, out)
 		}

@@ -15,6 +15,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
+	"sort"
 	"strings"
 	"time"
 
@@ -35,9 +37,28 @@ const coldClusterStateMessage = "Reflection has not completed a pass yet — clu
 // handleReflectPersonality renders the personality profile. Cold case (non-empty
 // corpus, no persisted cluster_id yet) → an explicit not-yet-computed report.
 func handleReflectPersonality(ctx context.Context, deps ClientDeps, a queryReflectArgs) kgtools.ToolResult {
-	clusters, profile, cold := fetchClusterContext(ctx, deps)
-	if cold {
+	provider := deps.ClusterProvider()
+	if provider == nil {
+		return textResult("personality: the reflection loop is not running in this process — " +
+			"no cached clusters to serve. Start the daemon with the propagation runtime enabled.")
+	}
+	cachedClusters, cachedProfile, computed := provider.GetClustersCached()
+	if !computed {
 		return textResult(coldClusterStateMessage)
+	}
+	// Defensive copy: ApplyTopicLabels mutates clusters[i].Label + profile.ClusterLabels
+	// (topic_labels.go:58,64) in place; the cache returns the loop's shared backing
+	// slice/pointer (reassigned under p.mu each tick), so mutating them here would
+	// race the loop + a concurrent map write on ClusterLabels. Copy the slice (struct
+	// elements → independent Label fields) and clone the profile's ClusterLabels map.
+	// Scalars is read-only on this path (ReflectPersonality reads it, never writes), so
+	// the cloned profile shares the Scalars reference — only ClusterLabels needs a fresh map.
+	clusters := append([]clientthought.ThoughtCluster(nil), cachedClusters...)
+	var profile *clientthought.PersonalityProfile
+	if cachedProfile != nil {
+		labels := make(map[string]string, len(cachedProfile.ClusterLabels))
+		maps.Copy(labels, cachedProfile.ClusterLabels)
+		profile = &clientthought.PersonalityProfile{Scalars: cachedProfile.Scalars, ClusterLabels: labels}
 	}
 	// Prefer persisted topic-summary text over the member-SymbolName label wherever
 	// a topic doc exists (lever-produced); unsummarized clusters keep their label.
@@ -118,7 +139,7 @@ func handleReflectInfluence(ctx context.Context, deps ClientDeps, a queryReflect
 	if gc == nil {
 		return errorResult("influence: graph client unavailable")
 	}
-	_, profile, _ := fetchClusterContext(ctx, deps)
+	_, profile := fetchClusterContext(ctx, deps)
 	limit := a.Limit
 	if limit <= 0 {
 		limit = 10
@@ -157,16 +178,29 @@ func handleReflectInfluence(ctx context.Context, deps ClientDeps, a queryReflect
 	return textResult(sb.String())
 }
 
-// handleReflectTensions surfaces pairs of connected thoughts with
-// opposing valence.
-func handleReflectTensions(ctx context.Context, deps ClientDeps, a queryReflectArgs) kgtools.ToolResult {
-	gc := deps.GraphCaller()
-	if gc == nil {
-		return errorResult("tensions: graph client unavailable")
+// tensionsColdMessage is the not-yet-computed report query(mode:tensions) returns
+// when the reflection loop has not completed a tick (computed=false, including
+// right after a daemon restart). The tension report is produced by the background
+// propagation loop and served from cache O(1) — the on-demand call NEVER recomputes
+// synchronously, so a cold cache returns this rather than blocking on a full pass.
+const tensionsColdMessage = "Reflection has not completed a pass yet — the tensions report is not yet " +
+	"computed. The cross-cluster opposing-valence diagnostic appears after the next propagation tick " +
+	"(hourly; the daemon must be logged in). This is the cold state, not an empty result."
+
+// handleReflectTensions serves the loop's cached tension reports in O(1): it reads
+// the TensionsProvider seam (the live PropagationLoop's GetTensions) and renders it.
+// It issues NO graph reads on this path — the background tick already computed the
+// reports. A nil provider (reflection loop not running) or a not-yet-computed report
+// (computed=false) returns a clear message, never a synchronous recompute.
+func handleReflectTensions(_ context.Context, deps ClientDeps, a queryReflectArgs) kgtools.ToolResult {
+	provider := deps.TensionsProvider()
+	if provider == nil {
+		return textResult("tensions: the reflection loop is not running in this process — " +
+			"no cached report to serve. Start the daemon with the propagation runtime enabled.")
 	}
-	tensions, err := clientthought.ReflectTensions(ctx, gc)
-	if err != nil {
-		return errorResult("tension detection failed: " + err.Error())
+	tensions, computed := provider.GetTensions()
+	if !computed {
+		return textResult(tensionsColdMessage)
 	}
 	if a.Format == "json" {
 		return jsonResult(tensions)
@@ -249,11 +283,35 @@ func handleReflectBlindSpots(_ context.Context, deps ClientDeps, a queryReflectA
 
 // handleReflectSummary renders the overall thought-graph summary.
 func handleReflectSummary(ctx context.Context, deps ClientDeps, a queryReflectArgs) kgtools.ToolResult {
+	provider := deps.ClusterProvider()
+	if provider == nil {
+		return textResult("summary: the reflection loop is not running in this process — " +
+			"no cached clusters to serve. Start the daemon with the propagation runtime enabled.")
+	}
+	cachedClusters, _, computed := provider.GetClustersCached()
+	if !computed {
+		return textResult(coldClusterStateMessage)
+	}
+	// Defensive copy of the loop's shared backing slice BEFORE sort + ApplyTopicLabels
+	// (both mutate: sort reorders, ApplyTopicLabels writes clusters[i].Label). ThoughtCluster
+	// is a struct value so the copied slice has independent elements. Summary passes a nil
+	// profile to ApplyTopicLabels below, so there is no ClusterLabels map-write hazard here —
+	// only the slice copy is needed.
+	clusters := append([]clientthought.ThoughtCluster(nil), cachedClusters...)
+	// Restore DetectPersistedClusters' deterministic ordering (clusters.go:156-163) — the
+	// cache (buildClusterObjects map order) is unsorted, but ReflectSummary's
+	// TopClusters = clusters[:5] has no internal re-sort, so default-granularity output
+	// must be Size-desc/ID-asc to stay byte-identical to the pre-cache fetchClusterContext path.
+	sort.Slice(clusters, func(i, j int) bool {
+		if clusters[i].Size != clusters[j].Size {
+			return clusters[i].Size > clusters[j].Size
+		}
+		return clusters[i].ID < clusters[j].ID
+	})
 	gc := deps.GraphCaller()
 	if gc == nil {
 		return errorResult("summary: graph client unavailable")
 	}
-	clusters, _, _ := fetchClusterContext(ctx, deps)
 	// Prefer persisted topic-summary text over the member-SymbolName label wherever
 	// a topic doc exists (lever-produced); unsummarized clusters keep their label.
 	clientthought.ApplyTopicLabels(ctx, gc, clusters, nil)
@@ -307,7 +365,7 @@ func handleReflectEvolution(ctx context.Context, deps ClientDeps, a queryReflect
 	if gc == nil {
 		return errorResult("evolution: graph client unavailable")
 	}
-	clusters, _, _ := fetchClusterContext(ctx, deps)
+	clusters, _ := fetchClusterContext(ctx, deps)
 	snapshots, err := clientthought.ComputeScalarEvolution(ctx, gc, clusters, a.ClusterA, a.ClusterB, 30, clientthought.BuildEvidenceAdj(ctx, gc, clusters))
 	if err != nil {
 		return errorResult("evolution failed: " + err.Error())

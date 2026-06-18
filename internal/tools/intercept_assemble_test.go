@@ -51,6 +51,8 @@ func (d *fakeAssembleDeps) ReflectionForcer() ReflectionForcer           { retur
 func (d *fakeAssembleDeps) SimilarityForcer() SimilarityForcer           { return nil }
 
 func (d *fakeAssembleDeps) BlindSpotProvider() BlindSpotProvider { return nil }
+func (d *fakeAssembleDeps) ClusterProvider() ClusterProvider     { return nil }
+func (d *fakeAssembleDeps) TensionsProvider() TensionsProvider   { return nil }
 
 // scriptGcAssemble is a tiny GraphCaller that answers query(id:)
 // calls with canned node JSON keyed by ID. Sufficient for the

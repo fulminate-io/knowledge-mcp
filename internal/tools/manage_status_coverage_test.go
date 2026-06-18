@@ -116,6 +116,8 @@ func (d *coverageDeps) ReflectionForcer() ReflectionForcer           { return ni
 func (d *coverageDeps) SimilarityForcer() SimilarityForcer           { return nil }
 
 func (d *coverageDeps) BlindSpotProvider() BlindSpotProvider { return nil }
+func (d *coverageDeps) ClusterProvider() ClusterProvider     { return nil }
+func (d *coverageDeps) TensionsProvider() TensionsProvider   { return nil }
 
 // TestRenderLLMCoverage_Table pins the per-graph coverage rendering:
 //   - the knowledge row is present even though its enumerated name is empty (T3-2)

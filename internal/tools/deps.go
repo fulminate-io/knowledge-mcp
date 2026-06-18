@@ -126,6 +126,33 @@ type BlindSpotProvider interface {
 	GetBlindSpots() clientthought.BlindSpotReport
 }
 
+// ClusterProvider is the narrow READ seam the on-demand query(mode:personality)
+// and query(mode:summary) handlers serve the loop's cached clusters + personality
+// profile through. *clientthought.PropagationLoop satisfies it (GetClustersCached).
+// Declared as an interface — not the concrete loop type — so the tools layer reads
+// the cache without importing the loop's full surface, and so tests inject a fake
+// returning constructed clusters. GetClustersCached is O(1) (a p.mu-guarded field
+// read): the handler serves the clusters the background tick already detected and
+// NEVER recomputes on the call path. The bool is the cold sentinel (false before
+// the first tick) — the handler renders a not-yet-computed message rather than a
+// synchronous cluster detect.
+type ClusterProvider interface {
+	GetClustersCached() ([]clientthought.ThoughtCluster, *clientthought.PersonalityProfile, bool)
+}
+
+// TensionsProvider is the narrow READ seam the on-demand query(mode:tensions)
+// handler serves the loop's cached tension reports through. *clientthought.
+// PropagationLoop satisfies it (GetTensions). Declared as an interface — not the
+// concrete loop type — so the tools layer reads the cache without importing the
+// loop's full surface, and so tests inject a fake returning constructed reports.
+// GetTensions is O(1) (a p.mu-guarded field read): the handler serves the reports
+// the background tick already computed and NEVER recomputes on the call path. The
+// bool is the cold sentinel (false before the first tick) — the handler renders a
+// not-yet-computed message rather than a synchronous tension detect.
+type TensionsProvider interface {
+	GetTensions() ([]clientthought.TensionReport, bool)
+}
+
 // SimilarityForcer is the narrow seam the manual propagate tool uses to drive the
 // now-ASYNC topic-similarity lever (thoughts(propagate, similarity:true)).
 // *clientthought.PropagationLoop satisfies it. Declared as an interface (mirroring
@@ -338,6 +365,19 @@ type ClientDeps interface {
 	// handleReflectBlindSpots renders a "reflection loop not running" message on nil
 	// rather than recomputing.
 	BlindSpotProvider() BlindSpotProvider
+	// ClusterProvider returns the read seam query(mode:personality) and
+	// query(mode:summary) serve the loop's cached clusters + personality profile
+	// through (GetClustersCached, O(1)). Returns the live *clientthought.
+	// PropagationLoop, or nil when the reflection loop is not running in this process
+	// (--no-propagation-runtime, or a router-less test fixture) — the handlers render
+	// a "reflection loop not running" message on nil rather than recomputing.
+	ClusterProvider() ClusterProvider
+	// TensionsProvider returns the read seam query(mode:tensions) serves the loop's
+	// cached tension reports through (GetTensions, O(1)). Returns the live
+	// *clientthought.PropagationLoop, or nil when the reflection loop is not running
+	// in this process (same condition as ClusterProvider) — handleReflectTensions
+	// renders a "reflection loop not running" message on nil rather than recomputing.
+	TensionsProvider() TensionsProvider
 	// WorkerReady / PropReady / PipelineReady report whether the corresponding
 	// background-wiring stage has completed (Bind-first startup: the daemon binds the HTTP
 	// MCP listener first, then wires the worker / propagation / pipeline runtimes

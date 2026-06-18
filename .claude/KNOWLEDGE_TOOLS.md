@@ -49,6 +49,7 @@
   </writes>
   <thoughts>
     <rule>recall → think → charge on every task — not optional. Past thoughts carry debugging notes and design rationale that save re-investigation; recall before starting, think during, charge when evidence arrives.</rule>
+    <rule>Charge what is epistemically load-bearing, not just what is procedurally convenient. Charge the moment a USER CORRECTION or directive lands, when a DESIGN INSIGHT or decision rationale is reached, and whenever later evidence confirms or contradicts a prior thought — not only test pass/fail. Charges attach to thoughts only: to bring a decision or finding into the evidence graph, charge the thought that states its claim, or cite the decision/finding as `evidence`. Anti-pattern: charging ONLY step-by-step implementation progress — it inflates procedural bookkeeping into the highest-magnitude, most-influential nodes while genuine insights and corrections sit uncharged, inverting the evidence signal away from epistemic value.</rule>
     <rule>`branches_from` + invalidate is destructive — charges do NOT carry forward to the new thought. Don't supersede a prior thought, or mutate its status, without intent.</rule>
   </thoughts>
   <planning>
@@ -234,6 +235,8 @@
                "reasoning": "Tests pass — 71 callers resolve after adding resolveEdges; the evidence supports this thought's claim that the resolution layer fixes traversal" })
   </example>
   <when-to-use>Before implementing (planned approach) · debugging (hypothesis, then the broken→fixed transition) · design trade-offs · surprising behavior · after testing (charge with results).</when-to-use>
+  <when-to-charge>Charge beyond test results: the moment a USER CORRECTION or directive lands, when a DESIGN INSIGHT or decision rationale is reached, and when later evidence confirms/contradicts a prior thought. Decisions/findings are not directly chargeable (charges are thought-only) — charge the thought that states the claim, or cite the node as `evidence`. Do NOT charge only step-by-step progress: that buries load-bearing insights and corrections under procedural bookkeeping and inverts the evidence signal.</when-to-charge>
+  <feedback-loop-charge>The HIGHEST-grade charge is the feedback loop: when the work is verified in the REAL WORLD — shipped and it works, the symptom is gone, the user confirmed, the prediction held or failed — charge the ORIGINATING hypothesis with that outcome (positive if reality supported the claim, negative if it contradicted it). Green unit tests are not this; reality is. It is the charge most often skipped, because by the time the result lands the session has moved on — but it is the one that turns an asserted hypothesis into validated knowledge. Closing this loop is exactly what the retro phase exists to do; do it whenever an outcome lands, not only at retro.</feedback-loop-charge>
 </tool>
 
 </category>

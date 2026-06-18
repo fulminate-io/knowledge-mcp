@@ -169,6 +169,8 @@ func (d similarityDispatchDeps) PipelineScanner() PipelineScanner             { 
 func (d similarityDispatchDeps) ReflectionForcer() ReflectionForcer           { return nil }
 func (d similarityDispatchDeps) SimilarityForcer() SimilarityForcer           { return d.forcer }
 func (d similarityDispatchDeps) BlindSpotProvider() BlindSpotProvider         { return nil }
+func (d similarityDispatchDeps) ClusterProvider() ClusterProvider             { return nil }
+func (d similarityDispatchDeps) TensionsProvider() TensionsProvider           { return nil }
 
 func callPropagate(deps ClientDeps, args string) kgtools.ToolResult {
 	return handlePropagateClient(context.Background(), deps, kgtools.CallToolParams{

@@ -90,6 +90,13 @@ type PropagationLoop struct {
 	lastAdj        map[string][]string
 	lastTensions   []TensionReport
 	lastBlindSpots BlindSpotReport
+	// lastComputed is the cold sentinel for the cluster/profile/tensions cache:
+	// false until storeDetectionResults has published at least one completed tick,
+	// true thereafter. The on-demand cache-serve handlers (personality/summary/
+	// tensions) read it to distinguish a cold daemon (nothing computed yet) from a
+	// genuinely empty result. Mirrors BlindSpotReport.Computed; flipped true only on
+	// the warm path (storeDetectionResults), never on a failed/early-return tick.
+	lastComputed bool
 
 	// lastDirtySeed is the dirty seed derived by the most recent
 	// runClusterDetection tick (UpdatedAt>watermark thoughts UNION edge-change
@@ -179,6 +186,25 @@ func (p *PropagationLoop) GetBlindSpots() BlindSpotReport {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	return p.lastBlindSpots
+}
+
+// GetClustersCached returns the most recently detected clusters + personality
+// profile from the loop tick, plus a `computed` flag that is false until the
+// loop has stored at least one tick (the cold sentinel). Mirrors GetBlindSpots'
+// Computed-false cold path. Distinct from GetClusters() (kept unchanged for its
+// similarity_lever callers) only by carrying the cold flag.
+func (p *PropagationLoop) GetClustersCached() ([]ThoughtCluster, *PersonalityProfile, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.lastClusters, p.lastProfile, p.lastComputed
+}
+
+// GetTensions returns the most recently computed tension reports plus the cold
+// flag (false before the first tick). Mirrors GetBlindSpots.
+func (p *PropagationLoop) GetTensions() ([]TensionReport, bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.lastTensions, p.lastComputed
 }
 
 // TriggerClusterDetection runs cluster detection synchronously and

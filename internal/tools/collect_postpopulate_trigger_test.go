@@ -77,6 +77,8 @@ func (d *ppTriggerDeps) ReflectionForcer() ReflectionForcer           { return n
 func (d *ppTriggerDeps) SimilarityForcer() SimilarityForcer           { return nil }
 
 func (d *ppTriggerDeps) BlindSpotProvider() BlindSpotProvider { return nil }
+func (d *ppTriggerDeps) ClusterProvider() ClusterProvider     { return nil }
+func (d *ppTriggerDeps) TensionsProvider() TensionsProvider   { return nil }
 
 // TestInterceptCollect_FiresPostPopulateHookOnLivePath proves the
 // gate: PostPopulate edge enrichment demonstrably runs on the live collect path

@@ -115,6 +115,8 @@ func (d graphTypeTestDeps) ReflectionForcer() ReflectionForcer           { retur
 func (d graphTypeTestDeps) SimilarityForcer() SimilarityForcer           { return nil }
 
 func (d graphTypeTestDeps) BlindSpotProvider() BlindSpotProvider { return nil }
+func (d graphTypeTestDeps) ClusterProvider() ClusterProvider     { return nil }
+func (d graphTypeTestDeps) TensionsProvider() TensionsProvider   { return nil }
 
 func callGraphType(t *testing.T, deps ClientDeps, argsJSON string) (handled bool, body string, isErr bool) {
 	t.Helper()

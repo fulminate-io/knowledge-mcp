@@ -406,3 +406,41 @@ func TestRouter_Forwarders_RouteAtCallTime(t *testing.T) {
 		})
 	}
 }
+
+// TestRouter_MachineAuth_RoutesCloudWithoutLogin proves the headless
+// machine-auth path: a Router built with machineAuth=true routes to cloud
+// EVEN WITH an empty keychain (never logged in). This is the selection rule
+// for a client started with a machine bearer token — it runs cloud-only with
+// no keychain involvement.
+func TestRouter_MachineAuth_RoutesCloudWithoutLogin(t *testing.T) {
+	localURL, localEng := startCountingEngine(t)
+	cloudURL, cloudEng := startCountingEngine(t)
+	localGC := NewGraphClientForURL(localURL)
+	store := newFakeAuthStore() // empty → NOT logged in
+	as := auth.NewAuthState(store, time.Hour)
+	r := NewRouterWithMachineAuth(localGC, cloudURL, staticTokenSource{tok: "machine-tok"}, as, true)
+
+	_, err := r.Execute(context.Background(), &knowledgev1.ExecuteRequest{})
+	require.NoError(t, err)
+	assert.Equal(t, int32(0), localEng.execute.Load(), "machine-auth must not route to local")
+	assert.Equal(t, int32(1), cloudEng.execute.Load(), "machine-auth routes cloud without keychain login")
+	assert.True(t, r.LoggedIn(context.Background()), "machine-auth must report LoggedIn==true (cloud-only, no local)")
+}
+
+// TestRouter_MachineAuthFalse_UnchangedSelection is the regression guard that
+// the machineAuth OR did not change the default: machineAuth=false over an
+// empty (not-logged-in) store still routes local, exactly as before.
+func TestRouter_MachineAuthFalse_UnchangedSelection(t *testing.T) {
+	localURL, localEng := startCountingEngine(t)
+	cloudURL, cloudEng := startCountingEngine(t)
+	localGC := NewGraphClientForURL(localURL)
+	store := newFakeAuthStore() // empty → not logged in
+	as := auth.NewAuthState(store, time.Hour)
+	r := NewRouterWithMachineAuth(localGC, cloudURL, staticTokenSource{}, as, false)
+
+	_, err := r.Execute(context.Background(), &knowledgev1.ExecuteRequest{})
+	require.NoError(t, err)
+	assert.Equal(t, int32(1), localEng.execute.Load(), "machineAuth=false + empty store still routes local")
+	assert.Equal(t, int32(0), cloudEng.execute.Load(), "cloud must not be hit without auth")
+	assert.False(t, r.LoggedIn(context.Background()), "machineAuth=false + empty store reports LoggedIn==false")
+}

@@ -30,6 +30,21 @@ func TestStaticTokenSource_ReturnsFields(t *testing.T) {
 	}
 }
 
+// TestStaticTokenSource_NotRefreshing is the load-bearing guard for the
+// "no refresh loop" property of the headless machine-auth path: a
+// StaticTokenSource implements TokenSource (so it can drive every cloud
+// call) but deliberately NOT RefreshingTokenSource, so a 401 on a
+// machine-bearer request is surfaced to the caller rather than triggering a
+// force-refresh retry it could never satisfy (the opaque token has no
+// refresh credential behind it).
+func TestStaticTokenSource_NotRefreshing(t *testing.T) {
+	var _ TokenSource = StaticTokenSource{}
+	if _, ok := any(StaticTokenSource{}).(RefreshingTokenSource); ok {
+		t.Fatal("StaticTokenSource must NOT implement RefreshingTokenSource — " +
+			"a machine bearer has no refresh credential, so a 401 must surface to the caller, not spin a force-refresh retry")
+	}
+}
+
 // signTestJWT makes a JWT with the given permissions claim and exp (as
 // seconds since epoch). Signature value is irrelevant — the client
 // doesn't verify.
