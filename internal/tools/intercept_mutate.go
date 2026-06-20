@@ -61,6 +61,16 @@ type mutateArgs struct {
 	EdgeEvidence  string  `json:"edge_evidence,omitempty"`
 	LastValidated string  `json:"last_validated,omitempty"`
 
+	// Negation-gate proof-of-work fields — read ONLY by InterceptNegationGate
+	// (negation_gate.go), which runs BEFORE InterceptMutate. VerifiedQuote is a
+	// verbatim substring of the contradicted node's CURRENT source the negator must
+	// supply for mutate(link relationship:contradicts) / mutate(update status:
+	// invalidated) to pass; CitedRange is the optional file:line-range locality hint
+	// (empty → existence+currency only). GATE-only inputs: the write IGNORES them
+	// (proof-of-work, never persisted), so they are not threaded into any write path.
+	VerifiedQuote string `json:"verified_quote,omitempty"`
+	CitedRange    string `json:"cited_range,omitempty"`
+
 	// Extended fields claimed for create=finding/
 	// research/rule + answer dispatch arms, and (Command/CriterionType/
 	// Keywords) the per-type update intercept (intercept_mutate_update.go).

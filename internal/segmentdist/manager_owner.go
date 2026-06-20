@@ -32,6 +32,12 @@ type Manager struct {
 	caller   segmentCaller
 	cacheDir string
 	maxBytes int64
+	// writerID is the stable per-machine identity threaded onto every
+	// rpcSegmentSource this Manager constructs, so each outbound segment RPC
+	// carries it for the server's last-connection liveness stamp. Set at
+	// construction from the stable writer-id helper; "" is a tolerated no-op
+	// server-side (an older client that does not supply one).
+	writerID string
 
 	mu sync.Mutex
 	// managers holds the HNSW engine per graph (vectors). bm25Managers holds the
@@ -39,9 +45,11 @@ type Manager struct {
 	managers     map[graphKey]*distManager[[]byte, struct{}]
 	bm25Managers map[graphKey]*distManager[bm25.Query, *bm25.CorpusStats]
 	// detManagers holds the DETERMINISTIC HNSW engine per graph used ONLY by the
-	// segment_rebuild path (hnsw.NewDeterministic()). Kept separate from managers
-	// so the rebuild's byte-reproducible build engine never shares a coalescing
-	// buffer with the embed engine for the same graph. Guarded by mu.
+	// segment_rebuild path. Kept separate from managers so the rebuild's build
+	// engine never shares a coalescing buffer with the embed engine for the same
+	// graph. (Both engines now build byte-reproducibly — the HNSW builder is
+	// deterministic everywhere — so the split is purely buffer/seed isolation, not a
+	// build-variant distinction.) Guarded by mu.
 	detManagers map[graphKey]*distManager[[]byte, struct{}]
 }
 
@@ -55,12 +63,14 @@ type graphKey struct {
 // surface (*graphclient.Router / *graphclient.GraphClient route
 // cloud-when-logged-in / local-when-not through the same dispatch the Engine RPCs
 // use). cacheDir roots the per-graph L2 disk caches; maxBytes <= 0 means an
-// unbounded cache.
+// unbounded cache. The stable per-machine writer_id is resolved once
+// here via the writer-id helper and threaded onto every outbound segment RPC.
 func NewManager(caller segmentCaller, cacheDir string, maxBytes int64) *Manager {
 	return &Manager{
 		caller:       caller,
 		cacheDir:     cacheDir,
 		maxBytes:     maxBytes,
+		writerID:     writerID(),
 		managers:     make(map[graphKey]*distManager[[]byte, struct{}]),
 		bm25Managers: make(map[graphKey]*distManager[bm25.Query, *bm25.CorpusStats]),
 		detManagers:  make(map[graphKey]*distManager[[]byte, struct{}]),
@@ -81,10 +91,37 @@ func (m *Manager) AddAndShip(ctx context.Context, gt kgtypes.GraphType, name str
 	if err := dm.engine.Add(docs); err != nil {
 		return err
 	}
-	// ROLE B (embed): reconcile-prune against locallyShipped only — restart-safe,
-	// never prunes the prior corpus this process did not ship.
-	_, err := dm.ship(ctx, dm.locallyShipped)
+	// REGISTRY MODEL: publish this writer's RESIDENT live set as its
+	// "hnsw" manifest, unioned with the deterministic engine's resident ids (both
+	// share the one "hnsw" graphKey manifest, so the embed publish must keep the
+	// det engine's resident blobs referenced or it would reap them). The server
+	// refcount-GCs whatever dropped out of the live set — restart-safe because the
+	// resident Export omits merged-away constituents and a fresh process's
+	// re-imported corpus is its resident set, not a reaped diff.
+	_, err := dm.shipAndPublish(ctx, m.detResidentHNSWIDs(gt, name), dm.locallyShipped)
 	return err
+}
+
+// detResidentHNSWIDs returns the resident Export() ids of the DETERMINISTIC HNSW
+// engine for (gt, name) when one exists, else nil. The embed HNSW publish unions
+// these into its "hnsw" manifest because the embed and deterministic engines
+// share ONE (graphKey, writer, "hnsw") manifest — without the union, an embed
+// publish would reap the deterministic engine's still-resident blobs. Returns nil
+// when no deterministic engine has been constructed for the graph (the common
+// embed-only case).
+func (m *Manager) detResidentHNSWIDs(gt kgtypes.GraphType, name string) []searchengine.SegmentID {
+	m.mu.Lock()
+	dm, ok := m.detManagers[graphKey{graphType: gt, graphName: name}]
+	m.mu.Unlock()
+	if !ok {
+		return nil
+	}
+	exported := dm.engine.Export()
+	ids := make([]searchengine.SegmentID, 0, len(exported))
+	for _, b := range exported {
+		ids = append(ids, b.ID)
+	}
+	return ids
 }
 
 // AddAndShipFields is the BM25 counterpart to AddAndShip: it routes field-bearing
@@ -102,8 +139,11 @@ func (m *Manager) AddAndShipFields(ctx context.Context, gt kgtypes.GraphType, na
 	if err := dm.engine.Add(docs); err != nil {
 		return err
 	}
-	// ROLE B (embed): reconcile-prune against locallyShipped only — restart-safe.
-	_, err := dm.ship(ctx, dm.locallyShipped)
+	// REGISTRY MODEL: publish the BM25 resident live set as its "bm25"
+	// manifest. BM25 has a single engine per graph (no deterministic variant), so
+	// there is no sibling-engine union to carry — the manifest is exactly this
+	// engine's resident Export().
+	_, err := dm.shipAndPublish(ctx, nil, dm.locallyShipped)
 	return err
 }
 
@@ -124,16 +164,17 @@ func (m *Manager) Flush(ctx context.Context, gt kgtypes.GraphType, name string) 
 	if err := hnsw.engine.Flush(); err != nil {
 		return err
 	}
-	// ROLE B (embed force-seal of the sub-threshold tail, NOT a complete corpus):
-	// reconcile-prune against locallyShipped only — restart-safe.
-	if _, err := hnsw.ship(ctx, hnsw.locallyShipped); err != nil {
+	// REGISTRY MODEL: embed force-seal of the sub-threshold tail, then
+	// publish the resident live set as the manifest (unioned with the deterministic
+	// engine's resident ids for the shared "hnsw" manifest) — restart-safe.
+	if _, err := hnsw.shipAndPublish(ctx, m.detResidentHNSWIDs(gt, name), hnsw.locallyShipped); err != nil {
 		return err
 	}
 	bm := m.bm25ManagerFor(gt, name)
 	if err := bm.engine.Flush(); err != nil {
 		return err
 	}
-	_, err := bm.ship(ctx, bm.locallyShipped)
+	_, err := bm.shipAndPublish(ctx, nil, bm.locallyShipped)
 	return err
 }
 
@@ -151,7 +192,7 @@ func (m *Manager) AddDeterministic(ctx context.Context, gt kgtypes.GraphType, na
 	if len(docs) == 0 {
 		return nil
 	}
-	dm := m.hnswManagerFor(m.detManagers, hnsw.NewDeterministic(), gt, name)
+	dm := m.hnswManagerFor(m.detManagers, hnsw.NewDeterministic(), gt, name, false)
 	return dm.engine.Add(docs)
 }
 
@@ -174,32 +215,46 @@ func (m *Manager) AddFields(ctx context.Context, gt kgtypes.GraphType, name stri
 // FlushDeterministic is the SINGLE serial finalizer of the deterministic rebuild
 // path, called ONCE by the driver after every concurrent AddDeterministic /
 // AddFields has published its segment. It seals the sub-threshold tail of the
-// DETERMINISTIC HNSW engine and ships it ONCE (the only ship() on the
-// deterministic path — because it runs after the pool joins, the single Export
-// it diffs against is COMPLETE, so reconcilePrune can only drop genuinely
-// merged-away ids, never a live sibling: this is the fix for the concurrent-ship
-// data-loss race). It then seals + ships the BM25 tail once.
+// DETERMINISTIC HNSW engine and PUBLISHES its resident live set ONCE (the only
+// ship on the deterministic path — because it runs after the pool joins, the
+// single Export it publishes is COMPLETE). It then seals + publishes the BM25
+// tail once.
 //
-// PRUNE ROLE A (replace-prune): both ships pass shippedIDs (the server-seeded
-// full set), NOT locallyShipped. The deterministic Export() IS the complete
-// rebuilt corpus, so shippedIDs − Export() is exactly the old (possibly
-// degenerate) corpus this rebuild supersedes — the rebuild MUST prune it to
-// replace a degenerate pool. The driver error-gates the rebuild BEFORE calling
-// FlushDeterministic, so a partial Export can never reach this prune. (A
-// locallyShipped-only mechanic would orphan the old corpus here: a fresh
-// process's locallyShipped is empty, so the rebuild would ship the new corpus
-// alongside the stale old one and never prune it.)
+// REGISTRY MODEL — ROLE A: the rebuild publishes its RESIDENT Export as
+// the writer's "hnsw" manifest (NOT a force-reloaded set — a force-reload would
+// re-List the OLD corpus and resurface superseded ids via publishImport, defeating
+// the replace). It publishes the DETERMINISTIC resident set ONLY — NOT unioned with
+// the embed engine's resident set: the rebuild's documented purpose is to REPLACE
+// the (possibly degenerate, non-deterministic) embed corpus, whose blobs hash
+// DIFFERENTLY from the deterministic rebuild and so are correctly reaped by the
+// refcount-GC. Any node the rebuild ALSO covers hashes identically (deterministic
+// build) and is already in the det Export, so the legitimate overlap is preserved
+// without a union; an embed blob for a node OUTSIDE the rebuild scan self-heals on
+// the next embed dirty-gen ship (which re-publishes the embed manifest) — the same
+// self-healing the embed path already relies on. (A det∪embed union was
+// considered; it pins the stale embed corpus the rebuild is replacing and breaks
+// the replace-regression guards — det-only is the resolution that keeps every
+// guard green and matches the production rebuild flow, where the rebuild driver
+// never populates the embed engine.)
 //
-// RETURNS the HNSW pruned []SegmentID (the merged-away ids reconcilePrune dropped
+// The reconcile is against shippedIDs (the server-seeded full set), so
+// shippedIDs − liveSet is exactly the superseded old corpus, returned for local L2
+// eviction. The driver error-gates the rebuild BEFORE calling FlushDeterministic,
+// and the publish coverage/subset gate blocks a degenerate rebuild from publishing
+// a wipe-inducing manifest.
+//
+// RETURNS the HNSW superseded []SegmentID (the old-corpus ids the publish reaped
 // server-side) so the driver feeds them to InvalidateLocal for local L2 .seg
-// eviction. The BM25 ship's prune set is irrelevant to local embed-cache
+// eviction. The BM25 publish's dropped set is irrelevant to local embed-cache
 // invalidation, so it is discarded.
 func (m *Manager) FlushDeterministic(ctx context.Context, gt kgtypes.GraphType, name string) ([]searchengine.SegmentID, error) {
-	hnswDM := m.hnswManagerFor(m.detManagers, hnsw.NewDeterministic(), gt, name)
+	hnswDM := m.hnswManagerFor(m.detManagers, hnsw.NewDeterministic(), gt, name, false)
 	if err := hnswDM.engine.Flush(); err != nil {
 		return nil, err
 	}
-	pruned, err := hnswDM.ship(ctx, hnswDM.shippedIDs)
+	// ROLE A: publish the deterministic resident Export, reconciling against
+	// shippedIDs so the superseded old corpus is reaped + returned.
+	superseded, err := hnswDM.shipAndPublish(ctx, nil, hnswDM.shippedIDs)
 	if err != nil {
 		return nil, err
 	}
@@ -207,10 +262,10 @@ func (m *Manager) FlushDeterministic(ctx context.Context, gt kgtypes.GraphType, 
 	if err := bm.engine.Flush(); err != nil {
 		return nil, err
 	}
-	if _, err := bm.ship(ctx, bm.shippedIDs); err != nil {
+	if _, err := bm.shipAndPublish(ctx, nil, bm.shippedIDs); err != nil {
 		return nil, err
 	}
-	return pruned, nil
+	return superseded, nil
 }
 
 // InvalidateLocal evicts the given superseded segment ids from the deterministic
@@ -223,7 +278,7 @@ func (m *Manager) InvalidateLocal(gt kgtypes.GraphType, name string, ids []searc
 	if len(ids) == 0 {
 		return
 	}
-	dm := m.hnswManagerFor(m.detManagers, hnsw.NewDeterministic(), gt, name)
+	dm := m.hnswManagerFor(m.detManagers, hnsw.NewDeterministic(), gt, name, false)
 	for _, id := range ids {
 		dm.cache.Remove(id)
 	}
@@ -237,7 +292,7 @@ func (m *Manager) InvalidateLocal(gt kgtypes.GraphType, name string, ids []searc
 // drain edge without disturbing resident state. A fresh rpcSegmentSource is
 // built per call (no engine, no cache) — strictly the presence list.
 func (m *Manager) HasShippedSegments(ctx context.Context, gt kgtypes.GraphType, name string) (bool, error) {
-	source := newRPCSegmentSource(m.caller, graphSelector(gt, name), context.Background())
+	source := newRPCSegmentSource(m.caller, graphSelector(gt, name), m.writerID, context.Background())
 	metas, err := source.List(ctx, 0)
 	if err != nil {
 		return false, err
@@ -268,7 +323,7 @@ func (m *Manager) HasShippedSegments(ctx context.Context, gt kgtypes.GraphType, 
 func (m *Manager) ShippedSegmentDocCount(
 	ctx context.Context, gt kgtypes.GraphType, name string,
 ) (covered int, anyUnknown bool, err error) {
-	source := newRPCSegmentSource(m.caller, graphSelector(gt, name), context.Background())
+	source := newRPCSegmentSource(m.caller, graphSelector(gt, name), m.writerID, context.Background())
 	metas, err := source.List(ctx, 0)
 	if err != nil {
 		return 0, false, err
@@ -307,21 +362,34 @@ func (m *Manager) ResidentDocCount(gt kgtypes.GraphType, name string) int {
 // rooted per-graph so distinct graphs never collide on the content-hash filename
 // space.
 func (m *Manager) managerFor(gt kgtypes.GraphType, name string) *distManager[[]byte, struct{}] {
-	return m.hnswManagerFor(m.managers, hnsw.New(), gt, name)
+	// Embed engine: hnsw.New() is the deterministic builder (the only HNSW builder),
+	// so the live ship path is byte-reproducible — two writers building the same
+	// nodes mint the same content-hash blob, the content-addressed store dedups to
+	// one copy at refcount-N, and exact-match recall is recovered. Auto-reclaim
+	// superseded constituents from the LIVE L2 cache on every background merge.
+	return m.hnswManagerFor(m.managers, hnsw.New(), gt, name, true)
 }
 
 // hnswManagerFor is the shared HNSW distManager factory both the embed path
-// (managerFor → m.managers, hnsw.New()) and the deterministic rebuild path
-// (AddDeterministic/FlushDeterministic → m.detManagers, hnsw.NewDeterministic())
-// route through. dst selects WHICH per-graph map the memoized instance is keyed
-// in; fmtVariant selects the Format the engine builds with. The two maps are
-// distinct so the embed and rebuild engines for the SAME graph never share a
-// coalescing buffer or a shippedIDs seed — but they share one content-addressed
-// cache root (hnsw.New().Name() == hnsw.NewDeterministic().Name() == "hnsw"),
-// which is SAFE because content-hash filenames mean deterministic-vs-parallel
-// segments for the same nodes hash differently and never collide.
+// (managerFor → m.managers) and the segment_rebuild path
+// (AddDeterministic/FlushDeterministic → m.detManagers) route through. dst selects
+// WHICH per-graph map the memoized instance is keyed in; fmtVariant is the HNSW
+// Format (always the deterministic builder now). The two maps are distinct so the
+// embed and rebuild engines for the SAME graph never share a coalescing buffer or a
+// shippedIDs seed — but they share one content-addressed cache root (Name() is the
+// constant "hnsw"), which is SAFE because content-hash filenames key on the bytes:
+// both engines build the same nodes byte-identically and so correctly share one
+// cache entry, while non-overlapping content lands under a distinct hash — no
+// collision either way.
+//
+// autoReclaim gates the merge-completion hook: the EMBED engine (managerFor) wires
+// Options.OnMerge so a background merge reclaims the superseded constituents from
+// its live L2 cache; the DETERMINISTIC rebuild engine passes false (nil OnMerge),
+// because its superseded segments are reclaimed through the ROLE-A
+// FlushDeterministic→InvalidateLocal path, NOT the live embed cache — auto-
+// reclaiming there would Remove against the wrong cache lifecycle.
 func (m *Manager) hnswManagerFor(
-	dst map[graphKey]*distManager[[]byte, struct{}], fmtVariant hnsw.Format, gt kgtypes.GraphType, name string,
+	dst map[graphKey]*distManager[[]byte, struct{}], fmtVariant hnsw.Format, gt kgtypes.GraphType, name string, autoReclaim bool,
 ) *distManager[[]byte, struct{}] {
 	k := graphKey{graphType: gt, graphName: name}
 	m.mu.Lock()
@@ -331,10 +399,21 @@ func (m *Manager) hnswManagerFor(
 	}
 
 	target := graphSelector(gt, name)
-	engine := searchengine.New[[]byte, struct{}](fmtVariant, searchengine.Options{})
-	source := newRPCSegmentSource(m.caller, target, context.Background())
+	source := newRPCSegmentSource(m.caller, target, m.writerID, context.Background())
 	cache := newDiskSegmentCache(graphCacheDirFor(m.cacheDir, gt, name, fmtVariant.Name()), m.maxBytes)
-	dm := newDistManager(engine, source, cache, target, fmtVariant.Name())
+
+	// var-before-assign: the OnMerge closure back-references the distManager that is
+	// constructed AFTER the engine. Safe because OnMerge cannot fire before the
+	// engine's first merge, which cannot happen before this function returns (the
+	// engine holds no documents at construction and the first merge tick is 50ms
+	// out against an empty set).
+	var dm *distManager[[]byte, struct{}]
+	opts := searchengine.Options{}
+	if autoReclaim {
+		opts.OnMerge = func(res searchengine.MergeResult) { dm.reclaimMerged(res) }
+	}
+	engine := searchengine.New[[]byte, struct{}](fmtVariant, opts)
+	dm = newDistManager(engine, source, cache, target, fmtVariant.Name())
 	dst[k] = dm
 	return dm
 }
@@ -355,10 +434,18 @@ func (m *Manager) bm25ManagerFor(gt kgtypes.GraphType, name string) *distManager
 	}
 
 	target := graphSelector(gt, name)
-	engine := searchengine.New[bm25.Query, *bm25.CorpusStats](bm25.New(), searchengine.Options{})
-	source := newRPCSegmentSource(m.caller, target, context.Background())
+	source := newRPCSegmentSource(m.caller, target, m.writerID, context.Background())
 	cache := newDiskSegmentCache(graphCacheDirFor(m.cacheDir, gt, name, bm25.New().Name()), m.maxBytes)
-	dm := newDistManager(engine, source, cache, target, bm25.New().Name())
+
+	// var-before-assign OnMerge: the BM25 engine is embed-only (no deterministic
+	// variant), so it always auto-reclaims superseded constituents from its live L2
+	// cache on a background merge. Same back-reference-after-construction safety as
+	// hnswManagerFor (OnMerge cannot fire before this returns).
+	var dm *distManager[bm25.Query, *bm25.CorpusStats]
+	engine := searchengine.New[bm25.Query, *bm25.CorpusStats](bm25.New(), searchengine.Options{
+		OnMerge: func(res searchengine.MergeResult) { dm.reclaimMerged(res) },
+	})
+	dm = newDistManager(engine, source, cache, target, bm25.New().Name())
 	m.bm25Managers[k] = dm
 	return dm
 }

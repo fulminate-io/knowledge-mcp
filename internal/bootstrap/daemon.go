@@ -261,6 +261,16 @@ func (c *client) wireRuntimesBackground(ctx context.Context, f Config) {
 		stage("llmproviders.RunPrecheck spawned (async)")
 	}
 
+	// Construct the client-side segment Manager UNCONDITIONALLY (router-guarded),
+	// BEFORE wirePipelineRuntime — see ensureSegmentManager. This is the
+	// READ/CONSUME engine the search intercepts query, and it must exist even
+	// offline so search serves BM25 over existing segments; wirePipelineRuntime
+	// then only attaches this already-built instance to the producer for shipping.
+	// The L2 cache roots under f.GraphStorage (<graph-storage>/segments) — the same
+	// tilde-expanded data root the client spawns the local server with — so client
+	// L2 and server store co-locate instead of leaking to a HOME-fixed path.
+	c.ensureSegmentManager(f.GraphStorage)
+
 	// Wire the client-side LLM pipeline (Phase 6). Builds summarizer +
 	// embedder + worker pools, runs the initial graph-list registration,
 	// then spawns a background refresh goroutine that replaces the

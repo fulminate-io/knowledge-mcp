@@ -59,6 +59,7 @@ func (d *repoTestDeps) RepoResolver() *RepoResolver                  { return d.
 func (d *repoTestDeps) SegmentManager() SegmentSearcher              { return nil }
 func (d *repoTestDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
 func (d *repoTestDeps) SegmentShipper() SegmentShipper               { return nil }
+func (d *repoTestDeps) SegmentPruner() SegmentPruner                 { return nil }
 func (d *repoTestDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
 func (d *repoTestDeps) PipelineScanner() PipelineScanner             { return nil }
 func (d *repoTestDeps) ReflectionForcer() ReflectionForcer           { return nil }

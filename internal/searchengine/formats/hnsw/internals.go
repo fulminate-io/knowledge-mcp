@@ -30,7 +30,7 @@ type hnswNode struct {
 }
 
 // binaryBuildItem holds a binary vector with its external ID for batch
-// insertion (parallel build).
+// insertion by the deterministic serial builder.
 type binaryBuildItem struct {
 	id  string
 	vec []byte

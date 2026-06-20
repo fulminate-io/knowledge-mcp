@@ -154,6 +154,7 @@ func (d pullDeps) RepoResolver() *RepoResolver                  { return nil }
 func (d pullDeps) SegmentManager() SegmentSearcher              { return nil }
 func (d pullDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
 func (d pullDeps) SegmentShipper() SegmentShipper               { return nil }
+func (d pullDeps) SegmentPruner() SegmentPruner                 { return nil }
 func (d pullDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
 func (d pullDeps) PipelineScanner() PipelineScanner             { return nil }
 func (d pullDeps) ReflectionForcer() ReflectionForcer           { return nil }

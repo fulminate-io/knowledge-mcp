@@ -29,14 +29,34 @@ type fakeSegmentService struct {
 	mu    sync.Mutex
 	byKey map[string][]*knowledgev1.SegmentBlobProto
 	gen   uint64
+	// manifests holds each writer's published id-set, keyed graphKey -> (writerID
+	// "\x00" format) -> id-set. Publish swaps a writer's manifest and refcount-GCs
+	// blobs no manifest references — the in-memory mirror of the real server's
+	// __segment_manifests + NOT EXISTS GC.
+	manifests map[string]map[string]map[string]bool
+	// seenWriterIDs records every non-empty writer_id the fake observed on ANY
+	// inbound RPC (ship/list/fetch/publish) — the test's window onto the
+	// last-connection liveness wiring (the server stamps __segment_writers off this).
+	seenWriterIDs map[string]bool
 }
 
 func newFakeSegmentService() *fakeSegmentService {
-	return &fakeSegmentService{byKey: map[string][]*knowledgev1.SegmentBlobProto{}}
+	return &fakeSegmentService{
+		byKey:         map[string][]*knowledgev1.SegmentBlobProto{},
+		manifests:     map[string]map[string]map[string]bool{},
+		seenWriterIDs: map[string]bool{},
+	}
 }
 
 func (f *fakeSegmentService) key(t *knowledgev1.GraphSelector) string {
 	return t.GetGraph() + ":" + t.GetRepo() + t.GetAccount() + t.GetName()
+}
+
+// recordWriter notes a non-empty writer_id seen on an inbound RPC (caller holds mu).
+func (f *fakeSegmentService) recordWriter(writerID string) {
+	if writerID != "" {
+		f.seenWriterIDs[writerID] = true
+	}
 }
 
 func (f *fakeSegmentService) Ship(
@@ -44,6 +64,7 @@ func (f *fakeSegmentService) Ship(
 ) (*connect.Response[knowledgev1.ShipResponse], error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.recordWriter(req.Msg.GetWriterId())
 	k := f.key(req.Msg.GetTarget())
 	existing := map[string]*knowledgev1.SegmentBlobProto{}
 	for _, b := range f.byKey[k] {
@@ -72,6 +93,7 @@ func (f *fakeSegmentService) ListDelta(
 ) (*connect.Response[knowledgev1.ListDeltaResponse], error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.recordWriter(req.Msg.GetWriterId())
 	k := f.key(req.Msg.GetTarget())
 	var metas []*knowledgev1.SegmentMetaProto
 	for _, b := range f.byKey[k] {
@@ -88,6 +110,7 @@ func (f *fakeSegmentService) Fetch(
 ) (*connect.Response[knowledgev1.FetchResponse], error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.recordWriter(req.Msg.GetWriterId())
 	k := f.key(req.Msg.GetTarget())
 	want := map[string]bool{}
 	for _, id := range req.Msg.GetIds() {
@@ -128,6 +151,52 @@ func (f *fakeSegmentService) Prune(
 	return connect.NewResponse(&knowledgev1.PruneResponse{Deleted: removed}), nil
 }
 
+// Publish swaps this writer's manifest for (graphKey, writer_id, format) with the
+// published id-set, then refcount-GCs every blob no manifest references —
+// the in-memory mirror of the real server's manifest swap + NOT EXISTS GC. The
+// refcount is mechanical: a blob survives iff SOME writer's manifest references
+// it (multi-writer-safe by construction). Returns how many blobs it removed.
+func (f *fakeSegmentService) Publish(
+	_ context.Context, req *connect.Request[knowledgev1.PublishRequest],
+) (*connect.Response[knowledgev1.PublishResponse], error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.recordWriter(req.Msg.GetWriterId())
+	k := f.key(req.Msg.GetTarget())
+
+	// Swap this writer's manifest (keyed writer_id + format).
+	if f.manifests[k] == nil {
+		f.manifests[k] = map[string]map[string]bool{}
+	}
+	mk := req.Msg.GetWriterId() + "\x00" + req.Msg.GetFormat()
+	set := map[string]bool{}
+	for _, id := range req.Msg.GetIds() {
+		set[id] = true
+	}
+	f.manifests[k][mk] = set
+
+	// Union every manifest's id-set under this graphKey.
+	referenced := map[string]bool{}
+	for _, s := range f.manifests[k] {
+		for id := range s {
+			referenced[id] = true
+		}
+	}
+
+	// Refcount-GC: keep only blobs some manifest references.
+	kept := f.byKey[k][:0]
+	var removed uint64
+	for _, b := range f.byKey[k] {
+		if referenced[b.GetId()] {
+			kept = append(kept, b)
+			continue
+		}
+		removed++
+	}
+	f.byKey[k] = kept
+	return connect.NewResponse(&knowledgev1.PublishResponse{Deleted: removed}), nil
+}
+
 func metaOf(b *knowledgev1.SegmentBlobProto) *knowledgev1.SegmentMetaProto {
 	// Carry doc_count onto the meta exactly as the real server's metaFromEnvelope
 	// does — the coverage probe reads meta.DocCount off ListDelta.
@@ -139,7 +208,7 @@ func metaOf(b *knowledgev1.SegmentBlobProto) *knowledgev1.SegmentMetaProto {
 // newSegmentHarness stands up an h2c httptest server behind the fake
 // SegmentService handler and returns a GraphClient pointed at it (the GraphClient
 // satisfies segmentCaller).
-func newSegmentHarness(t *testing.T) (*fakeSegmentService, *graphclient.GraphClient) {
+func newSegmentHarness(t testing.TB) (*fakeSegmentService, *graphclient.GraphClient) {
 	t.Helper()
 	svc := newFakeSegmentService()
 	mux := http.NewServeMux()
@@ -167,7 +236,7 @@ func TestRPCSegmentSourceRoundTrip(t *testing.T) {
 	})
 	require.NoError(t, err)
 
-	src := newRPCSegmentSource(gc, target, ctx)
+	src := newRPCSegmentSource(gc, target, "", ctx)
 
 	metas, err := src.List(ctx, 0)
 	require.NoError(t, err)

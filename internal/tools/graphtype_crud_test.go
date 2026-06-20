@@ -109,6 +109,7 @@ func (d graphTypeTestDeps) RepoResolver() *RepoResolver                  { retur
 func (d graphTypeTestDeps) SegmentManager() SegmentSearcher              { return nil }
 func (d graphTypeTestDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
 func (d graphTypeTestDeps) SegmentShipper() SegmentShipper               { return nil }
+func (d graphTypeTestDeps) SegmentPruner() SegmentPruner                 { return nil }
 func (d graphTypeTestDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
 func (d graphTypeTestDeps) PipelineScanner() PipelineScanner             { return nil }
 func (d graphTypeTestDeps) ReflectionForcer() ReflectionForcer           { return nil }

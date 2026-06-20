@@ -55,14 +55,16 @@ func classifyForTest(
 	charges map[string][]*knowledgev1.Node,
 	influence map[string]float64,
 	nodeByID map[string]*knowledgev1.Node,
+	citedCodeUpdatedAt map[string]int64,
 	now time.Time,
 ) BlindSpotReport {
 	return classifyBlindSpots(blindSpotInputs{
-		thoughtIDs: thoughtIDs,
-		charges:    charges,
-		influence:  influence,
-		nodeByID:   nodeByID,
-		now:        now,
+		thoughtIDs:         thoughtIDs,
+		charges:            charges,
+		influence:          influence,
+		nodeByID:           nodeByID,
+		citedCodeUpdatedAt: citedCodeUpdatedAt,
+		now:                now,
 	})
 }
 
@@ -104,7 +106,7 @@ func TestClassifyBlindSpots_ConfidentUntested(t *testing.T) {
 		"settled": mkThought("settled", "", "implementer"),
 		"tested":  mkThought("tested", "", "implementer"),
 	}
-	r := classifyForTest([]string{"settled", "tested"}, charges, nil, nodeByID, fixedNow)
+	r := classifyForTest([]string{"settled", "tested"}, charges, nil, nodeByID, nil, fixedNow)
 
 	assert.True(t, hasThought(r, facetConfidentUntested, "settled"),
 		"single heavy-charge high-magnitude thought is confident-but-untested")
@@ -122,7 +124,7 @@ func TestClassifyBlindSpots_FoundationalUnexamined(t *testing.T) {
 		"hub":      mkThought("hub", "", "implementer"),
 		"isolated": mkThought("isolated", "", "implementer"),
 	}
-	r := classifyForTest([]string{"hub", "isolated"}, charges, influence, nodeByID, fixedNow)
+	r := classifyForTest([]string{"hub", "isolated"}, charges, influence, nodeByID, nil, fixedNow)
 
 	assert.True(t, hasThought(r, facetFoundationalUnexamined, "hub"),
 		"high-influence zero-charge thought is foundational-but-unexamined")
@@ -153,7 +155,7 @@ func TestClassifyBlindSpots_FragileSinglePoint(t *testing.T) {
 		"robust":  mkThought("robust", "", "implementer"),
 		"single":  mkThought("single", "", "implementer"),
 	}
-	r := classifyForTest([]string{"fragile", "robust", "single"}, charges, nil, nodeByID, fixedNow)
+	r := classifyForTest([]string{"fragile", "robust", "single"}, charges, nil, nodeByID, nil, fixedNow)
 
 	assert.True(t, hasThought(r, facetFragileSinglePoint, "fragile"),
 		"a thought that flips sign on single-charge removal is fragile")
@@ -179,12 +181,45 @@ func TestClassifyBlindSpots_StaleConfidence(t *testing.T) {
 		"stale":  mkThought("stale", "", "implementer"),
 		"recent": mkThought("recent", "", "implementer"),
 	}
-	r := classifyForTest([]string{"stale", "recent"}, charges, nil, nodeByID, fixedNow)
+	r := classifyForTest([]string{"stale", "recent"}, charges, nil, nodeByID, nil, fixedNow)
 
 	assert.True(t, hasThought(r, facetStaleConfidence, "stale"),
 		"a thought whose newest charge predates the staleness window is stale")
 	assert.False(t, hasThought(r, facetStaleConfidence, "recent"),
 		"a recently-charged thought is not stale")
+}
+
+// TestClassifyBlindSpots_CodeChanged (FAILS-WHEN-ABSENT): a thought whose cited
+// code UpdatedAt is newer than its newest charge is flagged facetCodeChanged; a
+// thought whose cited code is older-or-equal is not; an uncited thought (no map
+// entry → 0) is never flagged. Mirrors the stale-confidence test: a single charge
+// at fixedNow, and the citedCodeUpdatedAt fixture straddles that charge time.
+func TestClassifyBlindSpots_CodeChanged(t *testing.T) {
+	charges := map[string][]*knowledgev1.Node{
+		"changed": {mkCharge("cc0", "positive", 3, fixedNow)},
+		"fresh":   {mkCharge("fr0", "positive", 3, fixedNow)},
+		"uncited": {mkCharge("un0", "positive", 3, fixedNow)},
+	}
+	nodeByID := map[string]*knowledgev1.Node{
+		"changed": mkThought("changed", "", "implementer"),
+		"fresh":   mkThought("fresh", "", "implementer"),
+		"uncited": mkThought("uncited", "", "implementer"),
+	}
+	// "changed": code modified one hour AFTER the newest charge → flagged.
+	// "fresh":   code modified one hour BEFORE the newest charge → not flagged.
+	// "uncited": no entry (0) → never flagged (0 > any positive UnixNano is false).
+	citedCodeUpdatedAt := map[string]int64{
+		"changed": fixedNow.Add(time.Hour).UnixNano(),
+		"fresh":   fixedNow.Add(-time.Hour).UnixNano(),
+	}
+	r := classifyForTest([]string{"changed", "fresh", "uncited"}, charges, nil, nodeByID, citedCodeUpdatedAt, fixedNow)
+
+	assert.True(t, hasThought(r, facetCodeChanged, "changed"),
+		"a thought whose cited code changed after its newest charge is flagged")
+	assert.False(t, hasThought(r, facetCodeChanged, "fresh"),
+		"a thought whose cited code predates its newest charge is not flagged")
+	assert.False(t, hasThought(r, facetCodeChanged, "uncited"),
+		"a thought with no resolvable cited code is never flagged")
 }
 
 // TestClassifyBlindSpots_BeliefReversal (FAILS-WHEN-ABSENT): OLD charges net one
@@ -209,7 +244,7 @@ func TestClassifyBlindSpots_BeliefReversal(t *testing.T) {
 		"reversed":   mkThought("reversed", "", "implementer"),
 		"consistent": mkThought("consistent", "", "implementer"),
 	}
-	r := classifyForTest([]string{"reversed", "consistent"}, charges, nil, nodeByID, fixedNow)
+	r := classifyForTest([]string{"reversed", "consistent"}, charges, nil, nodeByID, nil, fixedNow)
 
 	assert.True(t, hasThought(r, facetBeliefReversal, "reversed"),
 		"old-negative/recent-positive history is a belief reversal")
@@ -233,7 +268,7 @@ func TestClassifyBlindSpots_BeliefReversal_NetZeroSideNoFlag(t *testing.T) {
 		},
 	}
 	nodeByID := map[string]*knowledgev1.Node{"netzero": mkThought("netzero", "", "implementer")}
-	r := classifyForTest([]string{"netzero"}, charges, nil, nodeByID, fixedNow)
+	r := classifyForTest([]string{"netzero"}, charges, nil, nodeByID, nil, fixedNow)
 
 	assert.False(t, hasThought(r, facetBeliefReversal, "netzero"),
 		"a net-zero old side has no net polarity and must NOT flag a reversal")
@@ -252,7 +287,7 @@ func TestClassifyBlindSpots_MachineGenreExcluded(t *testing.T) {
 		"dream": mkThought("dream", "dream:analyze", "main"),
 		"human": mkThought("human", "", "implementer"),
 	}
-	r := classifyForTest([]string{"dream", "human"}, charges, nil, nodeByID, fixedNow)
+	r := classifyForTest([]string{"dream", "human"}, charges, nil, nodeByID, nil, fixedNow)
 
 	assert.Equal(t, 1, r.TotalThoughts, "only the human-genre thought is considered")
 	for _, f := range r.Facets {
@@ -279,8 +314,8 @@ func TestClassifyBlindSpots_Determinism(t *testing.T) {
 		nodeByID[id] = mkThought(id, "", "implementer")
 	}
 
-	r1 := classifyForTest(ids, charges, influence, nodeByID, fixedNow)
-	r2 := classifyForTest(ids, charges, influence, nodeByID, fixedNow)
+	r1 := classifyForTest(ids, charges, influence, nodeByID, nil, fixedNow)
+	r2 := classifyForTest(ids, charges, influence, nodeByID, nil, fixedNow)
 
 	foundational := facetItems(r1, facetFoundationalUnexamined)
 	require.Len(t, foundational, blindSpotFacetCap, "facet 2 caps at blindSpotFacetCap")

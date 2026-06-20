@@ -46,6 +46,11 @@ type cacheEntry struct {
 
 var _ searchengine.SegmentCache = (*diskSegmentCache)(nil)
 
+// *diskSegmentCache also satisfies the wider segmentL2Cache seam (Get/Put/Remove)
+// distManager writes through — the Remove method is what segmentL2Cache adds over
+// searchengine.SegmentCache.
+var _ segmentL2Cache = (*diskSegmentCache)(nil)
+
 // newDiskSegmentCache constructs a content-addressed L2 cache rooted at root
 // with a maximum total on-disk byte budget of maxBytes (<= 0 means unbounded).
 // On construction it scans the root once so a restart recovers the prior cache

@@ -65,3 +65,16 @@ type SegmentMeta struct {
 	DocCount   int
 	DeadCount  int
 }
+
+// MergeResult is the supersession event a completed background merge surfaces to
+// its owner via Options.OnMerge: Removed is the set of superseded constituent
+// segment ids the merge consolidated away, and Merged is the shippable blob of
+// the single all-live consolidated segment that replaced them. The owner uses
+// this to reclaim the superseded constituents' L2 disk files (Put the merged
+// blob, then Remove the constituents). It lives engine-side because doMerge
+// builds it from engine-internal entries; segmentdist (which consumes it) already
+// imports searchengine, so the engine never imports segmentdist.
+type MergeResult struct {
+	Removed []SegmentID
+	Merged  SegmentBlob
+}

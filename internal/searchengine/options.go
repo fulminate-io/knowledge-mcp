@@ -1,5 +1,13 @@
 package searchengine
 
+// OnMergeFunc is the merge-completion callback an owner installs via
+// Options.OnMerge. The engine invokes it (when non-nil) exactly once per
+// completed background merge, AFTER the consolidated segment is published, with
+// the superseded constituent ids and the consolidated blob. It runs on the
+// engine's background merge goroutine holding NO engine lock; the owner must not
+// call back into the engine in a way that re-enters the merge path.
+type OnMergeFunc func(MergeResult)
+
 // Options tunes the engine's coalescing and merge policy.
 type Options struct {
 	// MinSegmentDocs is the coalescing threshold: Add buffers documents until at
@@ -13,6 +21,12 @@ type Options struct {
 	// background merge (too many small segments slows fan-out). Engine tunable,
 	// not contract-locked.
 	SegmentCountTarget int
+	// OnMerge, when non-nil, is invoked once per completed background merge with
+	// the superseded constituent ids and the consolidated blob (see OnMergeFunc).
+	// nil (the default) is a no-op: every existing caller that constructs Options
+	// without this field gets the prior behavior. withDefaults value-copies the
+	// func field unchanged and never substitutes a default.
+	OnMerge OnMergeFunc
 }
 
 const (

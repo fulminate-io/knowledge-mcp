@@ -105,6 +105,8 @@ func InterceptManage(deps ClientDeps, params kgtools.CallToolParams) (bool, kgto
 		return true, handleClientRebuildCache(context.Background(), deps, a)
 	case "rebuild_segments":
 		return true, handleClientRebuildSegments(context.Background(), deps, a)
+	case "prune-cache":
+		return true, handleClientPruneCache(context.Background(), deps, a)
 	case "drop_graph":
 		return true, handleClientDropGraph(context.Background(), deps, a)
 	}
@@ -192,6 +194,14 @@ type manageArgs struct {
 	// payload with format=json forced.
 	DryRun bool `json:"dry_run"`
 	Force  bool `json:"force"`
+
+	// Execute gates prune-cache: it PREVIEWS by default (Execute=false renders a
+	// would-remove report and deletes NOTHING) and removes orphaned segments ONLY
+	// when Execute=true. This is the OPPOSITE default polarity from drop_graph's
+	// DryRun (which executes by default, previews on dry_run:true) — prune-cache is
+	// data-destructive against the L2 cache, so the false-prune history mandates a
+	// preview-first default that an operator must explicitly opt out of.
+	Execute bool `json:"execute"`
 
 	// set_metadata_overrides force-lists, read by the client
 	// intercept and lowered onto the Index RPC params payload. Mirror the

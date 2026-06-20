@@ -90,7 +90,12 @@ func buildSegment(results []docFieldTokens) *bm25Segment {
 	fields := make([]*fieldData, len(configs))
 	byName := make(map[string]*fieldData, len(configs))
 	for i, cfg := range configs {
-		fd := &fieldData{config: cfg, postings: make(map[string][]posting)}
+		// docLengths reaches exactly one entry per indexable doc (len(members) ≤
+		// len(results)); preallocate its capacity to that known upper bound so the
+		// per-doc grow-by-one append below (one entry per field per doc) never
+		// reallocates the backing array. Length stays 0 — the values appended and
+		// the final length are unchanged, so Encode is byte-identical.
+		fd := &fieldData{config: cfg, postings: make(map[string][]posting), docLengths: make([]int, 0, len(results))}
 		fields[i] = fd
 		byName[cfg.Name] = fd
 	}
@@ -98,6 +103,12 @@ func buildSegment(results []docFieldTokens) *bm25Segment {
 	members := make([]searchengine.ExternalID, 0, len(results))
 	docFreq := make(map[string]int64)
 
+	// One per-segment scratch set, cleared per doc, instead of a fresh map per doc.
+	// uniqueTerms only needs to dedup THIS doc's terms before the docFreq bump
+	// below, so its contents never outlive a single iteration — reuse + clear is
+	// semantically identical to a fresh map and drops the dominant per-doc
+	// allocation (one map header + bucket-growth per indexable doc).
+	uniqueTerms := make(map[string]struct{})
 	for _, r := range results {
 		if r.fields == nil {
 			continue // no indexable fields → not a member
@@ -111,7 +122,7 @@ func buildSegment(results []docFieldTokens) *bm25Segment {
 			fd.docLengths = append(fd.docLengths, 0)
 		}
 
-		uniqueTerms := make(map[string]struct{})
+		clear(uniqueTerms)
 		for fieldName, tokens := range r.fields {
 			fd := byName[fieldName]
 			if fd == nil {

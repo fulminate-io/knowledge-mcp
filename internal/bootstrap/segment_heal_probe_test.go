@@ -19,6 +19,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1/knowledgev1connect"
 	"github.com/fulminate-io/knowledge-mcp/internal/auth"
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
+	"github.com/fulminate-io/knowledge-mcp/internal/graphsel"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine/formats/hnsw"
 	"github.com/fulminate-io/knowledge-mcp/internal/segmentdist"
@@ -48,13 +49,17 @@ func (e *coverageStatsEngine) Stats(
 // for the probe (HasShippedSegments / ShippedSegmentDocCount drive ListDelta(0));
 // Fetch/Prune are present to satisfy the handler interface and never fire here.
 type healSegmentService struct {
-	mu    sync.Mutex
-	byKey map[string][]*knowledgev1.SegmentBlobProto
-	gen   uint64
+	mu        sync.Mutex
+	byKey     map[string][]*knowledgev1.SegmentBlobProto
+	gen       uint64
+	manifests map[string]map[string]map[string]bool // graphKey -> writer+format -> id-set
 }
 
 func newHealSegmentService() *healSegmentService {
-	return &healSegmentService{byKey: map[string][]*knowledgev1.SegmentBlobProto{}}
+	return &healSegmentService{
+		byKey:     map[string][]*knowledgev1.SegmentBlobProto{},
+		manifests: map[string]map[string]map[string]bool{},
+	}
 }
 
 func (f *healSegmentService) key(t *knowledgev1.GraphSelector) string {
@@ -106,6 +111,44 @@ func (f *healSegmentService) Prune(
 	return connect.NewResponse(&knowledgev1.PruneResponse{}), nil
 }
 
+// Publish swaps this writer's manifest and refcount-GCs blobs no manifest
+// references — the registry-model mirror so the coverage-heal probe's publish path
+// behaves like the real server.
+func (f *healSegmentService) Publish(
+	_ context.Context, req *connect.Request[knowledgev1.PublishRequest],
+) (*connect.Response[knowledgev1.PublishResponse], error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	k := f.key(req.Msg.GetTarget())
+	if f.manifests[k] == nil {
+		f.manifests[k] = map[string]map[string]bool{}
+	}
+	mk := req.Msg.GetWriterId() + "\x00" + req.Msg.GetFormat()
+	set := map[string]bool{}
+	for _, id := range req.Msg.GetIds() {
+		set[id] = true
+	}
+	f.manifests[k][mk] = set
+
+	referenced := map[string]bool{}
+	for _, s := range f.manifests[k] {
+		for id := range s {
+			referenced[id] = true
+		}
+	}
+	kept := f.byKey[k][:0]
+	var removed uint64
+	for _, b := range f.byKey[k] {
+		if referenced[b.GetId()] {
+			kept = append(kept, b)
+			continue
+		}
+		removed++
+	}
+	f.byKey[k] = kept
+	return connect.NewResponse(&knowledgev1.PublishResponse{Deleted: removed}), nil
+}
+
 // buildHealProbeClient stands up ONE h2c httptest server serving BOTH the
 // EngineService (Stats, embedded count) and the SegmentService (ListDelta,
 // shipped metas) handlers, wires a logged-out *Router pointed at it, and builds a
@@ -145,14 +188,24 @@ func buildHealProbeClient(t *testing.T, embedded int32) *client {
 // router so the metas land where the probe's ListDelta(0) reads them.
 func shipHNSW(t *testing.T, c *client, repo string, docCounts ...int) {
 	t.Helper()
+	shipHNSWFor(t, c, kgtypes.GraphCode, repo, docCounts...)
+}
+
+// shipHNSWFor is the graph-type-aware shipHNSW: it addresses the (gt, name)
+// instance through graphsel.GraphSelectorFor (so a cloud/cicd graph ships under
+// Account and a practice graph under Language, not Repo) — letting a reconcile
+// test ship a degenerate corpus for a NON-code embeddable builtin. shipHNSW is the
+// code-graph shorthand that delegates here.
+func shipHNSWFor(t *testing.T, c *client, gt kgtypes.GraphType, name string, docCounts ...int) {
+	t.Helper()
 	blobs := make([]*knowledgev1.SegmentBlobProto, 0, len(docCounts))
 	for i, dc := range docCounts {
 		blobs = append(blobs, &knowledgev1.SegmentBlobProto{
-			Id: repo + "-h" + string(rune('A'+i)), Format: hnsw.New().Name(), DocCount: int32(dc), Bytes: []byte("seg"),
+			Id: name + "-h" + string(rune('A'+i)), Format: hnsw.New().Name(), DocCount: int32(dc), Bytes: []byte("seg"),
 		})
 	}
 	_, err := c.router.Ship(context.Background(), &knowledgev1.ShipRequest{
-		Target: &knowledgev1.GraphSelector{Graph: "code", Repo: repo},
+		Target: graphsel.GraphSelectorFor(gt, name, false),
 		Blobs:  blobs,
 	})
 	require.NoError(t, err)

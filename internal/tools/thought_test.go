@@ -52,6 +52,7 @@ func (thoughtTestDeps) RepoResolver() *RepoResolver                  { return ni
 func (thoughtTestDeps) SegmentManager() SegmentSearcher              { return nil }
 func (thoughtTestDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
 func (thoughtTestDeps) SegmentShipper() SegmentShipper               { return nil }
+func (thoughtTestDeps) SegmentPruner() SegmentPruner                 { return nil }
 func (thoughtTestDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
 func (thoughtTestDeps) PipelineScanner() PipelineScanner             { return nil }
 func (thoughtTestDeps) ReflectionForcer() ReflectionForcer           { return nil }

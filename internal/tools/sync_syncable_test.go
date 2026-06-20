@@ -76,6 +76,7 @@ func (d listDeps) RepoResolver() *RepoResolver                  { return nil }
 func (d listDeps) SegmentManager() SegmentSearcher              { return nil }
 func (d listDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
 func (d listDeps) SegmentShipper() SegmentShipper               { return nil }
+func (d listDeps) SegmentPruner() SegmentPruner                 { return nil }
 func (d listDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
 func (d listDeps) PipelineScanner() PipelineScanner             { return nil }
 func (d listDeps) ReflectionForcer() ReflectionForcer           { return nil }

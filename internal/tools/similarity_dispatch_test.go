@@ -164,6 +164,7 @@ func (d similarityDispatchDeps) RepoResolver() *RepoResolver                  { 
 func (d similarityDispatchDeps) SegmentManager() SegmentSearcher              { return nil }
 func (d similarityDispatchDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
 func (d similarityDispatchDeps) SegmentShipper() SegmentShipper               { return nil }
+func (d similarityDispatchDeps) SegmentPruner() SegmentPruner                 { return nil }
 func (d similarityDispatchDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
 func (d similarityDispatchDeps) PipelineScanner() PipelineScanner             { return nil }
 func (d similarityDispatchDeps) ReflectionForcer() ReflectionForcer           { return nil }

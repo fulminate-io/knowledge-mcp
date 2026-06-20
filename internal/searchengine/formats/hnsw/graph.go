@@ -14,7 +14,6 @@ import (
 	"math"
 	"math/rand/v2"
 	"slices"
-	"sort"
 	"sync"
 )
 
@@ -48,6 +47,99 @@ type binaryGraph struct {
 	entryPoint     uint32            // entry node internal ID
 	idMap          map[string]uint32 // external ID → internal ID
 	rng            *rand.Rand
+
+	// pruneScratch is a reusable candidate heap for addBidirectionalEdge's per-edge
+	// neighbor prune. A binaryGraph is built by exactly ONE goroutine (the serial
+	// builder; the across-segment concurrency is one graph per goroutine), so this
+	// per-graph buffer is never shared across goroutines — it recycles the build's
+	// hottest allocation with zero contention. selectNeighborsHeuristic sorts it in
+	// place and returns a fresh slice without retaining it, so reuse is safe and
+	// leaves the selected neighbors byte-identical.
+	pruneScratch maxHeap
+
+	// neighborArena backs every node's per-layer neighbor list from a handful of
+	// large []uint32 slabs instead of one tiny make per list. Each (node,layer)
+	// list draws a contiguous cap-(mLayer+1) window (arena.alloc); the +1 absorbs
+	// addBidirectionalEdge's transient overflow append before the re-prune
+	// truncates it back, so that append stays in-cap and never crosses into an
+	// adjacent window. Slabs are append-only and never regrown, so a handed-out
+	// window's backing array is stable for the whole build. Per-graph + single
+	// goroutine (the build is serial; cross-segment concurrency is one graph per
+	// goroutine), like pruneScratch — NOT a sync.Pool. Storage only: it relocates
+	// the backing array, never the ids/order/length, so Encode stays byte-identical.
+	neighborArena neighborArena
+
+	// headerArena backs each node's neighbors [][]uint32 header (one per node,
+	// length level+1) from shared slabs, the same append-only non-moving slab
+	// strategy as neighborArena. A header is never appended to (a node's level is
+	// fixed at insert), so an exact-length window suffices. Storage only — the
+	// header still holds the same per-layer windows in the same order.
+	headerArena headerArena
+}
+
+// headerSlabSize is the [][]uint32 capacity of each header-arena slab.
+const headerSlabSize = 1024
+
+// headerArena is the [][]uint32 analog of neighborArena: an append-only slab
+// allocator handing out fixed-length neighbor-header windows with a stable
+// backing array for the graph's lifetime.
+type headerArena struct {
+	slabs [][][]uint32
+	cur   [][]uint32
+	off   int
+}
+
+// alloc returns a length-n header window (each element nil) backed by the arena.
+func (a *headerArena) alloc(n int) [][]uint32 {
+	if n > headerSlabSize {
+		s := make([][]uint32, n)
+		a.slabs = append(a.slabs, s)
+		return s
+	}
+	if a.cur == nil || a.off+n > len(a.cur) {
+		a.cur = make([][]uint32, headerSlabSize)
+		a.slabs = append(a.slabs, a.cur)
+		a.off = 0
+	}
+	w := a.cur[a.off : a.off+n : a.off+n]
+	a.off += n
+	return w
+}
+
+// neighborSlabSize is the uint32 capacity of each neighbor-arena slab. A slab
+// holds many neighbor windows (a layer-0 window is mMax0+1 ≈ 65 uint32s at the
+// default M=32), so one 8192-uint32 slab backs ~126 layer-0 lists — amortizing the
+// per-list allocation down to a per-slab one.
+const neighborSlabSize = 8192
+
+// neighborArena is an append-only slab allocator for []uint32 neighbor windows.
+// It hands out contiguous len-0 windows carved sequentially from the current
+// slab; when a request does not fit the slab's remaining tail, it seals the slab
+// and starts a fresh one. Slabs are never regrown or moved, so every window it
+// returns keeps a stable backing array for the graph's lifetime.
+type neighborArena struct {
+	slabs [][]uint32
+	cur   []uint32 // current slab
+	off   int      // next free offset within cur
+}
+
+// alloc returns a len-0, cap-capL window backed by the arena. capL must be > 0.
+func (a *neighborArena) alloc(capL int) []uint32 {
+	if capL > neighborSlabSize {
+		// A window larger than a slab gets its own exact-fit slab (never happens at
+		// default M, where the largest window is mMax0+1; defensive for huge M).
+		s := make([]uint32, capL)
+		a.slabs = append(a.slabs, s)
+		return s[:0:capL]
+	}
+	if a.cur == nil || a.off+capL > len(a.cur) {
+		a.cur = make([]uint32, neighborSlabSize)
+		a.slabs = append(a.slabs, a.cur)
+		a.off = 0
+	}
+	w := a.cur[a.off : a.off : a.off+capL]
+	a.off += capL
+	return w
 }
 
 // newBinaryGraph constructs an empty graph with the given HNSW parameters.
@@ -105,10 +197,11 @@ func (h *binaryGraph) Insert(externalID string, vec []byte) {
 	internalID := uint32(len(h.nodes))
 	level := h.randomLevel()
 
-	neighbors := make([][]uint32, level+1)
-	for i := range neighbors {
-		neighbors[i] = nil
-	}
+	// Draw the per-layer header from the header arena (length level+1, elements
+	// nil). The arena hands out non-overlapping, never-reused regions of a
+	// zero-valued slab, so every element is already nil — no explicit nil-fill
+	// needed. The per-layer windows are filled below from neighborArena.
+	neighbors := h.headerArena.alloc(level + 1)
 
 	h.nodes = append(h.nodes, hnswNode{
 		externalID: externalID,
@@ -139,7 +232,15 @@ func (h *binaryGraph) Insert(externalID string, vec []byte) {
 		if l == 0 {
 			mLayer = h.mMax0
 		}
-		selectedNeighbors := h.selectNeighborsHeuristic(vec, results, mLayer)
+		// Draw this node's layer-l neighbor window from the arena (cap mLayer+1 so a
+		// later overflow append in addBidirectionalEdge stays in-cap). topLayer =
+		// min(level, maxLevel) ≤ level, so l ≤ level holds for every iteration here
+		// — the window is always stored, never a wasted transient. The returned slice
+		// IS h.nodes[internalID].neighbors[l]; reusing it as entryPoints is a
+		// read-only alias, safe because addBidirectionalEdge below only appends to the
+		// NEIGHBORS' lists, never to this node's own list.
+		dst := h.neighborArena.alloc(mLayer + 1)
+		selectedNeighbors := h.selectNeighborsHeuristic(vec, results, mLayer, dst)
 
 		if l <= level {
 			h.nodes[internalID].neighbors[l] = selectedNeighbors
@@ -174,12 +275,24 @@ func (h *binaryGraph) addBidirectionalEdge(nodeID, neighborID uint32, layer, mLa
 
 	if len(node.neighbors[layer]) > mLayer {
 		nVec := h.nodeVector(neighborID)
-		candidates := &maxHeap{}
+		// Reuse the per-graph scratch heap (reset to len 0, capacity carried forward)
+		// instead of allocating a fresh candidate heap per prune — this is the build's
+		// hottest allocation path (addBidirectionalEdge fires on every overflowing
+		// edge insertion). The graph is single-goroutine-built, so the scratch is
+		// uncontended.
+		candidates := &h.pruneScratch
+		*candidates = (*candidates)[:0]
 		for _, id := range node.neighbors[layer] {
 			d := hammingDistance(nVec, h.nodeVector(id))
 			candidates.push(heapItem{id: id, dist: d})
 		}
-		node.neighbors[layer] = h.selectNeighborsHeuristic(nVec, candidates, mLayer)
+		// Re-prune in place: pruneScratch above already holds an independent copy of
+		// the candidates, so the heuristic can overwrite node.neighbors[layer]'s own
+		// window (passed as dst). The window keeps its arena backing across the
+		// re-prune — no fresh allocation, no arena balloon. (A non-arena list — the
+		// rare nil-first-append on a high layer — works identically: dst is
+		// truncated and refilled regardless of where it is backed.)
+		node.neighbors[layer] = h.selectNeighborsHeuristic(nVec, candidates, mLayer, node.neighbors[layer])
 	}
 }
 
@@ -272,22 +385,54 @@ func (h *binaryGraph) searchLayer(query []byte, entryPoints []uint32, ef, layer 
 
 // selectNeighborsHeuristic picks up to m neighbors from candidates using the
 // HNSW diversity heuristic, backfilling with nearest unselected if short.
-func (h *binaryGraph) selectNeighborsHeuristic(_ []byte, candidates *maxHeap, m int) []uint32 {
+//
+// dst is the caller-owned arena window the selected ids are written into (cap
+// m+1, the +1 reserved for addBidirectionalEdge's later overflow append). It is
+// truncated to len 0 and re-filled here, so the SAME window is reused across a
+// re-prune (no fresh allocation, no arena balloon). The candidates heap must
+// already be a copy independent of dst (the re-prune path copies node.neighbors
+// into pruneScratch before calling), since dst is overwritten in place.
+func (h *binaryGraph) selectNeighborsHeuristic(_ []byte, candidates *maxHeap, m int, dst []uint32) []uint32 {
 	if candidates.Len() <= m {
-		result := make([]uint32, candidates.Len())
-		for i := range result {
-			result[i] = (*candidates)[i].id
+		result := dst[:0]
+		for i := range candidates.Len() {
+			result = append(result, (*candidates)[i].id)
 		}
 		return result
 	}
 
-	items := make([]heapItem, candidates.Len())
-	copy(items, *candidates)
-	sort.Slice(items, func(i, j int) bool {
-		return items[i].dist < items[j].dist
+	// Sort the candidate heap IN PLACE (it is a disposable heap: searchLayer's
+	// freshly-copied `out`, or the per-graph prune scratch — never shared across
+	// goroutines), avoiding a per-call scratch-slice copy that the build's hottest
+	// path (addBidirectionalEdge → here) otherwise repeats per edge. The in-place
+	// sort touches the SAME elements in the SAME total order as a copy would, so the
+	// selected neighbor list is byte-identical.
+	//
+	// slices.SortFunc (not sort.Slice) avoids reflect.Swapper boxing and its per-call
+	// allocation on this hot path. Total-order comparator: distance first, then
+	// internal id as the secondary key — an exact total order (heapItem.id is the
+	// unique build ordinal and dist is integer-popcount Hamming, no float rounding),
+	// so equal-distance ties resolve identically every run rather than landing in the
+	// non-stable sort's input-dependent order, keeping Encode byte-reproducible.
+	items := *candidates
+	slices.SortFunc(items, func(a, b heapItem) int {
+		if a.dist != b.dist {
+			if a.dist < b.dist {
+				return -1
+			}
+			return 1
+		}
+		switch {
+		case a.id < b.id:
+			return -1
+		case a.id > b.id:
+			return 1
+		default:
+			return 0
+		}
 	})
 
-	selected := make([]uint32, 0, m)
+	selected := dst[:0]
 	for _, item := range items {
 		if len(selected) >= m {
 			break
@@ -307,17 +452,16 @@ func (h *binaryGraph) selectNeighborsHeuristic(_ []byte, candidates *maxHeap, m 
 	}
 
 	if len(selected) < m {
-		selectedSet := make(map[uint32]bool, len(selected))
-		for _, id := range selected {
-			selectedSet[id] = true
-		}
+		// Backfill nearest unselected. `selected` is bounded by m (≈ mLayer, a few
+		// dozen), so a linear membership scan is cheaper than allocating a
+		// map[uint32]bool per call on this hot path — and selection order is
+		// unchanged, so the result stays byte-identical.
 		for _, item := range items {
 			if len(selected) >= m {
 				break
 			}
-			if !selectedSet[item.id] {
+			if !slices.Contains(selected, item.id) {
 				selected = append(selected, item.id)
-				selectedSet[item.id] = true
 			}
 		}
 	}

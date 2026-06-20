@@ -188,7 +188,7 @@ Skip sweep. Use literal arg as root, or focused sweep for subsystem.
 7. Charge when evidence lands
 
 ### Phase 3: Supersede stale thoughts
-Append-with-supersede via `branches_from`, mark prior `invalidated`. Charges do NOT carry forward.
+Supersede or invalidate a prior thought ONLY after proving its staleness/contradiction first-hand in the CURRENT SOURCE — never from another agent's report, a comment, a docstring, or a prior thought's assertion (the anti-pattern above already forbids inferring current state from prior thoughts; this is that rule applied to negation). With proof in hand: append-with-supersede via `branches_from`, mark prior `invalidated`. Charges do NOT carry forward — so prefer supersede with a source-cited reason over a blanket invalidate.
 
 <constraint id="explorer-anti-patterns" severity="hard">
 

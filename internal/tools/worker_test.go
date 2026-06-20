@@ -152,6 +152,7 @@ func (d workerTestDeps) RepoResolver() *RepoResolver                  { return n
 func (d workerTestDeps) SegmentManager() SegmentSearcher              { return nil }
 func (d workerTestDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
 func (d workerTestDeps) SegmentShipper() SegmentShipper               { return nil }
+func (d workerTestDeps) SegmentPruner() SegmentPruner                 { return nil }
 func (d workerTestDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
 func (d workerTestDeps) PipelineScanner() PipelineScanner             { return nil }
 func (d workerTestDeps) ReflectionForcer() ReflectionForcer           { return nil }

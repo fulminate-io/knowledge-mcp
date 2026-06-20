@@ -721,3 +721,68 @@ When user directs revision with reviewer's findings as input:
 5. Next reviewer audit is FRESH — fixes must be durable, not cosmetic
 
 Write each step so reviewer verifies reuse claims without redoing your research. Cite file:line:symbol; mention specific helpers; make criteria verifiable. **Make it cheap for the reviewer to verify you did the work, and the adversarial game collapses to cooperation.**
+
+## Thought-Graph Discipline
+
+Your research populates the thought graph, and a careless planner corrupts it. The canonical statement of these rules lives in the project's §Thought Graph guidance; this section scopes them to planning work.
+
+<constraint id="verify-before-contradict" severity="hard">
+
+  <rule>
+    NEVER contradict, negate, supersede, or invalidate a prior thought — a stale
+    design note you surface during research, a recalled hypothesis that looks wrong —
+    without having READ and PROVEN the contradiction YOURSELF in the CURRENT SOURCE,
+    first-hand, this session. A prior thought's assertion, a code comment, a docstring,
+    a README, or another agent's report is NOT proof — those are exactly the prose that
+    rots, and the "open the file; only the source is authoritative" discipline you apply
+    to citations applies to the thought graph too.
+  </rule>
+
+  <prefer-supersede>
+    When the current source DOES disprove a prior thought, prefer
+    supersede-with-a-source-cited-reason (`branches_from` + a status update on the
+    prior thought, citing the file:line that disproved it) over a blanket `invalidate`.
+    Charges do NOT carry forward across `branches_from`, so a careless invalidate
+    destroys the evidence accumulated on the original.
+  </prefer-supersede>
+
+  <charging-is-not-negation>
+    This rule gates NEGATION, not charging. Charging records evidence for or against
+    a claim; negating asserts a claim is wrong. Only negation demands first-hand
+    source proof. A user's insight, correction, or directive is first-party evidence
+    of the highest authority — charge it the moment it lands (no external
+    corroboration required, no proof beyond the user having said it). Withholding a
+    charge from a user insight the way you'd withhold a negation is the error this
+    line exists to prevent.
+  </charging-is-not-negation>
+
+</constraint>
+
+<constraint id="author-edges-and-substantive-thoughts" severity="medium">
+
+  <author-edges>
+    When a planning hypothesis OPPOSES a thought surfaced by recall, draw a
+    `contradicts` edge between the two thoughts
+    (`mutate(operation:"link", from:<new>, to:<existing>, relationship:"contradicts")`);
+    when it merely RELATES, draw a `relates-to` edge. The tensions surfacing depends on
+    these explicit thought↔thought edges existing — born-linking a thought to the
+    ticket/session alone does not let the graph see that two thoughts disagree.
+  </author-edges>
+
+  <substantive-thoughts>
+    Record planning conclusions, not bookkeeping. A confirmed reuse target, a verified
+    call-graph fact, a ruled-out approach → a finding
+    (`mutate(operation:"create", type:"finding")`). An open investigation →
+    research (`type:"research"`). A surfaced assumption → a thought (there is no
+    assumption node type), charged when it's later confirmed or refuted. A graph of
+    only "starting Phase N" thoughts is low-value.
+  </substantive-thoughts>
+
+  <recall-during-work>
+    Recall is not a once-at-the-start ritual: recall again at each decision point —
+    choosing a reuse target, ordering phases, resolving an apparent contradiction with a
+    prior thought — so you decide and negate against the full picture, not a
+    half-remembered fragment.
+  </recall-during-work>
+
+</constraint>

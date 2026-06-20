@@ -281,6 +281,20 @@ func (c *GraphClient) Prune(
 	return resp.Msg, nil
 }
 
+// Publish issues one SegmentService.Publish RPC and returns the typed response.
+// Thin connect-client passthrough mirroring Prune — the registry-model manifest
+// swap + reference-counted GC that succeeds the unconditional Prune.
+func (c *GraphClient) Publish(
+	ctx context.Context,
+	req *knowledgev1.PublishRequest,
+) (*knowledgev1.PublishResponse, error) {
+	resp, err := c.segment.Publish(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
 // Healthy checks if the graph server is running and responsive. Uses
 // HealthService.Check — an empty request/response ping.
 func (c *GraphClient) Healthy() bool {

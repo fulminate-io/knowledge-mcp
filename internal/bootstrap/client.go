@@ -131,10 +131,14 @@ type client struct {
 	// segmentMgr is the per-graph client-hosted BM25+HNSW segment owner. ONE
 	// instance shared between the PRODUCER side (the pipeline ships segments
 	// into it at embed writeback — AttachSegmentManager) and the CONSUMER side
-	// (the search intercepts query it via SegmentManager()). Constructed in
-	// wirePipelineRuntime alongside the pipeline; nil when the pipeline was not
-	// wired. Holding ONE instance is load-bearing: a second Manager would build
-	// duplicate engines (double memory) and miss the producer's loaded segments.
+	// (the search intercepts query it via SegmentManager()). Constructed
+	// UNCONDITIONALLY in wireRuntimesBackground (ensureSegmentManager, router-gated,
+	// BEFORE wirePipelineRuntime) so the READ path serves BM25 over existing
+	// segments even offline (--no-llm-pipeline, or no embedder/summarizer); nil ONLY
+	// for a router-less / headless client. The embedder/LLM is required only for
+	// index UPDATES, which stay in the pipeline-gated body. Holding ONE instance is
+	// load-bearing: a second Manager would build duplicate engines (double memory)
+	// and miss the producer's loaded segments.
 	segmentMgr *segmentdist.Manager
 
 	// claimRegistry + banSet are the client-side hive monitor state, created in

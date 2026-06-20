@@ -114,7 +114,7 @@ func TestRecallParitySegmentedVsSingleGraph(t *testing.T) {
 
 	for _, ef := range []int{50, 100, 200} {
 		// Single big-graph baseline at this ef.
-		baseline := buildBinaryHNSWParallel(items, defaultVecBytes, defaultM, defaultEfConstruction, 0)
+		baseline := buildBinaryHNSWSerialDeterministic(items, defaultVecBytes, defaultM, defaultEfConstruction)
 		baseline.setEfSearch(ef)
 
 		// Multi-segment set at the same ef.
@@ -204,7 +204,7 @@ func TestRecallNoRegressionAcrossMerge(t *testing.T) {
 
 	// From-scratch single-graph build over the SAME vectors — the oracle for "merge
 	// re-insertion is as good as a fresh build".
-	fresh := buildBinaryHNSWParallel(items, defaultVecBytes, defaultM, defaultEfConstruction, 0)
+	fresh := buildBinaryHNSWSerialDeterministic(items, defaultVecBytes, defaultM, defaultEfConstruction)
 	fresh.setEfSearch(ef)
 
 	var mergedRecall, freshRecall float64

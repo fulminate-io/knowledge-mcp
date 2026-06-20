@@ -48,8 +48,9 @@ func TestBuildSearchBasic(t *testing.T) {
 		t.Fatalf("Build: %v", err)
 	}
 
-	// Sample the whole corpus so the recall fraction is stable near the ~97% mean
-	// (small slices vary run-to-run with the crypto-seeded graph rng). Floor 0.93.
+	// Sample the whole corpus so the recall fraction is a stable estimate of the
+	// ~97% mean (the build is deterministic, but per-node recall varies across the
+	// corpus, so a small slice is noisy). Floor 0.93.
 	const k = 5
 	recovered := 0
 	scoreOK := true
@@ -176,8 +177,10 @@ func TestAggregateStatsNoOp(t *testing.T) {
 // exactly the union of live members and returns correct nearest neighbors. A
 // second case decodes both inputs from Encode() bytes first (proving decoded
 // segments are merge-eligible) and asserts the same consolidated membership.
-// Criterion: Phase 2 Step 2. Asserts RECALL/membership, NOT byte-identity —
-// randomLevel is non-deterministic so a re-inserted graph is not bit-identical.
+// Asserts RECALL/membership, NOT byte-identity: Merge re-inserts the surviving
+// members of two segments into a fresh graph, so the merged blob is not expected to
+// equal either input's bytes — membership + recall is the meaningful merge property
+// (the per-segment build is itself deterministic, but that is not what Merge tests).
 func TestMergeUnionOfLiveMembers(t *testing.T) {
 	docsA := vecDocs(300)
 	// Distinct ids AND distinct vectors for B (different PCG seed) so no A/B pair

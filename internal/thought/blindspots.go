@@ -23,7 +23,7 @@ import (
 // capped and deterministically ordered so the surface stays in-context and
 // reproducible across runs.
 
-// Facet keys — stable identifiers for the five epistemic-risk sections. These are
+// Facet keys — stable identifiers for the six epistemic-risk sections. These are
 // the wire/json keys the report carries and the handler renders per section.
 const (
 	// facetConfidentUntested: high magnitude + high consistency but <=1 charge —
@@ -37,6 +37,10 @@ const (
 	facetFragileSinglePoint = "fragile_single_point"
 	// facetStaleConfidence: charged long ago, never re-charged (v1 = recency only).
 	facetStaleConfidence = "stale_confidence"
+	// facetCodeChanged: the thought's born-linked (cited) code has been modified
+	// since the thought's newest charge — the evidence predates the current source,
+	// so the belief may no longer describe the code it was reasoned about.
+	facetCodeChanged = "code_changed"
 	// facetBeliefReversal: old charges net one polarity, recent charges net the
 	// opposite — a regime-change / revelation detector.
 	facetBeliefReversal = "belief_reversal"
@@ -62,7 +66,7 @@ const (
 	// intentional.
 	blindSpotConfidentMaxCharges = 1
 	// blindSpotFacetCap bounds each facet's item list. Smaller than a single global
-	// cap would be (five facets × 10 keeps the whole surface in-context); the old
+	// cap would be (six facets × 10 keeps the whole surface in-context); the old
 	// global cluster cap is removed with the old ranked path.
 	blindSpotFacetCap = 10
 )
@@ -71,9 +75,10 @@ const (
 // charge is older than this is "charged long ago, never re-charged". Tuned for the
 // AI-era cadence — beliefs go stale fast, so a thought charged a week or more ago
 // and never revisited since is already a staleness signal (a once-confident stance
-// nobody has touched in 7+ days of active work). v1 is recency only — the "cited
-// code/decision has since changed" enrichment needs cross-graph staleness and is
-// out of scope.
+// nobody has touched in 7+ days of active work). This window is recency-only; the
+// complementary "cited code has since changed" signal is its own facet
+// (facetCodeChanged), driven by a cross-graph cited-code precompute rather than by
+// this wall-clock window. The cited-decision variant remains out of scope.
 const blindSpotStaleWindow = 7 * 24 * time.Hour
 
 // The belief-reversal facet (facet 5) machinery — the old/recent partition
@@ -122,6 +127,7 @@ var facetTitles = map[string]string{
 	facetFoundationalUnexamined: "Foundational but unexamined",
 	facetFragileSinglePoint:     "Fragile single-point",
 	facetStaleConfidence:        "Stale confidence",
+	facetCodeChanged:            "Cited code changed",
 	facetBeliefReversal:         "Belief reversal",
 }
 
@@ -131,6 +137,7 @@ var facetOrder = []string{
 	facetFoundationalUnexamined,
 	facetFragileSinglePoint,
 	facetStaleConfidence,
+	facetCodeChanged,
 	facetBeliefReversal,
 }
 
@@ -144,6 +151,11 @@ type blindSpotInputs struct {
 	influence        map[string]float64
 	nodeByID         map[string]*knowledgev1.Node
 	sessionByThought map[string]string
+	// citedCodeUpdatedAt is the per-thought max UpdatedAt (unix-nanos) of the
+	// thought's born-linked (cited) code nodes, from the cross-graph cited-code
+	// precompute. A nil map or a zero/absent entry means no resolvable code-ref
+	// born-link, so facetCodeChanged never fires for that thought.
+	citedCodeUpdatedAt map[string]int64
 	// clusters is the Leiden partition for this tick (each .ThoughtIDs); topics
 	// rolls member clusters sharing a topic-summary doc into one unit. Both feed the
 	// cluster/topic-level belief-reversal view (facet 5 Groups). A nil clusters
@@ -180,7 +192,7 @@ func classifyBlindSpots(in blindSpotInputs) BlindSpotReport {
 			continue
 		}
 		considered++
-		for key, it := range facetsForThought(id, in.charges[id], in.influence[id], in.nodeByID[id], in.now) {
+		for key, it := range facetsForThought(id, in.charges[id], in.influence[id], in.nodeByID[id], in.citedCodeUpdatedAt[id], in.now) {
 			items[key] = append(items[key], it)
 		}
 	}
@@ -221,6 +233,7 @@ func facetsForThought(
 	thoughtCharges []*knowledgev1.Node,
 	influence float64,
 	node *knowledgev1.Node,
+	citedCodeUpdatedAt int64,
 	now time.Time,
 ) map[string]BlindSpotItem {
 	props := computePropertiesFromCharges(thoughtCharges)
@@ -263,7 +276,15 @@ func facetsForThought(
 			add(facetStaleConfidence, "newest charge older than the staleness window — charged long ago, never re-charged")
 		}
 	}
-	// Facet 5: belief reversal.
+	// Facet 5: cited code changed. Fires when the thought's born-linked code was
+	// modified (UpdatedAt) after its newest charge — the evidence predates the
+	// current source. Requires >=1 charge (newestChargeTime ok); a thought with no
+	// resolvable cited code has citedCodeUpdatedAt==0, and 0 > any positive
+	// UnixNano is false, so it never fires.
+	if newest, ok := newestChargeTime(thoughtCharges); ok && citedCodeUpdatedAt > newest.UnixNano() {
+		add(facetCodeChanged, "cited code changed since the newest charge — the evidence predates the current code")
+	}
+	// Facet 6: belief reversal.
 	if reason, reversed := beliefReversal(thoughtCharges, now); reversed {
 		add(facetBeliefReversal, reason)
 	}

@@ -44,6 +44,7 @@ func (d *logE2EDeps) RepoResolver() *RepoResolver                  { return nil 
 func (d *logE2EDeps) SegmentManager() SegmentSearcher              { return nil }
 func (d *logE2EDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
 func (d *logE2EDeps) SegmentShipper() SegmentShipper               { return nil }
+func (d *logE2EDeps) SegmentPruner() SegmentPruner                 { return nil }
 func (d *logE2EDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
 func (d *logE2EDeps) PipelineScanner() PipelineScanner             { return nil }
 func (d *logE2EDeps) ReflectionForcer() ReflectionForcer           { return nil }

@@ -53,6 +53,7 @@ func (d *cloudStatusDeps) RepoResolver() *RepoResolver                  { return
 func (d *cloudStatusDeps) SegmentManager() SegmentSearcher              { return nil }
 func (d *cloudStatusDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
 func (d *cloudStatusDeps) SegmentShipper() SegmentShipper               { return nil }
+func (d *cloudStatusDeps) SegmentPruner() SegmentPruner                 { return nil }
 func (d *cloudStatusDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
 func (d *cloudStatusDeps) PipelineScanner() PipelineScanner             { return nil }
 func (d *cloudStatusDeps) ReflectionForcer() ReflectionForcer           { return nil }

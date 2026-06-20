@@ -64,8 +64,6 @@ func (h *minHeap) siftDown(i int) {
 // Used to replace map[uint32]bool for visited nodes in HNSW search.
 type bitset []uint64
 
-func newBitset(n int) bitset { return make([]uint64, (n+63)/64) }
-
 func (b bitset) set(i uint32)      { b[i/64] |= 1 << (i % 64) }
 func (b bitset) has(i uint32) bool { return b[i/64]&(1<<(i%64)) != 0 }
 

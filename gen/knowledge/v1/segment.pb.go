@@ -32,6 +32,7 @@ type ShipRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Target        *GraphSelector         `protobuf:"bytes,1,opt,name=target,proto3" json:"target,omitempty"`
 	Blobs         []*SegmentBlobProto    `protobuf:"bytes,2,rep,name=blobs,proto3" json:"blobs,omitempty"`
+	WriterId      string                 `protobuf:"bytes,3,opt,name=writer_id,json=writerId,proto3" json:"writer_id,omitempty"` // stable per-machine identity; stamps last-connection liveness (additive)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -78,6 +79,13 @@ func (x *ShipRequest) GetBlobs() []*SegmentBlobProto {
 		return x.Blobs
 	}
 	return nil
+}
+
+func (x *ShipRequest) GetWriterId() string {
+	if x != nil {
+		return x.WriterId
+	}
+	return ""
 }
 
 // ShipResponse returns each shipped blob's server-stamped metadata: the
@@ -135,6 +143,7 @@ type ListDeltaRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Target        *GraphSelector         `protobuf:"bytes,1,opt,name=target,proto3" json:"target,omitempty"`
 	SinceGen      uint64                 `protobuf:"varint,2,opt,name=since_gen,json=sinceGen,proto3" json:"since_gen,omitempty"`
+	WriterId      string                 `protobuf:"bytes,3,opt,name=writer_id,json=writerId,proto3" json:"writer_id,omitempty"` // stable per-machine identity; stamps last-connection liveness (additive)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -181,6 +190,13 @@ func (x *ListDeltaRequest) GetSinceGen() uint64 {
 		return x.SinceGen
 	}
 	return 0
+}
+
+func (x *ListDeltaRequest) GetWriterId() string {
+	if x != nil {
+		return x.WriterId
+	}
+	return ""
 }
 
 // ListDeltaResponse returns the SegmentMetaProto descriptors for the delta,
@@ -235,6 +251,7 @@ type FetchRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Target        *GraphSelector         `protobuf:"bytes,1,opt,name=target,proto3" json:"target,omitempty"`
 	Ids           []string               `protobuf:"bytes,2,rep,name=ids,proto3" json:"ids,omitempty"`
+	WriterId      string                 `protobuf:"bytes,3,opt,name=writer_id,json=writerId,proto3" json:"writer_id,omitempty"` // stable per-machine identity; stamps last-connection liveness (additive)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -281,6 +298,13 @@ func (x *FetchRequest) GetIds() []string {
 		return x.Ids
 	}
 	return nil
+}
+
+func (x *FetchRequest) GetWriterId() string {
+	if x != nil {
+		return x.WriterId
+	}
+	return ""
 }
 
 // FetchResponse returns the opaque SegmentBlobProto bytes for the requested
@@ -433,6 +457,131 @@ func (x *PruneResponse) GetDeleted() uint64 {
 	return 0
 }
 
+// PublishRequest carries the FULL live id-set this writer holds for one
+// (graphKey, writer_id, format) — its manifest. Modeled on PruneRequest's
+// target+ids carrier (no novel shape) plus the registry-model dimensions the
+// prune request lacks: writer_id (which writer's manifest to swap) and format
+// (BM25 / HNSW-embed / deterministic-HNSW share one graphKey bucket, kept
+// distinct by this tag). ids is the complete set the writer references, NOT a
+// delta — the server replaces the writer's prior manifest with this set
+// wholesale, then refcount-GCs blobs that dropped to zero references. target
+// reuses the GraphSelector routing envelope imported at line 14.
+type PublishRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Target        *GraphSelector         `protobuf:"bytes,1,opt,name=target,proto3" json:"target,omitempty"`
+	WriterId      string                 `protobuf:"bytes,2,opt,name=writer_id,json=writerId,proto3" json:"writer_id,omitempty"` // stable per-machine identity addressing this writer's manifest
+	Format        string                 `protobuf:"bytes,3,opt,name=format,proto3" json:"format,omitempty"`                     // format tag distinguishing manifests within one graphKey bucket
+	Ids           []string               `protobuf:"bytes,4,rep,name=ids,proto3" json:"ids,omitempty"`                           // the complete live id-set this writer publishes (its manifest)
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PublishRequest) Reset() {
+	*x = PublishRequest{}
+	mi := &file_knowledge_v1_segment_proto_msgTypes[8]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PublishRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PublishRequest) ProtoMessage() {}
+
+func (x *PublishRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_knowledge_v1_segment_proto_msgTypes[8]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PublishRequest.ProtoReflect.Descriptor instead.
+func (*PublishRequest) Descriptor() ([]byte, []int) {
+	return file_knowledge_v1_segment_proto_rawDescGZIP(), []int{8}
+}
+
+func (x *PublishRequest) GetTarget() *GraphSelector {
+	if x != nil {
+		return x.Target
+	}
+	return nil
+}
+
+func (x *PublishRequest) GetWriterId() string {
+	if x != nil {
+		return x.WriterId
+	}
+	return ""
+}
+
+func (x *PublishRequest) GetFormat() string {
+	if x != nil {
+		return x.Format
+	}
+	return ""
+}
+
+func (x *PublishRequest) GetIds() []string {
+	if x != nil {
+		return x.Ids
+	}
+	return nil
+}
+
+// PublishResponse returns how many __segments blobs the refcount-GC deleted
+// after the manifest swap. Mirrors PruneResponse.deleted: idempotent — a
+// re-publish of an unchanged manifest deletes 0, and a blob still referenced by
+// any (this or another writer's) manifest is never counted/deleted.
+type PublishResponse struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	Deleted       uint64                 `protobuf:"varint,1,opt,name=deleted,proto3" json:"deleted,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *PublishResponse) Reset() {
+	*x = PublishResponse{}
+	mi := &file_knowledge_v1_segment_proto_msgTypes[9]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *PublishResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*PublishResponse) ProtoMessage() {}
+
+func (x *PublishResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_knowledge_v1_segment_proto_msgTypes[9]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use PublishResponse.ProtoReflect.Descriptor instead.
+func (*PublishResponse) Descriptor() ([]byte, []int) {
+	return file_knowledge_v1_segment_proto_rawDescGZIP(), []int{9}
+}
+
+func (x *PublishResponse) GetDeleted() uint64 {
+	if x != nil {
+		return x.Deleted
+	}
+	return 0
+}
+
 // SegmentBlobProto mirrors searchengine.SegmentBlob (cmd/knowledge/internal/
 // searchengine/segment.go:49-54) field-for-field, RE-DECLARED here (NOT imported
 // from the client engine) so the server stays engine-FREE: the server links
@@ -457,7 +606,7 @@ type SegmentBlobProto struct {
 
 func (x *SegmentBlobProto) Reset() {
 	*x = SegmentBlobProto{}
-	mi := &file_knowledge_v1_segment_proto_msgTypes[8]
+	mi := &file_knowledge_v1_segment_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -469,7 +618,7 @@ func (x *SegmentBlobProto) String() string {
 func (*SegmentBlobProto) ProtoMessage() {}
 
 func (x *SegmentBlobProto) ProtoReflect() protoreflect.Message {
-	mi := &file_knowledge_v1_segment_proto_msgTypes[8]
+	mi := &file_knowledge_v1_segment_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -482,7 +631,7 @@ func (x *SegmentBlobProto) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SegmentBlobProto.ProtoReflect.Descriptor instead.
 func (*SegmentBlobProto) Descriptor() ([]byte, []int) {
-	return file_knowledge_v1_segment_proto_rawDescGZIP(), []int{8}
+	return file_knowledge_v1_segment_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *SegmentBlobProto) GetId() string {
@@ -538,7 +687,7 @@ type SegmentMetaProto struct {
 
 func (x *SegmentMetaProto) Reset() {
 	*x = SegmentMetaProto{}
-	mi := &file_knowledge_v1_segment_proto_msgTypes[9]
+	mi := &file_knowledge_v1_segment_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -550,7 +699,7 @@ func (x *SegmentMetaProto) String() string {
 func (*SegmentMetaProto) ProtoMessage() {}
 
 func (x *SegmentMetaProto) ProtoReflect() protoreflect.Message {
-	mi := &file_knowledge_v1_segment_proto_msgTypes[9]
+	mi := &file_knowledge_v1_segment_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -563,7 +712,7 @@ func (x *SegmentMetaProto) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SegmentMetaProto.ProtoReflect.Descriptor instead.
 func (*SegmentMetaProto) Descriptor() ([]byte, []int) {
-	return file_knowledge_v1_segment_proto_rawDescGZIP(), []int{9}
+	return file_knowledge_v1_segment_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *SegmentMetaProto) GetId() string {
@@ -605,26 +754,36 @@ var File_knowledge_v1_segment_proto protoreflect.FileDescriptor
 
 const file_knowledge_v1_segment_proto_rawDesc = "" +
 	"\n" +
-	"\x1aknowledge/v1/segment.proto\x12\fknowledge.v1\x1a\x19knowledge/v1/engine.proto\"x\n" +
+	"\x1aknowledge/v1/segment.proto\x12\fknowledge.v1\x1a\x19knowledge/v1/engine.proto\"\x95\x01\n" +
 	"\vShipRequest\x123\n" +
 	"\x06target\x18\x01 \x01(\v2\x1b.knowledge.v1.GraphSelectorR\x06target\x124\n" +
-	"\x05blobs\x18\x02 \x03(\v2\x1e.knowledge.v1.SegmentBlobProtoR\x05blobs\"H\n" +
+	"\x05blobs\x18\x02 \x03(\v2\x1e.knowledge.v1.SegmentBlobProtoR\x05blobs\x12\x1b\n" +
+	"\twriter_id\x18\x03 \x01(\tR\bwriterId\"H\n" +
 	"\fShipResponse\x128\n" +
-	"\astamped\x18\x01 \x03(\v2\x1e.knowledge.v1.SegmentMetaProtoR\astamped\"d\n" +
+	"\astamped\x18\x01 \x03(\v2\x1e.knowledge.v1.SegmentMetaProtoR\astamped\"\x81\x01\n" +
 	"\x10ListDeltaRequest\x123\n" +
 	"\x06target\x18\x01 \x01(\v2\x1b.knowledge.v1.GraphSelectorR\x06target\x12\x1b\n" +
-	"\tsince_gen\x18\x02 \x01(\x04R\bsinceGen\"I\n" +
+	"\tsince_gen\x18\x02 \x01(\x04R\bsinceGen\x12\x1b\n" +
+	"\twriter_id\x18\x03 \x01(\tR\bwriterId\"I\n" +
 	"\x11ListDeltaResponse\x124\n" +
-	"\x05metas\x18\x01 \x03(\v2\x1e.knowledge.v1.SegmentMetaProtoR\x05metas\"U\n" +
+	"\x05metas\x18\x01 \x03(\v2\x1e.knowledge.v1.SegmentMetaProtoR\x05metas\"r\n" +
 	"\fFetchRequest\x123\n" +
 	"\x06target\x18\x01 \x01(\v2\x1b.knowledge.v1.GraphSelectorR\x06target\x12\x10\n" +
-	"\x03ids\x18\x02 \x03(\tR\x03ids\"E\n" +
+	"\x03ids\x18\x02 \x03(\tR\x03ids\x12\x1b\n" +
+	"\twriter_id\x18\x03 \x01(\tR\bwriterId\"E\n" +
 	"\rFetchResponse\x124\n" +
 	"\x05blobs\x18\x01 \x03(\v2\x1e.knowledge.v1.SegmentBlobProtoR\x05blobs\"U\n" +
 	"\fPruneRequest\x123\n" +
 	"\x06target\x18\x01 \x01(\v2\x1b.knowledge.v1.GraphSelectorR\x06target\x12\x10\n" +
 	"\x03ids\x18\x02 \x03(\tR\x03ids\")\n" +
 	"\rPruneResponse\x12\x18\n" +
+	"\adeleted\x18\x01 \x01(\x04R\adeleted\"\x8c\x01\n" +
+	"\x0ePublishRequest\x123\n" +
+	"\x06target\x18\x01 \x01(\v2\x1b.knowledge.v1.GraphSelectorR\x06target\x12\x1b\n" +
+	"\twriter_id\x18\x02 \x01(\tR\bwriterId\x12\x16\n" +
+	"\x06format\x18\x03 \x01(\tR\x06format\x12\x10\n" +
+	"\x03ids\x18\x04 \x03(\tR\x03ids\"+\n" +
+	"\x0fPublishResponse\x12\x18\n" +
 	"\adeleted\x18\x01 \x01(\x04R\adeleted\"\x8d\x01\n" +
 	"\x10SegmentBlobProto\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x16\n" +
@@ -642,12 +801,13 @@ const file_knowledge_v1_segment_proto_rawDesc = "" +
 	"generation\x12\x1b\n" +
 	"\tdoc_count\x18\x04 \x01(\x05R\bdocCount\x12\x1d\n" +
 	"\n" +
-	"dead_count\x18\x05 \x01(\x05R\tdeadCount2\xa1\x02\n" +
+	"dead_count\x18\x05 \x01(\x05R\tdeadCount2\xe9\x02\n" +
 	"\x0eSegmentService\x12=\n" +
 	"\x04Ship\x12\x19.knowledge.v1.ShipRequest\x1a\x1a.knowledge.v1.ShipResponse\x12L\n" +
 	"\tListDelta\x12\x1e.knowledge.v1.ListDeltaRequest\x1a\x1f.knowledge.v1.ListDeltaResponse\x12@\n" +
 	"\x05Fetch\x12\x1a.knowledge.v1.FetchRequest\x1a\x1b.knowledge.v1.FetchResponse\x12@\n" +
-	"\x05Prune\x12\x1a.knowledge.v1.PruneRequest\x1a\x1b.knowledge.v1.PruneResponseB@Z>github.com/fulminate-io/knowledge/gen/knowledge/v1;knowledgev1b\x06proto3"
+	"\x05Prune\x12\x1a.knowledge.v1.PruneRequest\x1a\x1b.knowledge.v1.PruneResponse\x12F\n" +
+	"\aPublish\x12\x1c.knowledge.v1.PublishRequest\x1a\x1d.knowledge.v1.PublishResponseB@Z>github.com/fulminate-io/knowledge/gen/knowledge/v1;knowledgev1b\x06proto3"
 
 var (
 	file_knowledge_v1_segment_proto_rawDescOnce sync.Once
@@ -661,7 +821,7 @@ func file_knowledge_v1_segment_proto_rawDescGZIP() []byte {
 	return file_knowledge_v1_segment_proto_rawDescData
 }
 
-var file_knowledge_v1_segment_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
+var file_knowledge_v1_segment_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
 var file_knowledge_v1_segment_proto_goTypes = []any{
 	(*ShipRequest)(nil),       // 0: knowledge.v1.ShipRequest
 	(*ShipResponse)(nil),      // 1: knowledge.v1.ShipResponse
@@ -671,32 +831,37 @@ var file_knowledge_v1_segment_proto_goTypes = []any{
 	(*FetchResponse)(nil),     // 5: knowledge.v1.FetchResponse
 	(*PruneRequest)(nil),      // 6: knowledge.v1.PruneRequest
 	(*PruneResponse)(nil),     // 7: knowledge.v1.PruneResponse
-	(*SegmentBlobProto)(nil),  // 8: knowledge.v1.SegmentBlobProto
-	(*SegmentMetaProto)(nil),  // 9: knowledge.v1.SegmentMetaProto
-	(*GraphSelector)(nil),     // 10: knowledge.v1.GraphSelector
+	(*PublishRequest)(nil),    // 8: knowledge.v1.PublishRequest
+	(*PublishResponse)(nil),   // 9: knowledge.v1.PublishResponse
+	(*SegmentBlobProto)(nil),  // 10: knowledge.v1.SegmentBlobProto
+	(*SegmentMetaProto)(nil),  // 11: knowledge.v1.SegmentMetaProto
+	(*GraphSelector)(nil),     // 12: knowledge.v1.GraphSelector
 }
 var file_knowledge_v1_segment_proto_depIdxs = []int32{
-	10, // 0: knowledge.v1.ShipRequest.target:type_name -> knowledge.v1.GraphSelector
-	8,  // 1: knowledge.v1.ShipRequest.blobs:type_name -> knowledge.v1.SegmentBlobProto
-	9,  // 2: knowledge.v1.ShipResponse.stamped:type_name -> knowledge.v1.SegmentMetaProto
-	10, // 3: knowledge.v1.ListDeltaRequest.target:type_name -> knowledge.v1.GraphSelector
-	9,  // 4: knowledge.v1.ListDeltaResponse.metas:type_name -> knowledge.v1.SegmentMetaProto
-	10, // 5: knowledge.v1.FetchRequest.target:type_name -> knowledge.v1.GraphSelector
-	8,  // 6: knowledge.v1.FetchResponse.blobs:type_name -> knowledge.v1.SegmentBlobProto
-	10, // 7: knowledge.v1.PruneRequest.target:type_name -> knowledge.v1.GraphSelector
-	0,  // 8: knowledge.v1.SegmentService.Ship:input_type -> knowledge.v1.ShipRequest
-	2,  // 9: knowledge.v1.SegmentService.ListDelta:input_type -> knowledge.v1.ListDeltaRequest
-	4,  // 10: knowledge.v1.SegmentService.Fetch:input_type -> knowledge.v1.FetchRequest
-	6,  // 11: knowledge.v1.SegmentService.Prune:input_type -> knowledge.v1.PruneRequest
-	1,  // 12: knowledge.v1.SegmentService.Ship:output_type -> knowledge.v1.ShipResponse
-	3,  // 13: knowledge.v1.SegmentService.ListDelta:output_type -> knowledge.v1.ListDeltaResponse
-	5,  // 14: knowledge.v1.SegmentService.Fetch:output_type -> knowledge.v1.FetchResponse
-	7,  // 15: knowledge.v1.SegmentService.Prune:output_type -> knowledge.v1.PruneResponse
-	12, // [12:16] is the sub-list for method output_type
-	8,  // [8:12] is the sub-list for method input_type
-	8,  // [8:8] is the sub-list for extension type_name
-	8,  // [8:8] is the sub-list for extension extendee
-	0,  // [0:8] is the sub-list for field type_name
+	12, // 0: knowledge.v1.ShipRequest.target:type_name -> knowledge.v1.GraphSelector
+	10, // 1: knowledge.v1.ShipRequest.blobs:type_name -> knowledge.v1.SegmentBlobProto
+	11, // 2: knowledge.v1.ShipResponse.stamped:type_name -> knowledge.v1.SegmentMetaProto
+	12, // 3: knowledge.v1.ListDeltaRequest.target:type_name -> knowledge.v1.GraphSelector
+	11, // 4: knowledge.v1.ListDeltaResponse.metas:type_name -> knowledge.v1.SegmentMetaProto
+	12, // 5: knowledge.v1.FetchRequest.target:type_name -> knowledge.v1.GraphSelector
+	10, // 6: knowledge.v1.FetchResponse.blobs:type_name -> knowledge.v1.SegmentBlobProto
+	12, // 7: knowledge.v1.PruneRequest.target:type_name -> knowledge.v1.GraphSelector
+	12, // 8: knowledge.v1.PublishRequest.target:type_name -> knowledge.v1.GraphSelector
+	0,  // 9: knowledge.v1.SegmentService.Ship:input_type -> knowledge.v1.ShipRequest
+	2,  // 10: knowledge.v1.SegmentService.ListDelta:input_type -> knowledge.v1.ListDeltaRequest
+	4,  // 11: knowledge.v1.SegmentService.Fetch:input_type -> knowledge.v1.FetchRequest
+	6,  // 12: knowledge.v1.SegmentService.Prune:input_type -> knowledge.v1.PruneRequest
+	8,  // 13: knowledge.v1.SegmentService.Publish:input_type -> knowledge.v1.PublishRequest
+	1,  // 14: knowledge.v1.SegmentService.Ship:output_type -> knowledge.v1.ShipResponse
+	3,  // 15: knowledge.v1.SegmentService.ListDelta:output_type -> knowledge.v1.ListDeltaResponse
+	5,  // 16: knowledge.v1.SegmentService.Fetch:output_type -> knowledge.v1.FetchResponse
+	7,  // 17: knowledge.v1.SegmentService.Prune:output_type -> knowledge.v1.PruneResponse
+	9,  // 18: knowledge.v1.SegmentService.Publish:output_type -> knowledge.v1.PublishResponse
+	14, // [14:19] is the sub-list for method output_type
+	9,  // [9:14] is the sub-list for method input_type
+	9,  // [9:9] is the sub-list for extension type_name
+	9,  // [9:9] is the sub-list for extension extendee
+	0,  // [0:9] is the sub-list for field type_name
 }
 
 func init() { file_knowledge_v1_segment_proto_init() }
@@ -711,7 +876,7 @@ func file_knowledge_v1_segment_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_knowledge_v1_segment_proto_rawDesc), len(file_knowledge_v1_segment_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   10,
+			NumMessages:   12,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

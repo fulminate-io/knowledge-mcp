@@ -122,6 +122,37 @@ func (e *SegmentedIndex[Q, S]) doMerge(chosen []*segmentEntry[Q, S]) {
 		}
 	}
 	e.mergeCnt.Add(1)
+
+	// Surface the supersession event to the owner (when installed) so it can
+	// reclaim the superseded constituents' L2 disk files. Runs AFTER the publish,
+	// holding NO engine lock (only the lock-free CAS above touched e.set), on the
+	// background merger goroutine — so it cannot re-enter or deadlock the merge
+	// tick. The merged blob mirrors the Export encode-shape (distribution.go:11):
+	// Generation is 0 here (newEntry never stamps it), which is harmless because
+	// the L2 cache keys by id + raw bytes and ignores Generation (cache.go). On an
+	// Encode error we simply do NOT fire — a Remove without a durable Put of the
+	// merged blob would be a fresh false-prune, so an empty/partial Merged is worse
+	// than no callback (the next ship/reconcile still bounds the server set).
+	if e.opts.OnMerge != nil && len(remove) > 0 {
+		bytes, err := entry.payload.Encode()
+		if err != nil {
+			return
+		}
+		removed := make([]SegmentID, 0, len(remove))
+		for id := range remove {
+			removed = append(removed, id)
+		}
+		e.opts.OnMerge(MergeResult{
+			Removed: removed,
+			Merged: SegmentBlob{
+				ID:         entry.meta.ID,
+				Format:     e.format.Name(),
+				Generation: entry.meta.Generation,
+				DocCount:   entry.meta.DocCount,
+				Bytes:      bytes,
+			},
+		})
+	}
 }
 
 // Close stops the background merge goroutine. Idempotent.

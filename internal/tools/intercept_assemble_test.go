@@ -45,6 +45,7 @@ func (d *fakeAssembleDeps) RepoResolver() *RepoResolver                  { retur
 func (d *fakeAssembleDeps) SegmentManager() SegmentSearcher              { return nil }
 func (d *fakeAssembleDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
 func (d *fakeAssembleDeps) SegmentShipper() SegmentShipper               { return nil }
+func (d *fakeAssembleDeps) SegmentPruner() SegmentPruner                 { return nil }
 func (d *fakeAssembleDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
 func (d *fakeAssembleDeps) PipelineScanner() PipelineScanner             { return nil }
 func (d *fakeAssembleDeps) ReflectionForcer() ReflectionForcer           { return nil }

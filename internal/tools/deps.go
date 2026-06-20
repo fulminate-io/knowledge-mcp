@@ -70,6 +70,46 @@ type SegmentShipper interface {
 	InvalidateLocal(gt kgtypes.GraphType, name string, ids []searchengine.SegmentID)
 }
 
+// SegmentPruner is the narrow seam the one-shot manage(prune-cache) handler drives
+// to reclaim orphaned L2 segment files. *segmentdist.Manager satisfies it (via the
+// bootstrap client_segment.go adapter — the ONLY place the tools-local and
+// segmentdist-native vocabularies meet). The targets cross this seam as PARALLEL
+// slices (graphTypes[i] pairs with names[i]) of already-imported kgtypes.GraphType
+// + string — DELIBERATELY not a segmentdist target type — so tools never imports
+// segmentdist (the same intra-client decoupling the four sibling segment seams keep:
+// this file references *segmentdist.Manager in PROSE only, never in a signature or a
+// var _ assertion). execute=false previews (the report carries the would-remove
+// orphans, deletes nothing); execute=true unlinks the orphans and fills
+// Removed/RemovedBytes.
+type SegmentPruner interface {
+	PruneCache(ctx context.Context, graphTypes []kgtypes.GraphType, names []string, execute bool) (PruneCacheReport, error)
+}
+
+// PruneCacheGraphReport is the tools-local per-(graph, format) prune result — a
+// field-identical mirror of segmentdist.PruneCacheGraphReport over already-imported
+// types only (kgtypes.GraphType + searchengine.SegmentID). The client_segment.go
+// adapter copies it field-for-field across the package boundary. Orphans is the
+// would-remove (preview) OR did-remove set; Bytes is the summed .seg FileInfo size;
+// Aborted+AbortReason surface a List(0) subset-abort for a SKIPPED pool.
+type PruneCacheGraphReport struct {
+	GraphType   kgtypes.GraphType
+	Name        string
+	Format      string
+	Orphans     []searchengine.SegmentID
+	Bytes       int64
+	Aborted     bool
+	AbortReason string
+}
+
+// PruneCacheReport is the tools-local whole-run result mirroring
+// segmentdist.PruneCacheReport: one PruneCacheGraphReport per (graph, format) pool
+// plus the EXECUTED totals (Removed count + RemovedBytes), zero on a preview run.
+type PruneCacheReport struct {
+	Graphs       []PruneCacheGraphReport
+	Removed      int
+	RemovedBytes int64
+}
+
 // SegmentCoverageReader is the narrow read seam the manage(status) segment-coverage
 // column uses to read a graph's segment-covered doc count (summed HNSW
 // meta.DocCount). *segmentdist.Manager satisfies it (Manager.ShippedSegmentDocCount).
@@ -319,11 +359,14 @@ type ClientDeps interface {
 	GraphCaller() GraphCaller
 	LocalGraphCaller() GraphCaller
 	RepoResolver() *RepoResolver
-	// SegmentManager returns the SAME *segmentdist.Manager the client-side
-	// pipeline attached (one instance — duplicate engines would double memory
-	// and miss the producer's loaded segments). Returns nil when the pipeline
-	// was not wired (--no-llm-pipeline, or no embedder/summarizer configured);
-	// the search arms fall back to the server search path on nil.
+	// SegmentManager returns the SAME *segmentdist.Manager the client holds (one
+	// instance — duplicate engines would double memory and miss the producer's
+	// loaded segments). The read Manager is constructed UNCONDITIONALLY whenever a
+	// router is present (wireRuntimesBackground, independent of the LLM pipeline),
+	// so an offline daemon (--no-llm-pipeline, or no embedder/summarizer) still
+	// serves BM25 over existing segments. Returns nil ONLY for a router-less /
+	// headless client; the search arms loud-error on that nil — there is NO server
+	// search fallback (that path is retired).
 	SegmentManager() SegmentSearcher
 	// SegmentVectorResolver returns the SAME *segmentdist.Manager as the by-id
 	// stored-vector read seam the mode:"similar" claim resolves its query vector
@@ -336,6 +379,12 @@ type ClientDeps interface {
 	// pipeline was not wired (same condition as SegmentManager) — the driver errors
 	// "pipeline not wired" on nil.
 	SegmentShipper() SegmentShipper
+	// SegmentPruner returns the SAME *segmentdist.Manager (via the client_segment.go
+	// adapter) as the one-shot manage(prune-cache) orphaned-L2-reclaim surface.
+	// Returns nil when the segment manager was not constructed (router-less / headless
+	// client) — the handler's nil-guard surfaces a not-ready error rather than
+	// dereferencing.
+	SegmentPruner() SegmentPruner
 	// SegmentCoverage returns the SAME *segmentdist.Manager as the read seam the
 	// manage(status) segment-coverage column reads segment-covered doc counts
 	// through. Returns nil when the pipeline was not wired (same condition as

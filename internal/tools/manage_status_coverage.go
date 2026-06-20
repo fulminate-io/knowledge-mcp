@@ -135,16 +135,18 @@ func GraphEmbeddedCount(ctx context.Context, gc GraphCaller, gt kgtypes.GraphTyp
 
 // segCoveredFor reads the SERVER-shipped HNSW-segment-covered doc count AND the
 // LIVE in-memory engine resident doc count for a row's graph via the nil-safe
-// SegmentCoverage seam. Segments exist ONLY for the two builtin graphs the
-// auto-heal arm scopes to (GraphCode + GraphKnowledge — the same gate
-// buildHealFactory uses); every other graph type has no segment pool, so it returns
-// (0, 0, false) and the column renders "—". When the seam is unwired (degraded
-// headless mode) or the shipped probe errs, it also returns (0, 0, false) — a
-// placeholder, not a hard failure of the status table. The live resident read is a
-// single atomic snapshot (no RPC); it is surfaced so a live-pool collapse (live 0
+// SegmentCoverage seam. Segments exist for every graph kgtypes.HasRebuildableSegments
+// admits — the embeddable builtins (knowledge, code, cloud, cicd, practice) — the
+// SAME gate buildHealFactory and the manual rebuild_segments op use, so the status
+// column reports coverage for exactly the graph set the auto-heal arm services. A
+// graph with no rebuildable segments (linkage, transformers, and the raw graphs)
+// returns (0, 0, false) and the column renders "—". When the seam is unwired
+// (degraded headless mode) or the shipped probe errs, it also returns (0, 0, false)
+// — a placeholder, not a hard failure of the status table. The live resident read is
+// a single atomic snapshot (no RPC); it is surfaced so a live-pool collapse (live 0
 // while covered is N) is detectable instead of masked behind the shipped figure.
 func segCoveredFor(ctx context.Context, deps ClientDeps, gt kgtypes.GraphType, name string) (covered, liveResident int, hasSeg bool) {
-	if gt != kgtypes.GraphCode && gt != kgtypes.GraphKnowledge {
+	if !kgtypes.HasRebuildableSegments(gt) {
 		return 0, 0, false
 	}
 	sr := deps.SegmentCoverage()

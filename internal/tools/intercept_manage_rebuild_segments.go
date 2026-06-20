@@ -157,9 +157,14 @@ func handleClientRebuildSegments(ctx context.Context, deps ClientDeps, a manageA
 	case a.Graph == "":
 		return errorResult(`manage(rebuild_segments) requires "graph" — name the code, knowledge, or registered custom graph to rebuild`)
 	case kgtypes.IsBuiltinGraphType(a.Graph):
-		// Among the builtins, only `code` and `knowledge` have rebuildable segments.
-		if a.Graph != string(kgtypes.GraphCode) && a.Graph != string(kgtypes.GraphKnowledge) {
-			return errorResult(fmt.Sprintf(`manage(rebuild_segments): builtin graph %q has no rebuildable segments — only code, knowledge, and registered custom graph types are supported`, a.Graph))
+		// A builtin carries rebuildable segments iff its graph type is embeddable.
+		// Gate on HasRebuildableSegments — the client mirror of the SAME Embeddable()
+		// predicate the server's segment_rebuild scan uses — so the client gate and
+		// the server scan cannot drift. This admits every embeddable builtin (code,
+		// knowledge, cloud, cicd, practice) and still rejects the non-embeddable ones
+		// (linkage, transformers, logs, web, pdf), which have no segments to rebuild.
+		if !kgtypes.HasRebuildableSegments(kgtypes.GraphType(a.Graph)) {
+			return errorResult(fmt.Sprintf(`manage(rebuild_segments): builtin graph %q has no rebuildable segments — only embeddable graphs (code, knowledge, cloud, cicd, practice) and registered custom graph types are supported`, a.Graph))
 		}
 		// The builtin knowledge graph has one canonical instance named "default";
 		// an empty name (or the "knowledge" alias) resolves to it. BASE layer only

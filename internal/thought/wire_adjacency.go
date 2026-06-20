@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"sync"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
@@ -191,6 +192,48 @@ func fetchAdjacency(ctx context.Context, gc Caller, scope string, subset []strin
 	return nodeIDs, adj, nil
 }
 
+// fetchTensionUniverseNodes drains the THREE chargeable claim node types —
+// thought, finding, research — each via the existing drainThoughtBrowse paging
+// helper, and concatenates them into one node universe for the tensions browse.
+// The three type-drains are independent (distinct type browses, no data
+// dependency), so they fan out across a bounded set of goroutines joined on a
+// sync.WaitGroup; the first non-nil drain error is returned.
+//
+// This is DELIBERATELY separate from fetchAllThoughtNodes (the shared
+// thought-only drain). Only the tensions browse (fetchTensionEdges) reads the
+// wider universe; every other charge/valence consumer — DeGroot propagation,
+// clustering, recall, influence, personality, blind_spots, simulate — keeps
+// sourcing its node set from the thought-only fetchAllThoughtNodes, so charged
+// findings/research surface in tensions WITHOUT bleeding into propagation or
+// clustering.
+func fetchTensionUniverseNodes(ctx context.Context, gc Caller) ([]*knowledgev1.Node, error) {
+	if gc == nil {
+		return nil, nil
+	}
+	types := []kgtypes.NodeType{kgtypes.NodeThought, kgtypes.NodeFinding, kgtypes.NodeResearch}
+	results := make([][]*knowledgev1.Node, len(types))
+	errs := make([]error, len(types))
+	var wg sync.WaitGroup
+	for i, nt := range types {
+		wg.Add(1)
+		go func(idx int, nodeType string) {
+			defer wg.Done()
+			results[idx], errs[idx] = drainThoughtBrowse(ctx, gc, nodeType, browsePageSize)
+		}(i, string(nt))
+	}
+	wg.Wait()
+	for _, err := range errs {
+		if err != nil {
+			return nil, err
+		}
+	}
+	var out []*knowledgev1.Node
+	for _, r := range results {
+		out = append(out, r...)
+	}
+	return out, nil
+}
+
 // fetchTensionEdges builds the edge set ReflectTensions pairs on: thoughts joined
 // ONLY by an EXPLICIT, HUMAN thought↔thought reasoning edge (tensionEdgeTypes
 // minus machine-Method provenances), with NO session-sibling expansion. The
@@ -218,17 +261,19 @@ func fetchAdjacency(ctx context.Context, gc Caller, scope string, subset []strin
 // pre-filter local to this function, structurally incapable of touching
 // cluster-detection adjacency.
 //
-// Cost is the cheap half of fetchAdjacency("all"): one bulk NodeThought browse
-// (fetchAllThoughtNodes) + one bulk RETURN_MODE_EDGES read filtered to
-// tensionEdgeTypes (fetchEdgesForNodeSet) + a pure client-side O(edges) machine
-// filter. It deliberately SKIPS the session-sibling expansion (the extra
-// EdgeKGContains read + group-by) that dominates fetchAdjacency("all").
+// Cost is the cheap half of fetchAdjacency("all"): one widened thought+finding+
+// research universe browse (fetchTensionUniverseNodes) + one bulk
+// RETURN_MODE_EDGES read filtered to tensionEdgeTypes (fetchEdgesForNodeSet) + a
+// pure client-side O(edges) machine filter. It deliberately SKIPS the
+// session-sibling expansion (the extra EdgeKGContains read + group-by) that
+// dominates fetchAdjacency("all"). The widened universe is LOCAL to this helper —
+// clustering (fetchAdjacencyNodeIDs) stays on the thought-only fetchAllThoughtNodes.
 func fetchTensionEdges(ctx context.Context, gc Caller) ([]string, []*knowledgev1.Edge, map[string]bool, error) {
 	if gc == nil {
 		return nil, nil, nil, nil
 	}
 
-	nodes, err := fetchAllThoughtNodes(ctx, gc)
+	nodes, err := fetchTensionUniverseNodes(ctx, gc)
 	if err != nil {
 		return nil, nil, nil, err
 	}

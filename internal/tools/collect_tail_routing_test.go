@@ -44,6 +44,7 @@ func (d *tailRoutingDeps) RepoResolver() *RepoResolver                  { return
 func (d *tailRoutingDeps) SegmentManager() SegmentSearcher              { return nil }
 func (d *tailRoutingDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
 func (d *tailRoutingDeps) SegmentShipper() SegmentShipper               { return nil }
+func (d *tailRoutingDeps) SegmentPruner() SegmentPruner                 { return nil }
 func (d *tailRoutingDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
 func (d *tailRoutingDeps) PipelineScanner() PipelineScanner             { return nil }
 func (d *tailRoutingDeps) ReflectionForcer() ReflectionForcer           { return nil }

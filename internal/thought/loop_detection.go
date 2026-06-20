@@ -184,8 +184,10 @@ func (p *PropagationLoop) runClusterDetection() {
 // computeBlindSpots builds the faceted epistemic-risk report for the on-demand
 // blind_spots surface to serve from cache. It does the bulk-read shape the
 // per-thought facets need — ONE influence pass + one bulk session-label read + one
-// bulk charges read + one bulk node hydrate over nodeIDs — plus ONE bulk topic-doc
-// browse (TopicGroupingByClusterID) for the topic rollup unit of the cluster-level
+// bulk charges read + one bulk node hydrate over nodeIDs + one bulk cited-code
+// staleness precompute (buildCitedCodeUpdatedAt: 1 edge read + 1 proxy hydrate + 1
+// code hydrate per distinct cited repo) — plus ONE bulk topic-doc browse
+// (TopicGroupingByClusterID) for the topic rollup unit of the cluster-level
 // belief-reversal view. The pooled cluster reversal REUSES the same charges map (no
 // extra per-thought fetch); clusters come from the tick's Leiden partition. No
 // per-thought fan-out, no N+1 — every read is a single bulk call.
@@ -194,19 +196,24 @@ func (p *PropagationLoop) computeBlindSpots(ctx context.Context, nodeIDs []strin
 	sessionByThought := FetchSessionLabelsByThought(ctx, p.gc, nodeIDs)
 	charges := fetchChargesFor(ctx, p.gc, nodeIDs)
 	nodeByID := fetchNodesByIDs(ctx, p.gc, nodeIDs)
+	// Cited-code staleness precompute for facetCodeChanged: one bulk cross-graph
+	// read (1 edge read + 1 proxy hydrate + 1 code hydrate per distinct cited repo,
+	// no per-thought fan-out) → thoughtID→newest cited-code UpdatedAt.
+	citedCodeUpdatedAt := buildCitedCodeUpdatedAt(ctx, p.gc, nodeIDs)
 	// Topic rollup for the cluster-level reversal unit: one bulk topic-doc browse,
 	// loop-safe (in-package, Caller-based, no handler deps). Clusters sharing a
 	// topic-summary doc roll into one unit; topicless clusters stay raw.
 	topics := TopicGroupingByClusterID(ctx, p.gc)
 	return classifyBlindSpots(blindSpotInputs{
-		thoughtIDs:       nodeIDs,
-		charges:          charges,
-		influence:        influence,
-		nodeByID:         nodeByID,
-		sessionByThought: sessionByThought,
-		clusters:         clusters,
-		topics:           topics,
-		now:              p.clockNow(),
+		thoughtIDs:         nodeIDs,
+		charges:            charges,
+		influence:          influence,
+		nodeByID:           nodeByID,
+		sessionByThought:   sessionByThought,
+		citedCodeUpdatedAt: citedCodeUpdatedAt,
+		clusters:           clusters,
+		topics:             topics,
+		now:                p.clockNow(),
 	})
 }
 

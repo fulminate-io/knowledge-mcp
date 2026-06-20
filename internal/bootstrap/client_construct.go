@@ -32,6 +32,50 @@ var newAuthStoreFn = auth.NewStore
 // is what this seam lets a test assert.
 var startKeepaliveFn = (*graphclient.GraphClient).StartKeepalive
 
+// selectAuthSources resolves the auth Store, TokenSource, and the machineAuth
+// cloud-selection bool that constructClient threads into the Router. It is the
+// single place the three Router.pick (router.go:173) inputs are decided.
+//
+// Three mutually exclusive paths:
+//   - --no-auth (fail-closed local-only floor): forces BOTH cloud triggers off
+//     in one chokepoint. machineAuth is false WITHOUT consulting f.AuthToken (a
+//     present --auth-token / KNOWLEDGE_AUTH_TOKEN cannot re-enable cloud), and
+//     the keychain is replaced with noopAuthStore{} (Get→ErrNotFound) so
+//     AuthState.IsLoggedIn==false even with a live `knowledge login` refresh
+//     token present. tokenSource is the zero-IO StaticTokenSource{} (empty
+//     bearer) — never the OAuth source, so no keychain refresh is attempted.
+//     Result: no routed op can reach a fulminate.io host regardless of
+//     credentials. (The cloud endpoint is still passed UNCHANGED by the caller;
+//     --no-auth is a capability reduction, never a host override.)
+//   - machine token present (--auth-token / KNOWLEDGE_AUTH_TOKEN): a zero-IO
+//     StaticTokenSource bearing the caller-supplied opaque token, machineAuth
+//     true. No browser login, no keychain refresh. Permissions are left nil —
+//     the token is opaque to the client and the backend enforces its scopes.
+//   - no machine token: the interactive keychain OAuth source, machineAuth
+//     false. Cloud selection then follows the keychain login state.
+//
+// Store construction errors (ErrNotImplementedOS on Windows, or any transient
+// failure) are non-fatal: degrade to noopAuthStore{} so AuthState reports
+// IsLoggedIn==false and the Router falls through to local.
+func selectAuthSources(f Config) (auth.Store, auth.TokenSource, bool) {
+	if f.NoAuth {
+		return noopAuthStore{}, auth.StaticTokenSource{}, false
+	}
+	authStore, storeErr := newAuthStoreFn()
+	if storeErr != nil {
+		authStore = noopAuthStore{}
+	}
+	if f.AuthToken != "" {
+		return authStore, auth.StaticTokenSource{AccessToken: f.AuthToken}, true
+	}
+	tokenSource := auth.NewOAuthTokenSource(
+		authStore,
+		cli.CloudEndpoint,
+		cli.AllowedAuthHosts(),
+	)
+	return authStore, tokenSource, false
+}
+
 // constructClient builds a stdio client that proxies to the graph server.
 // It does NOT open any .bin file and does NOT register key fragments —
 // the server binary owns graph storage. The sink is a RemoteUploadSink
@@ -58,37 +102,19 @@ func constructClient(f Config) *client {
 	}
 	tcp := dialLocal(f.Port)
 
-	// Build the auth Store. ErrNotImplementedOS (Windows) is non-fatal:
-	// substitute a no-op Store so AuthState always returns false and the
-	// Router falls through to local. Other errors are also non-fatal —
-	// degrade to no-op so the local path still works.
-	authStore, storeErr := newAuthStoreFn()
-	if storeErr != nil {
-		authStore = noopAuthStore{}
-	}
-	// TokenSource selection — the coexistence rule for the two auth paths:
-	//   - machine token present (--auth-token / KNOWLEDGE_AUTH_TOKEN) → a
-	//     zero-IO StaticTokenSource bearing the caller-supplied opaque token.
-	//     No browser login, no keychain refresh. Permissions are left nil: the
-	//     token is opaque to the client and the backend enforces its scopes.
-	//   - no machine token → the interactive keychain OAuth source, which mints
-	//     fresh access tokens on demand from the `knowledge login` refresh token.
-	machineAuth := f.AuthToken != ""
-	var tokenSource auth.TokenSource
-	if machineAuth {
-		tokenSource = auth.StaticTokenSource{AccessToken: f.AuthToken}
-	} else {
-		tokenSource = auth.NewOAuthTokenSource(
-			authStore,
-			cli.CloudEndpoint,
-			cli.AllowedAuthHosts(),
-		)
-	}
+	// Resolve the three Router.pick (router.go:173) inputs — auth Store,
+	// TokenSource, and the machineAuth cloud-selection bool. selectAuthSources
+	// is the single decision point; under --no-auth it returns the noop store +
+	// empty StaticTokenSource + machineAuth=false, forcing pick() local-only
+	// regardless of any credential present (fail-closed). See its doc-comment.
+	authStore, tokenSource, machineAuth := selectAuthSources(f)
 	authState := auth.NewAuthState(authStore, 0)
 	// machineAuth forces cloud selection without keychain involvement: a
 	// machine-token client routes every op to cloud and runs with no local
 	// server. The endpoint is always the canonical pinned cloud endpoint — never
 	// overridden; in-cluster routing is handled by infrastructure, out of scope.
+	// Under --no-auth machineAuth is false and authStore is the noop store, so
+	// pick() always returns the local *GraphClient.
 	router := graphclient.NewRouterWithMachineAuth(tcp, cli.CloudEndpoint, tokenSource, authState, machineAuth)
 
 	c := &client{

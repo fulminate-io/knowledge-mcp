@@ -8,23 +8,22 @@ import (
 	"math"
 )
 
-const (
-	// serialVersion is the legacy v1 format (topology only). Deserialization no
-	// longer accepts v1 — only v2 with inline vectors is valid. Retained for the
-	// serialize-side version-byte comparison.
-	serialVersion byte = 1
-
-	// serialVersionWithVectors is the v2 binary HNSW format that appends the flat
-	// vector array after the topology data. Inline vectors are what make a decoded
-	// graph fully reconstructable — and therefore merge-eligible (the contract's
-	// Decode-reconstructs-concrete requirement).
-	serialVersionWithVectors byte = 2
-)
+// serialVersionWithVectors is the v2 binary HNSW format that appends the flat
+// vector array after the topology data. Inline vectors are what make a decoded
+// graph fully reconstructable — and therefore merge-eligible (the contract's
+// Decode-reconstructs-concrete requirement). It is the ONLY version encode()
+// writes (an empty graph still encodes as a valid zero-node v2 blob) and the only
+// version decodeGraph accepts; the legacy v1 (topology-only) format is gone — a
+// v1 byte is rejected on decode and never produced.
+const serialVersionWithVectors byte = 2
 
 // encode serializes the binary HNSW graph (topology + inline vectors) to a v2
-// blob. Always writes v2 when vectors are present; a graph with no vectors
-// (empty) falls back to the v1 version byte. Copied from the server's
-// binary_serial.go Serialize.
+// blob. The version byte is ALWAYS v2 (serialVersionWithVectors), including for a
+// legitimately-empty graph (zero nodes/vectors) — that yields a valid 29-byte
+// zero-node v2 blob with no trailing vector block, which decodeGraph accepts on
+// reload. A populated graph is byte-identical to before (it already wrote v2 plus
+// the trailing inline vectors); only the empty-graph version byte changed.
+// Copied from the server's binary_serial.go Serialize.
 func (h *binaryGraph) encode() []byte {
 	includeVectors := len(h.vectors) > 0
 
@@ -41,11 +40,10 @@ func (h *binaryGraph) encode() []byte {
 
 	buf := make([]byte, 0, estSize)
 
-	if includeVectors {
-		buf = append(buf, serialVersionWithVectors)
-	} else {
-		buf = append(buf, serialVersion)
-	}
+	// Always write v2 — a populated graph carries inline vectors, and an empty
+	// graph encodes as a valid zero-node v2 blob (no trailing vectors). decodeGraph
+	// accepts only v2, so an empty graph must never fall back to a v1 version byte.
+	buf = append(buf, serialVersionWithVectors)
 
 	// Header: 7 × uint32. dims field stores vecBytes for binary HNSW.
 	buf = binary.LittleEndian.AppendUint32(buf, uint32(h.vecBytes))

@@ -265,8 +265,37 @@ thoughts is operation-dispatched: `thoughts({ "operation": "think" | "charge" | 
     - When surprised: what was unexpected, what it implies
     - When connecting dots: cross-cutting thoughts (most valuable)
     - When debugging: what's broken, hypothesis, what you found
-    - After research: charge your earlier thoughts — did evidence support or contradict?
+    - After research: charge your earlier thoughts — did evidence support or contradict? — AND, when a new research thought OPPOSES a thought surfaced by recall, draw a `contradicts` edge between the two thoughts (`mutate(operation:"link", from:<new>, to:<existing>, relationship:"contradicts")`); when it merely RELATES, draw `relates-to`. The tensions surfacing depends on explicit thought↔thought edges existing — charging alone does not record that two thoughts disagree.
   </when-to-think>
+
+  <recall-during-research>
+    Recall is not a once-at-the-start ritual. Recall again at mid-research decision
+    points — when a finding appears to contradict a recalled thought, when you change
+    investigative direction — so you reason against the full picture, not a
+    half-remembered fragment.
+  </recall-during-research>
+
+  <verify-before-contradict severity="hard">
+    When research evidence APPEARS to contradict a prior thought, you must verify the
+    contradiction against the CURRENT SOURCE yourself, first-hand, before negating that
+    thought. A prior thought's assertion, a docstring, or a summary is NOT proof — this
+    is the same docstrings-rot discipline you already apply to citations, extended to
+    the thought graph. Prefer source-cited supersede (`branches_from` + a status update
+    citing the file:line that disproved it) over a blanket `invalidate`; charges do NOT
+    carry forward across `branches_from`. This rule gates NEGATION only — charging is
+    the opposite act and needs no source proof. A user's insight or correction is
+    first-party evidence of the highest authority: charge it the moment it lands, never
+    withholding the charge the way you'd withhold a negation pending corroboration.
+  </verify-before-contradict>
+
+  <substantive-thoughts>
+    Use `think` for raw reasoning — hypotheses, intuitions, the connections between
+    findings. Record CONFIRMED conclusions as findings (`mutate(operation:"create",
+    type:"finding")`), open investigations as research (`create_research`), and
+    surfaced assumptions as thoughts (there is no assumption node type) — charged when
+    later confirmed or refuted. The distinction matters: a finding asserts something
+    verified, a thought records the reasoning that got there.
+  </substantive-thoughts>
 
 </constraint>
 

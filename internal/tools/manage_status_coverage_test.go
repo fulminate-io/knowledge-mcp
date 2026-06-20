@@ -19,9 +19,11 @@ import (
 // coverageFake is a statsRPC that (a) records every StatsRequest it receives so
 // the test can assert IncludeCoverage was set (the T2 gate trigger), (b) serves
 // per-graph GraphStats keyed by the resolved instance label, and (c) serves a
-// RETURN_MODE_GRAPH_NAMES enumeration that returns ONE named "code" graph and an
+// RETURN_MODE_GRAPH_NAMES enumeration that returns a named "code" repo AND a named
+// "practice" language (a NON-code embeddable builtin), and an
 // EMPTY name for knowledge (mirroring the real drop of empty names) — proving the
-// knowledge row is rendered via the explicit empty-name selector, not enumeration.
+// knowledge row is rendered via the explicit empty-name selector, not enumeration,
+// and a non-code embeddable graph now renders a real segment-coverage cell.
 type coverageFake struct {
 	reqs       []*knowledgev1.StatsRequest
 	statsByKey map[string]*knowledgev1.GraphStats
@@ -32,22 +34,30 @@ func (f *coverageFake) Execute(_ context.Context, req *knowledgev1.ExecuteReques
 	if q == nil || q.GetReturnMode() != knowledgev1.ReturnMode_RETURN_MODE_GRAPH_NAMES {
 		return &knowledgev1.ExecuteResponse{}, nil
 	}
-	// Only the code graph reports a named instance; everything else (incl the
-	// default knowledge graph) enumerates empty — which listGraphNamesOfType drops.
-	if req.GetTarget().GetGraph() == "code" {
+	// The code graph reports a named repo and the practice graph a named language (a
+	// NON-code embeddable builtin renderLLMCoverage now enumerates); everything else
+	// (incl the default knowledge graph) enumerates empty — which listGraphNamesOfType
+	// drops.
+	switch req.GetTarget().GetGraph() {
+	case "code":
 		return &knowledgev1.ExecuteResponse{GraphNames: []*knowledgev1.GraphInfo{{Name: "myrepo"}}}, nil
+	case "practice":
+		return &knowledgev1.ExecuteResponse{GraphNames: []*knowledgev1.GraphInfo{{Name: "go"}}}, nil
 	}
 	return &knowledgev1.ExecuteResponse{}, nil
 }
 
 func (f *coverageFake) Stats(_ context.Context, req *knowledgev1.StatsRequest) (*knowledgev1.StatsResponse, error) {
 	f.reqs = append(f.reqs, req)
-	// Resolve the row label the renderer would use: empty Graph → knowledge;
-	// otherwise the repo/name field carries the instance.
+	// Resolve the row label the renderer would use: empty Graph → knowledge; a code
+	// graph carries the repo field, a practice graph the language field.
 	sel := req.GetTarget()
 	key := "knowledge"
-	if sel.GetGraph() == "code" {
+	switch sel.GetGraph() {
+	case "code":
 		key = "code/" + sel.GetRepo()
+	case "practice":
+		key = "practice/" + sel.GetLanguage()
 	}
 	st := f.statsByKey[key]
 	if st == nil {
@@ -110,6 +120,7 @@ func (d *coverageDeps) RepoResolver() *RepoResolver                  { return ni
 func (d *coverageDeps) SegmentManager() SegmentSearcher              { return nil }
 func (d *coverageDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
 func (d *coverageDeps) SegmentShipper() SegmentShipper               { return nil }
+func (d *coverageDeps) SegmentPruner() SegmentPruner                 { return nil }
 func (d *coverageDeps) SegmentCoverage() SegmentCoverageReader       { return d.segCov }
 func (d *coverageDeps) PipelineScanner() PipelineScanner             { return nil }
 func (d *coverageDeps) ReflectionForcer() ReflectionForcer           { return nil }
@@ -130,14 +141,19 @@ func TestRenderLLMCoverage_Table(t *testing.T) {
 		"knowledge": {NonProxyNodeCount: 10, SummarizedCount: 0, BinaryVectorCount: 0},
 		// code/myrepo: fully covered 8 of 8 + 8 embedded, no failures
 		"code/myrepo": {NonProxyNodeCount: 8, SummarizedCount: 8, BinaryVectorCount: 8},
+		// practice/go: a NON-code embeddable builtin — 20 nodes, 12 embedded. Its
+		// segment coverage now surfaces as a real cell instead of "—".
+		"practice/go": {NonProxyNodeCount: 20, SummarizedCount: 20, BinaryVectorCount: 12},
 	}}
 	// Segment-coverage stub: code/myrepo's segments cover 6 of its 8 embedded docs
 	// (a degenerate-looking pool, the lever-3 operator signal) and the live engine is
 	// resident with all 6 (a healthy live≈covered row); knowledge has 0 embedded so
-	// its segment cell is "0 of 0 (live 0)".
+	// its segment cell is "0 of 0 (live 0)". practice/go has 0 segment coverage of its
+	// 12 embedded docs (a never-shipped non-code graph) — zero shown as a real number,
+	// "0 of 12 (live 0)", not "—".
 	seg := &coverageSegReader{
-		coveredByKey:  map[string]int{"knowledge": 0, "code/myrepo": 6},
-		residentByKey: map[string]int{"knowledge": 0, "code/myrepo": 6},
+		coveredByKey:  map[string]int{"knowledge": 0, "code/myrepo": 6, "practice/go": 0},
+		residentByKey: map[string]int{"knowledge": 0, "code/myrepo": 6, "practice/go": 0},
 	}
 	deps := &coverageDeps{gc: fake, segCov: seg}
 
@@ -163,6 +179,14 @@ func TestRenderLLMCoverage_Table(t *testing.T) {
 	// for the code graph (6 of 8 (live 6), the same BinaryVectorCount denominator
 	// lever 2 uses); a healthy row shows live≈covered.
 	assert.Contains(t, out, "6 of 8 (live 6)", "code graph renders segment-covered of embedded with live resident")
+
+	// lever-3 surface: a NON-code embeddable builtin (practice/go) renders a
+	// REAL segment-coverage cell — zero coverage shown as "0 of 12 (live 0)", not "—"
+	// or an omitted row. segCoveredFor now gates on HasRebuildableSegments, so
+	// practice/cloud/cicd report coverage.
+	assert.Contains(t, out, "| practice/go |", "a non-code embeddable graph renders its own row")
+	assert.Contains(t, out, "0 of 12 (live 0)",
+		"practice graph renders zero segment coverage as a real number, not the — placeholder")
 
 	// T2: every issued StatsRequest set IncludeCoverage.
 	require.NotEmpty(t, fake.reqs, "renderer must issue at least one Stats RPC")

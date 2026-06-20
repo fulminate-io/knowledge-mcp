@@ -4,8 +4,8 @@
 // thoughts(operation:charge). The intercept LOWERS the charge into a GENERIC
 // create_batch MutationPlan via the Execute carrier seam (no dedicated server
 // charge handler): it reproduces handleMutateCreateCharge's invariants
-// client-side — polarity/weight validation, NodeThought-only target gate, the
-// charge node layout, EdgeChargedBy (thought_parent→charge) + EdgeEvidencedBy
+// client-side — polarity/weight validation, a thought/finding/research target
+// gate, the charge node layout, EdgeChargedBy (thought_parent→charge) + EdgeEvidencedBy
 // (charge→evidence) edges, and the 3-outcome cross-graph evidence resolve
 // matching the server's ResolveOrProxy. After the create, it re-pulls charges
 // via the bulk charges_for helper and computes thought properties locally — the
@@ -68,9 +68,11 @@ func handleChargeClient(ctx context.Context, deps ClientDeps, params kgtools.Cal
 		return errorResult(verr)
 	}
 
-	// Verify the parent exists and is a NodeThought (mirrors handleMutateCreate-
-	// Charge's AddCharge guard). A missing / non-thought target is rejected with
-	// the same messages.
+	// Verify the parent exists and is a chargeable claim node — thought, finding,
+	// or research. A missing / non-chargeable target is rejected with the same
+	// messages. The downstream charge-node create + property recompute are
+	// node-agnostic, so a charged finding/research accrues the same
+	// valence/magnitude a thought does.
 	parent, ferr := render.FetchNode(ctx, gc, a.Thought)
 	if ferr != nil {
 		return errorResult(fmt.Sprintf("thought lookup failed for %s: %s", a.Thought, ferr.Error()))
@@ -78,9 +80,12 @@ func handleChargeClient(ctx context.Context, deps ClientDeps, params kgtools.Cal
 	if parent == nil || parent.Id == "" {
 		return errorResult(fmt.Sprintf("thought %s not found", a.Thought))
 	}
-	if kgtypes.NodeType(parent.Type) != kgtypes.NodeThought {
-		return errorResult(fmt.Sprintf("charge target %s is type %q, must be %q (charges carry valence/magnitude/consistency that only apply to thoughts)",
-			a.Thought, parent.Type, kgtypes.NodeThought))
+	switch kgtypes.NodeType(parent.Type) {
+	case kgtypes.NodeThought, kgtypes.NodeFinding, kgtypes.NodeResearch:
+		// chargeable claim node — accept.
+	default:
+		return errorResult(fmt.Sprintf("charge target %s is type %q, must be one of thought/finding/research (charges carry valence/magnitude that apply to chargeable claim nodes)",
+			a.Thought, parent.Type))
 	}
 
 	// Resolve cross-graph evidence to proxies CLIENT-SIDE (3-outcome mirror of

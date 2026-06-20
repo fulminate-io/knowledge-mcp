@@ -44,6 +44,8 @@ const (
 	SegmentServiceFetchProcedure = "/knowledge.v1.SegmentService/Fetch"
 	// SegmentServicePruneProcedure is the fully-qualified name of the SegmentService's Prune RPC.
 	SegmentServicePruneProcedure = "/knowledge.v1.SegmentService/Prune"
+	// SegmentServicePublishProcedure is the fully-qualified name of the SegmentService's Publish RPC.
+	SegmentServicePublishProcedure = "/knowledge.v1.SegmentService/Publish"
 )
 
 // SegmentServiceClient is a client for the knowledge.v1.SegmentService service.
@@ -52,6 +54,7 @@ type SegmentServiceClient interface {
 	ListDelta(context.Context, *connect.Request[v1.ListDeltaRequest]) (*connect.Response[v1.ListDeltaResponse], error)
 	Fetch(context.Context, *connect.Request[v1.FetchRequest]) (*connect.Response[v1.FetchResponse], error)
 	Prune(context.Context, *connect.Request[v1.PruneRequest]) (*connect.Response[v1.PruneResponse], error)
+	Publish(context.Context, *connect.Request[v1.PublishRequest]) (*connect.Response[v1.PublishResponse], error)
 }
 
 // NewSegmentServiceClient constructs a client for the knowledge.v1.SegmentService service. By
@@ -89,6 +92,12 @@ func NewSegmentServiceClient(httpClient connect.HTTPClient, baseURL string, opts
 			connect.WithSchema(segmentServiceMethods.ByName("Prune")),
 			connect.WithClientOptions(opts...),
 		),
+		publish: connect.NewClient[v1.PublishRequest, v1.PublishResponse](
+			httpClient,
+			baseURL+SegmentServicePublishProcedure,
+			connect.WithSchema(segmentServiceMethods.ByName("Publish")),
+			connect.WithClientOptions(opts...),
+		),
 	}
 }
 
@@ -98,6 +107,7 @@ type segmentServiceClient struct {
 	listDelta *connect.Client[v1.ListDeltaRequest, v1.ListDeltaResponse]
 	fetch     *connect.Client[v1.FetchRequest, v1.FetchResponse]
 	prune     *connect.Client[v1.PruneRequest, v1.PruneResponse]
+	publish   *connect.Client[v1.PublishRequest, v1.PublishResponse]
 }
 
 // Ship calls knowledge.v1.SegmentService.Ship.
@@ -120,12 +130,18 @@ func (c *segmentServiceClient) Prune(ctx context.Context, req *connect.Request[v
 	return c.prune.CallUnary(ctx, req)
 }
 
+// Publish calls knowledge.v1.SegmentService.Publish.
+func (c *segmentServiceClient) Publish(ctx context.Context, req *connect.Request[v1.PublishRequest]) (*connect.Response[v1.PublishResponse], error) {
+	return c.publish.CallUnary(ctx, req)
+}
+
 // SegmentServiceHandler is an implementation of the knowledge.v1.SegmentService service.
 type SegmentServiceHandler interface {
 	Ship(context.Context, *connect.Request[v1.ShipRequest]) (*connect.Response[v1.ShipResponse], error)
 	ListDelta(context.Context, *connect.Request[v1.ListDeltaRequest]) (*connect.Response[v1.ListDeltaResponse], error)
 	Fetch(context.Context, *connect.Request[v1.FetchRequest]) (*connect.Response[v1.FetchResponse], error)
 	Prune(context.Context, *connect.Request[v1.PruneRequest]) (*connect.Response[v1.PruneResponse], error)
+	Publish(context.Context, *connect.Request[v1.PublishRequest]) (*connect.Response[v1.PublishResponse], error)
 }
 
 // NewSegmentServiceHandler builds an HTTP handler from the service implementation. It returns the
@@ -159,6 +175,12 @@ func NewSegmentServiceHandler(svc SegmentServiceHandler, opts ...connect.Handler
 		connect.WithSchema(segmentServiceMethods.ByName("Prune")),
 		connect.WithHandlerOptions(opts...),
 	)
+	segmentServicePublishHandler := connect.NewUnaryHandler(
+		SegmentServicePublishProcedure,
+		svc.Publish,
+		connect.WithSchema(segmentServiceMethods.ByName("Publish")),
+		connect.WithHandlerOptions(opts...),
+	)
 	return "/knowledge.v1.SegmentService/", http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case SegmentServiceShipProcedure:
@@ -169,6 +191,8 @@ func NewSegmentServiceHandler(svc SegmentServiceHandler, opts ...connect.Handler
 			segmentServiceFetchHandler.ServeHTTP(w, r)
 		case SegmentServicePruneProcedure:
 			segmentServicePruneHandler.ServeHTTP(w, r)
+		case SegmentServicePublishProcedure:
+			segmentServicePublishHandler.ServeHTTP(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -192,4 +216,8 @@ func (UnimplementedSegmentServiceHandler) Fetch(context.Context, *connect.Reques
 
 func (UnimplementedSegmentServiceHandler) Prune(context.Context, *connect.Request[v1.PruneRequest]) (*connect.Response[v1.PruneResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("knowledge.v1.SegmentService.Prune is not implemented"))
+}
+
+func (UnimplementedSegmentServiceHandler) Publish(context.Context, *connect.Request[v1.PublishRequest]) (*connect.Response[v1.PublishResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("knowledge.v1.SegmentService.Publish is not implemented"))
 }

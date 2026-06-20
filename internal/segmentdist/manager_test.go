@@ -20,7 +20,7 @@ func buildManager(
 	cacheDir string,
 ) (*distManager[mockQuery, mockStats], *countingCaller) {
 	cc := &countingCaller{inner: caller}
-	src := newRPCSegmentSource(cc, target, context.Background())
+	src := newRPCSegmentSource(cc, target, "", context.Background())
 	cache := newDiskSegmentCache(cacheDir, 0)
 	return newDistManager(engine, src, cache, target, ""), cc
 }

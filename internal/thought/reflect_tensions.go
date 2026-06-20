@@ -21,15 +21,15 @@ import (
 // for an LLM consumer (one representative per cluster-pair, capped).
 const tensionReportCap = 25
 
-// TensionReport identifies two connected thoughts with opposing valence. The
-// provenance + collapse fields (Method/EdgeType/ClusterA/ClusterB/PairCount/
-// DistinctEvidence) make a row judgeable in-context without a follow-up query:
-// they name the linking edge's provenance, the cluster pair the representative
-// stands for, how many candidate pairs collapsed into it, and the distinct charge
-// evidence backing it.
+// TensionReport identifies two connected nodes (thought/finding/research) with
+// opposing valence. The provenance + collapse fields (Method/EdgeType/ClusterA/
+// ClusterB/PairCount/DistinctEvidence) make a row judgeable in-context without a
+// follow-up query: they name the linking edge's provenance, the cluster pair the
+// representative stands for, how many candidate pairs collapsed into it, and the
+// distinct charge evidence backing it.
 type TensionReport struct {
-	ThoughtA     *knowledgev1.Node
-	ThoughtB     *knowledgev1.Node
+	NodeA        *knowledgev1.Node
+	NodeB        *knowledgev1.Node
 	PropertiesA  ThoughtProperties
 	PropertiesB  ThoughtProperties
 	ValenceDelta float64
@@ -130,8 +130,8 @@ func buildTensionCandidates(humanEdges []*knowledgev1.Edge, idSet map[string]boo
 		candidates = append(candidates, tensionCandidate{
 			idA: a, idB: b,
 			report: TensionReport{
-				ThoughtA:         nA,
-				ThoughtB:         nB,
+				NodeA:            nA,
+				NodeB:            nB,
 				PropertiesA:      pA,
 				PropertiesB:      pB,
 				ValenceDelta:     delta,
@@ -223,7 +223,7 @@ func rankAndCapTensions(tensions []TensionReport) []TensionReport {
 		if wi != wj {
 			return wi > wj
 		}
-		return tensions[i].ThoughtA.Id < tensions[j].ThoughtA.Id
+		return tensions[i].NodeA.Id < tensions[j].NodeA.Id
 	})
 	if len(tensions) > tensionReportCap {
 		tensions = tensions[:tensionReportCap]

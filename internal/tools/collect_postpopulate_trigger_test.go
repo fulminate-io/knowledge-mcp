@@ -71,6 +71,7 @@ func (d *ppTriggerDeps) RepoResolver() *RepoResolver                  { return n
 func (d *ppTriggerDeps) SegmentManager() SegmentSearcher              { return nil }
 func (d *ppTriggerDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
 func (d *ppTriggerDeps) SegmentShipper() SegmentShipper               { return nil }
+func (d *ppTriggerDeps) SegmentPruner() SegmentPruner                 { return nil }
 func (d *ppTriggerDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
 func (d *ppTriggerDeps) PipelineScanner() PipelineScanner             { return nil }
 func (d *ppTriggerDeps) ReflectionForcer() ReflectionForcer           { return nil }

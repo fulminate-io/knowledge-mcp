@@ -106,6 +106,26 @@ func SyncEligibleGraphTypes() []GraphType {
 	return out
 }
 
+// HasRebuildableSegments reports whether a graph of type gt carries search
+// segments that manage(rebuild_segments) can regenerate from embedded nodes. It is
+// the client-side mirror of the server's store.GraphType.Embeddable()
+// (cmd/knowledge-server/internal/store/node_type_eligibility_table.go) — the SAME
+// gate the server's segment_rebuild scan uses (embedGapEligible → gt.Embeddable()).
+// The embeddable builtins {knowledge, code, cloud, cicd, practice} have rebuildable
+// segments; the non-embeddable types {linkage, transformers, logs, web, pdf} do
+// not (transformers is BM25-indexed but carries no embedded vectors, so the
+// embedding-gated rebuild scan yields nothing for it).
+//
+// DELIBERATE client-side DUPLICATE of the server predicate, for the same
+// module-boundary reason as SyncEligible: the client cannot import the
+// server-internal table. Written as the embeddable subset of SyncEligible (which
+// already drops logs/web/pdf) minus the two sync-eligible-but-non-embeddable types,
+// so a newly-added raw type stays excluded automatically. BI-DIRECTIONAL CONTRACT:
+// a new builtin set Embeddable=false on the server MUST be excluded here too.
+func HasRebuildableSegments(gt GraphType) bool {
+	return SyncEligible(gt) && gt != GraphLinkage && gt != GraphTransformers
+}
+
 // IsBuiltinGraphType reports whether name matches one of the canonical built-in
 // GraphType constants (knowledge / code / cloud / cicd / practice / linkage /
 // transformers / logs / web / pdf). It is the registration-time collision

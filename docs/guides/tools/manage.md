@@ -69,6 +69,7 @@ A full error round auto-pauses the pipeline and it does not self-heal —
 | `credential` | string |  |  | Credential value for configure_log_backend — stored encrypted at rest. Accepts the raw value (e.g., a bearer token, API key, or service account JSON) or a $ENV_VAR reference resolved at query time. Optional when auth_type=kubeconfig. |
 | `default_branch` | string |  |  | Override default branch detection for reindex — treats this branch name as the default so the current branch gets a full reindex instead of branch overlay |
 | `dry_run` | boolean |  |  | For promote_metadata: when true, run the decision pass and report intended actions without mutating the graph. For drop_graph: when true, render a 'would drop' preview and issue ZERO mutations. Default false (executes). |
+| `execute` | boolean |  |  | For prune-cache: when true, DELETE the orphaned segments; default false renders a would-remove preview only. |
 | `force` | boolean |  |  | For promote_metadata: when true, bypass the hysteresis bands and use the simple distinct<1000 rule. Operator one-shot path only. |
 | `force_edge` | array of string |  |  | Metadata keys pinned to value-node edges for set_metadata_overrides. Replaces the existing list. |
 | `force_edge[]` | string |  |  |  |
@@ -78,7 +79,7 @@ A full error round auto-pauses the pipeline and it does not self-heal —
 | `graph` | string |  |  | Target graph type for clear_llm_failures (knowledge, code, practice, cloud, cicd) |
 | `kube_context` | string |  |  | Kubeconfig context name from ~/.kube/config. Required when provider=k8s and auth_type=kubeconfig. Auth is resolved via client-go using the operator's environment (gcloud/aws-iam-authenticator/service-account tokens). |
 | `name` | string |  |  | Repository name (or log_backend name for configure_log_backend; or query_id for discard_logs) |
-| `operation` | string | yes | status, pprof_start, pprof_stop, delete_branch, list_branches, link, configure_log_backend, list_log_backends, list_logs, discard_logs, set_metadata_overrides, promote_metadata, clear_llm_failures, pause_pipeline, resume_pipeline, pipeline_status, prune, rebuild_cache, rebuild_segments, drop_graph | Operation to perform |
+| `operation` | string | yes | status, pprof_start, pprof_stop, delete_branch, list_branches, link, configure_log_backend, list_log_backends, list_logs, discard_logs, set_metadata_overrides, promote_metadata, clear_llm_failures, pause_pipeline, resume_pipeline, pipeline_status, prune, prune-cache, rebuild_cache, rebuild_segments, drop_graph | Operation to perform |
 | `precise_calls` | boolean |  |  | Enable precise Go call graph via RTA (slower but more accurate CALLS edges) |
 | `provider` | string |  |  | Log backend provider for configure_log_backend (cloudwatch, loki, elasticsearch, stackdriver, k8s, ...) |
 | `reason` | string |  |  | For pause_pipeline: optional operator reason surfaced by pipeline_status. Defaults to a generic 'manually paused by operator' string when omitted. |

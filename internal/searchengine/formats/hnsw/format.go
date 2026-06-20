@@ -16,26 +16,22 @@ const formatName = "hnsw"
 // corpus-wide statistics (HNSW search needs none — AggregateStats is a no-op).
 // The format owns its concrete Segment type (*hnswSegment) so Merge type-asserts
 // its inputs and reads their internals (vectors) directly — no Document retention.
-type Format struct {
-	// deterministic selects the byte-reproducible serial build path
-	// (buildBinaryHNSWSerialDeterministic) instead of the default concurrent
-	// NumCPU builder. Set ONLY via NewDeterministic(), used ONLY by the
-	// segment_rebuild path; the embed path uses New() (deterministic=false) and
-	// is byte-unchanged.
-	deterministic bool
-}
+// There is no build-variant state: the HNSW builder is deterministic everywhere
+// (the byte-reproducible serial path is the ONLY builder), so Format carries no
+// fields.
+type Format struct{}
 
-// New returns the HNSW SegmentFormat ready to hand to searchengine.New. This is
-// the embed/migration path — the concurrent (non-deterministic) builder.
+// New returns the HNSW SegmentFormat ready to hand to searchengine.New. Build is
+// byte-reproducible (fixed PCG seed + stable sorted-by-id serial insertion): the
+// same node set always produces the same blob → the same content hash, so two
+// writers' segments dedup to one copy and exact-match recall is recovered.
 func New() Format { return Format{} }
 
-// NewDeterministic returns an HNSW SegmentFormat whose Build uses the
-// byte-reproducible serial builder (fixed PCG seed + stable sorted-by-id
-// insertion). Used by the segment_rebuild driver so a re-run over an unchanged
-// node set produces byte-identical segments → identical content hash → a true
-// ship no-op. Same concrete SegmentFormat[[]byte, struct{}] type as New(), so it
-// drops into the same searchengine.New / Manager wiring.
-func NewDeterministic() Format { return Format{deterministic: true} }
+// NewDeterministic is retained as an alias for New() — the HNSW builder is
+// deterministic unconditionally now, so there is no separate variant. Kept so the
+// segment_rebuild wiring that named the deterministic builder explicitly still
+// reads clearly at its call sites.
+func NewDeterministic() Format { return Format{} }
 
 // Compile-time contract assertions.
 var (
@@ -57,10 +53,11 @@ func (Format) Name() string { return formatName }
 // Build seals an immutable HNSW segment from a batch of live documents. It reads
 // Document.Vector (ignoring Document.Fields — HNSW indexes vectors, not text) and
 // DEFENSIVELY skips documents whose Vector is empty (contract: formats tolerate
-// absent data, never panic). The heavy graph construction is delegated to the
-// parallel NumCPU builder. An all-empty batch yields an empty (searchable, zero-
-// hit) segment.
-func (f Format) Build(docs []searchengine.Document) (searchengine.Segment[[]byte, struct{}], error) {
+// absent data, never panic). Graph construction is the byte-reproducible serial
+// builder (fixed PCG seed + stable sorted-by-id insertion), so identical inputs
+// yield a byte-identical blob. An all-empty batch yields an empty (searchable,
+// zero-hit) segment.
+func (Format) Build(docs []searchengine.Document) (searchengine.Segment[[]byte, struct{}], error) {
 	items := make([]binaryBuildItem, 0, len(docs))
 	for _, d := range docs {
 		if len(d.Vector) == 0 {
@@ -68,15 +65,7 @@ func (f Format) Build(docs []searchengine.Document) (searchengine.Segment[[]byte
 		}
 		items = append(items, binaryBuildItem{id: d.ID, vec: d.Vector})
 	}
-	var graph *binaryGraph
-	if f.deterministic {
-		// segment_rebuild path: byte-reproducible serial build (fixed seed +
-		// stable sorted-by-id insertion).
-		graph = buildBinaryHNSWSerialDeterministic(items, defaultVecBytes, defaultM, defaultEfConstruction)
-	} else {
-		// embed path: concurrent NumCPU builder — byte-identical to pre-change.
-		graph = buildBinaryHNSWParallel(items, defaultVecBytes, defaultM, defaultEfConstruction, 0)
-	}
+	graph := buildBinaryHNSWSerialDeterministic(items, defaultVecBytes, defaultM, defaultEfConstruction)
 	graph.setEfSearch(defaultEfSearch)
 	return &hnswSegment{graph: graph}, nil
 }

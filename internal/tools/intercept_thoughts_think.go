@@ -53,6 +53,17 @@ type thinkArgs struct {
 	// param flows through to composeThoughtCreate; default-to-main normalization
 	// happens in the resolver, not here.
 	Origin string `json:"origin"`
+
+	// Negation-gate proof-of-work fields — read ONLY by InterceptNegationGate
+	// (negation_gate.go), which runs BEFORE this think handler in the intercept
+	// chain. For a thoughts(think) supersession (branches_from set) — including the
+	// branches_from + status:invalidated shape — VerifiedQuote must be a verbatim
+	// substring of the superseded (branches_from) node's CURRENT source; CitedRange
+	// is the optional file:line-range locality hint. They are GATE-only inputs: the
+	// think write IGNORES them (proof-of-work, never persisted), so they are not
+	// threaded into composeThoughtCreate.
+	VerifiedQuote string `json:"verified_quote,omitempty"`
+	CitedRange    string `json:"cited_range,omitempty"`
 }
 
 // composeThoughtArgs is the reusable input to composeThoughtCreate. It is the

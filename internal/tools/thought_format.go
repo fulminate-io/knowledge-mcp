@@ -223,8 +223,8 @@ func handleReflectTensions(_ context.Context, deps ClientDeps, a queryReflectArg
 		candidateCount, clusterPairs, len(tensions))
 	for i, t := range tensions {
 		fmt.Fprintf(&sb, "%d. **%s** (v:%.2f, %d charges) vs **%s** (v:%.2f, %d charges) -- delta: %.2f\n",
-			i+1, t.ThoughtA.SymbolName, t.PropertiesA.Valence, t.PropertiesA.ChargeCount,
-			t.ThoughtB.SymbolName, t.PropertiesB.Valence, t.PropertiesB.ChargeCount, t.ValenceDelta)
+			i+1, t.NodeA.SymbolName, t.PropertiesA.Valence, t.PropertiesA.ChargeCount,
+			t.NodeB.SymbolName, t.PropertiesB.Valence, t.PropertiesB.ChargeCount, t.ValenceDelta)
 		fmt.Fprintf(&sb, "   via %s\n", tensionProvenanceLabel(t))
 		if t.PairCount > 1 {
 			fmt.Fprintf(&sb, "   collapses %d similar pairs\n", t.PairCount)

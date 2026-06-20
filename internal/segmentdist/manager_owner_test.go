@@ -63,10 +63,10 @@ func TestManagerAddAndShipSealsOneBlob(t *testing.T) {
 	// Export-diff no-op: a second ship() with NO intervening Add re-exports the
 	// SAME sealed segment (same content hash), so the diff against shippedIDs is
 	// empty → ZERO new Ship RPC, ZERO new blobs. This is the manager.go ship-diff
-	// guarantee. (Note: re-ADDING the same docs would seal a NEW segment with a
-	// DIFFERENT content hash — HNSW graph topology is non-deterministic, randomLevel
-	// — so doc-level idempotency does NOT hold for HNSW the way it does for the
-	// deterministic mock format; the segment-level diff no-op is the true property.)
+	// guarantee. (The HNSW builder is deterministic, so re-ADDING the same docs
+	// would also seal a BYTE-IDENTICAL segment with the SAME content hash — doc-level
+	// idempotency now holds for HNSW too. This test asserts the narrower segment-level
+	// diff no-op the ship path relies on: re-ship without Add ships nothing.)
 	beforeShips := cc.shipCalls.Load()
 	beforeBlobs := cc.shipBlobs.Load()
 	_, shipErr := dm.ship(ctx, dm.locallyShipped)

@@ -27,6 +27,7 @@ type segmentCaller interface {
 	ListDelta(ctx context.Context, req *knowledgev1.ListDeltaRequest) (*knowledgev1.ListDeltaResponse, error)
 	Fetch(ctx context.Context, req *knowledgev1.FetchRequest) (*knowledgev1.FetchResponse, error)
 	Prune(ctx context.Context, req *knowledgev1.PruneRequest) (*knowledgev1.PruneResponse, error)
+	Publish(ctx context.Context, req *knowledgev1.PublishRequest) (*knowledgev1.PublishResponse, error)
 }
 
 // rpcSegmentSource implements searchengine.SegmentSource over the SegmentService
@@ -36,6 +37,11 @@ type rpcSegmentSource struct {
 	caller   segmentCaller
 	target   *knowledgev1.GraphSelector
 	fetchCtx context.Context
+	// writerID is the stable per-machine identity threaded onto every outbound
+	// RPC (Ship/List/Fetch/Publish). The server stamps it as the writer's
+	// last-connection liveness signal; an empty writerID is a tolerated no-op on
+	// the server. Sourced from the stable writer-id helper at construction.
+	writerID string
 }
 
 var _ searchengine.SegmentSource = (*rpcSegmentSource)(nil)
@@ -43,12 +49,14 @@ var _ searchengine.SegmentSource = (*rpcSegmentSource)(nil)
 // newRPCSegmentSource builds a SegmentSource for one graph. fetchCtx backs the
 // ctx-less SegmentSource.Fetch leg (the engine's Fetch signature takes no ctx —
 // distribution_iface.go:23 — while List does, line 22); pass context.Background
-// when no scoped ctx is available.
-func newRPCSegmentSource(caller segmentCaller, target *knowledgev1.GraphSelector, fetchCtx context.Context) *rpcSegmentSource {
+// when no scoped ctx is available. writerID is the stable per-machine identity
+// carried on every outbound RPC for the server's last-connection liveness
+// stamp; "" is a tolerated no-op server-side.
+func newRPCSegmentSource(caller segmentCaller, target *knowledgev1.GraphSelector, writerID string, fetchCtx context.Context) *rpcSegmentSource {
 	if fetchCtx == nil {
 		fetchCtx = context.Background()
 	}
-	return &rpcSegmentSource{caller: caller, target: target, fetchCtx: fetchCtx}
+	return &rpcSegmentSource{caller: caller, target: target, fetchCtx: fetchCtx, writerID: writerID}
 }
 
 // List issues SegmentService.ListDelta for the delta (generation > sinceGen) and
@@ -57,6 +65,7 @@ func (s *rpcSegmentSource) List(ctx context.Context, sinceGen uint64) ([]searche
 	resp, err := s.caller.ListDelta(ctx, &knowledgev1.ListDeltaRequest{
 		Target:   s.target,
 		SinceGen: sinceGen,
+		WriterId: s.writerID,
 	})
 	if err != nil {
 		return nil, err
@@ -73,8 +82,9 @@ func (s *rpcSegmentSource) List(ctx context.Context, sinceGen uint64) ([]searche
 // fetchCtx.
 func (s *rpcSegmentSource) Fetch(ids []searchengine.SegmentID) ([]searchengine.SegmentBlob, error) {
 	resp, err := s.caller.Fetch(s.fetchCtx, &knowledgev1.FetchRequest{
-		Target: s.target,
-		Ids:    ids,
+		Target:   s.target,
+		Ids:      ids,
+		WriterId: s.writerID,
 	})
 	if err != nil {
 		return nil, err
@@ -94,6 +104,25 @@ func (s *rpcSegmentSource) Prune(ids []searchengine.SegmentID) (int, error) {
 	resp, err := s.caller.Prune(s.fetchCtx, &knowledgev1.PruneRequest{
 		Target: s.target,
 		Ids:    ids,
+	})
+	if err != nil {
+		return 0, err
+	}
+	return int(resp.GetDeleted()), nil
+}
+
+// PublishManifest issues SegmentService.Publish with this writer's full live
+// id-set for one format — the registry-model manifest swap that replaces the
+// unconditional Prune delete. The server atomically swaps this writer's manifest
+// and reference-count-GCs blobs no manifest references; it returns how many it
+// deleted. Mirrors Prune — uses the source's fetchCtx and routes the graph's
+// target selector — but carries the writer/format dimensions the manifest needs.
+func (s *rpcSegmentSource) PublishManifest(format string, ids []searchengine.SegmentID) (int, error) {
+	resp, err := s.caller.Publish(s.fetchCtx, &knowledgev1.PublishRequest{
+		Target:   s.target,
+		WriterId: s.writerID,
+		Format:   format,
+		Ids:      ids,
 	})
 	if err != nil {
 		return 0, err

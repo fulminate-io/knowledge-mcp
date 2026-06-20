@@ -38,9 +38,10 @@ func TestHandleChargeClient_BadPolarity_Errors(t *testing.T) {
 	assert.Contains(t, toolResultText(res), "polarity must be 'positive' or 'negative'")
 }
 
-func TestHandleChargeClient_NonThoughtTarget_Rejected(t *testing.T) {
-	// The parent verify resolves a non-thought node → rejected with the
-	// thought-only-target message.
+func TestHandleChargeClient_NonChargeableTarget_Rejected(t *testing.T) {
+	// The parent verify resolves a non-chargeable node (document) → rejected with
+	// the must-be-one-of-thought/finding/research message. A decision/document/
+	// other type is NOT a chargeable claim node.
 	fc := &fakeGraphCaller{queryResponses: map[string]kgtools.ToolResult{
 		"doc-1": nodeResultJSON(t, "doc-1", "document", nil),
 	}}
@@ -50,7 +51,45 @@ func TestHandleChargeClient_NonThoughtTarget_Rejected(t *testing.T) {
 		Arguments: json.RawMessage(`{"operation":"charge","thought":"doc-1","polarity":"positive","weight":1.0,"reasoning":"r"}`),
 	})
 	require.True(t, res.IsError)
-	assert.Contains(t, toolResultText(res), `charge target doc-1 is type "document", must be "thought"`)
+	assert.Contains(t, toolResultText(res), `charge target doc-1 is type "document", must be one of thought/finding/research`)
+}
+
+// TestHandleChargeClient_FindingTarget_Accepted proves the relaxed gate: a charge
+// against a FINDING node succeeds (no IsError, charge id rendered). Mirrors the
+// LowersToCreateBatch success-path scaffolding — seeded mutateIDs + nil GraphClient
+// (interceptTestDeps wires no GraphClient) → the bare-ID tail.
+func TestHandleChargeClient_FindingTarget_Accepted(t *testing.T) {
+	fc := &fakeGraphCaller{
+		queryResponses: map[string]kgtools.ToolResult{
+			"f-1": nodeResultJSON(t, "f-1", "finding", nil),
+		},
+		mutateIDs: []string{"charge-f"},
+	}
+	deps := interceptTestDeps{gc: fc}
+	res := handleChargeClient(context.Background(), deps, kgtools.CallToolParams{
+		Name:      "thoughts",
+		Arguments: json.RawMessage(`{"operation":"charge","thought":"f-1","polarity":"positive","weight":2.0,"reasoning":"a finding can be charged"}`),
+	})
+	require.False(t, res.IsError, "charging a finding should succeed: %s", toolResultText(res))
+	assert.Contains(t, toolResultText(res), "Charge recorded → ID: charge-f")
+}
+
+// TestHandleChargeClient_ResearchTarget_Accepted is the research analog: a charge
+// against a RESEARCH node succeeds under the relaxed gate.
+func TestHandleChargeClient_ResearchTarget_Accepted(t *testing.T) {
+	fc := &fakeGraphCaller{
+		queryResponses: map[string]kgtools.ToolResult{
+			"r-1": nodeResultJSON(t, "r-1", "research", nil),
+		},
+		mutateIDs: []string{"charge-r"},
+	}
+	deps := interceptTestDeps{gc: fc}
+	res := handleChargeClient(context.Background(), deps, kgtools.CallToolParams{
+		Name:      "thoughts",
+		Arguments: json.RawMessage(`{"operation":"charge","thought":"r-1","polarity":"negative","weight":3.0,"reasoning":"a research question can be charged"}`),
+	})
+	require.False(t, res.IsError, "charging a research node should succeed: %s", toolResultText(res))
+	assert.Contains(t, toolResultText(res), "Charge recorded → ID: charge-r")
 }
 
 func TestHandleChargeClient_MissingTarget_NotFound(t *testing.T) {

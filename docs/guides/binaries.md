@@ -40,6 +40,7 @@ low-noise development.
 | `--graph-storage` | `~/.knowledge/` | Directory for graph storage (display-only; server owns the bin file) |
 | `--log-file` |  | Log file path (logs to both stderr and file when set) |
 | `--log-level` | `info` | Log level: debug, info, warn, error |
+| `--no-auth` | `false` | Force the client local-only: suppress BOTH cloud-selection triggers at the Router.pick chokepoint (machineAuth forced false WITHOUT consulting --auth-token/KNOWLEDGE_AUTH_TOKEN, and the keychain replaced with a no-op store so a live `knowledge login` refresh token reports IsLoggedIn==false). Fail-closed: no routed op can reach a fulminate.io host regardless of credentials present. Capability reduction only — the cloud endpoint is never overridden. Use for offline/OSS mode and as the safety floor for the bug-hunt harness. |
 | `--no-llm-pipeline` | `false` | Skip client-side LLM pipeline (summarize + embed) wiring. The MCP daemon and other tools continue to work; only background summarization/embedding stops. |
 | `--no-propagation-runtime` | `false` | Skip client-side PropagationLoop wiring. The MCP daemon continues to serve and reflective tools still run on demand, but the hourly background cluster detection + valence propagation stops. Use for offline development or to silence background log noise. |
 | `--no-worker-runtime` | `false` | Skip dream Runner wiring. Run knowledge purely to serve/exercise the graph (e.g. the bench harness) without starting its own background worker runtime. |
@@ -77,6 +78,7 @@ outlives any single session.
 | `--http-port` | `15023` | Loopback TCP port for the streamable-HTTP MCP endpoint (/mcp). Distinct from --port (the graph server). |
 | `--log-file` |  | Log file path (logs to both stderr and file when set) |
 | `--log-level` | `info` | Log level: debug, info, warn, error |
+| `--no-auth` | `false` | Force the client local-only: suppress BOTH cloud-selection triggers at the Router.pick chokepoint (machineAuth forced false WITHOUT consulting --auth-token/KNOWLEDGE_AUTH_TOKEN, and the keychain replaced with a no-op store so a live `knowledge login` refresh token reports IsLoggedIn==false). Fail-closed: no routed op can reach a fulminate.io host regardless of credentials present. Capability reduction only — the cloud endpoint is never overridden. Use for offline/OSS mode and as the safety floor for the bug-hunt harness. |
 | `--no-llm-pipeline` | `false` | Skip client-side LLM pipeline (summarize + embed) wiring. The MCP daemon and other tools continue to work; only background summarization/embedding stops. |
 | `--no-propagation-runtime` | `false` | Skip client-side PropagationLoop wiring. The MCP daemon continues to serve and reflective tools still run on demand, but the hourly background cluster detection + valence propagation stops. Use for offline development or to silence background log noise. |
 | `--no-worker-runtime` | `false` | Skip dream Runner wiring. Run knowledge purely to serve/exercise the graph (e.g. the bench harness) without starting its own background worker runtime. |

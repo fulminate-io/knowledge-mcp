@@ -51,43 +51,44 @@ func buildSerial(items []binaryBuildItem) *binaryGraph {
 	return h
 }
 
-// TestSerialParallelTop1Parity builds the same vector set serially (Insert loop)
-// and in parallel (buildBinaryHNSWParallel with NumCPU workers) and asserts both
-// indexes return the same top-1 nearest neighbor for a sample of queries. Parity
-// is on the returned neighbor, NOT byte-identity — parallel insertion order
-// differs, so the graphs are not bit-identical.
-func TestSerialParallelTop1Parity(t *testing.T) {
+// TestSerialBuildersTop1Recall builds the same vector set two ways — the
+// crypto-seeded Insert-loop helper (buildSerial) and the production fixed-seed
+// deterministic builder (buildBinaryHNSWSerialDeterministic) — and asserts each
+// independently recovers the EXACT top-1 (the query's own indexed vector) for the
+// bulk of the corpus. Both are serial; the seed/insertion-order difference is the
+// only delta, so this guards that the deterministic builder navigates as well as a
+// plain serial build (recall floor 0.90), not just that it builds.
+func TestSerialBuildersTop1Recall(t *testing.T) {
 	const n = 1500
 	items := randomVectors(n)
 
 	serial := buildSerial(items)
-	parallel := buildBinaryHNSWParallel(items, defaultVecBytes, defaultM, defaultEfConstruction, 0)
+	deterministic := buildBinaryHNSWSerialDeterministic(items, defaultVecBytes, defaultM, defaultEfConstruction)
 
-	// Both graphs are approximate and independently seeded, so top-1 AGREEMENT
-	// compounds two ~97% recalls (≈0.94 expected). The honest property is that
-	// each independently recovers the EXACT top-1 (the query's own vector) for the
-	// bulk of the corpus — assert each graph's recall against ground truth, sampled
-	// over the whole corpus for a stable fraction, floor 0.90.
-	var sHit, pHit int
+	// Both graphs are approximate, so top-1 AGREEMENT compounds two ~97% recalls.
+	// The honest property is that each independently recovers the EXACT top-1 (the
+	// query's own vector) for the bulk of the corpus — assert each graph's recall
+	// against ground truth, sampled over the whole corpus, floor 0.90.
+	var sHit, dHit int
 	for i := range n {
 		q := items[i].vec
 		want := items[i].id // exact NN of an indexed vector is itself
 		sHits := serial.search(q, 1, nil)
-		pHits := parallel.search(q, 1, nil)
-		if len(sHits) == 0 || len(pHits) == 0 {
-			t.Fatalf("query %d: empty result (serial=%d parallel=%d)", i, len(sHits), len(pHits))
+		dHits := deterministic.search(q, 1, nil)
+		if len(sHits) == 0 || len(dHits) == 0 {
+			t.Fatalf("query %d: empty result (serial=%d deterministic=%d)", i, len(sHits), len(dHits))
 		}
 		if sHits[0].externalID == want {
 			sHit++
 		}
-		if pHits[0].externalID == want {
-			pHit++
+		if dHits[0].externalID == want {
+			dHit++
 		}
 	}
 	sFrac := float64(sHit) / float64(n)
-	pFrac := float64(pHit) / float64(n)
-	if sFrac < 0.90 || pFrac < 0.90 {
-		t.Fatalf("top-1 exact recall: serial=%.3f parallel=%.3f, want both >= 0.90", sFrac, pFrac)
+	dFrac := float64(dHit) / float64(n)
+	if sFrac < 0.90 || dFrac < 0.90 {
+		t.Fatalf("top-1 exact recall: serial=%.3f deterministic=%.3f, want both >= 0.90", sFrac, dFrac)
 	}
 }
 
@@ -98,7 +99,7 @@ func TestSerialParallelTop1Parity(t *testing.T) {
 func TestSerializeRoundTripIdenticalSearch(t *testing.T) {
 	const n = 800
 	items := randomVectors(n)
-	orig := buildBinaryHNSWParallel(items, defaultVecBytes, defaultM, defaultEfConstruction, 0)
+	orig := buildBinaryHNSWSerialDeterministic(items, defaultVecBytes, defaultM, defaultEfConstruction)
 
 	blob := orig.encode()
 	if len(blob) == 0 || blob[0] != serialVersionWithVectors {
@@ -137,12 +138,12 @@ func TestSerializeRoundTripIdenticalSearch(t *testing.T) {
 func TestExactTop1Recovery(t *testing.T) {
 	const n = 1000
 	items := randomVectors(n)
-	h := buildBinaryHNSWParallel(items, defaultVecBytes, defaultM, defaultEfConstruction, 0)
+	h := buildBinaryHNSWSerialDeterministic(items, defaultVecBytes, defaultM, defaultEfConstruction)
 
-	// Sample the WHOLE corpus so the measured fraction is stable near the ~97%
-	// mean (a small slice has high variance run-to-run with the crypto-seeded
-	// graph rng). Floor 0.93 leaves genuine margin below the stable mean while
-	// still catching a navigation regression.
+	// Sample the WHOLE corpus so the measured fraction is a stable estimate of the
+	// ~97% mean (the build is deterministic, but per-node recall varies across the
+	// corpus, so a small slice is a noisy sample). Floor 0.93 leaves genuine margin
+	// below the stable mean while still catching a navigation regression.
 	hit := 0
 	for i := range n {
 		q := items[i].vec

@@ -388,10 +388,32 @@ func TestRebuildSegments_RegisteredCustomGraph(t *testing.T) {
 			"the rejection names the v1 base-layer-only boundary")
 	})
 
-	t.Run("non-code builtin is rejected", func(t *testing.T) {
+	t.Run("embeddable builtin (practice) is accepted, gt reaches the scanner", func(t *testing.T) {
+		min := searchengine.DefaultMinSegmentDocs
+		scanner := &fakeRebuildScanner{pages: [][]*knowledgev1.PipelineScanItem{makeScanPage("p", 0, min)}}
+		shipper := &fakeRebuildShipper{}
+		deps := rebuildClientDeps{scanner: scanner, shipper: shipper, crud: crud}
+
+		// practice is an embeddable builtin — it carries rebuildable segments
+		// (HasRebuildableSegments == true), so the gate accepts it and the threaded
+		// GraphType reaches the scanner.
+		res := handleClientRebuildSegments(context.Background(), deps, manageArgs{Graph: string(kgtypes.GraphPractice), Name: "go"})
+		require.False(t, res.IsError, "an embeddable builtin (practice) must be accepted: %v", res.Content)
+		require.NotEmpty(t, scanner.graphTypes)
+		for _, gt := range scanner.graphTypes {
+			require.Equal(t, string(kgtypes.GraphPractice), gt,
+				"the threaded GraphType must reach the PipelineScan request (practice)")
+		}
+	})
+
+	t.Run("non-embeddable builtin is rejected", func(t *testing.T) {
 		deps := rebuildClientDeps{scanner: &fakeRebuildScanner{}, shipper: &fakeRebuildShipper{}, crud: crud}
-		res := handleClientRebuildSegments(context.Background(), deps, manageArgs{Graph: "practice", Name: "go"})
-		require.True(t, res.IsError, "a non-code/non-knowledge builtin graph has no rebuildable segments and must be rejected")
+		// transformers is a builtin but NOT embeddable — it carries no rebuildable
+		// segments, so the gate rejects it (HasRebuildableSegments == false).
+		res := handleClientRebuildSegments(context.Background(), deps, manageArgs{Graph: string(kgtypes.GraphTransformers), Name: "recipes"})
+		require.True(t, res.IsError, "a non-embeddable builtin graph has no rebuildable segments and must be rejected")
+		require.Contains(t, res.Content[0].Text, "no rebuildable segments",
+			"the rejection names the no-rebuildable-segments boundary")
 	})
 
 	t.Run("unregistered custom typo is rejected", func(t *testing.T) {
@@ -452,6 +474,7 @@ func (rebuildClientDeps) RepoResolver() *RepoResolver                  { return 
 func (rebuildClientDeps) SegmentManager() SegmentSearcher              { return nil }
 func (rebuildClientDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
 func (d rebuildClientDeps) SegmentShipper() SegmentShipper             { return d.shipper }
+func (rebuildClientDeps) SegmentPruner() SegmentPruner                 { return nil }
 func (rebuildClientDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
 func (d rebuildClientDeps) PipelineScanner() PipelineScanner           { return d.scanner }
 func (d rebuildClientDeps) ReflectionForcer() ReflectionForcer         { return nil }

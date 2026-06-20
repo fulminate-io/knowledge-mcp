@@ -4,6 +4,7 @@ package segmentdist
 
 import (
 	"context"
+	"log/slog"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
@@ -16,18 +17,26 @@ import (
 // shipped (in BOTH shippedIDs and locallyShipped), and advances last-seen
 // generation.
 //
+// SUPERSEDED ON THE PRODUCTION PATH: the registry-model cutover moved
+// every production ship caller — the embed path (AddAndShip/AddAndShipFields/
+// Flush) AND the deterministic rebuild (FlushDeterministic) — onto shipAndPublish,
+// which ships the new blobs then PUBLISHES the resident live set as the writer's
+// manifest (the server refcount-GCs what dropped out). ship()+reconcilePrune are
+// retained as the diff-prune mechanism that the segmentdist unit tests exercise
+// directly (they push segments and assert the diff/reconcile semantics); they are
+// no longer reached by any production caller. The publishResident path is the
+// production reclaim authority.
+//
 // reconcile-on-ship: after the ship-new leg, ship() also PRUNES the stale
 // segments via reconcilePrune. The PRUNE ROLE is chosen by the CALLER via the
-// `against` argument — ship() is the single shared method, and which set it
-// prunes against is a property of the call:
+// `against` argument:
 //
-//   - embed/tail path (AddAndShip/AddAndShipFields/Flush) passes locallyShipped
-//     (ROLE B): prune only this-process merged-away ids. A fresh process's
-//     locallyShipped is empty, so it can NEVER prune the prior corpus — the
-//     segment-ship restart false-prune fix.
-//   - deterministic rebuild (FlushDeterministic) passes shippedIDs (ROLE A): the
-//     authoritative replace-prune — its Export() is the complete rebuilt corpus,
-//     so shippedIDs − Export() is exactly the old corpus it superseded.
+//   - ROLE B (against = locallyShipped): prune only this-process merged-away ids.
+//     A fresh process's locallyShipped is empty, so it can NEVER prune the prior
+//     corpus — the segment-ship restart false-prune fix.
+//   - ROLE A (against = shippedIDs): the authoritative replace-prune — the
+//     Export() is the complete corpus, so shippedIDs − Export() is exactly the old
+//     corpus it superseded.
 //
 // Ship-new runs FIRST so the consolidated/rebuilt blobs land before their
 // predecessors are pruned (never a server gap), then Prune removes the stale ids.
@@ -110,8 +119,9 @@ func (m *distManager[Q, S]) shipNew(
 	}
 
 	resp, err := m.source.caller.Ship(ctx, &knowledgev1.ShipRequest{
-		Target: m.target,
-		Blobs:  diff,
+		Target:   m.target,
+		Blobs:    diff,
+		WriterId: m.source.writerID,
 	})
 	if err != nil {
 		return err
@@ -198,4 +208,207 @@ func (m *distManager[Q, S]) reconcilePrune(
 	}
 	m.shipMu.Unlock()
 	return pruneSet, nil
+}
+
+// shipAndPublish is the embed/tail ship path's REGISTRY-MODEL replacement for the
+// diff-prune reconcile: it ships the new-content-hash blobs (the same
+// ship-new leg as ship()), then PUBLISHES this writer's current RESIDENT live set
+// as its manifest so the server reference-count-GCs whatever dropped out of the
+// live set. Unlike reconcilePrune — which deletes the diff of a caller-supplied
+// `against` set — the published manifest is the AUTHORITATIVE live set, and the
+// server reaps a blob only when NO writer's manifest references it (multi-writer
+// safe by construction).
+//
+// extraReferenced carries sibling-engine resident ids that share this format +
+// graphKey and must stay referenced by THIS manifest (the HNSW embed∪deterministic
+// union — both engines key one "hnsw" manifest, so the embed publish must include
+// the deterministic engine's resident ids or it would reap them). It is nil for
+// formats with a single engine (BM25).
+//
+// CRITICAL: the published set is the RESIDENT m.engine.Export(),
+// NOT a force-reloaded set. A force-reload (List(0)+load+Export) re-imports
+// merged-away constituents via publishImport, so they would resurface in the
+// manifest and never be reaped — breaking the bounded-server-set property. The
+// resident Export already omits merged-away constituents (the merge CAS removed
+// them), so the manifest omits them → their refcount drops to zero → GC reaps.
+//
+// reconcileAgainst encodes the caller's ROLE exactly as reconcilePrune's `against`
+// set does — it selects WHICH bookkeeping set is diffed against the published live
+// set to compute the dropped (superseded) ids returned + dropped from local
+// bookkeeping:
+//
+//   - ROLE B (embed/tail, against = m.locallyShipped): a fresh process's
+//     locallyShipped is empty, so it can only ever report its own merged-away tail
+//     — never the prior corpus it re-imported. The restart-tail guard.
+//   - ROLE A (deterministic rebuild, against = m.shippedIDs): the rebuild's
+//     resident Export IS the complete new corpus, so shippedIDs − liveSet is the
+//     old corpus it superseded — returned so FlushDeterministic feeds it to
+//     InvalidateLocal for local L2 eviction.
+//
+// RETURN: the ids that dropped out (per the role's set). The empty-set / coverage
+// gate inside publishResident protects against a degenerate publish.
+func (m *distManager[Q, S]) shipAndPublish(
+	ctx context.Context, extraReferenced []searchengine.SegmentID,
+	reconcileAgainst map[searchengine.SegmentID]struct{},
+) ([]searchengine.SegmentID, error) {
+	if err := m.ensureShippedSeeded(ctx); err != nil {
+		return nil, err
+	}
+
+	all := m.engine.Export()
+
+	m.shipMu.Lock()
+	var diff []*knowledgev1.SegmentBlobProto
+	diffBlobs := make(map[string]searchengine.SegmentBlob)
+	for _, b := range all {
+		if _, sent := m.shippedIDs[b.ID]; sent {
+			continue
+		}
+		diff = append(diff, blobToProto(b))
+		diffBlobs[b.ID] = b
+	}
+	m.shipMu.Unlock()
+
+	// Ship-new FIRST so the consolidated blobs land before the publish reaps their
+	// merged-away predecessors (never a server gap).
+	if err := m.shipNew(ctx, diff, diffBlobs); err != nil {
+		return nil, err
+	}
+
+	return m.publishResident(ctx, all, extraReferenced, reconcileAgainst)
+}
+
+// publishResident publishes the union of this writer's resident live set (the
+// ids in `all` = m.engine.Export()) and extraReferenced as this writer's manifest
+// for (graphKey, writerID, format), then reconciles the local bookkeeping. It
+// returns the ids in reconcileAgainst that dropped out of the published set (the
+// caller's ROLE choice — locallyShipped for the embed path, shippedIDs for the
+// deterministic rebuild). Separated from shipAndPublish so the merge/reclaim paths
+// can re-publish without re-running the ship-new diff.
+func (m *distManager[Q, S]) publishResident(
+	ctx context.Context, all []searchengine.SegmentBlob, extraReferenced []searchengine.SegmentID,
+	reconcileAgainst map[searchengine.SegmentID]struct{},
+) ([]searchengine.SegmentID, error) {
+	liveSet := make(map[searchengine.SegmentID]struct{}, len(all)+len(extraReferenced))
+	manifestIDs := make([]searchengine.SegmentID, 0, len(all)+len(extraReferenced))
+	for _, b := range all {
+		if _, dup := liveSet[b.ID]; dup {
+			continue
+		}
+		liveSet[b.ID] = struct{}{}
+		manifestIDs = append(manifestIDs, b.ID)
+	}
+	for _, id := range extraReferenced {
+		if _, dup := liveSet[id]; dup {
+			continue
+		}
+		liveSet[id] = struct{}{}
+		manifestIDs = append(manifestIDs, id)
+	}
+
+	// SAFETY GATE (empty/degenerate-publish corpus-wipe guard): a publish swaps this
+	// writer's manifest and drives a refcount-GC, so a DEGENERATE live set (empty
+	// Export, a partial/incomplete load, a not-yet-loaded fresh process) must NEVER
+	// reach PublishManifest or it would wipe the prior corpus. Two checks gate it:
+	//
+	//   (1) NON-EMPTY + COVERAGE-RATIO FLOOR: an empty manifest, or a resident set
+	//       far below the server's shipped doc count for this format, is rejected.
+	//       This reuses the read-side coverage backstop policy verbatim
+	//       (publishCoverageOK → shippedDocCountForRatio + residentBackstopFloor/
+	//       Ratio with the conservative-unknown + tiny-graph disarm) so the publish
+	//       path and the read-side recoverIfDegenerate share one coverage policy.
+	//   (2) SUBSET-COMPLETENESS: the live set must be a subset of the server's
+	//       List(0) for this format. A live set holding ids the server lacks signals
+	//       an incomplete/suspect view — skip rather than publish against it.
+	//
+	// On a skip the prior manifest + ALL blobs survive (the swap never runs), so a
+	// degenerate publish is a no-op, not a corpus wipe. Skips are logged (best-effort
+	// like the read-side backstop) and return nil — the embed ship treats a skipped
+	// publish as "nothing to reconcile this pass", self-healing on a later pass once
+	// the engine is fully loaded.
+	ok, reason, err := m.publishCoverageOK(ctx, liveSet)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		slog.Warn("segmentdist: publish SKIPPED (degenerate/incomplete live set — manifest+blobs left intact)",
+			"format", m.format, "live", len(manifestIDs), "reason", reason)
+		return nil, nil
+	}
+
+	if _, err := m.source.PublishManifest(m.format, manifestIDs); err != nil {
+		return nil, err
+	}
+
+	// Reconcile bookkeeping: the ids in reconcileAgainst (the caller's ROLE set)
+	// that dropped out of the published live set are now reaped server-side (their
+	// refcount went to zero). The embed path passes locallyShipped (so a fresh
+	// process never drops the prior corpus it merely re-imported — the
+	// restart-tail guard); the rebuild path passes shippedIDs (the old corpus it
+	// superseded). The dropped ids are removed from BOTH bookkeeping views to keep
+	// them consistent.
+	m.shipMu.Lock()
+	var dropped []searchengine.SegmentID
+	for id := range reconcileAgainst {
+		if _, live := liveSet[id]; !live {
+			dropped = append(dropped, id)
+		}
+	}
+	for _, id := range dropped {
+		delete(m.shippedIDs, id)
+		delete(m.locallyShipped, id)
+	}
+	m.shipMu.Unlock()
+	return dropped, nil
+}
+
+// publishCoverageOK is the publish-path safety gate. It returns
+// (true, "") when liveSet is safe to publish as this writer's manifest, or
+// (false, reason) when the publish must be SKIPPED to avoid wiping the corpus.
+// The checks, in order:
+//
+//	(1) NON-EMPTY: an empty live set (∅ ⊆ anything is a vacuous subset) would pass
+//	    the subset gate yet drive a full refcount-GC — the exact corpus wipe. An
+//	    empty manifest is always rejected.
+//	(2) COVERAGE-RATIO FLOOR: the resident doc count vs the server's shipped doc
+//	    count for this format, via the SAME shippedDocCountForRatio +
+//	    residentBackstopFloor/residentBackstopRatio policy the read-side
+//	    recoverIfDegenerate uses (conservative-unknown on a pre-doc_count blob,
+//	    sub-floor tiny-graph disarm). A resident set far below the shipped corpus is
+//	    a degenerate/partial load — skip rather than reap the corpus it has not yet
+//	    re-imported. A disarmed ratio (tiny graph / untrustworthy denominator) is
+//	    treated as SAFE: a small graph legitimately publishes its whole tiny set.
+//	(3) SUBSET-COMPLETENESS: the live set must be a subset of List(0) for this
+//	    format (liveSetSubsetOfList0). A live set referencing ids the server lacks
+//	    is an incomplete/suspect view — skip.
+func (m *distManager[Q, S]) publishCoverageOK(
+	ctx context.Context, liveSet map[searchengine.SegmentID]struct{},
+) (bool, string, error) {
+	if len(liveSet) == 0 {
+		return false, "empty live set", nil
+	}
+
+	// Coverage-ratio floor — reuse the read-side backstop policy verbatim.
+	resident := m.engine.ResidentDocCount()
+	shipped, disarm, err := m.shippedDocCountForRatio(ctx)
+	if err != nil {
+		return false, "", err
+	}
+	// disarm == true means the denominator is untrustworthy (pre-doc_count blob) or
+	// the corpus is below the floor (tiny graph): the ratio is not meaningful, so the
+	// coverage check does not block — a tiny/legacy graph legitimately publishes its
+	// whole set. A non-disarmed below-ratio resident set is the degenerate case.
+	if !disarm && float64(resident) < residentBackstopRatio*float64(shipped) {
+		return false, "resident doc count below coverage ratio of shipped corpus", nil
+	}
+
+	// Subset-completeness against List(0).
+	subset, err := m.liveSetSubsetOfList0(ctx, liveSet)
+	if err != nil {
+		return false, "", err
+	}
+	if !subset {
+		return false, "live set not a subset of List(0) — incomplete view", nil
+	}
+	return true, "", nil
 }

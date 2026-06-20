@@ -14,8 +14,6 @@ package bootstrap
 import (
 	"context"
 	"log/slog"
-	"os"
-	"path/filepath"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/config"
@@ -23,19 +21,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/llmproviders"
 	"github.com/fulminate-io/knowledge-mcp/internal/pipeline"
-	"github.com/fulminate-io/knowledge-mcp/internal/segmentdist"
 )
-
-// segmentCacheDir is the L2 disk-cache root for client-built/pulled HNSW segment
-// blobs, under ~/.knowledge/segments (falls back to a temp dir if the home dir is
-// unavailable — the cache is a best-effort backstop).
-func segmentCacheDir() string {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return filepath.Join(os.TempDir(), "knowledge-segments")
-	}
-	return filepath.Join(home, ".knowledge", "segments")
-}
 
 // routedWireClient adapts the login-aware *graphclient.Router to the pipeline's
 // WireClient + BackendResolver contract. Every PipelineScan/Execute re-picks the
@@ -187,12 +173,18 @@ func wirePipelineRuntime(c *client, f Config) error {
 	// (Ship/ListDelta/Fetch route cloud-when-logged-in / local-when-not, the same
 	// dispatch the Engine RPCs use). Best-effort: a ship failure only WARNs and
 	// never fails embed writeback (server vector path authoritative — fusion
-	// finding). The L2 segment cache roots under ~/.knowledge/segments.
+	// finding). The L2 segment cache roots under <graph-storage>/segments — off the
+	// CLIENT's --graph-storage data root (segmentCacheDirFor, daemon.go), which equals
+	// the auto-spawned local server's --graph-storage, so client L2 and server store
+	// co-locate rather than leaking to a HOME-fixed path.
 	// ONE Manager instance, shared between the PRODUCER (this pipeline ships
 	// segments into it at embed writeback) and the CONSUMER (the search
-	// intercepts query it via deps.SegmentManager()). Hoisted onto *client so
-	// both sides reach the same engines + the segments the producer loaded.
-	c.segmentMgr = segmentdist.NewManager(c.router, segmentCacheDir(), 0)
+	// intercepts query it via deps.SegmentManager()). The Manager is CONSTRUCTED
+	// UNCONDITIONALLY in wireRuntimesBackground (daemon.go) BEFORE this call — the
+	// read path must serve BM25 over existing segments even offline — so here the
+	// producer only ATTACHES the already-built instance for shipping. A nil
+	// segmentMgr means construction was skipped (router-less headless client); the
+	// AttachHealFactory guard below stays nil-safe for that case.
 	p.AttachSegmentManager(c.segmentMgr)
 
 	// Wire the auto-heal factory: on the embed drain after a collect armed

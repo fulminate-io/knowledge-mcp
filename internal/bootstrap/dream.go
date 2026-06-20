@@ -175,6 +175,18 @@ func (c *client) runInterceptChainInner(ctx context.Context, params kgtools.Call
 	if handled, res := tools.InterceptAst(c, params); handled {
 		return params, true, res
 	}
+	// Deterministic verified-negation gate. MUST run BEFORE both InterceptThoughts
+	// (claims thoughts(think) supersession) and InterceptMutate (claims
+	// mutate(update status:invalidated) / mutate(link relationship:contradicts)) so
+	// it precedes every write handler that lands a negation. It self-gates: it
+	// returns (false,_) for any non-negation call (and on nil gc, fail-open), so a
+	// normal think/mutate falls cleanly through to the handler below. On a missing /
+	// hallucinated / stale quote it returns (true, errResult) — the negation never
+	// reaches its write handler. Placed before InterceptThoughts (the earlier of the
+	// two negation claimants) satisfies the before-both ordering.
+	if handled, res := tools.InterceptNegationGate(c, params); handled {
+		return params, true, res
+	}
 	if handled, res := tools.InterceptThoughts(c, params); handled {
 		return params, true, res
 	}

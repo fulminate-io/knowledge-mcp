@@ -46,6 +46,49 @@ id="confirm-foundational-architecture".
 
 </constraint>
 
+<constraint id="recall-before-acting" severity="hard">
+
+  <rule>
+    Brainstorm already recalls existing decisions/findings/thoughts before creating
+    new ones (above). The same discipline governs ACTING. Whenever this phase does
+    something operational — connecting to a service or database to verify a claim,
+    running a command to reproduce or smoke-test, building or deploying to check a
+    behavior, restarting a process — and the METHOD is not already in your context,
+    FIRST consult what already exists: recall stored how-to knowledge ("how do I X
+    here"), and read the project's own affordances (its build targets, scripts/,
+    READMEs, existing commands). Act only after that. The correct procedure almost
+    always already exists and is recorded; improvising it from first principles is
+    the failure, not the fallback.
+  </rule>
+
+  <concretely>
+    Before the procedural action, do BOTH: (1) recall — search stored knowledge
+    for "how do I &lt;build|deploy|restart|connect to|run&gt; X here"; (2) check
+    affordances — scan the project's build file and scripts for an existing target
+    matching the verb (e.g. grep the Makefile / justfile / package scripts for
+    `deploy`, `restart`, `daemon`, `release`). If a recorded procedure or a project
+    target exists, USE IT. Hand-roll the steps only after confirming none exists.
+  </concretely>
+
+  <override-default>
+    Trained instinct under momentum: when the procedure isn't in hand, try
+    something plausible and press on, correcting on errors. WRONG for operational
+    work — a confidently-wrong procedural action (a hand-rolled service restart, an
+    ad-hoc connection, a guessed deploy) does real damage, and the confidence makes
+    it read as correct. Not having the method in hand is the signal to RECALL and
+    read the project's affordances — never to improvise and keep going.
+  </override-default>
+
+  <tell>
+    You are about to fail this whenever you reach for a RAW PRIMITIVE for an
+    operational task — a kill/nohup to cycle a service, a hand-built command to
+    connect or deploy, a from-scratch sequence for something the project surely
+    automates. That reach IS the tell. Stop and find the recorded procedure or the
+    project's target/script first.
+  </tell>
+
+</constraint>
+
 ## Step 0: Check Index Freshness
 
 **Before doing any research, check if the code index is stale.**
@@ -447,6 +490,8 @@ For simple topics, use `mutate(operation: "create", type: "research", ...)` for 
    ```
 
    Use `think` for raw reasoning (hypotheses, intuitions, connections). Use `mutate(operation: "create", type: "finding")` for confirmed conclusions. When evidence lands DURING the brainstorm (a researcher verifies or refutes a hypothesis you recorded), charge the thought then — don't defer: polarity positive if the evidence supports the hypothesis's claim, negative if it contradicts it.
+
+   **The user's own insight, correction, or directive is first-party evidence — charge it the moment it lands.** A brainstorm is where the user's architectural insights and corrections land most; each is itself evidence of the highest authority, needing no external corroboration. Charge the thought it bears on immediately rather than leaving it uncharged. Note the distinction: charging records evidence on a claim and needs no source proof — only NEGATION (contradicting, superseding, or invalidating a thought) demands first-hand proof read in the current source.
 
 4. **Record findings** when you reach conclusions:
 

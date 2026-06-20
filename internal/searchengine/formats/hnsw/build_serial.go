@@ -7,15 +7,14 @@ import (
 	"sort"
 )
 
-// build_serial.go is the production twin of the deterministic serial build path
-// proven byte-reproducible by build_bench_test.go (newFixedSeedGraph + sortedByID
-// + buildSerialDeterministic) and guarded by TestDeterministicSerialIsReproducible.
-// The segment_rebuild Format variant (NewDeterministic) builds through this so a
-// re-run over an unchanged node set yields byte-identical segments.
+// build_serial.go is the HNSW build path — byte-reproducible serial construction,
+// the ONLY builder. Format.Build runs through it for every segment (embed ship and
+// segment_rebuild alike), so a re-run over an unchanged node set yields
+// byte-identical segments. Reproducibility is guarded by
+// TestDeterministicSerialIsReproducible.
 
 // detSeedHi / detSeedLo pin the fixed PCG seed for the deterministic serial
-// build — the ONLY behavioural delta vs newRand()'s crypto/rand seed. Same
-// constants the measurement benchmark uses (build_bench_test.go fixedSeedHi/Lo).
+// build — the ONLY behavioural delta vs newRand()'s crypto/rand seed.
 const (
 	detSeedHi = 0xdeadbeef
 	detSeedLo = 0xcafebabe
@@ -28,8 +27,6 @@ const (
 // eliminates). Encode (serial.go) is already deterministic, so identical items in
 // → byte-identical encoded blob out.
 //
-// It is the serial counterpart to buildBinaryHNSWParallel: same params, same
-// (*binaryGraph).Insert algorithm, only the seed + insertion concurrency differ.
 // Determinism is a PER-SEGMENT property; cross-segment build concurrency is the
 // engine/Manager layer's job (each goroutine builds one segment via this fn).
 func buildBinaryHNSWSerialDeterministic(items []binaryBuildItem, vecBytes, m, efConstruction int) *binaryGraph {

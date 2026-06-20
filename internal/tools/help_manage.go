@@ -82,6 +82,24 @@ const helpManage = `# manage — Server operations
   and prunes the superseded embed ones; every rebuild after is a no-op). Runs
   SYNCHRONOUSLY and reports the scanned/built/pruned counts.
 
+## Orphaned-segment cache prune (one-shot backlog reclaim)
+  manage({ "operation": "prune-cache" })                  — PREVIEW: report the orphaned L2 segments per graph+format, delete nothing
+  manage({ "operation": "prune-cache", "execute": true }) — DELETE the orphaned L2 segments
+
+  prune-cache is a ONE-TIME (not periodic) reclaim of orphaned client-side L2
+  segment blobs: the accumulated superseded .seg files the invalidation-driven
+  reclaim never unlinked. It enumerates the segment-bearing graphs (knowledge/default
+  + every code repo) and, per graph+format, diffs the on-disk .seg ids against that
+  graph's COMPLETE current live set, removing the orphans. It PREVIEWS by default
+  (execute=false renders a would-remove report and deletes NOTHING); execute=true
+  performs the removal.
+  The complete-live-set diff is the safety: each graph is FORCE-FULL-LOADED so an
+  unloaded-but-live segment still counts (never false-pruned), the HNSW embed +
+  deterministic engines' live sets are UNIONED (they share one cache root), and the
+  computed live set is cross-checked against the server's List(0) — any pool whose
+  live set is not a subset is SKIPPED untouched and surfaced in the report rather than
+  pruned. Honors format=json for the structured report.
+
 ## Cross-graph linking
   manage({ "operation": "link" })  — run image, Helm, and Dockerfile linkers to create code-to-cloud edges
 

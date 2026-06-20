@@ -154,7 +154,7 @@ func TestReconcileResidentDegenerate_Disarms(t *testing.T) {
 // graph via a throwaway source — the shipped denominator the probe reads.
 func serverHNSWDocCount(t *testing.T, gc *graphclient.GraphClient, target *knowledgev1.GraphSelector) int {
 	t.Helper()
-	src := newRPCSegmentSource(gc, target, context.Background())
+	src := newRPCSegmentSource(gc, target, "", context.Background())
 	metas, err := src.List(context.Background(), 0)
 	require.NoError(t, err)
 	total := 0

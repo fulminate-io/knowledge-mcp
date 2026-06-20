@@ -122,6 +122,7 @@ func (d ctxPackDeps) RepoResolver() *RepoResolver                  { return nil 
 func (d ctxPackDeps) SegmentManager() SegmentSearcher              { return d.segMgr }
 func (d ctxPackDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
 func (d ctxPackDeps) SegmentShipper() SegmentShipper               { return nil }
+func (d ctxPackDeps) SegmentPruner() SegmentPruner                 { return nil }
 func (d ctxPackDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
 func (d ctxPackDeps) PipelineScanner() PipelineScanner             { return nil }
 func (d ctxPackDeps) ReflectionForcer() ReflectionForcer           { return nil }

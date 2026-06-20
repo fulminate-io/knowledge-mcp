@@ -8,9 +8,42 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"connectrpc.com/connect"
+
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
+
+// maxFetchSegmentIDs caps how many segment ids a single Fetch RPC may request.
+// On a cold/force-load the client lists the whole accumulated-generation delta
+// and must materialize every miss; issuing ONE Fetch(allMisses) made the server
+// build the entire corpus into one slice (~1.9 GiB) and OOM (the 2026-06-19 P0).
+// Sub-batching the misses into chunks of at most this many ids bounds the client's
+// peak resident bytes to ~one chunk's worth of blobs.
+//
+// This is a COUNT cap, not a byte cap: SegmentMetaProto carries no byte size
+// (adding one is explicitly OUT OF SCOPE — CEO Option A), so the client cannot
+// byte-pack. It is sized so maxFetchSegmentIDs × a generous per-blob size stays
+// well under the server's authoritative store.MaxSegmentFetchResponseBytes
+// (256 MiB) ceiling: 256 ids × ~256 KiB/blob ≈ 64 MiB, comfortably under. The two
+// bounds are deliberately coupled — the count cap is the common case, and the
+// server byte ceiling is the hard backstop that triggers the adaptive halving in
+// fetchMisses when a count-capped chunk is nonetheless too large in bytes.
+// Keeping the cap a parameter of fetchMisses leaves a future count→byte upgrade
+// additive without a proto change.
+const maxFetchSegmentIDs = 256
+
+// segmentL2Cache is the L2 disk-cache seam distManager writes through. The
+// concrete *diskSegmentCache satisfies it; tests substitute instrumented or
+// fault-injecting implementations to exercise the prune-safety ordering.
+// searchengine.SegmentCache is NOT reused here — it carries only Get/Put, and the
+// reclaim/prune paths require Remove, so extending the searchengine contract for a
+// segmentdist need would be the wrong boundary.
+type segmentL2Cache interface {
+	Get(id searchengine.SegmentID) ([]byte, bool)
+	Put(id searchengine.SegmentID, b []byte)
+	Remove(id searchengine.SegmentID)
+}
 
 // distManager ties one graph's searchengine.SegmentedIndex to the SegmentService
 // wire: it SHIPS newly-built segments (diffing against what the server already
@@ -22,7 +55,7 @@ import (
 type distManager[Q, S any] struct {
 	engine *searchengine.SegmentedIndex[Q, S]
 	source *rpcSegmentSource
-	cache  *diskSegmentCache
+	cache  segmentL2Cache
 	target *knowledgev1.GraphSelector
 
 	// format is this engine's segment format name (e.g. "hnsw", "bm25"). The
@@ -111,7 +144,7 @@ type residentSeg struct {
 func newDistManager[Q, S any](
 	engine *searchengine.SegmentedIndex[Q, S],
 	source *rpcSegmentSource,
-	cache *diskSegmentCache,
+	cache segmentL2Cache,
 	target *knowledgev1.GraphSelector,
 	format string,
 ) *distManager[Q, S] {
@@ -216,9 +249,13 @@ func (m *distManager[Q, S]) load(ctx context.Context) error {
 		missIDs = append(missIDs, meta.ID)
 	}
 
-	// One batched Fetch for all misses.
+	// Sub-batched Fetch for all misses: fetchMisses count-caps each Fetch RPC
+	// (and halves on the server byte ceiling) so a cold load never issues one
+	// unbounded Fetch(allMisses) — the 2026-06-19 OOM. All-or-hard-error: a byte
+	// ceiling that a single blob cannot satisfy returns here BEFORE the Import +
+	// importedGen advance below, so the unfetched id stays re-listable.
 	if len(missIDs) > 0 {
-		blobs, err := m.source.Fetch(missIDs)
+		blobs, err := m.fetchMisses(missIDs)
 		if err != nil {
 			return err
 		}
@@ -263,6 +300,86 @@ func (m *distManager[Q, S]) load(ctx context.Context) error {
 	}
 	m.advanceGen(&m.importedGen, maxGen)
 	return nil
+}
+
+// fetchMisses Fetches the named segment ids from the source in COUNT-capped
+// sub-batches (at most maxFetchSegmentIDs ids per RPC) and concatenates the
+// results, so a cold load never issues one unbounded Fetch(allMisses) (the
+// 2026-06-19 OOM). It is the single shared Fetch path for both load and reload.
+//
+// ADAPTIVE HALVING: a chunk is count-capped, but blobs have no client-visible
+// byte size, so a count-capped chunk can still exceed the server's
+// store.MaxSegmentFetchResponseBytes byte ceiling. When the server rejects a
+// chunk with connect.CodeResourceExhausted (the byte-ceiling backstop maps
+// store.ErrSegmentFetchTooLarge to that code), fetchMisses HALVES the chunk and
+// retries each half, recursing until each sub-chunk fits under the ceiling. Only
+// CodeResourceExhausted triggers halving; ANY OTHER error propagates immediately
+// with no retry.
+//
+// ALL-OR-HARD-ERROR: if a SINGLE id's blob alone exceeds the server ceiling
+// (pathological — one segment > MaxSegmentFetchResponseBytes), halving a 1-id
+// chunk cannot make it fit, so fetchMisses returns a hard error rather than
+// looping forever. That error propagates to load()/reload() BEFORE any Import or
+// importedGen advance, so the id stays re-listable on the next load — no silent
+// blob loss. fetchMisses returns every requested blob, or an error; never a
+// partial set silently.
+//
+// BACKPRESSURE COUPLING (load-bearing assumption): halving keys on
+// CodeResourceExhausted, but a server may have a SECOND source of that code — a
+// backpressure mechanism that sheds DB-heavy RPCs with CodeResourceExhausted
+// meaning "server busy, back off and retry the SAME batch" (the semantic
+// OPPOSITE of "batch too big, halve it"). This is SAFE TODAY because the segment
+// Fetch RPC is NOT subject to that backpressure shedding — the byte ceiling is
+// the sole ResourceExhausted source on Fetch. If a future change makes Fetch
+// subject to backpressure, this code MUST disambiguate the byte-ceiling error
+// from a backpressure shed (e.g. via a distinguishable detail on
+// ErrSegmentFetchTooLarge) BEFORE halving. (graphclient.IsRetryableTransportError
+// deliberately does NOT retry ResourceExhausted, so the segment-level halving
+// sees the code cleanly with no double-retry interference.)
+func (m *distManager[Q, S]) fetchMisses(missIDs []searchengine.SegmentID) ([]searchengine.SegmentBlob, error) {
+	if len(missIDs) == 0 {
+		return nil, nil
+	}
+	out := make([]searchengine.SegmentBlob, 0, len(missIDs))
+	for start := 0; start < len(missIDs); start += maxFetchSegmentIDs {
+		end := min(start+maxFetchSegmentIDs, len(missIDs))
+		blobs, err := m.fetchChunkAdaptive(missIDs[start:end])
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, blobs...)
+	}
+	return out, nil
+}
+
+// fetchChunkAdaptive Fetches one already-count-capped chunk, halving it on a
+// server byte-ceiling rejection (CodeResourceExhausted) until each sub-chunk
+// fits. A 1-id chunk that still exceeds the ceiling is a hard error (no infinite
+// loop). Any non-ResourceExhausted error propagates immediately. See fetchMisses
+// for the full halving + backpressure-coupling rationale.
+func (m *distManager[Q, S]) fetchChunkAdaptive(chunk []searchengine.SegmentID) ([]searchengine.SegmentBlob, error) {
+	blobs, err := m.source.Fetch(chunk)
+	if err == nil {
+		return blobs, nil
+	}
+	if connect.CodeOf(err) != connect.CodeResourceExhausted {
+		return nil, err // not a byte-ceiling rejection — propagate, no retry
+	}
+	// Byte ceiling: the chunk is too large in bytes despite being count-capped.
+	// A single id that still over-runs the ceiling cannot be split further.
+	if len(chunk) <= 1 {
+		return nil, err
+	}
+	mid := len(chunk) / 2
+	left, err := m.fetchChunkAdaptive(chunk[:mid])
+	if err != nil {
+		return nil, err
+	}
+	right, err := m.fetchChunkAdaptive(chunk[mid:])
+	if err != nil {
+		return nil, err
+	}
+	return append(left, right...), nil
 }
 
 // unloadUnderPressure drops resident segments (lowest generation first) via
@@ -319,7 +436,9 @@ func (m *distManager[Q, S]) reload(ids []searchengine.SegmentID) error {
 		missIDs = append(missIDs, id)
 	}
 	if len(missIDs) > 0 {
-		fetched, err := m.source.Fetch(missIDs)
+		// Sub-batched Fetch (count-capped + byte-ceiling halving) so a large
+		// reload never issues one unbounded Fetch(allMisses).
+		fetched, err := m.fetchMisses(missIDs)
 		if err != nil {
 			return err
 		}

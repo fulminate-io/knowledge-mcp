@@ -19,8 +19,8 @@ import (
 // directly through the provider seam — no gc-driven recompute fixture is needed.
 func sampleTensionReports() []clientthought.TensionReport {
 	return []clientthought.TensionReport{{
-		ThoughtA:     &knowledgev1.Node{Id: "t-a", SymbolName: "optimistic stance"},
-		ThoughtB:     &knowledgev1.Node{Id: "t-b", SymbolName: "pessimistic stance"},
+		NodeA:        &knowledgev1.Node{Id: "t-a", SymbolName: "optimistic stance"},
+		NodeB:        &knowledgev1.Node{Id: "t-b", SymbolName: "pessimistic stance"},
 		PropertiesA:  clientthought.ThoughtProperties{Valence: 0.8, ChargeCount: 3},
 		PropertiesB:  clientthought.ThoughtProperties{Valence: -0.7, ChargeCount: 2},
 		ValenceDelta: 1.5,

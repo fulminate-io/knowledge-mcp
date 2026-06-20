@@ -26,15 +26,19 @@ import (
 )
 
 // reconcileEngine is an EngineServiceHandler for the segment-reconcile tests. It
-// (a) enumerates code repos via Execute(RETURN_MODE_GRAPH_NAMES) so the reconcile's
-// code-repo discovery (tools.ListGraphNamesOfType) sees them; (b) serves a
-// configurable segment_rebuild scan page per graph via PipelineScan, RECORDING the
+// (a) enumerates per-graph-type instance names via Execute(RETURN_MODE_GRAPH_NAMES)
+// so the reconcile's per-type discovery (tools.ListGraphNamesOfType, now called for
+// every embeddable builtin) sees them — keyed by the requested graph type so a test
+// can register code repos AND non-code instances (e.g. a cloud account); (b) serves
+// a configurable segment_rebuild scan page per graph via PipelineScan, RECORDING the
 // call count per graph so a test can assert a rebuild fired (RebuildSegments pages
 // PipelineScan only when the probe reports degenerate); (c) serves a fixed Stats.
 // It embeds countingEngine to inherit the rest of the handler surface.
 type reconcileEngine struct {
 	*countingEngine
-	codeRepos []string
+	// namesByType maps a graph-type string (e.g. "code", "cloud") to the instance
+	// names RETURN_MODE_GRAPH_NAMES serves for that type.
+	namesByType map[string][]string
 
 	mu        sync.Mutex
 	scanItems map[string][]*knowledgev1.PipelineScanItem // keyed by graph name
@@ -46,14 +50,12 @@ func (e *reconcileEngine) Execute(
 ) (*connect.Response[knowledgev1.ExecuteResponse], error) {
 	q := req.Msg.GetQuery()
 	if q != nil && q.GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_GRAPH_NAMES {
-		if req.Msg.GetTarget().GetGraph() == "code" {
-			infos := make([]*knowledgev1.GraphInfo, 0, len(e.codeRepos))
-			for _, r := range e.codeRepos {
-				infos = append(infos, &knowledgev1.GraphInfo{Name: r})
-			}
-			return connect.NewResponse(&knowledgev1.ExecuteResponse{GraphNames: infos}), nil
+		names := e.namesByType[req.Msg.GetTarget().GetGraph()]
+		infos := make([]*knowledgev1.GraphInfo, 0, len(names))
+		for _, n := range names {
+			infos = append(infos, &knowledgev1.GraphInfo{Name: n})
 		}
-		return connect.NewResponse(&knowledgev1.ExecuteResponse{}), nil
+		return connect.NewResponse(&knowledgev1.ExecuteResponse{GraphNames: infos}), nil
 	}
 	return connect.NewResponse(&knowledgev1.ExecuteResponse{}), nil
 }
@@ -95,7 +97,7 @@ func buildReconcileClient(t *testing.T, codeRepos ...string) (*client, *reconcil
 	seg := newHealSegmentService()
 	eng := &reconcileEngine{
 		countingEngine: &countingEngine{},
-		codeRepos:      codeRepos,
+		namesByType:    map[string][]string{string(kgtypes.GraphCode): codeRepos},
 		scanItems:      map[string][]*knowledgev1.PipelineScanItem{},
 		scanCalls:      map[string]int{},
 	}
@@ -174,6 +176,57 @@ func TestReconcileSegmentCoverage_DegenerateRebuilds(t *testing.T) {
 
 	require.GreaterOrEqual(t, eng.scanCallCount("degenRepo"), 1,
 		"a degenerate graph triggers RebuildSegments — PipelineScan is paged")
+}
+
+// TestReconcileSegmentCoverage_DegenerateNonCodeRebuilds proves the reconcile now
+// enumerates + heals NON-code embeddable builtins: a cloud graph (keyed by account,
+// enumerated via the per-type ListGraphNamesOfType the HasRebuildableSegments loop
+// now calls for cloud) in the post-restart degenerate state (full shipped corpus >=
+// floor, live resident empty after the empty Fetch) triggers exactly one
+// RebuildSegments — PipelineScan is paged for it. Under a code-only enumeration the
+// cloud graph would never be discovered, so no rebuild would fire.
+func TestReconcileSegmentCoverage_DegenerateNonCodeRebuilds(t *testing.T) {
+	c, eng := buildReconcileClient(t) // no code repos — exercise the non-code path alone.
+	ctx := context.Background()
+
+	// Register a cloud account instance so the reconcile's per-type enumeration
+	// (ListGraphNamesOfType for "cloud") discovers it.
+	eng.namesByType[string(kgtypes.GraphCloud)] = []string{"acct"}
+
+	// Full shipped corpus (128 >> floor) under the cloud account selector, but the
+	// heal segment service's empty Fetch means load imports nothing → live resident
+	// stays 0 → degenerate. PipelineScan is keyed by the instance name (account).
+	shipHNSWFor(t, c, kgtypes.GraphCloud, "acct", 64, 64)
+	eng.scanItems["acct"] = makeReconcileScanPage("acct", 10)
+
+	c.reconcileSegmentCoverage(ctx)
+
+	require.GreaterOrEqual(t, eng.scanCallCount("acct"), 1,
+		"a degenerate NON-code embeddable graph (cloud/acct) is enumerated, probed, and rebuilt — PipelineScan paged")
+}
+
+// TestReconcileSegmentCoverage_SkipsNonEmbeddableBuiltins is the closed-gate side:
+// the per-type enumeration skips kgtypes.GraphLinkage and kgtypes.GraphTransformers
+// (HasRebuildableSegments returns false), so even if the server WOULD enumerate a
+// degenerate-looking instance for them, the reconcile never probes or rebuilds it —
+// they carry no rebuildable segments.
+func TestReconcileSegmentCoverage_SkipsNonEmbeddableBuiltins(t *testing.T) {
+	c, eng := buildReconcileClient(t)
+	ctx := context.Background()
+
+	// Register instances for the two non-embeddable sync-eligible builtins. If the
+	// enumeration did NOT skip them, the loop would probe these names.
+	eng.namesByType[string(kgtypes.GraphLinkage)] = []string{"lk"}
+	eng.namesByType[string(kgtypes.GraphTransformers)] = []string{"recipes"}
+	eng.scanItems["lk"] = makeReconcileScanPage("lk", 10)
+	eng.scanItems["recipes"] = makeReconcileScanPage("recipes", 10)
+
+	c.reconcileSegmentCoverage(ctx)
+
+	require.Equal(t, 0, eng.scanCallCount("lk"),
+		"linkage has no rebuildable segments — never enumerated/probed/rebuilt")
+	require.Equal(t, 0, eng.scanCallCount("recipes"),
+		"transformers has no rebuildable segments — never enumerated/probed/rebuilt")
 }
 
 // TestReconcileSegmentCoverage_NilManagerNoPanic proves the headless/degraded path:

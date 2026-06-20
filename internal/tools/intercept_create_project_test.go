@@ -186,6 +186,7 @@ func (d interceptTestDeps) RepoResolver() *RepoResolver                  { retur
 func (d interceptTestDeps) SegmentManager() SegmentSearcher              { return nil }
 func (d interceptTestDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
 func (d interceptTestDeps) SegmentShipper() SegmentShipper               { return nil }
+func (d interceptTestDeps) SegmentPruner() SegmentPruner                 { return nil }
 func (d interceptTestDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
 func (d interceptTestDeps) PipelineScanner() PipelineScanner             { return nil }
 func (d interceptTestDeps) ReflectionForcer() ReflectionForcer {

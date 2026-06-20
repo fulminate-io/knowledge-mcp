@@ -108,11 +108,12 @@ func (m *mockSegment) Encode() ([]byte, error) { return json.Marshal(m.rows) }
 // countingCaller wraps a segmentCaller and counts Fetch / Ship calls so tests
 // can assert "zero Fetch on a cache hit" / "zero Ship on an empty diff".
 type countingCaller struct {
-	inner      segmentCaller
-	fetchCalls atomic.Int64
-	shipCalls  atomic.Int64
-	shipBlobs  atomic.Int64
-	pruneCalls atomic.Int64
+	inner        segmentCaller
+	fetchCalls   atomic.Int64
+	shipCalls    atomic.Int64
+	shipBlobs    atomic.Int64
+	pruneCalls   atomic.Int64
+	publishCalls atomic.Int64
 }
 
 func (c *countingCaller) Ship(ctx context.Context, req *knowledgev1.ShipRequest) (*knowledgev1.ShipResponse, error) {
@@ -133,6 +134,11 @@ func (c *countingCaller) Fetch(ctx context.Context, req *knowledgev1.FetchReques
 func (c *countingCaller) Prune(ctx context.Context, req *knowledgev1.PruneRequest) (*knowledgev1.PruneResponse, error) {
 	c.pruneCalls.Add(1)
 	return c.inner.Prune(ctx, req)
+}
+
+func (c *countingCaller) Publish(ctx context.Context, req *knowledgev1.PublishRequest) (*knowledgev1.PublishResponse, error) {
+	c.publishCalls.Add(1)
+	return c.inner.Publish(ctx, req)
 }
 
 // newMockEngine builds a SegmentedIndex over the mock format with MinSegmentDocs=1

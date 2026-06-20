@@ -47,7 +47,16 @@ type Config struct {
 	// keychain. Populated from the --auth-token flag (defaulting to the
 	// KNOWLEDGE_AUTH_TOKEN environment variable) for headless/automated
 	// callers. Empty leaves the interactive login path fully intact.
-	AuthToken            string
+	AuthToken string
+	// NoAuth forces the client local-only at the Router.pick chokepoint. When
+	// set, constructClient suppresses BOTH cloud-selection triggers: machineAuth
+	// is forced false (the --auth-token / KNOWLEDGE_AUTH_TOKEN value is NOT
+	// consulted) and the keychain is replaced with a no-op store so AuthState
+	// reports IsLoggedIn==false even when a live `knowledge login` refresh token
+	// exists. The result is fail-closed: no routed op can reach a fulminate.io
+	// host regardless of credentials present. Capability reduction only — the
+	// cloud endpoint is never overridden. Populated from the --no-auth flag.
+	NoAuth               bool
 	LogLevel             string
 	LogFile              string
 	NoWorkerRuntime      bool
@@ -92,6 +101,7 @@ func registerConfigFlags(fs *flag.FlagSet, cfg *Config) {
 	fs.StringVar(&cfg.AuthToken, "auth-token", os.Getenv("KNOWLEDGE_AUTH_TOKEN"), "Opaque machine bearer token presented on every request, bypassing the interactive browser login and the platform keychain. Defaults to the KNOWLEDGE_AUTH_TOKEN environment variable; an explicit flag value wins. Empty leaves the interactive login path intact.")
 	fs.StringVar(&cfg.LogLevel, "log-level", "info", "Log level: debug, info, warn, error")
 	fs.StringVar(&cfg.LogFile, "log-file", "", "Log file path (logs to both stderr and file when set)")
+	fs.BoolVar(&cfg.NoAuth, "no-auth", false, "Force the client local-only: suppress BOTH cloud-selection triggers at the Router.pick chokepoint (machineAuth forced false WITHOUT consulting --auth-token/KNOWLEDGE_AUTH_TOKEN, and the keychain replaced with a no-op store so a live `knowledge login` refresh token reports IsLoggedIn==false). Fail-closed: no routed op can reach a fulminate.io host regardless of credentials present. Capability reduction only — the cloud endpoint is never overridden. Use for offline/OSS mode and as the safety floor for the bug-hunt harness.")
 	fs.BoolVar(&cfg.NoWorkerRuntime, "no-worker-runtime", false, "Skip dream Runner wiring. Run knowledge purely to serve/exercise the graph (e.g. the bench harness) without starting its own background worker runtime.")
 	fs.BoolVar(&cfg.NoPropagationRuntime, "no-propagation-runtime", false, "Skip client-side PropagationLoop wiring. The MCP daemon continues to serve and reflective tools still run on demand, but the hourly background cluster detection + valence propagation stops. Use for offline development or to silence background log noise.")
 	fs.BoolVar(&cfg.Pprof, "pprof", true, fmt.Sprintf("Start the pprof profiling HTTP endpoint on %s (/debug/pprof/) at boot. Also reachable on demand via manage(pprof_start). Use to profile client-side work such as collect. Default-on during the general-stability investigation window; flip to false once the startup-timeout flake is diagnosed.", profiling.Addr()))

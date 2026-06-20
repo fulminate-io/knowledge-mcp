@@ -21,7 +21,9 @@ import (
 // computePropertiesFromCharges derivation runs. It serves exactly the reads
 // fetchTensionEdges + fetchChargesFor + fetchNodesByIDs issue:
 //
-//   - the type=thought browse (fetchAllThoughtNodes) → every thought node;
+//   - the per-type universe browses (fetchTensionUniverseNodes drains
+//     thought/finding/research) → the seeded nodes whose Type matches each
+//     browse's requested Selection.NodeType;
 //   - a RETURN_MODE_EDGES read filtered to tensionEdgeTypes → tensionEdges;
 //   - a RETURN_MODE_EDGES read filtered to EdgeChargedBy → chargeEdges
 //     (thought→charge), driving the per-thought valence;
@@ -99,10 +101,23 @@ func (f *tensionFake) Execute(_ context.Context, req *knowledgev1.ExecuteRequest
 	if q.GetOffset() > 0 {
 		return &knowledgev1.ExecuteResponse{}, nil
 	}
-	// the type=thought browse (first page): every thought node.
+	// A type browse (first page). fetchTensionUniverseNodes now drains three
+	// types (thought/finding/research) via separate single-type browses, so the
+	// fake answers each by the requested Selection.NodeType: return only the
+	// seeded nodes whose Type matches. A type with no seeded nodes (e.g. research
+	// when only thoughts are seeded) returns an empty page — the existing
+	// thought-only tension cases are unchanged.
+	wantType := ""
+	if sel := q.GetSelection(); sel != nil {
+		wantType = sel.GetNodeType()
+	}
 	var nodes []*knowledgev1.Node
 	for _, id := range f.order {
-		nodes = append(nodes, cloneNode(f.thoughts[id]))
+		n := f.thoughts[id]
+		if wantType != "" && n.Type != wantType {
+			continue
+		}
+		nodes = append(nodes, cloneNode(n))
 	}
 	return &knowledgev1.ExecuteResponse{Nodes: nodes}, nil
 }
@@ -213,4 +228,111 @@ func TestReflectTensions_RelatesToEdge_PairsOnce(t *testing.T) {
 		"a human relates-to edge between opposite-valence thoughts must yield exactly one tension")
 	assert.InDelta(t, 2.0, tensions[0].ValenceDelta, 1e-9,
 		"the tension's valence delta is the full +1/-1 swing")
+}
+
+// newFindingTensionFake builds a two-FINDING corpus F1 (one positive charge) and
+// F2 (one negative charge), both magnitude≥0.5 and |Δvalence|=2, joined by the
+// supplied explicit thought↔thought reasoning edge. It is the cross-node-type
+// analog of newTensionFake: the nodes carry NodeFinding type, so the fake's
+// type-browse branch serves them only to the finding browse — proving the widened
+// fetchTensionUniverseNodes drains findings and ReflectTensions pairs them.
+func newFindingTensionFake(edges []*knowledgev1.Edge) *tensionFake {
+	mkFinding := func(id string) *knowledgev1.Node {
+		return &knowledgev1.Node{Id: id, Type: string(kgtypes.NodeFinding), UpdatedAt: 1000}
+	}
+	mkCharge := func(id, polarity string) *knowledgev1.Node {
+		n := &knowledgev1.Node{Id: id, Type: string(kgtypes.NodeCharge), UpdatedAt: 1000}
+		kgtypes.SetValue(n, "polarity", polarity)
+		kgtypes.SetValue(n, "weight", "7")
+		return n
+	}
+	return &tensionFake{
+		thoughts: map[string]*knowledgev1.Node{"F1": mkFinding("F1"), "F2": mkFinding("F2")},
+		order:    []string{"F1", "F2"},
+		charges: map[string]*knowledgev1.Node{
+			"cF1": mkCharge("cF1", "positive"), // F1 → valence +1
+			"cF2": mkCharge("cF2", "negative"), // F2 → valence -1
+		},
+		tensionEdges: edges,
+		chargeEdges: []*knowledgev1.Edge{
+			{Type: string(kgtypes.EdgeChargedBy), FromId: "F1", ToId: "cF1"},
+			{Type: string(kgtypes.EdgeChargedBy), FromId: "F2", ToId: "cF2"},
+		},
+	}
+}
+
+// TestReflectTensions_FindingFinding_CrossNodeType (FAILS-WHEN-ABSENT) is the
+// headline cross-node-type behavior: two opposing-valence FINDING nodes joined by
+// an explicit `contradicts` edge surface as exactly one cross-node-type tension. It
+// goes red if fetchTensionEdges is reverted to the thought-only
+// fetchAllThoughtNodes drain (the findings would never enter the node universe, so
+// no pair would form). PairCount==1 confirms graceful degradation for nodes that
+// carry no cluster_id: each forms its own singleton group keyed by node id, never
+// collapsed together.
+func TestReflectTensions_FindingFinding_CrossNodeType(t *testing.T) {
+	f := newFindingTensionFake([]*knowledgev1.Edge{
+		{Type: "contradicts", FromId: "F1", ToId: "F2"},
+	})
+	tensions, err := ReflectTensions(context.Background(), f)
+	require.NoError(t, err)
+	require.Len(t, tensions, 1,
+		"two opposing-valence findings joined by a contradicts edge must yield exactly one cross-node-type tension")
+	assert.InDelta(t, 2.0, tensions[0].ValenceDelta, 1e-9,
+		"the tension's valence delta is the full +1/-1 swing")
+	assert.Equal(t, 1, tensions[0].PairCount,
+		"a finding pair with no cluster_id is a singleton group (PairCount==1) — graceful degradation, not collapsed")
+	// The reported pair is the two finding nodes.
+	ids := map[string]bool{tensions[0].NodeA.Id: true, tensions[0].NodeB.Id: true}
+	assert.True(t, ids["F1"] && ids["F2"], "the tension reports the two finding nodes")
+}
+
+// TestReflectTensions_UnclusteredFindings_NotCollapsedTogether (FAILS-WHEN-ABSENT)
+// proves graceful degradation for nodes lacking cluster_id: two INDEPENDENT
+// finding pairs (F1↔F2, F3↔F4), none carrying a cluster_id, must surface as TWO
+// separate representatives each with PairCount==1 — never wrongly collapsed into a
+// single group. tensionGroupKey falls back to a per-id singleton key (the
+// thought:<id> prefix is cosmetic — it keys on the node id regardless of node
+// type) when clusterIDOf returns empty, and findings never get a cluster_id
+// (clustering stays thought-only), so this per-id fallback is the path every
+// finding tension takes. A regression that keyed unclustered nodes under a shared
+// empty-cluster bucket would collapse these into one PairCount==2 row.
+func TestReflectTensions_UnclusteredFindings_NotCollapsedTogether(t *testing.T) {
+	mkFinding := func(id string) *knowledgev1.Node {
+		return &knowledgev1.Node{Id: id, Type: string(kgtypes.NodeFinding), UpdatedAt: 1000}
+	}
+	mkCharge := func(id, polarity string) *knowledgev1.Node {
+		n := &knowledgev1.Node{Id: id, Type: string(kgtypes.NodeCharge), UpdatedAt: 1000}
+		kgtypes.SetValue(n, "polarity", polarity)
+		kgtypes.SetValue(n, "weight", "7")
+		return n
+	}
+	f := &tensionFake{
+		thoughts: map[string]*knowledgev1.Node{
+			"F1": mkFinding("F1"), "F2": mkFinding("F2"),
+			"F3": mkFinding("F3"), "F4": mkFinding("F4"),
+		},
+		order: []string{"F1", "F2", "F3", "F4"},
+		charges: map[string]*knowledgev1.Node{
+			"cF1": mkCharge("cF1", "positive"), "cF2": mkCharge("cF2", "negative"),
+			"cF3": mkCharge("cF3", "positive"), "cF4": mkCharge("cF4", "negative"),
+		},
+		tensionEdges: []*knowledgev1.Edge{
+			{Type: "contradicts", FromId: "F1", ToId: "F2"},
+			{Type: "contradicts", FromId: "F3", ToId: "F4"},
+		},
+		chargeEdges: []*knowledgev1.Edge{
+			{Type: string(kgtypes.EdgeChargedBy), FromId: "F1", ToId: "cF1"},
+			{Type: string(kgtypes.EdgeChargedBy), FromId: "F2", ToId: "cF2"},
+			{Type: string(kgtypes.EdgeChargedBy), FromId: "F3", ToId: "cF3"},
+			{Type: string(kgtypes.EdgeChargedBy), FromId: "F4", ToId: "cF4"},
+		},
+	}
+	tensions, err := ReflectTensions(context.Background(), f)
+	require.NoError(t, err)
+	require.Len(t, tensions, 2,
+		"two independent unclustered finding pairs must NOT collapse — each is its own per-id singleton group")
+	for _, tn := range tensions {
+		assert.Equal(t, 1, tn.PairCount,
+			"each unclustered finding pair is a singleton group (PairCount==1)")
+	}
 }

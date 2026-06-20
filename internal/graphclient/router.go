@@ -261,6 +261,20 @@ func (r *Router) Prune(
 	return gc.Prune(ctx, req)
 }
 
+// Publish is the per-call-routed SegmentService.Publish forwarder. Mirrors
+// (*GraphClient).Publish — the registry-model manifest swap + reference-counted
+// GC routes by live auth state like the other segment RPCs.
+func (r *Router) Publish(
+	ctx context.Context,
+	req *knowledgev1.PublishRequest,
+) (*knowledgev1.PublishResponse, error) {
+	gc, err := r.pick(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return gc.Publish(ctx, req)
+}
+
 // Index is the per-call-routed EngineService.Index forwarder. Mirrors
 // (*GraphClient).Index (client.go:137) so the tools.Indexer type assertion
 // at intercept_manage_index.go:38 succeeds when GraphCaller() returns a *Router.

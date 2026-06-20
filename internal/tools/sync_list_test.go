@@ -61,6 +61,7 @@ func (d *fakeSyncListDeps) RepoResolver() *RepoResolver                  { retur
 func (d *fakeSyncListDeps) SegmentManager() SegmentSearcher              { return nil }
 func (d *fakeSyncListDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
 func (d *fakeSyncListDeps) SegmentShipper() SegmentShipper               { return nil }
+func (d *fakeSyncListDeps) SegmentPruner() SegmentPruner                 { return nil }
 func (d *fakeSyncListDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
 func (d *fakeSyncListDeps) PipelineScanner() PipelineScanner             { return nil }
 func (d *fakeSyncListDeps) ReflectionForcer() ReflectionForcer           { return nil }

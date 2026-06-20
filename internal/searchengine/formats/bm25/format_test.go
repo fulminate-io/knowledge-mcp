@@ -221,6 +221,27 @@ func TestMergeUnionMatchesScratch(t *testing.T) {
 	}
 }
 
+// TestBM25EmptySegmentRoundTrip pins that BM25 is safe by construction: it writes
+// its serial version unconditionally (no empty-graph version fork like HNSW had),
+// so an empty (all-dead) BM25 segment Encodes and Decodes with no error and yields
+// an empty, searchable zero-hit segment. This confirms the HNSW empty-segment fix
+// needs no analogous BM25 code change.
+func TestBM25EmptySegmentRoundTrip(t *testing.T) {
+	// Merge over zero inputs yields an empty segment (the all-dead consolidation
+	// shape — every member dropped by accept reduces to this).
+	segIface, err := Format{}.Merge(nil, nil)
+	require.NoError(t, err)
+	require.Empty(t, segIface.IDs())
+
+	blob, err := segIface.Encode()
+	require.NoError(t, err)
+
+	decIface, err := Format{}.Decode(blob)
+	require.NoError(t, err, "empty BM25 segment must decode cleanly")
+	require.Empty(t, decIface.IDs())
+	require.Nil(t, decIface.Search(NewQuery("anything"), newCorpusStats(), 10, nil))
+}
+
 // idfSanity guards the IDF formula against silent drift: a term in every doc has
 // near-zero idf, a rare term has higher idf.
 func TestIDFMonotonic(t *testing.T) {

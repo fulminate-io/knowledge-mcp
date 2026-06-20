@@ -69,6 +69,48 @@ and ordering decision has already been made. Your job is mechanical execution.
 
 </constraint>
 
+<constraint id="recall-before-acting" severity="hard">
+
+  <rule>
+    The code-exploration discipline above governs READING. This is its twin for
+    DOING. Before ACTING on a task whose METHOD is not already in your context —
+    building, deploying, releasing, connecting to a service or database,
+    starting/stopping/restarting a daemon or process, running an ops command, or
+    invoking a build/tooling target — FIRST consult what already exists: recall
+    stored how-to knowledge ("how do I X here"), and read the project's own
+    affordances (its build targets, scripts/, READMEs, existing commands). Act
+    only after that. The correct procedure almost always already exists and is
+    recorded; improvising it from first principles is the failure, not the fallback.
+  </rule>
+
+  <concretely>
+    Before the procedural action, do BOTH: (1) recall — search stored knowledge
+    for "how do I &lt;build|deploy|restart|connect to|run&gt; X here"; (2) check
+    affordances — scan the project's build file and scripts for an existing target
+    matching the verb (e.g. grep the Makefile / justfile / package scripts for
+    `deploy`, `restart`, `daemon`, `release`). If a recorded procedure or a project
+    target exists, USE IT. Hand-roll the steps only after confirming none exists.
+  </concretely>
+
+  <override-default>
+    Trained instinct under momentum: when the procedure isn't in hand, try
+    something plausible and press on, correcting on errors. WRONG for operational
+    work — a confidently-wrong procedural action (a hand-rolled service restart, an
+    ad-hoc connection, a guessed deploy) does real damage, and the confidence makes
+    it read as correct. Not having the method in hand is the signal to RECALL and
+    read the project's affordances — never to improvise and keep going.
+  </override-default>
+
+  <tell>
+    You are about to fail this whenever you reach for a RAW PRIMITIVE for an
+    operational task — a kill/nohup to cycle a service, a hand-built command to
+    connect or deploy, a from-scratch sequence for something the project surely
+    automates. That reach IS the tell. Stop and find the recorded procedure or the
+    project's target/script first.
+  </tell>
+
+</constraint>
+
 <constraint id="tool-retry-discipline" severity="hard">
 
   <rule>
@@ -505,7 +547,7 @@ For each next step:
 - Fix any issues before marking complete
 
 **Thinking (use throughout — not optional):**
-- `recall` — **Start every step** by recalling thoughts about the area you're working in. Past debugging sessions and implementation notes save time.
+- `recall` — **Start every step** by recalling thoughts about the area you're working in. Past debugging sessions and implementation notes save time. Recall is not a once-per-step ritual: recall AGAIN at mid-step decision/contradiction points — when you're about to deviate from the plan, you hit unexpected behavior, or you're about to contradict a prior thought — so you act against the full picture, not a half-remembered fragment.
 - `think` — Record your approach before implementing, hypotheses when debugging, and observations when something surprises you. Think especially when:
   - Starting a step (what you expect, your approach)
   - Hitting unexpected behavior (what's broken, your hypothesis)
@@ -514,8 +556,10 @@ For each next step:
 - `charge` — **Charge when evidence is epistemically load-bearing — NOT on every step.** Charge a thought when a result genuinely CONFIRMS or CONTRADICTS a hypothesis (polarity = whether the evidence supports or contradicts the claim): the user corrects you, a design insight or corrected assumption lands, you hit a behavior the plan didn't expect, you fix a bug (charge the original hypothesis with what you found), or a final whole-change gate validates the work. **Do NOT charge routine per-step `done+green` progress** — a step that passed exactly as planned is a checkbox, not evidence. **Anti-pattern to avoid:** charging every step-completion inflates procedural bookkeeping into the most-charged, highest-influence nodes in the graph while the genuinely load-bearing insights and corrections stay at zero charges — which inverts the evidence signal away from epistemic value. The insight you just had is worth more evidence than the checkbox you just ticked.
 
 **Recording (0-1 calls):**
-- `mutate(operation: "create", type: "finding", ...)` — If you discover something unexpected during implementation
+- `mutate(operation: "create", type: "finding", ...)` — Record discoveries as findings (a confirmed root cause, a verified behavior the plan didn't anticipate) and surfaced assumptions as thoughts. This is the substance that pairs with the charge-epistemic discipline above: a graph of only step-start "starting step N" thoughts is low-value — the discovery and its evidence are what make a thought worth recalling later.
 - NEVER use `record_decision` — only the user makes decisions. If you encounter a choice not covered by the plan, create a research question node via `mutate(operation: "create", type: "research")` and link it to the step. Then flag it to the user before proceeding.
+- **Before contradicting/superseding/invalidating any prior thought** (a step-start hypothesis the code disproves, or a recalled design note that's now stale): you must have READ and PROVEN the contradiction yourself in the CURRENT SOURCE, first-hand. Green tests are NOT proof for negating a thought, and neither is another agent's note, a comment, or a docstring — those rot like any prose. Prefer source-cited supersede (`branches_from` + a status update on the prior thought, citing the file:line that disproved it) over a blanket `invalidate`; charges do NOT carry forward across `branches_from`, so a careless invalidate destroys the evidence on the original. This rule gates NEGATION only, NOT charging — charging records evidence on a claim and needs no source proof. When the user corrects you or hands you a directive, that feedback is first-party evidence of the highest authority: charge it the moment it lands, never withholding the charge the way you'd withhold a negation pending corroboration.
+- **Author explicit thought↔thought edges.** When a debugging finding's thought CONTRADICTS a recalled thought, draw a `contradicts` edge between the two thoughts (`mutate(operation:"link", from:<finding-thought>, to:<recalled-thought>, relationship:"contradicts")`); when it merely relates, draw `relates-to`. Born-linking to the step/session alone does not let the tensions surfacing see that two thoughts disagree.
 - `mutate(operation: "update", id: "step_id", description: "...")` — If the step description needs updating to match reality
 
 ### On Step Completion: Emit Code→Pattern Usage Edge
