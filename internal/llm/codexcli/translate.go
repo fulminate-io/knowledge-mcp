@@ -45,6 +45,12 @@ import (
 //
 // Trailing "-" is the prompt argument; codex reads stdin when the prompt is
 // "-", which is what our subprocess feeds it.
+//
+// ORDER IS LOAD-BEARING: every flag here MUST stay AFTER the "exec" subcommand.
+// These are exec-subcommand flags, NOT codex global flags — placing one ahead of
+// "exec" (e.g. `codex --ignore-user-config exec ...`) is REJECTED with
+// "unexpected argument '--ignore-user-config' found" (verified live against
+// codex-cli 0.140.0). Do NOT reorder any flag ahead of "exec".
 var baseArgs = []string{
 	"exec",
 	"--json",

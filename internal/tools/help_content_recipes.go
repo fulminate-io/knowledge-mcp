@@ -264,14 +264,12 @@ const helpRecipes = "# Recipe DSL\n" +
 	"## Stats reported after a run\n" +
 	"\n" +
 	"    nodes_emitted      — target-graph nodes written (or would be in DryRun)\n" +
-	"    rule_path_nodes    — subset from rule evaluation (all for recipes)\n" +
-	"    pages_processed    — retained from transformer interface; 0 here\n" +
 	"    skipped_chunks     — emit-skipped rows (empty name + empty identity)\n" +
-	"    lookups_resolved   — lookup rules that found their target\n" +
-	"    lookup_misses      — lookup rules whose target was absent\n" +
+	"    lookups_resolved   — lookup rules that found their same-run target\n" +
+	"    lookup_misses      — lookup rules whose target was not emitted this run\n" +
 	"    link_misses        — link rules skipped due to empty or missing endpoint\n" +
 	"    force_deleted      — nodes removed by Force cleanup\n" +
-	"    elapsed_ms         — wall-clock time of Interpret()\n" +
+	"    elapsed_ms         — wall-clock time of the run\n" +
 	"\n" +
 	"A nonzero `lookup_misses` or high `link_misses` usually indicates a\n" +
 	"recipe bug (wrong identity expression, wrong rule ordering). Check\n" +
@@ -321,17 +319,24 @@ const helpRecipes = "# Recipe DSL\n" +
 	"  sourceSlug=A doesn't touch emissions from sourceSlug=B, even when\n" +
 	"  they target the same practice graph.\n" +
 	"\n" +
-	"## Relationship to the transformer interface\n" +
+	"## How a recipe runs (client-side dispatch)\n" +
 	"\n" +
-	"A recipe is executed by the generic `recipeTransformer` registered\n" +
-	"under the name `recipe`. The transformer Lookups the recipe by\n" +
-	"Options.SourceManifest, parses the DSL body (AST cached in-process),\n" +
-	"and runs Interpret against (sourceDB, targetDB). The transformer\n" +
-	"owns StableID / TranslatedFromEdge / Force cleanup via the shared\n" +
-	"`transformer/` helpers — recipes never see those mechanics.\n" +
+	"A recipe runs entirely CLIENT-SIDE through a single function,\n" +
+	"`recipe.RunRecipe`. `collect type=web|pdf transformer=recipe`\n" +
+	"dispatches to it directly — there is no transformer interface, no\n" +
+	"registry, and no server round-trip. RunRecipe: loads the named recipe\n" +
+	"from the GraphTransformers/recipes bucket over the wire, parses the\n" +
+	"DSL body (AST cached in-process), materializes the source graph once\n" +
+	"into an in-memory view (two reads — all nodes, then all edges — never\n" +
+	"a per-row query), interprets the rules into an in-memory result, and\n" +
+	"ships the projected practice-graph nodes + lineage edges back through\n" +
+	"the collector Sink. StableID / translated-from lineage / Force cleanup\n" +
+	"are owned by the recipe package itself — recipes never see those\n" +
+	"mechanics.\n" +
 	"\n" +
-	"To add a NEW transformer that isn't recipe-driven, implement the\n" +
-	"`transformer.Transformer` interface (Name/Target/Transform) and\n" +
-	"register it via `transformer.Register` in a package init. The\n" +
-	"recipe system is one implementation among potential others.\n" +
+	"The collect `type` (web vs pdf) is validated against the recipe's\n" +
+	"`source_graph_type` metadata: a mismatch is rejected before any read.\n" +
+	"`dry_run:true` computes and returns the projection's stats without\n" +
+	"writing; `force:true` deletes prior emissions from the same source\n" +
+	"slug before re-emitting.\n" +
 	""

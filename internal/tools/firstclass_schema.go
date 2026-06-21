@@ -209,6 +209,8 @@ func CollectToolDef() kgtools.MCPTool {
 				"follow_patterns":    {Type: "array", Description: "Web only: regex allowlist for internal links.", Items: &kgtools.Property{Type: "string"}},
 				"max_depth":          {Type: "integer", Description: "Web only: BFS depth bound from a seed URL."},
 				"max_pages":          {Type: "integer", Description: "Web only: cap on total pages fetched across the crawl."},
+				"max_path_segments":  {Type: "integer", Description: "Web only: cap on the number of non-empty URL path segments a followed link may have; catches recursive-path traps like /a/b/a/b/.... 0 = off (unbounded), the default."},
+				"max_pages_per_host": {Type: "integer", Description: "Web only: cap on pages fetched from any single host within the crawl, independent of max_pages. 0 = off (no per-host cap). When both fire, the crawl stops for a host once either cap hits first."},
 				"politeness_ms":      {Type: "integer", Description: "Web only: per-host request delay in milliseconds."},
 				"user_agent":         {Type: "string", Description: "Web only: override for the HTTP User-Agent header."},
 				"transformer":        {Type: "string", Description: "Web/PDF only: optional transformer name."},

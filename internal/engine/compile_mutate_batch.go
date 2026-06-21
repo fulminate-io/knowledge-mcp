@@ -36,9 +36,18 @@ func compileMutateUpdateBatch(a mutateArgs) (*knowledgev1.ExecuteRequest, bool) 
 	// the right per-graph backing. a.Branch threads the overlay dimension onto the
 	// Target so an overlay-resident write-back lands on the same overlay key the
 	// gap scan read from (resolveCode Scopes repo@branch); empty → base graph.
+	// graph=="transformers" pins the instance to the canonical "recipes" bucket,
+	// mirroring mutationRequest/deleteRequest — building inline must not bypass the
+	// pin (a transformers update_batch with a recipe name would otherwise scatter
+	// into a per-name instance). Latent today (callers are knowledge-graph-internal)
+	// but makes the FUL bug class impossible for any future transformers caller.
+	name := a.Name
+	if a.Graph == "transformers" {
+		name = transformersBucketName
+	}
 	return &knowledgev1.ExecuteRequest{
 		Plan:   &knowledgev1.ExecuteRequest_Mutation{Mutation: plan},
-		Target: buildTarget(a.Graph, a.Repo, a.Account, a.Name, a.Language, a.Branch),
+		Target: buildTarget(a.Graph, a.Repo, a.Account, name, a.Language, a.Branch),
 	}, true
 }
 
@@ -96,8 +105,16 @@ func compileMutateBulkMetadata(a mutateArgs) (*knowledgev1.ExecuteRequest, bool)
 	// knowledge. a.Branch is threaded for symmetry with compileMutateUpdateBatch
 	// (the two batch sites lower to the same UPDATE_ITEMS arm) and is empty for
 	// the current knowledge-graph callers; forward-proof for an overlay bulk write.
+	// graph=="transformers" pins the instance to the canonical "recipes" bucket,
+	// mirroring mutationRequest/deleteRequest so building inline does not bypass the
+	// pin. Latent today (callers are knowledge-graph-internal) but keeps the routing
+	// pin total across every transformers mutation arm.
+	name := a.Name
+	if a.Graph == "transformers" {
+		name = transformersBucketName
+	}
 	return &knowledgev1.ExecuteRequest{
 		Plan:   &knowledgev1.ExecuteRequest_Mutation{Mutation: plan},
-		Target: buildTarget(a.Graph, a.Repo, a.Account, a.Name, a.Language, a.Branch),
+		Target: buildTarget(a.Graph, a.Repo, a.Account, name, a.Language, a.Branch),
 	}, true
 }

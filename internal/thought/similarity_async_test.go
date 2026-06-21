@@ -68,6 +68,13 @@ func TestStartSimilarityPass_StartsAndReleases(t *testing.T) {
 		t.Fatal("onComplete was not invoked within the deadline")
 	}
 
+	// onComplete fires from inside the async goroutine BEFORE its deferred guard
+	// release() runs, so re-acquiring immediately after <-done races the release
+	// (assert-too-early flake). Stop() calls inFlight.Wait(), draining the goroutine
+	// and its deferred release before we re-acquire. Same drain idiom as
+	// TestStartSimilarityPass_StopDrains.
+	p.Stop(5 * time.Second)
+
 	// The guard is free after completion: a fresh acquire succeeds.
 	release, ok := AcquireReflectionPass(ReflectionPassKey)
 	require.True(t, ok, "the guard must be released after the async pass completes")
@@ -141,6 +148,13 @@ func TestStartSimilarityPass_ReleasesOnError(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("onComplete was not invoked after the pass panicked")
 	}
+
+	// onComplete fires from inside the async goroutine BEFORE its deferred guard
+	// release() runs, so re-acquiring immediately after <-done races the release
+	// (assert-too-early flake). Stop() calls inFlight.Wait(), draining the goroutine
+	// and its deferred release before we re-acquire. Same drain idiom as
+	// TestStartSimilarityPass_StopDrains.
+	p.Stop(5 * time.Second)
 
 	// The guard must be free despite the panic.
 	release, ok := AcquireReflectionPass(ReflectionPassKey)

@@ -13,10 +13,25 @@ examples) with a generated parameter table kept in sync with the source. The
 binary guide does the same for the CLI. The agent and skill guides describe the
 higher-level workflows built on top of the tools.
 
-If you are just getting started, read the [binaries guide](binaries.md) to get the
-server running, skim the [agents](agents.md) and [skills](skills.md) overviews to
-see the workflows, then dip into individual [tool guides](#tools) as you need
-them.
+If you are just getting started, follow a [setup guide](#setup) to install
+knowledge and wire it into your assistant, read the [binaries guide](binaries.md)
+to understand the server, skim the [agents](agents.md) and [skills](skills.md)
+overviews to see the workflows, then dip into individual [tool guides](#tools) as
+you need them.
+
+## Concepts
+
+New to knowledge? Read [Concepts](concepts.md) first — the mental model the rest
+of these guides assume: the kernel/OS framing, the ten graph families, the
+selector vocabulary, the client/daemon/server topology, and how code, cloud, and
+knowledge link into one connected graph.
+
+## Setup
+
+- [Set up with Claude Code](setup-claude.md) — first-run setup for Claude Code.
+- [Set up with Codex](setup-codex.md) — first-run setup for Codex.
+- [Configuration](config.md) — the `~/.knowledge/config` reference (providers,
+  models, and credentials).
 
 ## Contents
 
@@ -26,6 +41,21 @@ them.
   implementer, and the rest) and how they compose.
 - [Skills](skills.md) — the slash-command workflows (`/research`, `/plan`,
   `/implement`, and more).
+- [Reasoning](reasoning.md) — the thought graph: the recall→think→charge→reflect
+  cycle, the evidence model, DeGroot propagation, and the reflection modes. The
+  product differentiator — persistent, evidence-weighted reasoning that survives
+  sessions.
+
+### Collection guides
+
+- [Web collection](web-collection.md) — crawl a public website into a `web` graph
+  with `collect`: seed URLs, follow patterns, the unbounded-by-default crawl, and
+  how to scope it.
+- [PDF collection](pdf-collection.md) — collect a PDF into the graph: the
+  absolute-path requirement, section-mode chunking, and why it is text extraction
+  rather than OCR.
+- [Recipes](recipes.md) — transform a collected raw graph into structured domain
+  nodes with a graph-resident, zero-LLM recipe: authoring, dry-run, and force.
 
 ### Tools
 
@@ -41,6 +71,7 @@ them.
 - [delete](tools/delete.md) — remove or prune nodes.
 - [file_symbols](tools/file_symbols.md) — list the symbols in a file.
 - [help](tools/help.md) — built-in documentation.
+- [hive](tools/hive.md) — coordinate agents over the cloud work-queue (optional paid tier).
 - [manage](tools/manage.md) — server and pipeline operations.
 - [mutate](tools/mutate.md) — create, update, and link nodes.
 - [query](tools/query.md) — lookup, browse, and special read modes.

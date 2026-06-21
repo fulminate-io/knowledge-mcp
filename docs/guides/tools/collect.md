@@ -83,6 +83,8 @@ transport and security model, and a worked register → collect example.
 | `max_download_bytes` | integer |  |  | Web only: per-(owner,repo,ref) cap on github materialization downloads. 0=default (50 MiB), -1=unlimited, >0=explicit cap (uncompressed bytes). |
 | `max_entries` | integer |  |  | Logs only: cap on entries pulled from the provider. |
 | `max_pages` | integer |  |  | Web only: cap on total pages fetched across the crawl. |
+| `max_pages_per_host` | integer |  |  | Web only: cap on pages fetched from any single host within the crawl, independent of max_pages. 0 = off (no per-host cap). When both fire, the crawl stops for a host once either cap hits first. |
+| `max_path_segments` | integer |  |  | Web only: cap on the number of non-empty URL path segments a followed link may have; catches recursive-path traps like /a/b/a/b/.... 0 = off (unbounded), the default. |
 | `params` | object |  |  | Registered custom_collector types only: opaque param object forwarded to the external collector binary, validated against its param_schema before exec. Built-in types ignore it. |
 | `politeness_ms` | integer |  |  | Web only: per-host request delay in milliseconds. |
 | `promote` | boolean |  |  | Code only: promote this branch to the base graph — land in base regardless of the recorded default branch, overwrite the recorded default branch to the collected branch, and delete the now-redundant same-name overlay. No effect for non-code collectors. |

@@ -90,6 +90,24 @@ func main() {
 	if handled, code := bootstrap.RunWorkerSubcommand(); handled {
 		os.Exit(code)
 	}
+	// Bare `knowledge --version` / `-v` must print the version and exit 0
+	// rather than falling into ParseFlags, which would reject the unknown
+	// flag and exit 2. Routes through the same RunVersion entry point as the
+	// `version` subcommand so the output shape is identical. Placed AFTER the
+	// subcommand dispatch (so `knowledge version` still routes there) and
+	// BEFORE ParseFlags. Mirrors cmd/knowledge-server/main.go's pre-parse
+	// version-flag switch; `-v` is free (registerConfigFlags registers no
+	// single-letter flags).
+	if len(os.Args) > 1 {
+		switch os.Args[1] {
+		case "--version", "-version", "-v", "--v":
+			if verr := bootstrap.RunVersion(os.Args[2:]); verr != nil {
+				fmt.Fprintln(os.Stderr, verr)
+				os.Exit(1)
+			}
+			os.Exit(0)
+		}
+	}
 	cfg, err := bootstrap.ParseFlags(os.Args[1:])
 	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {

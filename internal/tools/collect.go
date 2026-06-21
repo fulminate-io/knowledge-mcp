@@ -19,6 +19,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	clientlinker "github.com/fulminate-io/knowledge-mcp/internal/linker"
 	"github.com/fulminate-io/knowledge-mcp/internal/postpopulate"
+	"github.com/fulminate-io/knowledge-mcp/internal/recipe"
 )
 
 // InterceptCollect intercepts the `collect` MCP tool call and runs the
@@ -113,15 +114,14 @@ func InterceptCollect(deps ClientDeps, params kgtools.CallToolParams) (bool, kgt
 
 	if a.Type == "web" || a.Type == "pdf" {
 		if a.Transformer == "recipe" {
-			// Recipe runs server-side: both the source raw graph and
-			// the target practice graph live there, so there's nothing
-			// for the client to do except forward. Return (false, _)
-			// to fall through to the JSON-RPC proxy in mcp_client.go.
-			//
-			// Source kind (web vs pdf) is carried by `type` and
-			// validated server-side against the recipe's
-			// source_graph_type metadata.
-			return false, kgtools.ToolResult{}
+			// Recipe runs CLIENT-SIDE: the client reads the source raw
+			// graph over the wire into an in-memory view, interprets the
+			// recipe, and ships the projected practice-graph nodes back
+			// through the Sink — recipe.RunRecipe owns the whole path. The
+			// collect `type` (web vs pdf) is passed as the expected source
+			// type so RunRecipe can reject a recipe whose source_graph_type
+			// metadata does not match.
+			return true, runRecipeCollect(ctx, deps, a)
 		}
 		if a.Transformer != "" || a.Recipe != "" || a.DryRun {
 			return true, errorResult(fmt.Sprintf(
@@ -132,21 +132,11 @@ func InterceptCollect(deps ClientDeps, params kgtools.CallToolParams) (bool, kgt
 	}
 
 	if a.Type == "web" {
-		crawlOpts := web.CrawlOptions{
-			Source:           a.ID,
-			SeedURLs:         a.SeedURLs,
-			FollowPatterns:   a.FollowPatterns,
-			MaxDepth:         a.MaxDepth,
-			MaxPages:         a.MaxPages,
-			PolitenessMs:     a.PolitenessMs,
-			UserAgent:        a.UserAgent,
-			MaxDownloadBytes: a.MaxDownloadBytes,
+		var failed bool
+		var res kgtools.ToolResult
+		if ctx, failed, res = withWebCrawlOptions(ctx, a); failed {
+			return true, res
 		}
-		crawlOpts = crawlOpts.ApplyDefaults()
-		if err := web.ValidateCrawlOptions(crawlOpts); err != nil {
-			return true, errorResult(err.Error())
-		}
-		ctx = web.WithCrawlOptions(ctx, crawlOpts)
 	}
 
 	if err := collector.Collect(ctx, a.Type, a.ID, opts); err != nil {
@@ -178,6 +168,66 @@ func InterceptCollect(deps ClientDeps, params kgtools.CallToolParams) (bool, kgt
 		w.WakePipeline()
 	}
 	return true, textResult(fmt.Sprintf("Collected %s %s — streamed to server.", a.Type, a.ID))
+}
+
+// withWebCrawlOptions assembles the web.CrawlOptions from the collect args,
+// applies defaults, validates, and stashes the result on the returned context
+// for the web collector to read. It returns (ctx, false, _) on success; on a
+// validation failure it returns (ctx, true, errorResult) so the caller returns
+// the error immediately. Extracted from InterceptCollect to keep that dispatch
+// function within the funlen budget.
+func withWebCrawlOptions(ctx context.Context, a collectArgs) (context.Context, bool, kgtools.ToolResult) {
+	crawlOpts := web.CrawlOptions{
+		Source:           a.ID,
+		SeedURLs:         a.SeedURLs,
+		FollowPatterns:   a.FollowPatterns,
+		MaxDepth:         a.MaxDepth,
+		MaxPages:         a.MaxPages,
+		MaxPathSegments:  a.MaxPathSegments,
+		MaxPagesPerHost:  a.MaxPagesPerHost,
+		PolitenessMs:     a.PolitenessMs,
+		UserAgent:        a.UserAgent,
+		MaxDownloadBytes: a.MaxDownloadBytes,
+	}
+	crawlOpts = crawlOpts.ApplyDefaults()
+	if err := web.ValidateCrawlOptions(crawlOpts); err != nil {
+		return ctx, true, errorResult(err.Error())
+	}
+	return web.WithCrawlOptions(ctx, crawlOpts), false, kgtools.ToolResult{}
+}
+
+// runRecipeCollect handles `collect type=web|pdf transformer=recipe`. The recipe
+// transform runs CLIENT-SIDE: recipe.RunRecipe reads the source raw graph over
+// the GraphCaller wire into an in-memory view, interprets the named recipe, and
+// ships the projected practice-graph nodes/edges back through the Sink. The
+// collect `type` is passed as the expected source type so a recipe whose
+// source_graph_type does not match (e.g. a pdf collect against a web-source
+// recipe) is rejected with a typed error. DryRun previews the projection and
+// returns Stats without writing.
+func runRecipeCollect(ctx context.Context, deps ClientDeps, a collectArgs) kgtools.ToolResult {
+	if a.Recipe == "" {
+		return errorResult(fmt.Sprintf("collect %s transformer=recipe: 'recipe' (the recipe name) is required", a.Type))
+	}
+	opts := recipe.Options{
+		SourceManifest: recipe.FormatSourceManifest(a.ID, a.Recipe),
+		Force:          a.Force,
+		DryRun:         a.DryRun,
+	}
+	res, err := recipe.RunRecipe(ctx, deps.GraphCaller(), deps.Sink(), a.ID, kgtypes.GraphType(a.Type), opts)
+	if err != nil {
+		return errorResult("collect " + a.Type + " recipe: " + err.Error())
+	}
+	verb := "Ran"
+	if a.DryRun {
+		verb = "Dry-ran"
+	}
+	return textResult(fmt.Sprintf(
+		"%s recipe %q over %s/%s — emitted %d nodes (skipped %d, force-deleted %d, lookups %d/%d, link misses %d) in %dms.",
+		verb, a.Recipe, a.Type, a.ID,
+		res.Stats.NodesEmitted, res.Stats.SkippedChunks, res.Stats.ForceDeleted,
+		res.Stats.LookupsResolved, res.Stats.LookupsResolved+res.Stats.LookupMisses,
+		res.Stats.LinkMisses, res.Stats.ElapsedMillis,
+	))
 }
 
 // tryRegisteredCollect runs the external collector plugin for a registered
@@ -349,13 +399,18 @@ type collectArgs struct {
 	FollowPatterns   []string `json:"follow_patterns,omitempty"`
 	MaxDepth         int      `json:"max_depth,omitempty"`
 	MaxPages         int      `json:"max_pages,omitempty"`
+	MaxPathSegments  int      `json:"max_path_segments,omitempty"`
+	MaxPagesPerHost  int      `json:"max_pages_per_host,omitempty"`
 	PolitenessMs     int      `json:"politeness_ms,omitempty"`
 	UserAgent        string   `json:"user_agent,omitempty"`
 	MaxDownloadBytes int64    `json:"max_download_bytes,omitempty"`
 
-	// Web transformer dispatch — currently returns an error until a
-	// RunTransformer RPC is added. Fields parsed so the error message can
-	// name them rather than "unknown argument".
+	// Web/PDF transformer dispatch. Transformer="recipe" runs the recipe
+	// transform CLIENT-SIDE via recipe.RunRecipe (see runRecipeCollect):
+	// Recipe names the recipe in the GraphTransformers/recipes bucket, and
+	// DryRun previews the projection without writing. Any other Transformer
+	// value is rejected; the fields are parsed so the error message can name
+	// them rather than "unknown argument".
 	Transformer string `json:"transformer,omitempty"`
 	Recipe      string `json:"recipe,omitempty"`
 	DryRun      bool   `json:"dry_run,omitempty"`

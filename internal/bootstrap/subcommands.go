@@ -13,8 +13,8 @@ import (
 
 // RunSubcommand inspects os.Args[1] and, when it matches one of the
 // recognized CLI subcommands (login/logout/start/stop/status/serve/
-// install-claude-assets/install-codex-assets/doctor), dispatches to the
-// appropriate handler.
+// install-claude-assets/install-codex-assets/doctor/version), dispatches to
+// the appropriate handler.
 // Returns (handled=true, exitCode) when it handled the invocation so
 // the caller exits immediately. Returns (false, 0) when the first arg
 // is not a recognized subcommand so the no-subcommand fall-through
@@ -54,6 +54,8 @@ func RunSubcommand() (handled bool, exitCode int) {
 		err = runInstallCodexAssets(rest)
 	case "doctor":
 		err = runDoctor(rest)
+	case "version":
+		err = runVersion(rest)
 	default:
 		return false, 0
 	}

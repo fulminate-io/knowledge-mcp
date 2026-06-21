@@ -382,6 +382,16 @@ func nodeBodyToProto(n nodeBody) *knowledgev1.NodeBody {
 	}
 }
 
+// transformersBucketName is the single flat bucket every transformers (recipe)
+// mutation must route to. The recipe NAME flows to the node SymbolName
+// (createPayload maps a.Name → nodeBody.Name), NOT to the Target instance — so
+// the Target instance is pinned to this bucket, never the recipe name. Must
+// match the server's TransformersBucketName
+// (cmd/knowledge-server/internal/tools/tools_graph_routing.go:285); the client
+// cannot import that const (no shared packages outside gen/ proto), hence the
+// duplicated literal.
+const transformersBucketName = "recipes"
+
 // mutationRequest wraps a MutationPlan in an ExecuteRequest with the target
 // graph selector. An empty graph targets the knowledge graph (the engine's
 // graph=="" default); a practice/transformers graph routes the mutation to that
@@ -395,9 +405,27 @@ func nodeBodyToProto(n nodeBody) *knowledgev1.NodeBody {
 // account:"aws-123") would land Account-less and the server would reject it with
 // "graph=cloud requires account" — the postpopulate wire writes depend on
 // this. Mirrors the read side (compileQuery's buildTarget threads the same fields).
+//
+// graph=="transformers" is the ONE exception: a.Name is the recipe NAME, not a
+// graph instance. The server resolves transformers by Target.Name, so threading
+// a.Name would scatter each recipe into its own per-name transformers instance
+// instead of the canonical "recipes" bucket — and RunRecipe's loader (which
+// reads only "recipes") would never find it. The instance name is therefore
+// pinned to transformersBucketName for the mutations that route through this
+// chokepoint: create/upsert, by-id update, and link/unlink. delete is pinned
+// the same way in deleteRequest (compile_delete.go), and the two inline batch
+// arms (update_batch/bulk_metadata, compile_mutate_batch.go) apply the identical
+// a.Graph=="transformers" pin where they build their Target — so every
+// transformers mutation arm lands in the one "recipes" bucket. By-id
+// update/delete already passed a.Name="" → the server defaulted to "recipes";
+// the explicit pin makes that path unambiguously correct too.
 func mutationRequest(plan *knowledgev1.MutationPlan, a mutateArgs) *knowledgev1.ExecuteRequest {
+	name := a.Name
+	if a.Graph == "transformers" {
+		name = transformersBucketName
+	}
 	return &knowledgev1.ExecuteRequest{
 		Plan:   &knowledgev1.ExecuteRequest_Mutation{Mutation: plan},
-		Target: buildTarget(a.Graph, a.Repo, a.Account, a.Name, a.Language, ""),
+		Target: buildTarget(a.Graph, a.Repo, a.Account, name, a.Language, ""),
 	}
 }

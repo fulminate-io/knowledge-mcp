@@ -30,7 +30,8 @@ deletions, recovering a corrupted cache, or wiring up a log backend.
 | `clear_llm_failures` | — | Clear failure markers; `graph`/`name` scope it. |
 | `prune` | `graph` | Hard-delete tombstoned nodes; `before` windows it. |
 | `rebuild_cache` | `graph: "code"` or `graph: "knowledge"`, `name` | Re-derive a graph's summary/embed caches (free, no model calls). For `graph: "knowledge"` the `name` defaults to `"default"` (base layer only — no `@`-overlay names in v1). |
-| `rebuild_segments` | `graph: "code"` or `graph: "knowledge"` (or a registered custom type), `name` | Rebuild BM25+HNSW search segments from embedded nodes. For `graph: "knowledge"` the `name` defaults to `"default"` (base layer only — no `@`-overlay names in v1). |
+| `rebuild_segments` | `graph` — any embeddable type (`knowledge`, `code`, `cloud`, `cicd`, `practice`) or a registered custom type, `name` | Rebuild BM25+HNSW search segments from embedded nodes. For `graph: "knowledge"` the `name` defaults to `"default"` (base layer only — no `@`-overlay names in v1). |
+| `prune-cache` | — | One-shot reclaim of orphaned L2 search segments (superseded `.seg` blobs the invalidation-driven reclaim never unlinked) across `knowledge/default` and every code repo. Previews by default; `execute: true` deletes. |
 | `drop_graph` | `graph` (+ the family instance field) | Tear down a whole non-logs graph (store + loaded state) via one DROP_GRAPH mutation; `dry_run: true` previews. Use `discard_logs` for log graphs. |
 | `list_branches` / `delete_branch` | `name` (+ `branch` for delete) | Manage code-graph branch overlays. |
 | `link` | — | Run the image/Helm/Dockerfile linkers to create code-to-cloud edges. |

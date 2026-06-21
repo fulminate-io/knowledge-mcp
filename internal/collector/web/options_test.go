@@ -123,13 +123,15 @@ func TestWithCrawlOptionsRoundTrip(t *testing.T) {
 	}
 
 	opts := CrawlOptions{
-		Source:         "test",
-		SeedURLs:       []string{"https://a.example/", "https://b.example/"},
-		FollowPatterns: []string{`^/ok/`},
-		MaxDepth:       3,
-		MaxPages:       17,
-		PolitenessMs:   250,
-		UserAgent:      "test-agent/1.0",
+		Source:          "test",
+		SeedURLs:        []string{"https://a.example/", "https://b.example/"},
+		FollowPatterns:  []string{`^/ok/`},
+		MaxDepth:        3,
+		MaxPages:        17,
+		MaxPathSegments: 6,
+		MaxPagesPerHost: 9,
+		PolitenessMs:    250,
+		UserAgent:       "test-agent/1.0",
 	}
 	ctx := WithCrawlOptions(parent, opts)
 	got, ok := crawlOptionsFrom(ctx)
@@ -139,6 +141,8 @@ func TestWithCrawlOptionsRoundTrip(t *testing.T) {
 	if got.Source != opts.Source ||
 		got.MaxDepth != opts.MaxDepth ||
 		got.MaxPages != opts.MaxPages ||
+		got.MaxPathSegments != opts.MaxPathSegments ||
+		got.MaxPagesPerHost != opts.MaxPagesPerHost ||
 		got.PolitenessMs != opts.PolitenessMs ||
 		got.UserAgent != opts.UserAgent {
 		t.Errorf("round-tripped opts differ: got %+v want %+v", got, opts)

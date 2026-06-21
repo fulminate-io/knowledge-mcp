@@ -66,6 +66,29 @@ func TestInterceptRecordDecision_EmptyChoice_Errors(t *testing.T) {
 		toolResultText(res))
 }
 
+func TestInterceptRecordDecision_EmptyRationale_Errors(t *testing.T) {
+	const wantErr = "record_decision: rationale is required and must be non-empty (why this was decided)"
+
+	// Empty rationale (valid choice) is rejected.
+	deps := interceptTestDeps{gc: &fakeGraphCaller{}}
+	handled, res := InterceptRecordDecision(deps, kgtools.CallToolParams{
+		Name:      "record_decision",
+		Arguments: json.RawMessage(`{"name":"d","choice":"do X","rationale":""}`),
+	})
+	require.True(t, handled)
+	require.True(t, res.IsError)
+	assert.Equal(t, wantErr, toolResultText(res))
+
+	// Rationale key entirely absent is rejected the same way.
+	handled, res = InterceptRecordDecision(deps, kgtools.CallToolParams{
+		Name:      "record_decision",
+		Arguments: json.RawMessage(`{"name":"d","choice":"do X"}`),
+	})
+	require.True(t, handled)
+	require.True(t, res.IsError)
+	assert.Equal(t, wantErr, toolResultText(res))
+}
+
 func TestInterceptRecordDecision_HappyPath_TextFormat(t *testing.T) {
 	fc := &fakeGraphCaller{
 		mutateResult: kgtools.ToolResult{

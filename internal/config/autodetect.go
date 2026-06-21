@@ -40,7 +40,7 @@ var defaultModels = map[Provider]Model{
 	ProviderOpenAI:    "gpt-4o-mini",
 	ProviderGemini:    "gemini-2.5-flash",
 	ProviderClaudeCLI: "claude-haiku-4-5",
-	ProviderCodexCLI:  "o4-mini-codex",
+	ProviderCodexCLI:  "gpt-5.3-codex-spark",
 }
 
 // localPrecedence is the auto-detect walk for loopback binds. CLI

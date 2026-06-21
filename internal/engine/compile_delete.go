@@ -153,10 +153,20 @@ func pruneSelection(a deleteArgs) (*knowledgev1.Selection, bool) {
 // deleteRequest wraps a DELETE MutationPlan in an ExecuteRequest with the target
 // graph selector (the delete tool, like prune, targets the knowledge graph by
 // default — an empty graph is the engine's knowledge default).
+//
+// graph=="transformers" pins the instance to transformersBucketName so a recipe
+// delete routes to the canonical "recipes" bucket, matching the create/update
+// chokepoint in mutationRequest. This path already passed name=""
+// (the server then defaulted to "recipes"), so the pin is hardening — it makes
+// the routing explicit rather than reliant on the server's empty-name default.
 func deleteRequest(plan *knowledgev1.MutationPlan, graph, language string) *knowledgev1.ExecuteRequest {
+	name := ""
+	if graph == "transformers" {
+		name = transformersBucketName
+	}
 	return &knowledgev1.ExecuteRequest{
 		Plan:   &knowledgev1.ExecuteRequest_Mutation{Mutation: plan},
-		Target: buildTarget(graph, "", "", "", language, ""),
+		Target: buildTarget(graph, "", "", name, language, ""),
 	}
 }
 

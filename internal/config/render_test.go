@@ -30,7 +30,7 @@ var renderCases = []struct {
 	{name: "openai", provider: ProviderOpenAI, model: "gpt-4o-mini"},
 	{name: "gemini", provider: ProviderGemini, model: "gemini-2.5-flash"},
 	{name: "claude-cli", provider: ProviderClaudeCLI, model: "claude-haiku-4-5"},
-	{name: "codex-cli", provider: ProviderCodexCLI, model: "o4-mini-codex"},
+	{name: "codex-cli", provider: ProviderCodexCLI, model: "gpt-5.3-codex-spark"},
 }
 
 func TestRender_Goldens(t *testing.T) {

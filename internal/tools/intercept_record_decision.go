@@ -67,6 +67,9 @@ func InterceptRecordDecision(deps ClientDeps, params kgtools.CallToolParams) (bo
 	if strings.TrimSpace(a.Choice) == "" {
 		return true, errorResult("record_decision: choice is required and must be non-empty (what was decided)")
 	}
+	if strings.TrimSpace(a.Rationale) == "" {
+		return true, errorResult("record_decision: rationale is required and must be non-empty (why this was decided)")
+	}
 
 	ctx := context.Background()
 	node := buildDecisionNode(a)

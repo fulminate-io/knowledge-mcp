@@ -1,0 +1,11 @@
+select section
+emit pattern {
+    type := "pattern"
+    name := section.heading
+} as $p
+traverse references out as $t
+emit pattern {
+    type := "pattern"
+    name := $t.heading
+} as $rp
+link $p --[relates-to]--> $rp

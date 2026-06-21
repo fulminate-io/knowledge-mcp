@@ -1,0 +1,17 @@
+# eip-to-design-patterns: Hohpe EIP → practice/design-patterns
+select section where section.heading ~= /Router/
+filter has_edge("references", "out")
+bind $slug := lower(trim(section.heading))
+traverse references out as $target
+group_by $slug
+source_ref section.id
+emit pattern {
+    type := "pattern"
+    name := section.heading
+    content := section.content
+} as $pat
+emit use_case {
+    type := "use_case"
+    name := concat("when-", $slug)
+} as $uc
+link $pat --[applies-when]--> $uc

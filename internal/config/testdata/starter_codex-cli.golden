@@ -27,7 +27,7 @@ schema_version = 1
 
 [default]
 provider = "codex-cli"
-model    = "o4-mini-codex"
+model    = "gpt-5.3-codex-spark"
 
 # Per-consumer overrides inherit unset fields from [default]. Summarizers
 # do simple text extraction (haiku-class is plenty); dream phases, the

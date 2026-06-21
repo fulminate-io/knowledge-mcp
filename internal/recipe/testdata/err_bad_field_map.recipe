@@ -1,0 +1,3 @@
+emit pattern {
+    type = "pattern"
+}

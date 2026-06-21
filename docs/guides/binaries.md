@@ -20,14 +20,18 @@ to reach for each one.
 
 ## `knowledge` (client)
 
-Run bare, `knowledge` is the MCP client your assistant connects to over stdio. It
-speaks to the graph server on `--port` (default `15022`), starting one if needed,
-and runs the background work that keeps the graph fresh: the client-side LLM
-pipeline that summarizes and embeds nodes, the propagation runtime that maintains
-the thought graph, and the worker runtime for background jobs. The flags below
-tune those background systems — batch sizes, worker counts, and the
-`--no-*-runtime` switches that turn an individual subsystem off for offline or
-low-noise development.
+`knowledge` is a multi-command CLI: it dispatches the subcommands documented on
+this page (`serve`, `start`, `stop`, `status`, `login`, `logout`, `doctor`,
+`install-claude-assets`, `install-codex-assets`, and the rest). Run bare with no
+subcommand it does **not** serve MCP — it prints a hint pointing you at
+`knowledge serve`, the daemon that exposes the MCP endpoint your assistant
+connects to (see the next section). The client speaks to the graph server on
+`--port` (default `15022`), starting one if needed, and runs the background work
+that keeps the graph fresh: the client-side LLM pipeline that summarizes and
+embeds nodes, the propagation runtime that maintains the thought graph, and the
+worker runtime for background jobs. The flags below tune those background systems
+— batch sizes, worker counts, and the `--no-*-runtime` switches that turn an
+individual subsystem off for offline or low-noise development.
 
 <!-- BEGIN GENERATED: flags-client -->
 | Flag | Default | Description |
@@ -282,7 +286,6 @@ auto-generated like the client tables above):
 | Flag | Default | Description |
 | --- | --- | --- |
 | `--graph-storage` | `~/.knowledge/` | Directory for graph storage (`knowledge.bin` + `code/*.bin`). |
-| `--config-file` |  | Path to the TOML config with provider + model selection. Empty resolves to `~/.knowledge/config`; auto-detected on first run. |
 | `--root` | `.` | Project root directory for collectors and the default active repo. |
 | `--port` | `15022` | TCP port for server mode. |
 | `--drain-timeout` | `0` | Max wait for in-flight requests on shutdown (`0` = default of 5 minutes). |

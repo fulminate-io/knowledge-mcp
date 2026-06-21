@@ -1,0 +1,142 @@
+// SPDX-License-Identifier: Apache-2.0
+
+// version_subcommand.go — the `knowledge version` subcommand and its
+// best-effort daemon-version probe. runVersion always prints the client
+// binary version (the ldflags-injected bootstrap.Version), then makes a
+// single best-effort MCP `initialize` round-trip to the running
+// `knowledge serve` daemon and, when reachable, prints the daemon's
+// reported serverInfo.version on a second `server <ver>` line. The probe
+// never errors or blocks: an unreachable/slow daemon degrades to the
+// client line alone.
+//
+// The bare `knowledge --version` / `-v` flag (handled in
+// cmd/knowledge/main.go before ParseFlags) routes here via runVersion too,
+// so the flag and the subcommand share one code path and one output shape.
+
+package bootstrap
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"flag"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"time"
+
+	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
+)
+
+// runVersion implements `knowledge version`. It prints `knowledge <version>`
+// (the ldflags-injected client binary version, already published into
+// bootstrap.Version by cmd/knowledge/main.go's init()) on its own line, then
+// best-effort probes the running daemon and, on success, prints a second
+// `server <version>` line. It NEVER returns a non-nil error or exits non-zero
+// because the daemon is down — the SERVER line is purely additive.
+//
+// --http-port selects the loopback port the daemon's streamable-HTTP MCP
+// endpoint (/mcp) listens on; it defaults to graphclient.DefaultMCPHTTPPort
+// (the port that actually serves serverInfo.version — distinct from the
+// graph-server --port). Unknown flags are tolerated (the bare `--version`/`-v`
+// entry passes no args) so the command stays a no-friction one-shot.
+// RunVersion is the exported entry point for the bare `knowledge --version` /
+// `-v` flag path in cmd/knowledge/main.go (handled before ParseFlags). It
+// delegates to runVersion so the flag and the `version` subcommand share one
+// output shape — main.go must NOT duplicate the print logic.
+func RunVersion(args []string) error { return runVersion(args) }
+
+func runVersion(args []string) error {
+	fs := flag.NewFlagSet("knowledge version", flag.ContinueOnError)
+	port := fs.Int("http-port", graphclient.DefaultMCPHTTPPort, "Loopback TCP port the `knowledge serve` daemon binds its MCP endpoint (/mcp) on; probed for the running server's version")
+	// Silence the FlagSet's own usage spew on a bad flag — the version
+	// command is best-effort and must never derail on flag noise.
+	fs.SetOutput(io.Discard)
+	if err := fs.Parse(args); err != nil {
+		// A malformed flag is not worth failing a version print over: fall
+		// back to the default port so the client line still emits.
+		*port = graphclient.DefaultMCPHTTPPort
+	}
+
+	fmt.Fprintf(os.Stdout, "knowledge %s\n", Version)
+
+	if serverVersion, ok := probeDaemonVersion(*port); ok {
+		fmt.Fprintf(os.Stdout, "server %s\n", serverVersion)
+	}
+	return nil
+}
+
+// probeDaemonVersion best-effort reads the running `knowledge serve` daemon's
+// version from its MCP serverInfo. It POSTs a minimal MCP `initialize`
+// JSON-RPC request to http://127.0.0.1:<port>/mcp over h2c (cleartext HTTP/2,
+// the daemon's transport — see graphclient/mcp_http.go) with a short context
+// timeout, decodes the JSON-RPC result, and returns
+// (result.serverInfo.version, true) on success.
+//
+// It returns ("", false) on ANY failure — connection refused, timeout,
+// non-200, malformed JSON, or a missing serverInfo.version field — and never
+// panics or blocks beyond the timeout. This is the best-effort contract: a
+// version print must not depend on a live daemon. The 2s budget mirrors
+// checkServer (doctor_checks.go).
+func probeDaemonVersion(port int) (string, bool) {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	// Minimal MCP initialize request — exactly the shape handleHTTPInitialize
+	// (graphclient/mcp_http.go) answers, returning serverInfo.version =
+	// h.version.
+	reqBody := []byte(`{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-11-25"}}`)
+	url := fmt.Sprintf("http://127.0.0.1:%d/mcp", port)
+
+	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(reqBody))
+	if err != nil {
+		return "", false
+	}
+	httpReq.Header.Set("Content-Type", "application/json")
+
+	resp, err := newVersionProbeClient().Do(httpReq)
+	if err != nil {
+		return "", false
+	}
+	defer func() { _ = resp.Body.Close() }()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return "", false
+	}
+
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	if err != nil {
+		return "", false
+	}
+
+	// Decode just enough of the JSON-RPC envelope to reach
+	// result.serverInfo.version (mcp_http.go:349).
+	var decoded struct {
+		Result struct {
+			ServerInfo struct {
+				Version string `json:"version"`
+			} `json:"serverInfo"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		return "", false
+	}
+	if decoded.Result.ServerInfo.Version == "" {
+		return "", false
+	}
+	return decoded.Result.ServerInfo.Version, true
+}
+
+// newVersionProbeClient builds the h2c (cleartext HTTP/2) client the daemon's
+// /mcp endpoint requires. Mirrors the stdlib-only transport shape of the bench
+// harness's newWireHTTPClient (cmd/server-bench/internal/bench/spawn_oss.go):
+// HTTP/1.1 OFF, unencrypted HTTP/2 ON, so the request reaches the daemon's
+// h2c.NewHandler. No global client timeout — the per-call context deadline in
+// probeDaemonVersion bounds the request.
+func newVersionProbeClient() *http.Client {
+	t := &http.Transport{}
+	t.Protocols = new(http.Protocols)
+	t.Protocols.SetHTTP1(false)
+	t.Protocols.SetUnencryptedHTTP2(true)
+	return &http.Client{Transport: t}
+}
