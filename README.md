@@ -113,12 +113,12 @@ about: code, decisions, findings, cloud resources, log streams, and
 docs. One query surface, every source — the LLM doesn't pick a
 backend, it asks for what it wants.
 
-Code search covers 31 languages with tree-sitter chunking and a binary
+Code search covers 30+ languages with tree-sitter chunking and a binary
 HNSW index, plus structural AST search for the shapes regex can't
 express — every `defer x.Close()`, every goroutine without a recover,
 every public function returning an error, every framework-specific
-call site. The AST DSL works the same way across all 31 languages;
-patterns in one language port without rewriting.
+call site. The AST DSL works the same way across every language it
+parses; patterns in one language port without rewriting.
 
 ```jsonc
 search({ "queries": ["retry backoff", "circuit breaker"], "repo": "all" })
@@ -170,7 +170,7 @@ The graph is only useful if it reflects reality. Knowledge ships with
 collectors for the surfaces a coding LLM cares about, each populating
 its own graph type:
 
-**Code.** Tree-sitter chunkers across 31 languages produce per-file
+**Code.** Tree-sitter chunkers across 30+ languages produce per-file
 AST nodes — functions, types, calls, imports — indexed for hybrid
 search and walked as a static call graph. Branch overlays index
 non-default branches as thin diffs over main; only changed nodes
@@ -297,11 +297,13 @@ catalog:
 knowledge install-claude-assets
 ```
 
+→ Full walkthrough: **[Set up with Claude Code](./docs/guides/setup-claude.md)**.
+
 That does two things:
 
-- **Registers the MCP daemon** with Claude Code (`claude mcp add -s user
-  --transport http knowledge http://127.0.0.1:15023/mcp`) — no manual
-  `.mcp.json` editing.
+- **Registers the MCP daemon** with Claude Code (`claude mcp add-json -s
+  user knowledge '{"type":"http","url":"http://127.0.0.1:15023/mcp","timeout":180000}'`)
+  — no manual `.mcp.json` editing.
 - **Writes the curated agents** (`~/.claude/agents/*.md`) and skills
   (`~/.claude/skills/*/SKILL.md`) so Claude Code picks them up.
 
@@ -319,6 +321,8 @@ daemon and installs the agents and skills:
 ```bash
 knowledge install-codex-assets
 ```
+
+→ Full walkthrough: **[Set up with Codex](./docs/guides/setup-codex.md)**.
 
 That does two things:
 
@@ -384,9 +388,32 @@ model    = "gpt-4o-mini"
 voyage_api_key = "..."
 ```
 
+## Documentation
+
+Full step-by-step guides ship in [`docs/guides/`](./docs/guides/index.md):
+
+**Setup** — first run, end to end:
+
+- [Set up with Claude Code](./docs/guides/setup-claude.md)
+- [Set up with Codex](./docs/guides/setup-codex.md)
+- [Configuration](./docs/guides/config.md) — the `~/.knowledge/config` file: providers, models, credentials, and fallback chains
+
+**Concepts** — the mental model:
+
+- [Concepts](./docs/guides/concepts.md) — the graph families, the selector vocabulary, and the client / daemon / graph-server topology
+- [Reasoning](./docs/guides/reasoning.md) — the thought graph: recall → think → charge → reflect, and DeGroot propagation
+
+**Collection** — getting data in:
+
+- [Web](./docs/guides/web-collection.md) · [PDF](./docs/guides/pdf-collection.md) · [Transformer recipes](./docs/guides/recipes.md)
+
+**Reference**:
+
+- [Binaries & CLI flags](./docs/guides/binaries.md) · [Agents](./docs/guides/agents.md) · [Skills](./docs/guides/skills.md)
+
 ## Tools
 
-21 MCP tools across the five graph types. The full reference is
+22 MCP tools across the ten graph families. The full reference is
 [KNOWLEDGE_TOOLS.md](./KNOWLEDGE_TOOLS.md). The ones you'll touch
 daily: `search`, `ast`, `traverse`, `thoughts`, `record_decision`,
 `create_project` / `create_ticket` / `create_plan`, `assemble`,
@@ -426,8 +453,8 @@ state down, promote a working copy as the team head.
 
 Pre-1.0. Active development toward Apache 2.0 OSS launch.
 
-**Shipping today**: MCP server with five-graph architecture, thought
-reasoning with DeGroot propagation, 31 topology analyzers, branch
+**Shipping today**: MCP server with ten-graph architecture, thought
+reasoning with DeGroot propagation, 30+ topology analyzers, branch
 overlays, auto-compaction recovery, tokenless OSS boot, browser-PKCE
 OAuth login with keychain-backed credentials.
 
@@ -438,6 +465,6 @@ constraints: [CLAUDE.md](./CLAUDE.md).
 
 ## License
 
-Apache 2.0 on OSS launch. See [LICENSE](./LICENSE) once committed.
+Apache 2.0 on OSS launch. See [LICENSE](./LICENSE).
 Fulminate Cloud commercial use is separately licensed; see
 [fulminate.io/legal](https://fulminate.io/legal).
