@@ -7,6 +7,8 @@ import (
 	"testing"
 
 	"github.com/stretchr/testify/require"
+
+	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
 
 // TestDiskSegmentCachePutGet covers Put then Get returns bytes+true; an absent
@@ -81,4 +83,33 @@ func TestDiskSegmentCacheRemove(t *testing.T) {
 
 	// Remove of an absent id is a harmless no-op.
 	require.NotPanics(t, func() { c.Remove("never-existed") })
+}
+
+// TestDiskSegmentCacheKeys verifies Keys() enumerates exactly the live in-memory
+// index: a fresh cache over a dir with N .seg files returns those N ids
+// (set-equal, recovered by scanExisting); a Removed id drops from Keys() and a
+// Put id appears — proving Keys() tracks the live index, not a one-shot disk scan.
+func TestDiskSegmentCacheKeys(t *testing.T) {
+	dir := t.TempDir()
+	seed := newDiskSegmentCache(dir, 0)
+	seed.Put("seg-a", []byte("blob-a"))
+	seed.Put("seg-b", []byte("blob-b"))
+	seed.Put("seg-c", []byte("blob-c"))
+
+	// A fresh cache over the SAME dir recovers membership via scanExisting; Keys()
+	// returns exactly those three ids (order-independent set equality).
+	c := newDiskSegmentCache(dir, 0)
+	require.ElementsMatch(t, []searchengine.SegmentID{"seg-a", "seg-b", "seg-c"}, c.Keys())
+
+	// A Removed id drops from Keys().
+	c.Remove("seg-b")
+	require.ElementsMatch(t, []searchengine.SegmentID{"seg-a", "seg-c"}, c.Keys())
+
+	// A Put id appears in Keys().
+	c.Put("seg-d", []byte("blob-d"))
+	require.ElementsMatch(t, []searchengine.SegmentID{"seg-a", "seg-c", "seg-d"}, c.Keys())
+
+	// An empty cache enumerates to an empty (non-nil) slice.
+	empty := newDiskSegmentCache(t.TempDir(), 0)
+	require.Empty(t, empty.Keys())
 }

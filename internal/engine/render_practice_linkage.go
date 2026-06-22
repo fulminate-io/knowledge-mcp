@@ -55,8 +55,11 @@ func writePracticeHit(sb *strings.Builder, idx int, r SearchResult, graphTag str
 
 // PracticeFanOutHit is a practice search hit tagged with the practice graph
 // (language) it came from. The scatter-gather fan-out (composePracticeSearchFanOut)
-// emits these so the merged renderer can attribute each hit to its source graph —
-// engine.SearchResult itself carries no graph field.
+// emits these so the merged renderer (RenderPracticeFanOut) can attribute each
+// hit to its source graph in the markdown output. The json arm no longer needs
+// this wrapper — SearchResult.Graph/GraphInstance now carries the per-result
+// source-graph identity directly, stamped at hydrate time — so the
+// wrapper is a markdown-render concern only.
 type PracticeFanOutHit struct {
 	Graph  string
 	Result SearchResult

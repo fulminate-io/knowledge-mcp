@@ -84,6 +84,33 @@ func TestComposeCodeStats(t *testing.T) {
 	assert.Contains(t, body, "- function: 30")
 }
 
+// TestComposeCodeStats_JSON asserts the format:"json" branch returns the
+// structured GraphStats shape with graph=code + repo + counts + type maps,
+// BEFORE the markdown render. The text path stays covered by TestComposeCodeStats.
+func TestComposeCodeStats_JSON(t *testing.T) {
+	f := &modFake{stats: &knowledgev1.GraphStats{
+		NodeCount: 42, EdgeCount: 17, BinaryVectorCount: 8,
+		NodesByType: map[string]int64{"function": 30, "file": 12},
+		EdgesByType: map[string]int64{"calls": 17},
+	}}
+	res := composeCodeStats(context.Background(), f, modulesCodeStatsArgs{Graph: "code", Mode: "stats", Repo: "knowledge", Format: "json"})
+	require.False(t, res.IsError, textBodyTools(res))
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal([]byte(textBodyTools(res)), &payload), "body must be valid JSON")
+	assert.Equal(t, "code", payload["graph"])
+	assert.Equal(t, "knowledge", payload["repo"])
+	assert.EqualValues(t, 42, payload["node_count"])
+	assert.EqualValues(t, 17, payload["edge_count"])
+	assert.EqualValues(t, 8, payload["binary_vector_count"])
+	nbt, ok := payload["nodes_by_type"].(map[string]any)
+	require.True(t, ok, "nodes_by_type is an object")
+	assert.EqualValues(t, 30, nbt["function"])
+	ebt, ok := payload["edges_by_type"].(map[string]any)
+	require.True(t, ok, "edges_by_type is an object")
+	assert.EqualValues(t, 17, ebt["calls"])
+}
+
 // TestInterceptQueryModulesCodeStats_Gate asserts the graph=code mode gate.
 func TestInterceptQueryModulesCodeStats_Gate(t *testing.T) {
 	// non-code → not claimed.

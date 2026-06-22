@@ -94,8 +94,14 @@ type PruneCacheReport struct {
 // (engine.Unload CAS-removes it) is still LIVE on the server and on disk but absent
 // from a bare Export(). Diffing the on-disk ids against a resident-only Export
 // would mark that unloaded-but-live segment an orphan and DELETE it — data loss.
-// importedGen.Store(0) + load(ctx) (the manager_backstop.go recoverIfDegenerate
-// idiom) re-Lists(0) the full corpus and re-Imports it, making Export() complete.
+// importedGen.Store(0) + loadFromServer(ctx) (the manager_backstop.go
+// recoverIfDegenerate idiom) re-Lists(0) the full corpus and re-Imports it, making
+// Export() complete. It calls loadFromServer directly, NOT the L2-first load():
+// load() is L2-PRIMARY and short-circuits on the l2Loaded once-guard (already set
+// this process), so it would no-op the second call and leave the unloaded-but-live
+// segment out of the live set — a false-prune/data-loss. loadFromServer always
+// Lists(0) and re-Imports (the unloaded segments are L2 cache HITs — zero network),
+// which is exactly this force's purpose.
 //
 // SAFE-BY-IDEMPOTENCE (no lock, no gate): this force-load mutates a LIVE engine the
 // daemon may also be serving (the reconcile loop, a lazy recover, a concurrent
@@ -108,7 +114,7 @@ type PruneCacheReport struct {
 // the cost is paid once.
 func (m *distManager[Q, S]) forceCompleteLiveSet(ctx context.Context) ([]searchengine.SegmentID, error) {
 	m.importedGen.Store(0)
-	if err := m.load(ctx); err != nil {
+	if err := m.loadFromServer(ctx); err != nil {
 		return nil, err
 	}
 	exported := m.engine.Export()

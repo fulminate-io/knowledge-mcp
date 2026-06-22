@@ -4,6 +4,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -18,6 +19,7 @@ import (
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1/knowledgev1connect"
+	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
@@ -223,6 +225,80 @@ func TestPracticeFanOut_MergesAttributedAcrossGraphs(t *testing.T) {
 		deps := &interceptDeps{gc: gc, segMgr: mgr}
 		res := routePracticeClient(context.Background(), deps, gc, queryArgs{Graph: "practice", Language: "all", Text: "pool"})
 		assertMerged(t, textBodyTools(res), mgr)
+	})
+}
+
+// TestPracticeSearch_JSONAndText covers the JSON contract for BOTH practice composers:
+// composePracticeSearchClient (specific language, QUERY tool) and
+// composePracticeSearchFanOut (language:"all"). format:"json" parses to the
+// SearchJSONResponse envelope; the no-format run stays on the markdown path.
+func TestPracticeSearch_JSONAndText(t *testing.T) {
+	t.Run("single-language client json + text", func(t *testing.T) {
+		seed := func() (*graphclient.GraphClient, *fanOutSegmentSearcher) {
+			gc := newFanOutHarness(t, []string{"go"},
+				practiceNode("p:go", "GoWorkerPool", "bounded goroutines"),
+			)
+			mgr := newFanOutSegmentSearcher(map[string][]searchengine.Hit{
+				"go": {{ID: "p:go", Score: 0.90}},
+			})
+			return gc, mgr
+		}
+
+		gc, mgr := seed()
+		deps := &interceptDeps{gc: gc, segMgr: mgr}
+		jsonRes := routePracticeClient(context.Background(), deps, gc,
+			queryArgs{Graph: "practice", Language: "go", Text: "pool", Format: "json"})
+		var env engine.SearchJSONResponse
+		require.NoError(t, json.Unmarshal([]byte(textBodyTools(jsonRes)), &env), "json branch must parse")
+		require.Equal(t, 1, env.Total)
+		require.Len(t, env.Results, 1)
+		assert.Equal(t, "p:go", env.Results[0].ID)
+		assert.Equal(t, "GoWorkerPool", env.Results[0].SymbolName)
+
+		gc2, mgr2 := seed()
+		deps2 := &interceptDeps{gc: gc2, segMgr: mgr2}
+		textRes := routePracticeClient(context.Background(), deps2, gc2,
+			queryArgs{Graph: "practice", Language: "go", Text: "pool"})
+		body := textBodyTools(textRes)
+		assert.Contains(t, body, "GoWorkerPool", "text path renders RenderPracticeResults markdown")
+		var env2 engine.SearchJSONResponse
+		assert.Error(t, json.Unmarshal([]byte(body), &env2), "text path must not emit JSON")
+	})
+
+	t.Run("fan-out json + text", func(t *testing.T) {
+		seed := func() (*graphclient.GraphClient, *fanOutSegmentSearcher) {
+			gc := newFanOutHarness(t, []string{"go", "python"},
+				practiceNode("p:go", "GoWorkerPool", "bounded goroutines"),
+				practiceNode("p:py", "PyThreadPool", "thread pool executor"),
+			)
+			mgr := newFanOutSegmentSearcher(map[string][]searchengine.Hit{
+				"go":     {{ID: "p:go", Score: 0.90}},
+				"python": {{ID: "p:py", Score: 0.70}},
+			})
+			return gc, mgr
+		}
+
+		gc, mgr := seed()
+		deps := &interceptDeps{gc: gc, segMgr: mgr}
+		jsonRes := routePracticeClient(context.Background(), deps, gc,
+			queryArgs{Graph: "practice", Language: "all", Text: "pool", Format: "json"})
+		var env engine.SearchJSONResponse
+		require.NoError(t, json.Unmarshal([]byte(textBodyTools(jsonRes)), &env), "fan-out json branch must parse")
+		require.Equal(t, 2, env.Total)
+		// Score-desc merge: the 0.90 go hit precedes the 0.70 python hit.
+		assert.Equal(t, "p:go", env.Results[0].ID)
+		assert.Equal(t, "p:py", env.Results[1].ID)
+		// Flat shape drops per-graph attribution (markdown-only) — no "Searched ... graphs" header.
+		assert.NotContains(t, textBodyTools(jsonRes), "Searched")
+
+		gc2, mgr2 := seed()
+		deps2 := &interceptDeps{gc: gc2, segMgr: mgr2}
+		textRes := routePracticeClient(context.Background(), deps2, gc2,
+			queryArgs{Graph: "practice", Language: "all", Text: "pool"})
+		body := textBodyTools(textRes)
+		assert.Contains(t, body, "Searched 2 practice graphs (go, python)", "text path renders the fan-out markdown header")
+		var env2 engine.SearchJSONResponse
+		assert.Error(t, json.Unmarshal([]byte(body), &env2), "text path must not emit JSON")
 	})
 }
 

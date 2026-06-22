@@ -12,6 +12,7 @@ import (
 	"testing"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 
@@ -219,6 +220,52 @@ func TestInterceptSearchCode_RoutesViaComposeCodeSearch(t *testing.T) {
 	// no embedder, no caller vector → BM25-only → mode label "text".
 	assert.Contains(t, body, `Found 1 results for "foo" (mode: text):`)
 	assert.Contains(t, body, "Foo (function)")
+}
+
+// TestInterceptSearchCode_JSONAndText covers the JSON contract: search(graph:code,
+// format:"json") returns the SearchJSONResponse envelope (built via
+// engine.RenderForCaller), while the default no-format run stays on the
+// byte-for-byte text path. Mirrors TestInterceptSearchCode_RoutesViaComposeCodeSearch.
+func TestInterceptSearchCode_JSONAndText(t *testing.T) {
+	seed := func(t *testing.T) *interceptDeps {
+		t.Helper()
+		var execHits atomic.Int64
+		gc := newInterceptHarness(t, &execHits, cannedNodesResp(
+			&knowledgev1.Node{Id: "f.go:Foo", SymbolName: "Foo", Type: "function", FilePath: "f.go", StartLine: 1},
+		))
+		mgr := &fakeSegmentSearcher{hits: []searchengine.Hit{{ID: "f.go:Foo", Score: 0.9}}}
+		return &interceptDeps{gc: gc, segMgr: mgr}
+	}
+
+	t.Run("format:json returns the SearchJSONResponse envelope", func(t *testing.T) {
+		handled, res := interceptSearchCode(context.Background(), seed(t), nil,
+			json.RawMessage(`{"graph":"code","query":"foo","repo":"knowledge","format":"json"}`))
+		require.True(t, handled, "graph=code must be claimed client-side")
+		require.False(t, res.IsError, textBodyTools(res))
+		var env engine.SearchJSONResponse
+		require.NoError(t, json.Unmarshal([]byte(textBodyTools(res)), &env), "json branch must parse to SearchJSONResponse")
+		require.Equal(t, 1, env.Total)
+		require.Len(t, env.Results, 1)
+		assert.Equal(t, "f.go:Foo", env.Results[0].ID)
+		assert.Equal(t, "f.go", env.Results[0].FilePath)
+		assert.Equal(t, 1, env.Results[0].Line)
+		assert.Equal(t, "function", env.Results[0].Type)
+		assert.InDelta(t, 0.9, env.Results[0].Score, 0.0001)
+	})
+
+	t.Run("no format stays on the text path", func(t *testing.T) {
+		handled, res := interceptSearchCode(context.Background(), seed(t), nil,
+			json.RawMessage(`{"graph":"code","query":"foo","repo":"knowledge"}`))
+		require.True(t, handled)
+		require.False(t, res.IsError, textBodyTools(res))
+		body := textBodyTools(res)
+		assert.Contains(t, body, "[knowledge]")
+		assert.Contains(t, body, `Found 1 results for "foo" (mode: text):`)
+		assert.Contains(t, body, "Foo (function)")
+		// The text body is NOT a JSON envelope.
+		var env engine.SearchJSONResponse
+		assert.Error(t, json.Unmarshal([]byte(body), &env), "text path must not emit JSON")
+	})
 }
 
 // TestInterceptSearchCode_NoQueryFallsThrough asserts a graph=code search with

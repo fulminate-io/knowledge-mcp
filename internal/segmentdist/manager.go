@@ -4,11 +4,10 @@ package segmentdist
 
 import (
 	"context"
-	"sort"
+	"errors"
+	"log/slog"
 	"sync"
 	"sync/atomic"
-
-	"connectrpc.com/connect"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
@@ -43,6 +42,11 @@ type segmentL2Cache interface {
 	Get(id searchengine.SegmentID) ([]byte, bool)
 	Put(id searchengine.SegmentID, b []byte)
 	Remove(id searchengine.SegmentID)
+	// Keys enumerates the L2-resident segment ids server-independently so load()
+	// can reconstruct the resident set from L2 alone when the server manifest is
+	// unavailable (slow/down server). It reads only the in-memory index — no disk
+	// re-read, no network.
+	Keys() []searchengine.SegmentID
 }
 
 // distManager ties one graph's searchengine.SegmentedIndex to the SegmentService
@@ -92,13 +96,13 @@ type distManager[Q, S any] struct {
 	shippedGen  atomic.Uint64
 
 	// shippedIDs is the set of content-hash segment ids already present on the
-	// server. SEEDED ONCE (seedOnce) from Source.List(0) — the server is the
-	// single source of truth for what has been shipped; the client RE-DERIVES
-	// rather than persisting a drift-prone local file. Guarded by shipMu. Serves
-	// TWO purposes: ship-new DIFF suppression (skip re-uploading the seeded
-	// corpus), and the ROLE-A authoritative replace-prune used by the
-	// deterministic rebuild (FlushDeterministic), whose Export() IS the complete
-	// new corpus.
+	// server. SEEDED from Source.List(0) the first time a seed SUCCEEDS (the
+	// shipMu-guarded `seeded` latch below) — the server is the single source of
+	// truth for what has been shipped; the client RE-DERIVES rather than persisting
+	// a drift-prone local file. Guarded by shipMu. Serves TWO purposes: ship-new
+	// DIFF suppression (skip re-uploading the seeded corpus), and the ROLE-A
+	// authoritative replace-prune used by the deterministic rebuild
+	// (FlushDeterministic), whose Export() IS the complete new corpus.
 	//
 	// locallyShipped is the set of ids THIS PROCESS shipped via shipNew — seeded
 	// EMPTY and never populated from the server. It is the ROLE-B prune-eligible
@@ -109,9 +113,13 @@ type distManager[Q, S any] struct {
 	// segment-ship restart false-prune: seeding shippedIDs from the full server
 	// List(0) while Export() returns only the tail made the embed reconcile prune
 	// the whole corpus on the first ship after restart.
-	shipMu         sync.Mutex
-	seedOnce       sync.Once
-	seedErr        error
+	shipMu sync.Mutex
+	// seeded latches true ONLY when a seed List(0) SUCCEEDS (ensureShippedSeeded,
+	// manager_seed.go). A transient List failure leaves it false so the next ship
+	// RE-ARMS the seed — replacing the old sync.Once+seedErr, which consumed the
+	// Once on the first (possibly failed) attempt and poisoned shipping for the
+	// process lifetime. Guarded by shipMu.
+	seeded         bool
 	shippedIDs     map[searchengine.SegmentID]struct{}
 	locallyShipped map[searchengine.SegmentID]struct{}
 
@@ -127,6 +135,15 @@ type distManager[Q, S any] struct {
 	// true, resets the load floor, and re-imports the corpus; concurrent searches see
 	// it already set and skip (the recovery will make the corpus resident shortly).
 	recovering atomic.Bool
+
+	// l2Loaded is the L2-first once-guard. load() is L2-PRIMARY: the FIRST act is a
+	// server-independent import of the L2-resident set (cache.Keys() -> reload()),
+	// not a server List. Once that primary import (or the cold-cache List+Fetch
+	// fallthrough) has run, l2Loaded is set true and a repeated load() short-circuits
+	// to a bare return nil — matching the "Load is idempotent" contract that
+	// manager_search.go relies on. Modeled on recovering: a one-shot atomic.Bool, no
+	// lock.
+	l2Loaded atomic.Bool
 }
 
 // residentSeg records one imported segment's size + format + generation so unload
@@ -166,50 +183,65 @@ func (m *distManager[Q, S]) keepFormat(f string) bool {
 	return m.format == "" || f == m.format
 }
 
-// ensureShippedSeeded lazily seeds shippedIDs from the server's current segment
-// set (Source.List(0)) so a fresh process does not re-ship the entire corpus on
-// the first ship(). The server is the source of truth; the client re-derives.
-// Backed by the idempotent server Put, this seed is an optimization (avoid the
-// upload), not a correctness requirement.
+// load builds the engine's resident set L2-FIRST: the PRIMARY path is a
+// server-independent import of the L2 disk cache, and the cloud (L3) server is a
+// FALLBACK reached only when the L2 cache is genuinely cold. This is the spine of
+// the L2-primary hierarchy: L2 (local disk ~/.knowledge/segments) is the primary
+// source; L3 (cloud __segments) is hit only for a cold cache / background
+// reconcile. Startup is independent of the cloud BY DESIGN.
 //
-// CRITICAL: the server keys blobs by graphKey ONLY (no format dimension), so
-// List(0) returns BOTH this graph's HNSW and BM25 blobs. shippedIDs must hold
-// ONLY THIS engine's format ids — exactly the same keepFormat filter load()
-// applies. Seeding a foreign-format id here would make reconcilePrune treat it as
-// "shipped but no longer Exported" (this engine never Exports the other format)
-// and PRUNE the other format's live segments server-side: e.g. the BM25 ship
-// would prune the just-shipped HNSW segments, leaving VectorByID with nothing to
-// resolve. The format filter is the fix for that cross-format prune.
-func (m *distManager[Q, S]) ensureShippedSeeded(ctx context.Context) error {
-	m.seedOnce.Do(func() {
-		metas, err := m.source.List(ctx, 0)
-		if err != nil {
-			m.seedErr = err
-			return
-		}
-		m.shipMu.Lock()
-		for _, meta := range metas {
-			if !m.keepFormat(meta.Format) {
-				continue
-			}
-			m.shippedIDs[meta.ID] = struct{}{}
-		}
-		m.shipMu.Unlock()
-	})
-	return m.seedErr
+//   - GUARD: l2Loaded short-circuits a repeated load() to a bare return nil — the
+//     resident set is already imported this process (the "Load is idempotent"
+//     contract manager_search.go relies on).
+//   - PRIMARY (populated L2): cache.Keys() enumerates the L2-resident ids
+//     server-independently and reload() imports them — a cache HIT for every id on
+//     a populated-cache restart, ZERO network. This path does NOT advance
+//     importedGen: no server manifest was obtained, so the load floor stays put and
+//     the later background reconcile re-Lists from the same floor for the genuine
+//     server delta. See loadResidentFromL2 for the trade-off (un-manifest-filtered
+//     superset across an un-reclaimed merge window — never degenerate/empty).
+//   - FALLBACK (cold L2): loadFromServer Lists the delta (generation >
+//     importedGen), serves cache HITS locally, batch-Fetches the MISSES, warms the
+//     cache, Imports the full set, and advances importedGen. A cold process has
+//     importedGen==0, so List(0) returns the full stored corpus.
+func (m *distManager[Q, S]) load(ctx context.Context) error {
+	if m.l2Loaded.Load() {
+		return nil
+	}
+	// PRIMARY: import the L2-resident set with zero network. loadResidentFromL2
+	// returns nil after a successful reload(Keys()); on a genuinely-cold cache
+	// (no Keys) it returns the sentinel errL2CacheCold, signaling the L3 fallback.
+	if err := m.loadResidentFromL2(ctx); err == nil {
+		m.l2Loaded.Store(true)
+		return nil
+	} else if err != errL2CacheCold {
+		return err
+	}
+	// FALLBACK: cold L2 — pull the corpus from the server, then set the guard.
+	if err := m.loadFromServer(ctx); err != nil {
+		return err
+	}
+	m.l2Loaded.Store(true)
+	return nil
 }
 
-// load pulls the server's delta (generation > importedGen) into the engine:
-// List the delta, serve cache HITS locally (skip network), batch-Fetch the
-// MISSES, warm the cache, and Import the full set. Advances importedGen (the LOAD
-// floor — NOT shippedGen) to the max generation in the delta. A cold process has
+// loadFromServer is the COLD-L2 fallback path: List the server delta (generation >
+// importedGen), serve cache HITS locally (skip network), batch-Fetch the MISSES,
+// warm the cache, and Import the full set. Advances importedGen (the LOAD floor —
+// NOT shippedGen) to the max generation in the delta. A cold process has
 // importedGen==0, so List(0) returns the full stored corpus and imports it all;
 // re-listing this process's own shipped tail is harmless because Import is
 // idempotent by segment id. tombstones is empty — tombstone sourcing is the
 // overlay/migration ticket's concern, not this layer.
-func (m *distManager[Q, S]) load(ctx context.Context) error {
+func (m *distManager[Q, S]) loadFromServer(ctx context.Context) error {
 	listed, err := m.source.List(ctx, m.importedGen.Load())
 	if err != nil {
+		// This is the COLD-L2 fallback: load() only reaches here after the L2-first
+		// primary path found an empty cache (loadResidentFromL2 returned
+		// errL2CacheCold). So there is nothing to fall back to — a populated L2 would
+		// already have been imported on the primary path, server-independently. Return
+		// the original List error so the caller surfaces the genuine cold-cache +
+		// down-server condition.
 		return err
 	}
 	// The server bucket holds BOTH formats for this graph (no format dimension in
@@ -251,11 +283,13 @@ func (m *distManager[Q, S]) load(ctx context.Context) error {
 
 	// Sub-batched Fetch for all misses: fetchMisses count-caps each Fetch RPC
 	// (and halves on the server byte ceiling) so a cold load never issues one
-	// unbounded Fetch(allMisses) — the 2026-06-19 OOM. All-or-hard-error: a byte
-	// ceiling that a single blob cannot satisfy returns here BEFORE the Import +
-	// importedGen advance below, so the unfetched id stays re-listable.
+	// unbounded Fetch(allMisses) — the 2026-06-19 OOM. A byte ceiling that a single
+	// blob cannot satisfy hard-errors here BEFORE the Import + importedGen advance
+	// below, so the unfetched id stays re-listable. fetchMisses may also return a
+	// SHORT-but-OK subset (the server omitted some listed ids); the load-floor
+	// clamp below keeps those omitted kept-format segments re-listable too.
 	if len(missIDs) > 0 {
-		blobs, err := m.fetchMisses(missIDs)
+		blobs, err := m.fetchMisses(ctx, missIDs)
 		if err != nil {
 			return err
 		}
@@ -271,11 +305,21 @@ func (m *distManager[Q, S]) load(ctx context.Context) error {
 		}
 	}
 
+	// Every meta in pend is KEPT-format (metas was already keepFormat-filtered). A
+	// nil-bytes entry is a kept-format segment the server LISTED but did not Fetch
+	// (a short-but-OK Fetch — e.g. a refcount-GC raced between List and Fetch). Track
+	// the LOWEST such generation: the load floor must NOT advance to or past it, or
+	// the omitted segment becomes permanently unre-listable and is silently lost.
 	blobs := make([]searchengine.SegmentBlob, 0, len(pend))
-	var maxGen uint64
+	var maxGen, minUnfetchedKeptGen uint64
 	for _, p := range pend {
 		if p.bytes == nil {
-			continue // server reported a meta it could not Fetch — skip
+			// Kept-format meta the server could not Fetch — skip the import but
+			// remember its generation as a clamp on the load-floor advance.
+			if minUnfetchedKeptGen == 0 || p.meta.Generation < minUnfetchedKeptGen {
+				minUnfetchedKeptGen = p.meta.Generation
+			}
+			continue
 		}
 		blobs = append(blobs, searchengine.SegmentBlob{
 			ID:         p.meta.ID,
@@ -292,136 +336,89 @@ func (m *distManager[Q, S]) load(ctx context.Context) error {
 		return err
 	}
 	m.recordResident(blobs)
-	// Advance the LOAD floor (importedGen) past the WHOLE listed delta (incl.
-	// dropped foreign-format metas) so a later load does not re-list and re-drop
-	// them.
-	if listedMaxGen > maxGen {
-		maxGen = listedMaxGen
-	}
-	m.advanceGen(&m.importedGen, maxGen)
+	m.advanceGen(&m.importedGen, clampedLoadFloor(listedMaxGen, maxGen, minUnfetchedKeptGen))
 	return nil
 }
 
-// fetchMisses Fetches the named segment ids from the source in COUNT-capped
-// sub-batches (at most maxFetchSegmentIDs ids per RPC) and concatenates the
-// results, so a cold load never issues one unbounded Fetch(allMisses) (the
-// 2026-06-19 OOM). It is the single shared Fetch path for both load and reload.
-//
-// ADAPTIVE HALVING: a chunk is count-capped, but blobs have no client-visible
-// byte size, so a count-capped chunk can still exceed the server's
-// store.MaxSegmentFetchResponseBytes byte ceiling. When the server rejects a
-// chunk with connect.CodeResourceExhausted (the byte-ceiling backstop maps
-// store.ErrSegmentFetchTooLarge to that code), fetchMisses HALVES the chunk and
-// retries each half, recursing until each sub-chunk fits under the ceiling. Only
-// CodeResourceExhausted triggers halving; ANY OTHER error propagates immediately
-// with no retry.
-//
-// ALL-OR-HARD-ERROR: if a SINGLE id's blob alone exceeds the server ceiling
-// (pathological — one segment > MaxSegmentFetchResponseBytes), halving a 1-id
-// chunk cannot make it fit, so fetchMisses returns a hard error rather than
-// looping forever. That error propagates to load()/reload() BEFORE any Import or
-// importedGen advance, so the id stays re-listable on the next load — no silent
-// blob loss. fetchMisses returns every requested blob, or an error; never a
-// partial set silently.
-//
-// BACKPRESSURE COUPLING (load-bearing assumption): halving keys on
-// CodeResourceExhausted, but a server may have a SECOND source of that code — a
-// backpressure mechanism that sheds DB-heavy RPCs with CodeResourceExhausted
-// meaning "server busy, back off and retry the SAME batch" (the semantic
-// OPPOSITE of "batch too big, halve it"). This is SAFE TODAY because the segment
-// Fetch RPC is NOT subject to that backpressure shedding — the byte ceiling is
-// the sole ResourceExhausted source on Fetch. If a future change makes Fetch
-// subject to backpressure, this code MUST disambiguate the byte-ceiling error
-// from a backpressure shed (e.g. via a distinguishable detail on
-// ErrSegmentFetchTooLarge) BEFORE halving. (graphclient.IsRetryableTransportError
-// deliberately does NOT retry ResourceExhausted, so the segment-level halving
-// sees the code cleanly with no double-retry interference.)
-func (m *distManager[Q, S]) fetchMisses(missIDs []searchengine.SegmentID) ([]searchengine.SegmentBlob, error) {
-	if len(missIDs) == 0 {
-		return nil, nil
+// clampedLoadFloor computes the importedGen advance target for a loadFromServer
+// pass. The base is the full listed delta's max generation (listedMaxGen, incl.
+// dropped foreign-format metas — re-listing those is wasteful, not lossy, so they
+// never clamp) raised to the max IMPORTED generation. When a kept-format segment's
+// blob was omitted by a short Fetch (minUnfetchedKeptGen > 0), the floor is clamped
+// to minUnfetchedKeptGen-1 so that segment stays re-listable on the next load and
+// is never silently lost.
+func clampedLoadFloor(listedMaxGen, maxImportedGen, minUnfetchedKeptGen uint64) uint64 {
+	target := max(listedMaxGen, maxImportedGen)
+	if minUnfetchedKeptGen > 0 && minUnfetchedKeptGen-1 < target {
+		target = minUnfetchedKeptGen - 1
 	}
-	out := make([]searchengine.SegmentBlob, 0, len(missIDs))
-	for start := 0; start < len(missIDs); start += maxFetchSegmentIDs {
-		end := min(start+maxFetchSegmentIDs, len(missIDs))
-		blobs, err := m.fetchChunkAdaptive(missIDs[start:end])
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, blobs...)
-	}
-	return out, nil
+	return target
 }
 
-// fetchChunkAdaptive Fetches one already-count-capped chunk, halving it on a
-// server byte-ceiling rejection (CodeResourceExhausted) until each sub-chunk
-// fits. A 1-id chunk that still exceeds the ceiling is a hard error (no infinite
-// loop). Any non-ResourceExhausted error propagates immediately. See fetchMisses
-// for the full halving + backpressure-coupling rationale.
-func (m *distManager[Q, S]) fetchChunkAdaptive(chunk []searchengine.SegmentID) ([]searchengine.SegmentBlob, error) {
-	blobs, err := m.source.Fetch(chunk)
-	if err == nil {
-		return blobs, nil
-	}
-	if connect.CodeOf(err) != connect.CodeResourceExhausted {
-		return nil, err // not a byte-ceiling rejection — propagate, no retry
-	}
-	// Byte ceiling: the chunk is too large in bytes despite being count-capped.
-	// A single id that still over-runs the ceiling cannot be split further.
-	if len(chunk) <= 1 {
-		return nil, err
-	}
-	mid := len(chunk) / 2
-	left, err := m.fetchChunkAdaptive(chunk[:mid])
-	if err != nil {
-		return nil, err
-	}
-	right, err := m.fetchChunkAdaptive(chunk[mid:])
-	if err != nil {
-		return nil, err
-	}
-	return append(left, right...), nil
-}
+// errL2CacheCold is the sentinel loadResidentFromL2 returns when the L2 disk cache
+// is genuinely cold/wiped (cache.Keys() is empty) — there is no resident set to
+// import server-independently. load() treats it as the signal to fall through to
+// the cold-L2 server fallback (loadFromServer); it is NOT a real error and must
+// never surface to a caller as a load failure.
+var errL2CacheCold = errors.New("segmentdist: L2 cache is cold (no resident ids)")
 
-// unloadUnderPressure drops resident segments (lowest generation first) via
-// engine.Unload until the approximate resident-byte total is at or below target.
-// Returns the ids it unloaded so the caller can reload them later. The L2 cache
-// retains the bytes, so reload is a cache hit.
-func (m *distManager[Q, S]) unloadUnderPressure(targetResidentBytes int) []searchengine.SegmentID {
-	m.resMu.Lock()
-	defer m.resMu.Unlock()
-
-	type res struct {
-		id  searchengine.SegmentID
-		seg residentSeg
+// loadResidentFromL2 is the SERVER-INDEPENDENT PRIMARY import path of load(): it
+// reconstructs the resident set from the L2 disk cache alone, so startup never
+// depends on the cloud (L3) and a slow/down server never leaves the engine empty
+// nor lets a caller mistake the failure for genuine degeneracy and rebuild from
+// scratch.
+//
+// It enumerates this manager's L2-resident ids and imports them via
+// reload(tolerateMisses=true), which is a cache HIT for every id on a
+// populated-cache restart — ZERO network. The Fetch inside reload() is reserved
+// for ids genuinely missing from L2 (none on a cold restart over a populated
+// cache); content-hash filenames are self-verifying, so an L2-only import is safe.
+// tolerateMisses=true (SERVER-INDEPENDENT path): a miss that cannot be Fetched
+// because the server is down still imports the available L2 hits rather than
+// aborting — see the merge-reclaim race in the TRADE-OFF below.
+//
+// TRADE-OFF (accepted): this L2-resident set is UN-MANIFEST-FILTERED — it is
+// whatever is on disk, not the server's authoritative current manifest. The
+// merge-reclaim ordering (reclaimMerged Puts the merged blob BEFORE Removing its
+// constituents) permits a window where both a merged blob and its superseded
+// constituents are on disk at once, so the imported set can be a stale-but-valid
+// SUPERSET across an un-reclaimed merge window. It is never degenerate/empty, each
+// blob self-verifies by its content-hash filename, and the superset self-corrects
+// on the next live merge. This is the accepted trade versus a from-scratch rebuild
+// when the server is unreachable.
+//
+// It does NOT advance importedGen: the server manifest was never obtained, so the
+// load floor must stay put — the later background reconcile re-Lists from the same
+// floor and reconciles the genuine server delta.
+//
+// On an empty L2 cache it returns errL2CacheCold (the cold-cache signal); load()
+// falls through to loadFromServer.
+func (m *distManager[Q, S]) loadResidentFromL2(ctx context.Context) error {
+	keys := m.cache.Keys()
+	if len(keys) == 0 {
+		return errL2CacheCold
 	}
-	ordered := make([]res, 0, len(m.resident))
-	total := 0
-	for id, seg := range m.resident {
-		ordered = append(ordered, res{id: id, seg: seg})
-		total += seg.bytes
+	slog.Info("segmentdist: importing L2-resident segments server-independently (L2-first)",
+		"target", m.target.GetName(), "format", m.format, "l2_ids", len(keys))
+	if err := m.reload(ctx, keys, true); err != nil {
+		return err
 	}
-	// Lowest generation = oldest = evict first.
-	sort.Slice(ordered, func(i, j int) bool {
-		return ordered[i].seg.generation < ordered[j].seg.generation
-	})
-
-	var unloaded []searchengine.SegmentID
-	for _, r := range ordered {
-		if total <= targetResidentBytes {
-			break
-		}
-		m.engine.Unload([]searchengine.SegmentID{r.id})
-		delete(m.resident, r.id)
-		total -= r.seg.bytes
-		unloaded = append(unloaded, r.id)
-	}
-	return unloaded
+	slog.Info("segmentdist: imported L2-resident segments without the server",
+		"target", m.target.GetName(), "format", m.format, "imported", len(keys))
+	return nil
 }
 
 // reload re-materializes previously-unloaded segments: L2 cache HIT (no network)
-// or Source.Fetch on a miss, then engine.Import. Re-adds them to resident
-// tracking.
-func (m *distManager[Q, S]) reload(ids []searchengine.SegmentID) error {
+// or Source.Fetch on a miss, then engine.Import; re-adds them to resident tracking.
+// tolerateMisses governs a failed Source.Fetch for the L2 MISSES (server down):
+//   - false (re-materialize callers, e.g. unload-then-reload): the unloaded
+//     segment genuinely needs the server, so the whole reload aborts and errors.
+//   - true (the L2-first server-independence path, loadResidentFromL2): the Fetch
+//     failure is logged-and-swallowed and reload imports the AVAILABLE L2 hits —
+//     serving the partial, content-hash-self-verifying superset rather than
+//     aborting because one constituent was evicted (a Remove racing the Keys()
+//     snapshot, see loadResidentFromL2's TRADE-OFF) AND the server is down.
+func (m *distManager[Q, S]) reload(ctx context.Context, ids []searchengine.SegmentID, tolerateMisses bool) error {
 	if len(ids) == 0 {
 		return nil
 	}
@@ -438,13 +435,22 @@ func (m *distManager[Q, S]) reload(ids []searchengine.SegmentID) error {
 	if len(missIDs) > 0 {
 		// Sub-batched Fetch (count-capped + byte-ceiling halving) so a large
 		// reload never issues one unbounded Fetch(allMisses).
-		fetched, err := m.fetchMisses(missIDs)
-		if err != nil {
+		fetched, err := m.fetchMisses(ctx, missIDs)
+		switch {
+		case err != nil && !tolerateMisses:
 			return err
-		}
-		for _, b := range fetched {
-			cached[b.ID] = b.Bytes
-			m.cache.Put(b.ID, b.Bytes)
+		case err != nil:
+			// L2-first: server unreachable for the misses — log and continue with
+			// the available (self-verifying) cache hits instead of aborting.
+			slog.Warn("segmentdist: L2-first reload could not fetch missed ids from the server; "+
+				"importing the available L2 hits only",
+				"target", m.target.GetName(), "format", m.format,
+				"missed", len(missIDs), "available", len(cached), "err", err)
+		default:
+			for _, b := range fetched {
+				cached[b.ID] = b.Bytes
+				m.cache.Put(b.ID, b.Bytes)
+			}
 		}
 	}
 	for _, id := range ids {

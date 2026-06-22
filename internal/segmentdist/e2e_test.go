@@ -68,7 +68,7 @@ func TestSegmentDistributionE2E(t *testing.T) {
 
 	// Reload from L2 — zero network Fetch.
 	fetchBeforeReload := consCC.fetchCalls.Load()
-	require.NoError(t, consMgr.reload(unloaded))
+	require.NoError(t, consMgr.reload(ctx, unloaded, false))
 	require.Equal(t, fetchBeforeReload, consCC.fetchCalls.Load(), "reload-from-L2: zero Fetch")
 	require.Len(t, consEng.Search(mockQuery{term: "alpha"}, 10), 2, "search hits return after reload")
 

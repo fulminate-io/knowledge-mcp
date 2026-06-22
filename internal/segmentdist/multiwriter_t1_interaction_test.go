@@ -57,7 +57,7 @@ func TestMultiWriterT1ConcurrentColdLoads(t *testing.T) {
 	var wg sync.WaitGroup
 	for w := range k {
 		wg.Go(func() {
-			blobs, err := mgrs[w].fetchMisses(ids)
+			blobs, err := mgrs[w].fetchMisses(t.Context(), ids)
 			imported := make([]blobImport, len(blobs))
 			for i, b := range blobs {
 				imported[i] = blobImport{id: b.ID, bytes: string(b.Bytes)}

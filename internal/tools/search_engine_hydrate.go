@@ -9,6 +9,7 @@ import (
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
 
@@ -89,6 +90,19 @@ func hydrateEngineHits(
 		byID[n.GetId()] = n
 	}
 
+	// The source-graph identity is the SAME for every hit in this
+	// hydrate call — they were all ranked against ONE selector — so it is derived
+	// once from the selector and stamped on each row. graph + instance feed the
+	// graph-UI's per-result traverse. Covers knowledge-search / cloud / cicd /
+	// practice-single / practice-fanout (one hydrate call PER language, so each
+	// call's instance is that language) / registered / similar — every funnel that
+	// reaches hydrateEngineHits.
+	graph := sel.Graph
+	if graph == "" {
+		graph = string(kgtypes.GraphKnowledge) // the engine treats "" as knowledge.
+	}
+	instance := hydrateSelectorInstance(sel)
+
 	// Walk the RANKED hits in order; join by id-map; carry the fused score.
 	results := make([]engine.SearchResult, 0, len(hits))
 	for _, h := range hits {
@@ -96,7 +110,33 @@ func hydrateEngineHits(
 		if !ok {
 			continue // tombstoned/deleted between rank and hydrate — skip.
 		}
-		results = append(results, engine.SearchResult{Node: n, Score: h.Score})
+		results = append(results, engine.SearchResult{
+			Node:          n,
+			Score:         h.Score,
+			Graph:         graph,
+			GraphInstance: instance,
+		})
 	}
 	return results, nil
+}
+
+// hydrateSelectorInstance picks the per-result instance string from the
+// hydrateSelector: the field a buildTarget consumes for this graph family — Repo
+// for code, Account for cloud/cicd, Name for logs/registered, Language for
+// practice. The knowledge default has no instance (empty). When more than one is
+// set (defensive — the composers set exactly one) the code→cloud/cicd→name→
+// language precedence mirrors the selector-routing order.
+func hydrateSelectorInstance(sel hydrateSelector) string {
+	switch {
+	case sel.Repo != "":
+		return sel.Repo
+	case sel.Account != "":
+		return sel.Account
+	case sel.Name != "":
+		return sel.Name
+	case sel.Language != "":
+		return sel.Language
+	default:
+		return ""
+	}
 }

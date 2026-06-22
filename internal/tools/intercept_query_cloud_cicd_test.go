@@ -4,6 +4,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -111,6 +112,45 @@ func TestResourceStats_BothKinds(t *testing.T) {
 		res := resourceStats(context.Background(), rec, cicdGraphKind, queryArgs{Graph: "cicd", Account: "acme", Mode: "stats"})
 		assert.Contains(t, textBodyTools(res), "## CI/CD Graph: acme")
 	})
+}
+
+// TestResourceStats_JSON asserts the format:"json" branch for BOTH resource
+// kinds (cloud + cicd) returns the structured shape with the right graph label,
+// account instance key, counts, and type maps. The text path stays covered by
+// TestResourceStats_BothKinds.
+func TestResourceStats_JSON(t *testing.T) {
+	stats := &knowledgev1.GraphStats{
+		NodeCount: 4, EdgeCount: 2, BinaryVectorCount: 1,
+		NodesByType: map[string]int64{"cloud-resource": 4},
+		EdgesByType: map[string]int64{"depends-on": 2},
+	}
+	for _, tc := range []struct {
+		name string
+		kind resourceGraphKind
+	}{
+		{"cloud", cloudGraphKind},
+		{"cicd", cicdGraphKind},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rec := &recordingStatsRPC{stats: stats}
+			res := resourceStats(context.Background(), rec, tc.kind, queryArgs{Graph: tc.kind.graph, Account: "acme", Mode: "stats", Format: "json"})
+			require.False(t, res.IsError, textBodyTools(res))
+
+			var payload map[string]any
+			require.NoError(t, json.Unmarshal([]byte(textBodyTools(res)), &payload), "body must be valid JSON")
+			assert.Equal(t, tc.kind.graph, payload["graph"])
+			assert.Equal(t, "acme", payload["account"])
+			assert.EqualValues(t, 4, payload["node_count"])
+			assert.EqualValues(t, 2, payload["edge_count"])
+			assert.EqualValues(t, 1, payload["binary_vector_count"])
+			nbt, ok := payload["nodes_by_type"].(map[string]any)
+			require.True(t, ok, "nodes_by_type is an object")
+			assert.EqualValues(t, 4, nbt["cloud-resource"])
+			ebt, ok := payload["edges_by_type"].(map[string]any)
+			require.True(t, ok, "edges_by_type is an object")
+			assert.EqualValues(t, 2, ebt["depends-on"])
+		})
+	}
 }
 
 // textBodyTools concatenates a ToolResult's text content for assertions.

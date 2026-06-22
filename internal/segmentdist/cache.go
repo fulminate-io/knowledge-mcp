@@ -188,6 +188,26 @@ func (c *diskSegmentCache) Remove(id searchengine.SegmentID) {
 	}
 }
 
+// Keys enumerates the content-hash ids of every segment currently in the live
+// in-memory index — the L2-resident set — as a freshly-allocated slice. It is the
+// server-independent enumeration the load() fallback uses to reconstruct the
+// resident set from L2 alone when the server manifest is unavailable.
+//
+// It ranges the in-memory index (already populated at construction by
+// scanExisting and kept current by Put/Remove); it does NOT re-read the disk, and
+// it is recency-neutral — it does NOT MoveToFront, so enumerating the set never
+// perturbs the LRU ordering. Safe to call concurrently with Get/Put/Remove under
+// the same mutex.
+func (c *diskSegmentCache) Keys() []searchengine.SegmentID {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	keys := make([]searchengine.SegmentID, 0, len(c.index))
+	for id := range c.index {
+		keys = append(keys, id)
+	}
+	return keys
+}
+
 // atomicWriteFile writes b to path via a temp file + rename. This rolls its OWN
 // temp+rename because the server's store.atomicWriteFile helper lives in a
 // SEPARATE module and cannot be imported (the (path, bytes) shape also differs

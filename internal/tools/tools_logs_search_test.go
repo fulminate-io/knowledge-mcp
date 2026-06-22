@@ -13,6 +13,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 	"github.com/fulminate-io/knowledge-mcp/internal/enginetest"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 )
@@ -184,6 +185,39 @@ func TestSearchLogs_Basic(t *testing.T) {
 	assert.Contains(t, text, "ERROR", "severity metadata should render")
 	assert.Contains(t, text, "Count: 42", "count metadata should render")
 	assert.Contains(t, text, queryID, "output header should mention the queryID")
+}
+
+// TestSearchLogs_JSONAndText covers the JSON contract for the logs path: searchLogs with
+// Format:"json" parses to the SearchJSONResponse envelope carrying the template
+// SymbolName + severity metadata; the no-format run stays on the markdown
+// log-templates header path.
+func TestSearchLogs_JSONAndText(t *testing.T) {
+	queryID := testSearchQueryID
+
+	jsonRes := newSearchHandler(t).searchLogs(context.Background(), searchArgs{
+		Graph: "logs", Name: queryID, Query: "connection timeout", Limit: 10, Format: "json",
+	})
+	require.False(t, jsonRes.IsError, resultText(jsonRes))
+	var env engine.SearchJSONResponse
+	require.NoError(t, json.Unmarshal([]byte(resultText(jsonRes)), &env), "json branch must parse to SearchJSONResponse")
+	require.GreaterOrEqual(t, env.Total, 1)
+	require.NotEmpty(t, env.Results)
+	hit := env.Results[0]
+	assert.Equal(t, "log-template:connection-timeout", hit.ID)
+	assert.Equal(t, "connection timeout while reaching <*>", hit.SymbolName, "template pattern rides through SymbolName")
+	assert.Equal(t, "ERROR", hit.Metadata["severity"], "severity rides through metadata")
+	assert.Equal(t, "42", hit.Metadata["count"])
+	assert.Equal(t, "2026-04-13T12:00:00.000000000Z", hit.Metadata["first_seen"])
+
+	textRes := newSearchHandler(t).searchLogs(context.Background(), searchArgs{
+		Graph: "logs", Name: queryID, Query: "connection timeout", Limit: 10,
+	})
+	require.False(t, textRes.IsError, resultText(textRes))
+	body := resultText(textRes)
+	assert.Contains(t, body, "Log templates in", "text path renders the markdown header")
+	assert.Contains(t, body, "Count: 42")
+	var env2 engine.SearchJSONResponse
+	assert.Error(t, json.Unmarshal([]byte(body), &env2), "text path must not emit JSON")
 }
 
 // TestSearchLogs_TemplateOnlyFilter confirms chunks/streams never appear

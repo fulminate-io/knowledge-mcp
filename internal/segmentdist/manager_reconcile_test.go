@@ -17,6 +17,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1/knowledgev1connect"
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine/formats/hnsw"
 )
 
@@ -116,6 +117,54 @@ func TestReconcileResidentDegenerate_Incident(t *testing.T) {
 		"server holds the corpus but the live engine stays empty after load → degenerate")
 	require.Equal(t, 0, mgr.ResidentDocCount(kgtypes.GraphCode, "incidentRepo"),
 		"the live resident pool is empty (the masked collapse)")
+}
+
+// TestReconcileResidentDegenerate_PartialL2HealsViaServerReimport drives the C5
+// case the OLD load()-guarded reconcile could NOT heal: the server holds the FULL
+// HNSW corpus and CAN Fetch it, but the consumer already ran a load() that imported
+// only a sub-floor PARTIAL set (l2Loaded latched true). A bare dm.load(ctx) would
+// short-circuit on the l2Loaded once-guard and re-import nothing, leaving resident
+// below floor — flagging degenerate and forcing the expensive rebuild. The cheap
+// server re-import (recoverIfDegenerate: importedGen.Store(0) + loadFromServer)
+// restores coverage instead.
+//
+// RED on current source: load() short-circuits, resident stays < floor, shipped >=
+// floor → degenerate=true. GREEN after the recoverIfDegenerate re-wire: the cheap
+// re-import pulls the full corpus, resident >= floor → degenerate=false.
+func TestReconcileResidentDegenerate_PartialL2HealsViaServerReimport(t *testing.T) {
+	_, gc := newSegmentHarness(t)
+	ctx := context.Background()
+
+	// Server holds a real, Fetch-able full HNSW corpus (>> floor) shipped by a
+	// producer Manager pointed at the same server.
+	producer := NewManager(gc, t.TempDir(), 0)
+	require.NoError(t, producer.AddAndShip(ctx, kgtypes.GraphCode, "partialHealRepo", hnswVecDocs(1024)))
+
+	// Consumer Manager. Grab the SAME dm ReconcileResidentDegenerate will use, then
+	// force the partial-L2-already-loaded state: import a sub-floor segment, latch
+	// l2Loaded=true, and bump importedGen so a plain load() would short-circuit and
+	// re-import nothing.
+	consumer := NewManager(gc, t.TempDir(), 0)
+	dm := consumer.managerFor(kgtypes.GraphCode, "partialHealRepo")
+
+	partial := buildHNSWSegment(t, vecContentDocsSeed(10, 5000)) // one 10-doc segment (< floor 64)
+	partialBlobs := make([]searchengine.SegmentBlob, 0, len(partial))
+	for _, b := range partial {
+		partialBlobs = append(partialBlobs, blobFromProto(b))
+	}
+	require.NoError(t, dm.engine.Import(partialBlobs, nil))
+	dm.recordResident(partialBlobs)
+	dm.l2Loaded.Store(true)   // a prior load already ran (partial L2).
+	dm.importedGen.Store(999) // floor advanced past the corpus — plain load() no-ops.
+	require.Less(t, dm.engine.ResidentDocCount(), residentBackstopFloor,
+		"the consumer is below floor after the partial import")
+
+	degenerate, err := consumer.ReconcileResidentDegenerate(ctx, kgtypes.GraphCode, "partialHealRepo")
+	require.NoError(t, err)
+	require.False(t, degenerate,
+		"the cheap server re-import must restore coverage, not flag degenerate for a rebuild")
+	require.GreaterOrEqual(t, dm.engine.ResidentDocCount(), residentBackstopFloor,
+		"resident >= floor after the cheap re-import pulled the full server corpus")
 }
 
 // TestReconcileResidentDegenerate_Disarms pins the conservative-unknown and

@@ -159,7 +159,11 @@ func composeRecentBrowse(ctx context.Context, gc GraphCaller, a queryArgs) kgtoo
 
 	results := make([]engine.SearchResult, len(nodes))
 	for i, n := range nodes {
-		results[i] = engine.SearchResult{Node: n, Score: 1.0}
+		// Stamp the source-graph identity: this is the knowledge default
+		// graph (no instance). composeRecentBrowse builds SearchResults directly
+		// (it is a temporal BROWSE, not a hydrateEngineHits funnel), so it stamps
+		// here rather than inheriting the hydrate stamp.
+		results[i] = engine.SearchResult{Node: n, Score: 1.0, Graph: string(kgtypes.GraphKnowledge)}
 	}
 
 	// UpdatedAt half-life rerank (BOOST + re-sort); base scores are all 1.0 so the

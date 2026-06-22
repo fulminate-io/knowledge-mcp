@@ -5,6 +5,8 @@ package segmentdist
 import (
 	"context"
 	"log/slog"
+
+	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
 
 // residentBackstopFloor and residentBackstopRatio gate the READ-SIDE coverage
@@ -76,10 +78,18 @@ func (m *distManager[Q, S]) recoverIfDegenerate(ctx context.Context) error {
 	}
 	defer m.recovering.Store(false)
 
-	// Reset the load floor to 0 so the next load() Lists(0) and re-imports the full
+	// Reset the load floor to 0 so the forced load Lists(0) and re-imports the full
 	// corpus (Import dedup drops any already-resident segment), then force that load.
+	//
+	// Call loadFromServer directly, NOT load(): the degeneracy this net heals is an
+	// in-memory engine that covers far less than the SERVER's shipped corpus, and the
+	// missing segments are on the server, not in L2 (the L2-first primary path is
+	// exactly what produced/left the degenerate resident set). load() would either
+	// short-circuit on the l2Loaded once-guard (already set this process) or re-import
+	// only the L2 tail — neither recovers the server corpus. loadFromServer Lists(0)
+	// and Fetches the misses, which is the recovery's whole purpose.
 	m.importedGen.Store(0)
-	return m.load(ctx)
+	return m.loadFromServer(ctx)
 }
 
 // shippedDocCountForRatio sums this engine's keepFormat shipped doc count from one
@@ -104,20 +114,32 @@ func (m *distManager[Q, S]) shippedDocCountForRatio(ctx context.Context) (shippe
 	if err != nil {
 		return 0, false, err
 	}
-	for _, meta := range metas {
+	shipped, disarm = m.shippedDocCountForRatioFromSnapshot(metas)
+	return shipped, disarm, nil
+}
+
+// shippedDocCountForRatioFromSnapshot is shippedDocCountForRatio's body lifted
+// VERBATIM onto a passed-in snapshot — the disarm rules (conservative-unknown on a
+// DocCount==0 blob; sub-floor disarm) are unchanged. It is the snapshot-consuming
+// core the wrapper above feeds with its own List(0); a caller that already holds a
+// ShippedManifestSnapshot can call this directly to avoid a redundant List.
+func (m *distManager[Q, S]) shippedDocCountForRatioFromSnapshot(
+	snapshot []searchengine.SegmentMeta,
+) (shipped int, disarm bool) {
+	for _, meta := range snapshot {
 		if !m.keepFormat(meta.Format) {
 			continue
 		}
 		if meta.DocCount == 0 {
 			// Conservative-unknown: an old pre-doc_count blob is present, so the
 			// shipped denominator is not trustworthy — disarm rather than churn.
-			return 0, true, nil
+			return 0, true
 		}
 		shipped += meta.DocCount
 	}
 	if shipped < residentBackstopFloor {
 		// Too small for the ratio to be meaningful — disarm.
-		return shipped, true, nil
+		return shipped, true
 	}
-	return shipped, false, nil
+	return shipped, false
 }

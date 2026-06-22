@@ -61,7 +61,34 @@ func (h *Handler) searchLogs(ctx context.Context, a searchArgs) kgtools.ToolResu
 		return kgtools.TextResult(fmt.Sprintf("No log template matches in graph %q for: %s",
 			a.Name, strings.Join(queries, ", ")))
 	}
+	if a.Format == "json" {
+		return engine.RenderForCaller(strings.Join(queries, " | "), logHitsToResults(a.Name, results), "json", nil, "")
+	}
 	return formatLogSearchResults(a.Name, strings.Join(queries, " | "), results)
+}
+
+// logHitsToResults projects each logSearchHit into an engine.SearchResult for the
+// format:"json" arm: the template id, its pattern (SymbolName), score, and the
+// full metadata map (severity/count/first_seen/last_seen — what the text path
+// surfaces per entry) ride through renderJSON's verbatim Metadata copy. Each row
+// is stamped with its source-graph identity: Graph:"logs" and
+// GraphInstance:name (the log queryID), so the universal contract holds for the
+// logs family too.
+func logHitsToResults(name string, hits []logSearchHit) []engine.SearchResult {
+	out := make([]engine.SearchResult, len(hits))
+	for i, h := range hits {
+		out[i] = engine.SearchResult{
+			Node: &knowledgev1.Node{
+				Id:         h.id,
+				SymbolName: h.symbolName,
+				Metadata:   h.metadata,
+			},
+			Score:         h.score,
+			Graph:         "logs",
+			GraphInstance: name,
+		}
+	}
+	return out
 }
 
 // logSearchHit is the minimal per-result view the formatter needs. Mirrors

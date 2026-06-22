@@ -32,9 +32,11 @@ type SegmentStore interface {
 
 // SegmentSource is the CLIENT-side pull seam (RPC-backed). The client lists the
 // delta (gen > last-seen) and fetches the blobs it is missing, then Imports them.
+// Both legs take the caller ctx so a cold/partial-L2 search that drives a Fetch is
+// cancellable (a search ctx cancel / shutdown unwinds the in-flight RPC).
 type SegmentSource interface {
 	List(ctx context.Context, sinceGen uint64) ([]SegmentMeta, error)
-	Fetch(ids []SegmentID) ([]SegmentBlob, error)
+	Fetch(ctx context.Context, ids []SegmentID) ([]SegmentBlob, error)
 }
 
 // SegmentCache is the CLIENT-side L2 disk cache. A cache hit skips the network

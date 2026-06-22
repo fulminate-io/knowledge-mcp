@@ -53,6 +53,21 @@ type healSegmentService struct {
 	byKey     map[string][]*knowledgev1.SegmentBlobProto
 	gen       uint64
 	manifests map[string]map[string]map[string]bool // graphKey -> writer+format -> id-set
+	// realFetch, when true, serves the stored byKey blobs for the requested ids
+	// (mirroring fakeSegmentService.Fetch) so a load() of a REAL decodable corpus
+	// imports it — the intact-corpus path. Default false keeps the empty
+	// Fetch (the post-restart collapse the degenerate-rebuild tests model).
+	realFetch bool
+
+	// failListAfterN, when > 0, makes the first N ListDelta calls succeed and every
+	// ListDelta call AFTER that return a transport error (connect.CodeUnavailable —
+	// the 524/timeout/server-down shape). This models a server that answers the
+	// cheap presence probes (HasShippedSegments + ShippedSegmentDocCount) but then
+	// times out on the heal probe's cache-first load() — letting a test drive
+	// healNeedsRebuild into the ReconcileResidentDegenerate probe-error arm.
+	// listCalls is the running ListDelta count (guarded by mu).
+	failListAfterN int
+	listCalls      int
 }
 
 func newHealSegmentService() *healSegmentService {
@@ -87,6 +102,12 @@ func (f *healSegmentService) ListDelta(
 ) (*connect.Response[knowledgev1.ListDeltaResponse], error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.listCalls++
+	if f.failListAfterN > 0 && f.listCalls > f.failListAfterN {
+		// Server answered the cheap presence probes, now times out on the load() —
+		// the 524/down shape that drives the heal probe-error arm.
+		return nil, connect.NewError(connect.CodeUnavailable, context.DeadlineExceeded)
+	}
 	k := f.key(req.Msg.GetTarget())
 	var metas []*knowledgev1.SegmentMetaProto
 	for _, b := range f.byKey[k] {
@@ -100,9 +121,29 @@ func (f *healSegmentService) ListDelta(
 }
 
 func (f *healSegmentService) Fetch(
-	_ context.Context, _ *connect.Request[knowledgev1.FetchRequest],
+	_ context.Context, req *connect.Request[knowledgev1.FetchRequest],
 ) (*connect.Response[knowledgev1.FetchResponse], error) {
-	return connect.NewResponse(&knowledgev1.FetchResponse{}), nil
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.realFetch {
+		// Default: empty Fetch — a load imports nothing (the post-restart collapse).
+		return connect.NewResponse(&knowledgev1.FetchResponse{}), nil
+	}
+	// realFetch: serve the stored blobs for the requested ids (mirror
+	// fakeSegmentService.Fetch source_test.go:108-126) so a load() of a real
+	// decodable corpus actually imports it.
+	k := f.key(req.Msg.GetTarget())
+	want := map[string]bool{}
+	for _, id := range req.Msg.GetIds() {
+		want[id] = true
+	}
+	var blobs []*knowledgev1.SegmentBlobProto
+	for _, b := range f.byKey[k] {
+		if want[b.GetId()] {
+			blobs = append(blobs, b)
+		}
+	}
+	return connect.NewResponse(&knowledgev1.FetchResponse{Blobs: blobs}), nil
 }
 
 func (f *healSegmentService) Prune(
@@ -242,7 +283,9 @@ func TestSegmentPoolDegenerateCoverageProbe(t *testing.T) {
 	t.Run("CASE A degenerate-but-nonzero heals", func(t *testing.T) {
 		c := buildHealProbeClient(t, 120)
 		shipHNSW(t, c, "repoA", 12) // covered=12, anyUnknown=false
-		degenerate, err := c.segmentPoolDegenerate(ctx, kgtypes.GraphCode, "repoA")
+		snap, err := c.segmentMgr.ShippedManifestSnapshot(ctx, kgtypes.GraphCode, "repoA")
+		require.NoError(t, err)
+		degenerate, err := c.segmentPoolDegenerate(ctx, kgtypes.GraphCode, "repoA", snap)
 		require.NoError(t, err)
 		require.True(t, degenerate, "above floor, covered/embedded below ratio → rebuild")
 	})
@@ -250,7 +293,9 @@ func TestSegmentPoolDegenerateCoverageProbe(t *testing.T) {
 	t.Run("CASE B healthy disarms", func(t *testing.T) {
 		c := buildHealProbeClient(t, 60)
 		shipHNSW(t, c, "repoB", 58) // covered=58, anyUnknown=false
-		degenerate, err := c.segmentPoolDegenerate(ctx, kgtypes.GraphCode, "repoB")
+		snap, err := c.segmentMgr.ShippedManifestSnapshot(ctx, kgtypes.GraphCode, "repoB")
+		require.NoError(t, err)
+		degenerate, err := c.segmentPoolDegenerate(ctx, kgtypes.GraphCode, "repoB", snap)
 		require.NoError(t, err)
 		require.False(t, degenerate, "above floor, covered/embedded above ratio → no rebuild")
 	})
@@ -258,7 +303,9 @@ func TestSegmentPoolDegenerateCoverageProbe(t *testing.T) {
 	t.Run("CASE C small graph below floor no-flap", func(t *testing.T) {
 		c := buildHealProbeClient(t, 10)
 		shipHNSW(t, c, "repoC", 1) // covered=1, embedded=10 < floor → ratio never consulted
-		degenerate, err := c.segmentPoolDegenerate(ctx, kgtypes.GraphCode, "repoC")
+		snap, err := c.segmentMgr.ShippedManifestSnapshot(ctx, kgtypes.GraphCode, "repoC")
+		require.NoError(t, err)
+		degenerate, err := c.segmentPoolDegenerate(ctx, kgtypes.GraphCode, "repoC", snap)
 		require.NoError(t, err)
 		require.False(t, degenerate, "embedded below floor → ratio path disarmed")
 	})
@@ -266,7 +313,9 @@ func TestSegmentPoolDegenerateCoverageProbe(t *testing.T) {
 	t.Run("CASE D migration all-zero-doc_count storm guard disarms", func(t *testing.T) {
 		c := buildHealProbeClient(t, 60000)
 		shipHNSW(t, c, "repoD", 0, 0) // every HNSW meta doc_count==0 → anyUnknown=true
-		degenerate, err := c.segmentPoolDegenerate(ctx, kgtypes.GraphCode, "repoD")
+		snap, err := c.segmentMgr.ShippedManifestSnapshot(ctx, kgtypes.GraphCode, "repoD")
+		require.NoError(t, err)
+		degenerate, err := c.segmentPoolDegenerate(ctx, kgtypes.GraphCode, "repoD", snap)
 		require.NoError(t, err)
 		require.False(t, degenerate,
 			"anyUnknown (pre-doc_count migration state) DISARMS the ratio despite covered=0 < 0.5*embedded — no fleet rebuild storm")

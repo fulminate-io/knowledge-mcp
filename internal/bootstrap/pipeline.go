@@ -97,20 +97,28 @@ var (
 // set OR neither summarizer nor embedder is configured (graceful degrade —
 // the rest of the MCP loop continues to work without LLM features).
 //
-// The pipeline's refresh goroutine runs under ctx (canceled by the
-// caller's defer p.Stop chain) so it exits cleanly on shutdown.
-func wirePipelineRuntime(c *client, f Config) error {
+// The 5 long-lived background loops spawned here run under the passed ctx (the
+// caller's c.wireCtx — drainOnShutdown cancels it before pipeline.Stop), so a
+// shutdown unwinds them. The boot-SYNCHRONOUS calls (BuildSummarizerWithFallback,
+// p.Start, RefreshOnceForBoot) run under a fresh Background bootCtx instead: a
+// shutdown mid-boot must NOT abort the pipeline's own Start lifecycle —
+// pipeline.Stop owns the Start-spawned dispatcher/worker WaitGroups, so binding
+// Start to wireCtx would double-cancel them.
+func wirePipelineRuntime(ctx context.Context, c *client, f Config) error {
 	if f.NoLLMPipeline {
 		slog.Info("client pipeline: skipped (--no-llm-pipeline)")
 		return nil
 	}
-	ctx := context.Background()
+	// bootCtx backs the boot-synchronous calls that must survive a mid-boot
+	// shutdown (Start lifecycle owned by pipeline.Stop). The long-lived loops below
+	// use the passed ctx (c.wireCtx) so shutdown cancels them.
+	bootCtx := context.Background()
 
 	// Build the ordered summarizer chain (primary + configured fallbacks). The
 	// returned FallbackChain is nil when config is unloaded (degrade-not-die);
 	// non-nil carries the composite selection summarizer + background prober for
 	// the multi-entry case and the single bare summarizer for the len==1 case.
-	fc, err := llmproviders.BuildSummarizerWithFallback(ctx, config.ConsumerSummarizer, pipeline.ShouldAdvanceFallback)
+	fc, err := llmproviders.BuildSummarizerWithFallback(bootCtx, config.ConsumerSummarizer, pipeline.ShouldAdvanceFallback)
 	if err != nil {
 		// Don't bubble — degrade-not-die. The client keeps serving
 		// non-LLM tools so a misconfigured summarizer doesn't take down
@@ -207,24 +215,33 @@ func wirePipelineRuntime(c *client, f Config) error {
 	}
 
 	c.pipeline = p
-	if err := p.Start(ctx); err != nil {
+	if err := p.Start(bootCtx); err != nil {
 		return err
 	}
 
 	// Initial registration: poll once + register each (gt, name).
 	// Refresh goroutine takes over from here, picking up the delta on
 	// subsequent ticks (worst-case lag: one tick).
-	p.RefreshOnceForBoot(ctx) //nolint:errcheck // best-effort initial seed
+	p.RefreshOnceForBoot(bootCtx) //nolint:errcheck // best-effort initial seed
 
-	// Startup segment-coverage reconcile: now that RefreshOnceForBoot has registered
-	// the builtin collectors, the code-repo enumeration sees the loaded repos. Probe
-	// each segment-bearing builtin for the post-restart live-resident collapse and
-	// heal a degenerate one via RebuildSegments — the recovery lever NOT gated on a
-	// search or a collect (the regression: both prior levers are event-triggered and
-	// neither fires for a fully-embedded, never-re-collected graph). Best-effort and
-	// cheap on the healthy path; runs in this bind-first background wiring stage so it
-	// does not block the MCP listener bind.
-	c.reconcileSegmentCoverage(ctx)
+	// Boot-delay segment-coverage reconcile (one-shot, OFF the critical path): a
+	// single reconcile pass fired ~segmentReconcileBootDelay after wiring, NOT
+	// synchronously here. The synchronous startup reconcile was removed because, with
+	// the L2-first load() (the resident set is now imported from the L2 disk cache
+	// server-independently before the MCP bind), boot no longer needs a server round
+	// trip to be searchable — running the all-graphs server reconcile on the bind path
+	// only coupled first-search readiness to a slow/down server.
+	//
+	// The one-shot is still REQUIRED, not a nicety: runSegmentReconcileLoop's first
+	// tick fires only at segmentReconcileInterval (5min) because it selects on
+	// ticker.C with no immediate first iteration. With the synchronous reconcile gone
+	// AND the per-search recoverIfDegenerate removed (Phase 3), a graph genuinely
+	// degenerate after the L2-first load — a cold/partial L2 on this machine while the
+	// server holds the full corpus — would otherwise sit degenerate for up to 5min
+	// post-restart. The ~30s delay closes that heal gap while staying off the bind /
+	// markPipelineReady path: it fires well after readiness latches, never blocking
+	// the MCP listener bind.
+	go c.bootDelayReconcile(ctx)
 
 	// Continuous refresh in background.
 	go p.RefreshLoadedGraphs(ctx)
@@ -232,7 +249,8 @@ func wirePipelineRuntime(c *client, f Config) error {
 	// Periodic segment-coverage reconcile in background: re-runs the same probe-heal
 	// on a fixed cadence so a graph that collapses (or is never re-collected)
 	// mid-session self-heals WITHOUT a search or collect. Shares the one reconcile
-	// body with the startup trigger; exits on ctx.Done (no leak).
+	// body with the startup trigger; exits on ctx.Done — ctx is c.wireCtx, which
+	// drainOnShutdown cancels on shutdown, so this loop is unwound (no leak).
 	go c.runSegmentReconcileLoop(ctx, segmentReconcileInterval)
 
 	// Central two-phase bulk gen-poll in background: ONE PipelineGenPoll RPC per
@@ -244,7 +262,8 @@ func wirePipelineRuntime(c *client, f Config) error {
 	// Background summarizer-chain health prober (multi-entry chains only): every
 	// configured interval it re-checks each limited entry with a cheap ping and
 	// shifts traffic back to the highest-priority recovered entry. Shares the same
-	// ctx lifecycle as the other background loops (exits on ctx.Done — no leak).
+	// ctx lifecycle as the other background loops — ctx is c.wireCtx, cancelled by
+	// drainOnShutdown, so it exits on ctx.Done (no leak).
 	if chained != nil {
 		go chained.RunHealthProbeLoop(ctx)
 	}

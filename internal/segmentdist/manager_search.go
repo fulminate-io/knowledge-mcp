@@ -21,12 +21,15 @@ import (
 // nodes via a RETURN_MODE_NODES read (search_engine_hydrate.go).
 //
 // Both engines are loaded cache-first (dm.load / bm.load — idempotent, one
-// batched Fetch for the delta, parallel Import) before the search. After the HNSW
-// load, a read-side coverage backstop (dm.recoverIfDegenerate) forces a recovery
-// load() if the in-memory engine is degenerate relative to the server's shipped
-// corpus — the durability net for a poisoned load floor. The two engine.Search
-// calls run CONCURRENTLY over a bounded WaitGroup (the engines are independent and
-// each is internally per-segment parallel), not serially.
+// batched Fetch for the delta, parallel Import) before the search. There is NO
+// per-search recoverIfDegenerate backstop: the L2-first load() imports the full L2
+// corpus on the primary path, so resident is not left poisoned-degenerate after a
+// load, and a genuinely cold/partial L2 is healed OFF the hot path by the
+// boot-delay one-shot + the periodic reconcile (which drive recoverIfDegenerate's
+// cheap server re-import), not by a List(0) on every search (see the inline note
+// below). The two engine.Search calls run CONCURRENTLY over a bounded WaitGroup
+// (the engines are independent and each is internally per-segment parallel), not
+// serially.
 //
 // Failure-mode note: searchengine.SegmentedIndex.Search returns nil for an empty
 // segment set, so a graph whose segments are not yet built/shipped yields an
@@ -50,17 +53,16 @@ func (m *Manager) Search(
 	dm := m.managerFor(gt, name)
 	bm := m.bm25ManagerFor(gt, name)
 
-	// Load both engines' server delta cache-first. Load is idempotent (empty
-	// delta = zero Fetch) so repeated searches do not re-pull.
+	// Load both engines' L2-resident set L2-first (server-independent on a populated
+	// cache; cold L2 falls through to the server). Load is idempotent — the l2Loaded
+	// once-guard short-circuits a repeated load() — so repeated searches do not
+	// re-pull. The per-search recoverIfDegenerate backstop was removed: with the
+	// L2-first load() the primary path imports the full L2 corpus, so resident is no
+	// longer left poisoned-degenerate after a load, and a genuinely cold/partial L2 is
+	// healed off the hot path by the boot-delay one-shot + the periodic reconcile
+	// (bootstrap), not by a List(0) on every search. recoverIfDegenerate remains for
+	// the reconcile's direct use + its dedicated tests.
 	if err := dm.load(ctx); err != nil {
-		return nil, err
-	}
-	// Read-side coverage backstop (HNSW arm only): after the load, detect a
-	// degenerate in-memory engine (resident doc count << the server's shipped
-	// corpus) and force a single-flighted recovery load(). A healthy engine pays
-	// one in-memory count and zero extra RPC. Best-effort — a probe error logs and
-	// leaves the search to run on the current (possibly degenerate) set.
-	if err := dm.recoverIfDegenerate(ctx); err != nil {
 		return nil, err
 	}
 	if err := bm.load(ctx); err != nil {

@@ -10,47 +10,80 @@ import (
 
 // ReconcileResidentDegenerate is the startup/periodic reconcile's detection probe:
 // it reports whether a graph's LIVE in-memory engine is degenerate relative to the
-// server's shipped corpus AFTER a cache-first load — i.e. a graph that lazy-load
-// would heal is NOT flagged, and a genuinely-collapsed graph (server holds the full
-// corpus, the live searchable pool stays near-empty even after loading) IS caught.
+// server's shipped corpus AFTER a cache-first load + a cheap server re-import — i.e.
+// a graph either heal step would restore is NOT flagged, and a genuinely-collapsed
+// graph (server holds the full corpus, the live searchable pool stays near-empty
+// even after both) IS caught, leaving the expensive RebuildSegments path to the
+// caller.
 //
-// It is recoverIfDegenerate's DETECTION half WITHOUT the self-loading action tail:
-// recoverIfDegenerate resets the load floor and re-imports inline (the read-edge
-// best-effort net), but the reconcile caller heals via the PROVEN RebuildSegments
-// path instead of a bare load, so this method only DETECTS and reports — the heal
-// decision and action belong to the caller.
+// It runs TWO complementary heal steps before the degeneracy read, because each
+// covers a case the other misses:
+//   - load() (cache-first): the L2-FIRST primary path imports the warm L2 resident
+//     set SERVER-INDEPENDENTLY, so a warm-but-not-yet-loaded graph is made resident
+//     even when the server is slow/down — never collapsed to empty on a List
+//     timeout. But load() short-circuits on the l2Loaded once-guard, so it heals
+//     NOTHING for a graph a prior Search/load already (partially) loaded.
+//   - recoverIfDegenerate (server re-import): resets the load floor
+//     (importedGen.Store(0)) and re-imports from the SERVER (loadFromServer),
+//     bypassing the l2Loaded guard — the fix for a PARTIAL-L2 graph (resident below
+//     floor while the server holds the full corpus) that load() can no longer
+//     touch. It is a no-op (ZERO RPC) when load() already cleared the floor.
 //
-// Flow (mirroring recoverIfDegenerate's AFTER-load ordering, which is why
-// segmentPoolDegenerate — a server-vs-server compare with no load — is the wrong
-// detector here):
-//  1. load() cache-first so a graph whose first load would import the corpus is
-//     made resident BEFORE the resident count is read (no false-positive on a cold
-//     graph that simply had not loaded yet).
-//  2. read the live resident doc count; resident >= residentBackstopFloor → healthy,
-//     return false with zero further RPC (the healthy fast path pays one load + one
-//     atomic count).
-//  3. below the floor: read the shipped denominator via the SHARED
+// A bare load() was insufficient (a partial-L2 graph stayed flagged degenerate
+// forever); a bare recoverIfDegenerate was ALSO insufficient (it skips the L2-first
+// warm-disk import, collapsing a warm-but-unloaded graph to empty on a List
+// timeout). Both, in order, cover both cases.
+//
+// Flow:
+//  1. load() cache-first (L2-first warm import; no-op if already loaded).
+//  2. recoverIfDegenerate: no-op when resident >= floor; else single-flighted
+//     importedGen.Store(0) + loadFromServer re-import of the server corpus.
+//  3. read the live resident doc count; resident >= residentBackstopFloor → healthy
+//     (a heal step restored coverage), return false.
+//  4. below the floor: read the shipped denominator via the SHARED
 //     shippedDocCountForRatio (same disarm rules as the read-side backstop — a
 //     pre-doc_count blob or a sub-floor corpus disarms).
-//  4. degenerate iff resident < residentBackstopRatio * shipped.
+//  5. degenerate iff resident < residentBackstopRatio * shipped.
 //
-// Best-effort: a load() or List error is returned to the caller, which logs and
-// continues (never blocks boot). The probe never mutates ship/load state beyond the
-// cache-first load() (it does NOT reset importedGen — that is recoverIfDegenerate's
-// inline-heal mechanic, not the detector's job).
+// ACCEPTED TRADE — TWO List(0)s on the below-floor heal path: recoverIfDegenerate
+// runs its own shippedDocCountForRatio List(0) (manager_backstop.go) when below
+// floor, and this method then re-reads the shipped denominator with a SECOND List(0)
+// at step 4. This is deliberate, not a regression: a HEALTHY graph short-circuits in
+// BOTH recoverIfDegenerate's floor gate AND step 3 here, paying ZERO List — the
+// extra List is confined to the rare actually-degenerate case. ReconcileResidentDegenerate
+// is OFF the bind path (fired only by the ~30s boot-delay one-shot and the periodic
+// reconcile loop), so a second List on a cold heal never touches first-search
+// readiness. Threading recoverIfDegenerate's already-computed shipped count back to
+// the caller to save the second List was rejected: its early-exit paths never
+// compute one, so plumbing a sentinel through that hot read-side net to shave one
+// List off a non-bind-path heal is not worth the coupling.
+//
+// Best-effort: a load(), recoverIfDegenerate, or List error is returned to the
+// caller, which logs and continues (never blocks boot).
 func (m *Manager) ReconcileResidentDegenerate(
 	ctx context.Context, gt kgtypes.GraphType, name string,
 ) (degenerate bool, err error) {
 	dm := m.managerFor(gt, name)
 
-	// Cache-first load FIRST: a graph whose lazy load would heal must not be flagged.
+	// Cache-first load FIRST: the L2-first primary path imports the warm L2 resident
+	// set SERVER-INDEPENDENTLY (loadResidentFromL2), so a warm-but-not-yet-loaded
+	// graph is made resident even when the server List times out — never collapsed
+	// to empty. A graph whose lazy load would heal is thus not flagged.
 	if err := dm.load(ctx); err != nil {
+		return false, err
+	}
+	// THEN the cheap server re-import: heal a partial-L2 graph whose prior load
+	// already latched l2Loaded (so the load() above short-circuits and re-imports
+	// nothing) — recoverIfDegenerate resets the load floor and re-imports from the
+	// server, bypassing the once-guard. It is a no-op (zero RPC) when the load above
+	// already cleared the floor, so a warm/healthy graph pays nothing extra here.
+	if err := dm.recoverIfDegenerate(ctx); err != nil {
 		return false, err
 	}
 
 	resident := dm.engine.ResidentDocCount()
 	if resident >= residentBackstopFloor {
-		// Healthy after load — the resident pool clears the floor. Zero further RPC.
+		// Healthy after the re-import — the resident pool clears the floor.
 		return false, nil
 	}
 

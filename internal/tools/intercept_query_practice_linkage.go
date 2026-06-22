@@ -117,6 +117,17 @@ func routePracticeClient(ctx context.Context, deps ClientDeps, gc statsRPC, a qu
 			return errorResult(fmt.Sprintf("practice %q graph stats failed: %s", a.Language, err.Error()))
 		}
 		stats := resp.GetGraphStats()
+		if a.Format == "json" {
+			return jsonResult(map[string]any{
+				"graph":               "practice",
+				"language":            a.Language,
+				"node_count":          stats.GetNodeCount(),
+				"edge_count":          stats.GetEdgeCount(),
+				"binary_vector_count": stats.GetBinaryVectorCount(),
+				"nodes_by_type":       stats.GetNodesByType(),
+				"edges_by_type":       stats.GetEdgesByType(),
+			})
+		}
 		var sb strings.Builder
 		fmt.Fprintf(&sb, "## Practice Graph: %s\n\n", a.Language)
 		sb.WriteString(engine.RenderStatsBreakdown(stats))
@@ -135,7 +146,7 @@ func routePracticeClient(ctx context.Context, deps ClientDeps, gc statsRPC, a qu
 	// graph (kills the silent-0). The empty-language list-graphs BROWSE above is
 	// preserved; only the explicit "all" sentinel fans out.
 	if a.Language == "all" {
-		return composePracticeSearchFanOut(ctx, deps, deps.SegmentManager(), query)
+		return composePracticeSearchFanOut(ctx, deps, deps.SegmentManager(), query, a.Format)
 	}
 
 	// (3b) Route a specific-language practice search through the per-language CLIENT
@@ -146,7 +157,7 @@ func routePracticeClient(ctx context.Context, deps ClientDeps, gc statsRPC, a qu
 	// stats/sample shapes (arm 2) are unchanged — only the ranked search arm
 	// reroutes. An un-collected practice graph (no segments) renders zero results
 	// cleanly.
-	return composePracticeSearchClient(ctx, deps, deps.SegmentManager(), a.Language, query)
+	return composePracticeSearchClient(ctx, deps, deps.SegmentManager(), a.Language, query, a.Format)
 }
 
 // composePracticeSearchClient runs the practice ranked-search arm against the
@@ -155,7 +166,7 @@ func routePracticeClient(ctx context.Context, deps ClientDeps, gc statsRPC, a qu
 // RETURN_MODE_NODES hydrate, rendered via the same RenderPracticeResults shape
 // as the server arm. A nil embedder degrades to the BM25 arm; an empty graph
 // (segments not yet built) renders zero results cleanly.
-func composePracticeSearchClient(ctx context.Context, deps ClientDeps, mgr SegmentSearcher, language, query string) kgtools.ToolResult {
+func composePracticeSearchClient(ctx context.Context, deps ClientDeps, mgr SegmentSearcher, language, query, format string) kgtools.ToolResult {
 	// Readiness gate (bind-first startup): mgr.Search below dereferences the segment Manager
 	// with no nil-check; during the bind-first wiring window SegmentManager() is an
 	// untyped nil → panic. Gate before the deref. Both entry points (specific
@@ -183,6 +194,9 @@ func composePracticeSearchClient(ctx context.Context, deps ClientDeps, mgr Segme
 	if err != nil {
 		return errorResult("practice search: hydrate: " + err.Error())
 	}
+	if format == "json" {
+		return engine.RenderForCaller(query, results, "json", nil, "")
+	}
 	return engine.RenderPracticeResults(language, query, results)
 }
 
@@ -196,7 +210,7 @@ func composePracticeSearchClient(ctx context.Context, deps ClientDeps, mgr Segme
 // (sorted desc, capped at knowledgeSearchDefaultLimit) and rendered with
 // per-graph attribution via RenderPracticeFanOut. An empty practice-graph set
 // renders a clean "no graphs" result rather than a silent zero.
-func composePracticeSearchFanOut(ctx context.Context, deps ClientDeps, mgr SegmentSearcher, query string) kgtools.ToolResult {
+func composePracticeSearchFanOut(ctx context.Context, deps ClientDeps, mgr SegmentSearcher, query, format string) kgtools.ToolResult {
 	// Readiness gate (bind-first startup): the per-graph mgr.Search runs INSIDE a goroutine
 	// fan-out and dereferences the segment Manager with no nil-check — a nil
 	// Manager there panics in a goroutine and crashes the daemon. During the
@@ -274,6 +288,20 @@ func composePracticeSearchFanOut(ctx context.Context, deps ClientDeps, mgr Segme
 		merged = merged[:knowledgeSearchDefaultLimit]
 	}
 
+	if format == "json" {
+		// Flatten each merged hit's .Result into the flat json envelope. The
+		// per-graph identity already RIDES each h.Result: hydrateEngineHits
+		// stamps {practice, <language>} per per-graph hydrate call, so the json
+		// consumer (graph-UI) traverses each result in its own language. The .Graph
+		// markdown attribution is now redundant with the stamp; the renderJSON shape
+		// stays flat.
+		flat := make([]engine.SearchResult, len(merged))
+		for i, h := range merged {
+			flat[i] = h.Result
+		}
+		return engine.RenderForCaller(query, flat, "json", nil, "")
+	}
+
 	searched := make([]string, len(names))
 	copy(searched, names)
 	sort.Strings(searched)
@@ -310,96 +338,6 @@ func rankedSearchRetiredResult(graph string) kgtools.ToolResult {
 		graph, graph))
 }
 
-// routeLinkageClient dispatches the linkage shapes.
-func routeLinkageClient(ctx context.Context, gc statsRPC, a queryArgs) kgtools.ToolResult {
-	// (1) list-graphs: no id/text/mode.
-	if a.ID == "" && a.Text == "" && a.Mode == "" && len(a.Queries) == 0 {
-		return listLinkageGraphs(ctx, gc)
-	}
-	// (2) mode=stats.
-	if a.Mode == "stats" {
-		return linkageStatsClient(ctx, gc)
-	}
-	// (3) id getNode.
-	if a.ID != "" {
-		resp, err := gc.Execute(ctx, &knowledgev1.ExecuteRequest{
-			Plan:   &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{ById: a.ID}},
-			Target: &knowledgev1.GraphSelector{Graph: "linkage"},
-		})
-		if err != nil {
-			return errorResult(fmt.Sprintf("node %s not found in linkage graph", a.ID))
-		}
-		nodes, derr := engine.DecodeNodes(resp)
-		if derr != nil || len(nodes) == 0 {
-			return errorResult(fmt.Sprintf("node %s not found in linkage graph", a.ID))
-		}
-		return engine.RenderGenericNode(nodes[0], "linkage")
-	}
-	// (4) ranked text search RETIRED. linkage proxies denormalize
-	// source-graph text and carry no unique client-indexable content, so there is
-	// no client linkage search index. The index-free ops above (list-graphs, stats
-	// + proxy breakdown, id getNode) — and proxy read-through — are unaffected.
-	return rankedSearchRetiredResult("linkage")
-}
-
-// linkageStatsClient renders the linkage stats body + the proxy-by-foreign_graph
-// breakdown (one extra Match(NodeProxy) Execute — bounded by the proxy set, the
-// linkage-specific enrichment the server linkageStats appended).
-func linkageStatsClient(ctx context.Context, gc statsRPC) kgtools.ToolResult {
-	resp, err := gc.Stats(ctx, &knowledgev1.StatsRequest{Target: &knowledgev1.GraphSelector{Graph: "linkage"}})
-	if err != nil {
-		return errorResult("linkage graph stats failed: " + err.Error())
-	}
-	stats := resp.GetGraphStats()
-	var sb strings.Builder
-	sb.WriteString("## Linkage Graph\n\n")
-	sb.WriteString(engine.RenderStatsBreakdown(stats))
-	sb.WriteString(renderLinkageProxyBreakdown(ctx, gc))
-	return textResult(sb.String())
-}
-
-// renderLinkageProxyBreakdown fetches the proxy nodes (one Match(NodeProxy)
-// Execute, bounded by the proxy set) and renders the proxy-by-foreign_graph
-// breakdown the server linkageStats appended. Returns "" when there are no
-// proxies / the fetch fails (degrade gracefully — the stats body still renders).
-func renderLinkageProxyBreakdown(ctx context.Context, gc statsRPC) string {
-	resp, err := gc.Execute(ctx, &knowledgev1.ExecuteRequest{
-		Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
-			Selection: &knowledgev1.Selection{NodeType: string(kgtypes.NodeProxy)},
-		}},
-		Target: &knowledgev1.GraphSelector{Graph: "linkage"},
-	})
-	if err != nil {
-		return ""
-	}
-	proxies, derr := engine.DecodeNodes(resp)
-	if derr != nil || len(proxies) == 0 {
-		return ""
-	}
-	counts := make(map[string]int)
-	for _, n := range proxies {
-		fg := kgtypes.Value(n, "foreign_graph")
-		if fg == "" {
-			fg = "unknown"
-		}
-		counts[fg]++
-	}
-	if len(counts) == 0 {
-		return ""
-	}
-	keys := make([]string, 0, len(counts))
-	for k := range counts {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
-	var sb strings.Builder
-	sb.WriteString("\n### Proxy Breakdown\n")
-	for _, k := range keys {
-		fmt.Fprintf(&sb, "- %s: %d proxies\n", k, counts[k])
-	}
-	return sb.String()
-}
-
 // listPracticeGraphs enumerates the loaded practice graphs (RETURN_MODE_GRAPH_NAMES
 // Execute via listGraphNamesOfType + per-graph Stats counts).
 func listPracticeGraphs(ctx context.Context, deps ClientDeps) kgtools.ToolResult {
@@ -422,19 +360,6 @@ func listPracticeGraphs(ctx context.Context, deps ClientDeps) kgtools.ToolResult
 		fmt.Fprintf(&sb, "- **%s** — %d nodes, %d edges\n", name, nodes, edges)
 	}
 	sb.WriteString("\nUse `query({ \"graph\": \"practice\", \"language\": \"go\" })` to browse a specific practice graph.")
-	return textResult(sb.String())
-}
-
-// listLinkageGraphs enumerates the loaded linkage graphs + the topology hint.
-func listLinkageGraphs(ctx context.Context, gc statsRPC) kgtools.ToolResult {
-	// The linkage graph is a single instance (empty name); fetch its counts.
-	nodes, edges := graphCounts(ctx, gc, "linkage", "")
-	if nodes == 0 && edges == 0 {
-		return textResult("No linkage graph found. Linkage graphs are created by the tier-1 linker when code-to-cloud relationships are detected.")
-	}
-	var sb strings.Builder
-	sb.WriteString("Linkage graph:\n\n")
-	fmt.Fprintf(&sb, "- %d nodes, %d edges\n", nodes, edges)
 	return textResult(sb.String())
 }
 

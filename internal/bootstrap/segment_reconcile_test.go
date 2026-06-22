@@ -39,6 +39,13 @@ type reconcileEngine struct {
 	// namesByType maps a graph-type string (e.g. "code", "cloud") to the instance
 	// names RETURN_MODE_GRAPH_NAMES serves for that type.
 	namesByType map[string][]string
+	// embedded is the BinaryVectorCount Stats serves — the embedded denominator
+	// segmentPoolDegenerate reads (via tools.GraphEmbeddedCount). It defaults to 0
+	// (the empty-Stats behavior the resident-vs-shipped reconcile tests rely on:
+	// they probe ReconcileResidentDegenerate, NOT segmentPoolDegenerate, so they
+	// never read BinaryVectorCount). A nonzero value arms segmentPoolDegenerate for
+	// the heal-closure red-green, which gates on it.
+	embedded int32
 
 	mu        sync.Mutex
 	scanItems map[string][]*knowledgev1.PipelineScanItem // keyed by graph name
@@ -63,7 +70,9 @@ func (e *reconcileEngine) Execute(
 func (e *reconcileEngine) Stats(
 	context.Context, *connect.Request[knowledgev1.StatsRequest],
 ) (*connect.Response[knowledgev1.StatsResponse], error) {
-	return connect.NewResponse(&knowledgev1.StatsResponse{GraphStats: &knowledgev1.GraphStats{}}), nil
+	return connect.NewResponse(&knowledgev1.StatsResponse{
+		GraphStats: &knowledgev1.GraphStats{BinaryVectorCount: e.embedded},
+	}), nil
 }
 
 func (e *reconcileEngine) PipelineScan(
@@ -94,10 +103,56 @@ func (e *reconcileEngine) scanCallCount(name string) int {
 // lets a test seed scan pages + read the per-graph PipelineScan count.
 func buildReconcileClient(t *testing.T, codeRepos ...string) (*client, *reconcileEngine) {
 	t.Helper()
+	return buildReconcileClientWith(t, 0, false, codeRepos...)
+}
+
+// buildReconcileClientWith is the lower-level wiring buildReconcileClient delegates
+// to. It exposes the two knobs the heal-closure red-green needs over the
+// default empty-Fetch / zero-embedded fixture:
+//   - embedded: the BinaryVectorCount Stats serves, so segmentPoolDegenerate (which
+//     gates the heal closure's load-first/rebuild decision) can be ARMED (nonzero).
+//   - realFetch: when true, the segment service serves stored decodable blobs from
+//     Fetch, so a load() of a REAL shipped corpus actually imports it (the intact
+//     case). Default false keeps the empty Fetch the collapse tests model.
+//
+// A test ships a real decodable corpus by routing a producer Manager over the
+// returned client's router (which fronts the same segment service this builds).
+func buildReconcileClientWith(
+	t *testing.T, embedded int32, realFetch bool, codeRepos ...string,
+) (*client, *reconcileEngine) {
+	t.Helper()
+	c, eng, _ := buildReconcileClientWithSeg(t, embedded, realFetch, codeRepos...)
+	return c, eng
+}
+
+// buildReconcileClientWithSeg is buildReconcileClientWith that ALSO returns the
+// *healSegmentService, so a test can flip its failListAfterN knob to model a server
+// that answers the cheap presence probes but then times out on the heal probe's
+// load() — driving healNeedsRebuild into the ReconcileResidentDegenerate
+// probe-error arm.
+func buildReconcileClientWithSeg(
+	t *testing.T, embedded int32, realFetch bool, codeRepos ...string,
+) (*client, *reconcileEngine, *healSegmentService) {
+	t.Helper()
+	c, eng, seg, _ := buildReconcileClientWithSegDir(t, embedded, realFetch, codeRepos...)
+	return c, eng, seg
+}
+
+// buildReconcileClientWithSegDir is buildReconcileClientWithSeg that ALSO returns
+// the client's L2 cache base dir, so a test can warm the on-disk L2 cache through a
+// SEPARATE producer Manager rooted at the SAME dir (the daemon-restart shape: a
+// prior run warmed the disk, then a fresh consumer Manager imports from it L2-first
+// while the server is down).
+func buildReconcileClientWithSegDir(
+	t *testing.T, embedded int32, realFetch bool, codeRepos ...string,
+) (*client, *reconcileEngine, *healSegmentService, string) {
+	t.Helper()
 	seg := newHealSegmentService()
+	seg.realFetch = realFetch
 	eng := &reconcileEngine{
 		countingEngine: &countingEngine{},
 		namesByType:    map[string][]string{string(kgtypes.GraphCode): codeRepos},
+		embedded:       embedded,
 		scanItems:      map[string][]*knowledgev1.PipelineScanItem{},
 		scanCalls:      map[string]int{},
 	}
@@ -114,13 +169,14 @@ func buildReconcileClient(t *testing.T, codeRepos ...string) (*client, *reconcil
 	authState := auth.NewAuthState(newFakeAuthStore(), time.Minute)
 	router := graphclient.NewRouter(local, srv.URL, staticTokenSource{tok: "tok"}, authState)
 
+	dir := t.TempDir()
 	c := &client{
 		local:      local,
 		router:     router,
 		authState:  authState,
-		segmentMgr: segmentdist.NewManager(router, t.TempDir(), 0),
+		segmentMgr: segmentdist.NewManager(router, dir, 0),
 	}
-	return c, eng
+	return c, eng, seg, dir
 }
 
 // makeReconcileScanPage builds n segment_rebuild scan items with 32-byte vectors —
@@ -227,6 +283,80 @@ func TestReconcileSegmentCoverage_SkipsNonEmbeddableBuiltins(t *testing.T) {
 		"linkage has no rebuildable segments — never enumerated/probed/rebuilt")
 	require.Equal(t, 0, eng.scanCallCount("recipes"),
 		"transformers has no rebuildable segments — never enumerated/probed/rebuilt")
+}
+
+// TestReconcileSegmentCoverage_TimeoutKeepsResidentNoRebuild is the Phase 2
+// red-green: with the L2-first load(), a server whose manifest List times out on the
+// reconcile's heal load (the down/524 shape) is a NO-OP that keeps the L2 resident,
+// NEVER a from-scratch rebuild.
+//
+// Restart shape: a prior run warmed the on-disk L2 cache with a REAL decodable
+// corpus; a FRESH consumer Manager rooted at the SAME dir then reconciles while the
+// server's List times out. The L2-first load enumerates the warm disk and imports
+// the corpus WITHOUT EVER calling List → resident stays >= the corpus → the probe
+// reads NOT degenerate → reconcileSegmentCoverage pages ZERO PipelineScan.
+//
+// RED on a Phase-1-reverted tree (load() Lists the server first): the fresh
+// consumer's load Lists, the List TIMES OUT → load returns the error → the resident
+// pool stays EMPTY (0). The discriminating assertion is therefore
+// ResidentDocCount>=corpusN, which FAILS on the revert (resident 0) and passes after
+// the L2-first flip. scanCallCount==0 holds on BOTH trees — the best-effort reconcile
+// arms never rebuild on a probe error (the Phase-2 no-op-on-timeout guarantee) — so
+// it is asserted as the no-rebuild invariant, while the resident assertion is the
+// L2-first discriminator.
+func TestReconcileSegmentCoverage_TimeoutKeepsResidentNoRebuild(t *testing.T) {
+	const (
+		repo = "timeoutRepo"
+		// >= the segmentdist resident backstop floor (64) so the shipped corpus arms
+		// the resident-vs-shipped ratio (a sub-floor corpus would disarm and mask the
+		// red-green). The floor constant is unexported in package segmentdist.
+		corpusN = 72
+	)
+	// realFetch=true during the warm so the warm Manager actually imports the corpus
+	// from the server into the shared on-disk L2 cache.
+	c, eng, seg, dir := buildReconcileClientWithSegDir(t, 0, true /*realFetch*/, repo)
+	ctx := context.Background()
+
+	// Ship a REAL decodable HNSW corpus through the router the consumer loads from.
+	producer := segmentdist.NewManager(c.router, t.TempDir(), 0)
+	require.NoError(t, producer.AddAndShip(ctx, kgtypes.GraphCode, repo, fastloadVecDocs(repo, corpusN)))
+	require.NoError(t, producer.Flush(ctx, kgtypes.GraphCode, repo))
+
+	// WARM the shared on-disk L2 cache via a SEPARATE Manager rooted at the SAME dir:
+	// its cache-first load Lists + Fetches the real corpus and writes the .seg blobs
+	// to disk under dir. After this the disk cache holds the full decodable corpus.
+	warm := segmentdist.NewManager(c.router, dir, 0)
+	degenerate, err := warm.ReconcileResidentDegenerate(ctx, kgtypes.GraphCode, repo)
+	require.NoError(t, err)
+	require.False(t, degenerate, "the warm load imports the full corpus from the server (resident >= floor)")
+	require.GreaterOrEqual(t, warm.ResidentDocCount(kgtypes.GraphCode, repo), corpusN,
+		"the warm Manager is coverage-passing — the on-disk L2 cache now holds the corpus")
+
+	// Now the server's manifest List times out: every ListDelta from here on returns a
+	// transport error (the down/524 shape). failListAfterN is set to the List count
+	// already spent on the warm so ALL subsequent Lists (the consumer's reconcile)
+	// fail. A reverted L3-first load() Lists first → errors → resident stays empty; the
+	// L2-first load() never Lists → imports from the warm disk.
+	seg.mu.Lock()
+	seg.failListAfterN = seg.listCalls
+	seg.mu.Unlock()
+
+	// Seed a scan page so that, IF a rebuild wrongly fired, PipelineScan would be paged
+	// (making the scanCallCount==0 assertion meaningful, not vacuous).
+	eng.scanItems[repo] = makeReconcileScanPage(repo, 10)
+
+	// ACT: a FRESH consumer (c.segmentMgr — never loaded) reconciles over the warm L2
+	// dir while the server's List times out.
+	require.Equal(t, 0, c.segmentMgr.ResidentDocCount(kgtypes.GraphCode, repo),
+		"PRE: the fresh consumer has not loaded yet (resident 0)")
+	c.reconcileSegmentCoverage(ctx)
+
+	// GREEN: the L2-first load imported the corpus from the warm disk (never Listed) →
+	// not degenerate → no rebuild paged, and the resident pool is preserved.
+	require.Equal(t, 0, eng.scanCallCount(repo),
+		"a List-timeout reconcile is a NO-OP — RebuildSegments NEVER paged (scanCallCount==0)")
+	require.GreaterOrEqual(t, c.segmentMgr.ResidentDocCount(kgtypes.GraphCode, repo), corpusN,
+		"the L2 resident is preserved on the List timeout (imported from warm disk, not collapsed — the L2-first discriminator)")
 }
 
 // TestReconcileSegmentCoverage_NilManagerNoPanic proves the headless/degraded path:

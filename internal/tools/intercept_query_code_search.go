@@ -37,14 +37,6 @@ import (
 // shows real commits-behind + last-collected-when. Degrades to no footer when no
 // metadata is recorded (graphs collected before staleness tracking landed).
 
-// excludedCodeSearchTypes are the low-signal node types dropped by default (port
-// of the server excludedCodeTypes).
-var excludedCodeSearchTypes = map[string]bool{
-	"comment":             true,
-	"block_mapping_pair":  true,
-	"block_sequence_item": true,
-}
-
 // codeSearchArgs is the code-search view of the query args.
 type codeSearchArgs struct {
 	Graph           string   `json:"graph"`
@@ -62,6 +54,10 @@ type codeSearchArgs struct {
 	IncludeComments *bool    `json:"include_comments"`
 	IncludeTests    *bool    `json:"include_tests"`
 	TestKinds       []string `json:"test_kinds"`
+	// Format selects the render shape: "json" emits the SearchJSONResponse
+	// envelope (via engine.RenderForCaller), anything else stays on the text
+	// path. Decoded by both interceptSearchCode and InterceptQueryCodeSearch.
+	Format string `json:"format"`
 	// QueryVector is the caller-supplied single query vector for this search's
 	// query/queries set (a caller supplies at most one per call). The Go stdlib
 	// JSON []byte codec base64-decodes it transparently, matching
@@ -304,8 +300,17 @@ func pipelinePausedFooter(deps ClientDeps) string {
 // (parallel) against the single repo graph, then renders.
 func composeCodeSearchSingleRepo(ctx context.Context, deps ClientDeps, cdeps codeSearchDeps, a codeSearchArgs, queries []string, queryVecs [][]byte, limit int, includeSource, groupByFile bool) kgtools.ToolResult {
 	target := &knowledgev1.GraphSelector{Graph: "code", Repo: a.Repo, Branch: a.Branch}
-	perQuery := searchAllQueries(ctx, cdeps, target, queries, queryVecs, limit, a.PathPrefix, "")
+	// Pass a.Repo (not "") as the repo tag so each CodeResolvedResult.Repo carries
+	// the request repo — flattenCodeResults stamps it as the json GraphInstance
+	// Byte-for-byte safe for the single-repo TEXT path: only the
+	// MULTI-repo FormatCodeCrossRepoFlatResults reads rr.Repo; the single-repo
+	// formatters (FormatCodePerQueryResults / FormatCodePerQueryGroupByFile) never do.
+	perQuery := searchAllQueries(ctx, cdeps, target, queries, queryVecs, limit, a.PathPrefix, a.Repo)
 	perQuery = applyCodeResultFilters(perQuery, a)
+
+	if a.Format == "json" {
+		return engine.RenderForCaller(strings.Join(queries, " "), flattenCodeResults(perQuery), "json", nil, "")
+	}
 
 	counts := make([]int, len(perQuery))
 	for i := range perQuery {
@@ -384,6 +389,10 @@ func composeCodeSearchMultiRepo(ctx context.Context, deps ClientDeps, cdeps code
 	}
 	merged = applyCodeResultFilters(merged, a)
 
+	if a.Format == "json" {
+		return engine.RenderForCaller(strings.Join(queries, " "), flattenCodeResults(merged), "json", nil, "")
+	}
+
 	counts := make([]int, len(queries))
 	for i := range merged {
 		counts[i] = len(merged[i])
@@ -456,44 +465,4 @@ func searchOneCodeQueryClient(ctx context.Context, cdeps codeSearchDeps, target 
 		out = append(out, engine.CodeResolvedResult{Score: hr.Score, Node: hr.Node, Found: true, Repo: repo})
 	}
 	return out
-}
-
-// applyCodeResultFilters applies the default comment-exclusion + the test-flag
-// filter (port of excludeCommentResults + filterCodeResultsByTestFlag).
-func applyCodeResultFilters(perQuery [][]engine.CodeResolvedResult, a codeSearchArgs) [][]engine.CodeResolvedResult {
-	includeComments := a.IncludeComments != nil && *a.IncludeComments
-	kinds := make(map[string]bool, len(a.TestKinds))
-	for _, k := range a.TestKinds {
-		kinds[k] = true
-	}
-	filterTests := a.IncludeTests != nil || len(a.TestKinds) > 0
-	out := make([][]engine.CodeResolvedResult, len(perQuery))
-	for i, results := range perQuery {
-		kept := make([]engine.CodeResolvedResult, 0, len(results))
-		for _, r := range results {
-			if !includeComments && excludedCodeSearchTypes[r.Node.Type] {
-				continue
-			}
-			if filterTests && !keepCodeTestResult(r.Node, a.IncludeTests, kinds) {
-				continue
-			}
-			kept = append(kept, r)
-		}
-		out[i] = kept
-	}
-	return out
-}
-
-// keepCodeTestResult ports the server keepResult test-flag predicate.
-func keepCodeTestResult(n *knowledgev1.Node, includeTests *bool, kinds map[string]bool) bool {
-	if !n.IsTest {
-		return true
-	}
-	if includeTests != nil && !*includeTests {
-		return false
-	}
-	if len(kinds) == 0 {
-		return true
-	}
-	return kinds[n.TestKind]
 }

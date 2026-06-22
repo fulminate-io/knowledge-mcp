@@ -108,8 +108,10 @@ func formatBytes(b int64) string {
 // formatStatsBreakdown / appendSampleNames) — those now exist client-side, so
 // the logs stats path renders the same uniform body every other graph type
 // emits. The logs graph is the real persisted graph (Graph:"logs", Name:queryID);
-// the pre-fetched *logState is no longer needed for the counts.
-func (h *Handler) handleLogsStats(ctx context.Context, queryID string, _ *logState, _ bool) kgtools.ToolResult {
+// the pre-fetched *logState is no longer needed for the counts. format carries
+// the query's format arg threaded from handleLogsQuery (a.Format) so the
+// format=="json" branch can return structured GraphStats.
+func (h *Handler) handleLogsStats(ctx context.Context, queryID string, _ *logState, _ bool, format string) kgtools.ToolResult {
 	gc := h.graphCaller()
 	if gc == nil {
 		return kgtools.ErrorResult("logs stats: graph client unavailable")
@@ -125,6 +127,17 @@ func (h *Handler) handleLogsStats(ctx context.Context, queryID string, _ *logSta
 		return kgtools.ErrorResult(fmt.Sprintf("logs %q graph stats failed: %s", queryID, err.Error()))
 	}
 	stats := resp.GetGraphStats()
+	if format == "json" {
+		return jsonResult(map[string]any{
+			"graph":               "logs",
+			"name":                queryID,
+			"node_count":          stats.GetNodeCount(),
+			"edge_count":          stats.GetEdgeCount(),
+			"binary_vector_count": stats.GetBinaryVectorCount(),
+			"nodes_by_type":       stats.GetNodesByType(),
+			"edges_by_type":       stats.GetEdgesByType(),
+		})
+	}
 	return kgtools.TextResult(fmt.Sprintf("## Logs Graph: %s\n\n%s", queryID, engine.RenderStatsBreakdown(stats)))
 }
 

@@ -245,7 +245,7 @@ func TestRPCSegmentSourceRoundTrip(t *testing.T) {
 	require.Equal(t, uint64(1), metas[0].Generation)
 	require.Equal(t, uint64(2), metas[1].Generation)
 
-	blobs, err := src.Fetch([]searchengine.SegmentID{"s1", "s2"})
+	blobs, err := src.Fetch(ctx, []searchengine.SegmentID{"s1", "s2"})
 	require.NoError(t, err)
 	require.Len(t, blobs, 2)
 	got := map[string]searchengine.SegmentBlob{}

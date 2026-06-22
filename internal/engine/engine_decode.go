@@ -39,9 +39,19 @@ func nanosToTime(nanos int64) time.Time {
 // former store.HydratedResult's field set (pkg/store/search_types.go:18) with
 // the embedded node retyped to the wire proto *knowledgev1.Node — T5
 // drops the store.Node wrapper layer from the client read path. Method-free DTO.
+//
+// Graph + GraphInstance carry the result's SOURCE-GRAPH identity: the
+// graph family ("code"/"cloud"/"cicd"/"practice"/"knowledge"/"logs") and the
+// per-result instance (repo / account / language / log queryID; empty for the
+// knowledge default). Every json-emitting compose path stamps them at hydrate/
+// merge time from the selector it already has, so a json consumer (the graph-UI)
+// can traverse each result in its own graph. The practice fan-out is the case
+// that varies PER HIT, so the stamp is per-result, not per-call.
 type SearchResult struct {
-	Node  *knowledgev1.Node
-	Score float64
+	Node          *knowledgev1.Node
+	Score         float64
+	Graph         string
+	GraphInstance string
 }
 
 // TraversalResult is the client-side traversal hit (node + distance), mirroring

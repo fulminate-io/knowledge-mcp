@@ -276,7 +276,7 @@ func (c *client) wireRuntimesBackground(ctx context.Context, f Config) {
 	// then spawns a background refresh goroutine that replaces the
 	// deleted server-side RegisterPipelineHooks. nil-safe Stop is run by
 	// the cleanup closure.
-	if err := wirePipelineRuntime(c, f); err != nil {
+	if err := wirePipelineRuntime(ctx, c, f); err != nil {
 		slog.Warn("client pipeline wire failed; LLM background processing disabled",
 			"error", err)
 	}

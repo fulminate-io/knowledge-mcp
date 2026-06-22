@@ -47,6 +47,14 @@ type SearchJSONResult struct {
 	Language    string            `json:"language,omitempty"`
 	Status      string            `json:"status,omitempty"`
 	Metadata    map[string]string `json:"metadata,omitempty"`
+	// Graph + GraphInstance carry the result's SOURCE-GRAPH identity:
+	// the graph family and the per-result instance the graph-UI traverses each
+	// result in. omitempty keeps the json shape stable for any path that has not
+	// stamped them. Copied verbatim from engine.SearchResult by renderJSON +
+	// projectHydratedResult (write) and back into SearchResult by HydrateFromJSON
+	// (read) so the applyClientRerank round-trip preserves the stamp.
+	Graph         string `json:"graph,omitempty"`
+	GraphInstance string `json:"graph_instance,omitempty"`
 }
 
 // SearchJSONResponse is the client-local envelope wrapping the JSON search
@@ -151,23 +159,25 @@ func renderJSON(query string, results []SearchResult, fields []string) kgtools.T
 			name = r.Node.Description
 		}
 		resp.Results[i] = SearchJSONResult{
-			ID:          r.Node.Id,
-			Name:        name,
-			Type:        r.Node.Type,
-			Score:       r.Score,
-			SymbolName:  r.Node.SymbolName,
-			Signature:   r.Node.Signature,
-			Summary:     r.Node.Summary,
-			Keywords:    r.Node.Keywords,
-			TestKind:    r.Node.TestKind,
-			Description: r.Node.Description,
-			Source:      r.Node.Source,
-			Content:     r.Node.Content,
-			FilePath:    r.Node.FilePath,
-			Line:        int(r.Node.StartLine),
-			Language:    r.Node.Language,
-			Status:      r.Node.Status,
-			Metadata:    r.Node.Metadata,
+			ID:            r.Node.Id,
+			Name:          name,
+			Type:          r.Node.Type,
+			Score:         r.Score,
+			SymbolName:    r.Node.SymbolName,
+			Signature:     r.Node.Signature,
+			Summary:       r.Node.Summary,
+			Keywords:      r.Node.Keywords,
+			TestKind:      r.Node.TestKind,
+			Description:   r.Node.Description,
+			Source:        r.Node.Source,
+			Content:       r.Node.Content,
+			FilePath:      r.Node.FilePath,
+			Line:          int(r.Node.StartLine),
+			Language:      r.Node.Language,
+			Status:        r.Node.Status,
+			Metadata:      r.Node.Metadata,
+			Graph:         r.Graph,
+			GraphInstance: r.GraphInstance,
 		}
 	}
 	data, err := json.Marshal(resp)
@@ -241,6 +251,14 @@ func projectHydratedResult(r SearchResult, fields []string) map[string]any {
 			out["line"] = r.Node.StartLine
 		case "language":
 			out["language"] = r.Node.Language
+		case "graph":
+			if r.Graph != "" {
+				out["graph"] = r.Graph
+			}
+		case "graph_instance":
+			if r.GraphInstance != "" {
+				out["graph_instance"] = r.GraphInstance
+			}
 		case "metadata":
 			if len(r.Node.Metadata) > 0 {
 				out["metadata"] = r.Node.Metadata
@@ -326,7 +344,9 @@ func HydrateFromJSON(body string) ([]SearchResult, error) {
 			symbol = r.Name
 		}
 		out[i] = SearchResult{
-			Score: r.Score,
+			Score:         r.Score,
+			Graph:         r.Graph,
+			GraphInstance: r.GraphInstance,
 			Node: &knowledgev1.Node{
 				Id:          r.ID,
 				SymbolName:  symbol,

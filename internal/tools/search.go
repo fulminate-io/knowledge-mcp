@@ -292,6 +292,10 @@ type searchReducibleArgs struct {
 	Query   string   `json:"query"`
 	Queries []string `json:"queries"`
 	Account string   `json:"account"`
+	// Format is threaded into the practice/resource composers so the SEARCH-tool
+	// reducible arms honor format:"json" (engine.RenderForCaller) like the
+	// query-tool arms do.
+	Format string `json:"format"`
 }
 
 // searchReducibleQueryText picks the search text from the query/queries fields.
@@ -346,11 +350,11 @@ func interceptSearchReducibleGraph(ctx context.Context, deps ClientDeps, graph s
 		// scatter-gather over all languages (kills the silent-0 that
 		// mgr.Search(GraphPractice,"all",…) would otherwise return). Any passed
 		// language is ignored on the SEARCH path — there is no single-graph branch.
-		return true, composePracticeSearchFanOut(ctx, deps, deps.SegmentManager(), query)
+		return true, composePracticeSearchFanOut(ctx, deps, deps.SegmentManager(), query, a.Format)
 	case "cloud":
-		return true, composeResourceSearchClient(ctx, deps, deps.SegmentManager(), cloudGraphKind, a.Account, query)
+		return true, composeResourceSearchClient(ctx, deps, deps.SegmentManager(), cloudGraphKind, a.Account, query, a.Format)
 	case "cicd":
-		return true, composeResourceSearchClient(ctx, deps, deps.SegmentManager(), cicdGraphKind, a.Account, query)
+		return true, composeResourceSearchClient(ctx, deps, deps.SegmentManager(), cicdGraphKind, a.Account, query, a.Format)
 	default: // linkage / web / pdf — ranked search retired.
 		return true, rankedSearchRetiredResult(graph)
 	}

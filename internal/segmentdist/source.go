@@ -32,7 +32,9 @@ type segmentCaller interface {
 
 // rpcSegmentSource implements searchengine.SegmentSource over the SegmentService
 // client. It carries the graph's GraphSelector (the routing envelope) plus a
-// background ctx for the ctx-less Fetch leg of the interface.
+// background fetchCtx for the ctx-less Prune/PublishManifest legs (those are not
+// part of SegmentSource and have no caller ctx to thread). Fetch and List both
+// route the CALLER's ctx now, so the search/reconcile path is cancellable.
 type rpcSegmentSource struct {
 	caller   segmentCaller
 	target   *knowledgev1.GraphSelector
@@ -47,11 +49,11 @@ type rpcSegmentSource struct {
 var _ searchengine.SegmentSource = (*rpcSegmentSource)(nil)
 
 // newRPCSegmentSource builds a SegmentSource for one graph. fetchCtx backs the
-// ctx-less SegmentSource.Fetch leg (the engine's Fetch signature takes no ctx —
-// distribution_iface.go:23 — while List does, line 22); pass context.Background
-// when no scoped ctx is available. writerID is the stable per-machine identity
-// carried on every outbound RPC for the server's last-connection liveness
-// stamp; "" is a tolerated no-op server-side.
+// ctx-less Prune/PublishManifest legs (those are not part of SegmentSource, so
+// they have no caller ctx to thread); SegmentSource.Fetch and List take the
+// caller ctx directly. Pass context.Background when no scoped ctx is available.
+// writerID is the stable per-machine identity carried on every outbound RPC for
+// the server's last-connection liveness stamp; "" is a tolerated no-op server-side.
 func newRPCSegmentSource(caller segmentCaller, target *knowledgev1.GraphSelector, writerID string, fetchCtx context.Context) *rpcSegmentSource {
 	if fetchCtx == nil {
 		fetchCtx = context.Background()
@@ -78,10 +80,11 @@ func (s *rpcSegmentSource) List(ctx context.Context, sinceGen uint64) ([]searche
 }
 
 // Fetch issues SegmentService.Fetch for the named ids and maps the proto blobs
-// to engine blobs. The interface gives Fetch no ctx; it uses the source's
-// fetchCtx.
-func (s *rpcSegmentSource) Fetch(ids []searchengine.SegmentID) ([]searchengine.SegmentBlob, error) {
-	resp, err := s.caller.Fetch(s.fetchCtx, &knowledgev1.FetchRequest{
+// to engine blobs. It routes the CALLER's ctx (threaded from load/reload, which a
+// search or background reconcile drives) so a cancelled search / shutdown unwinds
+// the in-flight Fetch RPC promptly — NOT the source's stored fetchCtx.
+func (s *rpcSegmentSource) Fetch(ctx context.Context, ids []searchengine.SegmentID) ([]searchengine.SegmentBlob, error) {
+	resp, err := s.caller.Fetch(ctx, &knowledgev1.FetchRequest{
 		Target:   s.target,
 		Ids:      ids,
 		WriterId: s.writerID,

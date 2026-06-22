@@ -168,6 +168,73 @@ func TestLinkageRoute_AllShapes(t *testing.T) {
 	})
 }
 
+// TestPracticeStats_JSON asserts the practice mode=stats format:"json" arm
+// returns the structured shape with graph=practice + language + counts + maps,
+// driven through routePracticeClient. Text path stays covered by
+// TestPracticeRoute_StatsAndSearch.
+func TestPracticeStats_JSON(t *testing.T) {
+	f := &plFake{stats: &knowledgev1.GraphStats{
+		NodeCount: 9, EdgeCount: 1, BinaryVectorCount: 3,
+		NodesByType: map[string]int64{"pattern": 9},
+		EdgesByType: map[string]int64{"relates-to": 1},
+	}}
+	res := routePracticeClient(context.Background(), nil, f, queryArgs{Graph: "practice", Language: "go", Mode: "stats", Format: "json"})
+	require.False(t, res.IsError, textBodyTools(res))
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal([]byte(textBodyTools(res)), &payload), "body must be valid JSON")
+	assert.Equal(t, "practice", payload["graph"])
+	assert.Equal(t, "go", payload["language"])
+	assert.EqualValues(t, 9, payload["node_count"])
+	assert.EqualValues(t, 1, payload["edge_count"])
+	assert.EqualValues(t, 3, payload["binary_vector_count"])
+	nbt, ok := payload["nodes_by_type"].(map[string]any)
+	require.True(t, ok, "nodes_by_type is an object")
+	assert.EqualValues(t, 9, nbt["pattern"])
+	ebt, ok := payload["edges_by_type"].(map[string]any)
+	require.True(t, ok, "edges_by_type is an object")
+	assert.EqualValues(t, 1, ebt["relates-to"])
+}
+
+// TestLinkageStats_JSON asserts the linkage mode=stats format:"json" arm returns
+// the structured shape with graph=linkage (no instance key) + counts + maps, and
+// that the markdown-only proxy-by-foreign_graph breakdown is ABSENT from JSON.
+// Driven through routeLinkageClient (the production entry that threads a.Format
+// into linkageStatsClient) so the format arg is exercised end-to-end. Text path
+// stays covered by TestLinkageRoute_AllShapes.
+func TestLinkageStats_JSON(t *testing.T) {
+	f := &plFake{
+		stats: &knowledgev1.GraphStats{
+			NodeCount: 4, EdgeCount: 2, BinaryVectorCount: 0,
+			NodesByType: map[string]int64{"proxy": 4},
+			EdgesByType: map[string]int64{"links-to": 2},
+		},
+		matchNodes: []knowledgev1.Node{
+			{Id: "x1", Type: string(kgtypes.NodeProxy), Metadata: map[string]string{"foreign_graph": "code"}},
+			{Id: "x2", Type: string(kgtypes.NodeProxy), Metadata: map[string]string{"foreign_graph": "cloud"}},
+		},
+	}
+	res := routeLinkageClient(context.Background(), f, queryArgs{Graph: "linkage", Mode: "stats", Format: "json"})
+	require.False(t, res.IsError, textBodyTools(res))
+
+	body := textBodyTools(res)
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal([]byte(body), &payload), "body must be valid JSON")
+	assert.Equal(t, "linkage", payload["graph"])
+	assert.NotContains(t, payload, "name", "linkage omits the instance key")
+	assert.EqualValues(t, 4, payload["node_count"])
+	assert.EqualValues(t, 2, payload["edge_count"])
+	nbt, ok := payload["nodes_by_type"].(map[string]any)
+	require.True(t, ok, "nodes_by_type is an object")
+	assert.EqualValues(t, 4, nbt["proxy"])
+	ebt, ok := payload["edges_by_type"].(map[string]any)
+	require.True(t, ok, "edges_by_type is an object")
+	assert.EqualValues(t, 2, ebt["links-to"])
+	// The proxy-by-foreign_graph breakdown is markdown-only — never in JSON.
+	assert.NotContains(t, payload, "proxy_breakdown")
+	assert.NotContains(t, body, "Proxy Breakdown", "proxy breakdown stays markdown-only")
+}
+
 // TestRouteWebPDF_RetiresRankedTextPassesIndexFreeOps is the Phase 3
 // web/pdf criterion: a ranked-text query (text or queries[], no id/specialized
 // mode) returns the retired result; every index-free op (by-id, type-browse,

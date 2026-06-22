@@ -48,7 +48,7 @@ func (h *Handler) handleLogsQuery(ctx context.Context, a queryArgs) kgtools.Tool
 	// needed. Run this BEFORE the engine-nil guard so an empty log graph
 	// still reports a well-formed (zero-count) stats body.
 	if a.Mode == "stats" {
-		return h.handleLogsStats(ctx, queryID, st, a.Samples)
+		return h.handleLogsStats(ctx, queryID, st, a.Samples, a.Format)
 	}
 	if engine == nil {
 		return kgtools.ErrorResult(fmt.Sprintf("logs query %q: no engine and no persisted graph", queryID))

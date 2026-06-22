@@ -59,6 +59,16 @@ func knowledgeStats(ctx context.Context, gc statsRPC, a queryArgs) kgtools.ToolR
 		return errorResult("knowledge graph stats failed: " + err.Error())
 	}
 	stats := resp.GetGraphStats()
+	if a.Format == "json" {
+		return jsonResult(map[string]any{
+			"graph":               "knowledge",
+			"node_count":          stats.GetNodeCount(),
+			"edge_count":          stats.GetEdgeCount(),
+			"binary_vector_count": stats.GetBinaryVectorCount(),
+			"nodes_by_type":       stats.GetNodesByType(),
+			"edges_by_type":       stats.GetEdgesByType(),
+		})
+	}
 	var sb strings.Builder
 	sb.WriteString("## Knowledge Graph\n\n")
 	sb.WriteString(engine.RenderStatsBreakdown(stats))

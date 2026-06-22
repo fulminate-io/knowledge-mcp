@@ -72,14 +72,20 @@ func TestMultiWriterRestartReapsNothing(t *testing.T) {
 	priorServer := shippedHNSWIDs(svc)
 	require.Len(t, priorServer, aSegs+1, "server holds A's corpus + B's segment")
 
-	// RESTART: a fresh Manager with A's SAME writer_id + SAME cache dir. Its load()
-	// re-imports the WHOLE server corpus for the graph (List is writer-agnostic — it
-	// returns every blob under the graphKey, A's AND B's), then re-publishes its
-	// (fully reloaded) resident live set. A fully-reloaded resident set passes the
-	// coverage gate, so the publish references the whole corpus and reaps nothing.
+	// RESTART: a fresh Manager with A's SAME writer_id + SAME cache dir. The
+	// writer-agnostic SERVER re-import (loadFromServer) pulls the WHOLE server corpus
+	// for the graph (List returns every blob under the graphKey, A's AND B's), then
+	// re-publishes its (fully reloaded) resident live set. A fully-reloaded resident
+	// set passes the coverage gate, so the publish references the whole corpus and
+	// reaps nothing. Drive loadFromServer directly: load() is L2-FIRST, and A's L2
+	// holds only A's OWN segments (B's blob is on the server but was never pulled into
+	// A's cache dir in this test), so a plain load() would import A's 3 and miss B's.
+	// The writer-agnostic full-corpus re-import this test pins is a loadFromServer
+	// property; in production a restart's missing-from-L2 blobs are healed by the
+	// background reconcile.
 	aRestart := restartFleetMember(t, a.caller, 0, a.cacheDir)
 	aRestartDM := aRestart.managerFor(gt, name)
-	require.NoError(t, aRestartDM.load(ctx))
+	require.NoError(t, aRestartDM.loadFromServer(ctx))
 	require.Len(t, aRestartDM.engine.Export(), aSegs+1,
 		"the restarted writer re-imports the whole server corpus for the graph (writer-agnostic List)")
 	_, err := aRestartDM.shipAndPublish(ctx, nil, aRestartDM.locallyShipped)

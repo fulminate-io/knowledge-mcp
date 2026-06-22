@@ -187,15 +187,21 @@ func (r *voyageReranker) Rerank(ctx context.Context, query string, results []eng
 	decodeDur := time.Since(decodeStart)
 
 	// Voyage returns Data sorted by relevance descending; Index references
-	// the input docs slice. Build the output preserving that order.
+	// the input docs slice. Build the output preserving that order. Carry each
+	// input doc's source-graph identity (Graph/GraphInstance) forward —
+	// the rerank only RE-ORDERS and RE-SCORES; it must not strip the per-result
+	// graph stamp the graph-UI traverses each result in (this rebuild is a
+	// round-trip strip point alongside HydrateFromJSON).
 	out := make([]engine.SearchResult, 0, len(parsed.Data))
 	for _, d := range parsed.Data {
 		if d.Index < 0 || d.Index >= len(send) {
 			continue
 		}
 		out = append(out, engine.SearchResult{
-			Node:  send[d.Index].Node,
-			Score: d.RelevanceScore,
+			Node:          send[d.Index].Node,
+			Score:         d.RelevanceScore,
+			Graph:         send[d.Index].Graph,
+			GraphInstance: send[d.Index].GraphInstance,
 		})
 	}
 

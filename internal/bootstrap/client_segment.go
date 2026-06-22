@@ -6,9 +6,9 @@ import (
 	"context"
 	"log/slog"
 	"path/filepath"
-	"time"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 	"github.com/fulminate-io/knowledge-mcp/internal/segmentdist"
 	"github.com/fulminate-io/knowledge-mcp/internal/tools"
 )
@@ -221,15 +221,27 @@ const (
 // cannot drift; the non-embeddable builtins (linkage, transformers) and the raw
 // graphs (logs, web, pdf) have no segments to heal and get a nil closure. The
 // closure runs on the armed embed drain edge: a CHEAP presence + coverage probe
-// and, when the pool is missing OR degenerate, the rebuild driver (single-flight,
-// shared with the manual rebuild_segments op). A healthy graph (segments present
-// AND covering enough of the embedded corpus) is a probe + disarm, never a churn.
+// and, when a from-scratch rebuild is genuinely needed, the rebuild driver
+// (single-flight, shared with the manual rebuild_segments op). A healthy graph
+// (segments present AND covering enough of the embedded corpus) is a probe +
+// disarm, never a churn.
 //
-// The probe heals on TWO conditions, not just zero segments:
-//  1. zero shipped segments (the never-shipped case), OR
-//  2. a degenerate-but-nonzero pool: segment-covered docs (summed HNSW doc_count)
+// The probe makes a THREE-way decision (the middle path is the fix):
+//  1. zero shipped segments (the never-shipped case) → rebuild from scratch.
+//  2. a degenerate-but-nonzero pool (segment-covered docs — summed HNSW doc_count —
 //     below coverageRatioThreshold × the graph's embedded-node count, once the
-//     embedded count clears segmentCoverageFloor.
+//     embedded count clears segmentCoverageFloor) → try a one-shot read-engine
+//     load FIRST via Manager.ReconcileResidentDegenerate, which cache-first
+//     load()s the intact persisted corpus and re-probes coverage. If that load
+//     restores resident coverage (degenerate=false) the pool was intact-but-not-
+//     resident — a daemon restart whose searchable pool simply had not loaded yet
+//     — so SKIP the rebuild; the load alone healed it. Rebuild from scratch ONLY
+//     when the load cannot restore coverage (degenerate=true) — the genuinely
+//     missing/collapsed shipped case. (A ReconcileResidentDegenerate error is
+//     best-effort: WARN and do NOT rebuild — rebuilding against a down/timing-out
+//     server is futile, so wait for a successful probe and keep the existing
+//     resident instead.)
+//  3. healthy (segments present AND covering enough) → probe + disarm, never a churn.
 //
 // CONSERVATIVE-UNKNOWN guard: a segment whose doc_count is 0 predates the
 // doc_count wire plumbing, so its real coverage is UNKNOWN. When ANY shipped HNSW
@@ -251,164 +263,108 @@ func (c *client) buildHealFactory() func(kgtypes.GraphType, string) func(context
 			return nil
 		}
 		return func(ctx context.Context) error {
-			has, err := c.segmentMgr.HasShippedSegments(ctx, gt, name)
+			needsRebuild, err := c.healNeedsRebuild(ctx, gt, name)
 			if err != nil {
 				return err
 			}
-			if has {
-				degenerate, derr := c.segmentPoolDegenerate(ctx, gt, name)
-				if derr != nil {
-					return derr
-				}
-				if !degenerate {
-					// Healthy: segments present AND covering enough of the embedded
-					// corpus (or the coverage signal is unknown/below-floor — disarm
-					// conservatively rather than churn). No rebuild.
-					return nil
-				}
-				// Degenerate-but-nonzero pool: fall through to the rebuild.
+			if !needsRebuild {
+				// Healthy pool, or a degenerate pool a read-engine load already
+				// restored to coverage — no from-scratch rebuild.
+				return nil
 			}
-			// Zero shipped segments OR a degenerate pool: heal by rebuilding from the
-			// already-embedded nodes. Reuse the SAME login-routed scanner seam the
-			// manual op uses (the accessor carries the c.router==nil guard) and the
-			// SAME segment manager as shipper. RebuildSegments owns the single-flight
-			// shared with the manual op.
+			// Zero shipped segments OR a degenerate pool a read-engine load could not
+			// restore: heal by rebuilding from the already-embedded nodes. Reuse the
+			// SAME login-routed scanner seam the manual op uses (the accessor carries
+			// the c.router==nil guard) and the SAME segment manager as shipper.
+			// RebuildSegments owns the single-flight shared with the manual op.
 			scanner := c.PipelineScanner()
 			ran, scanned, built, partial, pruned, err := tools.RebuildSegments(ctx, scanner, c.segmentMgr, gt, name)
 			if err != nil {
 				return err
 			}
-			slog.Info("bootstrap: auto-heal rebuilt missing or degenerate segments for builtin graph",
+			slog.Info("bootstrap: auto-heal rebuilt segments after read-engine load could not restore coverage for builtin graph",
 				"graph_type", gt, "name", name, "ran", ran, "scanned", scanned, "built", built, "partial", partial, "pruned", len(pruned))
 			return nil
 		}
 	}
 }
 
-// reconcileSegmentCoverage is the startup + periodic read-side reconcile: it
-// enumerates every segment-bearing builtin (the embeddable graph types
-// kgtypes.HasRebuildableSegments admits — knowledge/default explicit plus every
-// instance of code, cloud, cicd, practice via ListGraphNamesOfType), probes each
-// for the LIVE-resident-vs-shipped degeneracy a daemon restart
-// can leave behind (a fully-embedded, un-recollected graph whose searchable pool
-// collapsed to empty with no embed-drain or search to re-trigger a heal), and
-// heals a degenerate one through the PROVEN RebuildSegments path — the SAME
-// single-flight the manual rebuild op and the embed-drain auto-heal share, so the
-// three triggers coalesce onto one run rather than racing three rebuilds.
+// healNeedsRebuild is the embed-drain auto-heal's THREE-way decision: it
+// reports whether (gt, name) needs a from-scratch RebuildSegments, or whether the
+// pool is already healthy / restorable by a cheaper read-engine load.
 //
-// It is the recovery lever the prior two fixes left a gap for: the read-side
-// recoverIfDegenerate only runs lazily inside a Search, and the write-side
-// auto-heal only fires on the collect-armed embed-drain edge — neither event fires
-// for a graph that is fully embedded and never re-collected, so its empty pool had
-// no trigger to repopulate. This reconcile is INDEPENDENT of both events.
-//
-// Best-effort throughout: a nil segment manager (headless/--no-llm-pipeline) is a
-// no-op; a per-graph probe or rebuild error WARNs and continues to the next graph,
-// never blocking boot or the periodic tick. The probe is cheap (the healthy graphs
-// each pay one cache-first load + one atomic resident count + at most one
-// ListDelta(0); only a genuinely degenerate graph pays a rebuild).
-func (c *client) reconcileSegmentCoverage(ctx context.Context) {
-	if c.segmentMgr == nil {
-		return // headless / degraded — no segment engine to reconcile.
+//  1. zero shipped segments (never-shipped) → rebuild (true).
+//  2. degenerate-but-nonzero pool → try a one-shot read-engine load FIRST
+//     (Manager.ReconcileResidentDegenerate cache-first load()s the intact persisted
+//     corpus and re-probes coverage). If the load restored coverage (resDegen=false)
+//     the pool was intact-but-not-resident (a daemon restart whose searchable pool
+//     simply had not loaded yet) → SKIP the rebuild (false). Only when the load
+//     cannot restore coverage (resDegen=true) → rebuild (true). A probe error
+//     (server down / timing out) is best-effort: WARN and do NOT rebuild —
+//     rebuilding against a down/timing-out server is futile, so keep the existing
+//     resident and wait for a successful probe rather than storm a from-scratch
+//     rebuild on a transient failure.
+//  3. healthy (segments present AND covering enough) → no rebuild (false).
+func (c *client) healNeedsRebuild(ctx context.Context, gt kgtypes.GraphType, name string) (bool, error) {
+	// ONE manifest snapshot per heal pass: the presence probe (HasShippedFromSnapshot)
+	// and the coverage probe (segmentPoolDegenerate → ShippedDocCountFromSnapshot) both
+	// derive from this single List(0) instead of each issuing their own.
+	snapshot, err := c.segmentMgr.ShippedManifestSnapshot(ctx, gt, name)
+	if err != nil {
+		return false, err
 	}
-
-	// Every segment-bearing builtin: knowledge/default (seeded explicitly — its
-	// default instance has an empty enumerated name that ListGraphNamesOfType drops)
-	// plus every instance of the other embeddable builtins (code, cloud, cicd,
-	// practice), enumerated through the SAME ListGraphNamesOfType seam the status
-	// coverage table uses (the *client satisfies tools.ClientDeps). The
-	// kgtypes.HasRebuildableSegments gate mirrors segCoveredFor's matching gate
-	// (manage_status_coverage.go) so the reconcile probes exactly the graph set
-	// manage(status) reports as segment-bearing — linkage + transformers (sync-
-	// eligible but non-embeddable) are skipped, they carry no rebuildable segments.
-	type graphRef struct {
-		gt   kgtypes.GraphType
-		name string
+	if !c.segmentMgr.HasShippedFromSnapshot(snapshot) {
+		return true, nil // zero shipped segments — rebuild from the embedded nodes.
 	}
-	graphs := []graphRef{{gt: kgtypes.GraphKnowledge, name: "default"}}
-	for _, gt := range kgtypes.SyncEligibleGraphTypes() {
-		if gt == kgtypes.GraphKnowledge {
-			continue // already seeded explicitly above (empty default-instance name).
-		}
-		if !kgtypes.HasRebuildableSegments(gt) {
-			continue // linkage / transformers — no rebuildable segments.
-		}
-		names, err := tools.ListGraphNamesOfType(ctx, c, string(gt))
-		if err != nil {
-			slog.Warn("bootstrap: segment reconcile could not enumerate graphs of type (skipping this type this pass)",
-				"graph_type", gt, "error", err)
-			continue
-		}
-		for _, name := range names {
-			graphs = append(graphs, graphRef{gt: gt, name: name})
-		}
+	degenerate, err := c.segmentPoolDegenerate(ctx, gt, name, snapshot)
+	if err != nil {
+		return false, err
 	}
-
-	for _, g := range graphs {
-		degenerate, err := c.segmentMgr.ReconcileResidentDegenerate(ctx, g.gt, g.name)
-		if err != nil {
-			slog.Warn("bootstrap: segment reconcile probe failed (continuing)",
-				"graph_type", g.gt, "name", g.name, "error", err)
-			continue
-		}
-		if !degenerate {
-			continue // healthy (or disarmed) — no rebuild.
-		}
-		// Degenerate live pool: heal via the PROVEN rebuild path (single-flight shared
-		// with the manual op + embed-drain auto-heal — NOT a bare load).
-		ran, scanned, built, partial, pruned, rerr := tools.RebuildSegments(
-			ctx, c.PipelineScanner(), c.segmentMgr, g.gt, g.name)
-		if rerr != nil {
-			slog.Warn("bootstrap: segment reconcile rebuild failed (continuing)",
-				"graph_type", g.gt, "name", g.name, "error", rerr)
-			continue
-		}
-		slog.Info("bootstrap: segment reconcile rebuilt a degenerate live pool",
-			"graph_type", g.gt, "name", g.name,
-			"ran", ran, "scanned", scanned, "built", built, "partial", partial, "pruned", len(pruned))
+	if !degenerate {
+		// Healthy: segments present AND covering enough of the embedded corpus (or
+		// the coverage signal is unknown/below-floor — disarm conservatively rather
+		// than churn). No rebuild.
+		return false, nil
 	}
-}
-
-// segmentReconcileInterval is the periodic cadence of runSegmentReconcileLoop — a
-// fixed default for v1 (not config-driven). The probe is cheap (count compare +
-// floor gate before the List RPC), so a few-minute cadence catches a mid-session
-// collapse promptly without meaningful steady-state cost.
-const segmentReconcileInterval = 5 * time.Minute
-
-// runSegmentReconcileLoop fires reconcileSegmentCoverage on a fixed-interval ticker
-// until ctx is canceled — the PERIODIC trigger (independent of embed-drain and
-// search) for a graph that collapses, or was never re-collected, mid-session. It
-// shares the one reconcile body with the startup trigger, so the startup-vs-periodic
-// fork is just two call sites of the same function. Mirrors the RefreshLoadedGraphs
-// select{ctx.Done / timer} loop shape; exits promptly on ctx.Done (no leak).
-func (c *client) runSegmentReconcileLoop(ctx context.Context, interval time.Duration) {
-	ticker := time.NewTicker(interval)
-	defer ticker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			c.reconcileSegmentCoverage(ctx)
-		}
+	// Degenerate-but-nonzero pool: the shipped corpus is present but the live
+	// searchable pool is below coverage. Before paying a from-scratch rebuild, try a
+	// one-shot read-engine load of the intact persisted corpus.
+	resDegen, rerr := c.segmentMgr.ReconcileResidentDegenerate(ctx, gt, name)
+	if rerr != nil {
+		slog.Warn("bootstrap: auto-heal load-first probe failed; keeping existing resident (no rebuild)",
+			"graph_type", gt, "name", name, "err", rerr)
+		// Best-effort: a probe error (server down / timing out) does NOT rebuild —
+		// rebuilding against a down/timing-out server is futile, so keep the existing
+		// resident and wait for a successful probe rather than storm a from-scratch
+		// rebuild on a transient failure.
+		return false, nil
 	}
+	if !resDegen {
+		// Load restored coverage — the intact corpus is now resident. Skip the rebuild.
+		slog.Info("bootstrap: auto-heal restored degenerate pool via read-engine load (no rebuild)",
+			"graph_type", gt, "name", name)
+		return false, nil
+	}
+	// The load could NOT restore coverage — the genuinely missing/collapsed case.
+	return true, nil
 }
 
 // segmentPoolDegenerate reports whether a graph's shipped segment pool is present
 // but DEGENERATE — covering far fewer docs than the graph has embedded — and so
-// should be rebuilt. It is consulted only when HasShippedSegments already found
-// segments (the zero case heals unconditionally upstream).
+// should be rebuilt. It is consulted only when the caller already found segments
+// from the SAME snapshot (the zero case heals unconditionally upstream).
 //
-// It disarms (returns false) conservatively in three cases so a healthy or
-// ambiguous graph never churns: (1) anyUnknown — at least one shipped HNSW segment
-// has doc_count==0, so coverage is unknowable (migration-storm guard); (2) embedded
-// below segmentCoverageFloor — too small for the ratio to be meaningful; (3)
-// covered at/above coverageRatioThreshold × embedded — the pool is healthy.
-func (c *client) segmentPoolDegenerate(ctx context.Context, gt kgtypes.GraphType, name string) (bool, error) {
-	covered, anyUnknown, err := c.segmentMgr.ShippedSegmentDocCount(ctx, gt, name)
-	if err != nil {
-		return false, err
-	}
+// It derives the HNSW doc count from the passed-in snapshot (the shared List(0)
+// healNeedsRebuild already fetched — no second List), and disarms (returns false)
+// conservatively in three cases so a healthy or ambiguous graph never churns: (1)
+// anyUnknown — at least one shipped HNSW segment has doc_count==0, so coverage is
+// unknowable (migration-storm guard); (2) embedded below segmentCoverageFloor — too
+// small for the ratio to be meaningful; (3) covered at/above coverageRatioThreshold
+// × embedded — the pool is healthy.
+func (c *client) segmentPoolDegenerate(
+	ctx context.Context, gt kgtypes.GraphType, name string, snapshot []searchengine.SegmentMeta,
+) (bool, error) {
+	covered, anyUnknown := c.segmentMgr.ShippedDocCountFromSnapshot(snapshot)
 	if anyUnknown {
 		// Conservative-unknown: an old pre-doc_count segment is present, so the
 		// ratio is not trustworthy — disarm and leave it to the zero-only trigger.

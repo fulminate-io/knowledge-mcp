@@ -82,7 +82,10 @@ func NewManager(caller segmentCaller, cacheDir string, maxBytes int64) *Manager 
 // buffers, no graph rebuild), then ships any newly-sealed segments (the ship is a
 // diff-gated no-op when nothing new sealed). Returns the first error from Add or
 // ship; the pipeline caller treats any error as best-effort (WARN, never fail
-// writeback) — a dropped ship self-heals on the next embed dirty-gen.
+// writeback) — a dropped ship is RETRIED on the next embed dirty-gen, including a
+// transient seed-List failure: the seed re-arms (it latches only on a List(0)
+// success — ensureShippedSeeded), so a failed seed does not poison shipping for the
+// process lifetime.
 func (m *Manager) AddAndShip(ctx context.Context, gt kgtypes.GraphType, name string, docs []searchengine.Document) error {
 	if len(docs) == 0 {
 		return nil
@@ -130,7 +133,10 @@ func (m *Manager) detResidentHNSWIDs(gt kgtypes.GraphType, name string) []search
 // no segment seal), then ships any newly-sealed segments (diff-gated no-op when
 // nothing new sealed). Returns the first error from Add or ship; the pipeline
 // caller treats any error as best-effort (WARN, never fail writeback) — a dropped
-// ship self-heals on the next embed dirty-gen.
+// ship is RETRIED on the next embed dirty-gen, including a transient seed-List
+// failure: the seed re-arms (it latches only on a List(0) success —
+// ensureShippedSeeded), so a failed seed does not poison shipping for the process
+// lifetime.
 func (m *Manager) AddAndShipFields(ctx context.Context, gt kgtypes.GraphType, name string, docs []searchengine.Document) error {
 	if len(docs) == 0 {
 		return nil
@@ -291,13 +297,16 @@ func (m *Manager) InvalidateLocal(gt kgtypes.GraphType, name string, ids []searc
 // does NOT touch the per-graph engines/maps, so it is safe to call on the embed
 // drain edge without disturbing resident state. A fresh rpcSegmentSource is
 // built per call (no engine, no cache) — strictly the presence list.
+//
+// Standalone wrapper for callers that probe presence ALONE (no co-located doc-count
+// probe to share a snapshot with). The shared-snapshot heal path uses
+// ShippedManifestSnapshot + HasShippedFromSnapshot to collapse its List(0)s.
 func (m *Manager) HasShippedSegments(ctx context.Context, gt kgtypes.GraphType, name string) (bool, error) {
-	source := newRPCSegmentSource(m.caller, graphSelector(gt, name), m.writerID, context.Background())
-	metas, err := source.List(ctx, 0)
+	snapshot, err := m.ShippedManifestSnapshot(ctx, gt, name)
 	if err != nil {
 		return false, err
 	}
-	return len(metas) > 0, nil
+	return m.HasShippedFromSnapshot(snapshot), nil
 }
 
 // ShippedSegmentDocCount is the coverage-ratio probe's data source: it sums the
@@ -320,25 +329,18 @@ func (m *Manager) HasShippedSegments(ctx context.Context, gt kgtypes.GraphType, 
 // Does NOT Fetch any blob and does NOT touch the per-graph engines/maps — same
 // presence-probe contract as HasShippedSegments (a fresh rpcSegmentSource per
 // call, no engine, no cache).
+//
+// Standalone wrapper preserved for the external coverage seam
+// (tools.SegmentCoverageReader → manage(status)), which probes ONE graph's doc count
+// in isolation. The shared-snapshot heal path uses ShippedDocCountFromSnapshot.
 func (m *Manager) ShippedSegmentDocCount(
 	ctx context.Context, gt kgtypes.GraphType, name string,
 ) (covered int, anyUnknown bool, err error) {
-	source := newRPCSegmentSource(m.caller, graphSelector(gt, name), m.writerID, context.Background())
-	metas, err := source.List(ctx, 0)
+	snapshot, err := m.ShippedManifestSnapshot(ctx, gt, name)
 	if err != nil {
 		return 0, false, err
 	}
-	hnswFormat := hnsw.New().Name()
-	for _, meta := range metas {
-		if meta.Format != hnswFormat {
-			continue
-		}
-		if meta.DocCount == 0 {
-			anyUnknown = true
-			continue
-		}
-		covered += meta.DocCount
-	}
+	covered, anyUnknown = m.ShippedDocCountFromSnapshot(snapshot)
 	return covered, anyUnknown, nil
 }
 

@@ -101,7 +101,7 @@ func TestFetchMissesSubBatchesByCount(t *testing.T) {
 	const n = 3*maxFetchSegmentIDs + 7 // not a clean multiple of the cap
 	ids := segIDs(n)
 
-	blobs, err := mgr.fetchMisses(ids)
+	blobs, err := mgr.fetchMisses(context.Background(), ids)
 	require.NoError(t, err)
 
 	wantCalls := (n + maxFetchSegmentIDs - 1) / maxFetchSegmentIDs
@@ -142,7 +142,7 @@ func TestFetchMissesHalvesOnResourceExhausted(t *testing.T) {
 	mgr := newFetchMissesManager(t, caller)
 
 	ids := segIDs(maxFetchSegmentIDs) // one full count-capped chunk that over-runs bytes
-	blobs, err := mgr.fetchMisses(ids)
+	blobs, err := mgr.fetchMisses(context.Background(), ids)
 	require.NoError(t, err, "halving must eventually fit every sub-chunk under the ceiling")
 
 	// No blob loss: every id returned, in order.
@@ -175,7 +175,7 @@ func TestFetchMissesPropagatesNonResourceExhausted(t *testing.T) {
 	}
 	mgr := newFetchMissesManager(t, caller)
 
-	_, err := mgr.fetchMisses(segIDs(10))
+	_, err := mgr.fetchMisses(context.Background(), segIDs(10))
 	require.Error(t, err)
 	require.Equal(t, connect.CodeInternal, connect.CodeOf(err), "non-ResourceExhausted error must propagate unchanged")
 
@@ -197,7 +197,7 @@ func TestFetchMissesSingleBlobOverCeilingHardErrors(t *testing.T) {
 	}
 	mgr := newFetchMissesManager(t, caller)
 
-	_, err := mgr.fetchMisses(segIDs(4))
+	_, err := mgr.fetchMisses(context.Background(), segIDs(4))
 	require.Error(t, err, "a single blob over the ceiling must hard-error, not loop forever")
 	require.Equal(t, connect.CodeResourceExhausted, connect.CodeOf(err))
 }

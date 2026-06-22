@@ -12,6 +12,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 	"testing"
@@ -25,6 +26,47 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	logwire "github.com/fulminate-io/knowledge-mcp/internal/logwire"
 )
+
+// TestHandleLogsStats_JSONAndText is the FIRST handleLogsStats test — the
+// handler had zero coverage before the JSON wiring. It reuses the
+// recordingStatsRPC fake (a GraphCaller + statsRPC) via the graphCallerOverride
+// seam, no new fake. It asserts BOTH the format:"json" structured shape
+// (graph=logs + name + counts + maps) AND that the default (no-format) path
+// still returns the existing "## Logs Graph" markdown unchanged.
+func TestHandleLogsStats_JSONAndText(t *testing.T) {
+	stats := &knowledgev1.GraphStats{
+		NodeCount: 11, EdgeCount: 5, BinaryVectorCount: 0,
+		NodesByType: map[string]int64{"log-template": 7, "log-stream": 4},
+		EdgesByType: map[string]int64{"emitted-by": 5},
+	}
+	t.Run("json", func(t *testing.T) {
+		h := &Handler{graphCallerOverride: &recordingStatsRPC{stats: stats}}
+		res := h.handleLogsStats(context.Background(), "q1", nil, false, "json")
+		require.False(t, res.IsError, textBodyTools(res))
+
+		var payload map[string]any
+		require.NoError(t, json.Unmarshal([]byte(textBodyTools(res)), &payload), "body must be valid JSON")
+		assert.Equal(t, "logs", payload["graph"])
+		assert.Equal(t, "q1", payload["name"])
+		assert.EqualValues(t, 11, payload["node_count"])
+		assert.EqualValues(t, 5, payload["edge_count"])
+		nbt, ok := payload["nodes_by_type"].(map[string]any)
+		require.True(t, ok, "nodes_by_type is an object")
+		assert.EqualValues(t, 7, nbt["log-template"])
+		ebt, ok := payload["edges_by_type"].(map[string]any)
+		require.True(t, ok, "edges_by_type is an object")
+		assert.EqualValues(t, 5, ebt["emitted-by"])
+	})
+	t.Run("text unchanged", func(t *testing.T) {
+		h := &Handler{graphCallerOverride: &recordingStatsRPC{stats: stats}}
+		res := h.handleLogsStats(context.Background(), "q1", nil, false, "")
+		require.False(t, res.IsError, textBodyTools(res))
+		body := textBodyTools(res)
+		assert.Contains(t, body, "## Logs Graph: q1")
+		assert.Contains(t, body, "Nodes: 11")
+		assert.Contains(t, body, "### Nodes by Type")
+	})
+}
 
 // fakeLogsProvider is an in-memory logwire.Provider that emits a fixed entry
 // batch. We define it in the tools package so the tests can drive

@@ -34,6 +34,36 @@ func TestKnowledgeStats(t *testing.T) {
 	assert.Contains(t, body, "- finding: 40")
 }
 
+// TestKnowledgeStats_JSON asserts the format:"json" branch returns the structured
+// GraphStats shape (graph + counts + type maps, no instance key for knowledge)
+// built from the already-fetched GraphStats, BEFORE the markdown render. The
+// text path stays covered by TestKnowledgeStats above.
+func TestKnowledgeStats_JSON(t *testing.T) {
+	f := &modFake{stats: &knowledgev1.GraphStats{
+		NodeCount: 128, EdgeCount: 64, BinaryVectorCount: 12,
+		NodesByType: map[string]int64{"thought": 70, "finding": 40, "decision": 18},
+		EdgesByType: map[string]int64{"relates-to": 64},
+	}}
+	res := knowledgeStats(context.Background(), f, queryArgs{Mode: "stats", Format: "json"})
+	require.False(t, res.IsError, textBodyTools(res))
+
+	var payload map[string]any
+	require.NoError(t, json.Unmarshal([]byte(textBodyTools(res)), &payload), "body must be valid JSON")
+	assert.Equal(t, "knowledge", payload["graph"])
+	assert.NotContains(t, payload, "repo", "knowledge omits the instance key")
+	assert.NotContains(t, payload, "language")
+	assert.EqualValues(t, 128, payload["node_count"])
+	assert.EqualValues(t, 64, payload["edge_count"])
+	assert.EqualValues(t, 12, payload["binary_vector_count"])
+	nbt, ok := payload["nodes_by_type"].(map[string]any)
+	require.True(t, ok, "nodes_by_type is an object")
+	assert.EqualValues(t, 70, nbt["thought"])
+	assert.EqualValues(t, 40, nbt["finding"])
+	ebt, ok := payload["edges_by_type"].(map[string]any)
+	require.True(t, ok, "edges_by_type is an object")
+	assert.EqualValues(t, 64, ebt["relates-to"])
+}
+
 // NOTE: the "claimed, not denied" end-to-end assertion for the knowledge stats
 // path lives in the bootstrap package (query_domain_dispatch_test.go) where a
 // real in-process *graphclient.GraphClient backs deps.GraphClient() — the tools

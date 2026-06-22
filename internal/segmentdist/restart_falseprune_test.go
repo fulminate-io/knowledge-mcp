@@ -298,10 +298,16 @@ func TestRestartLoadImportsFullCorpusAfterShip(t *testing.T) {
 		"the ship advanced shippedGen (server-stamped tail generation)")
 	require.Len(t, dm.engine.Export(), 1, "before load() the fresh engine holds only its own tail T")
 
-	// The discriminating load(): on HEAD List(sharedCursor==N) → empty delta →
+	// The discriminating SERVER import: on HEAD List(sharedCursor==N) → empty delta →
 	// engine stays tail-only (Export len 1). With the cursor split List(0) imports
-	// the prior corpus; with the Import dedup the re-listed tail T is dropped.
-	require.NoError(t, dm.load(ctx))
+	// the prior corpus; with the Import dedup the re-listed tail T is dropped. Drive
+	// loadFromServer directly: load() is now L2-FIRST, and this process's L2 (a fresh
+	// tempdir) holds ONLY its just-shipped tail, not the prior server corpus — so a
+	// plain load() would import the tail from L2 and never List the server (by
+	// design). The cursor-split + Import-dedup invariants this test pins live in the
+	// cold-L2 server-import path (loadFromServer), which is exactly what a
+	// genuinely-cold restart (empty L2) or the background reconcile drives.
+	require.NoError(t, dm.loadFromServer(ctx))
 
 	// EXACTLY corpusSegs+1: the prior corpus (corpusSegs) plus the one tail T —
 	// NOT corpusSegs+2 (T double-imported). On un-split HEAD this is ~1 (tail-only).

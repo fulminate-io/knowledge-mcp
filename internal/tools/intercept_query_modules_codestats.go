@@ -30,6 +30,7 @@ type modulesCodeStatsArgs struct {
 	Branch     string   `json:"branch"`
 	PathPrefix string   `json:"path_prefix"`
 	Samples    bool     `json:"samples"`
+	Format     string   `json:"format"`
 }
 
 // InterceptQueryModulesCodeStats claims query(graph:code, mode in
@@ -132,6 +133,17 @@ func composeCodeStats(ctx context.Context, gc statsRPC, a modulesCodeStatsArgs) 
 		return errorResult(fmt.Sprintf("code %q graph stats failed: %s", a.Repo, err.Error()))
 	}
 	stats := resp.GetGraphStats()
+	if a.Format == "json" {
+		return jsonResult(map[string]any{
+			"graph":               "code",
+			"repo":                a.Repo,
+			"node_count":          stats.GetNodeCount(),
+			"edge_count":          stats.GetEdgeCount(),
+			"binary_vector_count": stats.GetBinaryVectorCount(),
+			"nodes_by_type":       stats.GetNodesByType(),
+			"edges_by_type":       stats.GetEdgesByType(),
+		})
+	}
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "## Code Graph: %s\n\n", repoLabelFor(a.Repo, a.Branch))
 	sb.WriteString(engine.RenderStatsBreakdown(stats))

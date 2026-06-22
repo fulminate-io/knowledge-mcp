@@ -43,6 +43,14 @@ type instrumentedCache struct {
 	// disk) — modeling a crash that halts BEFORE the merged blob is persisted. The
 	// crash-safe ordering means the constituents are then still intact on disk.
 	blockPut bool
+
+	// removeAfterKeys, when set, is the id the cache evicts from the inner store
+	// the FIRST time Keys() is called, AFTER Keys has already captured (and
+	// returned) the full snapshot. This deterministically models the
+	// reclaimMerged/InvalidateLocal Remove that races the load()'s Keys() snapshot:
+	// the id is present in the returned snapshot but is a cache MISS by the time
+	// reload()'s Get reaches it. Cleared after firing once.
+	removeAfterKeys searchengine.SegmentID
 }
 
 func newInstrumentedCache(inner *diskSegmentCache) *instrumentedCache {
@@ -83,6 +91,26 @@ func (c *instrumentedCache) Remove(id searchengine.SegmentID) {
 		return // crash before the actual file delete
 	}
 	c.inner.Remove(id)
+}
+
+// Keys forwards to the inner cache's in-memory index enumeration. Records the op
+// so a test can assert load()'s L2 fallback enumerated the resident set. When
+// removeAfterKeys is armed, it evicts that id from the inner cache AFTER capturing
+// the snapshot — modeling a Remove that races the Keys() snapshot (the id is in
+// the returned slice but a miss at the later Get).
+func (c *instrumentedCache) Keys() []searchengine.SegmentID {
+	c.mu.Lock()
+	c.ops = append(c.ops, cacheOp{kind: "keys"})
+	c.mu.Unlock()
+	snap := c.inner.Keys()
+	c.mu.Lock()
+	raced := c.removeAfterKeys
+	c.removeAfterKeys = ""
+	c.mu.Unlock()
+	if raced != "" {
+		c.inner.Remove(raced)
+	}
+	return snap
 }
 
 // opLog returns a copy of the recorded operations in call order.

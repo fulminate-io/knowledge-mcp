@@ -127,7 +127,7 @@ func InterceptQueryCloudCICD(deps ClientDeps, params kgtools.CallToolParams) (bo
 		if mgr == nil {
 			return true, errorResult(kind.graph + " search: client segment engine unavailable")
 		}
-		return true, composeResourceSearchClient(ctx, deps, mgr, kind, a.Account, query)
+		return true, composeResourceSearchClient(ctx, deps, mgr, kind, a.Account, query, a.Format)
 	}
 
 	// (5) browse (optionally resource_type-prefixed).
@@ -186,6 +186,17 @@ func resourceStats(ctx context.Context, gc statsRPC, kind resourceGraphKind, a q
 		return errorResult(fmt.Sprintf("%s %q graph stats failed: %s", kind.graph, a.Account, err.Error()))
 	}
 	stats := resp.GetGraphStats()
+	if a.Format == "json" {
+		return jsonResult(map[string]any{
+			"graph":               kind.graph,
+			"account":             a.Account,
+			"node_count":          stats.GetNodeCount(),
+			"edge_count":          stats.GetEdgeCount(),
+			"binary_vector_count": stats.GetBinaryVectorCount(),
+			"nodes_by_type":       stats.GetNodesByType(),
+			"edges_by_type":       stats.GetEdgesByType(),
+		})
+	}
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "## %s Graph: %s\n\n", kind.listLabel, a.Account)
 	sb.WriteString(engine.RenderStatsBreakdown(stats))
@@ -281,7 +292,7 @@ func resourceQueryText(a queryArgs) string {
 // account, …) → RRF, then ONE RETURN_MODE_NODES hydrate. A nil embedder degrades
 // to the BM25 arm; an empty/un-collected account (no segments) renders zero
 // results cleanly — graceful empty, NOT an error.
-func composeResourceSearchClient(ctx context.Context, deps ClientDeps, mgr SegmentSearcher, kind resourceGraphKind, account, query string) kgtools.ToolResult {
+func composeResourceSearchClient(ctx context.Context, deps ClientDeps, mgr SegmentSearcher, kind resourceGraphKind, account, query, format string) kgtools.ToolResult {
 	var queryVec []byte
 	if emb := deps.Embedder(); emb != nil && query != "" {
 		if vec, err := emb.EmbedBinary(ctx, query); err == nil && len(vec) > 0 {
@@ -295,6 +306,11 @@ func composeResourceSearchClient(ctx context.Context, deps ClientDeps, mgr Segme
 	results, err := hydrateEngineHits(ctx, deps.GraphCaller(), hydrateSelector{Graph: kind.graph, Account: account}, hits)
 	if err != nil {
 		return errorResult(kind.graph + " search: hydrate: " + err.Error())
+	}
+	if format == "json" {
+		// resource_type (and the rest of the resource node metadata) rides through
+		// renderJSON's verbatim Metadata copy — no per-path projection needed.
+		return engine.RenderForCaller(query, results, "json", nil, "")
 	}
 	return engine.RenderResourceSearch(kind.render, account, query, results)
 }

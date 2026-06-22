@@ -90,10 +90,14 @@ func TestManagerShipWarmsCacheAndGen(t *testing.T) {
 	require.Equal(t, uint64(0), mgr.importedGen.Load(), "ship-only path must NOT advance the load floor (importedGen)")
 }
 
-// TestManagerLoadDeltaCacheAndImport verifies: a fresh load() Lists 3 metas,
-// Fetches all 3 cold, Imports, search hits; a second load() at advanced gen Lists
-// an empty delta and issues ZERO Fetch; a load() with 2 of 3 cached issues ONE
-// Fetch for the 1 miss.
+// TestManagerLoadDeltaCacheAndImport verifies the SERVER-import path
+// (loadFromServer — the cold-L2 fallback of the L2-first load()): a fresh
+// loadFromServer Lists 3 metas, Fetches all 3 cold, Imports, search hits; a second
+// loadFromServer at advanced gen Lists an empty delta and issues ZERO Fetch; a
+// loadFromServer with 2 of 3 cached issues ONE Fetch for the 1 miss. These delta /
+// batched-Fetch / importedGen-advance mechanics are precisely the loadFromServer
+// contract; the L2-first wrapper (load()) is covered by
+// TestLoadL2FirstPrimaryPathIssuesZeroList.
 func TestManagerLoadDeltaCacheAndImport(t *testing.T) {
 	svc, gc := newSegmentHarness(t)
 	target := &knowledgev1.GraphSelector{Graph: "code", Repo: "loaddelta"}
@@ -112,7 +116,7 @@ func TestManagerLoadDeltaCacheAndImport(t *testing.T) {
 	loadEng := newMockEngine()
 	loadMgr, loadCC := buildManager(loadEng, gc, target, t.TempDir())
 
-	require.NoError(t, loadMgr.load(ctx))
+	require.NoError(t, loadMgr.loadFromServer(ctx))
 	require.Equal(t, int64(1), loadCC.fetchCalls.Load(), "cold load issues one batched Fetch for all 3 misses")
 	hits := loadEng.Search(mockQuery{term: "alpha"}, 10)
 	require.Len(t, hits, 2, "search must hit the imported segments (d1, d2)")
@@ -120,7 +124,7 @@ func TestManagerLoadDeltaCacheAndImport(t *testing.T) {
 
 	// Second load at advanced gen → empty delta → ZERO Fetch.
 	beforeSecond := loadCC.fetchCalls.Load()
-	require.NoError(t, loadMgr.load(ctx))
+	require.NoError(t, loadMgr.loadFromServer(ctx))
 	require.Equal(t, beforeSecond, loadCC.fetchCalls.Load(), "second load must issue ZERO Fetch (empty delta)")
 
 	// Ship a 4th segment; a fresh loader with 3 of 4 already cached issues ONE
@@ -140,7 +144,7 @@ func TestManagerLoadDeltaCacheAndImport(t *testing.T) {
 	delta, err := partialMgr.source.List(ctx, 0)
 	require.NoError(t, err)
 	require.Len(t, delta, 4)
-	prime, err := partialMgr.source.Fetch([]searchengine.SegmentID{delta[0].ID, delta[1].ID, delta[2].ID})
+	prime, err := partialMgr.source.Fetch(ctx, []searchengine.SegmentID{delta[0].ID, delta[1].ID, delta[2].ID})
 	require.NoError(t, err)
 	require.Len(t, prime, 3)
 	for _, b := range prime {
@@ -148,7 +152,7 @@ func TestManagerLoadDeltaCacheAndImport(t *testing.T) {
 	}
 	// Reset the Fetch counter so the assertion below counts only the load()'s Fetch.
 	partialCC.fetchCalls.Store(0)
-	require.NoError(t, partialMgr.load(ctx))
+	require.NoError(t, partialMgr.loadFromServer(ctx))
 	require.Equal(t, int64(1), partialCC.fetchCalls.Load(), "partial load issues ONE Fetch for the single miss")
 }
 
@@ -183,7 +187,7 @@ func TestManagerUnloadReloadFromL2(t *testing.T) {
 		"search must drop the unloaded hits")
 
 	// Reload from L2 — the bytes are cached, so ZERO Source.Fetch.
-	require.NoError(t, loadMgr.reload(unloaded))
+	require.NoError(t, loadMgr.reload(ctx, unloaded, false))
 	require.Equal(t, fetchAfterLoad, loadCC.fetchCalls.Load(),
 		"reload must restore from L2 with ZERO Source.Fetch")
 	require.Len(t, loadEng.Search(mockQuery{term: "alpha"}, 10), 3,
