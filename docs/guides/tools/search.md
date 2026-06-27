@@ -61,7 +61,7 @@ cloud searches need `account`. For the full parameter reference, run
 | `queries[]` | string |  |  |  |
 | `query` | string |  |  | Single search query (keywords, function names, concepts). |
 | `query_vector` | string |  |  | Optional base64-encoded binary embedding for the query text (32 bytes / 256-bit decoded). Client-supplied: set by the client-side LLM pipeline's InterceptSearch so the server can serve hybrid-search results without holding a Voyage key. The server never embeds — when query_vector is unset the search runs BM25-only (no server-side embedding fallback). Decoded length mismatches return a structured validation error and no search is performed. |
-| `repo` | string |  |  | Repository name. Optional for the knowledge graph and cross-repo search; REQUIRED for graph=code unless you are running inside an indexed repo, where it auto-resolves from the current directory. |
+| `repo` | string |  |  | Repository (code graph) name — REQUIRED for graph=code; it is never inferred from cwd. search accepts 'all' to span every code repo. Not used by the knowledge graph. |
 | `repos` | array of string |  |  | Search specific repos (e.g. ["agent","knowledge"]). Alternative to repo='all'. Code graph only. |
 | `repos[]` | string |  |  |  |
 | `rerank` | boolean |  |  | Apply post-fusion rerank when configured. Default true. Set false for cheap exact-symbol-name lookups where fan-in scoring suffices. |

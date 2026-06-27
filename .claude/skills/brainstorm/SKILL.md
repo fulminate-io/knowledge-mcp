@@ -121,6 +121,38 @@ The context pack surfaces related decisions, findings, tickets, and prior though
 
 ## Step 0.7: Surface and verify framing assumptions — BEFORE spawning the researcher
 
+<constraint id="signposts-orient-code-answers" severity="hard">
+
+  <rule>
+    A researcher's return — its claims, file:line citations, "exists" / "already
+    built" / "still there" assertions — is a SIGNPOST, not an answer. So is a
+    comment, a docstring, a prior finding, a decision, a thought, a plan's
+    "status: completed", a ticket's "existing X" prose. They are frozen at
+    write-time and rot as the code changes; a signpost trusted WHEN WRITTEN is not
+    therefore true NOW — the maps and books that declared the world flat were
+    trusted at the time, and the world was still round. The researcher may itself
+    have trusted a signpost, so its claim inherits that risk.
+  </rule>
+
+  <rhythm>
+    Before a load-bearing claim enters the ticket — or you present it to the user as
+    fact — VERIFY it yourself against the CURRENT source: code graph (search / ast /
+    file_symbols / traverse) plus opening the actual file. The thought / knowledge
+    graph orients (where, why); the code graph + the file is the answer.
+    "X already exists / is already built" is the highest-risk claim — a reuse target
+    or an endpoint the ticket assumes exists but doesn't sends everything downstream
+    building on a fiction. Confirm it in the code, or write it into the ticket as
+    explicitly unverified.
+  </rhythm>
+
+  <override-default>
+    Trained instinct: the researcher (or a plan / a status field) said X exists, so
+    the ticket can rely on it. WRONG — that is the source's belief, frozen when
+    written. Open the code and confirm, or do not let the ticket assert it.
+  </override-default>
+
+</constraint>
+
 <constraint id="verify-framing-assumptions-before-they-propagate" severity="hard">
 
   <rule>

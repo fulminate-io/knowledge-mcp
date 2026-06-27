@@ -49,7 +49,6 @@ func (d *cloudStatusDeps) Embedder() embed.BinaryEmbedder               { return
 func (d *cloudStatusDeps) BackendResolver() BackendResolver             { return nil }
 func (d *cloudStatusDeps) GraphCaller() GraphCaller                     { return d.gc }
 func (d *cloudStatusDeps) LocalGraphCaller() GraphCaller                { return d.gc }
-func (d *cloudStatusDeps) RepoResolver() *RepoResolver                  { return nil }
 func (d *cloudStatusDeps) SegmentManager() SegmentSearcher              { return nil }
 func (d *cloudStatusDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
 func (d *cloudStatusDeps) SegmentShipper() SegmentShipper               { return nil }

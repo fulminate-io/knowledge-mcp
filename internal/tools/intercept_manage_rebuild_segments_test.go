@@ -470,7 +470,6 @@ func (rebuildClientDeps) Embedder() embed.BinaryEmbedder               { return 
 func (rebuildClientDeps) BackendResolver() BackendResolver             { return nil }
 func (rebuildClientDeps) GraphCaller() GraphCaller                     { return nil }
 func (rebuildClientDeps) LocalGraphCaller() GraphCaller                { return nil }
-func (rebuildClientDeps) RepoResolver() *RepoResolver                  { return nil }
 func (rebuildClientDeps) SegmentManager() SegmentSearcher              { return nil }
 func (rebuildClientDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
 func (d rebuildClientDeps) SegmentShipper() SegmentShipper             { return d.shipper }

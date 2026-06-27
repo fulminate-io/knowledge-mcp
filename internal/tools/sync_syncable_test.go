@@ -4,8 +4,6 @@ package tools
 
 import (
 	"context"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -72,7 +70,6 @@ func (d listDeps) Embedder() embed.BinaryEmbedder               { return nil }
 func (d listDeps) BackendResolver() BackendResolver             { return nil }
 func (d listDeps) GraphCaller() GraphCaller                     { return nil }
 func (d listDeps) LocalGraphCaller() GraphCaller                { return d.local }
-func (d listDeps) RepoResolver() *RepoResolver                  { return nil }
 func (d listDeps) SegmentManager() SegmentSearcher              { return nil }
 func (d listDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
 func (d listDeps) SegmentShipper() SegmentShipper               { return nil }
@@ -113,28 +110,31 @@ func TestSyncList_SyncableCustomTypes(t *testing.T) {
 // are rejected BEFORE any ExportGraph call. Reverting the gate makes the rejection
 // assertions FAIL (the export would fire for a non-syncable custom type).
 func TestInterceptSync_Push_SyncableGate(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	t.Cleanup(srv.Close)
-	okTransport := func(t *testing.T) {
+	okTransport := func(t *testing.T, backend *fakeSyncBackend) {
 		withTransport(t, func() (*auth.Transport, error) {
 			src := auth.StaticTokenSource{AccessToken: "tok", Permissions: auth.PermissionSet{auth.PermMCPKnowledgeWrite: {}}}
-			return auth.NewSyncTransport(srv.URL, src), nil
+			return auth.NewSyncTransport(backend.srv.URL, src), nil
 		})
 	}
 
 	t.Run("syncable:true custom reaches ExportGraph", func(t *testing.T) {
-		okTransport(t)
-		exp := &fakeExporter{bytesOut: []byte{1, 2}}
+		backend := newFakeSyncBackend(t)
+		okTransport(t, backend)
+		exp := &fakeExporter{bytesOut: []byte("KGV4xx")}
 		_, out := InterceptSync(interceptTestDeps{gc: exp, crud: syncableCRUD()},
 			syncParams(t, map[string]any{"operation": "push", "graph": "syncgraph", "name": "demo"}))
 		assert.False(t, out.IsError, "syncable:true custom push must proceed: %q", textOf(out))
 		assert.Equal(t, 1, exp.exportCalls, "ExportGraph fired for the syncable custom type")
+		assert.Equal(t, 1, backend.confirmCalls, "the push completed through confirm")
 	})
 
 	t.Run("syncable:false custom is rejected before ExportGraph", func(t *testing.T) {
-		okTransport(t)
+		// The syncable gate rejects BEFORE any transport build, so no backend is
+		// needed; guard that the transport is never built.
+		withTransport(t, func() (*auth.Transport, error) {
+			t.Fatal("transport must not be built for a non-syncable push")
+			return nil, nil
+		})
 		exp := &fakeExporter{bytesOut: []byte{1, 2}}
 		_, out := InterceptSync(interceptTestDeps{gc: exp, crud: syncableCRUD()},
 			syncParams(t, map[string]any{"operation": "push", "graph": "nosyncgraph", "name": "demo"}))
@@ -143,7 +143,10 @@ func TestInterceptSync_Push_SyncableGate(t *testing.T) {
 	})
 
 	t.Run("unregistered custom is rejected before ExportGraph", func(t *testing.T) {
-		okTransport(t)
+		withTransport(t, func() (*auth.Transport, error) {
+			t.Fatal("transport must not be built for an unregistered push")
+			return nil, nil
+		})
 		exp := &fakeExporter{bytesOut: []byte{1, 2}}
 		_, out := InterceptSync(interceptTestDeps{gc: exp, crud: syncableCRUD()},
 			syncParams(t, map[string]any{"operation": "push", "graph": "ghostgraph", "name": "demo"}))
@@ -158,23 +161,31 @@ func TestInterceptSync_Push_SyncableGate(t *testing.T) {
 // syncable=true reaches ExportGraph + OverwriteGraph; syncable=false / unregistered
 // are rejected before any RPC.
 func TestInterceptSync_Pull_SyncableGate(t *testing.T) {
-	t.Run("syncable:true custom reaches ExportGraph + OverwriteGraph", func(t *testing.T) {
-		cloud := &fakeExporter{bytesOut: []byte{0xAA}}
+	t.Run("syncable:true custom reaches pull + OverwriteGraph", func(t *testing.T) {
+		want := []byte("KGV4 syncable custom graph")
+		backend := newFakeSyncBackend(t)
+		backend.pullPlaintext = want
+		withTransport(t, func() (*auth.Transport, error) {
+			src := auth.StaticTokenSource{AccessToken: "tok", Permissions: auth.PermissionSet{auth.PermMCPKnowledgeWrite: {}}}
+			return auth.NewSyncTransport(backend.srv.URL, src), nil
+		})
 		local := &fakeOverwriter{nodes: 1}
-		_, out := InterceptSync(pullDeps{routed: cloud, local: local, crud: syncableCRUD()},
+		_, out := InterceptSync(pullDeps{local: local, crud: syncableCRUD()},
 			syncParams(t, map[string]any{"operation": "pull", "graph": "syncgraph", "name": "demo"}))
 		assert.False(t, out.IsError, "syncable:true custom pull must proceed: %q", textOf(out))
-		assert.Equal(t, 1, cloud.exportCalls, "cloud ExportGraph fired")
+		assert.Equal(t, 1, backend.pullCalls, "pull control endpoint fired")
 		assert.Equal(t, 1, local.overwriteCalls, "local OverwriteGraph applied")
 	})
 
 	t.Run("syncable:false custom is rejected before any RPC", func(t *testing.T) {
-		cloud := &fakeExporter{bytesOut: []byte{0xAA}}
+		withTransport(t, func() (*auth.Transport, error) {
+			t.Fatal("transport must not be built for a non-syncable pull")
+			return nil, nil
+		})
 		local := &fakeOverwriter{}
-		_, out := InterceptSync(pullDeps{routed: cloud, local: local, crud: syncableCRUD()},
+		_, out := InterceptSync(pullDeps{local: local, crud: syncableCRUD()},
 			syncParams(t, map[string]any{"operation": "pull", "graph": "nosyncgraph", "name": "demo"}))
 		assert.True(t, out.IsError, "syncable:false custom pull must be rejected")
-		assert.Equal(t, 0, cloud.exportCalls, "no cloud ExportGraph for a non-syncable type")
 		assert.Equal(t, 0, local.overwriteCalls, "no local OverwriteGraph for a non-syncable type")
 	})
 }

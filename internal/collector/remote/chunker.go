@@ -10,6 +10,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgwire"
 )
 
 // DefaultBatchBytes caps the serialized size of a single CollectChunk's inline
@@ -41,6 +42,37 @@ func BatchNodes(nodes []*knowledgev1.Node, maxBytes int) [][]*knowledgev1.Node {
 		}
 		cur = append(cur, n)
 		curBytes += nodeSize
+	}
+	if len(cur) > 0 {
+		chunks = append(chunks, cur)
+	}
+	return chunks
+}
+
+// BatchEdgesProto groups edges into []*BatchEdge chunks whose total serialized
+// size stays under maxBytes, a structural sibling of BatchNodes for the edge
+// tail of the CollectChunk flow. Each group rides one CollectChunk request so no
+// single request body crosses the budget; maxBytes <= 0 defaults to
+// kgwire.MaxCloudRequestBytes (the cloud request-body cap). Edge order is
+// preserved; a single oversized edge still gets its own chunk (the budget is a
+// soft cap). Empty input → nil.
+func BatchEdgesProto(edges []*knowledgev1.BatchEdge, maxBytes int) [][]*knowledgev1.BatchEdge {
+	if maxBytes <= 0 {
+		maxBytes = kgwire.MaxCloudRequestBytes
+	}
+	var chunks [][]*knowledgev1.BatchEdge
+	var cur []*knowledgev1.BatchEdge
+	var curBytes int
+
+	for _, e := range edges {
+		edgeSize := proto.Size(e) + 16 // rough proto field overhead per edge
+		if cur != nil && curBytes+edgeSize > maxBytes {
+			chunks = append(chunks, cur)
+			cur = nil
+			curBytes = 0
+		}
+		cur = append(cur, e)
+		curBytes += edgeSize
 	}
 	if len(cur) > 0 {
 		chunks = append(chunks, cur)

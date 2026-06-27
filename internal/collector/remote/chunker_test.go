@@ -57,3 +57,56 @@ func TestBatchNodes_DefaultWhenMaxBytesZero(t *testing.T) {
 	require.Len(t, chunks[0], 1)
 	assert.Equal(t, "x", chunks[0][0].Id)
 }
+
+func TestBatchEdgesProto_RespectsSizeBoundAndOrder(t *testing.T) {
+	// Each edge serializes to ~60 bytes; a small maxBytes must produce multiple
+	// groups, each (bar a lone oversized edge) under the bound, and the flattened
+	// groups must reassemble exactly the input edges in order — none dropped.
+	edges := make([]*knowledgev1.BatchEdge, 10)
+	for i := range edges {
+		edges[i] = &knowledgev1.BatchEdge{
+			FromIdx:  -1,
+			ToIdx:    -1,
+			FromId:   string(rune('a'+i)) + "-from-node",
+			ToId:     string(rune('a'+i)) + "-to-node",
+			Type:     "relates-to",
+			Evidence: "evidence payload for edge batching",
+		}
+	}
+	const maxBytes = 200
+	chunks := BatchEdgesProto(edges, maxBytes)
+	require.GreaterOrEqual(t, len(chunks), 2, "10 edges at a 200-byte bound must produce multiple chunks")
+
+	var flattened []*knowledgev1.BatchEdge
+	for _, chunk := range chunks {
+		var chunkBytes int
+		for _, e := range chunk {
+			chunkBytes += proto.Size(e) + 16
+		}
+		if len(chunk) > 1 {
+			assert.LessOrEqual(t, chunkBytes, maxBytes, "multi-edge chunk must stay under the byte bound")
+		}
+		flattened = append(flattened, chunk...)
+	}
+	require.Len(t, flattened, len(edges), "every edge must survive the split (full reassembly)")
+	for i := range edges {
+		assert.Equal(t, edges[i].FromId, flattened[i].FromId, "edge order must be preserved across chunks")
+		assert.Equal(t, edges[i].ToId, flattened[i].ToId, "edge order must be preserved across chunks")
+	}
+}
+
+func TestBatchEdgesProto_DefaultWhenMaxBytesZero(t *testing.T) {
+	// maxBytes<=0 defaults to kgwire.MaxCloudRequestBytes (64 MiB), so a single
+	// small edge lands in exactly one group.
+	edges := []*knowledgev1.BatchEdge{
+		{FromIdx: -1, ToIdx: -1, FromId: "x", ToId: "y", Type: "calls"},
+	}
+	chunks := BatchEdgesProto(edges, 0)
+	require.Len(t, chunks, 1)
+	require.Len(t, chunks[0], 1)
+	assert.Equal(t, "x", chunks[0][0].FromId)
+	assert.Equal(t, "y", chunks[0][0].ToId)
+
+	// Empty input → nil.
+	require.Nil(t, BatchEdgesProto(nil, 0))
+}

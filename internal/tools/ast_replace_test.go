@@ -143,6 +143,63 @@ func TestAstReplace_DryRunPointerSemantics(t *testing.T) {
 	})
 }
 
+// TestAstReplace_EmptyReplacement_Deletes pins that an EXPLICIT empty
+// replacement DELETES the matched ranges (the template interpolates to "",
+// splicing nothing) — the deletion path the *string presence check unlocks.
+// An ABSENT replacement still errors (covered by missing_replacement_errors).
+func TestAstReplace_EmptyReplacement_Deletes(t *testing.T) {
+	t.Run("explicit_empty_deletes_on_apply", func(t *testing.T) {
+		repoDir := astIntegrationFixture(t)
+		deps := astTestDeps{rootDir: repoDir}
+		before, err := os.ReadFile(filepath.Join(repoDir, "main.go"))
+		require.NoError(t, err)
+		require.Contains(t, string(before), "defer f.Close()", "fixture must contain the target defer")
+
+		body, isErr, _ := callAst(t, deps, `{
+			"operation":"replace",
+			"language":"go",
+			"pattern":"defer $X.Close()",
+			"replacement":"",
+			"dry_run":false
+		}`)
+		require.False(t, isErr, "empty-replacement delete failed: %s", body)
+
+		var out replaceResultShape
+		require.NoError(t, json.Unmarshal([]byte(body), &out))
+		assert.True(t, out.Applied, "dry_run:false must apply the deletion")
+		assert.Equal(t, 1, out.FilesTouched)
+
+		onDisk, err := os.ReadFile(filepath.Join(repoDir, "main.go"))
+		require.NoError(t, err)
+		assert.NotContains(t, string(onDisk), "defer f.Close()", "the matched range must be deleted")
+	})
+
+	t.Run("explicit_empty_previews_under_default_dry_run", func(t *testing.T) {
+		repoDir := astIntegrationFixture(t)
+		deps := astTestDeps{rootDir: repoDir}
+		before, err := os.ReadFile(filepath.Join(repoDir, "main.go"))
+		require.NoError(t, err)
+
+		body, isErr, _ := callAst(t, deps, `{
+			"operation":"replace",
+			"language":"go",
+			"pattern":"defer $X.Close()",
+			"replacement":""
+		}`)
+		require.False(t, isErr, "empty-replacement dry-run failed: %s", body)
+
+		var out replaceResultShape
+		require.NoError(t, json.Unmarshal([]byte(body), &out))
+		assert.False(t, out.Applied, "absent dry_run defaults to preview")
+		assert.True(t, out.DryRun)
+		assert.NotEmpty(t, out.Diffs, "a deletion must still produce a preview diff")
+
+		after, err := os.ReadFile(filepath.Join(repoDir, "main.go"))
+		require.NoError(t, err)
+		assert.Equal(t, string(before), string(after), "dry-run deletion must not write")
+	})
+}
+
 // astReplaceNestFixture writes a single Go file whose only function body
 // contains a nested call f(g()) so that sibling-form patterns f($$$_) and g()
 // produce two matches whose byte ranges NEST inside one file.

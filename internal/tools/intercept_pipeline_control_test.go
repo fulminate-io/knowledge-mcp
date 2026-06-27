@@ -128,7 +128,7 @@ func TestStalenessFooterSurfacesPausedPipeline(t *testing.T) {
 	deps.p.PausePipeline("circuit-break test reason")
 
 	res := textResult("search results body")
-	out := appendStalenessFooter(context.Background(), deps, nil, "", res)
+	out := appendStalenessFooter(context.Background(), deps, nil, "", "", res)
 	txt := resultTextLocal(out)
 	for _, want := range []string{"search results body", "PAUSED", "circuit-break test reason", "resume_pipeline", "summary axis", "embed axis"} {
 		if !strings.Contains(txt, want) {
@@ -143,7 +143,7 @@ func TestStalenessFooterNoSpuriousLineWhenRunning(t *testing.T) {
 	deps := newPipelineControlDeps() // pipeline running (not paused)
 
 	res := textResult("search results body")
-	out := appendStalenessFooter(context.Background(), deps, nil, "", res)
+	out := appendStalenessFooter(context.Background(), deps, nil, "", "", res)
 	if txt := resultTextLocal(out); txt != "search results body" {
 		t.Fatalf("running-pipeline footer mutated body: %q", txt)
 	}

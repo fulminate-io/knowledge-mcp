@@ -32,8 +32,7 @@ import (
 // nil because the ast tool never calls them (NoOpBackend hydration means
 // zero wire traffic).
 type astTestDeps struct {
-	rootDir  string
-	resolver *RepoResolver
+	rootDir string
 }
 
 func (d astTestDeps) LocalLiveness() LocalLiveness                 { return nil }
@@ -51,7 +50,6 @@ func (d astTestDeps) Embedder() embed.BinaryEmbedder               { return nil 
 func (d astTestDeps) BackendResolver() BackendResolver             { return nil }
 func (d astTestDeps) GraphCaller() GraphCaller                     { return nil }
 func (d astTestDeps) LocalGraphCaller() GraphCaller                { return nil }
-func (d astTestDeps) RepoResolver() *RepoResolver                  { return d.resolver }
 func (d astTestDeps) SegmentManager() SegmentSearcher              { return nil }
 func (d astTestDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
 func (d astTestDeps) SegmentShipper() SegmentShipper               { return nil }
@@ -201,39 +199,170 @@ func TestHandleAstListNodeKinds_Unsupported(t *testing.T) {
 	assert.Contains(t, body, "unsupported language")
 }
 
-// TestDefaultRepoFromCwd covers the B1 ast hydration repo default at the seam
-// where the resolved value is directly observable: (a) empty repo + resolver hit
-// defaults to the graph name, (b) empty repo + resolver miss stays empty, (c) a
-// non-empty repo is left untouched. The resolver matches filepath.Base(cwd)
-// against the loaded code-graph names (repo_resolve.go ResolveCwd), so a temp
-// dir whose basename is "knowledge" resolves to the "knowledge" graph.
-func TestDefaultRepoFromCwd(t *testing.T) {
+// TestResolveRepoDir covers the cross-repo walk-root resolution: no-repo-arg and
+// the current repo's OWN name walk the session cwd; a bare cross-repo NAME is
+// NEVER guessed to a directory — it fails loud and points to an absolute path,
+// because a repo name is not a portable filesystem path (the same name lives at
+// a different location on every machine, and the graph stores no collect-time
+// path to map it back); an absolute path walks that dir directly; an empty root
+// preserves the existing --root-empty error. Resolution is purely FILESYSTEM-
+// based (directory existence + a path match against the real base tree), NOT the
+// code-graph catalog — so the fixtures create real temp dirs.
+func TestResolveRepoDir(t *testing.T) {
 	ctx := context.Background()
 
-	t.Run("empty_repo_resolver_hit_defaults_to_name", func(t *testing.T) {
-		dir := filepath.Join(t.TempDir(), "knowledge")
-		require.NoError(t, os.MkdirAll(dir, 0o750))
-		deps := astTestDeps{rootDir: dir, resolver: buildResolver(t, "knowledge")}
-		assert.Equal(t, "knowledge", defaultRepoFromCwd(ctx, deps, ""))
+	t.Run("no_repo_walks_cwd", func(t *testing.T) {
+		parent := t.TempDir()
+		dirY := filepath.Join(parent, "knowledge")
+		require.NoError(t, os.MkdirAll(dirY, 0o750))
+		deps := astTestDeps{rootDir: dirY}
+		got, err := resolveRepoDir(ctx, deps, "")
+		require.NoError(t, err)
+		assert.Equal(t, dirY, got)
 	})
 
-	t.Run("empty_repo_resolver_miss_stays_empty", func(t *testing.T) {
-		dir := filepath.Join(t.TempDir(), "unmatched")
-		require.NoError(t, os.MkdirAll(dir, 0o750))
-		deps := astTestDeps{rootDir: dir, resolver: buildResolver(t, "knowledge")}
-		assert.Empty(t, defaultRepoFromCwd(ctx, deps, ""))
+	t.Run("same_repo_walks_cwd", func(t *testing.T) {
+		parent := t.TempDir()
+		dirY := filepath.Join(parent, "knowledge")
+		require.NoError(t, os.MkdirAll(dirY, 0o750))
+		deps := astTestDeps{rootDir: dirY}
+		got, err := resolveRepoDir(ctx, deps, "knowledge")
+		require.NoError(t, err)
+		assert.Equal(t, dirY, got)
 	})
 
-	t.Run("nil_resolver_stays_empty", func(t *testing.T) {
-		deps := astTestDeps{rootDir: t.TempDir(), resolver: nil}
-		assert.Empty(t, defaultRepoFromCwd(ctx, deps, ""))
+	t.Run("relative_root_is_anchored_to_abs", func(t *testing.T) {
+		// REGRESSION: effectiveCwd can hand back a RELATIVE root — notably the
+		// daemon's default --root of "." when no session WorkspaceCwd is
+		// propagated over HTTP. The current-tree path match needs an absolute
+		// base (filepath.Dir(".") is "." with no parent), so resolveRepoDir
+		// anchors a relative base via filepath.Abs against the process cwd. Chdir
+		// into a repo dir, root="." → resolves to that absolute dir, and the
+		// repo's own name resolves the same anchored tree. Without the anchor,
+		// "knowledge" here fails loud (the live daemon symptom this pins).
+		parent := t.TempDir()
+		dirY := filepath.Join(parent, "knowledge")
+		require.NoError(t, os.MkdirAll(dirY, 0o750))
+		t.Chdir(dirY) // process cwd = .../knowledge
+		deps := astTestDeps{rootDir: "."}
+		// t.TempDir() lives under a /var → /private/var symlink on macOS, and
+		// os.Getwd resolves it, so compare via EvalSymlinks.
+		wantY, err := filepath.EvalSymlinks(dirY)
+		require.NoError(t, err)
+
+		got, err := resolveRepoDir(ctx, deps, "")
+		require.NoError(t, err)
+		assert.True(t, filepath.IsAbs(got), "a relative root must be anchored to an absolute path, got %q", got)
+		gotEval, err := filepath.EvalSymlinks(got)
+		require.NoError(t, err)
+		assert.Equal(t, wantY, gotEval)
+
+		got2, err := resolveRepoDir(ctx, deps, "knowledge")
+		require.NoError(t, err)
+		got2Eval, err := filepath.EvalSymlinks(got2)
+		require.NoError(t, err)
+		assert.Equal(t, wantY, got2Eval, "the current repo's name must resolve the anchored current tree")
 	})
 
-	t.Run("non_empty_repo_left_untouched", func(t *testing.T) {
-		dir := filepath.Join(t.TempDir(), "knowledge")
-		require.NoError(t, os.MkdirAll(dir, 0o750))
-		deps := astTestDeps{rootDir: dir, resolver: buildResolver(t, "knowledge")}
-		assert.Equal(t, "explicit", defaultRepoFromCwd(ctx, deps, "explicit"))
+	t.Run("cross_repo_name_does_not_guess_sibling", func(t *testing.T) {
+		// A bare cross-repo NAME must NOT be resolved by guessing a sibling
+		// directory: repo names are not portable filesystem paths. Even with a
+		// real parent/agent sibling on disk, resolution fails loud and directs the
+		// user to an absolute path — a name→dir guess is correct only by accident
+		// of THIS machine's layout, so we never make it. The manifest is empty
+		// here, so the sibling on disk is NOT picked up.
+		withTestManifest(t) // empty manifest: no recorded "agent" entry
+		parent := t.TempDir()
+		dirY := filepath.Join(parent, "knowledge")
+		dirX := filepath.Join(parent, "agent")
+		require.NoError(t, os.MkdirAll(dirY, 0o750))
+		require.NoError(t, os.MkdirAll(dirX, 0o750))
+		deps := astTestDeps{rootDir: dirY}
+		got, err := resolveRepoDir(ctx, deps, "agent")
+		require.Error(t, err)
+		assert.Empty(t, got)
+		assert.NotEqual(t, dirX, got, "a cross-repo NAME must never resolve to a guessed sibling dir")
+		assert.Contains(t, err.Error(), "absolute checkout path", "the error must point the user to an absolute path")
+	})
+
+	t.Run("cross_repo_no_checkout_errors", func(t *testing.T) {
+		// LOAD-BEARING: parent/agent does NOT exist on disk. The fail-loud floor
+		// MUST error rather than silently returning the cwd (knowledge) tree.
+		// This pins the never-return-the-cwd-tree property — it fails if the
+		// floor regresses.
+		withTestManifest(t) // empty manifest
+		parent := t.TempDir()
+		dirY := filepath.Join(parent, "knowledge")
+		require.NoError(t, os.MkdirAll(dirY, 0o750))
+		// Deliberately do NOT create parent/agent.
+		deps := astTestDeps{rootDir: dirY}
+		got, err := resolveRepoDir(ctx, deps, "agent")
+		require.Error(t, err)
+		assert.Empty(t, got)
+		assert.NotEqual(t, dirY, got, "fail-loud floor must NEVER silently return the cwd tree for a cross-repo arg")
+	})
+
+	t.Run("cross_repo_name_resolves_via_manifest", func(t *testing.T) {
+		// A bare cross-repo NAME recorded in the machine-local manifest resolves
+		// to its recorded directory — the recorded-fact path the ticket adds.
+		m := withTestManifest(t)
+		parent := t.TempDir()
+		dirY := filepath.Join(parent, "knowledge")
+		dirX := filepath.Join(parent, "agent")
+		require.NoError(t, os.MkdirAll(dirY, 0o750))
+		require.NoError(t, os.MkdirAll(dirX, 0o750))
+		require.NoError(t, m.Record("agent", dirX))
+		deps := astTestDeps{rootDir: dirY}
+		got, err := resolveRepoDir(ctx, deps, "agent")
+		require.NoError(t, err)
+		assert.Equal(t, dirX, got, "a manifest-recorded cross-repo name must resolve to its recorded dir")
+	})
+
+	t.Run("cross_repo_manifest_stale_dir_fails_loud", func(t *testing.T) {
+		// A manifest entry whose recorded checkout has since been removed must
+		// fall through to the fail-loud floor, never walk the phantom path.
+		m := withTestManifest(t)
+		parent := t.TempDir()
+		dirY := filepath.Join(parent, "knowledge")
+		require.NoError(t, os.MkdirAll(dirY, 0o750))
+		goneDir := filepath.Join(parent, "agent-was-here")
+		require.NoError(t, m.Record("agent", goneDir)) // recorded but never created
+		deps := astTestDeps{rootDir: dirY}
+		got, err := resolveRepoDir(ctx, deps, "agent")
+		require.Error(t, err)
+		assert.Empty(t, got)
+	})
+
+	t.Run("abs_path_walks_existing_dir", func(t *testing.T) {
+		// An absolute path to an existing directory is the user's direct
+		// instruction: walk it as-is, no sibling probe, no ResolveCwd gate.
+		parent := t.TempDir()
+		dirY := filepath.Join(parent, "knowledge")
+		require.NoError(t, os.MkdirAll(dirY, 0o750))
+		absTarget := t.TempDir() // an unrelated existing absolute dir
+		deps := astTestDeps{rootDir: dirY}
+		got, err := resolveRepoDir(ctx, deps, absTarget)
+		require.NoError(t, err)
+		assert.Equal(t, absTarget, got, "an existing absolute path must be walked directly")
+	})
+
+	t.Run("abs_path_missing_errors", func(t *testing.T) {
+		// A non-existent absolute path hits the fail-loud floor — never a
+		// silent fallback to the cwd tree.
+		parent := t.TempDir()
+		dirY := filepath.Join(parent, "knowledge")
+		require.NoError(t, os.MkdirAll(dirY, 0o750))
+		missing := filepath.Join(t.TempDir(), "does-not-exist")
+		deps := astTestDeps{rootDir: dirY}
+		got, err := resolveRepoDir(ctx, deps, missing)
+		require.Error(t, err)
+		assert.Empty(t, got)
+	})
+
+	t.Run("empty_root_errors", func(t *testing.T) {
+		deps := astTestDeps{rootDir: ""}
+		_, err := resolveRepoDir(ctx, deps, "")
+		require.Error(t, err)
 	})
 }
 

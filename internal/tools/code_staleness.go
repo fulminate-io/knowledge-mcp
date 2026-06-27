@@ -17,6 +17,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/coderun"
@@ -25,16 +27,35 @@ import (
 
 // recordedSyncMeta reads the recorded collected_commit + collected_time for a
 // single code graph via the generic modules catalog read (query{graph:code, mode:modules}
-// → RETURN_MODE_GRAPH_NAMES → DecodeGraphNames). It filters the returned
-// []GraphInfo by graph name == repo and returns the recorded values. ok is
-// false (degrade-to-unknown) on any miss: no seam, decode failure, repo not
-// found, or an empty/zero recorded pair (a graph collected before staleness
-// tracking landed).
-func recordedSyncMeta(ctx context.Context, exec engine.ExecuteFn, repo string) (syncCommit string, syncTime int64, ok bool) {
+// → RETURN_MODE_GRAPH_NAMES → DecodeGraphNames). ok is false (degrade-to-unknown)
+// on any miss: no seam, decode failure, repo not found, or an empty/zero recorded
+// pair (a graph collected before staleness tracking landed).
+//
+// Branch-aware: when branch is non-empty, the read passes overlay_of=repo so the
+// catalog enumerates the repo's "<repo>@*" overlay keys, and we filter for the
+// "<repo>@<branch>" overlay entry — so the footer reports the searched BRANCH
+// overlay's collect meta, not the stale base. An empty branch keeps the base
+// enumeration (filter on name == repo).
+//
+// NOTE: the overlay path depends on the server populating overlay entries' collect
+// meta (listOverlays → readSyncMeta). Until that server-side enablement lands,
+// overlay entries surface with empty collect meta and this degrades to ok=false
+// for a branch read — the client-side wire is in place and becomes live the moment
+// the server fills overlay collect meta.
+func recordedSyncMeta(ctx context.Context, exec engine.ExecuteFn, repo, branch string) (syncCommit string, syncTime int64, ok bool) {
 	if exec == nil || repo == "" {
 		return "", 0, false
 	}
-	args, err := json.Marshal(map[string]any{"graph": "code", "mode": "modules"})
+	modulesArgs := map[string]any{"graph": "code", "mode": "modules"}
+	// Branch overlays are keyed "<repo>@<branch>"; overlay_of restricts the
+	// catalog enumeration to the repo's overlay keys so the branch entry is in
+	// the returned set. wantName is the entry we filter for.
+	wantName := repo
+	if branch != "" {
+		modulesArgs["overlay_of"] = repo
+		wantName = repo + "@" + branch
+	}
+	args, err := json.Marshal(modulesArgs)
 	if err != nil {
 		return "", 0, false
 	}
@@ -51,7 +72,7 @@ func recordedSyncMeta(ctx context.Context, exec engine.ExecuteFn, repo string) (
 		return "", 0, false
 	}
 	for _, gi := range infos {
-		if gi.GetName() != repo {
+		if gi.GetName() != wantName {
 			continue
 		}
 		sc, st := gi.GetCollectedCommit(), gi.GetCollectedTime()
@@ -64,13 +85,23 @@ func recordedSyncMeta(ctx context.Context, exec engine.ExecuteFn, repo string) (
 }
 
 // codeStalenessFooter renders a one-line "code index" staleness footer for the
-// searched repo, or "" to degrade silently (no recorded metadata → no footer,
-// matching the prior graceful-empty behavior). When a sync_commit is recorded
-// it computes real commits-behind against the cwd's HEAD; when that count can't
-// be computed (detached HEAD, shallow clone, unknown revision) it falls back to
-// the last-collected-when signal alone with the reason noted.
-func codeStalenessFooter(ctx context.Context, exec engine.ExecuteFn, cwd, repo string) string {
-	syncCommit, syncTime, ok := recordedSyncMeta(ctx, exec, repo)
+// searched repo (+ branch overlay), or "" to degrade silently (no recorded
+// metadata → no footer, matching the prior graceful-empty behavior). When a
+// sync_commit is recorded it computes real commits-behind by running git in the
+// searched repo's REAL directory; when that count can't be computed (detached
+// HEAD, shallow clone, unknown revision) it falls back to the last-collected-when
+// signal alone with the reason noted.
+//
+// Directory resolution (the cross-repo git-exit-128 fix): git MUST run in the
+// SEARCHED repo's dir, not the session cwd — running rev-list in cwd for a
+// cross-repo search produced "exit status 128". The dir is resolved from the
+// machine-local manifest (lookupRepoDir(repo)); the session cwd is used ONLY when
+// it IS the searched repo's checkout (its basename matches repo). When neither
+// source yields the repo's dir, CommitsBehind is SKIPPED entirely (report the
+// collection time alone) rather than running git in the wrong tree and surfacing
+// a misleading exit-128.
+func codeStalenessFooter(ctx context.Context, exec engine.ExecuteFn, cwd, repo, branch string) string {
+	syncCommit, syncTime, ok := recordedSyncMeta(ctx, exec, repo, branch)
 	if !ok {
 		return ""
 	}
@@ -81,7 +112,14 @@ func codeStalenessFooter(ctx context.Context, exec engine.ExecuteFn, cwd, repo s
 	if syncCommit == "" {
 		return fmt.Sprintf("code index: last collected %s", when)
 	}
-	behind, err := coderun.CommitsBehind(ctx, cwd, syncCommit)
+	gitDir, dirKnown := stalenessGitDir(cwd, repo)
+	if !dirKnown {
+		// We can't run git in the searched repo's tree (not in the manifest and
+		// not the cwd's repo). Report the collection time WITHOUT a bogus
+		// commits-behind — no exit-128, no misleading count.
+		return fmt.Sprintf("code index: last collected %s", when)
+	}
+	behind, err := coderun.CommitsBehind(ctx, gitDir, syncCommit)
 	if err != nil {
 		return fmt.Sprintf("code index: last collected %s (commits-behind unavailable: %v)", when, err)
 	}
@@ -89,6 +127,31 @@ func codeStalenessFooter(ctx context.Context, exec engine.ExecuteFn, cwd, repo s
 		return fmt.Sprintf("code index: up to date — last collected %s", when)
 	}
 	return fmt.Sprintf("code index: %s behind HEAD — last collected %s", pluralCommits(behind), when)
+}
+
+// stalenessGitDir resolves the directory git should run in for the searched
+// repo's commits-behind count, and reports whether it is known. Preference:
+//  1. the machine-local manifest entry for repo (where it was collected from on
+//     THIS machine) — the authoritative cross-repo source.
+//  2. the session cwd, ONLY when cwd IS the searched repo's checkout (its
+//     basename equals repo, or repo appears as a path component) — covers the
+//     same-repo search before a collect has populated the manifest.
+//
+// Returns ok=false when neither applies, so the caller skips CommitsBehind rather
+// than running git in an unrelated tree (the cross-repo exit-128 bug).
+func stalenessGitDir(cwd, repo string) (dir string, ok bool) {
+	if repo == "" || repo == "all" {
+		return "", false
+	}
+	if d, found := lookupRepoDir(repo); found {
+		return d, true
+	}
+	if cwd != "" && (filepath.Base(cwd) == repo ||
+		strings.HasSuffix(cwd, "/"+repo) ||
+		strings.Contains(cwd, "/"+repo+"/")) {
+		return cwd, true
+	}
+	return "", false
 }
 
 // pluralCommits formats "<n> commit[s]".
@@ -101,10 +164,11 @@ func pluralCommits(n int) string {
 
 // RecordedCodeSyncMeta is the exported seam over recordedSyncMeta for callers
 // outside package tools (the knowledge doctor staleness check). It returns the
-// recorded HEAD SHA and collection time for a code graph, or ok=false to
-// degrade to unknown.
+// recorded HEAD SHA and collection time for a code graph's BASE (branch="" → no
+// overlay), or ok=false to degrade to unknown. The doctor check is base-graph
+// scoped; the branch-overlay read is internal to the search footer.
 func RecordedCodeSyncMeta(ctx context.Context, exec engine.ExecuteFn, repo string) (syncCommit string, collectedAt time.Time, ok bool) {
-	sc, st, found := recordedSyncMeta(ctx, exec, repo)
+	sc, st, found := recordedSyncMeta(ctx, exec, repo, "")
 	if !found {
 		return "", time.Time{}, false
 	}

@@ -74,16 +74,15 @@ var manageCodeGraphOps = map[string]bool{
 // AND the caller did not pass repo: explicitly, the call short-circuits
 // with a typed error WITHOUT issuing the wire RPC.
 //
-// Branch is auto-filled ONLY when the resolved target repo equals the
-// cwd's repo. The cwd's git HEAD is meaningful for the target only when
-// the target IS the cwd's repo, so a cross-repo target (or an unresolvable
-// cwd) leaves branch unstamped and falls through to the base graph WITHOUT
-// error — the caller passes branch: explicitly to read a cross-repo
-// overlay. "Same repo" is determined by RepoResolver basename / path-
-// component match, not git identity: a checkout whose directory name does
-// not match the graph name (a renamed or forked top-level clone) is treated
-// as cross-repo and will NOT auto-stamp a branch — pass branch: explicitly
-// to read its overlay.
+// Branch is auto-filled from the MACHINE-LOCAL MANIFEST, not from cwd: when the
+// caller omits branch, the repo name is looked up in ~/.knowledge/repos.json
+// (populated at collect) for its real on-disk directory, and coderun.DetectBranch
+// reads that checkout's current branch. This is machine-correct for any repo —
+// including cross-repo targets and renamed/forked clones — because the manifest
+// records where the repo actually lives here, rather than guessing from cwd. A
+// repo absent from the manifest, or a detached/non-git HEAD, leaves branch
+// unstamped and falls through to the base graph WITHOUT error — the caller passes
+// branch: explicitly to read an overlay. repo="all" is never branch-stamped.
 //
 // Return tuple:
 //   - rewritten: a possibly-mutated CallToolParams. When no rewrite was
@@ -105,13 +104,11 @@ var manageCodeGraphOps = map[string]bool{
 //  3. Repo injection: missing/empty args["repo"] → ResolveCwd. Hit
 //     populates args["repo"]; miss returns typed error.
 //
-//  4. Branch injection (same-repo only): missing/empty args["branch"]
-//     auto-fills via coderun.DetectBranch ONLY when the resolved target
-//     repo equals the cwd's repo (resolveRepo reused from step 3). On that
-//     same-repo path, success populates args["branch"] and a non-git cwd
-//     returns the branch-required typed error. A cross-repo target — or an
-//     unresolvable cwd — leaves branch unstamped and falls through to base
-//     WITHOUT error.
+//  4. Branch injection (manifest-based): missing/empty args["branch"]
+//     auto-fills via coderun.DetectBranch run in the repo's recorded on-disk
+//     directory (lookupRepoDir → ~/.knowledge/repos.json). A manifest miss, a
+//     detached/non-git HEAD, or repo="all" leaves branch unstamped and falls
+//     through to the base graph WITHOUT error. Never inferred from cwd.
 //
 //  5. Staleness trio: ONLY when tool == "search" AND args["staleness"]
 //     is true. Populates current_head / uncommitted_count /
@@ -135,41 +132,52 @@ func InjectRepoIfCodeGraph(ctx context.Context, deps ClientDeps, params kgtools.
 
 	args := decodeRepoArgs(params.Arguments)
 
-	// Graph-selector gate: search / query / traverse can target non-code graphs.
-	// Only proceed when graph is empty (code-graph default for code-only
-	// tools is enforced server-side) or explicitly "code".
-	if params.Name == "search" || params.Name == "query" || params.Name == "traverse" {
-		graph := decodeStringField(args, "graph")
-		if graph != "" && graph != "code" {
+	// Graph-selector gate. The DEFAULT graph differs per tool, so an OMITTED
+	// graph must route differently: `search` defaults to the CODE graph (omitted
+	// → code → repo required below), while `query` and `traverse` default to the
+	// KNOWLEDGE graph (omitted → knowledge → pass through untouched, no repo).
+	// Only an EXPLICIT graph="code" pulls query/traverse onto the repo-required
+	// path. (file_symbols is code-only with no graph arg — it always requires
+	// repo below.)
+	switch params.Name {
+	case "search":
+		if g := decodeStringField(args, "graph"); g != "" && g != "code" {
+			return params, false, kgtools.ToolResult{}
+		}
+	case "query", "traverse":
+		if decodeStringField(args, "graph") != "code" {
 			return params, false, kgtools.ToolResult{}
 		}
 	}
 
-	cwd := effectiveCwd(ctx, deps)
-
-	// Step 3: Repo injection.
-	if decodeStringField(args, "repo") == "" {
-		repo, ok, err := resolveRepo(ctx, deps, cwd)
-		if err != nil {
-			return params, true, errorResult(params.Name + ": resolve repo: " + err.Error())
-		}
-		if !ok {
-			return params, true, errorResult(params.Name + ": graph=\"code\" requires repo. For the memory/decision/thought graph, use graph=\"knowledge\". For a code repo named \"knowledge\", use graph=\"code\", repo=\"knowledge\".")
-		}
-		setStringField(args, "repo", repo)
+	// Repo is REQUIRED explicitly. A code graph is addressed by NAME; the client
+	// never infers it from cwd. The old cwd→graph-name guess was unreliable — it
+	// returned empty in the cloud-mode daemon (the catalog enumeration is empty
+	// there) and could silently mis-target in general — so an omitted repo now
+	// fails loud rather than guessing.
+	repo := decodeStringField(args, "repo")
+	if repo == "" {
+		return params, true, errorResult(params.Name + ": graph=\"code\" requires repo. Pass repo=\"<name>\" (or repo=\"all\" to search every code repo). For the memory/decision/thought graph, use graph=\"knowledge\".")
 	}
 
-	// Step 4: Branch injection — confined to the same-repo case (see
-	// injectSameRepoBranch).
-	if decodeStringField(args, "branch") == "" {
-		if handled, res := injectSameRepoBranch(ctx, deps, params.Name, cwd, args); handled {
-			return params, true, res
+	// Branch auto-detect (machine-correct, manifest-based). Repo STAYS explicitly
+	// required above — this does NOT re-introduce repo inference. When the caller
+	// omitted branch, the repo's real on-disk dir from the machine-local manifest
+	// drives DetectBranch so the searched repo's ACTUAL branch is stamped; absent a
+	// manifest hit / detached HEAD / repo="all" it stays unset (→ base graph).
+	if decodeStringField(args, "branch") == "" && repo != "all" {
+		if branch := autoDetectBranch(ctx, repo); branch != "" {
+			if b, mErr := json.Marshal(branch); mErr == nil {
+				args["branch"] = b
+			}
 		}
 	}
 
-	// Step 5: Staleness trio (search only, staleness:true only).
+	// Staleness trio (search only, staleness:true only): opt-in git state for the
+	// staleness footer, read from the session cwd. This is reporting, not repo
+	// resolution, so it stays.
 	if params.Name == "search" && decodeBoolField(args, "staleness") {
-		populateStaleness(ctx, args, cwd)
+		populateStaleness(ctx, args, effectiveCwd(ctx, deps))
 	}
 
 	rewritten, err := json.Marshal(args)
@@ -180,51 +188,20 @@ func InjectRepoIfCodeGraph(ctx context.Context, deps ClientDeps, params kgtools.
 	return params, false, kgtools.ToolResult{}
 }
 
-// injectSameRepoBranch stamps args["branch"] from the cwd's git HEAD, but
-// ONLY when the resolved target repo equals the cwd's repo. The cwd's git
-// HEAD is meaningful for the target only when the target IS the cwd's repo;
-// resolveRepo reuses the same mutex-memoized ResolveCwd already fired in
-// step 3 (this second call is free once the load has succeeded). Three cases:
-//   - SAME-REPO, git cwd: DetectBranch succeeds → stamp branch.
-//   - SAME-REPO, non-git cwd: DetectBranch errors/empty → return the typed
-//     branch-required short-circuit (handled==true).
-//   - CROSS-REPO (target != cwdRepo, OR cwd unresolvable so cwdOK==false):
-//     no stamp AND no error — fall through (handled==false) so resolveCode
-//     Retrieves base. The caller passes branch: explicitly for a cross-repo
-//     overlay.
-//
-// A resolver load failure propagates as the typed "resolve repo" short-circuit.
-func injectSameRepoBranch(ctx context.Context, deps ClientDeps, toolName, cwd string, args map[string]json.RawMessage) (bool, kgtools.ToolResult) {
-	effectiveTarget := decodeStringField(args, "repo")
-	cwdRepo, cwdOK, err := resolveRepo(ctx, deps, cwd)
+// autoDetectBranch returns the current git branch of the repo recorded in the
+// machine-local manifest (~/.knowledge/repos.json), or "" when the repo is not
+// in the manifest, its recorded checkout has a detached/non-git HEAD, or
+// DetectBranch otherwise fails. Pure read — no cwd inference.
+func autoDetectBranch(ctx context.Context, repo string) string {
+	dir, ok := lookupRepoDir(repo)
+	if !ok {
+		return ""
+	}
+	branch, err := coderun.DetectBranch(ctx, dir)
 	if err != nil {
-		return true, errorResult(toolName + ": resolve repo: " + err.Error())
+		return ""
 	}
-	if !cwdOK || cwdRepo != effectiveTarget {
-		// Cross-repo (or unresolvable cwd): no stamp, no error.
-		return false, kgtools.ToolResult{}
-	}
-	branch, err := coderun.DetectBranch(ctx, cwd)
-	if err != nil {
-		return true, errorResult(toolName + ": branch is required; run from inside a git working tree or pass branch: (" + err.Error() + ")")
-	}
-	if branch == "" {
-		return true, errorResult(toolName + ": branch is required; run from inside a git working tree or pass branch:")
-	}
-	setStringField(args, "branch", branch)
-	return false, kgtools.ToolResult{}
-}
-
-// resolveRepo wraps the deps.RepoResolver call with a nil-resolver guard.
-// Returns ("", false, nil) when no resolver is wired (test harnesses
-// that don't exercise repo injection) so the caller surfaces the
-// "repo is required" error rather than a misleading nil deref.
-func resolveRepo(ctx context.Context, deps ClientDeps, cwd string) (string, bool, error) {
-	r := deps.RepoResolver()
-	if r == nil {
-		return "", false, nil
-	}
-	return r.ResolveCwd(ctx, cwd)
+	return branch
 }
 
 // populateStaleness fills current_head / uncommitted_count from coderun
@@ -293,27 +270,14 @@ func decodeBoolField(args map[string]json.RawMessage, key string) bool {
 	return b
 }
 
-// setStringField sets args[key] to the JSON-encoded string value.
-func setStringField(args map[string]json.RawMessage, key, value string) {
-	b, err := json.Marshal(value)
-	if err != nil {
-		return
-	}
-	args[key] = b
-}
-
 // injectManageRepo handles the manage tool's code-graph subdispatch.
-// list_branches / delete_branch always need the repo (carried in `name:`).
-// For other manage operations (status, pprof_*, log ops,
-// set_metadata_overrides, promote_metadata, clear_llm_failures, topology,
-// link) this is a no-op fall-through. Branch is never auto-filled —
-// delete_branch's branch names the overlay to remove, not the current
-// checkout.
+// list_branches / delete_branch address a code graph by NAME (carried in
+// `name:`), which is REQUIRED — the client never infers it from cwd. For other
+// manage operations this is a no-op fall-through. Branch is never auto-filled.
 //
-// Returns the same tuple shape as InjectRepoIfCodeGraph: rewritten
-// params on continue, (params, true, errResult) on a typed short-circuit
-// (cwd doesn't match a loaded code graph for a code-targeted op).
-func injectManageRepo(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (kgtools.CallToolParams, bool, kgtools.ToolResult) {
+// Returns the same tuple shape as InjectRepoIfCodeGraph: passthrough on continue,
+// (params, true, errResult) on the typed missing-name short-circuit.
+func injectManageRepo(_ context.Context, _ ClientDeps, params kgtools.CallToolParams) (kgtools.CallToolParams, bool, kgtools.ToolResult) {
 	args := decodeRepoArgs(params.Arguments)
 
 	op := decodeStringField(args, "operation")
@@ -321,23 +285,8 @@ func injectManageRepo(ctx context.Context, deps ClientDeps, params kgtools.CallT
 		return params, false, kgtools.ToolResult{}
 	}
 
-	if decodeStringField(args, "name") != "" {
-		return params, false, kgtools.ToolResult{}
+	if decodeStringField(args, "name") == "" {
+		return params, true, errorResult("manage(" + op + "): repo is required; pass name=\"<repo>\"")
 	}
-
-	repo, ok, err := resolveRepo(ctx, deps, effectiveCwd(ctx, deps))
-	if err != nil {
-		return params, true, errorResult("manage(" + op + "): resolve repo: " + err.Error())
-	}
-	if !ok {
-		return params, true, errorResult("manage(" + op + "): repo is required; run from inside an indexed code repo or pass name:")
-	}
-	setStringField(args, "name", repo)
-
-	rewritten, err := json.Marshal(args)
-	if err != nil {
-		return params, true, errorResult("manage(" + op + "): re-encode args: " + err.Error())
-	}
-	params.Arguments = rewritten
 	return params, false, kgtools.ToolResult{}
 }

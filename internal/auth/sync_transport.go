@@ -103,6 +103,34 @@ func (t *Transport) PushGraph(
 	return nil
 }
 
+// SyncControlJSON issues a Bearer-authenticated POST to a /v1/sync/<path>
+// control-plane endpoint with the given JSON request body and returns the raw
+// JSON response body on a 2xx. It is the small-control-request counterpart of
+// PushGraph: the presigned-direct-to-GCS sync flow (presign / confirm / pull)
+// crosses Cloudflare only with these small JSON control requests, while the bulk
+// (encrypted) graph bytes go straight to/from GCS off-band.
+//
+// It reuses sendWithAuthBytes (so 401-refresh-retry is identical). The agent
+// control-plane handlers read the JSON body irrespective of the request
+// Content-Type (issueBytes labels the body octet-stream) and respond with JSON;
+// a non-2xx surfaces as a *SyncHTTPError so callers get the same auth-failure
+// classification PushGraph provides.
+func (t *Transport) SyncControlJSON(ctx context.Context, path string, reqBody []byte) ([]byte, error) {
+	resp, err := t.sendWithAuthBytes(ctx, http.MethodPost, path, reqBody)
+	if err != nil {
+		return nil, fmt.Errorf("auth: sync control %s: %w", path, err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return nil, readHTTPError(resp, path)
+	}
+	out, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("auth: read sync control %s response: %w", path, err)
+	}
+	return out, nil
+}
+
 // sendWithAuthBytes issues a single request (method + path + body) with
 // the current Bearer credential. On HTTP 401 from a refreshing token
 // source it force-refreshes and retries once. Used by PushGraph; kept as a

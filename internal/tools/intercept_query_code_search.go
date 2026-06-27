@@ -243,11 +243,11 @@ func queryVecAt(queryVecs [][]byte, i int) []byte {
 // paused pipeline means search results are silently going stale and the
 // operator must see it regardless of any code footer. Degrades to the body
 // unchanged when neither a staleness footer nor a paused state applies.
-func appendStalenessFooter(ctx context.Context, deps ClientDeps, exec engine.ExecuteFn, repo string, res kgtools.ToolResult) kgtools.ToolResult {
+func appendStalenessFooter(ctx context.Context, deps ClientDeps, exec engine.ExecuteFn, repo, branch string, res kgtools.ToolResult) kgtools.ToolResult {
 	if deps == nil {
 		return res
 	}
-	footer := codeStalenessFooter(ctx, exec, deps.RootDir(), repo)
+	footer := codeStalenessFooter(ctx, exec, deps.RootDir(), repo, branch)
 	if paused := pipelinePausedFooter(deps); paused != "" {
 		if footer == "" {
 			footer = paused
@@ -324,7 +324,7 @@ func composeCodeSearchSingleRepo(ctx context.Context, deps ClientDeps, cdeps cod
 		engine.FormatCodePerQueryResults(&sb, queries, perQuery, includeSource)
 	}
 	res := textResult(engine.FormatCodeWithRepo(repoLabelFor(a.Repo, a.Branch), sb.String()))
-	return appendStalenessFooter(ctx, deps, cdeps.exec, a.Repo, res)
+	return appendStalenessFooter(ctx, deps, cdeps.exec, a.Repo, a.Branch, res)
 }
 
 // composeCodeSearchMultiRepo resolves the repo set then fans the per-repo

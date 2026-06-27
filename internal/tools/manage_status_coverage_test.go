@@ -116,7 +116,6 @@ func (d *coverageDeps) Embedder() embed.BinaryEmbedder               { return ni
 func (d *coverageDeps) BackendResolver() BackendResolver             { return nil }
 func (d *coverageDeps) GraphCaller() GraphCaller                     { return d.gc }
 func (d *coverageDeps) LocalGraphCaller() GraphCaller                { return d.gc }
-func (d *coverageDeps) RepoResolver() *RepoResolver                  { return nil }
 func (d *coverageDeps) SegmentManager() SegmentSearcher              { return nil }
 func (d *coverageDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
 func (d *coverageDeps) SegmentShipper() SegmentShipper               { return nil }

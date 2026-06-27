@@ -165,25 +165,12 @@ func topologyAnalyzerNames() string {
 	return strings.Join(names, ", ")
 }
 
-// resolveTopologyRepo applies the same fallback ladder as
-// InjectRepoIfCodeGraph: explicit repo wins, otherwise resolve via the
-// session's RepoResolver against deps.RootDir(). Missing repo +
-// non-matching cwd → typed error WITHOUT RPC. Both are required for
-// the wire forward of the node-index fetch.
-func resolveTopologyRepo(ctx context.Context, deps ClientDeps, explicit string) (string, error) {
+// resolveTopologyRepo requires an EXPLICIT repo: topology runs over a named code
+// graph, and the client never infers the graph name from cwd. ctx/deps remain in
+// the signature for call-site symmetry but are no longer consulted.
+func resolveTopologyRepo(_ context.Context, _ ClientDeps, explicit string) (string, error) {
 	if explicit != "" {
 		return explicit, nil
 	}
-	resolver := deps.RepoResolver()
-	if resolver == nil {
-		return "", errors.New("repo is required; run from inside an indexed code repo or pass repo")
-	}
-	repo, ok, err := resolver.ResolveCwd(ctx, deps.RootDir())
-	if err != nil {
-		return "", fmt.Errorf("resolve repo: %w", err)
-	}
-	if !ok {
-		return "", errors.New("repo is required; cwd does not match any loaded code graph")
-	}
-	return repo, nil
+	return "", errors.New("repo is required; pass repo (topology runs over a named code graph)")
 }

@@ -40,7 +40,6 @@ func (d *logE2EDeps) Embedder() embed.BinaryEmbedder               { return nil 
 func (d *logE2EDeps) BackendResolver() BackendResolver             { return nil }
 func (d *logE2EDeps) GraphCaller() GraphCaller                     { return d.gc }
 func (d *logE2EDeps) LocalGraphCaller() GraphCaller                { return d.gc }
-func (d *logE2EDeps) RepoResolver() *RepoResolver                  { return nil }
 func (d *logE2EDeps) SegmentManager() SegmentSearcher              { return nil }
 func (d *logE2EDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
 func (d *logE2EDeps) SegmentShipper() SegmentShipper               { return nil }

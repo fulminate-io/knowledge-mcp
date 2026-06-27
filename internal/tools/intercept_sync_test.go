@@ -5,9 +5,6 @@ package tools
 import (
 	"context"
 	"encoding/json"
-	"io"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -64,23 +61,19 @@ func syncParams(t *testing.T, args map[string]any) kgtools.CallToolParams {
 	return kgtools.CallToolParams{Name: "sync", Arguments: raw}
 }
 
-// TestInterceptSync_Push_FetchesThenPosts asserts the push path: the intercept
-// fetches bytes via ExportGraph, then POSTs them to the cloud transport, and
-// renders the "pushed" success line.
-func TestInterceptSync_Push_FetchesThenPosts(t *testing.T) {
-	want := []byte{0x01, 0x02, 0x03, 0xFF}
-	var gotPath string
-	var gotBody []byte
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		gotPath = r.URL.Path
-		gotBody, _ = io.ReadAll(r.Body)
-		w.WriteHeader(http.StatusOK)
-	}))
-	t.Cleanup(srv.Close)
+// TestInterceptSync_Push_PresignSealPutConfirm asserts the push path end-to-end
+// over the presigned-GCS flow: the intercept serializes LOCAL bytes via
+// ExportGraph, requests a presign, seals the bytes into a push envelope, PUTs the
+// ciphertext to GCS, and calls confirm. The fake backend unwraps + GCM-opens the
+// uploaded ciphertext and proves it recovers the ORIGINAL serialized bytes (the
+// GCS object is ciphertext, not plaintext). Renders the "pushed" success line.
+func TestInterceptSync_Push_PresignSealPutConfirm(t *testing.T) {
+	want := []byte("KGV4 the local serialized graph bytes")
+	backend := newFakeSyncBackend(t)
 
 	withTransport(t, func() (*auth.Transport, error) {
 		src := auth.StaticTokenSource{AccessToken: "tok", Permissions: auth.PermissionSet{auth.PermMCPKnowledgeWrite: {}}}
-		return auth.NewSyncTransport(srv.URL, src), nil
+		return auth.NewSyncTransport(backend.srv.URL, src), nil
 	})
 
 	exp := &fakeExporter{bytesOut: want}
@@ -88,13 +81,21 @@ func TestInterceptSync_Push_FetchesThenPosts(t *testing.T) {
 
 	require.True(t, handled)
 	assert.False(t, out.IsError, "push success must not be an error result: %q", textOf(out))
-	assert.Equal(t, 1, exp.exportCalls, "ExportGraph fetched once")
-	assert.Equal(t, "/v1/sync/push/knowledge/default", gotPath, "POSTed to the push route")
-	assert.Equal(t, want, gotBody, "the exported bytes were uploaded verbatim")
-	// The success line now carries a serialize/upload timing breakdown after the
-	// byte count: "pushed knowledge/default (4 bytes; serialize=<dur> upload=<dur>)".
-	// Assert the stable prefix (graph/name + byte count) so the durations stay free.
-	assert.Contains(t, textOf(out), "pushed knowledge/default (4 bytes;")
+	assert.Equal(t, 1, exp.exportCalls, "ExportGraph fetched once (local serialize)")
+	assert.Equal(t, 1, backend.presignCalls, "presign called once")
+	assert.Equal(t, 1, backend.confirmCalls, "confirm called once")
+
+	// The uploaded GCS object must be CIPHERTEXT (not the plaintext bytes), and
+	// the backend's confirm (unwrap + GCM-open) must recover the original bytes.
+	backend.mu.Lock()
+	uploaded := backend.objects["push-obj"]
+	recovered := backend.confirmedPlaintext
+	backend.mu.Unlock()
+	require.NotEmpty(t, uploaded, "an object was PUT to GCS")
+	assert.NotEqual(t, want, uploaded, "the GCS object is ciphertext, not plaintext")
+	assert.Equal(t, want, recovered, "confirm decrypted the envelope back to the original bytes")
+
+	assert.Contains(t, textOf(out), "pushed knowledge/default")
 }
 
 // fakeOverwriter implements GraphCaller + Overwriter (the production
@@ -150,7 +151,6 @@ func (d pullDeps) Embedder() embed.BinaryEmbedder               { return nil }
 func (d pullDeps) BackendResolver() BackendResolver             { return nil }
 func (d pullDeps) GraphCaller() GraphCaller                     { return d.routed }
 func (d pullDeps) LocalGraphCaller() GraphCaller                { return d.local }
-func (d pullDeps) RepoResolver() *RepoResolver                  { return nil }
 func (d pullDeps) SegmentManager() SegmentSearcher              { return nil }
 func (d pullDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
 func (d pullDeps) SegmentShipper() SegmentShipper               { return nil }
@@ -164,43 +164,55 @@ func (d pullDeps) BlindSpotProvider() BlindSpotProvider { return nil }
 func (d pullDeps) ClusterProvider() ClusterProvider     { return nil }
 func (d pullDeps) TensionsProvider() TensionsProvider   { return nil }
 
-// TestInterceptSync_Pull_FetchesCloudAppliesLocal asserts the pull arm: the
-// cloud Exporter (routed GraphCaller) returns canned bytes, and the local
-// Overwriter (LocalGraphCaller) receives those EXACT bytes for the (gt, name),
-// rendering the "pulled" success line. The transport is never built (pull does
-// not POST to cloud).
+// TestInterceptSync_Pull_FetchesCloudAppliesLocal asserts the pull arm end-to-end
+// over the presigned-GCS flow: /v1/sync/pull returns {download_url, dek} for an
+// agent-encrypted object, the client GETs the ciphertext from GCS, decrypts it
+// with the returned DEK, and the local Overwriter (LocalGraphCaller) receives the
+// recovered bytes for the (gt, name), rendering the "pulled" success line. The
+// pull now goes through the control-plane transport (not a cloud ExportGraph).
 func TestInterceptSync_Pull_FetchesCloudAppliesLocal(t *testing.T) {
+	want := []byte("KGV4 the authoritative cloud graph image")
+	backend := newFakeSyncBackend(t)
+	backend.pullPlaintext = want
+
 	withTransport(t, func() (*auth.Transport, error) {
-		t.Fatal("transport builder must not be called for pull")
-		return nil, nil
+		src := auth.StaticTokenSource{AccessToken: "tok", Permissions: auth.PermissionSet{auth.PermMCPKnowledgeWrite: {}}}
+		return auth.NewSyncTransport(backend.srv.URL, src), nil
 	})
-	want := []byte{0xDE, 0xAD, 0xBE, 0xEF}
-	cloud := &fakeExporter{bytesOut: want}
 	local := &fakeOverwriter{nodes: 7, edges: 3}
 
-	handled, out := InterceptSync(pullDeps{routed: cloud, local: local},
+	handled, out := InterceptSync(pullDeps{local: local},
 		syncParams(t, map[string]any{"operation": "pull"}))
 
 	require.True(t, handled)
 	assert.False(t, out.IsError, "pull success must not be an error result: %q", textOf(out))
-	assert.Equal(t, 1, cloud.exportCalls, "cloud ExportGraph fetched once")
+	assert.Equal(t, 1, backend.pullCalls, "pull control endpoint called once")
 	require.Equal(t, 1, local.overwriteCalls, "local OverwriteGraph applied once")
 	require.NotNil(t, local.lastReq)
-	assert.Equal(t, want, local.lastReq.GetGraphBytes(), "the cloud bytes were applied locally verbatim")
+	assert.Equal(t, want, local.lastReq.GetGraphBytes(), "the decrypted cloud bytes were applied locally verbatim")
 	assert.Equal(t, "knowledge", local.lastReq.GetGraphType())
 	assert.Equal(t, "default", local.lastReq.GetName())
+
+	// The GCS object itself must be ciphertext (undecryptable without the DEK).
+	backend.mu.Lock()
+	stored := backend.objects["pull-obj"]
+	backend.mu.Unlock()
+	assert.NotEqual(t, want, stored, "the GCS pull object is ciphertext, not plaintext")
+
 	assert.Contains(t, textOf(out), "pulled knowledge/default")
 }
 
 // TestInterceptSync_Pull_NotLoggedIn asserts the not-logged-in pull path: the
-// cloud ExportGraph errors with auth.ErrNotFound → the actionable "knowledge
-// login" guidance renders and the local OverwriteGraph is NEVER called (nothing
-// to apply).
+// pull control call's token acquisition fails with auth.ErrNotFound → the
+// actionable "knowledge login" guidance renders and the local OverwriteGraph is
+// NEVER called (nothing to apply).
 func TestInterceptSync_Pull_NotLoggedIn(t *testing.T) {
-	cloud := &fakeExporter{exportErr: auth.ErrNotFound}
 	local := &fakeOverwriter{}
+	withTransport(t, func() (*auth.Transport, error) {
+		return auth.NewSyncTransport("http://unused.invalid", errTokenSource{}), nil
+	})
 
-	handled, out := InterceptSync(pullDeps{routed: cloud, local: local},
+	handled, out := InterceptSync(pullDeps{local: local},
 		syncParams(t, map[string]any{"operation": "pull"}))
 
 	require.True(t, handled)
@@ -211,12 +223,15 @@ func TestInterceptSync_Pull_NotLoggedIn(t *testing.T) {
 
 // TestInterceptSync_Pull_NoLocalServer_FailsLoud asserts pull fails loud when no
 // local server is wired (LocalGraphCaller()==nil): the apply target is the local
-// .bin, so a cloud-only install cannot pull. Mirrors the push no-local-server
-// guard.
+// .bin, so a cloud-only install cannot pull. overwriterSeam fails BEFORE the
+// transport is built. Mirrors the push no-local-server guard.
 func TestInterceptSync_Pull_NoLocalServer_FailsLoud(t *testing.T) {
-	cloud := &fakeExporter{bytesOut: []byte{1}}
-	// routed cloud caller present, but local caller nil → overwriterSeam fails.
-	handled, out := InterceptSync(pullDeps{routed: cloud, local: nil},
+	withTransport(t, func() (*auth.Transport, error) {
+		t.Fatal("transport builder must not be reached when no local server is wired")
+		return nil, nil
+	})
+	// local caller nil → overwriterSeam fails before any transport build.
+	handled, out := InterceptSync(pullDeps{local: nil},
 		syncParams(t, map[string]any{"operation": "pull"}))
 
 	require.True(t, handled)

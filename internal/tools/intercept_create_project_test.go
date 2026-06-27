@@ -182,7 +182,6 @@ func (d interceptTestDeps) BackendResolver() BackendResolver {
 }
 func (d interceptTestDeps) GraphCaller() GraphCaller                     { return d.gc }
 func (d interceptTestDeps) LocalGraphCaller() GraphCaller                { return d.gc }
-func (d interceptTestDeps) RepoResolver() *RepoResolver                  { return nil }
 func (d interceptTestDeps) SegmentManager() SegmentSearcher              { return nil }
 func (d interceptTestDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
 func (d interceptTestDeps) SegmentShipper() SegmentShipper               { return nil }

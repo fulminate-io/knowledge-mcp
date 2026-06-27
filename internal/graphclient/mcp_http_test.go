@@ -25,7 +25,7 @@ func timeAfter() <-chan time.Time { return time.After(5 * time.Second) }
 // reaper is disabled (idleTTL 0) so tests drive sessions deterministically.
 func newTestHTTPServer() *HTTPServer {
 	mc := NewMCPClient(MCPClientConfig{Version: "test"})
-	h := NewHTTPServer(mc, 15023)
+	h := NewHTTPServer(mc, 15023, nil)
 	h.idleTTL = 0
 	return h
 }
@@ -203,7 +203,7 @@ func TestHTTPDispatchStampsSessionCwd(t *testing.T) {
 			return params, true, kgtools.ToolResult{Content: []kgtools.ContentBlock{{Type: "text", Text: "ok"}}}
 		},
 	})
-	h := NewHTTPServer(mc, 15023)
+	h := NewHTTPServer(mc, 15023, nil)
 	h.idleTTL = 0
 
 	sidK := doInitialize(t, h, 54321)
@@ -274,7 +274,7 @@ func TestPerSessionCancellationIsolation(t *testing.T) {
 		},
 		LoggedIn: func(context.Context) bool { return true }, // skip EnsureServer
 	})
-	h := NewHTTPServer(mc, 15023)
+	h := NewHTTPServer(mc, 15023, nil)
 	h.idleTTL = 0
 
 	sidA := doInitialize(t, h, 54321)

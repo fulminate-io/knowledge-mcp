@@ -72,7 +72,6 @@ func (d *recipeDeps) Embedder() embed.BinaryEmbedder               { return nil 
 func (d *recipeDeps) BackendResolver() BackendResolver             { return nil }
 func (d *recipeDeps) GraphCaller() GraphCaller                     { return d.gc }
 func (d *recipeDeps) LocalGraphCaller() GraphCaller                { return d.gc }
-func (d *recipeDeps) RepoResolver() *RepoResolver                  { return nil }
 func (d *recipeDeps) SegmentManager() SegmentSearcher              { return nil }
 func (d *recipeDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
 func (d *recipeDeps) SegmentShipper() SegmentShipper               { return nil }

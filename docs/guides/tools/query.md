@@ -100,7 +100,7 @@ cloud graphs). For the full mode catalog, run `help("query")`.
 | `queries` | array of string |  |  | Batch search queries (code graph only) |
 | `queries[]` | string |  |  |  |
 | `query_vector` | string |  |  | Optional base64-encoded binary embedding for the text query (32 bytes / 256-bit decoded). Client-supplied: set by the client-side LLM pipeline's InterceptQuery on text-search modes (hybrid, recent/temporal). The server never embeds — when query_vector is unset the text-search modes run BM25-only (no server-side embedding fallback). Decoded length mismatches return a structured validation error and no query is performed. |
-| `repo` | string |  |  | Code repository name (default: active repo). Use 'all' for all repos. |
+| `repo` | string |  |  | Code graph name — REQUIRED for graph=code (it is never inferred from cwd). Use 'all' to query every code repo. |
 | `repos` | array of string |  |  | Search specific repos (alternative to repo='all') |
 | `repos[]` | string |  |  |  |
 | `resource_type` | string |  |  | Cloud resource type filter prefix |

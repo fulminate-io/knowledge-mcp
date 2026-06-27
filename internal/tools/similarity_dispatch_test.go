@@ -160,7 +160,6 @@ func (d similarityDispatchDeps) Embedder() embed.BinaryEmbedder               { 
 func (d similarityDispatchDeps) BackendResolver() BackendResolver             { return nil }
 func (d similarityDispatchDeps) GraphCaller() GraphCaller                     { return nil }
 func (d similarityDispatchDeps) LocalGraphCaller() GraphCaller                { return nil }
-func (d similarityDispatchDeps) RepoResolver() *RepoResolver                  { return nil }
 func (d similarityDispatchDeps) SegmentManager() SegmentSearcher              { return nil }
 func (d similarityDispatchDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
 func (d similarityDispatchDeps) SegmentShipper() SegmentShipper               { return nil }

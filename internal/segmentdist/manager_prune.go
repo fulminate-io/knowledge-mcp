@@ -7,15 +7,16 @@ import (
 	"log/slog"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgwire"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
 
 // ship exports every current segment, diffs against shippedIDs (the
-// server-seeded diff-suppression set), and ships ONLY the new content-hash blobs
-// in one batched Ship. An empty diff is a NO-OP for the ship leg: zero RPC, zero
-// generation, zero bytes. On the response it warms the L2 cache, marks each id
-// shipped (in BOTH shippedIDs and locallyShipped), and advances last-seen
-// generation.
+// server-seeded diff-suppression set), and ships ONLY the new content-hash blobs,
+// byte-packed into successive ≤64 MiB ShipRequests (one Ship RPC per sub-batch).
+// An empty diff is a NO-OP for the ship leg: zero RPC, zero generation, zero
+// bytes. On each response it warms the L2 cache, marks each id shipped (in BOTH
+// shippedIDs and locallyShipped), and advances last-seen generation.
 //
 // SUPERSEDED ON THE PRODUCTION PATH: the registry-model cutover moved
 // every production ship caller — the embed path (AddAndShip/AddAndShipFields/
@@ -94,10 +95,13 @@ func (m *distManager[Q, S]) ship(
 	return m.reconcilePrune(all, against)
 }
 
-// shipNew ships the new-content-hash blobs in one batched Ship, warms the L2
-// cache from the stamped response, marks each id shipped, and advances shippedGen
-// (TRACKING ONLY — NOT the load floor). An empty diff is a NO-OP: zero RPC, zero
-// generation, zero bytes.
+// shipNew ships the new-content-hash blobs, byte-packed into successive
+// ≤64 MiB ShipRequests (one Ship RPC per sub-batch so no request body crosses
+// the cloud cap), warms the L2 cache from each stamped response, marks each id
+// shipped, and advances shippedGen ONCE to the max stamped generation across the
+// whole ship (TRACKING ONLY — NOT the load floor). An empty diff is a NO-OP:
+// zero RPC, zero generation, zero bytes. A small diff packs into a single
+// sub-batch — exactly one Ship RPC, the prior behavior.
 //
 // CRITICAL: shipNew advances shippedGen, NEVER importedGen. The old single shared
 // cursor let this advance poison the load floor — on a cold process the embed
@@ -118,31 +122,40 @@ func (m *distManager[Q, S]) shipNew(
 		return nil
 	}
 
-	resp, err := m.source.caller.Ship(ctx, &knowledgev1.ShipRequest{
-		Target:   m.target,
-		Blobs:    diff,
-		WriterId: m.source.writerID,
-	})
-	if err != nil {
-		return err
-	}
-
-	m.shipMu.Lock()
+	// Byte-pack the diff into successive ≤64 MiB ShipRequests so no single request
+	// body crosses the cloud cap (the Cloudflare-fronted endpoint 413s oversize
+	// bodies). Each sub-batch is a separate Ship RPC; the per-response bookkeeping
+	// (stamp shippedIDs/locallyShipped, warm the L2 cache, track the max stamped
+	// gen) runs per sub-batch, and advanceGen fires ONCE after the loop with the
+	// highest stamped generation across the whole ship (current semantics). shipMu
+	// is held only around each response's bookkeeping, NEVER across the Ship RPC.
 	var maxGen uint64
-	for _, meta := range resp.GetStamped() {
-		m.shippedIDs[meta.GetId()] = struct{}{}
-		// locallyShipped records ONLY ids this process actually shipped — the
-		// ROLE-B (embed) prune-eligible set. Populated regardless of the caller's
-		// prune role (a ROLE-A rebuild ship keeps it current too, harmless).
-		m.locallyShipped[meta.GetId()] = struct{}{}
-		if b, ok := diffBlobs[meta.GetId()]; ok {
-			m.cache.Put(meta.GetId(), b.Bytes)
+	for _, sub := range BatchSegmentBlobs(diff, kgwire.MaxCloudRequestBytes) {
+		resp, err := m.source.caller.Ship(ctx, &knowledgev1.ShipRequest{
+			Target:   m.target,
+			Blobs:    sub,
+			WriterId: m.source.writerID,
+		})
+		if err != nil {
+			return err
 		}
-		if meta.GetGeneration() > maxGen {
-			maxGen = meta.GetGeneration()
+
+		m.shipMu.Lock()
+		for _, meta := range resp.GetStamped() {
+			m.shippedIDs[meta.GetId()] = struct{}{}
+			// locallyShipped records ONLY ids this process actually shipped — the
+			// ROLE-B (embed) prune-eligible set. Populated regardless of the caller's
+			// prune role (a ROLE-A rebuild ship keeps it current too, harmless).
+			m.locallyShipped[meta.GetId()] = struct{}{}
+			if b, ok := diffBlobs[meta.GetId()]; ok {
+				m.cache.Put(meta.GetId(), b.Bytes)
+			}
+			if meta.GetGeneration() > maxGen {
+				maxGen = meta.GetGeneration()
+			}
 		}
+		m.shipMu.Unlock()
 	}
-	m.shipMu.Unlock()
 
 	m.advanceGen(&m.shippedGen, maxGen)
 	return nil

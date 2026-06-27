@@ -94,7 +94,6 @@ func (d reflectTestDeps) Embedder() embed.BinaryEmbedder               { return 
 func (d reflectTestDeps) BackendResolver() BackendResolver             { return nil }
 func (d reflectTestDeps) GraphCaller() GraphCaller                     { return d.gc }
 func (d reflectTestDeps) LocalGraphCaller() GraphCaller                { return d.gc }
-func (d reflectTestDeps) RepoResolver() *RepoResolver                  { return nil }
 func (d reflectTestDeps) SegmentManager() SegmentSearcher              { return nil }
 func (d reflectTestDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
 func (d reflectTestDeps) SegmentShipper() SegmentShipper               { return nil }

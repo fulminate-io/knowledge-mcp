@@ -148,7 +148,6 @@ func (d workerTestDeps) Embedder() embed.BinaryEmbedder               { return n
 func (d workerTestDeps) BackendResolver() BackendResolver             { return nil }
 func (d workerTestDeps) GraphCaller() GraphCaller                     { return nil }
 func (d workerTestDeps) LocalGraphCaller() GraphCaller                { return nil }
-func (d workerTestDeps) RepoResolver() *RepoResolver                  { return nil }
 func (d workerTestDeps) SegmentManager() SegmentSearcher              { return nil }
 func (d workerTestDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
 func (d workerTestDeps) SegmentShipper() SegmentShipper               { return nil }

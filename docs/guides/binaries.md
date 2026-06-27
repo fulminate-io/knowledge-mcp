@@ -58,6 +58,7 @@ individual subsystem off for offline or low-noise development.
 | `--summary-batch-size` | `20` | Client-side LLM pipeline: items per summary worker batch |
 | `--summary-channel-size` | `10000` | Client-side LLM pipeline: SummaryWork channel buffer size (full = collector blocks) |
 | `--summary-workers` | `25` | Client-side LLM pipeline: count of summary worker goroutines |
+| `--web-origin` | `https://fulminate.io,https://dev.fulminate.io` | Comma-separated allow-list of browser web origins permitted to make cross-origin (CORS) requests to the daemon's loopback streamable-HTTP MCP endpoint. The Origin is reflected back only when it matches an entry; the list is never widened to '*'. An explicit value replaces the default (https://fulminate.io,https://dev.fulminate.io). Repeatable. |
 <!-- END GENERATED: flags-client -->
 
 ## `knowledge serve`
@@ -96,6 +97,7 @@ outlives any single session.
 | `--summary-batch-size` | `20` | Client-side LLM pipeline: items per summary worker batch |
 | `--summary-channel-size` | `10000` | Client-side LLM pipeline: SummaryWork channel buffer size (full = collector blocks) |
 | `--summary-workers` | `25` | Client-side LLM pipeline: count of summary worker goroutines |
+| `--web-origin` | `https://fulminate.io,https://dev.fulminate.io` | Comma-separated allow-list of browser web origins permitted to make cross-origin (CORS) requests to the daemon's loopback streamable-HTTP MCP endpoint. The Origin is reflected back only when it matches an entry; the list is never widened to '*'. An explicit value replaces the default (https://fulminate.io,https://dev.fulminate.io). Repeatable. |
 <!-- END GENERATED: flags-serve -->
 
 ## `knowledge start`

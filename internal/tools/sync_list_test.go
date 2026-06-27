@@ -57,7 +57,6 @@ func (d *fakeSyncListDeps) Embedder() embed.BinaryEmbedder               { retur
 func (d *fakeSyncListDeps) BackendResolver() BackendResolver             { return nil }
 func (d *fakeSyncListDeps) GraphCaller() GraphCaller                     { return d.cloud }
 func (d *fakeSyncListDeps) LocalGraphCaller() GraphCaller                { return d.local }
-func (d *fakeSyncListDeps) RepoResolver() *RepoResolver                  { return nil }
 func (d *fakeSyncListDeps) SegmentManager() SegmentSearcher              { return nil }
 func (d *fakeSyncListDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
 func (d *fakeSyncListDeps) SegmentShipper() SegmentShipper               { return nil }

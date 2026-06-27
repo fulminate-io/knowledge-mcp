@@ -59,7 +59,7 @@ func QueryToolDef() kgtools.MCPTool {
 				"include_edges":       {Type: "boolean", Description: "Include edges in node results"},
 				"include_cross_links": {Type: "boolean", Description: "Augment node query with cross-graph links from the linkage graph"},
 				"group_by_file":       {Type: "boolean", Description: "Group code search results by file"},
-				"repo":                {Type: "string", Description: "Code repository name (default: active repo). Use 'all' for all repos."},
+				"repo":                {Type: "string", Description: "Code graph name — REQUIRED for graph=code (it is never inferred from cwd). Use 'all' to query every code repo."},
 				"repos":               {Type: "array", Description: "Search specific repos (alternative to repo='all')", Items: &kgtools.Property{Type: "string"}},
 				"language":            {Type: "string", Description: "Language code (e.g. 'go', 'python', 'typescript'). Two uses: (1) practice graph selector — omit to list all practice graphs; (2) topology analyzer filter — code-graph analyzers like god_object scope to a single language. Empty means no filter for topology, all-graphs for practice."},
 				"account":             {Type: "string", Description: "Selects which inventoried external-provider account/org's resources to query within your own graph — an AWS/GCP account for graph=cloud, or a CI provider org (e.g. GitHub/GitLab) for graph=cicd. Required for graph=cloud/cicd; omit to list your available graphs."},

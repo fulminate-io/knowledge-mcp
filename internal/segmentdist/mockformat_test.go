@@ -7,7 +7,10 @@ import (
 	"encoding/json"
 	"sort"
 	"strings"
+	"sync"
 	"sync/atomic"
+
+	"google.golang.org/protobuf/proto"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
@@ -114,12 +117,30 @@ type countingCaller struct {
 	shipBlobs    atomic.Int64
 	pruneCalls   atomic.Int64
 	publishCalls atomic.Int64
+
+	// shipReqMu guards shipReqBytes — the per-Ship-call serialized request size
+	// recorded so the ship-split test can assert every ShipRequest stayed under
+	// the cloud cap. One entry per Ship RPC, in call order.
+	shipReqMu    sync.Mutex
+	shipReqBytes []int
 }
 
 func (c *countingCaller) Ship(ctx context.Context, req *knowledgev1.ShipRequest) (*knowledgev1.ShipResponse, error) {
 	c.shipCalls.Add(1)
 	c.shipBlobs.Add(int64(len(req.GetBlobs())))
+	c.shipReqMu.Lock()
+	c.shipReqBytes = append(c.shipReqBytes, proto.Size(req))
+	c.shipReqMu.Unlock()
 	return c.inner.Ship(ctx, req)
+}
+
+// recordedShipBytes returns a copy of the per-Ship-call request sizes.
+func (c *countingCaller) recordedShipBytes() []int {
+	c.shipReqMu.Lock()
+	defer c.shipReqMu.Unlock()
+	out := make([]int, len(c.shipReqBytes))
+	copy(out, c.shipReqBytes)
+	return out
 }
 
 func (c *countingCaller) ListDelta(ctx context.Context, req *knowledgev1.ListDeltaRequest) (*knowledgev1.ListDeltaResponse, error) {

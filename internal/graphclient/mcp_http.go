@@ -54,6 +54,13 @@ type HTTPServer struct {
 	port    int        // loopback TCP port to bind
 	version string     // protocol echo target lives on mc.cfg.Version; cached for clarity
 
+	// allowedOrigins is the O(1) lookup set of browser web origins the
+	// corsMiddleware reflects back in Access-Control-Allow-Origin. Built once in
+	// NewHTTPServer from the constructor's allowedOrigins slice. A request whose
+	// Origin is absent gets NO Access-Control-Allow-Origin header — the set is
+	// never widened to '*'. Empty/nil disables cross-origin reflection entirely.
+	allowedOrigins map[string]struct{}
+
 	// mu guards sessions. A plain map + RWMutex (NOT xsync) keeps the client
 	// module dependency-free — xsync/v4 is a server-module dep absent here,
 	// and this mirrors A's prior sync.Mutex idiom for the single session.
@@ -69,13 +76,27 @@ type HTTPServer struct {
 // tool-call dispatcher) bound to the loopback port. The MCPClient carries the
 // MCPClientConfig (InterceptChain/Dispatch/HandleToolsList/LoggedIn) the
 // daemon dispatches through.
-func NewHTTPServer(mc *MCPClient, port int) *HTTPServer {
+//
+// allowedOrigins is the browser web-origin allow-list for the CORS middleware:
+// a cross-origin request whose Origin appears here gets that exact Origin
+// reflected back in Access-Control-Allow-Origin (never '*'); any other Origin
+// gets no such header. It is collapsed into an O(1) set once here. An
+// empty/nil slice disables cross-origin reflection (e.g. tests that don't
+// exercise CORS).
+func NewHTTPServer(mc *MCPClient, port int, allowedOrigins []string) *HTTPServer {
+	originSet := make(map[string]struct{}, len(allowedOrigins))
+	for _, o := range allowedOrigins {
+		if o != "" {
+			originSet[o] = struct{}{}
+		}
+	}
 	return &HTTPServer{
-		mc:       mc,
-		port:     port,
-		version:  mc.cfg.Version,
-		sessions: make(map[string]*httpSession),
-		idleTTL:  defaultSessionIdleTTL,
+		mc:             mc,
+		port:           port,
+		version:        mc.cfg.Version,
+		sessions:       make(map[string]*httpSession),
+		idleTTL:        defaultSessionIdleTTL,
+		allowedOrigins: originSet,
 	}
 }
 
@@ -87,26 +108,6 @@ func NewHTTPServer(mc *MCPClient, port int) *HTTPServer {
 // re-uses the http2/h2c std-ecosystem packages directly rather than
 // importing the server-internal package (client/server boundary, AGENTS.md).
 func (h *HTTPServer) Run(ctx context.Context) error {
-	mux := http.NewServeMux()
-
-	// /mcp is served plainly — there is no bearer gate. Routing to cloud is
-	// decided by the keychain auth state (`knowledge login`), not by a per-request
-	// editor bearer, so an unauthenticated MCP request is served without a 401
-	// challenge. Cloud access requires the user to have run `knowledge login`.
-	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
-		switch r.Method {
-		case http.MethodPost:
-			h.handlePOST(w, r)
-		case http.MethodGet:
-			h.handleGET(w, r)
-		case http.MethodDelete:
-			h.handleDELETE(w, r)
-		default:
-			w.Header().Set("Allow", "GET, POST, DELETE")
-			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		}
-	})
-
 	// Idle-session reaper: Codex reconnects per turn and may skip DELETE
 	// /mcp, so its prior sessions go idle and must be swept to keep the
 	// client-side session map from growing unbounded. Skipped when idleTTL is
@@ -135,8 +136,12 @@ func (h *HTTPServer) Run(ctx context.Context) error {
 	// timeout.
 	h2s := &http2.Server{}
 	srv := &http.Server{
-		Addr:              ln.Addr().String(),
-		Handler:           h2c.NewHandler(mux, h2s),
+		Addr: ln.Addr().String(),
+		// corsMiddleware wraps the /mcp mux so browser preflight (OPTIONS) and
+		// cross-origin reads get the restricted CORS + Private-Network-Access
+		// headers before routing; non-OPTIONS requests fall through to the mux's
+		// method switch unchanged.
+		Handler:           h2c.NewHandler(h.corsMiddleware(h.mux()), h2s),
 		ReadHeaderTimeout: 10 * time.Second,
 	}
 
@@ -162,6 +167,35 @@ func (h *HTTPServer) Run(ctx context.Context) error {
 	case serveErr := <-errCh:
 		return serveErr
 	}
+}
+
+// mux builds the /mcp ServeMux with the method-switch handler. Extracted from
+// Run so the composed handler (corsMiddleware(mux)) can be exercised directly
+// from tests via httptest without binding a TCP socket — the OPTIONS preflight
+// is mux/middleware-level routing the handler-direct tests cannot reach. Pure
+// relocation: the POST/GET/DELETE routing and the default-405 arm are unchanged.
+func (h *HTTPServer) mux() *http.ServeMux {
+	mux := http.NewServeMux()
+
+	// /mcp is served plainly — there is no bearer gate. Routing to cloud is
+	// decided by the keychain auth state (`knowledge login`), not by a per-request
+	// editor bearer, so an unauthenticated MCP request is served without a 401
+	// challenge. Cloud access requires the user to have run `knowledge login`.
+	mux.HandleFunc("/mcp", func(w http.ResponseWriter, r *http.Request) {
+		switch r.Method {
+		case http.MethodPost:
+			h.handlePOST(w, r)
+		case http.MethodGet:
+			h.handleGET(w, r)
+		case http.MethodDelete:
+			h.handleDELETE(w, r)
+		default:
+			w.Header().Set("Allow", "GET, POST, DELETE")
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		}
+	})
+
+	return mux
 }
 
 // handlePOST serves the client→server JSON-RPC leg of streamable-HTTP MCP.

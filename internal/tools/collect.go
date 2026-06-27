@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"runtime/debug"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
@@ -146,6 +147,14 @@ func InterceptCollect(deps ClientDeps, params kgtools.CallToolParams) (bool, kgt
 		// survives via the pipeline's wrap.
 		return true, errorResult(err.Error())
 	}
+	// Record the repo→path mapping in the machine-local manifest so the
+	// name→dir consumers (ast cross-repo walk, branch auto-detect, the
+	// correct-dir/branch-aware staleness footer) can map this repo's NAME back
+	// to where it was collected from on THIS machine. Code only: the manifest
+	// keys on the code-graph repo name (filepath.Base(id)), exactly how `collect`
+	// keys the graph, and a.ID is already absolute here (the code collector
+	// rejects relative paths). Best-effort and machine-LOCAL — never synced.
+	recordCollectedRepo(a.Type, a.ID)
 	// Post-collect linker tail-call. Replaces the former server-side
 	// runPostCollectLinker that ran on the collect-write path.
 	// Gated on the same collector types that previously triggered the
@@ -168,6 +177,24 @@ func InterceptCollect(deps ClientDeps, params kgtools.CallToolParams) (bool, kgt
 		w.WakePipeline()
 	}
 	return true, textResult(fmt.Sprintf("Collected %s %s — streamed to server.", a.Type, a.ID))
+}
+
+// recordCollectedRepo upserts the just-collected code repo's name→absolute-path
+// mapping into the machine-local manifest. It is a no-op for every non-code
+// collector type — only code graphs are addressed by a name the name→dir
+// consumers must resolve back to a directory. The name is filepath.Base(absID),
+// matching how `collect` derives the code-graph name, and absID is the absolute
+// path the collect ran against. Best-effort: a manifest write failure (e.g. an
+// unresolvable home dir) is logged and swallowed so it never fails an otherwise-
+// successful collect.
+func recordCollectedRepo(collectorType, absID string) {
+	if collectorType != "code" {
+		return
+	}
+	name := filepath.Base(absID)
+	if err := recordRepoDir(name, absID); err != nil {
+		slog.Warn("collect: failed to record repo→path manifest entry", "repo", name, "path", absID, "error", err)
+	}
 }
 
 // withWebCrawlOptions assembles the web.CrawlOptions from the collect args,

@@ -41,7 +41,6 @@ func (d *fakeAssembleDeps) Embedder() embed.BinaryEmbedder               { retur
 func (d *fakeAssembleDeps) BackendResolver() BackendResolver             { return nil }
 func (d *fakeAssembleDeps) GraphCaller() GraphCaller                     { return d.gc }
 func (d *fakeAssembleDeps) LocalGraphCaller() GraphCaller                { return d.gc }
-func (d *fakeAssembleDeps) RepoResolver() *RepoResolver                  { return nil }
 func (d *fakeAssembleDeps) SegmentManager() SegmentSearcher              { return nil }
 func (d *fakeAssembleDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
 func (d *fakeAssembleDeps) SegmentShipper() SegmentShipper               { return nil }

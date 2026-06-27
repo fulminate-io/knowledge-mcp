@@ -48,7 +48,6 @@ func (thoughtTestDeps) Embedder() embed.BinaryEmbedder               { return ni
 func (thoughtTestDeps) BackendResolver() BackendResolver             { return nil }
 func (thoughtTestDeps) GraphCaller() GraphCaller                     { return nil }
 func (thoughtTestDeps) LocalGraphCaller() GraphCaller                { return nil }
-func (thoughtTestDeps) RepoResolver() *RepoResolver                  { return nil }
 func (thoughtTestDeps) SegmentManager() SegmentSearcher              { return nil }
 func (thoughtTestDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
 func (thoughtTestDeps) SegmentShipper() SegmentShipper               { return nil }

@@ -10,6 +10,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/require"
+
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/coderun"
 )
@@ -53,7 +55,7 @@ func TestRecordedSyncMeta(t *testing.T) {
 		exec := graphNamesFake([]*knowledgev1.GraphInfo{
 			{Name: "knowledge", CollectedCommit: "abc123", CollectedTime: ts},
 		})
-		sc, st, ok := recordedSyncMeta(ctx, exec, "knowledge")
+		sc, st, ok := recordedSyncMeta(ctx, exec, "knowledge", "")
 		if !ok || sc != "abc123" || st != ts {
 			t.Fatalf("got (%q, %d, %v), want (abc123, %d, true)", sc, st, ok, ts)
 		}
@@ -66,27 +68,27 @@ func TestRecordedSyncMeta(t *testing.T) {
 		exec := graphNamesFake([]*knowledgev1.GraphInfo{
 			{Name: "knowledge", SyncCommit: "abc123", SyncTime: ts},
 		})
-		if _, _, ok := recordedSyncMeta(ctx, exec, "knowledge"); ok {
+		if _, _, ok := recordedSyncMeta(ctx, exec, "knowledge", ""); ok {
 			t.Fatal("expected ok=false when only SyncCommit/SyncTime are set (collect-meta empty)")
 		}
 	})
 
 	t.Run("unrecorded graph → degrade", func(t *testing.T) {
 		exec := graphNamesFake([]*knowledgev1.GraphInfo{{Name: "knowledge"}})
-		if _, _, ok := recordedSyncMeta(ctx, exec, "knowledge"); ok {
+		if _, _, ok := recordedSyncMeta(ctx, exec, "knowledge", ""); ok {
 			t.Fatal("expected ok=false for an unrecorded graph")
 		}
 	})
 
 	t.Run("repo absent → degrade", func(t *testing.T) {
 		exec := graphNamesFake([]*knowledgev1.GraphInfo{{Name: "other", CollectedCommit: "x"}})
-		if _, _, ok := recordedSyncMeta(ctx, exec, "knowledge"); ok {
+		if _, _, ok := recordedSyncMeta(ctx, exec, "knowledge", ""); ok {
 			t.Fatal("expected ok=false when repo not in catalog")
 		}
 	})
 
 	t.Run("nil exec → degrade", func(t *testing.T) {
-		if _, _, ok := recordedSyncMeta(ctx, nil, "knowledge"); ok {
+		if _, _, ok := recordedSyncMeta(ctx, nil, "knowledge", ""); ok {
 			t.Fatal("expected ok=false for nil exec")
 		}
 	})
@@ -99,11 +101,20 @@ func TestCodeStalenessFooter(t *testing.T) {
 	if err != nil || head == "" {
 		t.Skip("no git HEAD available; skipping")
 	}
+	// The searched repo's git dir is resolved from the manifest first; record the
+	// real repo root under its own name so commits-behind runs against THIS tree.
+	// This also pins the manifest-dir path (the cross-repo exit-128 fix): git runs
+	// in the recorded dir, not the (here-unrelated) cwd.
+	repoName := filepath.Base(root)
+	m := withTestManifest(t)
+	require.NoError(t, m.Record(repoName, root))
+
 	t.Run("recorded collect_commit at HEAD → up to date footer with last-collected", func(t *testing.T) {
 		exec := graphNamesFake([]*knowledgev1.GraphInfo{
-			{Name: "knowledge", CollectedCommit: head, CollectedTime: time.Now().Add(-2 * time.Hour).UnixNano()},
+			{Name: repoName, CollectedCommit: head, CollectedTime: time.Now().Add(-2 * time.Hour).UnixNano()},
 		})
-		footer := codeStalenessFooter(ctx, exec, root, "knowledge")
+		// cwd is an UNRELATED dir to prove git runs in the manifest-recorded dir.
+		footer := codeStalenessFooter(ctx, exec, t.TempDir(), repoName, "")
 		if footer == "" {
 			t.Fatal("expected a footer when sync_commit is recorded")
 		}
@@ -121,9 +132,9 @@ func TestCodeStalenessFooter(t *testing.T) {
 
 	t.Run("no recorded metadata → no footer (degrade)", func(t *testing.T) {
 		exec := graphNamesFake([]*knowledgev1.GraphInfo{
-			{Name: "knowledge"}, // empty SyncCommit + zero SyncTime
+			{Name: repoName}, // empty SyncCommit + zero SyncTime
 		})
-		if footer := codeStalenessFooter(ctx, exec, root, "knowledge"); footer != "" {
+		if footer := codeStalenessFooter(ctx, exec, root, repoName, ""); footer != "" {
 			t.Fatalf("expected empty footer for unrecorded carrier, got %q", footer)
 		}
 	})
@@ -132,8 +143,56 @@ func TestCodeStalenessFooter(t *testing.T) {
 		exec := graphNamesFake([]*knowledgev1.GraphInfo{
 			{Name: "other", CollectedCommit: head},
 		})
-		if footer := codeStalenessFooter(ctx, exec, root, "knowledge"); footer != "" {
+		if footer := codeStalenessFooter(ctx, exec, root, repoName, ""); footer != "" {
 			t.Fatalf("expected empty footer when repo not in catalog, got %q", footer)
+		}
+	})
+
+	t.Run("dir unknown (not in manifest, not cwd's repo) → collection time WITHOUT commits-behind", func(t *testing.T) {
+		// LOAD-BEARING (the cross-repo exit-128 fix): a recorded sync_commit but
+		// NO resolvable git dir must report the collection time alone — NEVER run
+		// git in the wrong tree and surface "commits-behind unavailable: exit
+		// status 128". "elsewhere" is not in the (test) manifest and is not the
+		// cwd's repo.
+		withTestManifest(t) // fresh empty manifest for this subtest
+		exec := graphNamesFake([]*knowledgev1.GraphInfo{
+			{Name: "elsewhere", CollectedCommit: head, CollectedTime: time.Now().Add(-3 * time.Hour).UnixNano()},
+		})
+		footer := codeStalenessFooter(ctx, exec, root, "elsewhere", "")
+		if !strings.Contains(footer, "last collected 3 hours ago") {
+			t.Fatalf("expected a last-collected footer, got %q", footer)
+		}
+		if strings.Contains(footer, "exit status 128") || strings.Contains(footer, "commits-behind unavailable") {
+			t.Fatalf("must NOT run git in an unknown dir (no exit-128), got %q", footer)
+		}
+		if strings.Contains(footer, "up to date") || strings.Contains(footer, "behind HEAD") {
+			t.Fatalf("commits-behind must be skipped when the dir is unknown, got %q", footer)
+		}
+	})
+
+	t.Run("branch read filters the repo@branch overlay entry", func(t *testing.T) {
+		// With a branch passed, recordedSyncMeta filters for the "repo@branch"
+		// overlay entry (the overlay_of enumeration). The base entry must NOT
+		// satisfy a branch read — proving the branch is threaded through.
+		exec := graphNamesFake([]*knowledgev1.GraphInfo{
+			{Name: repoName, CollectedCommit: head, CollectedTime: time.Now().UnixNano()},                                  // base, wrong for a branch read
+			{Name: repoName + "@feature", CollectedCommit: head, CollectedTime: time.Now().Add(-1 * time.Hour).UnixNano()}, // the overlay entry
+		})
+		footer := codeStalenessFooter(ctx, exec, t.TempDir(), repoName, "feature")
+		if !strings.Contains(footer, "1 hour ago") {
+			t.Fatalf("branch read must surface the repo@branch overlay entry's collect time, got %q", footer)
+		}
+	})
+
+	t.Run("branch read with only a base entry degrades (no overlay match)", func(t *testing.T) {
+		// A branch read where only the BASE entry exists must degrade to no footer
+		// — it must NOT fall back to the base entry's meta (that's the stale-base
+		// lie this fixes).
+		exec := graphNamesFake([]*knowledgev1.GraphInfo{
+			{Name: repoName, CollectedCommit: head, CollectedTime: time.Now().UnixNano()},
+		})
+		if footer := codeStalenessFooter(ctx, exec, t.TempDir(), repoName, "feature"); footer != "" {
+			t.Fatalf("a branch read must not fall back to the base entry, got %q", footer)
 		}
 	})
 }

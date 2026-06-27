@@ -1,25 +1,35 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // intercept_sync.go — client-side `sync` intercept (push, pull, list). Sync runs
-// entirely client-side: it orchestrates two RPC seams.
-//   - push (local → cloud): fetch the serialized LOCAL graph bytes via the
-//     EngineService.ExportGraph read (off LocalGraphCaller), then POST them to
-//     Fulminate Cloud over the client's OAuth auth.Transport (PushGraph).
-//   - pull (cloud → local): fetch the authoritative CLOUD bytes via ExportGraph
-//     (off the login-routed GraphCaller), then FULLY OVERWRITE the local graph
-//     via the EngineService.OverwriteGraph apply (off LocalGraphCaller).
+// entirely client-side and routes the bulk graph bytes through GCS to bypass
+// Cloudflare's ~100 MB request-body cap; only small JSON control requests cross
+// Cloudflare. The bulk bytes are asymmetric-envelope encrypted, so a leaked GCS
+// object yields only ciphertext.
+//   - push (local → cloud): serialize the LOCAL graph bytes via the
+//     EngineService.ExportGraph read (off LocalGraphCaller), then presign → seal
+//     (per-request DEK, AES-256-GCM, RSA-OAEP-wrapped to the agent key) → PUT the
+//     ciphertext straight to GCS (no auth header) → confirm (the agent downloads,
+//     decrypts, and ingests it via /v1/sync/push). The presign/confirm control
+//     calls cross Cloudflare over the OAuth auth.Transport.
+//   - pull (cloud → local): call the agent's /v1/sync/pull (the agent runs the
+//     cloud ExportGraph, encrypts to GCS, and returns {download_url, dek}), GET
+//     the ciphertext from GCS (no auth header), decrypt with the returned DEK,
+//     then FULLY OVERWRITE the local graph via EngineService.OverwriteGraph (off
+//     LocalGraphCaller).
 //   - list: print the sync-eligibility table.
 //
 // The serialize/apply HALVES live server-side (connectAdapter.ExportGraph /
-// OverwriteGraph); the routing, upload, and license gate live here on the client.
-// promote was removed — it returns a clear error. The keychain / not-logged-in /
-// transport-failure cases render the chat-visible "run knowledge login" guidance
-// verbatim (the legacy is_error shape).
+// OverwriteGraph); the agent orchestrates the GCS envelope crypto; the routing,
+// transfer, and license gate live here on the client. promote was removed — it
+// returns a clear error. The keychain / not-logged-in / transport-failure cases
+// render the chat-visible "run knowledge login" guidance verbatim (the legacy
+// is_error shape).
 
 package tools
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,7 +40,56 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/auth"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/syncgcs"
 )
+
+// syncObjectContentType is the content-type the GCS PUT sends, matching what the
+// agent presign signs the upload URL with (a Bearer header is NOT sent — that
+// would break the GCS V4 signature; see syncgcs.PutObject).
+const syncObjectContentType = "application/octet-stream"
+
+// Control-plane JSON DTOs for the presigned-GCS sync flow. These mirror the
+// agent-side request/response shapes (cmd/agent/internal/http/server/
+// sync_presign.go, sync_confirm.go, sync_pull.go). The two repos cannot share a
+// Go package, so the shapes are deliberately mirrored on each side.
+
+// syncPresignRequest is the body of POST /v1/sync/presign.
+type syncPresignRequest struct {
+	GraphType string `json:"graph_type"`
+	Name      string `json:"name"`
+}
+
+// syncPresignResponse is the response of POST /v1/sync/presign.
+type syncPresignResponse struct {
+	UploadURL      string `json:"upload_url"`
+	ObjectPath     string `json:"object_path"`
+	AgentPublicKey string `json:"agent_public_key"`
+	Expiry         string `json:"expiry"`
+}
+
+// syncConfirmRequest is the body of POST /v1/sync/confirm.
+type syncConfirmRequest struct {
+	ObjectPath string `json:"object_path"`
+	GraphType  string `json:"graph_type"`
+	Name       string `json:"name"`
+}
+
+// syncPullRequest is the body of POST /v1/sync/pull.
+type syncPullRequest struct {
+	GraphType string `json:"graph_type"`
+	Name      string `json:"name"`
+}
+
+// syncPullResponse is the response of POST /v1/sync/pull. The DEK is
+// base64-StdEncoded and the GCS object it unlocks is ciphertext. ObjectPath is
+// the agent-minted GCS object path; the client feeds it into OpenEnvelope so the
+// pull-direction AAD it computes matches what the agent sealed with.
+type syncPullResponse struct {
+	DownloadURL string `json:"download_url"`
+	DEK         string `json:"dek"`
+	ObjectPath  string `json:"object_path"`
+	Expiry      string `json:"expiry"`
+}
 
 // Exporter is the narrow ExportGraph-RPC seam the push intercept drives. The
 // production graphClientCaller implements it (Call + Execute + Index + ... +
@@ -134,45 +193,74 @@ func InterceptSync(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtool
 	return true, pushGraph(context.Background(), exp, transport, graph, name)
 }
 
-// handlePull wires the two seams the pull arm needs — the CLOUD Exporter (the
-// login-routed GraphCaller, which fetches the authoritative cloud bytes) and the
-// LOCAL Overwriter (the OverwriteGraph apply target) — and drives pullGraph.
-// Each seam error surfaces cleanly: a cloud caller that is nil/not-logged-in
-// fails at the ExportGraph call inside pullGraph; a missing local server fails at
-// overwriterSeam (pull requires a local server because its destination is the
+// handlePull wires the two seams the pull arm needs — the control-plane
+// auth.Transport (the Bearer-authenticated /v1/sync channel that requests the
+// agent-orchestrated pull) and the LOCAL Overwriter (the OverwriteGraph apply
+// target) — and drives pullGraph. The cloud bytes no longer route through a cloud
+// ExportGraph caller: the agent exports + encrypts them to GCS, and pullGraph
+// GETs the ciphertext. Each seam error surfaces cleanly: a not-logged-in session
+// fails at the pull control call inside pullGraph; a missing local server fails
+// at overwriterSeam (pull requires a local server because its destination is the
 // local .bin).
 func handlePull(deps ClientDeps, graph, name string) kgtools.ToolResult {
-	exp, ok := deps.GraphCaller().(Exporter)
-	if !ok {
-		return errorResult("sync pull: graph caller is not ExportGraph-capable")
-	}
 	ov, err := overwriterSeam(deps)
 	if err != nil {
 		return errorResult("sync pull: " + err.Error())
 	}
-	return pullGraph(context.Background(), ov, exp, graph, name)
+	transport, err := syncTransportBuilder()
+	if err != nil {
+		return errorResult("sync pull: " + err.Error())
+	}
+	return pullGraph(context.Background(), ov, transport, graph, name)
 }
 
-// pullGraph fetches the serialized (graph, name) bytes from the cloud via the
-// routed ExportGraph RPC (GraphCaller routes cloud when logged in via
-// Router.pick), then applies them to the LOCAL graph via the OverwriteGraph RPC
-// (full overwrite). It is the inverse of pushGraph: push reads local + writes
-// cloud; pull reads cloud + writes local. Not-logged-in surfaces from the cloud
-// ExportGraph call with caller-actionable login guidance.
+// pullGraph fetches the authoritative (graph, name) bytes from Fulminate Cloud
+// through GCS (off Cloudflare's body cap): it calls the agent's /v1/sync/pull
+// control endpoint over the Bearer-authenticated channel (the agent runs the
+// cloud ExportGraph, encrypts with a fresh per-request DEK, uploads to GCS, and
+// returns {download_url, dek}), GETs the ciphertext straight from GCS with NO
+// auth header, decrypts it with the returned DEK (OpenEnvelope), then applies it
+// to the LOCAL graph via the OverwriteGraph RPC (full overwrite). It is the
+// inverse of pushGraph: push reads local + writes cloud; pull reads cloud +
+// writes local. Not-logged-in surfaces from the pull control call with
+// caller-actionable login guidance.
 func pullGraph(
 	ctx context.Context,
 	ov Overwriter,
-	exp Exporter,
+	transport *auth.Transport,
 	graph, name string,
 ) kgtools.ToolResult {
-	resp, err := exp.ExportGraph(ctx, &knowledgev1.ExportGraphRequest{
-		Target: manageGraphSelector(graph, name),
-	})
+	// (1) Request the agent-orchestrated pull: download URL + the DEK.
+	pullReqBody, err := json.Marshal(syncPullRequest{GraphType: graph, Name: name})
+	if err != nil {
+		return errorResult(fmt.Sprintf("sync pull: marshal pull request: %v", err))
+	}
+	pullRaw, err := transport.SyncControlJSON(ctx, "pull", pullReqBody)
 	if err != nil {
 		return errorResult(wrapPullErr(graph, name, err))
 	}
-	body := resp.GetGraphBytes()
+	var pull syncPullResponse
+	if err := json.Unmarshal(pullRaw, &pull); err != nil {
+		return errorResult(fmt.Sprintf("sync pull: decode pull response: %v", err))
+	}
+	dek, err := base64.StdEncoding.DecodeString(pull.DEK)
+	if err != nil {
+		return errorResult(fmt.Sprintf("sync pull: decode DEK: %v", err))
+	}
 
+	// (2) GET the ciphertext straight from GCS with NO auth header.
+	envelope, err := syncgcs.GetObject(ctx, pull.DownloadURL)
+	if err != nil {
+		return errorResult(fmt.Sprintf("sync pull: download %s/%s from GCS: %v", graph, name, err))
+	}
+
+	// (3) Decrypt with the returned DEK (pull shape [nonce][ciphertext]).
+	body, err := syncgcs.OpenEnvelope(envelope, dek, pull.ObjectPath)
+	if err != nil {
+		return errorResult(fmt.Sprintf("sync pull: decrypt %s/%s: %v", graph, name, err))
+	}
+
+	// (4) Apply to the LOCAL graph via OverwriteGraph (full overwrite).
 	ovResp, err := ov.OverwriteGraph(ctx, &knowledgev1.OverwriteGraphRequest{
 		GraphType:  graph,
 		Name:       name,
@@ -186,11 +274,17 @@ func pullGraph(
 		graph, name, len(body), ovResp.GetNodes(), ovResp.GetEdges()))
 }
 
-// pushGraph fetches the serialized (graph, name) bytes via the ExportGraph RPC
-// and POSTs them to Fulminate Cloud via the auth.Transport. It is the legacy
-// syncPush (engine_sync.go) split across the wire: the server serializes (the
-// ExportGraph read), the client uploads. Errors are wrapped for caller-
-// actionable login guidance.
+// pushGraph serializes the LOCAL (graph, name) bytes via the ExportGraph RPC,
+// then routes the bulk bytes to Fulminate Cloud through GCS (off Cloudflare's
+// ~100 MB body cap): it requests a presigned PUT + the agent public key via the
+// Bearer-authenticated /v1/sync control channel, asymmetric-envelope-encrypts the
+// bytes (a fresh per-request DEK, AES-256-GCM, RSA-OAEP-SHA256-wrapped to the
+// agent key), PUTs the ciphertext straight to GCS with NO auth header, then calls
+// confirm so the agent downloads, decrypts, and ingests it. Only the small
+// presign/confirm control requests cross Cloudflare; the bulk ciphertext goes
+// direct to GCS. The DEK lives only inside SealEnvelope and is discarded with the
+// ciphertext buffer on return. Errors are wrapped for caller-actionable login
+// guidance.
 func pushGraph(
 	ctx context.Context,
 	exp Exporter,
@@ -208,7 +302,44 @@ func pushGraph(
 	body := resp.GetGraphBytes()
 
 	uploadStart := time.Now()
-	if err := transport.PushGraph(ctx, graph, name, body); err != nil {
+
+	// (1) Request a presigned GCS PUT URL + the agent public key.
+	presignReqBody, err := json.Marshal(syncPresignRequest{GraphType: graph, Name: name})
+	if err != nil {
+		return errorResult(fmt.Sprintf("sync push: marshal presign request: %v", err))
+	}
+	presignRaw, err := transport.SyncControlJSON(ctx, "presign", presignReqBody)
+	if err != nil {
+		return errorResult(wrapPushErr(graph, name, err))
+	}
+	var presign syncPresignResponse
+	if err := json.Unmarshal(presignRaw, &presign); err != nil {
+		return errorResult(fmt.Sprintf("sync push: decode presign response: %v", err))
+	}
+
+	// (2) Asymmetric-envelope-encrypt the serialized graph; the DEK is wrapped to
+	// the agent public key and never leaves SealEnvelope.
+	envelope, err := syncgcs.SealEnvelope(body, presign.AgentPublicKey, presign.ObjectPath)
+	if err != nil {
+		return errorResult(fmt.Sprintf("sync push: encrypt %s/%s: %v", graph, name, err))
+	}
+
+	// (3) PUT the ciphertext straight to GCS with NO auth header (octet-stream,
+	// matching the content-type the presign signed).
+	if err := syncgcs.PutObject(ctx, presign.UploadURL, envelope, syncObjectContentType); err != nil {
+		return errorResult(fmt.Sprintf("sync push: upload %s/%s to GCS: %v", graph, name, err))
+	}
+
+	// (4) Confirm: the agent downloads, decrypts, bomb-checks, and ingests it.
+	confirmReqBody, err := json.Marshal(syncConfirmRequest{
+		ObjectPath: presign.ObjectPath,
+		GraphType:  graph,
+		Name:       name,
+	})
+	if err != nil {
+		return errorResult(fmt.Sprintf("sync push: marshal confirm request: %v", err))
+	}
+	if _, err := transport.SyncControlJSON(ctx, "confirm", confirmReqBody); err != nil {
 		return errorResult(wrapPushErr(graph, name, err))
 	}
 	uploadDur := time.Since(uploadStart)

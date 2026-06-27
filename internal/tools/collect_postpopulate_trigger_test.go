@@ -67,7 +67,6 @@ func (d *ppTriggerDeps) Embedder() embed.BinaryEmbedder               { return n
 func (d *ppTriggerDeps) BackendResolver() BackendResolver             { return nil }
 func (d *ppTriggerDeps) GraphCaller() GraphCaller                     { return d.gc }
 func (d *ppTriggerDeps) LocalGraphCaller() GraphCaller                { return d.gc }
-func (d *ppTriggerDeps) RepoResolver() *RepoResolver                  { return nil }
 func (d *ppTriggerDeps) SegmentManager() SegmentSearcher              { return nil }
 func (d *ppTriggerDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
 func (d *ppTriggerDeps) SegmentShipper() SegmentShipper               { return nil }

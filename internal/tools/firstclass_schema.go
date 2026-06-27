@@ -16,7 +16,7 @@ import "github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 
 // repoProp is the shared repo parameter added to the code tools. Moved
 // verbatim from the server-side cmd/knowledge-server/tools/tools_code.go.
-var repoProp = kgtools.Property{Type: "string", Description: "Repository name. Optional for the knowledge graph and cross-repo search; REQUIRED for graph=code unless you are running inside an indexed repo, where it auto-resolves from the current directory."}
+var repoProp = kgtools.Property{Type: "string", Description: "Repository (code graph) name — REQUIRED for graph=code; it is never inferred from cwd. search accepts 'all' to span every code repo. Not used by the knowledge graph."}
 
 // ThoughtsToolDef returns the unified MCP tool definition for the thought
 // graph. Five operations cover the full reasoning-cycle surface (think /

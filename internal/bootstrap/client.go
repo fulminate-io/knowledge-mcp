@@ -171,16 +171,6 @@ type client struct {
 	schemaMu   sync.Mutex
 	schemas    []toolSchema
 	schemaDone bool
-
-	// repoResolver is the client-side cwd → code-graph-name resolver
-	// resolver. Constructed lazily on first RepoResolver()
-	// call via repoResolverOnce so test harnesses that build *client
-	// without a GraphClient don't trip on the nil-graph path. The
-	// resolver's own mutex + loaded flag gates the code-graph catalog
-	// read (memoizing a successful load, retrying a failed one), so
-	// one resolver-per-session is exactly what we want.
-	repoResolverOnce sync.Once
-	repoResolver     *tools.RepoResolver
 }
 
 // LocalLiveness returns the LOCAL graph client as a liveness-only view
@@ -358,22 +348,6 @@ func (noopAuthStore) Get(context.Context, string) (string, error) {
 }
 func (noopAuthStore) Set(context.Context, string, string) error { return nil }
 func (noopAuthStore) Delete(context.Context, string) error      { return nil }
-
-// RepoResolver returns the client-side cwd → code-graph-name resolver.
-// Constructed lazily on first call via repoResolverOnce — one resolver
-// per MCP session. Returns nil when no GraphCaller is wired (degraded
-// headless mode), and InjectRepoIfCodeGraph falls through harmlessly
-// in that case.
-func (c *client) RepoResolver() *tools.RepoResolver {
-	c.repoResolverOnce.Do(func() {
-		gc := c.GraphCaller()
-		if gc == nil {
-			return
-		}
-		c.repoResolver = tools.NewRepoResolver(gc)
-	})
-	return c.repoResolver
-}
 
 // providerBackendResolver delegates to the production
 // cmd/knowledge/internal/backends/provider package. Kept tiny so the

@@ -20,19 +20,17 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
 	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
-	"github.com/fulminate-io/knowledge-mcp/internal/session"
 )
 
 // repoTestDeps satisfies ClientDeps for the InjectRepoIfCodeGraph tests.
-// The fields are wired to: rootDir (the cwd shown to the intercept),
-// resolver (the cwd→graph-name resolver, optionally backed by
-// listGraphsCaller), and gcCallCount (a counter so tests can assert
-// "intercept did NOT forward the call").
+// rootDir is the cwd shown to the intercept; gcCount counts GraphCaller
+// invocations so a test can assert "the intercept did NOT forward the call".
+// There is NO resolver field: repo identity is explicit and never inferred from
+// cwd, so the intercept has no cwd→graph-name resolver to consult.
 type repoTestDeps struct {
-	rootDir  string
-	resolver *RepoResolver
-	gcCount  *int32
-	gc       GraphCaller
+	rootDir string
+	gcCount *int32
+	gc      GraphCaller
 }
 
 func (d *repoTestDeps) LocalLiveness() LocalLiveness         { return nil }
@@ -55,7 +53,6 @@ func (d *repoTestDeps) GraphCaller() GraphCaller {
 	return d.gc
 }
 func (d *repoTestDeps) LocalGraphCaller() GraphCaller                { return d.gc }
-func (d *repoTestDeps) RepoResolver() *RepoResolver                  { return d.resolver }
 func (d *repoTestDeps) SegmentManager() SegmentSearcher              { return nil }
 func (d *repoTestDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
 func (d *repoTestDeps) SegmentShipper() SegmentShipper               { return nil }
@@ -68,14 +65,6 @@ func (d *repoTestDeps) SimilarityForcer() SimilarityForcer           { return ni
 func (d *repoTestDeps) BlindSpotProvider() BlindSpotProvider { return nil }
 func (d *repoTestDeps) ClusterProvider() ClusterProvider     { return nil }
 func (d *repoTestDeps) TensionsProvider() TensionsProvider   { return nil }
-
-// buildResolver returns a RepoResolver pre-loaded with the given graph
-// names. listGraphsCaller backs the resolver; the first ResolveCwd call
-// triggers the canned response.
-func buildResolver(_ *testing.T, names ...string) *RepoResolver {
-	gc := newListGraphsCaller(codeGraphs(names...))
-	return NewRepoResolver(gc)
-}
 
 // hermeticGitEnv returns os.Environ() with every GIT_* entry stripped, then
 // re-adds GIT_TERMINAL_PROMPT=0. Test fixtures that spawn git subprocesses MUST
@@ -148,262 +137,204 @@ func paramsFor(name string, body string) kgtools.CallToolParams {
 }
 
 func TestInjectRepoIfCodeGraph_QueryKnowledgeGraph_NotInjected(t *testing.T) {
-	// query with graph=knowledge must NOT be injected — knowledge graph
-	// calls don't carry repo:.
-	dir := gitRepoFixture(t)
-	deps := &repoTestDeps{rootDir: dir, resolver: buildResolver(t, "knowledge")}
+	// query with graph=knowledge must NOT be touched — knowledge graph calls
+	// don't carry repo:, and the code-graph gate passes them straight through.
+	deps := &repoTestDeps{rootDir: t.TempDir()}
 	out, handled, _ := InjectRepoIfCodeGraph(context.Background(), deps,
 		paramsFor("query", `{"graph":"knowledge","id":"some-id"}`))
 	assert.False(t, handled)
-	got := callArgs(t, out.Arguments)
-	_, has := got["repo"]
-	assert.False(t, has, "knowledge-graph query should not gain repo:")
-}
-
-func TestInjectRepoIfCodeGraph_QueryCodeGraph_IsInjected(t *testing.T) {
-	// query with graph=code (or unset) from a matching cwd MUST be
-	// injected with repo: + branch:.
-	dir := gitRepoFixture(t)
-	repoName := filepath.Base(dir)
-	deps := &repoTestDeps{rootDir: dir, resolver: buildResolver(t, repoName)}
-	out, handled, _ := InjectRepoIfCodeGraph(context.Background(), deps,
-		paramsFor("query", `{"graph":"code","text":"x"}`))
-	assert.False(t, handled)
-	got := callArgs(t, out.Arguments)
-	assert.Equal(t, repoName, got["repo"])
-	assert.Equal(t, "main", got["branch"])
+	_, has := callArgs(t, out.Arguments)["repo"]
+	assert.False(t, has, "knowledge-graph query must not gain repo:")
 }
 
 func TestInjectRepoIfCodeGraph_SearchKnowledgeGraph_NotInjected(t *testing.T) {
-	// search with graph=knowledge must NOT be injected — the knowledge
-	// graph is the default memory/thought graph, not a code repo.
-	dir := gitRepoFixture(t)
-	deps := &repoTestDeps{rootDir: dir, resolver: buildResolver(t, "knowledge")}
+	// search with graph=knowledge must pass through untouched.
+	deps := &repoTestDeps{rootDir: t.TempDir()}
 	out, handled, _ := InjectRepoIfCodeGraph(context.Background(), deps,
 		paramsFor("search", `{"graph":"knowledge","query":"summarizer pipeline"}`))
 	assert.False(t, handled)
 	got := callArgs(t, out.Arguments)
 	_, hasRepo := got["repo"]
 	_, hasBranch := got["branch"]
-	assert.False(t, hasRepo, "knowledge-graph search should not gain repo:")
-	assert.False(t, hasBranch, "knowledge-graph search should not gain branch:")
+	assert.False(t, hasRepo, "knowledge-graph search must not gain repo:")
+	assert.False(t, hasBranch, "knowledge-graph search must not gain branch:")
 }
 
-func TestInjectRepoIfCodeGraph_SearchCodeGraph_IsInjected(t *testing.T) {
-	// search with graph=code from a matching cwd MUST be injected with
-	// repo: + branch:, preserving the code-search shortcut behavior.
+func TestInjectRepoIfCodeGraph_QueryTraverse_OmittedGraph_KnowledgeDefault(t *testing.T) {
+	// query and traverse DEFAULT to the knowledge graph: an OMITTED graph must
+	// pass through untouched (no repo required), NOT be treated as a code query.
+	// Pins the fix for the confusing "graph=code requires repo" on a plain
+	// query(type:"ticket"). (Explicit graph="code" still requires repo — covered
+	// by TestInjectRepoIfCodeGraph_CodeGraph_NoRepo_ErrorsBeforeRPC.)
+	deps := &repoTestDeps{rootDir: t.TempDir()}
+	for _, tc := range []struct{ name, body string }{
+		{"query", `{"type":"ticket"}`},
+		{"traverse", `{"start":"some-node"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out, handled, _ := InjectRepoIfCodeGraph(context.Background(), deps, paramsFor(tc.name, tc.body))
+			assert.False(t, handled, "omitted-graph %s must pass through to the knowledge graph", tc.name)
+			_, hasRepo := callArgs(t, out.Arguments)["repo"]
+			assert.False(t, hasRepo, "omitted-graph %s must not gain repo:", tc.name)
+		})
+	}
+}
+
+func TestInjectRepoIfCodeGraph_CodeGraph_NoRepo_ErrorsBeforeRPC(t *testing.T) {
+	// Every code-graph tool with graph=code (or unset) and NO explicit repo:
+	// must fail loud client-side WITHOUT invoking GraphCaller — repo is required;
+	// it is never inferred from cwd. Run from inside a real git repo to prove the
+	// error is about the missing repo, not anything cwd-derived.
+	dir := gitRepoFixture(t)
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{"query", `{"graph":"code","text":"x"}`},
+		{"search", `{"graph":"code","query":"x"}`},
+		{"traverse", `{"graph":"code","start":"a.go:F"}`},
+		{"file_symbols", `{"file_path":"foo.go"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var gcCount int32
+			deps := &repoTestDeps{rootDir: dir, gcCount: &gcCount}
+			_, handled, res := InjectRepoIfCodeGraph(context.Background(), deps, paramsFor(tc.name, tc.body))
+			assert.True(t, handled, "missing repo must short-circuit")
+			assert.True(t, res.IsError)
+			assert.Contains(t, res.Content[0].Text, `graph="code" requires repo`)
+			assert.Equal(t, int32(0), atomic.LoadInt32(&gcCount), "GraphCaller must not be invoked on missing-repo error")
+		})
+	}
+}
+
+func TestInjectRepoIfCodeGraph_ExplicitRepo_NotInManifest_NoBranchStamp(t *testing.T) {
+	// An explicit repo: passes through untouched, and branch is NOT stamped when
+	// the repo is absent from the machine-local manifest — even when the cwd IS a
+	// git repo whose basename equals the target. Branch is NEVER inferred from cwd;
+	// the only auto-detect source is a manifest hit (see the manifest-hit test
+	// below). An omitted branch with no manifest entry reads the base graph.
+	withTestManifest(t) // empty manifest: repoName not recorded
 	dir := gitRepoFixture(t)
 	repoName := filepath.Base(dir)
-	deps := &repoTestDeps{rootDir: dir, resolver: buildResolver(t, repoName)}
+	deps := &repoTestDeps{rootDir: dir}
 	out, handled, _ := InjectRepoIfCodeGraph(context.Background(), deps,
-		paramsFor("search", `{"graph":"code","query":"x"}`))
+		paramsFor("search", `{"query":"x","repo":"`+repoName+`"}`))
 	assert.False(t, handled)
 	got := callArgs(t, out.Arguments)
-	assert.Equal(t, repoName, got["repo"])
-	assert.Equal(t, "main", got["branch"])
+	assert.Equal(t, repoName, got["repo"], "explicit repo must be preserved verbatim")
+	_, hasBranch := got["branch"]
+	assert.False(t, hasBranch, "branch must not be stamped when the repo is not in the manifest")
 }
 
-func TestInjectRepoIfCodeGraph_FileSymbols_NonMatchingCwd_ErrorsBeforeRPC(t *testing.T) {
-	// file_symbols without repo: from a non-matching cwd must produce a
-	// client-side error AND NOT invoke GraphCaller.
-	var gcCount int32
-	deps := &repoTestDeps{
-		rootDir:  t.TempDir(), // basename doesn't match resolver list
-		resolver: buildResolver(t, "knowledge"),
-		gcCount:  &gcCount,
-	}
-	_, handled, res := InjectRepoIfCodeGraph(context.Background(), deps,
-		paramsFor("file_symbols", `{"file_path":"foo.go"}`))
-	assert.True(t, handled)
-	assert.True(t, res.IsError)
-	assert.Contains(t, res.Content[0].Text, `graph="code" requires repo`)
-	assert.Equal(t, int32(0), atomic.LoadInt32(&gcCount), "GraphCaller must not be invoked on missing-repo error")
+func TestInjectRepoIfCodeGraph_RepoInManifest_StampsBranch(t *testing.T) {
+	// When the repo is recorded in the machine-local manifest, an omitted branch
+	// is auto-detected by running git in the repo's recorded on-disk directory —
+	// stamping the branch the searched repo is ACTUALLY on (here "main"). This is
+	// machine-correct and works cross-repo: the dir comes from the manifest, not cwd.
+	m := withTestManifest(t)
+	dir := gitRepoFixture(t) // a real git repo checked out on "main"
+	repoName := filepath.Base(dir)
+	require.NoError(t, m.Record(repoName, dir))
+	// Session cwd is a DIFFERENT dir to prove branch is read from the manifest dir,
+	// not from cwd.
+	deps := &repoTestDeps{rootDir: t.TempDir()}
+	out, handled, _ := InjectRepoIfCodeGraph(context.Background(), deps,
+		paramsFor("search", `{"query":"x","repo":"`+repoName+`"}`))
+	assert.False(t, handled)
+	got := callArgs(t, out.Arguments)
+	assert.Equal(t, "main", got["branch"], "branch must be auto-detected from the manifest-recorded dir")
+}
+
+func TestInjectRepoIfCodeGraph_ExplicitBranch_NotOverwritten(t *testing.T) {
+	// A caller-supplied branch is preserved verbatim even when the repo is in the
+	// manifest — auto-detect only fills a MISSING branch.
+	m := withTestManifest(t)
+	dir := gitRepoFixture(t)
+	repoName := filepath.Base(dir)
+	require.NoError(t, m.Record(repoName, dir))
+	deps := &repoTestDeps{rootDir: t.TempDir()}
+	out, handled, _ := InjectRepoIfCodeGraph(context.Background(), deps,
+		paramsFor("search", `{"query":"x","repo":"`+repoName+`","branch":"feature-x"}`))
+	assert.False(t, handled)
+	got := callArgs(t, out.Arguments)
+	assert.Equal(t, "feature-x", got["branch"], "an explicit branch must never be overwritten by auto-detect")
+}
+
+func TestInjectRepoIfCodeGraph_RepoAll_NoBranchStamp(t *testing.T) {
+	// repo="all" is a cross-repo fan-out — there is no single checkout to detect a
+	// branch from, so branch is never stamped.
+	m := withTestManifest(t)
+	dir := gitRepoFixture(t)
+	require.NoError(t, m.Record("all", dir)) // even a stray "all" entry must not stamp
+	deps := &repoTestDeps{rootDir: t.TempDir()}
+	out, handled, _ := InjectRepoIfCodeGraph(context.Background(), deps,
+		paramsFor("search", `{"query":"x","repo":"all"}`))
+	assert.False(t, handled)
+	got := callArgs(t, out.Arguments)
+	_, hasBranch := got["branch"]
+	assert.False(t, hasBranch, `repo="all" must never be branch-stamped`)
 }
 
 func TestInjectRepoIfCodeGraph_Search_StalenessTrue_PopulatesGitFields(t *testing.T) {
-	// search with staleness:true MUST populate current_head +
-	// uncommitted_count + commits_behind from git subprocess calls.
+	// search with an explicit repo: + staleness:true MUST populate current_head
+	// + uncommitted_count from git subprocess calls against the session cwd.
 	dir := gitRepoFixture(t)
 	repoName := filepath.Base(dir)
-	deps := &repoTestDeps{rootDir: dir, resolver: buildResolver(t, repoName)}
+	deps := &repoTestDeps{rootDir: dir}
 	out, handled, _ := InjectRepoIfCodeGraph(context.Background(), deps,
-		paramsFor("search", `{"query":"x","staleness":true}`))
+		paramsFor("search", `{"query":"x","repo":"`+repoName+`","staleness":true}`))
 	assert.False(t, handled)
 	got := callArgs(t, out.Arguments)
 	headSHA, _ := got["current_head"].(string)
 	assert.Len(t, headSHA, 40)
 	uncommitted, _ := got["uncommitted_count"].(float64)
 	assert.InDelta(t, float64(0), uncommitted, 0.0001)
-	commitsBehind, _ := got["commits_behind"].(float64)
-	assert.InDelta(t, float64(0), commitsBehind, 0.0001)
 }
 
 func TestInjectRepoIfCodeGraph_Search_StalenessFalse_SkipsGitSubprocess(t *testing.T) {
-	// search with staleness:false must NOT shell out to git for the
-	// staleness trio. Timing assertion: a non-staleness search call
-	// against a t.TempDir() (no .git) must complete fast and NOT emit
-	// the three staleness fields. Use a git repo fixture so DetectBranch
-	// succeeds — only the staleness trio is gated.
+	// search with staleness:false must NOT shell out to git for the staleness
+	// trio: no current_head / uncommitted_count, and it completes fast.
 	dir := gitRepoFixture(t)
 	repoName := filepath.Base(dir)
-	deps := &repoTestDeps{rootDir: dir, resolver: buildResolver(t, repoName)}
+	deps := &repoTestDeps{rootDir: dir}
 
 	start := time.Now()
 	out, handled, _ := InjectRepoIfCodeGraph(context.Background(), deps,
-		paramsFor("search", `{"query":"x","staleness":false}`))
+		paramsFor("search", `{"query":"x","repo":"`+repoName+`","staleness":false}`))
 	elapsed := time.Since(start)
 
 	assert.False(t, handled)
 	got := callArgs(t, out.Arguments)
 	_, hasHead := got["current_head"]
 	_, hasUnc := got["uncommitted_count"]
-	_, hasBehind := got["commits_behind"]
-	assert.False(t, hasHead, "current_head should not be set when staleness:false")
-	assert.False(t, hasUnc, "uncommitted_count should not be set when staleness:false")
-	assert.False(t, hasBehind, "commits_behind should not be set when staleness:false")
-	// Timing budget: detect-branch + resolver-cache lookup. Three subprocess calls would push us over.
-	assert.Less(t, elapsed, 500*time.Millisecond, "staleness:false should not pay for three additional git subprocesses")
+	assert.False(t, hasHead, "current_head must not be set when staleness:false")
+	assert.False(t, hasUnc, "uncommitted_count must not be set when staleness:false")
+	assert.Less(t, elapsed, 500*time.Millisecond, "staleness:false must not pay for git subprocesses")
 }
 
-func TestInjectRepoIfCodeGraph_ExplicitRepo_NotOverwritten(t *testing.T) {
-	// When caller passes repo: explicitly, the resolver match must NOT
-	// overwrite it.
-	dir := gitRepoFixture(t)
-	repoName := filepath.Base(dir)
-	// Resolver knows about a DIFFERENT graph name; explicit "myrepo" wins.
-	deps := &repoTestDeps{rootDir: dir, resolver: buildResolver(t, repoName, "myrepo")}
-	out, handled, _ := InjectRepoIfCodeGraph(context.Background(), deps,
-		paramsFor("search", `{"query":"x","repo":"myrepo"}`))
-	assert.False(t, handled)
-	got := callArgs(t, out.Arguments)
-	assert.Equal(t, "myrepo", got["repo"], "explicit repo must not be overwritten")
-}
-
-func TestInjectRepoIfCodeGraph_CrossRepoExplicit_NoBranchStamp(t *testing.T) {
-	// A cross-repo read — explicit repo:"agent" issued from a session whose
-	// cwd resolves to repoA — must NOT stamp repoA's git branch onto the
-	// agent target. The cwd's git HEAD is meaningless for a different repo,
-	// so branch is left UNSET and the call falls through to the wire RPC
-	// (handled==false) with repo:"agent" and no branch. The caller passes
-	// branch: explicitly if it wants a cross-repo overlay.
-	dir := gitRepoFixture(t)
-	repoA := filepath.Base(dir)
-	deps := &repoTestDeps{rootDir: dir, resolver: buildResolver(t, repoA, "agent")}
-	out, handled, _ := InjectRepoIfCodeGraph(context.Background(), deps,
-		paramsFor("search", `{"query":"x","repo":"agent"}`))
-	assert.False(t, handled, "cross-repo read must not short-circuit")
-	got := callArgs(t, out.Arguments)
-	assert.Equal(t, "agent", got["repo"], "explicit cross-repo target preserved")
-	_, hasBranch := got["branch"]
-	assert.False(t, hasBranch, "cross-repo read must not stamp the cwd repo's branch")
-}
-
-func TestInjectRepoIfCodeGraph_SameRepoExplicit_StampsBranch(t *testing.T) {
-	// A same-repo read — explicit repo: equal to the cwd's resolved repo —
-	// still auto-fills branch via DetectBranch (the legitimate same-repo
-	// overlay flow: knowledge session → knowledge@<branch>, real data).
-	dir := gitRepoFixture(t)
-	repoA := filepath.Base(dir)
-	deps := &repoTestDeps{rootDir: dir, resolver: buildResolver(t, repoA)}
-	out, handled, _ := InjectRepoIfCodeGraph(context.Background(), deps,
-		paramsFor("search", `{"query":"x","repo":"`+repoA+`"}`))
-	assert.False(t, handled)
-	got := callArgs(t, out.Arguments)
-	assert.Equal(t, repoA, got["repo"])
-	assert.Equal(t, "main", got["branch"], "same-repo explicit read still stamps the cwd git branch")
-}
-
-func TestInjectRepoIfCodeGraph_CrossRepoUnresolvableCwd_FallsThroughNoError(t *testing.T) {
-	// An explicit repo: that does not resolve from the cwd is a CROSS-REPO
-	// read: the cwd basename (random t.TempDir()) matches no loaded graph,
-	// so cwdRepo="" != the explicit target. Under the same-repo stamp
-	// boundary this falls through to base WITHOUT a branch-required error —
-	// branch is left unstamped and GraphCaller is reached normally
-	// (handled==false). (Previously this scenario produced a branch-required
-	// short-circuit; that contract moved to the same-repo non-git path.)
-	var gcCount int32
-	deps := &repoTestDeps{
-		rootDir:  t.TempDir(), // basename matches no loaded graph → unresolvable cwd
-		resolver: buildResolver(t, "knowledge"),
-		gcCount:  &gcCount,
-	}
-	out, handled, _ := InjectRepoIfCodeGraph(context.Background(), deps,
-		paramsFor("file_symbols", `{"file_path":"foo.go","repo":"knowledge"}`))
-	assert.False(t, handled, "cross-repo unresolvable-cwd read must fall through, not error")
-	got := callArgs(t, out.Arguments)
-	_, hasBranch := got["branch"]
-	assert.False(t, hasBranch, "cross-repo read must not stamp a branch")
-	assert.Equal(t, int32(0), atomic.LoadInt32(&gcCount), "GraphCaller is invoked downstream, not inside the intercept")
-}
-
-func TestInjectRepoIfCodeGraph_SameRepoNonGitCwd_BranchRequired(t *testing.T) {
-	// A SAME-REPO non-git cwd still errors with "branch is required": the
-	// cwd basename equals the target repo name (resolver match → same-repo),
-	// but the .git dir was removed so DetectBranch fails. The same-repo flow
-	// needs a branch, so the client-side branch-required short-circuit fires
-	// (handled==true) WITHOUT invoking GraphCaller. This preserves the
-	// branch-required contract that the cross-repo re-characterization no
-	// longer covers.
-	dir := gitRepoFixture(t)
-	repoName := filepath.Base(dir)
-	require.NoError(t, os.RemoveAll(filepath.Join(dir, ".git"))) // basename match survives; DetectBranch now fails
-	var gcCount int32
-	deps := &repoTestDeps{
-		rootDir:  dir,
-		resolver: buildResolver(t, repoName),
-		gcCount:  &gcCount,
-	}
+func TestInjectManageRepo_CodeOp_RequiresName(t *testing.T) {
+	// A code-graph manage op (list_branches) with NO name: must fail loud —
+	// the repo (carried in name:) is required and never inferred from cwd.
+	deps := &repoTestDeps{rootDir: gitRepoFixture(t)}
 	_, handled, res := InjectRepoIfCodeGraph(context.Background(), deps,
-		paramsFor("file_symbols", `{"file_path":"foo.go","repo":"`+repoName+`"}`))
+		paramsFor("manage", `{"operation":"list_branches"}`))
 	assert.True(t, handled)
 	assert.True(t, res.IsError)
-	assert.Contains(t, res.Content[0].Text, "branch is required")
-	assert.Equal(t, int32(0), atomic.LoadInt32(&gcCount), "GraphCaller must not be invoked on missing-branch error")
+	assert.Contains(t, res.Content[0].Text, "repo is required")
 }
 
-func TestInjectRepoIfCodeGraph_PerSessionWorkspaceCwd_OverridesRootDir(t *testing.T) {
-	// Two concurrent sessions from DIFFERENT repos: each carries its own
-	// workspace cwd on ctx (session.ContextWithWorkspaceCwd). The resolver
-	// knows both graph names. deps.RootDir() points at repoA, but the session
-	// ctx for repoB MUST override it so repoB's query resolves to repoB — and
-	// vice versa. This is the core multi-session repo-routing invariant.
-	dirA := gitRepoFixture(t)
-	dirB := gitRepoFixture(t)
-	repoA := filepath.Base(dirA)
-	repoB := filepath.Base(dirB)
-
-	// RootDir = dirA (the stdio --root). The session ctx is what differentiates.
-	deps := &repoTestDeps{rootDir: dirA, resolver: buildResolver(t, repoA, repoB)}
-
-	ctxA := session.ContextWithWorkspaceCwd(context.Background(), dirA)
-	ctxB := session.ContextWithWorkspaceCwd(context.Background(), dirB)
-
-	outA, handledA, _ := InjectRepoIfCodeGraph(ctxA, deps, paramsFor("query", `{"graph":"code","text":"x"}`))
-	assert.False(t, handledA)
-	assert.Equal(t, repoA, callArgs(t, outA.Arguments)["repo"], "session A must resolve to repoA")
-
-	outB, handledB, _ := InjectRepoIfCodeGraph(ctxB, deps, paramsFor("query", `{"graph":"code","text":"x"}`))
-	assert.False(t, handledB)
-	assert.Equal(t, repoB, callArgs(t, outB.Arguments)["repo"], "session B must resolve to repoB even though RootDir is repoA")
-}
-
-func TestInjectRepoIfCodeGraph_NoWorkspaceCwd_FallsBackToRootDir(t *testing.T) {
-	// The stdio path carries no workspace cwd on ctx, so repo resolution must
-	// fall back to deps.RootDir() exactly as before B. (Criterion: stdio path
-	// unchanged.)
-	dir := gitRepoFixture(t)
-	repoName := filepath.Base(dir)
-	deps := &repoTestDeps{rootDir: dir, resolver: buildResolver(t, repoName)}
-	// context.Background() carries NO workspace cwd.
+func TestInjectManageRepo_CodeOp_ExplicitName_PassesThrough(t *testing.T) {
+	// list_branches WITH name: passes through unchanged.
+	deps := &repoTestDeps{rootDir: t.TempDir()}
 	out, handled, _ := InjectRepoIfCodeGraph(context.Background(), deps,
-		paramsFor("query", `{"graph":"code","text":"x"}`))
+		paramsFor("manage", `{"operation":"list_branches","name":"knowledge"}`))
 	assert.False(t, handled)
-	assert.Equal(t, repoName, callArgs(t, out.Arguments)["repo"], "no-cwd ctx must fall back to RootDir")
+	assert.Equal(t, "knowledge", callArgs(t, out.Arguments)["name"])
 }
 
 func TestInjectRepoIfCodeGraph_NonCodeGraphTool_PassesThrough(t *testing.T) {
-	// Tools outside the codeGraphToolNames allowlist must pass through
-	// unchanged (no decode, no error).
+	// Tools outside the codeGraphToolNames allowlist (and non-code manage ops)
+	// must pass through unchanged (no decode, no error).
 	deps := &repoTestDeps{rootDir: t.TempDir()}
 	out, handled, _ := InjectRepoIfCodeGraph(context.Background(), deps,
 		paramsFor("manage", `{"operation":"status"}`))

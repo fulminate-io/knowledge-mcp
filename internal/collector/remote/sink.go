@@ -62,18 +62,21 @@ func NewUploadSinkFunc(picker IngestClientPicker) *UploadSink {
 // Compile-time assertion.
 var _ collector.Sink = (*UploadSink)(nil)
 
-// WriteResult mints a per-collection epoch, chunks the nodes by byte budget,
-// sends one CollectChunk per chunk (nodes INLINE), then a single Finalize with
-// the same epoch. All edges ride the FINAL chunk: collector edges are
+// WriteResult mints a per-collection epoch, byte-packs the nodes and the edges
+// into SEPARATE CollectChunk requests, sends each chunk, then a single Finalize
+// with the same epoch. Nodes pack at DefaultBatchBytes (4 MiB) and carry NO
+// edges; edges pack into their OWN chunks at kgwire.MaxCloudRequestBytes (64 MiB)
+// with nil Nodes — so no single request body crosses the cloud cap even when the
+// edge tail is large (the Cloudflare-fronted endpoint 413s oversize bodies).
+// Spreading edges across multiple chunks is SAFE: collector edges are
 // ID-addressed (FromIdx/ToIdx == -1, FromID/ToID set — see kgwire.BatchEdge
 // build sites), so they resolve regardless of which chunk a referenced node
-// arrived in. Per-chunk transport retry rides the existing reconnect
+// arrived in, and the server dedups (From,Type,To) tuples across chunks and the
+// resident graph bundles. Per-chunk transport retry rides the existing reconnect
 // interceptor and is content-idempotent for BOTH nodes and edges: a node
-// re-lands identically through the server's carry-forward upsert + epoch GC,
-// and an edge re-lands at most once because the server's collect edge-landing
-// path dedups duplicate (From,Type,To) tuples against the batch and the
-// resident graph bundles. A retry of the final chunk — which carries
-// ALL edges — therefore does not double them.
+// re-lands identically through the server's carry-forward upsert + epoch GC, and
+// an edge re-lands at most once because the server filters duplicate (From,Type,
+// To) tuples. A retry of any edge chunk therefore does not double its edges.
 func (s *UploadSink) WriteResult(ctx context.Context, collectorName string, result *collectorwire.CollectResult) error {
 	client, err := s.picker(ctx)
 	if err != nil {
@@ -86,14 +89,45 @@ func (s *UploadSink) WriteResult(ctx context.Context, collectorName string, resu
 	for _, n := range result.Nodes {
 		sanitizeNodeText(n)
 	}
-	chunks := BatchNodes(result.Nodes, DefaultBatchBytes)
+	nodeChunks := BatchNodes(result.Nodes, DefaultBatchBytes)
 	protoEdges := kgwire.BatchEdgesToProto(result.Edges)
+	// Edges ride their OWN chunks at the 64 MiB cloud cap, NEVER on a node-chunk:
+	// node-chunks stay ≤4 MiB and edge-chunks stay ≤64 MiB, so every emitted
+	// CollectChunk request body is ≤64 MiB regardless of how large the edge tail
+	// grows. The server dedups (From,Type,To) tuples across chunks, so any N edge
+	// chunks land the full edge set exactly once.
+	edgeChunks := BatchEdgesProto(protoEdges, kgwire.MaxCloudRequestBytes)
 
-	// Always send at least one CollectChunk so the edges + an empty-node
-	// collection (deletion-only recollect) still reach the server, and so
-	// Finalize has an epoch the server has seen.
-	if len(chunks) == 0 {
-		chunks = [][]*knowledgev1.Node{nil}
+	// build assembles a CollectChunkRequest carrying one node group and/or one
+	// edge group under the shared epoch + graph identity.
+	build := func(nodes []*knowledgev1.Node, edges []*knowledgev1.BatchEdge) *knowledgev1.CollectChunkRequest {
+		return &knowledgev1.CollectChunkRequest{
+			Epoch:         epoch,
+			GraphType:     string(result.GraphType),
+			GraphName:     result.GraphName,
+			CurrentBranch: result.CurrentBranch,
+			Promote:       result.Promote,
+			SyncCommit:    result.SyncCommit,
+			SyncTime:      result.SyncTime,
+			Nodes:         nodes,
+			Edges:         edges,
+		}
+	}
+
+	// Assemble the ordered request list: every node-chunk (no edges) first, then
+	// every edge-chunk (nil nodes).
+	var reqs []*knowledgev1.CollectChunkRequest
+	for _, nc := range nodeChunks {
+		reqs = append(reqs, build(nc, nil))
+	}
+	for _, ec := range edgeChunks {
+		reqs = append(reqs, build(nil, ec))
+	}
+	// Always send at least one CollectChunk so an empty-node + empty-edge
+	// collection (deletion-only recollect) still reaches the server and Finalize
+	// has an epoch the server has seen.
+	if len(reqs) == 0 {
+		reqs = append(reqs, build(nil, nil))
 	}
 	// Timing instrumentation: the CollectChunk upload loop + Finalize are the
 	// foreground of the collect tool call (the client blocks here until the
@@ -102,32 +136,18 @@ func (s *UploadSink) WriteResult(ctx context.Context, collectorName string, resu
 	uploadStart := time.Now()
 	slog.Debug("remote sink: upload start", "collector", collectorName,
 		"graph_type", result.GraphType, "graph", result.GraphName, "branch", result.CurrentBranch,
-		"epoch", epoch, "chunks", len(chunks), "nodes", len(result.Nodes), "edges", len(result.Edges))
-	for i, chunk := range chunks {
-		var edges []*knowledgev1.BatchEdge
-		if i == len(chunks)-1 {
-			edges = protoEdges
-		}
-		req := &knowledgev1.CollectChunkRequest{
-			Epoch:         epoch,
-			GraphType:     string(result.GraphType),
-			GraphName:     result.GraphName,
-			CurrentBranch: result.CurrentBranch,
-			Promote:       result.Promote,
-			SyncCommit:    result.SyncCommit,
-			SyncTime:      result.SyncTime,
-			Nodes:         chunk,
-			Edges:         edges,
-		}
+		"epoch", epoch, "chunks", len(reqs), "node_chunks", len(nodeChunks), "edge_chunks", len(edgeChunks),
+		"nodes", len(result.Nodes), "edges", len(result.Edges))
+	for i, req := range reqs {
 		chunkStart := time.Now()
 		if err := s.collectChunkWithRetry(ctx, req); err != nil {
-			return fmt.Errorf("remote sink: CollectChunk %d/%d: %w", i+1, len(chunks), err)
+			return fmt.Errorf("remote sink: CollectChunk %d/%d: %w", i+1, len(reqs), err)
 		}
-		slog.Debug("remote sink: chunk sent", "i", i+1, "of", len(chunks),
-			"nodes", len(chunk), "edges", len(edges), "dur", time.Since(chunkStart).Round(time.Millisecond))
+		slog.Debug("remote sink: chunk sent", "i", i+1, "of", len(reqs),
+			"nodes", len(req.Nodes), "edges", len(req.Edges), "dur", time.Since(chunkStart).Round(time.Millisecond))
 	}
 	slog.Debug("remote sink: all chunks uploaded", "graph", result.GraphName, "branch", result.CurrentBranch,
-		"epoch", epoch, "chunks", len(chunks), "dur", time.Since(uploadStart).Round(time.Millisecond))
+		"epoch", epoch, "chunks", len(reqs), "dur", time.Since(uploadStart).Round(time.Millisecond))
 
 	finReq := connect.NewRequest(&knowledgev1.FinalizeRequest{
 		Epoch:         epoch,

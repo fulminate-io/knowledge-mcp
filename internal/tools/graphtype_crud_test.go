@@ -105,7 +105,6 @@ func (d graphTypeTestDeps) Embedder() embed.BinaryEmbedder               { retur
 func (d graphTypeTestDeps) BackendResolver() BackendResolver             { return nil }
 func (d graphTypeTestDeps) GraphCaller() GraphCaller                     { return nil }
 func (d graphTypeTestDeps) LocalGraphCaller() GraphCaller                { return nil }
-func (d graphTypeTestDeps) RepoResolver() *RepoResolver                  { return nil }
 func (d graphTypeTestDeps) SegmentManager() SegmentSearcher              { return nil }
 func (d graphTypeTestDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
 func (d graphTypeTestDeps) SegmentShipper() SegmentShipper               { return nil }

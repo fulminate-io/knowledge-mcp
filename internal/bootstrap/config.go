@@ -13,11 +13,58 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/profiling"
 )
+
+// defaultWebOrigins is the allow-list applied to --web-origin when the flag is
+// absent: the canonical Fulminate agent hosts (prod app at the root domain +
+// the dev host). Restricted on purpose — never widened to '*' (see
+// Config.AllowedWebOrigins / corsMiddleware).
+var defaultWebOrigins = []string{"https://fulminate.io", "https://dev.fulminate.io"}
+
+// csvOrigins is a flag.Value backing the --web-origin flag. There is no
+// []string flag in the std flag package, so it accepts a comma-separated list
+// and splits it into the bound []string. Registering it via fs.Var keeps the
+// flag's definition (and its CSV split) centralized in registerConfigFlags so
+// it lands identically on every FlagSet that shares that registration
+// (ParseFlags + runServe), and the doc generator renders the default verbatim.
+// An explicit --web-origin REPLACES the default list (it does not append).
+type csvOrigins struct {
+	target *[]string
+	set    bool
+}
+
+// String renders the current value for the flag package's default/usage
+// printing. A nil/empty target prints the empty string.
+func (c *csvOrigins) String() string {
+	if c == nil || c.target == nil {
+		return ""
+	}
+	return strings.Join(*c.target, ",")
+}
+
+// Set parses a comma-separated --web-origin value, trimming surrounding
+// whitespace per entry and dropping empties. The first Set REPLACES the
+// default list; a repeated flag appends to the in-progress override.
+func (c *csvOrigins) Set(v string) error {
+	parsed := make([]string, 0, 4)
+	for part := range strings.SplitSeq(v, ",") {
+		if trimmed := strings.TrimSpace(part); trimmed != "" {
+			parsed = append(parsed, trimmed)
+		}
+	}
+	if !c.set {
+		*c.target = parsed
+		c.set = true
+		return nil
+	}
+	*c.target = append(*c.target, parsed...)
+	return nil
+}
 
 // programName returns os.Args[0] verbatim so the FlagSet's printed
 // program name matches what Go's default flag.CommandLine emits
@@ -56,7 +103,14 @@ type Config struct {
 	// exists. The result is fail-closed: no routed op can reach a fulminate.io
 	// host regardless of credentials present. Capability reduction only — the
 	// cloud endpoint is never overridden. Populated from the --no-auth flag.
-	NoAuth               bool
+	NoAuth bool
+	// AllowedWebOrigins is the allow-list of browser web origins permitted to
+	// make cross-origin (CORS) requests to the daemon's loopback streamable-HTTP
+	// MCP endpoint. The corsMiddleware reflects a request's Origin only when it
+	// appears in this list — it is NEVER widened to '*'. Populated from the
+	// --web-origin flag, defaulting to the canonical Fulminate agent hosts so a
+	// browser page served from those https origins can fetch the loopback daemon.
+	AllowedWebOrigins    []string
 	LogLevel             string
 	LogFile              string
 	NoWorkerRuntime      bool
@@ -101,6 +155,12 @@ func registerConfigFlags(fs *flag.FlagSet, cfg *Config) {
 	fs.StringVar(&cfg.AuthToken, "auth-token", os.Getenv("KNOWLEDGE_AUTH_TOKEN"), "Opaque machine bearer token presented on every request, bypassing the interactive browser login and the platform keychain. Defaults to the KNOWLEDGE_AUTH_TOKEN environment variable; an explicit flag value wins. Empty leaves the interactive login path intact.")
 	fs.StringVar(&cfg.LogLevel, "log-level", "info", "Log level: debug, info, warn, error")
 	fs.StringVar(&cfg.LogFile, "log-file", "", "Log file path (logs to both stderr and file when set)")
+	// Pre-apply the default allow-list so the no-flag path (and the
+	// never-parsed doc sinks) carry the canonical origins; an explicit
+	// --web-origin replaces this list via csvOrigins.Set. Copy the package
+	// default so callers cannot mutate the shared slice through cfg.
+	cfg.AllowedWebOrigins = append([]string(nil), defaultWebOrigins...)
+	fs.Var(&csvOrigins{target: &cfg.AllowedWebOrigins}, "web-origin", "Comma-separated allow-list of browser web origins permitted to make cross-origin (CORS) requests to the daemon's loopback streamable-HTTP MCP endpoint. The Origin is reflected back only when it matches an entry; the list is never widened to '*'. An explicit value replaces the default (https://fulminate.io,https://dev.fulminate.io). Repeatable.")
 	fs.BoolVar(&cfg.NoAuth, "no-auth", false, "Force the client local-only: suppress BOTH cloud-selection triggers at the Router.pick chokepoint (machineAuth forced false WITHOUT consulting --auth-token/KNOWLEDGE_AUTH_TOKEN, and the keychain replaced with a no-op store so a live `knowledge login` refresh token reports IsLoggedIn==false). Fail-closed: no routed op can reach a fulminate.io host regardless of credentials present. Capability reduction only — the cloud endpoint is never overridden. Use for offline/OSS mode and as the safety floor for the bug-hunt harness.")
 	fs.BoolVar(&cfg.NoWorkerRuntime, "no-worker-runtime", false, "Skip dream Runner wiring. Run knowledge purely to serve/exercise the graph (e.g. the bench harness) without starting its own background worker runtime.")
 	fs.BoolVar(&cfg.NoPropagationRuntime, "no-propagation-runtime", false, "Skip client-side PropagationLoop wiring. The MCP daemon continues to serve and reflective tools still run on demand, but the hourly background cluster detection + valence propagation stops. Use for offline development or to silence background log noise.")

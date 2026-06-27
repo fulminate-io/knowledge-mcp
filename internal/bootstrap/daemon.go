@@ -352,7 +352,7 @@ func runServe(args []string) error {
 		LoggedIn:        c.router.LoggedIn,
 	})
 
-	hs := graphclient.NewHTTPServer(c.mcpClient, *httpPort)
+	hs := graphclient.NewHTTPServer(c.mcpClient, *httpPort, cfg.AllowedWebOrigins)
 
 	// Bind-first (bind-first startup): the MCPClient + HTTPServer above reference c only via
 	// func-field injection (InterceptChain=c.runInterceptChain,

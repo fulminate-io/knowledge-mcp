@@ -40,7 +40,6 @@ func (d *tailRoutingDeps) Embedder() embed.BinaryEmbedder               { return
 func (d *tailRoutingDeps) BackendResolver() BackendResolver             { return nil }
 func (d *tailRoutingDeps) GraphCaller() GraphCaller                     { return d.routed }
 func (d *tailRoutingDeps) LocalGraphCaller() GraphCaller                { return d.local }
-func (d *tailRoutingDeps) RepoResolver() *RepoResolver                  { return nil }
 func (d *tailRoutingDeps) SegmentManager() SegmentSearcher              { return nil }
 func (d *tailRoutingDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
 func (d *tailRoutingDeps) SegmentShipper() SegmentShipper               { return nil }

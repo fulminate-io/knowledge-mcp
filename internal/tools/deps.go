@@ -323,16 +323,6 @@ type LocalLiveness interface {
 //     cloud when logged in.) Returns nil only when no local server is wired
 //     (cloud-first user); those callers' existing nil-guards surface the
 //     degraded-mode error.
-//   - RepoResolver: client-side cwd → code-graph-name resolver used by
-//     the InjectRepoIfCodeGraph intercept. One resolver
-//     per MCP session; a sync.Mutex + loaded flag inside the resolver
-//     gates the underlying code-graph catalog read so a 100-call burst
-//     still produces exactly one wire read once it succeeds (a failed
-//     load is not cached and is retried). Returns nil only in test
-//     harnesses that don't exercise repo injection — InjectRepoIfCodeGraph
-//     falls through (returns false) on nil, which is safe because the
-//     server-side handlers already reject empty repo: with a typed
-//     error after Phase 1.
 type ClientDeps interface {
 	LocalLiveness() LocalLiveness
 	Sink() collector.Sink
@@ -358,7 +348,6 @@ type ClientDeps interface {
 	BackendResolver() BackendResolver
 	GraphCaller() GraphCaller
 	LocalGraphCaller() GraphCaller
-	RepoResolver() *RepoResolver
 	// SegmentManager returns the SAME *segmentdist.Manager the client holds (one
 	// instance — duplicate engines would double memory and miss the producer's
 	// loaded segments). The read Manager is constructed UNCONDITIONALLY whenever a

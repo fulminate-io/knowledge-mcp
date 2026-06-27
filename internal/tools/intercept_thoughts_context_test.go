@@ -118,7 +118,6 @@ func (d ctxPackDeps) Embedder() embed.BinaryEmbedder               { return d.em
 func (d ctxPackDeps) BackendResolver() BackendResolver             { return nil }
 func (d ctxPackDeps) GraphCaller() GraphCaller                     { return d.gc }
 func (d ctxPackDeps) LocalGraphCaller() GraphCaller                { return d.gc }
-func (d ctxPackDeps) RepoResolver() *RepoResolver                  { return nil }
 func (d ctxPackDeps) SegmentManager() SegmentSearcher              { return d.segMgr }
 func (d ctxPackDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
 func (d ctxPackDeps) SegmentShipper() SegmentShipper               { return nil }

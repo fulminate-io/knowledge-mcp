@@ -31,8 +31,12 @@ func handleAstReplace(ctx context.Context, deps ClientDeps, a astArgs) kgtools.T
 	if _, ok := treesitter.LanguageGrammar(lang); !ok {
 		return errorResult("unsupported language: " + a.Language)
 	}
-	if strings.TrimSpace(a.Replacement) == "" {
-		return errorResult("operation=replace requires replacement")
+	// A nil replacement means the arg was omitted → error. An EXPLICIT empty
+	// string is allowed and DELETES the matched ranges (the template interpolates
+	// to "", splicing nothing). dry_run defaults TRUE, so a deletion previews its
+	// unified diff before any write.
+	if a.Replacement == nil {
+		return errorResult(`operation=replace requires replacement (pass replacement:"" to DELETE matched ranges)`)
 	}
 
 	patterns, perr := buildAstPatterns(a)
@@ -45,7 +49,7 @@ func handleAstReplace(ctx context.Context, deps ClientDeps, a astArgs) kgtools.T
 		return errorResult("parse where: " + werr.Error())
 	}
 
-	repoDir, derr := resolveRepoDir(deps)
+	repoDir, derr := resolveRepoDir(ctx, deps, a.Repo)
 	if derr != nil {
 		return errorResult(derr.Error())
 	}
@@ -57,7 +61,7 @@ func handleAstReplace(ctx context.Context, deps ClientDeps, a astArgs) kgtools.T
 	}
 
 	dryRun := a.DryRun == nil || bool(*a.DryRun)
-	res, rerr := ast.ApplyReplace(ctx, repoDir, lang, raws, a.Replacement, dryRun)
+	res, rerr := ast.ApplyReplace(ctx, repoDir, lang, raws, *a.Replacement, dryRun)
 	if rerr != nil {
 		return errorResult("replace: " + rerr.Error())
 	}

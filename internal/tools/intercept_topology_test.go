@@ -50,14 +50,11 @@ func TestInterceptTopology_UnknownAnalyzer_Errors(t *testing.T) {
 	assert.Contains(t, res.Content[0].Text, "unknown analyzer")
 }
 
-// TestInterceptTopology_DeadCode_NoRepo_Errors verifies that without
-// explicit repo: and without a resolver match, the intercept errors
-// out before any wire activity.
+// TestInterceptTopology_DeadCode_NoRepo_Errors verifies that without an
+// explicit repo: the intercept errors out before any wire activity (repo is
+// required; it is never inferred from cwd).
 func TestInterceptTopology_DeadCode_NoRepo_Errors(t *testing.T) {
-	deps := &repoTestDeps{
-		rootDir:  t.TempDir(),
-		resolver: buildResolver(t, "other"),
-	}
+	deps := &repoTestDeps{rootDir: t.TempDir()}
 	handled, res := InterceptTopology(context.Background(), deps,
 		kgtools.CallToolParams{Name: "query", Arguments: json.RawMessage(`{"mode":"topology","algorithm":"dead_code","graph":"code"}`)})
 	assert.True(t, handled)
@@ -74,8 +71,7 @@ func TestInterceptTopology_DeadCode_NonGoRepo_ReturnsEmptyFindings(t *testing.T)
 	// RunDeadCode returns (nil, nil).
 	dir := t.TempDir()
 	deps := &repoTestDeps{
-		rootDir:  dir,
-		resolver: buildResolver(t, "knowledge"),
+		rootDir: dir,
 		// GraphCaller must be non-nil so the intercept gets past the
 		// "graph caller unavailable" guard. runRTA aborts before any
 		// gc.Call is issued in this test, so the fake's Call body never

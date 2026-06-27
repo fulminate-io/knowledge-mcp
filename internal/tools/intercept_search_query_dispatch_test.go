@@ -193,7 +193,6 @@ func (d *interceptDeps) Embedder() embed.BinaryEmbedder               { return d
 func (d *interceptDeps) BackendResolver() BackendResolver             { return nil }
 func (d *interceptDeps) GraphCaller() GraphCaller                     { return d.gc }
 func (d *interceptDeps) LocalGraphCaller() GraphCaller                { return d.gc }
-func (d *interceptDeps) RepoResolver() *RepoResolver                  { return nil }
 func (d *interceptDeps) SegmentManager() SegmentSearcher              { return d.segMgr }
 func (d *interceptDeps) SegmentVectorResolver() SegmentVectorResolver { return d.segRes }
 func (d *interceptDeps) SegmentShipper() SegmentShipper               { return nil }
