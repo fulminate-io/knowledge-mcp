@@ -5,6 +5,7 @@ package thought
 import (
 	"context"
 	"sort"
+	"time"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 )
@@ -109,7 +110,9 @@ func BlindSpotInfluenceVector(ctx context.Context, gc Caller, thoughtIDs []strin
 	if len(thoughtIDs) == 0 {
 		return nil
 	}
-	matrix, err := BuildTrustMatrix(ctx, gc, thoughtIDs)
+	// One now for this pass: the recency-weighted SelfTrust diagonal.
+	now := time.Now()
+	matrix, err := BuildTrustMatrix(ctx, gc, thoughtIDs, now)
 	if err != nil {
 		return nil
 	}
@@ -132,9 +135,10 @@ func ReflectSummary(ctx context.Context, gc Caller, clusters []ThoughtCluster) T
 
 	if summary.TotalThoughts > 0 {
 		charges := fetchChargesFor(ctx, gc, thoughtIDs)
+		now := time.Now()
 		var totalV, totalM float64
 		for _, id := range thoughtIDs {
-			props := computePropertiesFromCharges(charges[id])
+			props := computePropertiesFromCharges(charges[id], now)
 			totalV += props.Valence
 			totalM += props.Magnitude
 		}

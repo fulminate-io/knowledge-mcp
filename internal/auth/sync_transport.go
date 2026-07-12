@@ -47,11 +47,21 @@ type TransportOption func(*Transport)
 // inside this window on a reasonable connection.
 const defaultSyncClientTimeout = 5 * time.Minute
 
+// Route prefixes for the two control channels the Transport speaks. The
+// server/agent register the graph-sync endpoints under /v1/sync/ and the agent
+// segment endpoints under /v1/segments/; both share the same Bearer +
+// 401-refresh core (sendWithAuthBytes/issueBytes), which the prefix parametrizes.
+const (
+	syncPathPrefix     = "/v1/sync/"
+	segmentsPathPrefix = "/v1/segments/"
+)
+
 // NewSyncTransport constructs a [Transport] targeting the given API
 // endpoint. endpoint must be the scheme+host+port without a trailing slash
-// and without a /v1 suffix — the Transport appends /v1/sync/... to each
-// route. source supplies the bearer credential (OAuth JWT with `sync`
-// scope or the legacy knowledge_token).
+// and without a /v1 suffix — the Transport appends the route prefix
+// (/v1/sync/... for graph sync, /v1/segments/... for the segment control
+// channel) to each route. source supplies the bearer credential (OAuth JWT
+// with `sync` scope or the legacy knowledge_token).
 func NewSyncTransport(endpoint string, source TokenSource, opts ...TransportOption) *Transport {
 	t := &Transport{
 		endpoint: endpoint,
@@ -88,13 +98,13 @@ func (t *Transport) PushGraph(
 		return fmt.Errorf("auth: push: graphType and name required")
 	}
 	path := "push/" + graphType + "/" + name
-	resp, err := t.sendWithAuthBytes(ctx, http.MethodPost, path, body)
+	resp, err := t.sendWithAuthBytes(ctx, http.MethodPost, syncPathPrefix, path, body)
 	if err != nil {
 		return fmt.Errorf("auth: push %s/%s: %w", graphType, name, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return readHTTPError(resp, path)
+		return readHTTPError(resp, syncPathPrefix+path)
 	}
 	// Drain so the connection can be reused.
 	_, _ = io.Copy(io.Discard, resp.Body)
@@ -116,31 +126,54 @@ func (t *Transport) PushGraph(
 // a non-2xx surfaces as a *SyncHTTPError so callers get the same auth-failure
 // classification PushGraph provides.
 func (t *Transport) SyncControlJSON(ctx context.Context, path string, reqBody []byte) ([]byte, error) {
-	resp, err := t.sendWithAuthBytes(ctx, http.MethodPost, path, reqBody)
+	return t.controlJSON(ctx, syncPathPrefix, "sync", path, reqBody)
+}
+
+// SegmentControlJSON issues a Bearer-authenticated POST to a /v1/segments/<path>
+// agent control-plane endpoint (presign / presign-batch / fetch / fetch-batch /
+// manifest/publish / manifest/read) with the given JSON request body and returns
+// the raw JSON response body on a 2xx. It is the segment-distribution counterpart
+// of [Transport.SyncControlJSON]: same Bearer + 401-refresh core, only the route
+// prefix differs (/v1/segments/ vs /v1/sync/). The GCS segment source (Ship /
+// List / Fetch / PublishManifest) speaks the agent through this method while the
+// bulk (encrypted) segment blobs go straight to/from GCS off-band.
+func (t *Transport) SegmentControlJSON(ctx context.Context, path string, reqBody []byte) ([]byte, error) {
+	return t.controlJSON(ctx, segmentsPathPrefix, "segment", path, reqBody)
+}
+
+// controlJSON is the shared body behind SyncControlJSON and SegmentControlJSON:
+// POST reqBody under the given route prefix, surface a non-2xx as a
+// *SyncHTTPError, and return the raw 2xx JSON body verbatim. label names the
+// channel in wrapped errors ("sync" / "segment").
+func (t *Transport) controlJSON(ctx context.Context, prefix, label, path string, reqBody []byte) ([]byte, error) {
+	resp, err := t.sendWithAuthBytes(ctx, http.MethodPost, prefix, path, reqBody)
 	if err != nil {
-		return nil, fmt.Errorf("auth: sync control %s: %w", path, err)
+		return nil, fmt.Errorf("auth: %s control %s: %w", label, path, err)
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return nil, readHTTPError(resp, path)
+		return nil, readHTTPError(resp, prefix+path)
 	}
 	out, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("auth: read sync control %s response: %w", path, err)
+		return nil, fmt.Errorf("auth: read %s control %s response: %w", label, path, err)
 	}
 	return out, nil
 }
 
-// sendWithAuthBytes issues a single request (method + path + body) with
+// sendWithAuthBytes issues a single request (method + prefix + path + body) with
 // the current Bearer credential. On HTTP 401 from a refreshing token
-// source it force-refreshes and retries once. Used by PushGraph; kept as a
-// standalone helper so the token-refresh logic stays isolated from the route.
+// source it force-refreshes and retries once. Used by PushGraph and both control
+// channels (SyncControlJSON / SegmentControlJSON); kept as a standalone helper so
+// the token-refresh logic stays isolated from the route (the prefix parameter
+// selects /v1/sync/ vs /v1/segments/).
 //
 // Returns the raw *http.Response; the caller owns the body lifecycle.
 // The POST-with-body payload bytes are sent as application/octet-stream.
 func (t *Transport) sendWithAuthBytes(
 	ctx context.Context,
 	method string,
+	prefix string,
 	path string,
 	body []byte,
 ) (*http.Response, error) {
@@ -150,7 +183,7 @@ func (t *Transport) sendWithAuthBytes(
 			method, path, err)
 	}
 
-	resp, err := t.issueBytes(ctx, method, path, body, token)
+	resp, err := t.issueBytes(ctx, method, prefix, path, body, token)
 	if err != nil {
 		return nil, err
 	}
@@ -173,7 +206,7 @@ func (t *Transport) sendWithAuthBytes(
 		return nil, fmt.Errorf("auth: force-refresh after 401 on %s %s: %w",
 			method, path, refreshErr)
 	}
-	return t.issueBytes(ctx, method, path, body, newToken)
+	return t.issueBytes(ctx, method, prefix, path, body, newToken)
 }
 
 // issueBytes constructs and sends one request with the given bearer
@@ -183,11 +216,12 @@ func (t *Transport) sendWithAuthBytes(
 func (t *Transport) issueBytes(
 	ctx context.Context,
 	method string,
+	prefix string,
 	path string,
 	body []byte,
 	token string,
 ) (*http.Response, error) {
-	url := t.endpoint + "/v1/sync/" + path
+	url := t.endpoint + prefix + path
 	var bodyReader io.Reader
 	if body != nil {
 		bodyReader = bytes.NewReader(body)
@@ -228,9 +262,10 @@ func readHTTPError(resp *http.Response, path string) error {
 	}
 }
 
-// SyncHTTPError is returned when a /v1/sync/* endpoint returns a non-2xx
-// status code. The Body field holds up to [maxErrorBodyBytes] of the raw
-// server response, truncated to avoid runaway log growth. Callers can
+// SyncHTTPError is returned when a /v1/sync/* or /v1/segments/* endpoint returns
+// a non-2xx status code. Path is the full route (prefix included, e.g.
+// "/v1/segments/presign"). The Body field holds up to [maxErrorBodyBytes] of the
+// raw server response, truncated to avoid runaway log growth. Callers can
 // errors.As() on this type to inspect status codes — common checks are
 // StatusCode == 401 (auth rejected even after refresh) and 403 (scope
 // missing, cross-account denial).
@@ -242,6 +277,6 @@ type SyncHTTPError struct {
 
 // Error implements the error interface.
 func (e *SyncHTTPError) Error() string {
-	return fmt.Sprintf("auth: /v1/sync/%s: HTTP %d: %s",
+	return fmt.Sprintf("auth: %s: HTTP %d: %s",
 		e.Path, e.StatusCode, e.Body)
 }

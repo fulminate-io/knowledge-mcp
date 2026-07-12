@@ -99,7 +99,7 @@ func TestMultiWriterE2ELifecycle(t *testing.T) {
 
 	// RESTART: writer 1 restarts (fresh Manager, SAME writer_id + cache dir), reloads,
 	// re-publishes — reaps nothing, and its reloaded engine still recalls the corpus.
-	r1 := restartFleetMember(t, mgrs[1].caller, 1, mgrs[1].cacheDir)
+	r1 := restartFleetMember(t, svc, 1, mgrs[1].cacheDir)
 	r1DM := r1.managerFor(gt, name)
 	require.NoError(t, r1DM.load(ctx))
 	_, err := r1DM.shipAndPublish(ctx, nil, r1DM.locallyShipped)
@@ -127,7 +127,7 @@ func TestMultiWriterE2ELifecycle(t *testing.T) {
 	// history. Compute the expected union of distinct ids across all live manifests +
 	// writer 2's pinned manifest, and assert the server count equals it.
 	expected := map[string]struct{}{}
-	for _, mgr := range []*Manager{mgrs[0], r1, mgrs[2]} {
+	for _, mgr := range []*fleetMember{mgrs[0], r1, mgrs[2]} {
 		for _, id := range writerManifest(svc, target, mgr.writerID, "hnsw") {
 			expected[id] = struct{}{}
 		}

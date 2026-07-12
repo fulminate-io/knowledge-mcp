@@ -6,6 +6,7 @@ import (
 	"context"
 	"math"
 	"sort"
+	"time"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
@@ -83,9 +84,10 @@ func ReflectTensions(ctx context.Context, gc Caller) ([]TensionReport, error) {
 	nodeByID := fetchNodesByIDs(ctx, gc, nodeIDs)
 	charges := fetchChargesFor(ctx, gc, nodeIDs)
 
+	now := time.Now()
 	propsCache := make(map[string]ThoughtProperties, len(nodeIDs))
 	for _, id := range nodeIDs {
-		propsCache[id] = computePropertiesFromCharges(charges[id])
+		propsCache[id] = computePropertiesFromCharges(charges[id], now)
 	}
 
 	candidates := buildTensionCandidates(humanEdges, idSet, propsCache, nodeByID, charges)

@@ -31,7 +31,7 @@ func TestPublishSubsetGate(t *testing.T) {
 
 		// Ship a real corpus so the coverage denominator is armed.
 		const corpusSegs = 3
-		mgr := NewManager(gc, t.TempDir(), 0)
+		mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 		for b := range corpusSegs {
 			batch := hnswVecDocs(searchCorpusN)
 			for i := range batch {
@@ -59,7 +59,7 @@ func TestPublishSubsetGate(t *testing.T) {
 		ctx := context.Background()
 
 		const corpusSegs = 3
-		mgr := NewManager(gc, t.TempDir(), 0)
+		mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 		for b := range corpusSegs {
 			batch := hnswVecDocs(searchCorpusN)
 			for i := range batch {
@@ -92,7 +92,7 @@ func TestPublishSubsetGate(t *testing.T) {
 
 		// Ship a large corpus (>= the coverage floor) so the ratio is meaningful.
 		const corpusSegs = 4
-		mgr := NewManager(gc, t.TempDir(), 0)
+		mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 		for b := range corpusSegs {
 			batch := hnswVecDocs(searchCorpusN)
 			for i := range batch {
@@ -105,7 +105,7 @@ func TestPublishSubsetGate(t *testing.T) {
 
 		// A FRESH manager that has NOT loaded the corpus: its resident set is tiny
 		// (zero / one tail) relative to the shipped corpus → below the coverage ratio.
-		fresh := NewManager(gc, t.TempDir(), 0)
+		fresh := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 		fdm := fresh.managerFor(kgtypes.GraphCode, "ratioRepo")
 		// Single shipped id as a stand-in resident live set — far below the ratio.
 		var anyID searchengine.SegmentID

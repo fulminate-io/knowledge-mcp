@@ -414,8 +414,8 @@ func externalChargeStats(clusterA ThoughtCluster, clusterB string, cache thought
 // personality scalars applied. The cluster-membership map is read
 // from the prebuilt nodeByID map (one gc.Call("query", {ids:})
 // upstream).
-func BuildTrustMatrixWithPersonality(ctx context.Context, gc Caller, thoughtIDs []string, profile PersonalityProfile, nodeByID map[string]*knowledgev1.Node) (TrustMatrix, error) {
-	matrix, err := BuildTrustMatrix(ctx, gc, thoughtIDs)
+func BuildTrustMatrixWithPersonality(ctx context.Context, gc Caller, thoughtIDs []string, profile PersonalityProfile, nodeByID map[string]*knowledgev1.Node, now time.Time) (TrustMatrix, error) {
+	matrix, err := BuildTrustMatrix(ctx, gc, thoughtIDs, now)
 	if err != nil {
 		return matrix, err
 	}

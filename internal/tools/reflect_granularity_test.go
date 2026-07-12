@@ -82,6 +82,7 @@ func reflectGranularityDeps(gc *reflectFakeCaller) reflectTestDeps {
 func (d reflectTestDeps) LocalLiveness() LocalLiveness                 { return nil }
 func (d reflectTestDeps) Sink() collector.Sink                         { return nil }
 func (d reflectTestDeps) RootDir() string                              { return "" }
+func (d reflectTestDeps) UsageAnalyzer() UsageAnalyzerAPI              { return nil }
 func (d reflectTestDeps) WorkerRuntime() WorkerRuntimeAPI              { return nil }
 func (d reflectTestDeps) WorkerReady() bool                            { return true }
 func (d reflectTestDeps) PropReady() bool                              { return true }

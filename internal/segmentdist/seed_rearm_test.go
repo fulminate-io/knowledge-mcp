@@ -14,22 +14,18 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
 
-// failFirstListCaller wraps a real segmentCaller and fails the FIRST ListDelta call
-// (a transient connect.CodeUnavailable — slow/down server at the moment of the
-// seed), then passes every subsequent call through. It is the fail-FIRST mirror of
-// failAfterWarmCaller: the seed's List(0) trips on call #1 and recovers on call #2.
-type failFirstListCaller struct {
-	inner segmentCaller
+// failFirstListSource wraps a segmentSource and fails the FIRST List call (a
+// transient connect.CodeUnavailable — slow/down server at the moment of the seed),
+// then passes every subsequent call through. It is the fail-FIRST mirror of
+// failAfterWarmSource: the seed's List(0) trips on call #1 and recovers on call #2.
+type failFirstListSource struct {
+	inner segmentSource
 
 	mu        sync.Mutex
 	listCalls int
 }
 
-func (c *failFirstListCaller) Ship(ctx context.Context, req *knowledgev1.ShipRequest) (*knowledgev1.ShipResponse, error) {
-	return c.inner.Ship(ctx, req)
-}
-
-func (c *failFirstListCaller) ListDelta(ctx context.Context, req *knowledgev1.ListDeltaRequest) (*knowledgev1.ListDeltaResponse, error) {
+func (c *failFirstListSource) List(ctx context.Context, sinceGen uint64) ([]searchengine.SegmentMeta, error) {
 	c.mu.Lock()
 	c.listCalls++
 	first := c.listCalls == 1
@@ -37,22 +33,30 @@ func (c *failFirstListCaller) ListDelta(ctx context.Context, req *knowledgev1.Li
 	if first {
 		return nil, connect.NewError(connect.CodeUnavailable, context.DeadlineExceeded)
 	}
-	return c.inner.ListDelta(ctx, req)
+	return c.inner.List(ctx, sinceGen)
 }
 
-func (c *failFirstListCaller) Fetch(ctx context.Context, req *knowledgev1.FetchRequest) (*knowledgev1.FetchResponse, error) {
-	return c.inner.Fetch(ctx, req)
+func (c *failFirstListSource) Fetch(ctx context.Context, ids []searchengine.SegmentID) ([]searchengine.SegmentBlob, error) {
+	return c.inner.Fetch(ctx, ids)
 }
 
-func (c *failFirstListCaller) Prune(ctx context.Context, req *knowledgev1.PruneRequest) (*knowledgev1.PruneResponse, error) {
-	return c.inner.Prune(ctx, req)
+func (c *failFirstListSource) Ship(ctx context.Context, blobs []*knowledgev1.SegmentBlobProto) ([]*knowledgev1.SegmentMetaProto, error) {
+	return c.inner.Ship(ctx, blobs)
 }
 
-func (c *failFirstListCaller) Publish(ctx context.Context, req *knowledgev1.PublishRequest) (*knowledgev1.PublishResponse, error) {
-	return c.inner.Publish(ctx, req)
+func (c *failFirstListSource) Prune(ids []searchengine.SegmentID) (int, error) {
+	return c.inner.Prune(ids)
 }
 
-var _ segmentCaller = (*failFirstListCaller)(nil)
+func (c *failFirstListSource) PublishManifest(format string, digests []segmentDigest) (int, error) {
+	return c.inner.PublishManifest(format, digests)
+}
+
+func (c *failFirstListSource) verifiesCompletenessServerSide() bool {
+	return c.inner.verifiesCompletenessServerSide()
+}
+
+var _ segmentSource = (*failFirstListSource)(nil)
 
 // TestEnsureShippedSeeded_RetriesAfterTransientFailure is the C3 regression: a
 // TRANSIENT seed List(0) failure must NOT permanently disable shipping. The first
@@ -65,15 +69,15 @@ var _ segmentCaller = (*failFirstListCaller)(nil)
 // lifetime. GREEN after re-arm: the seed only latches on List(0) SUCCESS, so the
 // second ship retries and ships.
 func TestEnsureShippedSeeded_RetriesAfterTransientFailure(t *testing.T) {
-	_, gc := newSegmentHarness(t)
 	target := &knowledgev1.GraphSelector{Graph: "code", Repo: "seedrearm"}
 	ctx := context.Background()
 
-	caller := &failFirstListCaller{inner: gc}
+	svc := newSharedServerFake()
+	src := &failFirstListSource{inner: svc.viewFor(target, "")}
 	eng := newMockEngine()
 	require.NoError(t, eng.Add([]searchengine.Document{doc("d1", "alpha")}))
 	require.NoError(t, eng.Add([]searchengine.Document{doc("d2", "beta")}))
-	mgr, _ := buildManager(eng, caller, target, t.TempDir())
+	mgr := newDistManager(eng, src, newDiskSegmentCache(t.TempDir(), 0), target, "")
 
 	// First ship: the seed's List(0) trips on the transient failure → ship bails.
 	_, err := mgr.ship(ctx, mgr.locallyShipped)
@@ -86,8 +90,6 @@ func TestEnsureShippedSeeded_RetriesAfterTransientFailure(t *testing.T) {
 	require.NoError(t, err, "a ship after a transient seed failure must retry the seed and succeed")
 
 	// The corpus actually landed on the server (the seed re-armed AND the ship ran).
-	src := newRPCSegmentSource(gc, target, "", ctx)
-	metas, listErr := src.List(ctx, 0)
-	require.NoError(t, listErr)
+	metas := svc.listDelta(target, "", 0)
 	require.Len(t, metas, 2, "both segments must be shipped after the re-armed seed")
 }

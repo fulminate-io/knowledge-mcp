@@ -17,8 +17,8 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
 
-// loadBoundCaller is an in-memory segmentCaller that backs ListDelta + Fetch from
-// a seeded blob set and instruments Fetch for the peak-memory-bound assertions:
+// loadBoundSource is an in-memory segmentSource that backs List + Fetch from a
+// seeded blob set and instruments Fetch for the peak-memory-bound assertions:
 //   - records the id count of every Fetch call (maxFetchIDs),
 //   - optionally rejects any Fetch whose summed content bytes exceed byteCeiling
 //     with connect.CodeResourceExhausted (the server byte-ceiling stand-in), which
@@ -26,7 +26,7 @@ import (
 //
 // Each seeded blob carries a real byte payload so the byte-ceiling simulation is
 // faithful (the cap is about bytes, not ids).
-type loadBoundCaller struct {
+type loadBoundSource struct {
 	mu          sync.Mutex
 	blobs       []*knowledgev1.SegmentBlobProto // generation-ordered
 	byteCeiling int                             // 0 = never reject
@@ -34,27 +34,22 @@ type loadBoundCaller struct {
 	fetchCalls  int
 }
 
-func (c *loadBoundCaller) Ship(_ context.Context, _ *knowledgev1.ShipRequest) (*knowledgev1.ShipResponse, error) {
-	return &knowledgev1.ShipResponse{}, nil
-}
-
-func (c *loadBoundCaller) ListDelta(_ context.Context, req *knowledgev1.ListDeltaRequest) (*knowledgev1.ListDeltaResponse, error) {
+func (c *loadBoundSource) List(_ context.Context, sinceGen uint64) ([]searchengine.SegmentMeta, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	var metas []*knowledgev1.SegmentMetaProto
+	var metas []searchengine.SegmentMeta
 	for _, b := range c.blobs {
-		if b.GetGeneration() > req.GetSinceGen() {
-			metas = append(metas, &knowledgev1.SegmentMetaProto{
-				Id: b.GetId(), Format: b.GetFormat(), Generation: b.GetGeneration(),
+		if b.GetGeneration() > sinceGen {
+			metas = append(metas, searchengine.SegmentMeta{
+				ID: b.GetId(), Format: b.GetFormat(), Generation: b.GetGeneration(),
 			})
 		}
 	}
-	sort.Slice(metas, func(i, j int) bool { return metas[i].GetGeneration() < metas[j].GetGeneration() })
-	return &knowledgev1.ListDeltaResponse{Metas: metas}, nil
+	sort.Slice(metas, func(i, j int) bool { return metas[i].Generation < metas[j].Generation })
+	return metas, nil
 }
 
-func (c *loadBoundCaller) Fetch(_ context.Context, req *knowledgev1.FetchRequest) (*knowledgev1.FetchResponse, error) {
-	ids := req.GetIds()
+func (c *loadBoundSource) Fetch(_ context.Context, ids []searchengine.SegmentID) ([]searchengine.SegmentBlob, error) {
 	c.mu.Lock()
 	c.fetchCalls++
 	if len(ids) > c.maxFetchIDs {
@@ -64,11 +59,11 @@ func (c *loadBoundCaller) Fetch(_ context.Context, req *knowledgev1.FetchRequest
 	for _, id := range ids {
 		want[id] = true
 	}
-	var out []*knowledgev1.SegmentBlobProto
+	var out []searchengine.SegmentBlob
 	var total int
 	for _, b := range c.blobs {
 		if want[b.GetId()] {
-			out = append(out, b)
+			out = append(out, blobFromProto(b))
 			total += len(b.GetBytes())
 		}
 	}
@@ -79,21 +74,25 @@ func (c *loadBoundCaller) Fetch(_ context.Context, req *knowledgev1.FetchRequest
 		return nil, connect.NewError(connect.CodeResourceExhausted,
 			fmt.Errorf("byte ceiling: %d bytes over %d", total, ceiling))
 	}
-	return &knowledgev1.FetchResponse{Blobs: out}, nil
+	return out, nil
 }
 
-func (c *loadBoundCaller) Prune(_ context.Context, _ *knowledgev1.PruneRequest) (*knowledgev1.PruneResponse, error) {
-	return &knowledgev1.PruneResponse{}, nil
+func (c *loadBoundSource) Ship(_ context.Context, _ []*knowledgev1.SegmentBlobProto) ([]*knowledgev1.SegmentMetaProto, error) {
+	return nil, nil
 }
 
-func (c *loadBoundCaller) Publish(_ context.Context, _ *knowledgev1.PublishRequest) (*knowledgev1.PublishResponse, error) {
-	return &knowledgev1.PublishResponse{}, nil
-}
+func (c *loadBoundSource) Prune(_ []searchengine.SegmentID) (int, error) { return 0, nil }
+
+func (c *loadBoundSource) PublishManifest(_ string, _ []segmentDigest) (int, error) { return 0, nil }
+
+func (c *loadBoundSource) verifiesCompletenessServerSide() bool { return false }
+
+var _ segmentSource = (*loadBoundSource)(nil)
 
 // seedMockSegments appends n mock-format segments (each a single-row mock segment
 // so the loader's engine can Decode + Import them) with ascending generations and
 // the given per-blob payload size. Returns the highest generation seeded.
-func (c *loadBoundCaller) seedMockSegments(t *testing.T, n, payloadBytes int) uint64 {
+func (c *loadBoundSource) seedMockSegments(t *testing.T, n, payloadBytes int) uint64 {
 	t.Helper()
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -117,10 +116,9 @@ func (c *loadBoundCaller) seedMockSegments(t *testing.T, n, payloadBytes int) ui
 	return maxGen
 }
 
-func newLoadBoundManager(t *testing.T, caller *loadBoundCaller) *distManager[mockQuery, mockStats] {
+func newLoadBoundManager(t *testing.T, src *loadBoundSource) *distManager[mockQuery, mockStats] {
 	t.Helper()
 	target := &knowledgev1.GraphSelector{Graph: "code", Repo: "peakbound"}
-	src := newRPCSegmentSource(caller, target, "", context.Background())
 	cache := newDiskSegmentCache(t.TempDir(), 0)
 	return newDistManager(newMockEngine(), src, cache, target, "")
 }
@@ -130,16 +128,16 @@ func newLoadBoundManager(t *testing.T, caller *loadBoundCaller) *distManager[moc
 // maxFetchSegmentIDs ids, AND every listed segment was imported (no loss across
 // sub-batches), AND importedGen advanced to the listed max.
 func TestLoadNeverExceedsFetchIDCap(t *testing.T) {
-	caller := &loadBoundCaller{}
+	src := &loadBoundSource{}
 	const m = 3*maxFetchSegmentIDs + 11 // M well over the cap, not a clean multiple
-	maxGen := caller.seedMockSegments(t, m, 16)
+	maxGen := src.seedMockSegments(t, m, 16)
 
-	mgr := newLoadBoundManager(t, caller)
+	mgr := newLoadBoundManager(t, src)
 	require.NoError(t, mgr.load(context.Background()))
 
-	require.LessOrEqual(t, caller.maxFetchIDs, maxFetchSegmentIDs,
+	require.LessOrEqual(t, src.maxFetchIDs, maxFetchSegmentIDs,
 		"no single Fetch may exceed the id cap")
-	require.Positive(t, caller.maxFetchIDs, "load must have Fetched the cold misses")
+	require.Positive(t, src.maxFetchIDs, "load must have Fetched the cold misses")
 
 	// No loss: every seeded segment is searchable (each row content is "aaaa...").
 	hits := mgr.engine.Search(mockQuery{term: "a"}, m+10)
@@ -147,22 +145,22 @@ func TestLoadNeverExceedsFetchIDCap(t *testing.T) {
 	require.Equal(t, maxGen, mgr.importedGen.Load(), "importedGen advances to the listed max after a complete load")
 }
 
-// TestLoadHalvesAndRetriesUnderByteCeiling drives a real load() against a caller
+// TestLoadHalvesAndRetriesUnderByteCeiling drives a real load() against a src
 // that rejects any Fetch whose summed bytes exceed a byte ceiling with
 // ResourceExhausted, with a count-capped chunk's bytes STARTING above the ceiling.
 // load() must halve+retry through fetchMisses, import EVERY listed id (no loss),
 // and advance importedGen to listedMaxGen ONLY after the complete fetch.
 func TestLoadHalvesAndRetriesUnderByteCeiling(t *testing.T) {
-	caller := &loadBoundCaller{}
+	src := &loadBoundSource{}
 	// Each blob ~ 1 KiB of content. A full count-capped chunk (256 ids) is ~256
 	// KiB; set the ceiling to 32 KiB so the first chunk is rejected and must halve
 	// several times until each sub-chunk's bytes fit.
 	const perBlob = 1 << 10 // 1 KiB
 	const m = 2 * maxFetchSegmentIDs
-	maxGen := caller.seedMockSegments(t, m, perBlob)
-	caller.byteCeiling = 32 << 10 // 32 KiB
+	maxGen := src.seedMockSegments(t, m, perBlob)
+	src.byteCeiling = 32 << 10 // 32 KiB
 
-	mgr := newLoadBoundManager(t, caller)
+	mgr := newLoadBoundManager(t, src)
 	require.NoError(t, mgr.load(context.Background()),
 		"load must halve+retry under the byte ceiling and complete")
 
@@ -178,12 +176,12 @@ func TestLoadHalvesAndRetriesUnderByteCeiling(t *testing.T) {
 // BEFORE Import/advance, and importedGen does NOT move — so the unfetched id stays
 // re-listable on the next load (no silent loss).
 func TestLoadSingleBlobOverCeilingDoesNotAdvance(t *testing.T) {
-	caller := &loadBoundCaller{}
+	src := &loadBoundSource{}
 	// One fat blob whose bytes alone exceed the ceiling, plus some normal ones.
 	const perBlob = 1 << 10 // 1 KiB normal
-	caller.seedMockSegments(t, 5, perBlob)
+	src.seedMockSegments(t, 5, perBlob)
 	// Make the LAST seeded blob enormous (over the ceiling on its own).
-	caller.mu.Lock()
+	src.mu.Lock()
 	fat := make([]byte, 64<<10) // 64 KiB content, well over the ceiling below
 	for j := range fat {
 		fat[j] = 'a'
@@ -191,13 +189,13 @@ func TestLoadSingleBlobOverCeilingDoesNotAdvance(t *testing.T) {
 	rows := []mockRow{{ID: searchengine.ExternalID("seg-fat"), Content: string(fat)}}
 	body, err := json.Marshal(rows)
 	require.NoError(t, err)
-	caller.blobs = append(caller.blobs, &knowledgev1.SegmentBlobProto{
+	src.blobs = append(src.blobs, &knowledgev1.SegmentBlobProto{
 		Id: "seg-fat", Format: "mock", Generation: 6, Bytes: body,
 	})
-	caller.mu.Unlock()
-	caller.byteCeiling = 8 << 10 // 8 KiB — the fat blob alone over-runs it
+	src.mu.Unlock()
+	src.byteCeiling = 8 << 10 // 8 KiB — the fat blob alone over-runs it
 
-	mgr := newLoadBoundManager(t, caller)
+	mgr := newLoadBoundManager(t, src)
 	require.Equal(t, uint64(0), mgr.importedGen.Load(), "precondition: cold loader")
 
 	err = mgr.load(context.Background())

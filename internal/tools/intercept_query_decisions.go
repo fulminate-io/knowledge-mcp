@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"strings"
 
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
@@ -65,6 +66,9 @@ func InterceptQueryDecisions(deps ClientDeps, params kgtools.CallToolParams) (bo
 		if err != nil {
 			return true, errorResult("search: " + err.Error())
 		}
+		if a.Format == "json" {
+			return true, decisionsBrowseJSON(results, len(results), a.Fields)
+		}
 		return true, formatDecisionsResults(results, 0, len(results))
 	}
 
@@ -72,7 +76,23 @@ func InterceptQueryDecisions(deps ClientDeps, params kgtools.CallToolParams) (bo
 	if err != nil {
 		return true, errorResult(err.Error())
 	}
+	if a.Format == "json" {
+		return true, decisionsBrowseJSON(results, total, a.Fields)
+	}
 	return true, formatDecisionsResults(results, int(a.Offset), total)
+}
+
+// decisionsBrowseJSON emits the {graph, type, results, total} browse-JSON
+// envelope (the handleBrowseJSON contract the agent graph-explorer BrowseResponse
+// consumes, identical to what the server browse returns for every non-intercepted
+// node type) from the SAME results the markdown path fetched — no second wire
+// call. Serves both the listing and topic-search paths.
+func decisionsBrowseJSON(results []engine.SearchResult, total int, fields []string) kgtools.ToolResult {
+	nodes := make([]*knowledgev1.Node, len(results))
+	for i, r := range results {
+		nodes[i] = r.Node
+	}
+	return engine.BrowseJSONResult("knowledge", "decision", nodes, total, fields)
 }
 
 // fetchDecisionsTopic issues the topic-search wire call against

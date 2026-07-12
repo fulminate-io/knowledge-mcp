@@ -8,7 +8,6 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
 	"github.com/stretchr/testify/require"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
@@ -17,12 +16,9 @@ import (
 
 // serverSegCount returns how many segments the fake server holds for one target —
 // the bounded-accumulation signal the reconcile test asserts on.
-func serverSegCount(t *testing.T, svc *fakeSegmentService, target *knowledgev1.GraphSelector) int {
+func serverSegCount(t *testing.T, svc *sharedServerFake, target *knowledgev1.GraphSelector) int {
 	t.Helper()
-	resp, err := svc.ListDelta(context.Background(),
-		connect.NewRequest(&knowledgev1.ListDeltaRequest{Target: target, SinceGen: 0}))
-	require.NoError(t, err)
-	return len(resp.Msg.GetMetas())
+	return len(svc.listMetas(target, 0))
 }
 
 // TestReconcileOnShipPrunesMergedAway is the bounded-server-segment proof.
@@ -97,10 +93,8 @@ func TestReconcileOnShipPrunesMergedAway(t *testing.T) {
 	// id is present on the server, and the server segment count MATCHES the engine's
 	// live set — BOUNDED (~1), NOT the ~8 pre-merge accumulation.
 	exported := prodEng.Export()
-	metas, err := svc.ListDelta(ctx, connect.NewRequest(&knowledgev1.ListDeltaRequest{Target: target, SinceGen: 0}))
-	require.NoError(t, err)
 	serverIDs := map[string]bool{}
-	for _, m := range metas.Msg.GetMetas() {
+	for _, m := range svc.listMetas(target, 0) {
 		serverIDs[m.GetId()] = true
 	}
 	for _, b := range exported {

@@ -1,0 +1,169 @@
+// SPDX-License-Identifier: Apache-2.0
+
+package segmentdist
+
+import (
+	"context"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
+)
+
+// recordingSource is a segmentSource that records the digests passed to
+// PublishManifest and returns a caller-configured List (so the publish coverage
+// gate's subset check passes). It is used to assert publishResident threads the
+// real per-digest DocCount to the wire.
+type recordingSource struct {
+	listMetas          []searchengine.SegmentMeta
+	published          []segmentDigest
+	publishCalls       int
+	verifiesServerSide bool
+	publishErr         error // when set, PublishManifest returns it
+}
+
+func (s *recordingSource) List(_ context.Context, _ uint64) ([]searchengine.SegmentMeta, error) {
+	return s.listMetas, nil
+}
+
+func (s *recordingSource) Fetch(_ context.Context, _ []searchengine.SegmentID) ([]searchengine.SegmentBlob, error) {
+	return nil, nil
+}
+
+func (s *recordingSource) Ship(_ context.Context, _ []*knowledgev1.SegmentBlobProto) ([]*knowledgev1.SegmentMetaProto, error) {
+	return nil, nil
+}
+
+func (s *recordingSource) Prune(_ []searchengine.SegmentID) (int, error) { return 0, nil }
+
+func (s *recordingSource) PublishManifest(_ string, digests []segmentDigest) (int, error) {
+	s.publishCalls++
+	s.published = append([]segmentDigest(nil), digests...)
+	return 0, s.publishErr
+}
+
+// verifiesServerSide toggles the recording source's completeness-authority signal so
+// tests can exercise both the subset-checked (rpc/local) and subset-skipped (gcs)
+// publish-gate branches.
+func (s *recordingSource) verifiesCompletenessServerSide() bool { return s.verifiesServerSide }
+
+// TestPublishResidentThreadsDocCount proves publishResident calls
+// source.PublishManifest with segmentDigests whose DocCount equals each resident
+// segment's Export DocCount, AND that the det-union extraReferenced digests carry
+// their own (non-zero) DocCounts. A tiny corpus (summed doc count < residentBackstopFloor)
+// disarms the coverage ratio; the recording source's List returns the live ids so
+// the subset gate passes — isolating the doc_count-threading behavior under test.
+func TestPublishResidentThreadsDocCount(t *testing.T) {
+	ctx := context.Background()
+	target := &knowledgev1.GraphSelector{Graph: "code", Repo: "doccount"}
+
+	// Resident segments (from Export) carry known doc counts; the det-union sibling
+	// digest carries its own doc count.
+	all := []searchengine.SegmentBlob{
+		{ID: "seg-a", Format: "hnsw", DocCount: 7},
+		{ID: "seg-b", Format: "hnsw", DocCount: 9},
+	}
+	extra := []segmentDigest{{ID: "det-c", DocCount: 5}}
+
+	rec := &recordingSource{
+		// List returns the full live id-set so liveSetSubsetOfList0 passes; the summed
+		// doc count (7+9+5=21) is under residentBackstopFloor=64, disarming the ratio.
+		listMetas: []searchengine.SegmentMeta{
+			{ID: "seg-a", Format: "hnsw", DocCount: 7},
+			{ID: "seg-b", Format: "hnsw", DocCount: 9},
+			{ID: "det-c", Format: "hnsw", DocCount: 5},
+		},
+	}
+	cache := newDiskSegmentCache(t.TempDir(), 0)
+	dm := newDistManager[mockQuery, mockStats](newMockEngine(), rec, cache, target, "hnsw")
+
+	dropped, err := dm.publishResident(ctx, all, extra, dm.locallyShipped)
+	require.NoError(t, err)
+	require.Nil(t, dropped, "no reconcileAgainst ids drop out on a first publish")
+
+	require.Equal(t, 1, rec.publishCalls, "publishResident issues exactly one PublishManifest")
+	got := map[searchengine.SegmentID]int{}
+	for _, d := range rec.published {
+		got[d.ID] = d.DocCount
+	}
+	require.Equal(t, map[searchengine.SegmentID]int{"seg-a": 7, "seg-b": 9, "det-c": 5}, got,
+		"each published digest carries the resident/det Export DocCount — not 0")
+}
+
+// TestVerifiesCompletenessServerSide pins the capability flag on the surviving
+// impls: gcs→true, local→false, and the errorSegmentSource sentinel→false (the
+// three-implementer discipline — a missed impl is caught here, not left to the
+// compile gate). The deleted rpc source's →false leg is gone with the RPC path.
+func TestVerifiesCompletenessServerSide(t *testing.T) {
+	cache := newDiskSegmentCache(t.TempDir(), 0)
+
+	gcs := newGCSSegmentSource(&fakeSegmentBackend{}, "code", "repo", "hnsw")
+	require.True(t, gcs.verifiesCompletenessServerSide(), "gcs source verifies via the agent HEAD-verify")
+
+	local := newLocalSegmentSource(cache, "hnsw")
+	require.False(t, local.verifiesCompletenessServerSide(), "local source has no server verify")
+
+	sentinel := &errorSegmentSource{reason: errNilSegmentTransport}
+	require.False(t, sentinel.verifiesCompletenessServerSide(), "the fail-loud sentinel reports no server verify (bool, not error)")
+}
+
+// TestPublishGateSourceAware proves the subset-completeness check is SKIPPED for a
+// completeness-server-side (GCS-like) source and RETAINED for an rpc-like source. The
+// prior manifest is EMPTY (List returns nothing), so a non-empty live set is NOT a
+// subset of List(0): the rpc-like source SKIPS the publish (deadlock the plan warns
+// of), while the GCS-like source publishes it.
+func TestPublishGateSourceAware(t *testing.T) {
+	ctx := context.Background()
+	target := &knowledgev1.GraphSelector{Graph: "code", Repo: "gate"}
+	all := []searchengine.SegmentBlob{{ID: "seg-a", Format: "hnsw", DocCount: 3}}
+
+	// rpc-like: verifiesServerSide=false, empty List → live NOT subset → SKIP (no publish).
+	rpcLike := &recordingSource{verifiesServerSide: false} // listMetas nil == empty List(0)
+	rpcDM := newDistManager[mockQuery, mockStats](newMockEngine(), rpcLike, newDiskSegmentCache(t.TempDir(), 0), target, "hnsw")
+	dropped, err := rpcDM.publishResident(ctx, all, nil, rpcDM.locallyShipped)
+	require.NoError(t, err)
+	require.Nil(t, dropped)
+	require.Equal(t, 0, rpcLike.publishCalls, "rpc-like source SKIPS the publish (live set not a subset of the empty List(0))")
+
+	// gcs-like: verifiesServerSide=true → subset check skipped → FIRST publish writes.
+	gcsLike := &recordingSource{verifiesServerSide: true}
+	gcsDM := newDistManager[mockQuery, mockStats](newMockEngine(), gcsLike, newDiskSegmentCache(t.TempDir(), 0), target, "hnsw")
+	_, err = gcsDM.publishResident(ctx, all, nil, gcsDM.locallyShipped)
+	require.NoError(t, err)
+	require.Equal(t, 1, gcsLike.publishCalls, "gcs-like source publishes the first (empty-prior) manifest — not skipped")
+	require.Len(t, gcsLike.published, 1)
+	require.Equal(t, "seg-a", gcsLike.published[0].ID)
+
+	// SECOND publish adds a new segment → included in the manifest.
+	all2 := append(all, searchengine.SegmentBlob{ID: "seg-b", Format: "hnsw", DocCount: 4})
+	_, err = gcsDM.publishResident(ctx, all2, nil, gcsDM.locallyShipped)
+	require.NoError(t, err)
+	require.Equal(t, 2, gcsLike.publishCalls)
+	got := map[searchengine.SegmentID]int{}
+	for _, d := range gcsLike.published {
+		got[d.ID] = d.DocCount
+	}
+	require.Equal(t, map[searchengine.SegmentID]int{"seg-a": 3, "seg-b": 4}, got, "the add-publish includes the new segment")
+}
+
+// TestPublishResidentSkipsOnIncomplete proves a PublishManifest manifestIncompleteError
+// (the agent 409'd on a missing blob) is a LOGGED SKIP inside publishResident: it
+// returns (nil, nil) — no error, no bookkeeping reconcile — leaving the prior manifest
+// intact.
+func TestPublishResidentSkipsOnIncomplete(t *testing.T) {
+	ctx := context.Background()
+	target := &knowledgev1.GraphSelector{Graph: "code", Repo: "incomplete"}
+	all := []searchengine.SegmentBlob{{ID: "seg-a", Format: "hnsw", DocCount: 3}}
+
+	src := &recordingSource{
+		verifiesServerSide: true,
+		publishErr:         &manifestIncompleteError{Missing: []string{"seg-a"}},
+	}
+	dm := newDistManager[mockQuery, mockStats](newMockEngine(), src, newDiskSegmentCache(t.TempDir(), 0), target, "hnsw")
+	dropped, err := dm.publishResident(ctx, all, nil, dm.locallyShipped)
+	require.NoError(t, err, "an incomplete-publish 409 is a logged SKIP, not a hard error")
+	require.Nil(t, dropped, "a skipped publish reconciles nothing")
+	require.Equal(t, 1, src.publishCalls, "the publish was attempted (and skipped on the 409)")
+}

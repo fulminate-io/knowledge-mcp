@@ -112,10 +112,26 @@ type PruneCacheReport struct {
 // reset pays at most a wasted re-import (a cost, not a correctness issue), exactly
 // as recoverIfDegenerate documents. prune-cache is a one-shot operator command, so
 // the cost is paid once.
+//
+// OSS L2-AUTHORITATIVE (l2Authoritative): there is no server to List/Fetch from, so
+// the complete live set is the L2-resident set. loadResidentFromL2 imports cache.Keys()
+// (server-independently, and it does NOT consult the l2Loaded once-guard, so it always
+// re-imports the current L2 set), then Export() is the complete live set. The downstream
+// liveSetSubsetOfList0 gate compares this against source.List(0) = cache.Keys() (both L2),
+// so the pool is trivially a subset and never falsely aborted. This makes the existing
+// orphan pruner (listOnDiskSegIDs + prunePoolReport os.Remove) compare on-disk .seg
+// against the L2/resident set with NO server round-trip — decouple #4. A cold L2
+// (errL2CacheCold) is not an error here: the live set is simply empty.
 func (m *distManager[Q, S]) forceCompleteLiveSet(ctx context.Context) ([]searchengine.SegmentID, error) {
-	m.importedGen.Store(0)
-	if err := m.loadFromServer(ctx); err != nil {
-		return nil, err
+	if m.l2Authoritative {
+		if err := m.loadResidentFromL2(ctx); err != nil && err != errL2CacheCold {
+			return nil, err
+		}
+	} else {
+		m.importedGen.Store(0)
+		if err := m.loadFromServer(ctx); err != nil {
+			return nil, err
+		}
 	}
 	exported := m.engine.Export()
 	ids := make([]searchengine.SegmentID, 0, len(exported))
@@ -141,7 +157,8 @@ func (m *Manager) completeHNSWLiveSet(ctx context.Context, gt kgtypes.GraphType,
 	live := make(map[searchengine.SegmentID]struct{})
 
 	// Embed engine (m.managers, hnsw.New()) — same accessor managerFor uses.
-	embedIDs, err := m.managerFor(gt, name).forceCompleteLiveSet(ctx)
+	embedDM := m.managerFor(gt, name)
+	embedIDs, err := embedDM.forceCompleteLiveSet(ctx)
 	if err != nil {
 		return nil, err
 	}
@@ -154,12 +171,25 @@ func (m *Manager) completeHNSWLiveSet(ctx context.Context, gt kgtypes.GraphType,
 	// rebuild path's construction (manager_owner.go); a force-load never merges, so
 	// the flag is immaterial here, but it must match so the memoized instance is the
 	// SAME one the rebuild path uses.
-	detIDs, err := m.hnswManagerFor(m.detManagers, hnsw.NewDeterministic(), gt, name, false).forceCompleteLiveSet(ctx)
-	if err != nil {
-		return nil, err
-	}
-	for _, id := range detIDs {
-		live[id] = struct{}{}
+	//
+	// OSS-PATH GUARD (l2Authoritative): on the cloud path the det force-load Lists the
+	// SERVER (loadFromServer), so a freshly-constructed det engine is harmless — its
+	// live set is the server's authoritative manifest, orphans on disk excluded. On the
+	// OSS path forceCompleteLiveSet imports cache.Keys() from the L2 disk, and a det
+	// engine constructed FRESH here (after orphans accumulated on disk) would scan those
+	// orphans into its cache index → pulling them into the live set (or failing to
+	// decode a junk one). So on OSS only union a det engine that ALREADY EXISTS (a real
+	// prior rebuild, whose memoized cache tracks its own content); never construct one
+	// just to prune-scan the disk. Skipping a non-existent det engine is SAFE — there
+	// are no deterministic-built segments to protect from the prune.
+	if !embedDM.l2Authoritative || m.hasDetManager(gt, name) {
+		detIDs, err := m.hnswManagerFor(m.detManagers, hnsw.NewDeterministic(), gt, name, false).forceCompleteLiveSet(ctx)
+		if err != nil {
+			return nil, err
+		}
+		for _, id := range detIDs {
+			live[id] = struct{}{}
+		}
 	}
 
 	return live, nil
@@ -282,6 +312,12 @@ func (m *Manager) PruneCache(ctx context.Context, graphs []PruneCacheTarget, exe
 		// SAME instance) for the per-format subset-check; the det engine shares the
 		// embed engine's "hnsw" format + target, so either engine's keepFormat/source
 		// is equivalent — use the embed manager's.
+		//
+		// NOTE (T3): unlike publishCoverageOK, PruneCache does NOT skip this subset
+		// check for the completeness-server-side (GCS) source. On the GCS path List(0)
+		// is the manifest, so a non-subset here merely SKIPS pruning (fail-safe — it
+		// never false-prunes). L2-prune-on-cloud is out of T3 scope (it belongs with
+		// the OSS-L2 work); leaving the guard intact is the conservative choice.
 		hnswSubset, err := m.managerFor(g.GraphType, g.Name).liveSetSubsetOfList0(ctx, hnswLive)
 		if err != nil {
 			return PruneCacheReport{}, err

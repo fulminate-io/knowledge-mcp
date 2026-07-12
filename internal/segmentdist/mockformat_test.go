@@ -3,16 +3,10 @@
 package segmentdist
 
 import (
-	"context"
 	"encoding/json"
 	"sort"
 	"strings"
-	"sync"
-	"sync/atomic"
 
-	"google.golang.org/protobuf/proto"
-
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
 
@@ -107,60 +101,6 @@ func (m *mockSegment) IDs() []searchengine.ExternalID {
 }
 
 func (m *mockSegment) Encode() ([]byte, error) { return json.Marshal(m.rows) }
-
-// countingCaller wraps a segmentCaller and counts Fetch / Ship calls so tests
-// can assert "zero Fetch on a cache hit" / "zero Ship on an empty diff".
-type countingCaller struct {
-	inner        segmentCaller
-	fetchCalls   atomic.Int64
-	shipCalls    atomic.Int64
-	shipBlobs    atomic.Int64
-	pruneCalls   atomic.Int64
-	publishCalls atomic.Int64
-
-	// shipReqMu guards shipReqBytes — the per-Ship-call serialized request size
-	// recorded so the ship-split test can assert every ShipRequest stayed under
-	// the cloud cap. One entry per Ship RPC, in call order.
-	shipReqMu    sync.Mutex
-	shipReqBytes []int
-}
-
-func (c *countingCaller) Ship(ctx context.Context, req *knowledgev1.ShipRequest) (*knowledgev1.ShipResponse, error) {
-	c.shipCalls.Add(1)
-	c.shipBlobs.Add(int64(len(req.GetBlobs())))
-	c.shipReqMu.Lock()
-	c.shipReqBytes = append(c.shipReqBytes, proto.Size(req))
-	c.shipReqMu.Unlock()
-	return c.inner.Ship(ctx, req)
-}
-
-// recordedShipBytes returns a copy of the per-Ship-call request sizes.
-func (c *countingCaller) recordedShipBytes() []int {
-	c.shipReqMu.Lock()
-	defer c.shipReqMu.Unlock()
-	out := make([]int, len(c.shipReqBytes))
-	copy(out, c.shipReqBytes)
-	return out
-}
-
-func (c *countingCaller) ListDelta(ctx context.Context, req *knowledgev1.ListDeltaRequest) (*knowledgev1.ListDeltaResponse, error) {
-	return c.inner.ListDelta(ctx, req)
-}
-
-func (c *countingCaller) Fetch(ctx context.Context, req *knowledgev1.FetchRequest) (*knowledgev1.FetchResponse, error) {
-	c.fetchCalls.Add(1)
-	return c.inner.Fetch(ctx, req)
-}
-
-func (c *countingCaller) Prune(ctx context.Context, req *knowledgev1.PruneRequest) (*knowledgev1.PruneResponse, error) {
-	c.pruneCalls.Add(1)
-	return c.inner.Prune(ctx, req)
-}
-
-func (c *countingCaller) Publish(ctx context.Context, req *knowledgev1.PublishRequest) (*knowledgev1.PublishResponse, error) {
-	c.publishCalls.Add(1)
-	return c.inner.Publish(ctx, req)
-}
 
 // newMockEngine builds a SegmentedIndex over the mock format with MinSegmentDocs=1
 // so every Add seals immediately (one segment per Add batch) — convenient for

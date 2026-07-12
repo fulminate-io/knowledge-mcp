@@ -104,6 +104,7 @@ type coverageDeps struct {
 func (d *coverageDeps) LocalLiveness() LocalLiveness                 { return nil }
 func (d *coverageDeps) Sink() collector.Sink                         { return nil }
 func (d *coverageDeps) RootDir() string                              { return "" }
+func (d *coverageDeps) UsageAnalyzer() UsageAnalyzerAPI              { return nil }
 func (d *coverageDeps) WorkerRuntime() WorkerRuntimeAPI              { return nil }
 func (d *coverageDeps) WorkerReady() bool                            { return true }
 func (d *coverageDeps) PropReady() bool                              { return true }

@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
 	"sync"
 	"sync/atomic"
 
@@ -23,6 +24,8 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/segmentdist"
 	clientthought "github.com/fulminate-io/knowledge-mcp/internal/thought"
 	"github.com/fulminate-io/knowledge-mcp/internal/tools"
+	"github.com/fulminate-io/knowledge-mcp/internal/transcriptanalytics"
+	"github.com/fulminate-io/knowledge-mcp/internal/transcriptsync"
 	"github.com/fulminate-io/knowledge-mcp/internal/workercrud"
 )
 
@@ -63,6 +66,16 @@ type client struct {
 	// the e2e test in Phase 4 can inspect / flip it via auth.NewAuthState
 	// inputs.
 	authState *auth.AuthState
+	// cloudTokenSource is the SINGLE process-wide cloud credential source,
+	// resolved once by selectAuthSources and shared by the Router AND the
+	// segment/sync/transcript control-plane transports (via
+	// buildCloudSyncTransport). Retaining the one source — instead of each
+	// consumer minting a fresh cold keychain OAuth source — means one warm
+	// cache/refresh cycle per token lifetime, and lets the resolved
+	// Config.AuthToken (flag/config, not os.Getenv) reach every cloud
+	// transport so a machine-authed headless daemon never silently falls
+	// back to the keyring. nil in test harnesses that build *client directly.
+	cloudTokenSource auth.TokenSource
 
 	mcpClient *graphclient.MCPClient // MCP dispatch client (built by the serve daemon, daemon.go)
 	sink      collector.Sink         // remote upload sink for client-side collection
@@ -171,6 +184,22 @@ type client struct {
 	schemaMu   sync.Mutex
 	schemas    []toolSchema
 	schemaDone bool
+
+	// usageAnalyzer is the lazily-constructed client-side agent-flow analyzer
+	// (embedded DuckDB over the local transcript parquet cache) the analyze_usage
+	// intercept dispatches through. Built once on first use under usageAnalyzerMu;
+	// it needs no router/network (reads the local cache only).
+	usageAnalyzerMu   sync.Mutex
+	usageAnalyzer     *transcriptanalytics.Service
+	usageAnalyzerDone bool
+
+	// transcriptHealth tracks the health of the background hourly transcript-upload
+	// loop (success/failure counters, last-success timestamp, consecutive-failure
+	// streak). Constructed in wireRuntimesBackground immediately before the loops are
+	// spawned and Record-ed on every tick; read by the TranscriptUploadHealth()
+	// accessor that the manage(status) surface overlays. nil in test-built clients
+	// (like the other runtime handles) — the accessor nil-guards.
+	transcriptHealth *transcriptsync.UploadHealthTracker
 }
 
 // LocalLiveness returns the LOCAL graph client as a liveness-only view
@@ -267,6 +296,28 @@ func (c *client) WorkerRuntime() tools.WorkerRuntimeAPI {
 		return nil
 	}
 	return c.runtime
+}
+
+// UsageAnalyzer returns the client-side agent-flow analyzer, lazily constructing it on
+// first use. It is built over the default ~/.knowledge/transcripts-cache root (no
+// router/network dependency). Returns a nil interface when the cache root cannot be
+// resolved, so InterceptAnalyzeUsage's nil-check fires and renders the cold-cache hint
+// rather than carrying a typed-nil.
+func (c *client) UsageAnalyzer() tools.UsageAnalyzerAPI {
+	c.usageAnalyzerMu.Lock()
+	defer c.usageAnalyzerMu.Unlock()
+	if !c.usageAnalyzerDone {
+		svc, err := transcriptanalytics.NewService("")
+		if err != nil {
+			slog.Warn("bootstrap: usage analyzer unavailable (cache root unresolvable)", "err", err)
+		}
+		c.usageAnalyzer = svc
+		c.usageAnalyzerDone = true
+	}
+	if c.usageAnalyzer == nil {
+		return nil
+	}
+	return c.usageAnalyzer
 }
 
 // WorkerCRUD returns the client-side wire-loopback CRUD client for the worker

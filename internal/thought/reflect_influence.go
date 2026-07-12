@@ -5,6 +5,7 @@ package thought
 import (
 	"context"
 	"sort"
+	"time"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 )
@@ -67,6 +68,10 @@ func ReflectInfluence(ctx context.Context, gc Caller, limit int, profile *Person
 		return InfluenceRanking{}, nil
 	}
 
+	// One now for the whole pass: the recency-weighted SelfTrust diagonal and the
+	// partition's per-thought props must be computed at a single consistent instant.
+	now := time.Now()
+
 	// Need cluster_id metadata for personality-adjusted matrix — pull
 	// the node bulk once.
 	var nodeByID map[string]*knowledgev1.Node
@@ -77,7 +82,7 @@ func ReflectInfluence(ctx context.Context, gc Caller, limit int, profile *Person
 	var matrix TrustMatrix
 	var chargeMap map[string][]*knowledgev1.Node
 	if profile != nil {
-		matrix, err = BuildTrustMatrixWithPersonality(ctx, gc, thoughtIDs, *profile, nodeByID)
+		matrix, err = BuildTrustMatrixWithPersonality(ctx, gc, thoughtIDs, *profile, nodeByID, now)
 		if err != nil {
 			return InfluenceRanking{}, err
 		}
@@ -90,14 +95,14 @@ func ReflectInfluence(ctx context.Context, gc Caller, limit int, profile *Person
 	} else {
 		// Non-profile (default) path: the charge map is FUSED with the matrix build
 		// — reused for the partition, no second full-corpus charge read.
-		matrix, chargeMap, err = BuildTrustMatrixWithCharges(ctx, gc, thoughtIDs)
+		matrix, chargeMap, err = BuildTrustMatrixWithCharges(ctx, gc, thoughtIDs, now)
 		if err != nil {
 			return InfluenceRanking{}, err
 		}
 	}
 
 	influence := ComputeInfluenceVector(matrix)
-	ranking := partitionInfluenceRanking(ctx, gc, thoughtIDs, influence, chargeMap, limit)
+	ranking := partitionInfluenceRanking(ctx, gc, thoughtIDs, influence, chargeMap, limit, now)
 
 	// composite: a within-evidenced-set display reorder by InfluenceScore×Magnitude.
 	// The selection is unchanged — the evidence-weighted rank already selected the
@@ -121,7 +126,7 @@ func ReflectInfluence(ctx context.Context, gc Caller, limit int, profile *Person
 // reused when building the reports. The node hydrate is the perf lock: ONE bounded
 // fetchNodesByIDs over the selected charged set ∪ the top-limit backfill hubs only
 // — never the full corpus.
-func partitionInfluenceRanking(ctx context.Context, gc Caller, thoughtIDs []string, influence map[string]float64, chargeMap map[string][]*knowledgev1.Node, limit int) InfluenceRanking {
+func partitionInfluenceRanking(ctx context.Context, gc Caller, thoughtIDs []string, influence map[string]float64, chargeMap map[string][]*knowledgev1.Node, limit int, now time.Time) InfluenceRanking {
 	type scoredID struct {
 		id        string
 		influence float64
@@ -130,7 +135,7 @@ func partitionInfluenceRanking(ctx context.Context, gc Caller, thoughtIDs []stri
 	}
 	var charged, backfill []scoredID
 	for _, id := range thoughtIDs {
-		props := computePropertiesFromCharges(chargeMap[id])
+		props := computePropertiesFromCharges(chargeMap[id], now)
 		inf := influence[id]
 		if props.ChargeCount > 0 {
 			chargeWeight := props.PositiveWeight + props.NegativeWeight

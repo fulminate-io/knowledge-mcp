@@ -28,6 +28,7 @@ type tailRoutingDeps struct {
 func (d *tailRoutingDeps) LocalLiveness() LocalLiveness                 { return nil }
 func (d *tailRoutingDeps) Sink() collector.Sink                         { return noopSink{} }
 func (d *tailRoutingDeps) RootDir() string                              { return "" }
+func (d *tailRoutingDeps) UsageAnalyzer() UsageAnalyzerAPI              { return nil }
 func (d *tailRoutingDeps) WorkerRuntime() WorkerRuntimeAPI              { return nil }
 func (d *tailRoutingDeps) WorkerReady() bool                            { return true }
 func (d *tailRoutingDeps) PropReady() bool                              { return true }

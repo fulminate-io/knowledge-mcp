@@ -12,17 +12,19 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
 
-// buildManager wires a manager around a counting caller + mock engine + cache.
+// buildManager wires a distManager around a fakeSegmentSource view (bound to target)
+// + mock engine + cache. src is the harness view (from newSegmentHarness); buildManager
+// rebinds it to target and returns it so callers reading src.shipCalls / .fetchCalls /
+// etc. read the fake's per-leg counters (the successor to countingCaller).
 func buildManager(
 	engine *searchengine.SegmentedIndex[mockQuery, mockStats],
-	caller segmentCaller,
+	src *fakeSegmentSource,
 	target *knowledgev1.GraphSelector,
 	cacheDir string,
-) (*distManager[mockQuery, mockStats], *countingCaller) {
-	cc := &countingCaller{inner: caller}
-	src := newRPCSegmentSource(cc, target, "", context.Background())
+) (*distManager[mockQuery, mockStats], *fakeSegmentSource) {
+	src.target = target
 	cache := newDiskSegmentCache(cacheDir, 0)
-	return newDistManager(engine, src, cache, target, ""), cc
+	return newDistManager(engine, src, cache, target, ""), src
 }
 
 // TestManagerShipDiffIdempotent verifies that after an initial ship() of N

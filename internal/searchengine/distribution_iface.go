@@ -15,11 +15,17 @@ import "context"
 //   - SegmentCache  — the CLIENT L2 disk cache, diskSegmentCache, content-
 //     addressed under the segments cache dir (../../segmentdist/cache.go).
 //
-// The server is the SOURCE OF TRUTH for shipped segments; the local cache is an
-// L2 accelerator and is wipe-safe (a fresh process re-lists from generation 0
-// and re-fetches). Server-side search is retired — these client segments are
-// the ONLY search index, so a graph with no shipped segments is unsearchable
-// until its segments are (re)built and shipped.
+// The source of truth is PER-SOURCE (the SegmentSource is pluggable):
+//   - RPC/CLOUD source (logged in): the SERVER is the source of truth for shipped
+//     segments; the local cache is an L2 accelerator and is wipe-safe (a fresh
+//     process re-lists from generation 0 and re-fetches).
+//   - OSS-LOCAL source (not logged in): the L2 disk cache is AUTHORITATIVE and NO
+//     SegmentService is consulted. Segment identity is the content-hash, ordering is
+//     the local manifest (cache.Keys()), and a lost/cold cache heals by rebuilding
+//     from the local embedded node graph — never a server Fetch.
+// Server-side search is retired in BOTH regimes — these client segments are the ONLY
+// search index, so a graph with no built/shipped segments is unsearchable until its
+// segments are (re)built.
 
 // SegmentStore is the SERVER-side opaque blob store. The server stamps/orders
 // Generation, persists the bytes, and serves list/fetch — it has NO engine and

@@ -18,6 +18,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
@@ -132,7 +133,8 @@ func handleChargeClient(ctx context.Context, deps ClientDeps, params kgtools.Cal
 		return textResult(fmt.Sprintf("Charge recorded → ID: %s", chargeID))
 	}
 	chargesByThought := clientthought.FetchChargesFor(ctx, graphCli, []string{a.Thought})
-	props := clientthought.ComputePropertiesFromCharges(chargesByThought[a.Thought])
+	now := time.Now()
+	props := clientthought.ComputePropertiesFromCharges(chargesByThought[a.Thought], now)
 
 	msg := fmt.Sprintf("Charge recorded → ID: %s\nThought properties:\n  Valence: %.3f\n  Magnitude: %.3f\n  Consistency: %.3f\n  Self-trust: %.3f\n  Charges: %d (positive: %.1f, negative: %.1f)",
 		chargeID, props.Valence, props.Magnitude, props.Consistency, props.SelfTrust,

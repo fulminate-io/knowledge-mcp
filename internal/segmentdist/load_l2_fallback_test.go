@@ -15,13 +15,13 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
 
-// failAfterWarmCaller wraps a real segmentCaller and, once tripped, returns a
-// transport error (connect.CodeUnavailable — the 524/hang shape) from ListDelta
-// and Fetch. It counts Fetch calls so a test can assert the L2 fallback issued
-// ZERO server Fetch. Ship/Prune/Publish pass through unchanged (the warm phase
-// ships through this wrapper before it is tripped).
-type failAfterWarmCaller struct {
-	inner segmentCaller
+// failAfterWarmSource wraps a segmentSource and, once tripped, returns a transport
+// error (connect.CodeUnavailable — the 524/hang shape) from List and Fetch. It
+// counts List/Fetch calls so a test can assert the L2 fallback issued ZERO server
+// Fetch. Ship/Prune/PublishManifest pass through unchanged (the warm phase ships
+// through this wrapper before it is tripped).
+type failAfterWarmSource struct {
+	inner segmentSource
 
 	mu         sync.Mutex
 	failing    bool
@@ -29,29 +29,25 @@ type failAfterWarmCaller struct {
 	listCalls  int
 }
 
-func (c *failAfterWarmCaller) trip() {
+func (c *failAfterWarmSource) trip() {
 	c.mu.Lock()
 	c.failing = true
 	c.mu.Unlock()
 }
 
-func (c *failAfterWarmCaller) fetchCount() int {
+func (c *failAfterWarmSource) fetchCount() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.fetchCalls
 }
 
-func (c *failAfterWarmCaller) listCount() int {
+func (c *failAfterWarmSource) listCount() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.listCalls
 }
 
-func (c *failAfterWarmCaller) Ship(ctx context.Context, req *knowledgev1.ShipRequest) (*knowledgev1.ShipResponse, error) {
-	return c.inner.Ship(ctx, req)
-}
-
-func (c *failAfterWarmCaller) ListDelta(ctx context.Context, req *knowledgev1.ListDeltaRequest) (*knowledgev1.ListDeltaResponse, error) {
+func (c *failAfterWarmSource) List(ctx context.Context, sinceGen uint64) ([]searchengine.SegmentMeta, error) {
 	c.mu.Lock()
 	c.listCalls++
 	failing := c.failing
@@ -59,10 +55,10 @@ func (c *failAfterWarmCaller) ListDelta(ctx context.Context, req *knowledgev1.Li
 	if failing {
 		return nil, connect.NewError(connect.CodeUnavailable, context.DeadlineExceeded)
 	}
-	return c.inner.ListDelta(ctx, req)
+	return c.inner.List(ctx, sinceGen)
 }
 
-func (c *failAfterWarmCaller) Fetch(ctx context.Context, req *knowledgev1.FetchRequest) (*knowledgev1.FetchResponse, error) {
+func (c *failAfterWarmSource) Fetch(ctx context.Context, ids []searchengine.SegmentID) ([]searchengine.SegmentBlob, error) {
 	c.mu.Lock()
 	c.fetchCalls++
 	failing := c.failing
@@ -70,18 +66,26 @@ func (c *failAfterWarmCaller) Fetch(ctx context.Context, req *knowledgev1.FetchR
 	if failing {
 		return nil, connect.NewError(connect.CodeUnavailable, context.DeadlineExceeded)
 	}
-	return c.inner.Fetch(ctx, req)
+	return c.inner.Fetch(ctx, ids)
 }
 
-func (c *failAfterWarmCaller) Prune(ctx context.Context, req *knowledgev1.PruneRequest) (*knowledgev1.PruneResponse, error) {
-	return c.inner.Prune(ctx, req)
+func (c *failAfterWarmSource) Ship(ctx context.Context, blobs []*knowledgev1.SegmentBlobProto) ([]*knowledgev1.SegmentMetaProto, error) {
+	return c.inner.Ship(ctx, blobs)
 }
 
-func (c *failAfterWarmCaller) Publish(ctx context.Context, req *knowledgev1.PublishRequest) (*knowledgev1.PublishResponse, error) {
-	return c.inner.Publish(ctx, req)
+func (c *failAfterWarmSource) Prune(ids []searchengine.SegmentID) (int, error) {
+	return c.inner.Prune(ids)
 }
 
-var _ segmentCaller = (*failAfterWarmCaller)(nil)
+func (c *failAfterWarmSource) PublishManifest(format string, digests []segmentDigest) (int, error) {
+	return c.inner.PublishManifest(format, digests)
+}
+
+func (c *failAfterWarmSource) verifiesCompletenessServerSide() bool {
+	return c.inner.verifiesCompletenessServerSide()
+}
+
+var _ segmentSource = (*failAfterWarmSource)(nil)
 
 // TestLoadL2FallbackReachesCoverageWithoutServer is the headline red-green for the
 // server-independent L2 load: with a populated L2 disk cache and a server that
@@ -119,7 +123,7 @@ func TestLoadL2FallbackReachesCoverageWithoutServer(t *testing.T) {
 	// diskSegmentCache scans the warmed dir; the caller errors on every ListDelta
 	// and Fetch, modeling a slow/down server at restart.
 	_, gc := newSegmentHarness(t)
-	fail := &failAfterWarmCaller{inner: gc}
+	fail := &failAfterWarmSource{inner: gc}
 	fail.trip() // server is down for the whole reconstructed-manager lifetime.
 
 	dm, _ := buildHNSWReclaimManagerOn(t, fail, gt, name, dir, 1<<30)
@@ -181,7 +185,7 @@ func TestLoadL2FirstPrimaryPathIssuesZeroList(t *testing.T) {
 	// --- RECONSTRUCT over the SAME dir + SAME server with a REACHABLE (NON-tripped)
 	// caller. The server is up and HOLDS the corpus — a List would succeed and return
 	// it — but the L2-first primary path must never reach it.
-	reachable := &failAfterWarmCaller{inner: gc} // NOT tripped: the server is reachable.
+	reachable := &failAfterWarmSource{inner: gc} // NOT tripped: the server is reachable.
 
 	dm, _ := buildHNSWReclaimManagerOn(t, reachable, gt, name, dir, 1<<30)
 	defer dm.engine.Close()
@@ -241,7 +245,7 @@ func TestLoadL2PartialImportToleratesRacedMissWithServerDown(t *testing.T) {
 	// one resident id so it is present in the Keys() snapshot but a cache MISS when
 	// reload's Get reaches it — and the tripped caller errors on the resulting Fetch.
 	_, gc := newSegmentHarness(t)
-	fail := &failAfterWarmCaller{inner: gc}
+	fail := &failAfterWarmSource{inner: gc}
 	fail.trip() // server is down: the raced-out id can never be Fetched.
 
 	dm, ic := buildHNSWReclaimManagerOn(t, fail, gt, name, dir, 1<<30)
@@ -271,7 +275,7 @@ func TestLoadL2FallbackEmptyCacheReturnsListError(t *testing.T) {
 	dir := t.TempDir() // empty — no .seg files warmed.
 
 	_, gc := newSegmentHarness(t)
-	fail := &failAfterWarmCaller{inner: gc}
+	fail := &failAfterWarmSource{inner: gc}
 	fail.trip()
 
 	dm, _ := buildHNSWReclaimManagerOn(t, fail, gt, name, dir, 1<<30)

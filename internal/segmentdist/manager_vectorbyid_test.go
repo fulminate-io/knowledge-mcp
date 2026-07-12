@@ -27,12 +27,12 @@ func TestManagerVectorByIDResolvesShippedVector(t *testing.T) {
 	docs, targetID, targetVec, _ := searchCorpus(11)
 
 	// Ship the HNSW segment with one manager.
-	shipper := NewManager(gc, t.TempDir(), 0)
+	shipper := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 	require.NoError(t, shipper.AddAndShip(ctx, kgtypes.GraphKnowledge, "kg", docs))
 
 	// Resolve on a FRESH manager that has never searched — it must pull the shipped
 	// segments cache-first via dm.load(ctx) before the by-id read.
-	fresh := NewManager(gc, t.TempDir(), 0)
+	fresh := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 
 	vec, ok, err := fresh.VectorByID(ctx, kgtypes.GraphKnowledge, "kg", targetID)
 	require.NoError(t, err)
@@ -54,7 +54,7 @@ func TestManagerVectorByIDEmptyGraph(t *testing.T) {
 	_, gc := newSegmentHarness(t)
 	ctx := context.Background()
 
-	mgr := NewManager(gc, t.TempDir(), 0)
+	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 	got, ok, err := mgr.VectorByID(ctx, kgtypes.GraphKnowledge, "never-shipped", "anything")
 	require.NoError(t, err)
 	require.False(t, ok)

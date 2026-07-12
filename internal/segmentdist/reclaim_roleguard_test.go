@@ -25,7 +25,7 @@ func TestReclaimRoleRegressionGuards(t *testing.T) {
 
 	t.Run("roleA_det_rebuild_still_prunes_and_no_live_hook", func(t *testing.T) {
 		svc, gc := newSegmentHarness(t)
-		mgr := NewManager(gc, t.TempDir(), 0)
+		mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 
 		// Ship an old degenerate corpus via the embed path, then deterministically
 		// rebuild it with a different corpus → ROLE-A prunes the old ids.

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"log/slog"
 	"sort"
+	"time"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
@@ -169,6 +170,10 @@ func RunPropagationScoped(ctx context.Context, gc Caller, profile *PersonalityPr
 	}
 	chargeMap := chargeMapForThoughts(ctx, gc, nodeIDs)
 
+	// One now for the whole pass: the read-time recency scalar (see the fold)
+	// must be consistent across every component's matrix diagonal and init loop.
+	now := time.Now()
+
 	components := findConnectedComponents(nodeIDs, adj)
 	result := PropagationResult{
 		ThoughtsProcessed: len(nodeIDs),
@@ -195,7 +200,7 @@ func RunPropagationScoped(ctx context.Context, gc Caller, profile *PersonalityPr
 		if err := ctx.Err(); err != nil {
 			return result, fmt.Errorf("propagation cancelled: %w", err)
 		}
-		matrix := buildComponentMatrix(component, adj, chargeMap, profile, nodeByID)
+		matrix := buildComponentMatrix(component, adj, chargeMap, profile, nodeByID, now)
 
 		// Hoist initial valence + local magnitude OUT of the per-thought
 		// init loop — pure computation over the prebuilt chargeMap (T3
@@ -203,7 +208,7 @@ func RunPropagationScoped(ctx context.Context, gc Caller, profile *PersonalityPr
 		initialValence := make(map[string]float64, len(component))
 		localMagnitude := make(map[string]float64, len(component))
 		for _, id := range component {
-			props := computePropertiesFromCharges(chargeMap[id])
+			props := computePropertiesFromCharges(chargeMap[id], now)
 			initialValence[id] = props.Valence
 			localMagnitude[id] = props.Magnitude
 		}

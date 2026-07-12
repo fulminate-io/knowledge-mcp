@@ -28,6 +28,7 @@ type logE2EDeps struct {
 func (d *logE2EDeps) LocalLiveness() LocalLiveness                 { return nil }
 func (d *logE2EDeps) Sink() collector.Sink                         { return nil }
 func (d *logE2EDeps) RootDir() string                              { return "" }
+func (d *logE2EDeps) UsageAnalyzer() UsageAnalyzerAPI              { return nil }
 func (d *logE2EDeps) WorkerRuntime() WorkerRuntimeAPI              { return nil }
 func (d *logE2EDeps) WorkerReady() bool                            { return true }
 func (d *logE2EDeps) PropReady() bool                              { return true }

@@ -15,54 +15,54 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
 
-// recordingFetchCaller is a segmentCaller that serves a synthetic blob per
+// recordingFetchSource is a segmentSource that serves a synthetic blob per
 // requested id (bytes = id) and records the id count of every Fetch call. An
 // optional reject closure lets a test fail a Fetch whose chunk is "too large"
 // (a byte-ceiling stand-in) with a chosen connect error, exercising the adaptive
-// halving / propagation paths in fetchMisses.
-type recordingFetchCaller struct {
+// halving / propagation paths in fetchMisses. (Successor to the deleted
+// recordingFetchCaller — the same knobs at the segmentSource seam.)
+type recordingFetchSource struct {
 	mu      sync.Mutex
 	calls   [][]string // id sets per Fetch, in call order
 	reject  func(ids []string) error
 	listErr error
 }
 
-func (c *recordingFetchCaller) Ship(_ context.Context, _ *knowledgev1.ShipRequest) (*knowledgev1.ShipResponse, error) {
-	return &knowledgev1.ShipResponse{}, nil
+func (c *recordingFetchSource) List(_ context.Context, _ uint64) ([]searchengine.SegmentMeta, error) {
+	return nil, c.listErr
 }
 
-func (c *recordingFetchCaller) ListDelta(_ context.Context, _ *knowledgev1.ListDeltaRequest) (*knowledgev1.ListDeltaResponse, error) {
-	return &knowledgev1.ListDeltaResponse{}, c.listErr
-}
-
-func (c *recordingFetchCaller) Fetch(_ context.Context, req *knowledgev1.FetchRequest) (*knowledgev1.FetchResponse, error) {
-	ids := req.GetIds()
+func (c *recordingFetchSource) Fetch(_ context.Context, ids []searchengine.SegmentID) ([]searchengine.SegmentBlob, error) {
 	c.mu.Lock()
-	idsCopy := append([]string(nil), ids...)
-	c.calls = append(c.calls, idsCopy)
+	strIDs := append([]string(nil), ids...) // searchengine.SegmentID is a string alias
+	c.calls = append(c.calls, strIDs)
 	c.mu.Unlock()
 
 	if c.reject != nil {
-		if err := c.reject(ids); err != nil {
+		if err := c.reject(strIDs); err != nil {
 			return nil, err
 		}
 	}
-	blobs := make([]*knowledgev1.SegmentBlobProto, 0, len(ids))
+	blobs := make([]searchengine.SegmentBlob, 0, len(ids))
 	for _, id := range ids {
-		blobs = append(blobs, &knowledgev1.SegmentBlobProto{Id: id, Format: "mock", Bytes: []byte(id)})
+		blobs = append(blobs, searchengine.SegmentBlob{ID: id, Format: "mock", Bytes: []byte(id)})
 	}
-	return &knowledgev1.FetchResponse{Blobs: blobs}, nil
+	return blobs, nil
 }
 
-func (c *recordingFetchCaller) Prune(_ context.Context, _ *knowledgev1.PruneRequest) (*knowledgev1.PruneResponse, error) {
-	return &knowledgev1.PruneResponse{}, nil
+func (c *recordingFetchSource) Ship(_ context.Context, _ []*knowledgev1.SegmentBlobProto) ([]*knowledgev1.SegmentMetaProto, error) {
+	return nil, nil
 }
 
-func (c *recordingFetchCaller) Publish(_ context.Context, _ *knowledgev1.PublishRequest) (*knowledgev1.PublishResponse, error) {
-	return &knowledgev1.PublishResponse{}, nil
+func (c *recordingFetchSource) Prune(_ []searchengine.SegmentID) (int, error) { return 0, nil }
+
+func (c *recordingFetchSource) PublishManifest(_ string, _ []segmentDigest) (int, error) {
+	return 0, nil
 }
 
-func (c *recordingFetchCaller) callCounts() []int {
+func (c *recordingFetchSource) verifiesCompletenessServerSide() bool { return false }
+
+func (c *recordingFetchSource) callCounts() []int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	counts := make([]int, len(c.calls))
@@ -72,12 +72,11 @@ func (c *recordingFetchCaller) callCounts() []int {
 	return counts
 }
 
-// newFetchMissesManager wires a distManager around a recordingFetchCaller so
+// newFetchMissesManager wires a distManager around a recordingFetchSource so
 // m.source.Fetch routes to it. The engine/cache are unused by fetchMisses.
-func newFetchMissesManager(t *testing.T, caller *recordingFetchCaller) *distManager[mockQuery, mockStats] {
+func newFetchMissesManager(t *testing.T, src *recordingFetchSource) *distManager[mockQuery, mockStats] {
 	t.Helper()
 	target := &knowledgev1.GraphSelector{Graph: "code", Repo: "fetchmisses"}
-	src := newRPCSegmentSource(caller, target, "", context.Background())
 	cache := newDiskSegmentCache(t.TempDir(), 0)
 	return newDistManager(newMockEngine(), src, cache, target, "")
 }
@@ -95,7 +94,7 @@ func segIDs(n int) []searchengine.SegmentID {
 // each requesting at most maxFetchSegmentIDs ids, and the concatenated result
 // holds every blob in input order with no loss or reordering.
 func TestFetchMissesSubBatchesByCount(t *testing.T) {
-	caller := &recordingFetchCaller{}
+	caller := &recordingFetchSource{}
 	mgr := newFetchMissesManager(t, caller)
 
 	const n = 3*maxFetchSegmentIDs + 7 // not a clean multiple of the cap
@@ -130,15 +129,13 @@ func TestFetchMissesHalvesOnResourceExhausted(t *testing.T) {
 	// ceiling: too many ids = too many bytes). With cap=256 and threshold=64, the
 	// first 256-id chunk is rejected and must halve down to <=64-id sub-chunks.
 	const threshold = 64
-	caller := &recordingFetchCaller{
-		reject: func(ids []string) error {
-			if len(ids) > threshold {
-				return connect.NewError(connect.CodeResourceExhausted,
-					fmt.Errorf("byte ceiling: %d ids too large", len(ids)))
-			}
-			return nil
-		},
-	}
+	caller := &recordingFetchSource{reject: func(ids []string) error {
+		if len(ids) > threshold {
+			return connect.NewError(connect.CodeResourceExhausted,
+				fmt.Errorf("byte ceiling: %d ids too large", len(ids)))
+		}
+		return nil
+	}}
 	mgr := newFetchMissesManager(t, caller)
 
 	ids := segIDs(maxFetchSegmentIDs) // one full count-capped chunk that over-runs bytes
@@ -168,11 +165,9 @@ func TestFetchMissesHalvesOnResourceExhausted(t *testing.T) {
 // error (CodeInternal) propagates immediately from fetchMisses with NO retry — only
 // the byte-ceiling code triggers halving.
 func TestFetchMissesPropagatesNonResourceExhausted(t *testing.T) {
-	caller := &recordingFetchCaller{
-		reject: func(_ []string) error {
-			return connect.NewError(connect.CodeInternal, fmt.Errorf("boom"))
-		},
-	}
+	caller := &recordingFetchSource{reject: func(_ []string) error {
+		return connect.NewError(connect.CodeInternal, fmt.Errorf("boom"))
+	}}
 	mgr := newFetchMissesManager(t, caller)
 
 	_, err := mgr.fetchMisses(context.Background(), segIDs(10))
@@ -188,13 +183,11 @@ func TestFetchMissesPropagatesNonResourceExhausted(t *testing.T) {
 // fetchMisses returns a hard error (no infinite loop) rather than silently
 // dropping the id.
 func TestFetchMissesSingleBlobOverCeilingHardErrors(t *testing.T) {
-	caller := &recordingFetchCaller{
-		reject: func(_ []string) error {
-			// Reject EVERY chunk, including a 1-id chunk — simulates a single blob
-			// whose bytes alone exceed the server ceiling.
-			return connect.NewError(connect.CodeResourceExhausted, fmt.Errorf("one blob over ceiling"))
-		},
-	}
+	caller := &recordingFetchSource{reject: func(_ []string) error {
+		// Reject EVERY chunk, including a 1-id chunk — simulates a single blob
+		// whose bytes alone exceed the server ceiling.
+		return connect.NewError(connect.CodeResourceExhausted, fmt.Errorf("one blob over ceiling"))
+	}}
 	mgr := newFetchMissesManager(t, caller)
 
 	_, err := mgr.fetchMisses(context.Background(), segIDs(4))

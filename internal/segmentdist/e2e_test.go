@@ -9,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"connectrpc.com/connect"
 	"github.com/stretchr/testify/require"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
@@ -93,14 +92,15 @@ func TestSegmentDistributionE2E(t *testing.T) {
 }
 
 // buildManagerWithWriter is buildManager with an explicit writer_id on the source,
-// so the e2e test can assert every outbound RPC carries it.
+// so the e2e test can assert every outbound leg carries it (the view stamps its
+// bound writer_id into the shared server's seenWriterIDs on Ship/PublishManifest).
 func buildManagerWithWriter(
 	engine *searchengine.SegmentedIndex[mockQuery, mockStats],
-	caller segmentCaller,
+	svc *sharedServerFake,
 	target *knowledgev1.GraphSelector,
 	cacheDir, writerID string,
 ) *distManager[mockQuery, mockStats] {
-	src := newRPCSegmentSource(&countingCaller{inner: caller}, target, writerID, context.Background())
+	src := svc.viewFor(target, writerID)
 	cache := newDiskSegmentCache(cacheDir, 0)
 	return newDistManager(engine, src, cache, target, "")
 }
@@ -113,7 +113,7 @@ func buildManagerWithWriter(
 // fully-reloaded publish reaps nothing), and EVERY outbound RPC carries the
 // writer_id the server's last-connection liveness depends on.
 func TestRegistryReclaimE2E(t *testing.T) {
-	svc, gc := newSegmentHarness(t)
+	svc, _ := newSegmentHarness(t)
 	target := &knowledgev1.GraphSelector{Graph: "code", Repo: "registryE2E"}
 	ctx := context.Background()
 	const writer = "abc123def4567890" // 16-hex machine-id shape
@@ -125,7 +125,7 @@ func TestRegistryReclaimE2E(t *testing.T) {
 		SegmentCountTarget: 4,
 	})
 	defer prodEng.Close()
-	prodMgr := buildManagerWithWriter(prodEng, gc, target, t.TempDir(), writer)
+	prodMgr := buildManagerWithWriter(prodEng, svc, target, t.TempDir(), writer)
 
 	// Repeated ship+publish cycles: seal+ship 8 small segments, publishing the
 	// resident live set each pass. The background merger consolidates them; the
@@ -166,15 +166,13 @@ func TestRegistryReclaimE2E(t *testing.T) {
 	// references the WHOLE corpus and reaps nothing (restart-tail guard).
 	restartEng := searchengine.New[mockQuery, mockStats](mockFormat{}, searchengine.Options{MinSegmentDocs: 1})
 	defer restartEng.Close()
-	restartMgr := buildManagerWithWriter(restartEng, gc, target, t.TempDir(), writer)
+	restartMgr := buildManagerWithWriter(restartEng, svc, target, t.TempDir(), writer)
 	require.NoError(t, restartMgr.load(ctx))
 	_, err = restartMgr.shipAndPublish(ctx, nil, restartMgr.locallyShipped)
 	require.NoError(t, err)
 
 	after := map[string]bool{}
-	all, err := svc.ListDelta(ctx, connect.NewRequest(&knowledgev1.ListDeltaRequest{Target: target, SinceGen: 0}))
-	require.NoError(t, err)
-	for _, m := range all.Msg.GetMetas() {
+	for _, m := range svc.listMetas(target, 0) {
 		after[m.GetId()] = true
 	}
 	for id := range priorCorpus {

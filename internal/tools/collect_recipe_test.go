@@ -60,6 +60,7 @@ type recipeDeps struct {
 func (d *recipeDeps) LocalLiveness() LocalLiveness                 { return nil }
 func (d *recipeDeps) Sink() collector.Sink                         { return d.sink }
 func (d *recipeDeps) RootDir() string                              { return "" }
+func (d *recipeDeps) UsageAnalyzer() UsageAnalyzerAPI              { return nil }
 func (d *recipeDeps) WorkerRuntime() WorkerRuntimeAPI              { return nil }
 func (d *recipeDeps) WorkerReady() bool                            { return true }
 func (d *recipeDeps) PropReady() bool                              { return true }

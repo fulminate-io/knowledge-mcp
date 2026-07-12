@@ -106,6 +106,7 @@ type ctxPackDeps struct {
 func (d ctxPackDeps) LocalLiveness() LocalLiveness                 { return nil }
 func (d ctxPackDeps) Sink() collector.Sink                         { return nil }
 func (d ctxPackDeps) RootDir() string                              { return "" }
+func (d ctxPackDeps) UsageAnalyzer() UsageAnalyzerAPI              { return nil }
 func (d ctxPackDeps) WorkerRuntime() WorkerRuntimeAPI              { return nil }
 func (d ctxPackDeps) WorkerReady() bool                            { return true }
 func (d ctxPackDeps) PropReady() bool                              { return true }

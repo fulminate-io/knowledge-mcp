@@ -97,44 +97,42 @@ func (e *reconcileEngine) scanCallCount(name string) int {
 	return e.scanCalls[name]
 }
 
-// buildReconcileClient wires a *client over ONE h2c server fronting the
-// reconcileEngine + a healSegmentService (empty Fetch — a shipped corpus loads to
-// an empty resident pool, the post-restart collapse). The returned engine handle
-// lets a test seed scan pages + read the per-graph PipelineScan count.
+// buildReconcileClient wires a *client over an EngineService h2c server + a
+// fakeSegBackend (GCS-agent control plane). The consumer Manager runs on the cloud
+// GCS segment source (logged-in + WithSegmentTransport). The returned engine handle
+// lets a test seed scan pages + read the per-graph PipelineScan count. Presence /
+// coverage metas are seeded onto the backend via shipHNSW (manifest seed); a
+// manifest with NO backing GCS objects loads to an empty resident pool (the
+// post-restart collapse the degenerate-rebuild tests model — the GCS analog of the
+// old empty-Fetch service).
 func buildReconcileClient(t *testing.T, codeRepos ...string) (*client, *reconcileEngine) {
 	t.Helper()
-	return buildReconcileClientWith(t, 0, false, codeRepos...)
+	return buildReconcileClientWith(t, 0, codeRepos...)
 }
 
-// buildReconcileClientWith is the lower-level wiring buildReconcileClient delegates
-// to. It exposes the two knobs the heal-closure red-green needs over the
-// default empty-Fetch / zero-embedded fixture:
-//   - embedded: the BinaryVectorCount Stats serves, so segmentPoolDegenerate (which
-//     gates the heal closure's load-first/rebuild decision) can be ARMED (nonzero).
-//   - realFetch: when true, the segment service serves stored decodable blobs from
-//     Fetch, so a load() of a REAL shipped corpus actually imports it (the intact
-//     case). Default false keeps the empty Fetch the collapse tests model.
-//
-// A test ships a real decodable corpus by routing a producer Manager over the
-// returned client's router (which fronts the same segment service this builds).
+// buildReconcileClientWith exposes the embedded knob (BinaryVectorCount Stats
+// serves) so segmentPoolDegenerate — which gates the heal closure's
+// load-first/rebuild decision — can be ARMED (nonzero). A test seeds a real
+// decodable corpus by shipping through a producer Manager wired to the SAME backend
+// (see shipRealCorpus); a manifest-only seed (shipHNSW) models the empty-load
+// collapse.
 func buildReconcileClientWith(
-	t *testing.T, embedded int32, realFetch bool, codeRepos ...string,
+	t *testing.T, embedded int32, codeRepos ...string,
 ) (*client, *reconcileEngine) {
 	t.Helper()
-	c, eng, _ := buildReconcileClientWithSeg(t, embedded, realFetch, codeRepos...)
+	c, eng, _ := buildReconcileClientWithSeg(t, embedded, codeRepos...)
 	return c, eng
 }
 
 // buildReconcileClientWithSeg is buildReconcileClientWith that ALSO returns the
-// *healSegmentService, so a test can flip its failListAfterN knob to model a server
-// that answers the cheap presence probes but then times out on the heal probe's
-// load() — driving healNeedsRebuild into the ReconcileResidentDegenerate
-// probe-error arm.
+// *fakeSegBackend, so a test can flip its failReadAfterN knob to model a server that
+// answers the cheap presence probe but then times out on the heal probe's load() —
+// driving healNeedsRebuild into the ReconcileResidentDegenerate probe-error arm.
 func buildReconcileClientWithSeg(
-	t *testing.T, embedded int32, realFetch bool, codeRepos ...string,
-) (*client, *reconcileEngine, *healSegmentService) {
+	t *testing.T, embedded int32, codeRepos ...string,
+) (*client, *reconcileEngine, *fakeSegBackend) {
 	t.Helper()
-	c, eng, seg, _ := buildReconcileClientWithSegDir(t, embedded, realFetch, codeRepos...)
+	c, eng, seg, _ := buildReconcileClientWithSegDir(t, embedded, codeRepos...)
 	return c, eng, seg
 }
 
@@ -144,11 +142,10 @@ func buildReconcileClientWithSeg(
 // prior run warmed the disk, then a fresh consumer Manager imports from it L2-first
 // while the server is down).
 func buildReconcileClientWithSegDir(
-	t *testing.T, embedded int32, realFetch bool, codeRepos ...string,
-) (*client, *reconcileEngine, *healSegmentService, string) {
+	t *testing.T, embedded int32, codeRepos ...string,
+) (*client, *reconcileEngine, *fakeSegBackend, string) {
 	t.Helper()
-	seg := newHealSegmentService()
-	seg.realFetch = realFetch
+	backend := newFakeSegBackend(t)
 	eng := &reconcileEngine{
 		countingEngine: &countingEngine{},
 		namesByType:    map[string][]string{string(kgtypes.GraphCode): codeRepos},
@@ -158,15 +155,21 @@ func buildReconcileClientWithSegDir(
 	}
 
 	mux := http.NewServeMux()
-	segPath, segHdlr := knowledgev1connect.NewSegmentServiceHandler(seg)
-	mux.Handle(segPath, segHdlr)
 	engPath, engHdlr := knowledgev1connect.NewEngineServiceHandler(eng)
 	mux.Handle(engPath, engHdlr)
 	srv := httptest.NewServer(h2c.NewHandler(mux, &http2.Server{}))
 	t.Cleanup(srv.Close)
 
 	local := graphclient.NewGraphClientForURL(srv.URL)
-	authState := auth.NewAuthState(newFakeAuthStore(), time.Minute)
+	// Logged IN by design: the login gate selects the OSS-local L2-only segment
+	// source for a not-logged-in caller. The reconcile fixtures exercise the
+	// SERVER/cloud reconcile path (ReconcileResidentDegenerate over a shipped corpus)
+	// — the logged-in regime — so the fixture seeds a keychain refresh token AND a
+	// segment transport to keep the manager on the GCS source. The OSS-local heal path
+	// is exercised by buildOSSHealClient.
+	store := newFakeAuthStore()
+	require.NoError(t, store.Set(context.Background(), auth.KeyRefreshToken, "frt-stub"))
+	authState := auth.NewAuthState(store, time.Minute)
 	router := graphclient.NewRouter(local, srv.URL, staticTokenSource{tok: "tok"}, authState)
 
 	dir := t.TempDir()
@@ -174,9 +177,9 @@ func buildReconcileClientWithSegDir(
 		local:      local,
 		router:     router,
 		authState:  authState,
-		segmentMgr: segmentdist.NewManager(router, dir, 0),
+		segmentMgr: segmentdist.NewManager(router, dir, 0, segmentdist.WithSegmentTransport(backend.transportBuilder())),
 	}
-	return c, eng, seg, dir
+	return c, eng, backend, dir
 }
 
 // makeReconcileScanPage builds n segment_rebuild scan items with 32-byte vectors —
@@ -201,11 +204,11 @@ func makeReconcileScanPage(graph string, n int) []*knowledgev1.PipelineScanItem 
 // HEALTHY (here: a sub-floor shipped corpus, which the resident-vs-shipped probe
 // disarms) triggers NO rebuild — PipelineScan is never paged for it.
 func TestReconcileSegmentCoverage_HealthyNoRebuild(t *testing.T) {
-	c, eng := buildReconcileClient(t, "healthyRepo")
+	c, eng, backend := buildReconcileClientWithSeg(t, 0, "healthyRepo")
 	ctx := context.Background()
 
 	// Sub-floor shipped corpus (4 < floor 64) → the probe disarms → not degenerate.
-	shipHNSW(t, c, "healthyRepo", 4)
+	shipHNSW(t, backend, "healthyRepo", 4)
 	// Seed a scan page so that, IF a rebuild wrongly fired, it would page the scanner
 	// (making the no-rebuild assertion meaningful).
 	eng.scanItems["healthyRepo"] = makeReconcileScanPage("healthyRepo", 10)
@@ -220,12 +223,12 @@ func TestReconcileSegmentCoverage_HealthyNoRebuild(t *testing.T) {
 // corpus >= floor but live resident empty after load — the empty-Fetch collapse)
 // triggers exactly one RebuildSegments: PipelineScan is paged for it.
 func TestReconcileSegmentCoverage_DegenerateRebuilds(t *testing.T) {
-	c, eng := buildReconcileClient(t, "degenRepo")
+	c, eng, backend := buildReconcileClientWithSeg(t, 0, "degenRepo")
 	ctx := context.Background()
 
 	// Full shipped corpus (128 >> floor) but the heal segment service's empty Fetch
 	// means load imports nothing → live resident stays 0 → degenerate.
-	shipHNSW(t, c, "degenRepo", 64, 64)
+	shipHNSW(t, backend, "degenRepo", 64, 64)
 	eng.scanItems["degenRepo"] = makeReconcileScanPage("degenRepo", 10)
 
 	c.reconcileSegmentCoverage(ctx)
@@ -242,7 +245,7 @@ func TestReconcileSegmentCoverage_DegenerateRebuilds(t *testing.T) {
 // RebuildSegments — PipelineScan is paged for it. Under a code-only enumeration the
 // cloud graph would never be discovered, so no rebuild would fire.
 func TestReconcileSegmentCoverage_DegenerateNonCodeRebuilds(t *testing.T) {
-	c, eng := buildReconcileClient(t) // no code repos — exercise the non-code path alone.
+	c, eng, backend := buildReconcileClientWithSeg(t, 0) // no code repos — exercise the non-code path alone.
 	ctx := context.Background()
 
 	// Register a cloud account instance so the reconcile's per-type enumeration
@@ -252,7 +255,7 @@ func TestReconcileSegmentCoverage_DegenerateNonCodeRebuilds(t *testing.T) {
 	// Full shipped corpus (128 >> floor) under the cloud account selector, but the
 	// heal segment service's empty Fetch means load imports nothing → live resident
 	// stays 0 → degenerate. PipelineScan is keyed by the instance name (account).
-	shipHNSWFor(t, c, kgtypes.GraphCloud, "acct", 64, 64)
+	shipHNSWFor(t, backend, kgtypes.GraphCloud, "acct", 64, 64)
 	eng.scanItems["acct"] = makeReconcileScanPage("acct", 10)
 
 	c.reconcileSegmentCoverage(ctx)
@@ -314,18 +317,18 @@ func TestReconcileSegmentCoverage_TimeoutKeepsResidentNoRebuild(t *testing.T) {
 	)
 	// realFetch=true during the warm so the warm Manager actually imports the corpus
 	// from the server into the shared on-disk L2 cache.
-	c, eng, seg, dir := buildReconcileClientWithSegDir(t, 0, true /*realFetch*/, repo)
+	c, eng, backend, dir := buildReconcileClientWithSegDir(t, 0, repo)
 	ctx := context.Background()
 
 	// Ship a REAL decodable HNSW corpus through the router the consumer loads from.
-	producer := segmentdist.NewManager(c.router, t.TempDir(), 0)
+	producer := segmentdist.NewManager(c.router, t.TempDir(), 0, segmentdist.WithSegmentTransport(backend.transportBuilder()))
 	require.NoError(t, producer.AddAndShip(ctx, kgtypes.GraphCode, repo, fastloadVecDocs(repo, corpusN)))
 	require.NoError(t, producer.Flush(ctx, kgtypes.GraphCode, repo))
 
 	// WARM the shared on-disk L2 cache via a SEPARATE Manager rooted at the SAME dir:
 	// its cache-first load Lists + Fetches the real corpus and writes the .seg blobs
 	// to disk under dir. After this the disk cache holds the full decodable corpus.
-	warm := segmentdist.NewManager(c.router, dir, 0)
+	warm := segmentdist.NewManager(c.router, dir, 0, segmentdist.WithSegmentTransport(backend.transportBuilder()))
 	degenerate, err := warm.ReconcileResidentDegenerate(ctx, kgtypes.GraphCode, repo)
 	require.NoError(t, err)
 	require.False(t, degenerate, "the warm load imports the full corpus from the server (resident >= floor)")
@@ -337,9 +340,9 @@ func TestReconcileSegmentCoverage_TimeoutKeepsResidentNoRebuild(t *testing.T) {
 	// already spent on the warm so ALL subsequent Lists (the consumer's reconcile)
 	// fail. A reverted L3-first load() Lists first → errors → resident stays empty; the
 	// L2-first load() never Lists → imports from the warm disk.
-	seg.mu.Lock()
-	seg.failListAfterN = seg.listCalls
-	seg.mu.Unlock()
+	backend.mu.Lock()
+	backend.failReadAfterN = backend.readCalls
+	backend.mu.Unlock()
 
 	// Seed a scan page so that, IF a rebuild wrongly fired, PipelineScan would be paged
 	// (making the scanCallCount==0 assertion meaningful, not vacuous).
@@ -372,8 +375,8 @@ func TestReconcileSegmentCoverage_NilManagerNoPanic(t *testing.T) {
 // reconcile (a degenerate graph gets rebuilt within a few ticks) and returns
 // promptly on ctx cancel (no goroutine leak).
 func TestRunSegmentReconcileLoop_TicksAndCancels(t *testing.T) {
-	c, eng := buildReconcileClient(t, "loopRepo")
-	shipHNSW(t, c, "loopRepo", 64, 64) // degenerate
+	c, eng, backend := buildReconcileClientWithSeg(t, 0, "loopRepo")
+	shipHNSW(t, backend, "loopRepo", 64, 64) // degenerate
 	eng.scanItems["loopRepo"] = makeReconcileScanPage("loopRepo", 10)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -404,13 +407,13 @@ func TestRunSegmentReconcileLoop_TicksAndCancels(t *testing.T) {
 // searchable corpus — WITHOUT any Manager.Search and WITHOUT a collect. It must fail
 // on a tree without the Phase 1-2 reconcile (no rebuild fires) and pass with it.
 func TestReconcileSegmentCoverage_EndToEndHealsWithoutSearchOrCollect(t *testing.T) {
-	c, eng := buildReconcileClient(t, "e2eRepo")
+	c, eng, backend := buildReconcileClientWithSeg(t, 0, "e2eRepo")
 	ctx := context.Background()
 
 	// PRE-state: a real embedded corpus exists (the scan returns >= MinSegmentDocs
 	// items so the rebuild seals a full searchable segment), the server holds shipped
 	// HNSW metas (>= floor) but the live engine resident is empty (empty Fetch).
-	shipHNSW(t, c, "e2eRepo", 64, 64)
+	shipHNSW(t, backend, "e2eRepo", 64, 64)
 	eng.scanItems["e2eRepo"] = makeReconcileScanPage("e2eRepo", searchengine.DefaultMinSegmentDocs)
 
 	// Assert the PRE-state: the probe reports degenerate AND the live resident pool is

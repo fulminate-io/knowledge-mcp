@@ -101,6 +101,93 @@ func TestTransport_PushGraph_SurfacesNon2xx(t *testing.T) {
 	}
 }
 
+// TestTransport_SegmentControlJSON_RoutesToSegmentsPrefix proves SegmentControlJSON
+// POSTs to /v1/segments/<path> (NOT /v1/sync/...), sets the Bearer header, and
+// returns the 2xx JSON body verbatim.
+func TestTransport_SegmentControlJSON_RoutesToSegmentsPrefix(t *testing.T) {
+	var gotMethod, gotPath, gotAuth string
+	var gotBody []byte
+	respBody := []byte(`{"chunks":[{"upload_url":"https://gcs/x","object_path":"segments/a/b/c/h.seg"}]}`)
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotMethod = r.Method
+		gotPath = r.URL.Path
+		gotAuth = r.Header.Get("Authorization")
+		gotBody, _ = io.ReadAll(r.Body)
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write(respBody)
+	}))
+	t.Cleanup(srv.Close)
+
+	src := StaticTokenSource{AccessToken: "tok", Permissions: PermissionSet{PermMCPKnowledgeWrite: {}}}
+	tr := newByteTransport(t, srv, src)
+
+	reqBody := []byte(`{"graph_type":"knowledge","name":"default","format":"hnsw","chunks":[{"content_hash":"h"}]}`)
+	out, err := tr.SegmentControlJSON(context.Background(), "presign", reqBody)
+	if err != nil {
+		t.Fatalf("SegmentControlJSON: %v", err)
+	}
+	if gotMethod != http.MethodPost {
+		t.Errorf("method: got %q want POST", gotMethod)
+	}
+	if gotPath != "/v1/segments/presign" {
+		t.Errorf("path: got %q want /v1/segments/presign", gotPath)
+	}
+	if gotAuth != "Bearer tok" {
+		t.Errorf("auth header: got %q want %q", gotAuth, "Bearer tok")
+	}
+	if !bytes.Equal(gotBody, reqBody) {
+		t.Errorf("request body mismatch: got %q want %q", gotBody, reqBody)
+	}
+	if !bytes.Equal(out, respBody) {
+		t.Errorf("response body not returned verbatim: got %q want %q", out, respBody)
+	}
+}
+
+// TestTransport_SegmentControlJSON_401Refreshes proves the /v1/segments/ channel
+// shares the same 401 → force-refresh → retry core as PushGraph: the first call
+// 401s, one ForceRefresh happens, and the retry (with the rotated token) reaches
+// the segments route and returns the body.
+func TestTransport_SegmentControlJSON_401Refreshes(t *testing.T) {
+	var first atomic.Bool
+	first.Store(true)
+	var seenAuth []string
+	var seenPath string
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		seenAuth = append(seenAuth, r.Header.Get("Authorization"))
+		seenPath = r.URL.Path
+		if first.CompareAndSwap(true, false) {
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"error":"expired"}`))
+			return
+		}
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"found":false}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	src := &refreshingStub{current: "tok-stale"}
+	tr := newByteTransport(t, srv, src)
+
+	out, err := tr.SegmentControlJSON(context.Background(), "manifest/read", []byte(`{}`))
+	if err != nil {
+		t.Fatalf("SegmentControlJSON: %v", err)
+	}
+	if src.refreshCnt != 1 {
+		t.Errorf("expected 1 refresh call, got %d", src.refreshCnt)
+	}
+	if len(seenAuth) < 2 || seenAuth[1] != "Bearer tok-refreshed" {
+		t.Errorf("expected retry with refreshed token, seenAuth=%v", seenAuth)
+	}
+	if seenPath != "/v1/segments/manifest/read" {
+		t.Errorf("path: got %q want /v1/segments/manifest/read", seenPath)
+	}
+	if string(out) != `{"found":false}` {
+		t.Errorf("body: got %q", out)
+	}
+}
+
 // refreshingStub is a RefreshingTokenSource used to prove that 401
 // triggers ForceRefresh and the retry reaches the server with a new token.
 type refreshingStub struct {

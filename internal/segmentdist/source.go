@@ -1,140 +1,125 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// Package segmentdist is the CLIENT-side segment distribution layer: an
-// RPC-backed SegmentSource, a content-addressed on-disk L2 SegmentCache, and a
-// load/unload manager that ties the searchengine engine to the SegmentService
-// wire. It is a CONSUMER of cmd/knowledge/internal/searchengine — deliberately a
-// SIBLING package, NOT inside the engine subpackage, so the engine stays
-// import-clean (stdlib + own subpkgs) for a future service extraction (locked
-// contract). The server stores opaque blobs; this package is
-// the only place the client engine and the SegmentService client meet.
+// Package segmentdist is the CLIENT-side segment distribution layer: a
+// content-addressed on-disk L2 SegmentCache, a GCS-agent SegmentSource for the
+// logged-in cloud path, an L2-only local SegmentSource for the OSS not-logged-in
+// path, and a load/unload manager that ties the searchengine engine to whichever
+// source the graph runs on. It is a CONSUMER of
+// cmd/knowledge/internal/searchengine — deliberately a SIBLING package, NOT inside
+// the engine subpackage, so the engine stays import-clean (stdlib + own subpkgs)
+// for a future service extraction (locked contract).
 package segmentdist
 
 import (
 	"context"
+	"errors"
+	"fmt"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
 
-// segmentCaller is the SegmentService surface rpcSegmentSource depends on. Both
-// *graphclient.GraphClient and *graphclient.Router satisfy it, so ship/pull
-// route cloud-when-logged-in / local-when-not through the same Router dispatch
-// the Engine RPCs use. Declared here (consumer-side interface) so the package
-// has no hard dependency on a concrete client type.
-type segmentCaller interface {
-	Ship(ctx context.Context, req *knowledgev1.ShipRequest) (*knowledgev1.ShipResponse, error)
-	ListDelta(ctx context.Context, req *knowledgev1.ListDeltaRequest) (*knowledgev1.ListDeltaResponse, error)
-	Fetch(ctx context.Context, req *knowledgev1.FetchRequest) (*knowledgev1.FetchResponse, error)
-	Prune(ctx context.Context, req *knowledgev1.PruneRequest) (*knowledgev1.PruneResponse, error)
-	Publish(ctx context.Context, req *knowledgev1.PublishRequest) (*knowledgev1.PublishResponse, error)
+// errNoSegmentTransportBuilder / errNilSegmentTransport are the reasons the source
+// factory hands the errorSegmentSource sentinel when a logged-in cloud caller has
+// no usable segment transport: no builder was supplied, or a supplied builder
+// returned a nil transport. A builder that returns a non-nil error carries that
+// error through as the reason instead.
+var (
+	errNoSegmentTransportBuilder = errors.New("no segment transport builder supplied to a logged-in cloud Manager")
+	errNilSegmentTransport       = errors.New("segment transport builder returned a nil transport")
+)
+
+// loginState is the cloud-capability signal the source factory gates on: whether
+// the caller (production *graphclient.Router) is in a logged-in cloud session.
+// Declared here (consumer-side interface) so the package has no hard dependency on
+// a concrete client type; *graphclient.Router satisfies it via its LoggedIn method.
+type loginState interface {
+	LoggedIn(ctx context.Context) bool
 }
 
-// rpcSegmentSource implements searchengine.SegmentSource over the SegmentService
-// client. It carries the graph's GraphSelector (the routing envelope) plus a
-// background fetchCtx for the ctx-less Prune/PublishManifest legs (those are not
-// part of SegmentSource and have no caller ctx to thread). Fetch and List both
-// route the CALLER's ctx now, so the search/reconcile path is cancellable.
-type rpcSegmentSource struct {
-	caller   segmentCaller
-	target   *knowledgev1.GraphSelector
-	fetchCtx context.Context
-	// writerID is the stable per-machine identity threaded onto every outbound
-	// RPC (Ship/List/Fetch/Publish). The server stamps it as the writer's
-	// last-connection liveness signal; an empty writerID is a tolerated no-op on
-	// the server. Sourced from the stable writer-id helper at construction.
-	writerID string
+// segmentSource is the pluggable segment-distribution seam distManager depends on.
+// It SUPERSETS searchengine.SegmentSource (List/Fetch) with the ship/prune/publish
+// legs so a cloud (GCS-agent) or OSS (local-L2) source plugs into the manager
+// through one interface. Ship is proto-typed on the shared wire contract
+// (SegmentBlobProto/SegmentMetaProto) — every source speaks it.
+type segmentSource interface {
+	searchengine.SegmentSource // List(ctx, sinceGen) []SegmentMeta; Fetch(ctx, ids) []SegmentBlob
+	Ship(ctx context.Context, blobs []*knowledgev1.SegmentBlobProto) ([]*knowledgev1.SegmentMetaProto, error)
+	Prune(ids []searchengine.SegmentID) (int, error)
+	PublishManifest(format string, digests []segmentDigest) (int, error)
+	// verifiesCompletenessServerSide reports whether the source's PublishManifest
+	// verifies live-set completeness on the server/agent side (a HEAD-verify + a
+	// 409-on-missing), making the client's liveSetSubsetOfList0 publish check
+	// redundant AND wrong. It is true ONLY on the GCS source, where List(0) IS the
+	// published manifest — so a resident set that legitimately includes
+	// newly-shipped-but-not-yet-published blobs is never a subset of List(0) and would
+	// deadlock the first/every add-publish. The local source returns false (its
+	// List(0) is the L2 set, against which the subset check is the correct
+	// incomplete-view guard).
+	verifiesCompletenessServerSide() bool
 }
 
-var _ searchengine.SegmentSource = (*rpcSegmentSource)(nil)
-
-// newRPCSegmentSource builds a SegmentSource for one graph. fetchCtx backs the
-// ctx-less Prune/PublishManifest legs (those are not part of SegmentSource, so
-// they have no caller ctx to thread); SegmentSource.Fetch and List take the
-// caller ctx directly. Pass context.Background when no scoped ctx is available.
-// writerID is the stable per-machine identity carried on every outbound RPC for
-// the server's last-connection liveness stamp; "" is a tolerated no-op server-side.
-func newRPCSegmentSource(caller segmentCaller, target *knowledgev1.GraphSelector, writerID string, fetchCtx context.Context) *rpcSegmentSource {
-	if fetchCtx == nil {
-		fetchCtx = context.Background()
-	}
-	return &rpcSegmentSource{caller: caller, target: target, fetchCtx: fetchCtx, writerID: writerID}
+// segmentDigest is one blob's identity in a manifest publish: its content-hash id
+// plus its live doc count. Carrying doc_count through PublishManifest lets the GCS
+// manifest store a real per-digest denominator for the coverage reads.
+type segmentDigest struct {
+	ID       searchengine.SegmentID
+	DocCount int
 }
 
-// List issues SegmentService.ListDelta for the delta (generation > sinceGen) and
-// maps the proto metas to engine metas field-for-field.
-func (s *rpcSegmentSource) List(ctx context.Context, sinceGen uint64) ([]searchengine.SegmentMeta, error) {
-	resp, err := s.caller.ListDelta(ctx, &knowledgev1.ListDeltaRequest{
-		Target:   s.target,
-		SinceGen: sinceGen,
-		WriterId: s.writerID,
-	})
-	if err != nil {
-		return nil, err
-	}
-	metas := make([]searchengine.SegmentMeta, 0, len(resp.GetMetas()))
-	for _, m := range resp.GetMetas() {
-		metas = append(metas, metaFromProto(m))
-	}
-	return metas, nil
+// errorSegmentSource is the FAIL-LOUD sentinel the source factory returns when a
+// logged-in cloud caller's segment transport cannot be built (nil/failed builder).
+// Every mutating/reading leg returns a wrapped, operator-actionable error rather
+// than silently degrading — a logged-in client with a broken transport must NOT
+// fall back to a phantom local source or a deleted RPC path; it must surface the
+// misconfiguration. verifiesCompletenessServerSide returns false (a bool, not an
+// error): the publish subset-check guard must have a definite answer, and false is
+// the safe/inert value (it never suppresses the incomplete-view guard).
+//
+// The source is memoized per graph, so a transport-build failure PINS this sentinel
+// for that graph until the daemon restarts — accepted: a logged-in client whose
+// transport build fails is misconfigured, and a restart after fixing the config
+// re-selects the GCS source.
+type errorSegmentSource struct {
+	reason error
 }
 
-// Fetch issues SegmentService.Fetch for the named ids and maps the proto blobs
-// to engine blobs. It routes the CALLER's ctx (threaded from load/reload, which a
-// search or background reconcile drives) so a cancelled search / shutdown unwinds
-// the in-flight Fetch RPC promptly — NOT the source's stored fetchCtx.
-func (s *rpcSegmentSource) Fetch(ctx context.Context, ids []searchengine.SegmentID) ([]searchengine.SegmentBlob, error) {
-	resp, err := s.caller.Fetch(ctx, &knowledgev1.FetchRequest{
-		Target:   s.target,
-		Ids:      ids,
-		WriterId: s.writerID,
-	})
-	if err != nil {
-		return nil, err
-	}
-	blobs := make([]searchengine.SegmentBlob, 0, len(resp.GetBlobs()))
-	for _, b := range resp.GetBlobs() {
-		blobs = append(blobs, blobFromProto(b))
-	}
-	return blobs, nil
+var _ segmentSource = (*errorSegmentSource)(nil)
+
+// segmentTransportErr wraps the underlying transport-build failure into an
+// operator-actionable message for every errorSegmentSource leg.
+func (s *errorSegmentSource) segmentTransportErr(op string) error {
+	return fmt.Errorf("segmentdist: %s unavailable — logged-in cloud segment transport failed to build (%v); check cloud credentials/connectivity and restart the daemon", op, s.reason)
 }
 
-// Prune issues SegmentService.Prune for the named ids (the merged-away segments
-// the manager reconciled off the server) and returns how many the server
-// actually deleted. Mirrors Fetch — it uses the source's fetchCtx and routes the
-// graph's target selector.
-func (s *rpcSegmentSource) Prune(ids []searchengine.SegmentID) (int, error) {
-	resp, err := s.caller.Prune(s.fetchCtx, &knowledgev1.PruneRequest{
-		Target: s.target,
-		Ids:    ids,
-	})
-	if err != nil {
-		return 0, err
-	}
-	return int(resp.GetDeleted()), nil
+func (s *errorSegmentSource) List(context.Context, uint64) ([]searchengine.SegmentMeta, error) {
+	return nil, s.segmentTransportErr("segment List")
 }
 
-// PublishManifest issues SegmentService.Publish with this writer's full live
-// id-set for one format — the registry-model manifest swap that replaces the
-// unconditional Prune delete. The server atomically swaps this writer's manifest
-// and reference-count-GCs blobs no manifest references; it returns how many it
-// deleted. Mirrors Prune — uses the source's fetchCtx and routes the graph's
-// target selector — but carries the writer/format dimensions the manifest needs.
-func (s *rpcSegmentSource) PublishManifest(format string, ids []searchengine.SegmentID) (int, error) {
-	resp, err := s.caller.Publish(s.fetchCtx, &knowledgev1.PublishRequest{
-		Target:   s.target,
-		WriterId: s.writerID,
-		Format:   format,
-		Ids:      ids,
-	})
-	if err != nil {
-		return 0, err
-	}
-	return int(resp.GetDeleted()), nil
+func (s *errorSegmentSource) Fetch(context.Context, []searchengine.SegmentID) ([]searchengine.SegmentBlob, error) {
+	return nil, s.segmentTransportErr("segment Fetch")
 }
 
-// blobToProto maps an engine SegmentBlob to the wire carrier. Reused by the
-// manager's ship path (Phase 4).
+func (s *errorSegmentSource) Ship(context.Context, []*knowledgev1.SegmentBlobProto) ([]*knowledgev1.SegmentMetaProto, error) {
+	return nil, s.segmentTransportErr("segment Ship")
+}
+
+func (s *errorSegmentSource) Prune([]searchengine.SegmentID) (int, error) {
+	return 0, s.segmentTransportErr("segment Prune")
+}
+
+func (s *errorSegmentSource) PublishManifest(string, []segmentDigest) (int, error) {
+	return 0, s.segmentTransportErr("segment PublishManifest")
+}
+
+// verifiesCompletenessServerSide returns false: the sentinel has no server-side
+// completeness verification, so the client's incomplete-view subset guard stays
+// armed. It is a bool (not an error) so the publish gate always has a definite
+// answer — the T4-1 interface-shape requirement.
+func (s *errorSegmentSource) verifiesCompletenessServerSide() bool { return false }
+
+// blobToProto maps an engine SegmentBlob to the wire carrier. Used by the
+// manager's ship path.
 func blobToProto(b searchengine.SegmentBlob) *knowledgev1.SegmentBlobProto {
 	return &knowledgev1.SegmentBlobProto{
 		Id:         b.ID,
@@ -153,16 +138,5 @@ func blobFromProto(p *knowledgev1.SegmentBlobProto) searchengine.SegmentBlob {
 		Generation: p.GetGeneration(),
 		DocCount:   int(p.GetDocCount()),
 		Bytes:      p.GetBytes(),
-	}
-}
-
-// metaFromProto maps a wire meta carrier to an engine SegmentMeta.
-func metaFromProto(p *knowledgev1.SegmentMetaProto) searchengine.SegmentMeta {
-	return searchengine.SegmentMeta{
-		ID:         p.GetId(),
-		Format:     p.GetFormat(),
-		Generation: p.GetGeneration(),
-		DocCount:   int(p.GetDocCount()),
-		DeadCount:  int(p.GetDeadCount()),
 	}
 }

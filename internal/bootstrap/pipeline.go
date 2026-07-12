@@ -177,9 +177,9 @@ func wirePipelineRuntime(ctx context.Context, c *client, f Config) error {
 
 	// Wire the optional client-side HNSW segment owner: at embed writeback the
 	// pipeline ALSO builds + ships HNSW segments from the binary vectors it just
-	// embedded. The Router satisfies segmentdist's segmentCaller
-	// (Ship/ListDelta/Fetch route cloud-when-logged-in / local-when-not, the same
-	// dispatch the Engine RPCs use). Best-effort: a ship failure only WARNs and
+	// embedded. The Router satisfies segmentdist's loginState seam
+	// (LoggedIn reports cloud-vs-local, selecting the GCS source when logged in and
+	// the L2-local source otherwise). Best-effort: a ship failure only WARNs and
 	// never fails embed writeback (server vector path authoritative — fusion
 	// finding). The L2 segment cache roots under <graph-storage>/segments — off the
 	// CLIENT's --graph-storage data root (segmentCacheDirFor, daemon.go), which equals

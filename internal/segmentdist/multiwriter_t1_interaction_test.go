@@ -14,7 +14,7 @@ import (
 // multiwriter_t1_interaction_test.go proves the T1 bounded-streaming fix (the Fetch
 // byte-ceiling + client adaptive halve-and-retry) holds under MULTI-WRITER
 // concurrent cold-loads. K writers concurrently cold-fetch the same large id-set,
-// each through the existing recordingFetchCaller byte-ceiling instrumentation
+// each through the existing recordingFetchSource byte-ceiling instrumentation
 // (manager_fetchmisses_test.go), and the suite asserts under contention: no single
 // Fetch ever carries more than maxFetchSegmentIDs ids, the client halves+retries on
 // CodeResourceExhausted until EVERY blob imports (no loss) for EVERY writer, and the
@@ -33,18 +33,16 @@ func TestMultiWriterT1ConcurrentColdLoads(t *testing.T) {
 
 	// Each writer gets its OWN byte-ceiling caller + manager so the per-writer
 	// no-loss + call-count instrumentation is isolated, while all K run concurrently.
-	callers := make([]*recordingFetchCaller, k)
+	callers := make([]*recordingFetchSource, k)
 	mgrs := make([]*distManager[mockQuery, mockStats], k)
 	for w := range k {
-		callers[w] = &recordingFetchCaller{
-			reject: func(reqIDs []string) error {
-				if len(reqIDs) > threshold {
-					return connect.NewError(connect.CodeResourceExhausted,
-						fmt.Errorf("byte ceiling: %d ids too large", len(reqIDs)))
-				}
-				return nil
-			},
-		}
+		callers[w] = &recordingFetchSource{reject: func(reqIDs []string) error {
+			if len(reqIDs) > threshold {
+				return connect.NewError(connect.CodeResourceExhausted,
+					fmt.Errorf("byte ceiling: %d ids too large", len(reqIDs)))
+			}
+			return nil
+		}}
 		mgrs[w] = newFetchMissesManager(t, callers[w])
 	}
 

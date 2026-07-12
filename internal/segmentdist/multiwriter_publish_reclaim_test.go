@@ -21,7 +21,7 @@ import (
 // assertLiveSetPublished asserts every id in mgr's resident Export() is present on
 // the server AND referenced by mgr's current manifest — the "live set is never
 // under-published" invariant, checked at a publish observation point.
-func assertLiveSetPublished(t *testing.T, svc *fakeSegmentService, mgr *Manager, gt kgtypes.GraphType, name, where string) {
+func assertLiveSetPublished(t *testing.T, svc *sharedServerFake, mgr *fleetMember, gt kgtypes.GraphType, name, where string) {
 	t.Helper()
 	target := graphSelector(gt, name)
 	manifest := map[string]bool{}

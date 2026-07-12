@@ -38,13 +38,13 @@ func hnswVecDocs(n int) []searchengine.Document {
 // already-shipped content hash). Criterion: Phase 3 Step 1.
 func TestManagerAddAndShipSealsOneBlob(t *testing.T) {
 	_, gc := newSegmentHarness(t)
-	cc := &countingCaller{inner: gc}
+	cc := gc
 	ctx := context.Background()
 
 	// MinSegmentDocs default is 1024; seal exactly one segment with 1024 docs.
 	docs := hnswVecDocs(1024)
 
-	mgr := NewManager(cc, t.TempDir(), 0)
+	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(cc))
 
 	require.NoError(t, mgr.AddAndShip(ctx, kgtypes.GraphCode, "repoHNSW", docs))
 	require.Equal(t, int64(1), cc.shipCalls.Load(), "AddAndShip sealing one segment fires exactly one Ship RPC")
@@ -83,13 +83,13 @@ func TestManagerAddAndShipSealsOneBlob(t *testing.T) {
 // cheap no-op (no segment-count blowup).
 func TestManagerFlushSealsSubThresholdTail(t *testing.T) {
 	_, gc := newSegmentHarness(t)
-	cc := &countingCaller{inner: gc}
+	cc := gc
 	ctx := context.Background()
 
 	// 500 < MinSegmentDocs(1024): the incremental backlog never seals a segment.
 	const n = 500
 	docs := hnswVecDocs(n)
-	mgr := NewManager(cc, t.TempDir(), 0)
+	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(cc))
 
 	require.NoError(t, mgr.AddAndShip(ctx, kgtypes.GraphCode, "smallRepo", docs))
 	dm := mgr.managerFor(kgtypes.GraphCode, "smallRepo")
@@ -121,13 +121,13 @@ func TestManagerFlushSealsSubThresholdTail(t *testing.T) {
 // independent ship state.
 func TestManagerRoutesPerGraph(t *testing.T) {
 	_, gc := newSegmentHarness(t)
-	cc := &countingCaller{inner: gc}
+	cc := gc
 	ctx := context.Background()
 
 	docsA := hnswVecDocs(1024)
 	docsB := hnswVecDocs(1024)
 
-	mgr := NewManager(cc, t.TempDir(), 0)
+	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(cc))
 	require.NoError(t, mgr.AddAndShip(ctx, kgtypes.GraphCode, "repoA", docsA))
 	require.NoError(t, mgr.AddAndShip(ctx, kgtypes.GraphKnowledge, "kg", docsB))
 
@@ -163,13 +163,13 @@ func bm25FieldDocs(n int) []searchengine.Document {
 // one bm25-format blob, and an empty-diff re-ship (no intervening Add) is a no-op.
 func TestManagerAddAndShipFieldsSealsBM25Blob(t *testing.T) {
 	_, gc := newSegmentHarness(t)
-	cc := &countingCaller{inner: gc}
+	cc := gc
 	ctx := context.Background()
 
 	// MinSegmentDocs default is 1024; seal exactly one segment with 1024 docs.
 	docs := bm25FieldDocs(1024)
 
-	mgr := NewManager(cc, t.TempDir(), 0)
+	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(cc))
 
 	require.NoError(t, mgr.AddAndShipFields(ctx, kgtypes.GraphKnowledge, "kgBM25", docs))
 	require.Equal(t, int64(1), cc.shipCalls.Load(), "AddAndShipFields sealing one segment fires exactly one Ship RPC")
@@ -201,7 +201,7 @@ func TestManagerAddAndShipFieldsSealsBM25Blob(t *testing.T) {
 // formats yields two distinct engines.
 func TestManagerHoldsBothFormatMaps(t *testing.T) {
 	_, gc := newSegmentHarness(t)
-	mgr := NewManager(gc, t.TempDir(), 0)
+	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 
 	hnswDM := mgr.managerFor(kgtypes.GraphKnowledge, "kg")
 	bm25DM := mgr.bm25ManagerFor(kgtypes.GraphKnowledge, "kg")
@@ -235,9 +235,9 @@ func TestGraphCacheDirsAreFormatDistinct(t *testing.T) {
 // presence-only (metas), so the countingCaller's Fetch counter stays at zero.
 func TestHasShippedSegments(t *testing.T) {
 	_, gc := newSegmentHarness(t)
-	cc := &countingCaller{inner: gc}
+	cc := gc
 	ctx := context.Background()
-	mgr := NewManager(cc, t.TempDir(), 0)
+	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(cc))
 
 	// Empty graph: zero metas → (false, nil), and no Fetch.
 	has, err := mgr.HasShippedSegments(ctx, kgtypes.GraphCode, "emptyRepo")
@@ -245,15 +245,12 @@ func TestHasShippedSegments(t *testing.T) {
 	require.False(t, has, "a graph with zero shipped segments probes as absent")
 	require.Equal(t, int64(0), cc.fetchCalls.Load(), "the presence probe must NOT Fetch any blob")
 
-	// Ship one blob for a distinct graph, then probe: one+ metas → (true, nil),
-	// still no Fetch.
-	_, err = gc.Ship(ctx, &knowledgev1.ShipRequest{
-		Target: &knowledgev1.GraphSelector{Graph: "code", Repo: "populatedRepo"},
-		Blobs: []*knowledgev1.SegmentBlobProto{
+	// Ship one blob for a distinct graph directly to the shared server, then probe:
+	// one+ metas → (true, nil), still no Fetch.
+	gc.server.ship(&knowledgev1.GraphSelector{Graph: "code", Repo: "populatedRepo"}, "",
+		[]*knowledgev1.SegmentBlobProto{
 			blobToProto(searchengine.SegmentBlob{ID: "s1", Format: "hnsw", Bytes: []byte("seg")}),
-		},
-	})
-	require.NoError(t, err)
+		})
 
 	has, err = mgr.HasShippedSegments(ctx, kgtypes.GraphCode, "populatedRepo")
 	require.NoError(t, err)
@@ -267,21 +264,18 @@ func TestHasShippedSegments(t *testing.T) {
 // DocCount==0, and never Fetches a blob.
 func TestShippedSegmentDocCount(t *testing.T) {
 	_, gc := newSegmentHarness(t)
-	cc := &countingCaller{inner: gc}
+	cc := gc
 	ctx := context.Background()
-	mgr := NewManager(cc, t.TempDir(), 0)
+	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(cc))
 
 	// Graph A: two HNSW segments (doc_count 1000 + 24) + one BM25 segment (doc_count
 	// 2048 — must be EXCLUDED). All non-zero HNSW → covered=1024, anyUnknown=false.
-	_, err := gc.Ship(ctx, &knowledgev1.ShipRequest{
-		Target: &knowledgev1.GraphSelector{Graph: "code", Repo: "covRepo"},
-		Blobs: []*knowledgev1.SegmentBlobProto{
+	gc.server.ship(&knowledgev1.GraphSelector{Graph: "code", Repo: "covRepo"}, "",
+		[]*knowledgev1.SegmentBlobProto{
 			blobToProto(searchengine.SegmentBlob{ID: "h1", Format: "hnsw", DocCount: 1000, Bytes: []byte("a")}),
 			blobToProto(searchengine.SegmentBlob{ID: "h2", Format: "hnsw", DocCount: 24, Bytes: []byte("b")}),
 			blobToProto(searchengine.SegmentBlob{ID: "b1", Format: "bm25", DocCount: 2048, Bytes: []byte("c")}),
-		},
-	})
-	require.NoError(t, err)
+		})
 
 	covered, anyUnknown, err := mgr.ShippedSegmentDocCount(ctx, kgtypes.GraphCode, "covRepo")
 	require.NoError(t, err)
@@ -291,13 +285,11 @@ func TestShippedSegmentDocCount(t *testing.T) {
 
 	// Graph B: one HNSW segment with DocCount==0 (an old pre-doc_count blob) →
 	// anyUnknown=true, covered counts only the non-zero HNSW metas.
-	_, err = gc.Ship(ctx, &knowledgev1.ShipRequest{
-		Target: &knowledgev1.GraphSelector{Graph: "code", Repo: "unknownRepo"},
-		Blobs: []*knowledgev1.SegmentBlobProto{
+	gc.server.ship(&knowledgev1.GraphSelector{Graph: "code", Repo: "unknownRepo"}, "",
+		[]*knowledgev1.SegmentBlobProto{
 			blobToProto(searchengine.SegmentBlob{ID: "h3", Format: "hnsw", DocCount: 512, Bytes: []byte("d")}),
 			blobToProto(searchengine.SegmentBlob{ID: "h4", Format: "hnsw", DocCount: 0, Bytes: []byte("e")}),
-		},
-	})
+		})
 	require.NoError(t, err)
 
 	covered, anyUnknown, err = mgr.ShippedSegmentDocCount(ctx, kgtypes.GraphCode, "unknownRepo")
@@ -313,7 +305,7 @@ func TestShippedSegmentDocCount(t *testing.T) {
 func TestManagerResidentDocCount(t *testing.T) {
 	_, gc := newSegmentHarness(t)
 	ctx := context.Background()
-	mgr := NewManager(gc, t.TempDir(), 0)
+	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 
 	// Seal exactly one segment (1024 docs == MinSegmentDocs) locally — AddAndShip
 	// both seals it into the engine (resident) and ships it.

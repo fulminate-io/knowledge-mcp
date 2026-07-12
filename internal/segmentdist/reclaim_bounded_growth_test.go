@@ -54,7 +54,7 @@ func TestReclaimBoundedGrowth(t *testing.T) {
 	ctx := context.Background()
 	base := t.TempDir()
 	_, gc := newSegmentHarness(t)
-	mgr := NewManager(gc, base, 0)
+	mgr := NewManager(loginStateStub{loggedIn: true}, base, 0, withSegmentSource(gc))
 
 	const seal = searchengine.DefaultMinSegmentDocs
 	gt, name := kgtypes.GraphCode, "bounded"

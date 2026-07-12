@@ -38,6 +38,7 @@ type astTestDeps struct {
 func (d astTestDeps) LocalLiveness() LocalLiveness                 { return nil }
 func (d astTestDeps) Sink() collector.Sink                         { return nil }
 func (d astTestDeps) RootDir() string                              { return d.rootDir }
+func (d astTestDeps) UsageAnalyzer() UsageAnalyzerAPI              { return nil }
 func (d astTestDeps) WorkerRuntime() WorkerRuntimeAPI              { return nil }
 func (d astTestDeps) WorkerReady() bool                            { return true }
 func (d astTestDeps) PropReady() bool                              { return true }

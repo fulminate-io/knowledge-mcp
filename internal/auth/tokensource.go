@@ -72,8 +72,9 @@ const accessCacheMargin = 5 * time.Minute
 // AuthKit access-token lifecycle. It caches the current access token
 // in memory, loads the long-lived refresh token from a [Store] when it
 // needs to refresh, runs RFC 9728 + RFC 8414 discovery against the
-// Fulminate endpoint to learn AuthKit's token URL, and persists the
-// rotated refresh token back to the store on every success.
+// Fulminate endpoint to learn AuthKit's token URL, and best-effort
+// persists the rotated refresh token back to the store on success (a
+// persist failure is logged rather than failing the acquisition).
 //
 // The zero value is not usable; construct via [NewOAuthTokenSource].
 type OAuthTokenSource struct {
@@ -113,7 +114,9 @@ func NewOAuthTokenSource(
 // Token implements [TokenSource]. It returns a cached access token if
 // one is valid + >5min from expiry; otherwise it reads the refresh
 // token from the store, exchanges it for a new access/refresh pair,
-// persists the rotated refresh token, and caches the new access token.
+// caches the new access token, and then best-effort persists the
+// rotated refresh token (a persist failure is logged, not fatal — the
+// freshly acquired access token is already cached and served).
 //
 // On [ErrInvalidGrant] (refresh revoked/expired) the persisted token is
 // NOT cleared — that is the caller's decision (a `knowledge logout`
@@ -189,18 +192,31 @@ func (o *OAuthTokenSource) refreshLocked(ctx context.Context) (string, Permissio
 		return "", nil, err
 	}
 
+	// Cache the validly-acquired access token FIRST, before attempting to
+	// persist the rotated refresh token. The access token is good right
+	// now regardless of whether the store write below succeeds, and a
+	// headless/detached daemon whose keychain write fails must still be
+	// able to serve the token it just obtained rather than re-refreshing
+	// on every call. This also resets warnedOnce (via
+	// populateFromResponseLocked) — unchanged semantics.
+	o.populateFromResponseLocked(tr)
+
 	if tr.RefreshToken != "" && tr.RefreshToken != rt {
 		if setErr := o.store.Set(ctx, KeyRefreshToken, tr.RefreshToken); setErr != nil {
-			// Persistence failed. The new access token is still usable
-			// until expiry but without the rotated refresh token we're
-			// locked out after that. Return the error so the caller
-			// (CLI, logger, metrics) can see this rather than silently
-			// accepting an un-rotatable credential state.
-			return "", nil, fmt.Errorf("auth: persist rotated refresh token: %w", setErr)
+			// Best-effort persistence: the access token is already cached
+			// and served above, so a failed write here is not fatal to
+			// this call. Residual risk: if the credential store cannot be
+			// written and the provider has invalidated the old refresh
+			// token, a re-login may be required after a process restart
+			// (the rotated token was never durably stored). This is
+			// bounded and recoverable, and strictly better than failing
+			// the whole acquisition. Because the token is now cached, this
+			// warning fires at most once per token lifetime, not per call.
+			slog.Warn("auth: could not persist rotated refresh token — token cached for this session; re-login may be required after restart",
+				"error", setErr)
 		}
 	}
 
-	o.populateFromResponseLocked(tr)
 	return o.accessToken, o.permissions, nil
 }
 

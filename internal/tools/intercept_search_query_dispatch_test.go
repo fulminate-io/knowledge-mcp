@@ -181,6 +181,7 @@ type interceptDeps struct {
 func (d *interceptDeps) LocalLiveness() LocalLiveness                 { return d.gc }
 func (d *interceptDeps) Sink() collector.Sink                         { return nil }
 func (d *interceptDeps) RootDir() string                              { return "" }
+func (d *interceptDeps) UsageAnalyzer() UsageAnalyzerAPI              { return nil }
 func (d *interceptDeps) WorkerRuntime() WorkerRuntimeAPI              { return nil }
 func (d *interceptDeps) WorkerReady() bool                            { return true }
 func (d *interceptDeps) PropReady() bool                              { return true }

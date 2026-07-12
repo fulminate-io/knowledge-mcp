@@ -119,6 +119,22 @@ type Config struct {
 	PprofPort            int
 	SkipLLMPrecheck      bool
 
+	// Headless is the umbrella flag for an embedded/supervisor-managed daemon.
+	// Populated from --headless. applyHeadless (headless.go) expands it into the
+	// implied gate set (the four --no-* bools above plus the three internal
+	// NoHive*/NoTranscriptUpload bools below); nothing reads Headless directly
+	// past applyHeadless.
+	Headless bool
+	// NoHiveMonitor, NoHiveReaper, and NoTranscriptUpload are INTERNAL gate bools
+	// with NO public flag of their own — they are set ONLY by applyHeadless when
+	// Headless is true, mirroring how the --no-* bools above gate their runtimes.
+	// runServe consults NoHiveMonitor/NoHiveReaper to skip the hive monitor +
+	// reaper starts; maybeStartTranscriptUpload consults NoTranscriptUpload to
+	// skip the background transcript-upload loops.
+	NoHiveMonitor      bool
+	NoHiveReaper       bool
+	NoTranscriptUpload bool
+
 	// LLM pipeline (lives client-side) worker-pool tuning.
 	NoLLMPipeline      bool
 	SummaryChannelSize int
@@ -168,6 +184,7 @@ func registerConfigFlags(fs *flag.FlagSet, cfg *Config) {
 	fs.IntVar(&cfg.PprofPort, "pprof-port", profiling.DefaultPort, "TCP port for the pprof profiling HTTP endpoint (loopback only)")
 	fs.BoolVar(&cfg.SkipLLMPrecheck, "skip-llm-precheck", false, "Skip the live-ping check that runs against every configured (provider, model) tuple at client startup. Use for offline development or CI sandboxes; default is to fail-fast at boot rather than at first tool call.")
 	fs.BoolVar(&cfg.NoLLMPipeline, "no-llm-pipeline", false, "Skip client-side LLM pipeline (summarize + embed) wiring. The MCP daemon and other tools continue to work; only background summarization/embedding stops.")
+	fs.BoolVar(&cfg.Headless, "headless", false, "Run as an embedded/supervisor-managed daemon: serve the loopback /mcp endpoint and resolve query embeddings, but skip every background content + coordination loop. Implies --no-worker-runtime, --no-propagation-runtime, --skip-llm-precheck and --no-llm-pipeline, and additionally disables the hive monitor, hive reaper, and transcript upload loops. Still loads ~/.knowledge/config (so [credentials] resolve config-first) and still seeds .claude agents/skills. Does not change auth.")
 	fs.IntVar(&cfg.SummaryChannelSize, "summary-channel-size", 10000, "Client-side LLM pipeline: SummaryWork channel buffer size (full = collector blocks)")
 	fs.IntVar(&cfg.SummaryBatchSize, "summary-batch-size", 20, "Client-side LLM pipeline: items per summary worker batch")
 	fs.IntVar(&cfg.SummaryWorkers, "summary-workers", 25, "Client-side LLM pipeline: count of summary worker goroutines")

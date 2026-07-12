@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
@@ -55,7 +56,7 @@ func ExamineThought(ctx context.Context, gc Caller, thoughtID string) (ThoughtEx
 	// one fetchNodesByIDs round-trip over the union of all evidence IDs.
 	chargeMap := chargeMapForThoughts(ctx, gc, []string{thoughtID})
 	chargeNodes := chargeMap[thoughtID]
-	props := computePropertiesFromCharges(chargeNodes)
+	props := computePropertiesFromCharges(chargeNodes, time.Now())
 
 	// Gather all per-charge evidence IDs in one traversal per charge, then
 	// bulk-hydrate. Per-charge traverse calls are unavoidable — but they

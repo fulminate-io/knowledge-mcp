@@ -75,7 +75,7 @@ func TestMultiWriterCoverageFloorEmptyExport(t *testing.T) {
 func TestMultiWriterCoverageFloorSubRatioExport(t *testing.T) {
 	ctx := context.Background()
 	mgrs, svc := newMultiWriterFleet(t, 2)
-	a, b := mgrs[0], mgrs[1]
+	_, b := mgrs[0], mgrs[1]
 	gt, name := kgtypes.GraphCode, "covfloor-subratio"
 	target := graphSelector(gt, name)
 
@@ -94,7 +94,7 @@ func TestMultiWriterCoverageFloorSubRatioExport(t *testing.T) {
 	// A "restarts" (fresh Manager, same writer_id) and ships ONE tail segment WITHOUT
 	// loading the prior corpus — its resident set is 1 of corpusSegs+1 segments, far
 	// below the 0.5 coverage ratio. The publish MUST be gated (skipped).
-	aRestart := restartFleetMember(t, a.caller, 0, t.TempDir())
+	aRestart := restartFleetMember(t, svc, 0, t.TempDir())
 	tail := hnswVecDocs(searchCorpusN)
 	for i := range tail {
 		tail[i].ID = fmt.Sprintf("sr-tail-%s", tail[i].ID)

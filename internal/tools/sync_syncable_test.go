@@ -58,6 +58,7 @@ type listDeps struct {
 func (d listDeps) LocalLiveness() LocalLiveness                 { return nil }
 func (d listDeps) Sink() collector.Sink                         { return nil }
 func (d listDeps) RootDir() string                              { return "" }
+func (d listDeps) UsageAnalyzer() UsageAnalyzerAPI              { return nil }
 func (d listDeps) WorkerRuntime() WorkerRuntimeAPI              { return nil }
 func (d listDeps) WorkerReady() bool                            { return true }
 func (d listDeps) PropReady() bool                              { return true }

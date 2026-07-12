@@ -60,13 +60,13 @@ func TestMultiWriterRestartReapsNothing(t *testing.T) {
 	// A ships a multi-segment corpus (three tiny segments) + publishes its manifest.
 	const aSegs = 3
 	for s := range aSegs {
-		addFlushSeg(t, a, gt, name, s)
+		addFlushSeg(t, a.Manager, gt, name, s)
 	}
 	aPriorManifest := writerManifest(svc, target, a.writerID, "hnsw")
 	require.Len(t, aPriorManifest, aSegs, "A's manifest references its whole corpus")
 
 	// B independently ships + publishes its own distinct segment.
-	bSeg := addFlushSeg(t, b, gt, name, 500)
+	bSeg := addFlushSeg(t, b.Manager, gt, name, 500)
 	require.Equal(t, 1, blobRefCount(svc, target, bSeg), "B's segment referenced only by B")
 
 	priorServer := shippedHNSWIDs(svc)
@@ -83,7 +83,7 @@ func TestMultiWriterRestartReapsNothing(t *testing.T) {
 	// The writer-agnostic full-corpus re-import this test pins is a loadFromServer
 	// property; in production a restart's missing-from-L2 blobs are healed by the
 	// background reconcile.
-	aRestart := restartFleetMember(t, a.caller, 0, a.cacheDir)
+	aRestart := restartFleetMember(t, svc, 0, a.cacheDir)
 	aRestartDM := aRestart.managerFor(gt, name)
 	require.NoError(t, aRestartDM.loadFromServer(ctx))
 	require.Len(t, aRestartDM.engine.Export(), aSegs+1,
@@ -115,7 +115,7 @@ func TestMultiWriterRestartReapsNothing(t *testing.T) {
 // distinctWriterManifestCount returns how many distinct writer manifests exist for
 // the graph (one per writer_id\x00format key) — the "one manifest per writer_id"
 // signal a restart must preserve.
-func distinctWriterManifestCount(svc *fakeSegmentService, target *knowledgev1.GraphSelector) int {
+func distinctWriterManifestCount(svc *sharedServerFake, target *knowledgev1.GraphSelector) int {
 	svc.mu.Lock()
 	defer svc.mu.Unlock()
 	return len(svc.manifests[svc.key(target)])
@@ -132,13 +132,13 @@ func TestMultiWriterGoldenGraphSurvival(t *testing.T) {
 	target := graphSelector(gt, name)
 
 	// The GOLDEN writer ships + publishes its corpus once, then only ever reads.
-	goldenSeg := addFlushSeg(t, golden, gt, name, 0)
+	goldenSeg := addFlushSeg(t, golden.Manager, gt, name, 0)
 	goldenVec := convergeDocs(8, 0)[0].Vector
 
 	// The CHURNER repeatedly ships + publishes its own distinct corpus on the SAME
 	// graph — every cycle drives a refcount-GC that must never reach golden's blob.
 	for c := range 3 {
-		churnSeg := addFlushSeg(t, churner, gt, name, 1000+c)
+		churnSeg := addFlushSeg(t, churner.Manager, gt, name, 1000+c)
 
 		// The golden writer only READS (its load is idempotent; it never publishes).
 		_, err := golden.Search(ctx, gt, name, "", goldenVec, 5)

@@ -55,6 +55,7 @@ type ppTriggerDeps struct {
 func (d *ppTriggerDeps) LocalLiveness() LocalLiveness                 { return nil }
 func (d *ppTriggerDeps) Sink() collector.Sink                         { return d.sink }
 func (d *ppTriggerDeps) RootDir() string                              { return "" }
+func (d *ppTriggerDeps) UsageAnalyzer() UsageAnalyzerAPI              { return nil }
 func (d *ppTriggerDeps) WorkerRuntime() WorkerRuntimeAPI              { return nil }
 func (d *ppTriggerDeps) WorkerReady() bool                            { return true }
 func (d *ppTriggerDeps) PropReady() bool                              { return true }

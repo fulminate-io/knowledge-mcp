@@ -236,7 +236,7 @@ func facetsForThought(
 	citedCodeUpdatedAt int64,
 	now time.Time,
 ) map[string]BlindSpotItem {
-	props := computePropertiesFromCharges(thoughtCharges)
+	props := computePropertiesFromCharges(thoughtCharges, now)
 	name := id
 	if node != nil && node.SymbolName != "" {
 		name = node.SymbolName
@@ -267,7 +267,7 @@ func facetsForThought(
 		add(facetFoundationalUnexamined, "high influence with 0 charges — shapes other beliefs but carries no evidence")
 	}
 	// Facet 3: fragile single-point.
-	if reason, fragile := fragileSinglePoint(thoughtCharges, props); fragile {
+	if reason, fragile := fragileSinglePoint(thoughtCharges, props, now); fragile {
 		add(facetFragileSinglePoint, reason)
 	}
 	// Facet 4: stale confidence.
@@ -298,7 +298,7 @@ func facetsForThought(
 // any single removal flips the sign of Valence (a non-zero before-valence is
 // required so a net-zero stance is not spuriously "flipped"). The reason names
 // the pivotal charge.
-func fragileSinglePoint(charges []*knowledgev1.Node, props ThoughtProperties) (string, bool) {
+func fragileSinglePoint(charges []*knowledgev1.Node, props ThoughtProperties, now time.Time) (string, bool) {
 	if props.ChargeCount <= 1 {
 		return "<=1 charge — the entire stance rests on a single point", true
 	}
@@ -307,7 +307,7 @@ func fragileSinglePoint(charges []*knowledgev1.Node, props ThoughtProperties) (s
 	}
 	beforeSign := math.Signbit(props.Valence)
 	for _, c := range charges {
-		after := computePropertiesExcluding(charges, c.Id)
+		after := computePropertiesExcluding(charges, c.Id, now)
 		if after.Valence == 0 {
 			continue
 		}

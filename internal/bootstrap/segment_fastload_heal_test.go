@@ -68,13 +68,13 @@ func TestHealClosure_IntactCorpusLoadsNoRebuild(t *testing.T) {
 		corpusN  = 96  // floor(64) <= 96 < embedded/2(150)
 		embedded = 300 // >128 so the band floor<=N<embedded/2 is non-empty
 	)
-	c, eng := buildReconcileClientWith(t, embedded, true /*realFetch*/, repo)
+	c, eng, backend := buildReconcileClientWithSeg(t, embedded, repo)
 	ctx := context.Background()
 
 	// Ship a REAL decodable HNSW corpus of N=96 docs through the SAME router the
 	// consumer segmentMgr loads from. AddAndShip of a sub-MinSegmentDocs(1024) batch
 	// just BUFFERS, so Flush force-seals + ships the 96-doc tail as one real segment.
-	producer := segmentdist.NewManager(c.router, t.TempDir(), 0)
+	producer := segmentdist.NewManager(c.router, t.TempDir(), 0, segmentdist.WithSegmentTransport(backend.transportBuilder()))
 	require.NoError(t, producer.AddAndShip(ctx, kgtypes.GraphCode, repo, fastloadVecDocs(repo, corpusN)))
 	require.NoError(t, producer.Flush(ctx, kgtypes.GraphCode, repo))
 
@@ -123,13 +123,13 @@ func TestHealClosure_UnloadableCorpusStillRebuilds(t *testing.T) {
 		embedded = 300 // armed so segmentPoolDegenerate enters the load-first branch
 	)
 	// realFetch=false: the default empty Fetch — a load imports nothing.
-	c, eng := buildReconcileClientWith(t, embedded, false /*realFetch*/, repo)
+	c, eng, backend := buildReconcileClientWithSeg(t, embedded, repo)
 	ctx := context.Background()
 
 	// Shipped metas summing to 128 (>> floor 64) via the []byte("seg") placeholder —
 	// it never decodes, so load imports nothing → resident stays 0. covered=128 <
 	// 0.5*300=150 so segmentPoolDegenerate arms.
-	shipHNSW(t, c, repo, 64, 64)
+	shipHNSW(t, backend, repo, 64, 64)
 	eng.scanItems[repo] = makeReconcileScanPage(repo, 10)
 
 	heal := c.buildHealFactory()(kgtypes.GraphCode, repo)
@@ -164,12 +164,12 @@ func TestHealNeedsRebuild_ProbeErrorNeverRebuilds(t *testing.T) {
 
 	t.Run("probe error keeps resident, NO rebuild", func(t *testing.T) {
 		const repo = "probeErrRepo"
-		c, eng, seg := buildReconcileClientWithSeg(t, embedded, false /*realFetch*/, repo)
+		c, eng, backend := buildReconcileClientWithSeg(t, embedded, repo)
 		ctx := context.Background()
 
 		// Shipped metas summing to 128 (>> floor 64): covered=128 < 0.5*300=150 so
 		// segmentPoolDegenerate arms and the closure reaches the probe.
-		shipHNSW(t, c, repo, 64, 64)
+		shipHNSW(t, backend, repo, 64, 64)
 		// Seed a scan page so a wrongly-fired rebuild WOULD page PipelineScan (the
 		// scanCallCount==0 assertion is meaningful, not vacuous).
 		eng.scanItems[repo] = makeReconcileScanPage(repo, 10)
@@ -179,9 +179,9 @@ func TestHealNeedsRebuild_ProbeErrorNeverRebuilds(t *testing.T) {
 		// ListDelta call) then times out on the heal probe's cache-first load() (the
 		// 2nd+ ListDelta) — the 524/down shape. (Pre-consolidation this was 2 presence
 		// Lists then a 3rd; the snapshot collapse drops it to 1 then the load.)
-		seg.mu.Lock()
-		seg.failListAfterN = 1
-		seg.mu.Unlock()
+		backend.mu.Lock()
+		backend.failReadAfterN = 1
+		backend.mu.Unlock()
 
 		// DIRECT assertion on the decision: a probe error returns (false, nil) — keep
 		// the existing resident, do NOT rebuild against a down/timing-out server.
@@ -195,9 +195,9 @@ func TestHealNeedsRebuild_ProbeErrorNeverRebuilds(t *testing.T) {
 		// consumed ListDelta calls and the listCalls counter persists, so reset it so the
 		// closure's ONE snapshot probe (call 1) succeeds again and its load() (call 2+)
 		// errors.
-		seg.mu.Lock()
-		seg.listCalls = 0
-		seg.mu.Unlock()
+		backend.mu.Lock()
+		backend.readCalls = 0
+		backend.mu.Unlock()
 		heal := c.buildHealFactory()(kgtypes.GraphCode, repo)
 		require.NotNil(t, heal, "a code graph gets a non-nil heal closure")
 		require.NoError(t, heal(ctx), "the heal closure succeeds (best-effort over the probe error)")
@@ -210,10 +210,10 @@ func TestHealNeedsRebuild_ProbeErrorNeverRebuilds(t *testing.T) {
 		// realFetch=false (empty Fetch) and NO failListAfterN: the probe's load()
 		// SUCCEEDS but imports nothing, so resident stays 0 < floor while shipped
 		// (64,64) >= floor → resDegen=true → rebuild.
-		c, eng, _ := buildReconcileClientWithSeg(t, embedded, false /*realFetch*/, repo)
+		c, eng, backend := buildReconcileClientWithSeg(t, embedded, repo)
 		ctx := context.Background()
 
-		shipHNSW(t, c, repo, 64, 64)
+		shipHNSW(t, backend, repo, 64, 64)
 		eng.scanItems[repo] = makeReconcileScanPage(repo, 10)
 
 		// DIRECT assertion: a SUCCESSFUL probe reporting a genuinely-collapsed pool

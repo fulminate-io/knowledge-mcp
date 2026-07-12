@@ -30,7 +30,7 @@ func noMergeEngine() *searchengine.SegmentedIndex[mockQuery, mockStats] {
 // via a throwaway ship-only manager. Each mock doc carries DocCount=1, so the
 // server's shipped doc total == n. The ids are prefixed so a later degenerate
 // manager's own tail ids never collide with the corpus.
-func shipCorpus(t *testing.T, gc segmentCaller, target *knowledgev1.GraphSelector, n int) {
+func shipCorpus(t *testing.T, gc *fakeSegmentSource, target *knowledgev1.GraphSelector, n int) {
 	t.Helper()
 	ctx := context.Background()
 	eng := noMergeEngine()
@@ -56,8 +56,8 @@ func shipCorpus(t *testing.T, gc segmentCaller, target *knowledgev1.GraphSelecto
 // recovery's List(0) RE-lists it — so the Import dedup is exercised: without it the
 // already-resident tail would be double-imported (the no-duplicate-docID witness).
 func degenerateManager(
-	t *testing.T, gc segmentCaller, target *knowledgev1.GraphSelector, tailN int, poison uint64,
-) (*distManager[mockQuery, mockStats], *countingCaller) {
+	t *testing.T, gc *fakeSegmentSource, target *knowledgev1.GraphSelector, tailN int, poison uint64,
+) (*distManager[mockQuery, mockStats], *fakeSegmentSource) {
 	t.Helper()
 	ctx := context.Background()
 	eng := noMergeEngine()

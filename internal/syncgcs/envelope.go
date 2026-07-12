@@ -79,6 +79,43 @@ func OpenEnvelope(blob []byte, dek []byte, objectPath string) ([]byte, error) {
 	return openGCM(dek, nonce, ciphertext, BuildAAD(EnvelopeDirectionPull, objectPath))
 }
 
+// maxWrappedDEKLen bounds the u32 wrapped-DEK length prefix on a PUSH object so a
+// corrupt/hostile header cannot drive a huge allocation before the GCM open. It
+// mirrors the agent's readWrappedDEK cap (segment_fetch.go maxWrappedDEKLen) — an
+// RSA-3072 wrapped DEK is 384 bytes; 8192 leaves ample headroom for 4096-bit keys.
+const maxWrappedDEKLen = 8192
+
+// OpenPushObject reverses a client-sealed PUSH object
+// ([u32 BE wrappedDEKLen][wrapped-DEK][12B nonce][AES-256-GCM ct+tag], see
+// envelope_spec.go) using a DEK the AGENT already unwrapped and returned (raw, in
+// the fetch JSON response). It SKIPS the wrapped-DEK header (the client does not
+// hold the KMS private key and never unwraps it itself) and GCM-opens the trailing
+// [nonce][ct] with AAD = BuildAAD(EnvelopeDirectionPush, objectPath), returning the
+// recovered plaintext segment bytes. objectPath is the GCS object path the agent
+// returned in the fetch response; it MUST byte-match what the client sealed with or
+// the GCM auth fails. OpenEnvelope (the PULL-shape decoder) CANNOT open a push
+// object: it has no wrapped-DEK header and uses the pull-direction AAD.
+func OpenPushObject(blob, dek []byte, objectPath string) ([]byte, error) {
+	if len(blob) < EnvelopeWrappedDEKLenSize {
+		return nil, errors.New("syncgcs: push object too short for length prefix")
+	}
+	wrappedLen := binary.BigEndian.Uint32(blob[:EnvelopeWrappedDEKLenSize])
+	if wrappedLen == 0 || wrappedLen > maxWrappedDEKLen {
+		return nil, fmt.Errorf("syncgcs: wrapped-DEK length %d out of range (1..%d)", wrappedLen, maxWrappedDEKLen)
+	}
+	end := EnvelopeWrappedDEKLenSize + int(wrappedLen)
+	if end > len(blob) {
+		return nil, fmt.Errorf("syncgcs: wrapped-DEK length %d overruns push object of %d bytes", wrappedLen, len(blob))
+	}
+	rest := blob[end:]
+	if len(rest) < EnvelopeNonceSize {
+		return nil, errors.New("syncgcs: push object too short for nonce")
+	}
+	nonce := rest[:EnvelopeNonceSize]
+	ciphertext := rest[EnvelopeNonceSize:]
+	return openGCM(dek, nonce, ciphertext, BuildAAD(EnvelopeDirectionPush, objectPath))
+}
+
 // sealGCM AES-256-GCM-encrypts plaintext under key with nonce and the supplied
 // AAD, returning ciphertext+tag (nonce framed separately by the caller).
 func sealGCM(key, nonce, plaintext, aad []byte) ([]byte, error) {

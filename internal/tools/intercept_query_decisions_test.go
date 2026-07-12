@@ -139,6 +139,53 @@ func TestInterceptQueryDecisions_TopicSearch_ClientEngine(t *testing.T) {
 	assert.Contains(t, engine.FirstTextContent(res), "cap-dec-alpha")
 }
 
+// browseJSONEnvelope is the {graph, type, results, total} shape the agent
+// graph-explorer BrowseResponse consumes — the contract the format:"json"
+// intercept branch must emit (handleBrowseJSON parity).
+type browseJSONEnvelope struct {
+	Graph   string `json:"graph"`
+	Type    string `json:"type"`
+	Total   int    `json:"total"`
+	Results []struct {
+		ID     string `json:"id"`
+		Name   string `json:"name"`
+		Type   string `json:"type"`
+		Status string `json:"status"`
+	} `json:"results"`
+}
+
+func TestInterceptQueryDecisions_Listing_JSON(t *testing.T) {
+	gc := seedDecisionsFixture()
+	deps := &logE2EDeps{gc: gc}
+	args := mustMarshal(t, map[string]any{"type": "decision", "limit": 10, "format": "json"})
+
+	handled, res := InterceptQueryDecisions(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
+	require.True(t, handled)
+	require.False(t, res.IsError, "intercept error: %v", res.Content)
+
+	var env browseJSONEnvelope
+	require.NoError(t, json.Unmarshal([]byte(extractText(res)), &env),
+		"format:json must return parseable browse JSON, got: %s", extractText(res))
+	assert.Equal(t, "knowledge", env.Graph)
+	assert.Equal(t, "decision", env.Type)
+	assert.Equal(t, 2, env.Total)
+	require.Len(t, env.Results, 2)
+	// Listing fixture order: dec2 (beta) then dec1 (alpha).
+	assert.Equal(t, "00000000000000000000000000000aa2", env.Results[0].ID)
+	assert.Equal(t, "cap-dec-beta", env.Results[0].Name)
+	assert.Equal(t, "decision", env.Results[0].Type)
+	assert.Equal(t, "active", env.Results[0].Status)
+	assert.Equal(t, "cap-dec-alpha", env.Results[1].Name)
+
+	// The default (no-format) caller MUST still receive the human markdown — the
+	// intercept only diverges on format:"json".
+	mdArgs := mustMarshal(t, map[string]any{"type": "decision", "limit": 10})
+	handledMD, resMD := InterceptQueryDecisions(deps, kgtools.CallToolParams{Name: "query", Arguments: mdArgs})
+	require.True(t, handledMD)
+	require.False(t, resMD.IsError)
+	assert.Contains(t, extractText(resMD), "Decisions (")
+}
+
 func TestInterceptQueryDecisions_Listing_WireShape_NoIncludeTombstones(t *testing.T) {
 	gc := seedDecisionsFixture()
 	deps := &logE2EDeps{gc: gc}

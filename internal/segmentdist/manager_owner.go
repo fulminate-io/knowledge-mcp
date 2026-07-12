@@ -4,12 +4,9 @@ package segmentdist
 
 import (
 	"context"
-	"path/filepath"
-	"strings"
 	"sync"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
-	"github.com/fulminate-io/knowledge-mcp/internal/graphsel"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine/formats/bm25"
@@ -17,27 +14,21 @@ import (
 )
 
 // Manager is the PRODUCTION owner of per-graph HNSW segment engines. It is the
-// missing production constructor + per-graph routing layer over the (previously
-// test-only) distManager: one searchengine.SegmentedIndex[[]byte, struct{}] over
-// the HNSW format per (graphType, graphName), lazily constructed, each wired to
-// the SegmentService wire via an rpcSegmentSource + an L2 diskSegmentCache.
+// production constructor + per-graph routing layer over the distManager: one
+// searchengine.SegmentedIndex[[]byte, struct{}] over the HNSW format per
+// (graphType, graphName), lazily constructed, each wired to its segment source (a
+// GCS-agent source when logged in, an L2-only local source otherwise) + an L2
+// diskSegmentCache.
 //
 // The client builds + ships HNSW segments from the binary vectors it already
-// holds at the pipeline embed-writeback seam (the server is a
-// dumb opaque blob store; the CLIENT builds + ships). AddAndShip is the HNSW
+// holds at the pipeline embed-writeback seam. AddAndShip is the HNSW
 // entry point; AddAndShipFields is the BM25 entry point. ONE Manager owns BOTH
 // formats per graph — two per-format per-graph maps, each lazily constructed and
 // rooted under a format-distinct L2 cache directory so they never collide.
 type Manager struct {
-	caller   segmentCaller
+	caller   loginState
 	cacheDir string
 	maxBytes int64
-	// writerID is the stable per-machine identity threaded onto every
-	// rpcSegmentSource this Manager constructs, so each outbound segment RPC
-	// carries it for the server's last-connection liveness stamp. Set at
-	// construction from the stable writer-id helper; "" is a tolerated no-op
-	// server-side (an older client that does not supply one).
-	writerID string
 
 	mu sync.Mutex
 	// managers holds the HNSW engine per graph (vectors). bm25Managers holds the
@@ -51,6 +42,53 @@ type Manager struct {
 	// deterministic everywhere — so the split is purely buffer/seed isolation, not a
 	// build-variant distinction.) Guarded by mu.
 	detManagers map[graphKey]*distManager[[]byte, struct{}]
+
+	// segTransport lazily builds the agent /v1/segments control transport for the
+	// cloud (logged-in) segment source. nil when no builder was supplied: on the
+	// logged-in branch the source factory then returns the fail-loud
+	// errorSegmentSource sentinel (a logged-in client with no/failed transport is
+	// misconfigured — it must surface, not silently degrade). Sampled once per lazy
+	// per-graph source construction. The production *auth.Transport it returns
+	// satisfies the SegmentControlTransport seam; in-package tests inject a fake
+	// through the same builder.
+	segTransport func() (SegmentControlTransport, error)
+
+	// testSource, when non-nil, is the segmentSource EVERY lazily-constructed
+	// distManager uses, bypassing the newSegmentSource capability gate entirely. It
+	// is TEST-ONLY (set via withSegmentSource) so the surviving in-package machinery
+	// tests inject a fake segment source without threading it through the production
+	// login/transport gate. nil in every production Manager.
+	testSource segmentSource
+}
+
+// targetBindable is the seam newSegmentSource uses to re-bind an INJECTED test
+// source to the per-graph target, without the production factory referencing a
+// test-only concrete type. Only the in-package test fake implements it; production
+// sources (gcs/local/error) do not, so the type-assert is a no-op for them.
+type targetBindable interface {
+	bindTarget(*knowledgev1.GraphSelector)
+}
+
+// ManagerOption configures a Manager at construction. See the With* functions.
+type ManagerOption func(*Manager)
+
+// WithSegmentTransport supplies the lazy agent /v1/segments control-transport
+// builder that selects the cloud (GCS) segment source on the logged-in path. The
+// production caller wraps cli.BuildSyncTransport (which returns the *auth.Transport
+// satisfying SegmentControlTransport). Without this option a Manager has no transport
+// builder and the logged-in path falls back to the RPC segment source (prior
+// behavior).
+func WithSegmentTransport(builder func() (SegmentControlTransport, error)) ManagerOption {
+	return func(m *Manager) { m.segTransport = builder }
+}
+
+// withSegmentSource is the TEST-ONLY option that pins the segmentSource every
+// lazily-constructed distManager uses, bypassing the newSegmentSource capability
+// gate. The surviving in-package machinery tests inject a fakeSegmentSource through
+// it so they exercise the manager over a controllable double without a live
+// login/transport. It is unexported and never used by production code.
+func withSegmentSource(src segmentSource) ManagerOption {
+	return func(m *Manager) { m.testSource = src }
 }
 
 // graphKey routes one (graphType, graphName) to its dedicated engine+distManager.
@@ -59,22 +97,26 @@ type graphKey struct {
 	graphName string
 }
 
-// NewManager constructs the production owner. caller is the SegmentService
-// surface (*graphclient.Router / *graphclient.GraphClient route
-// cloud-when-logged-in / local-when-not through the same dispatch the Engine RPCs
-// use). cacheDir roots the per-graph L2 disk caches; maxBytes <= 0 means an
-// unbounded cache. The stable per-machine writer_id is resolved once
-// here via the writer-id helper and threaded onto every outbound segment RPC.
-func NewManager(caller segmentCaller, cacheDir string, maxBytes int64) *Manager {
-	return &Manager{
+// NewManager constructs the production owner. caller reports the live cloud login
+// state (production *graphclient.Router.LoggedIn) so the source factory selects
+// the GCS source when logged in and the L2-local source otherwise. cacheDir roots
+// the per-graph L2 disk caches; maxBytes <= 0 means an unbounded cache.
+//
+// opts are optional construction knobs; WithSegmentTransport supplies the cloud
+// segment-transport builder that selects the GCS source on the logged-in path.
+func NewManager(caller loginState, cacheDir string, maxBytes int64, opts ...ManagerOption) *Manager {
+	m := &Manager{
 		caller:       caller,
 		cacheDir:     cacheDir,
 		maxBytes:     maxBytes,
-		writerID:     writerID(),
 		managers:     make(map[graphKey]*distManager[[]byte, struct{}]),
 		bm25Managers: make(map[graphKey]*distManager[bm25.Query, *bm25.CorpusStats]),
 		detManagers:  make(map[graphKey]*distManager[[]byte, struct{}]),
 	}
+	for _, opt := range opts {
+		opt(m)
+	}
+	return m
 }
 
 // AddAndShip routes docs to the (graphType, graphName) engine, Adds them (the
@@ -105,14 +147,15 @@ func (m *Manager) AddAndShip(ctx context.Context, gt kgtypes.GraphType, name str
 	return err
 }
 
-// detResidentHNSWIDs returns the resident Export() ids of the DETERMINISTIC HNSW
-// engine for (gt, name) when one exists, else nil. The embed HNSW publish unions
-// these into its "hnsw" manifest because the embed and deterministic engines
-// share ONE (graphKey, writer, "hnsw") manifest — without the union, an embed
-// publish would reap the deterministic engine's still-resident blobs. Returns nil
-// when no deterministic engine has been constructed for the graph (the common
-// embed-only case).
-func (m *Manager) detResidentHNSWIDs(gt kgtypes.GraphType, name string) []searchengine.SegmentID {
+// detResidentHNSWIDs returns the resident Export() digests (id + doc_count) of the
+// DETERMINISTIC HNSW engine for (gt, name) when one exists, else nil. The embed HNSW
+// publish unions these into its "hnsw" manifest because the embed and deterministic
+// engines share ONE (graphKey, writer, "hnsw") manifest — without the union, an
+// embed publish would reap the deterministic engine's still-resident blobs. Each
+// digest carries the blob's DocCount so the GCS manifest records the sibling
+// engine's real per-digest denominator. Returns nil when no deterministic engine has
+// been constructed for the graph (the common embed-only case).
+func (m *Manager) detResidentHNSWIDs(gt kgtypes.GraphType, name string) []segmentDigest {
 	m.mu.Lock()
 	dm, ok := m.detManagers[graphKey{graphType: gt, graphName: name}]
 	m.mu.Unlock()
@@ -120,11 +163,24 @@ func (m *Manager) detResidentHNSWIDs(gt kgtypes.GraphType, name string) []search
 		return nil
 	}
 	exported := dm.engine.Export()
-	ids := make([]searchengine.SegmentID, 0, len(exported))
+	digests := make([]segmentDigest, 0, len(exported))
 	for _, b := range exported {
-		ids = append(ids, b.ID)
+		digests = append(digests, segmentDigest{ID: b.ID, DocCount: b.DocCount})
 	}
-	return ids
+	return digests
+}
+
+// hasDetManager reports whether a deterministic HNSW engine has ALREADY been
+// constructed for (gt, name) — i.e. a real rebuild ran this process. The OSS
+// PruneCache live-set builder uses it to avoid force-loading a FRESHLY-constructed
+// det engine (whose scanExisting would pull accumulated on-disk orphans into the L2
+// live set); on the cloud path the det force-load Lists the server, so a fresh
+// construction is harmless there.
+func (m *Manager) hasDetManager(gt kgtypes.GraphType, name string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	_, ok := m.detManagers[graphKey{graphType: gt, graphName: name}]
+	return ok
 }
 
 // AddAndShipFields is the BM25 counterpart to AddAndShip: it routes field-bearing
@@ -291,16 +347,16 @@ func (m *Manager) InvalidateLocal(gt kgtypes.GraphType, name string, ids []searc
 }
 
 // HasShippedSegments is the CHEAP zero-shipped-segments presence probe the
-// auto-heal arm uses: a single ListDelta(sinceGen=0) RPC for the
-// graph, returning true when the server holds at least one segment meta. It does
-// NOT Fetch any blob (ListDeltaResponse carries only Metas — segment.pb.go) and
-// does NOT touch the per-graph engines/maps, so it is safe to call on the embed
-// drain edge without disturbing resident state. A fresh rpcSegmentSource is
-// built per call (no engine, no cache) — strictly the presence list.
+// auto-heal arm uses: ONE ShippedManifestSnapshot read for the graph, returning true
+// when it holds at least one segment meta. The snapshot is login-gated (cloud →
+// the GCS agent manifest/read; OSS not-logged-in → the L2-local source's set), so
+// this probe follows whichever source the graph runs on. It does NOT Fetch any blob
+// and does NOT touch the per-graph engines/maps, so it is safe to call on the embed
+// drain edge without disturbing resident state — strictly the presence list.
 //
 // Standalone wrapper for callers that probe presence ALONE (no co-located doc-count
 // probe to share a snapshot with). The shared-snapshot heal path uses
-// ShippedManifestSnapshot + HasShippedFromSnapshot to collapse its List(0)s.
+// ShippedManifestSnapshot + HasShippedFromSnapshot to collapse its reads.
 func (m *Manager) HasShippedSegments(ctx context.Context, gt kgtypes.GraphType, name string) (bool, error) {
 	snapshot, err := m.ShippedManifestSnapshot(ctx, gt, name)
 	if err != nil {
@@ -309,26 +365,38 @@ func (m *Manager) HasShippedSegments(ctx context.Context, gt kgtypes.GraphType, 
 	return m.HasShippedFromSnapshot(snapshot), nil
 }
 
-// ShippedSegmentDocCount is the coverage-ratio probe's data source: it sums the
-// per-segment live doc count across the graph's HNSW-format shipped segments
-// (covered) from a single ListDelta(sinceGen=0) — the same cheap, engine-free,
-// blob-free presence list HasShippedSegments uses. It returns:
+// ShippedSegmentDocCount is the coverage-ratio probe's data source: it reports the
+// "segment-covered docs" count for the graph's HNSW coverage. It returns:
 //
-//   - covered: the summed HNSW meta.DocCount — "segment-covered docs". ONLY the
-//     HNSW format is summed: BM25 metas index the SAME nodes, so summing both
-//     would double-count; HNSW is the per-node vector coverage that mirrors the
-//     graph's binary_vector_count denominator the coverage ratio compares against.
-//   - anyUnknown: true when ANY summed HNSW meta has DocCount==0. A zero doc count
-//     means that segment predates the doc_count wire plumbing (an old blob written
-//     before the field existed), so its real coverage is UNKNOWN. The coverage
-//     probe treats anyUnknown as the conservative-unknown signal and DISARMS the
-//     ratio trigger (falling back to the zero-only heal) — without this guard a
-//     fleet mid-migration, whose every shipped meta still reports doc_count=0,
-//     would read covered=0 on every graph and trigger a fleet-wide rebuild storm.
+//   - covered: the segment-covered HNSW doc count. On the cloud path it is the
+//     summed HNSW meta.DocCount from the GCS manifest snapshot; on the OSS path it is
+//     the L2 resident HNSW doc count. ONLY the HNSW dimension is counted: BM25 metas
+//     index the SAME nodes, so counting both would double-count; HNSW is the
+//     per-node vector coverage that mirrors the graph's binary_vector_count
+//     denominator the coverage ratio compares against.
+//   - anyUnknown: true when ANY summed HNSW meta has DocCount==0 (cloud path only).
+//     A zero doc count means that segment predates the doc_count wire plumbing (an
+//     old blob written before the field existed), so its real coverage is UNKNOWN.
+//     The coverage probe treats anyUnknown as the conservative-unknown signal and
+//     DISARMS the ratio trigger (falling back to the zero-only heal) — without this
+//     guard a fleet mid-migration, whose every shipped meta still reports
+//     doc_count=0, would read covered=0 on every graph and trigger a fleet-wide
+//     rebuild storm. The OSS/L2 path never returns anyUnknown (the resident count is
+//     always a real, known denominator).
 //
-// Does NOT Fetch any blob and does NOT touch the per-graph engines/maps — same
-// presence-probe contract as HasShippedSegments (a fresh rpcSegmentSource per
-// call, no engine, no cache).
+// It is SOURCE-AWARE, mirroring the heal path's healNeedsRebuildLocal split:
+//
+//   - OSS / L2-authoritative (not logged in): there is no server/GCS manifest, and
+//     the local source's List stamps DocCount=0 (so the snapshot would report
+//     covered=0/anyUnknown=true and wrongly disarm). Instead the covered count is
+//     the L2 RESIDENT HNSW doc count (LoadResidentDocCount) — the same L2 numerator
+//     the OSS heal decision uses. anyUnknown is false: the resident count is a real,
+//     known denominator, never the pre-doc_count sentinel.
+//   - CLOUD (logged-in): the GCS manifest carries real per-digest doc_counts, so the
+//     covered count is summed from the ShippedManifestSnapshot (the prior behavior).
+//
+// The OSS branch loads the read engine (idempotent, L2-only); the cloud branch does
+// NOT touch the per-graph engines/maps (one manifest read, no blob fetch).
 //
 // Standalone wrapper preserved for the external coverage seam
 // (tools.SegmentCoverageReader → manage(status)), which probes ONE graph's doc count
@@ -336,6 +404,16 @@ func (m *Manager) HasShippedSegments(ctx context.Context, gt kgtypes.GraphType, 
 func (m *Manager) ShippedSegmentDocCount(
 	ctx context.Context, gt kgtypes.GraphType, name string,
 ) (covered int, anyUnknown bool, err error) {
+	if m.IsL2Authoritative(gt, name) {
+		// OSS path: the L2 resident HNSW doc count is the covered denominator (the
+		// local source's List stamps DocCount=0, so the manifest snapshot cannot
+		// supply it). Known count → anyUnknown is always false.
+		resident, err := m.LoadResidentDocCount(ctx, gt, name)
+		if err != nil {
+			return 0, false, err
+		}
+		return resident, false, nil
+	}
 	snapshot, err := m.ShippedManifestSnapshot(ctx, gt, name)
 	if err != nil {
 		return 0, false, err
@@ -358,115 +436,25 @@ func (m *Manager) ResidentDocCount(gt kgtypes.GraphType, name string) int {
 	return m.managerFor(gt, name).engine.ResidentDocCount()
 }
 
-// managerFor lazily constructs (check-construct-store under the mutex) the
-// per-graph distManager: a SegmentedIndex over the HNSW format, an
-// rpcSegmentSource for the graph's selector, and a content-addressed L2 cache
-// rooted per-graph so distinct graphs never collide on the content-hash filename
-// space.
-func (m *Manager) managerFor(gt kgtypes.GraphType, name string) *distManager[[]byte, struct{}] {
-	// Embed engine: hnsw.New() is the deterministic builder (the only HNSW builder),
-	// so the live ship path is byte-reproducible — two writers building the same
-	// nodes mint the same content-hash blob, the content-addressed store dedups to
-	// one copy at refcount-N, and exact-match recall is recovered. Auto-reclaim
-	// superseded constituents from the LIVE L2 cache on every background merge.
-	return m.hnswManagerFor(m.managers, hnsw.New(), gt, name, true)
+// IsL2Authoritative reports whether (gt, name) runs on the OSS-local L2-only source
+// (the not-logged-in path) — reading the HNSW embed manager's l2Authoritative flag.
+// The flag is uniform per graph across formats (both formats derive it from the same
+// caller gate), so the HNSW manager's value is representative. The bootstrap heal
+// path calls this to route the OSS degeneracy collapse: an L2-authoritative graph
+// heals from resident-vs-embedded locally, with NO server presence probe.
+func (m *Manager) IsL2Authoritative(gt kgtypes.GraphType, name string) bool {
+	return m.managerFor(gt, name).l2Authoritative
 }
 
-// hnswManagerFor is the shared HNSW distManager factory both the embed path
-// (managerFor → m.managers) and the segment_rebuild path
-// (AddDeterministic/FlushDeterministic → m.detManagers) route through. dst selects
-// WHICH per-graph map the memoized instance is keyed in; fmtVariant is the HNSW
-// Format (always the deterministic builder now). The two maps are distinct so the
-// embed and rebuild engines for the SAME graph never share a coalescing buffer or a
-// shippedIDs seed — but they share one content-addressed cache root (Name() is the
-// constant "hnsw"), which is SAFE because content-hash filenames key on the bytes:
-// both engines build the same nodes byte-identically and so correctly share one
-// cache entry, while non-overlapping content lands under a distinct hash — no
-// collision either way.
-//
-// autoReclaim gates the merge-completion hook: the EMBED engine (managerFor) wires
-// Options.OnMerge so a background merge reclaims the superseded constituents from
-// its live L2 cache; the DETERMINISTIC rebuild engine passes false (nil OnMerge),
-// because its superseded segments are reclaimed through the ROLE-A
-// FlushDeterministic→InvalidateLocal path, NOT the live embed cache — auto-
-// reclaiming there would Remove against the wrong cache lifecycle.
-func (m *Manager) hnswManagerFor(
-	dst map[graphKey]*distManager[[]byte, struct{}], fmtVariant hnsw.Format, gt kgtypes.GraphType, name string, autoReclaim bool,
-) *distManager[[]byte, struct{}] {
-	k := graphKey{graphType: gt, graphName: name}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if dm, ok := dst[k]; ok {
-		return dm
+// LoadResidentDocCount loads the graph's HNSW engine (idempotent; L2-only on the OSS
+// path) and returns the resident HNSW doc count — the L2 resident numerator the OSS
+// degeneracy collapse compares against the embedded-node denominator. It is the
+// load-first variant of ResidentDocCount (the raw accessor does NOT load), needed
+// because the heal path must import the warm L2 set before reading the count.
+func (m *Manager) LoadResidentDocCount(ctx context.Context, gt kgtypes.GraphType, name string) (int, error) {
+	dm := m.managerFor(gt, name)
+	if err := dm.load(ctx); err != nil {
+		return 0, err
 	}
-
-	target := graphSelector(gt, name)
-	source := newRPCSegmentSource(m.caller, target, m.writerID, context.Background())
-	cache := newDiskSegmentCache(graphCacheDirFor(m.cacheDir, gt, name, fmtVariant.Name()), m.maxBytes)
-
-	// var-before-assign: the OnMerge closure back-references the distManager that is
-	// constructed AFTER the engine. Safe because OnMerge cannot fire before the
-	// engine's first merge, which cannot happen before this function returns (the
-	// engine holds no documents at construction and the first merge tick is 50ms
-	// out against an empty set).
-	var dm *distManager[[]byte, struct{}]
-	opts := searchengine.Options{}
-	if autoReclaim {
-		opts.OnMerge = func(res searchengine.MergeResult) { dm.reclaimMerged(res) }
-	}
-	engine := searchengine.New[[]byte, struct{}](fmtVariant, opts)
-	dm = newDistManager(engine, source, cache, target, fmtVariant.Name())
-	dst[k] = dm
-	return dm
-}
-
-// bm25ManagerFor lazily constructs (check-construct-store under the mutex) the
-// per-graph BM25 distManager: a SegmentedIndex over the BM25 format, an
-// rpcSegmentSource for the graph's selector (same format-agnostic routing the
-// HNSW path uses), and a content-addressed L2 cache rooted under a BM25-distinct
-// directory so HNSW and BM25 blobs never collide on the content-hash filename
-// space. Mirrors managerFor; the only differences are the format type parameters
-// and the format tag on the cache dir.
-func (m *Manager) bm25ManagerFor(gt kgtypes.GraphType, name string) *distManager[bm25.Query, *bm25.CorpusStats] {
-	k := graphKey{graphType: gt, graphName: name}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if dm, ok := m.bm25Managers[k]; ok {
-		return dm
-	}
-
-	target := graphSelector(gt, name)
-	source := newRPCSegmentSource(m.caller, target, m.writerID, context.Background())
-	cache := newDiskSegmentCache(graphCacheDirFor(m.cacheDir, gt, name, bm25.New().Name()), m.maxBytes)
-
-	// var-before-assign OnMerge: the BM25 engine is embed-only (no deterministic
-	// variant), so it always auto-reclaims superseded constituents from its live L2
-	// cache on a background merge. Same back-reference-after-construction safety as
-	// hnswManagerFor (OnMerge cannot fire before this returns).
-	var dm *distManager[bm25.Query, *bm25.CorpusStats]
-	engine := searchengine.New[bm25.Query, *bm25.CorpusStats](bm25.New(), searchengine.Options{
-		OnMerge: func(res searchengine.MergeResult) { dm.reclaimMerged(res) },
-	})
-	dm = newDistManager(engine, source, cache, target, bm25.New().Name())
-	m.bm25Managers[k] = dm
-	return dm
-}
-
-// graphCacheDirFor roots one graph's per-format L2 cache under
-// <base>/<format>/<graphType>/<safeName> so distinct graphs AND distinct formats
-// never collide on the content-hash filename space. The name is sanitized (path
-// separators stripped) since it is used as a directory name.
-func graphCacheDirFor(base string, gt kgtypes.GraphType, name, format string) string {
-	safe := strings.NewReplacer("/", "_", "\\", "_", "..", "_").Replace(name)
-	if safe == "" {
-		safe = "_"
-	}
-	return filepath.Join(base, format, string(gt), safe)
-}
-
-// graphSelector builds the routing envelope for one graph. Mirrors the canonical
-// mapping (topology/foundation/wire.go:graphTarget): the instance name lands in
-// the field the server resolver keys off per graph type.
-func graphSelector(gt kgtypes.GraphType, name string) *knowledgev1.GraphSelector {
-	return graphsel.GraphSelectorFor(gt, name, false)
+	return dm.engine.ResidentDocCount(), nil
 }

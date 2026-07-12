@@ -6,6 +6,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"time"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
@@ -54,8 +55,8 @@ const (
 // charge map — its (TrustMatrix, error) signature is the contract every caller
 // that does not need the charge map relies on (BuildTrustMatrixWithPersonality,
 // BlindSpotInfluenceVector, the propagation drivers).
-func BuildTrustMatrix(ctx context.Context, gc Caller, thoughtIDs []string) (TrustMatrix, error) {
-	matrix, _, err := BuildTrustMatrixWithCharges(ctx, gc, thoughtIDs)
+func BuildTrustMatrix(ctx context.Context, gc Caller, thoughtIDs []string, now time.Time) (TrustMatrix, error) {
+	matrix, _, err := BuildTrustMatrixWithCharges(ctx, gc, thoughtIDs, now)
 	return matrix, err
 }
 
@@ -69,7 +70,7 @@ func BuildTrustMatrix(ctx context.Context, gc Caller, thoughtIDs []string) (Trus
 // chargeMapForThoughts (→ fetchChargesFor, the bulk-charge Execute seam).
 // fillSparseRows operates entirely from those two prebuilt maps; the charge map
 // is returned rather than discarded.
-func BuildTrustMatrixWithCharges(ctx context.Context, gc Caller, thoughtIDs []string) (TrustMatrix, map[string][]*knowledgev1.Node, error) {
+func BuildTrustMatrixWithCharges(ctx context.Context, gc Caller, thoughtIDs []string, now time.Time) (TrustMatrix, map[string][]*knowledgev1.Node, error) {
 	n := len(thoughtIDs)
 	if n == 0 {
 		return TrustMatrix{}, nil, nil
@@ -84,14 +85,14 @@ func BuildTrustMatrixWithCharges(ctx context.Context, gc Caller, thoughtIDs []st
 	}
 	chargeMap := chargeMapForThoughts(ctx, gc, thoughtIDs)
 
-	rows := fillSparseRows(thoughtIDs, idIndex, adj, chargeMap)
+	rows := fillSparseRows(thoughtIDs, idIndex, adj, chargeMap, now)
 	normalizeSparseRows(rows)
 	return TrustMatrix{IDs: thoughtIDs, IDIndex: idIndex, Rows: rows}, chargeMap, nil
 }
 
 // fillSparseRows builds the sparse trust-matrix rows from the prebuilt
 // adjacency map + charge map. No wire calls.
-func fillSparseRows(thoughtIDs []string, idIndex map[string]int, adj map[string][]string, chargeMap map[string][]*knowledgev1.Node) [][]SparseEntry {
+func fillSparseRows(thoughtIDs []string, idIndex map[string]int, adj map[string][]string, chargeMap map[string][]*knowledgev1.Node, now time.Time) [][]SparseEntry {
 	n := len(thoughtIDs)
 	rows := make([][]SparseEntry, n)
 	seen := make([]bool, n)
@@ -108,7 +109,7 @@ func fillSparseRows(thoughtIDs []string, idIndex map[string]int, adj map[string]
 			seen[j] = true
 			row = append(row, SparseEntry{Col: j, Val: 1.0})
 		}
-		row = append(row, SparseEntry{Col: i, Val: computePropertiesFromCharges(chargeMap[id]).SelfTrust})
+		row = append(row, SparseEntry{Col: i, Val: computePropertiesFromCharges(chargeMap[id], now).SelfTrust})
 		sortRowByCol(row)
 		rows[i] = row
 	}
@@ -301,12 +302,12 @@ func ComputeInfluenceVector(matrix TrustMatrix) map[string]float64 {
 // buildComponentMatrix builds the TrustMatrix for one connected
 // component, reusing the prebuilt adj subset and chargeMap.
 // Personality scalars are applied if profile != nil.
-func buildComponentMatrix(component []string, adj map[string][]string, chargeMap map[string][]*knowledgev1.Node, profile *PersonalityProfile, nodeByID map[string]*knowledgev1.Node) TrustMatrix {
+func buildComponentMatrix(component []string, adj map[string][]string, chargeMap map[string][]*knowledgev1.Node, profile *PersonalityProfile, nodeByID map[string]*knowledgev1.Node, now time.Time) TrustMatrix {
 	idIndex := make(map[string]int, len(component))
 	for i, id := range component {
 		idIndex[id] = i
 	}
-	rows := fillSparseRows(component, idIndex, adj, chargeMap)
+	rows := fillSparseRows(component, idIndex, adj, chargeMap, now)
 	normalizeSparseRows(rows)
 	matrix := TrustMatrix{IDs: component, IDIndex: idIndex, Rows: rows}
 	if profile != nil {

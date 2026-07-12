@@ -40,6 +40,7 @@ type fakeDeps struct {
 func (d *fakeDeps) LocalLiveness() LocalLiveness                 { return nil }
 func (d *fakeDeps) Sink() collector.Sink                         { return d.sink }
 func (d *fakeDeps) RootDir() string                              { return "" }
+func (d *fakeDeps) UsageAnalyzer() UsageAnalyzerAPI              { return nil }
 func (d *fakeDeps) WorkerRuntime() WorkerRuntimeAPI              { return nil }
 func (d *fakeDeps) WorkerReady() bool                            { return true }
 func (d *fakeDeps) PropReady() bool                              { return true }

@@ -6,7 +6,6 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
-	"sync"
 	"testing"
 	"time"
 
@@ -19,7 +18,6 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1/knowledgev1connect"
 	"github.com/fulminate-io/knowledge-mcp/internal/auth"
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
-	"github.com/fulminate-io/knowledge-mcp/internal/graphsel"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine/formats/hnsw"
 	"github.com/fulminate-io/knowledge-mcp/internal/segmentdist"
@@ -43,213 +41,68 @@ func (e *coverageStatsEngine) Stats(
 	}), nil
 }
 
-// healSegmentService is a minimal in-memory SegmentServiceHandler for the heal
-// probe test: Ship stamps a monotonic generation and stores the blob; ListDelta
-// serves the stored metas (carrying doc_count). It only needs Ship + ListDelta
-// for the probe (HasShippedSegments / ShippedSegmentDocCount drive ListDelta(0));
-// Fetch/Prune are present to satisfy the handler interface and never fire here.
-type healSegmentService struct {
-	mu        sync.Mutex
-	byKey     map[string][]*knowledgev1.SegmentBlobProto
-	gen       uint64
-	manifests map[string]map[string]map[string]bool // graphKey -> writer+format -> id-set
-	// realFetch, when true, serves the stored byKey blobs for the requested ids
-	// (mirroring fakeSegmentService.Fetch) so a load() of a REAL decodable corpus
-	// imports it — the intact-corpus path. Default false keeps the empty
-	// Fetch (the post-restart collapse the degenerate-rebuild tests model).
-	realFetch bool
-
-	// failListAfterN, when > 0, makes the first N ListDelta calls succeed and every
-	// ListDelta call AFTER that return a transport error (connect.CodeUnavailable —
-	// the 524/timeout/server-down shape). This models a server that answers the
-	// cheap presence probes (HasShippedSegments + ShippedSegmentDocCount) but then
-	// times out on the heal probe's cache-first load() — letting a test drive
-	// healNeedsRebuild into the ReconcileResidentDegenerate probe-error arm.
-	// listCalls is the running ListDelta count (guarded by mu).
-	failListAfterN int
-	listCalls      int
-}
-
-func newHealSegmentService() *healSegmentService {
-	return &healSegmentService{
-		byKey:     map[string][]*knowledgev1.SegmentBlobProto{},
-		manifests: map[string]map[string]map[string]bool{},
-	}
-}
-
-func (f *healSegmentService) key(t *knowledgev1.GraphSelector) string {
-	return t.GetGraph() + ":" + t.GetRepo() + t.GetAccount() + t.GetName()
-}
-
-func (f *healSegmentService) Ship(
-	_ context.Context, req *connect.Request[knowledgev1.ShipRequest],
-) (*connect.Response[knowledgev1.ShipResponse], error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	k := f.key(req.Msg.GetTarget())
-	for _, b := range req.Msg.GetBlobs() {
-		f.gen++
-		f.byKey[k] = append(f.byKey[k], &knowledgev1.SegmentBlobProto{
-			Id: b.GetId(), Format: b.GetFormat(), Generation: f.gen,
-			DocCount: b.GetDocCount(), Bytes: b.GetBytes(),
-		})
-	}
-	return connect.NewResponse(&knowledgev1.ShipResponse{}), nil
-}
-
-func (f *healSegmentService) ListDelta(
-	_ context.Context, req *connect.Request[knowledgev1.ListDeltaRequest],
-) (*connect.Response[knowledgev1.ListDeltaResponse], error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.listCalls++
-	if f.failListAfterN > 0 && f.listCalls > f.failListAfterN {
-		// Server answered the cheap presence probes, now times out on the load() —
-		// the 524/down shape that drives the heal probe-error arm.
-		return nil, connect.NewError(connect.CodeUnavailable, context.DeadlineExceeded)
-	}
-	k := f.key(req.Msg.GetTarget())
-	var metas []*knowledgev1.SegmentMetaProto
-	for _, b := range f.byKey[k] {
-		if b.GetGeneration() > req.Msg.GetSinceGen() {
-			metas = append(metas, &knowledgev1.SegmentMetaProto{
-				Id: b.GetId(), Format: b.GetFormat(), Generation: b.GetGeneration(), DocCount: b.GetDocCount(),
-			})
-		}
-	}
-	return connect.NewResponse(&knowledgev1.ListDeltaResponse{Metas: metas}), nil
-}
-
-func (f *healSegmentService) Fetch(
-	_ context.Context, req *connect.Request[knowledgev1.FetchRequest],
-) (*connect.Response[knowledgev1.FetchResponse], error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if !f.realFetch {
-		// Default: empty Fetch — a load imports nothing (the post-restart collapse).
-		return connect.NewResponse(&knowledgev1.FetchResponse{}), nil
-	}
-	// realFetch: serve the stored blobs for the requested ids (mirror
-	// fakeSegmentService.Fetch source_test.go:108-126) so a load() of a real
-	// decodable corpus actually imports it.
-	k := f.key(req.Msg.GetTarget())
-	want := map[string]bool{}
-	for _, id := range req.Msg.GetIds() {
-		want[id] = true
-	}
-	var blobs []*knowledgev1.SegmentBlobProto
-	for _, b := range f.byKey[k] {
-		if want[b.GetId()] {
-			blobs = append(blobs, b)
-		}
-	}
-	return connect.NewResponse(&knowledgev1.FetchResponse{Blobs: blobs}), nil
-}
-
-func (f *healSegmentService) Prune(
-	_ context.Context, _ *connect.Request[knowledgev1.PruneRequest],
-) (*connect.Response[knowledgev1.PruneResponse], error) {
-	return connect.NewResponse(&knowledgev1.PruneResponse{}), nil
-}
-
-// Publish swaps this writer's manifest and refcount-GCs blobs no manifest
-// references — the registry-model mirror so the coverage-heal probe's publish path
-// behaves like the real server.
-func (f *healSegmentService) Publish(
-	_ context.Context, req *connect.Request[knowledgev1.PublishRequest],
-) (*connect.Response[knowledgev1.PublishResponse], error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	k := f.key(req.Msg.GetTarget())
-	if f.manifests[k] == nil {
-		f.manifests[k] = map[string]map[string]bool{}
-	}
-	mk := req.Msg.GetWriterId() + "\x00" + req.Msg.GetFormat()
-	set := map[string]bool{}
-	for _, id := range req.Msg.GetIds() {
-		set[id] = true
-	}
-	f.manifests[k][mk] = set
-
-	referenced := map[string]bool{}
-	for _, s := range f.manifests[k] {
-		for id := range s {
-			referenced[id] = true
-		}
-	}
-	kept := f.byKey[k][:0]
-	var removed uint64
-	for _, b := range f.byKey[k] {
-		if referenced[b.GetId()] {
-			kept = append(kept, b)
-			continue
-		}
-		removed++
-	}
-	f.byKey[k] = kept
-	return connect.NewResponse(&knowledgev1.PublishResponse{Deleted: removed}), nil
-}
-
-// buildHealProbeClient stands up ONE h2c httptest server serving BOTH the
-// EngineService (Stats, embedded count) and the SegmentService (ListDelta,
-// shipped metas) handlers, wires a logged-out *Router pointed at it, and builds a
-// *client whose segmentMgr AND GraphCaller() both route through that one router —
-// exactly the production wiring (pipeline.go:166 passes c.router to NewManager;
-// GraphCaller() returns c.router). Shipped metas are seeded via shipHNSW through
-// the client's own router, so the segment service is internal to the fixture.
-func buildHealProbeClient(t *testing.T, embedded int32) *client {
+// buildHealProbeClient stands up an EngineService (Stats, embedded count) h2c server
+// and a fakeSegBackend (the GCS-agent control plane), wires a logged-IN *Router +
+// a segmentMgr WithSegmentTransport(backend) so the manager runs on the cloud GCS
+// segment source, and builds a *client whose segmentMgr AND GraphCaller() route as
+// in production CLOUD wiring. Shipped metas are seeded onto the GCS backend via
+// shipHNSW (manifest seed), so ShippedManifestSnapshot's manifest/read returns them.
+//
+// LOGGED IN by design: the login gate selects the OSS-local L2-only source for a
+// not-logged-in caller. These probes exercise the SERVER/cloud segment path
+// (ShippedManifestSnapshot → GCS manifest/read, the coverage ratio) — the logged-in
+// regime — so the fixture seeds a keychain refresh token AND a segment transport to
+// keep the manager on the GCS source. The OSS-local heal path is exercised
+// separately by buildOSSHealClient.
+func buildHealProbeClient(t *testing.T, embedded int32) (*client, *fakeSegBackend) {
 	t.Helper()
-	seg := newHealSegmentService()
+	backend := newFakeSegBackend(t)
 	eng := &coverageStatsEngine{countingEngine: &countingEngine{}, embedded: embedded}
 
 	mux := http.NewServeMux()
-	segPath, segHdlr := knowledgev1connect.NewSegmentServiceHandler(seg)
-	mux.Handle(segPath, segHdlr)
 	engPath, engHdlr := knowledgev1connect.NewEngineServiceHandler(eng)
 	mux.Handle(engPath, engHdlr)
 	srv := httptest.NewServer(h2c.NewHandler(mux, &http2.Server{}))
 	t.Cleanup(srv.Close)
 
 	local := graphclient.NewGraphClientForURL(srv.URL)
-	authState := auth.NewAuthState(newFakeAuthStore(), time.Minute) // logged out → routes local
+	store := newFakeAuthStore()
+	require.NoError(t, store.Set(context.Background(), auth.KeyRefreshToken, "frt-stub")) // logged IN → cloud GCS source
+	authState := auth.NewAuthState(store, time.Minute)
 	router := graphclient.NewRouter(local, srv.URL, staticTokenSource{tok: "tok"}, authState)
 
 	c := &client{
 		local:      local,
 		router:     router,
 		authState:  authState,
-		segmentMgr: segmentdist.NewManager(router, t.TempDir(), 0),
+		segmentMgr: segmentdist.NewManager(router, t.TempDir(), 0, segmentdist.WithSegmentTransport(backend.transportBuilder())),
 	}
-	return c
+	return c, backend
 }
 
-// shipHNSW seeds the heal probe's server with HNSW-format segment metas carrying
+// shipHNSW seeds the heal probe's GCS backend with an HNSW-format manifest carrying
 // the given live doc_counts (a doc_count of 0 is the pre-doc_count-plumbing blob
-// that drives the conservative-unknown signal). Ships through the client's own
-// router so the metas land where the probe's ListDelta(0) reads them.
-func shipHNSW(t *testing.T, c *client, repo string, docCounts ...int) {
+// that drives the conservative-unknown signal). It seeds the manifest directly so
+// the probe's ShippedManifestSnapshot manifest/read returns the metas.
+func shipHNSW(t *testing.T, backend *fakeSegBackend, repo string, docCounts ...int) {
 	t.Helper()
-	shipHNSWFor(t, c, kgtypes.GraphCode, repo, docCounts...)
+	shipHNSWFor(t, backend, kgtypes.GraphCode, repo, docCounts...)
 }
 
-// shipHNSWFor is the graph-type-aware shipHNSW: it addresses the (gt, name)
-// instance through graphsel.GraphSelectorFor (so a cloud/cicd graph ships under
-// Account and a practice graph under Language, not Repo) — letting a reconcile
-// test ship a degenerate corpus for a NON-code embeddable builtin. shipHNSW is the
-// code-graph shorthand that delegates here.
-func shipHNSWFor(t *testing.T, c *client, gt kgtypes.GraphType, name string, docCounts ...int) {
+// shipHNSWFor is the graph-type-aware shipHNSW: it seeds the manifest for (gt, name)
+// on the GCS backend keyed by graphType/name (matching the gcsSegmentSource's
+// manifest key), letting a reconcile test seed a degenerate corpus for a NON-code
+// embeddable builtin. shipHNSW is the code-graph shorthand that delegates here.
+func shipHNSWFor(t *testing.T, backend *fakeSegBackend, gt kgtypes.GraphType, name string, docCounts ...int) {
 	t.Helper()
-	blobs := make([]*knowledgev1.SegmentBlobProto, 0, len(docCounts))
+	digests := make([]segManifestDigest, 0, len(docCounts))
 	for i, dc := range docCounts {
-		blobs = append(blobs, &knowledgev1.SegmentBlobProto{
-			Id: name + "-h" + string(rune('A'+i)), Format: hnsw.New().Name(), DocCount: int32(dc), Bytes: []byte("seg"),
+		digests = append(digests, segManifestDigest{
+			ContentHash: name + "-h" + string(rune('A'+i)),
+			DocCount:    dc,
 		})
 	}
-	_, err := c.router.Ship(context.Background(), &knowledgev1.ShipRequest{
-		Target: graphsel.GraphSelectorFor(gt, name, false),
-		Blobs:  blobs,
-	})
-	require.NoError(t, err)
+	backend.seedManifest(string(gt), name, hnsw.New().Name(), digests)
 }
 
 // TestSegmentPoolDegenerateCoverageProbe is the fails-when-absent heal-decision
@@ -281,8 +134,8 @@ func TestSegmentPoolDegenerateCoverageProbe(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("CASE A degenerate-but-nonzero heals", func(t *testing.T) {
-		c := buildHealProbeClient(t, 120)
-		shipHNSW(t, c, "repoA", 12) // covered=12, anyUnknown=false
+		c, backend := buildHealProbeClient(t, 120)
+		shipHNSW(t, backend, "repoA", 12) // covered=12, anyUnknown=false
 		snap, err := c.segmentMgr.ShippedManifestSnapshot(ctx, kgtypes.GraphCode, "repoA")
 		require.NoError(t, err)
 		degenerate, err := c.segmentPoolDegenerate(ctx, kgtypes.GraphCode, "repoA", snap)
@@ -291,8 +144,8 @@ func TestSegmentPoolDegenerateCoverageProbe(t *testing.T) {
 	})
 
 	t.Run("CASE B healthy disarms", func(t *testing.T) {
-		c := buildHealProbeClient(t, 60)
-		shipHNSW(t, c, "repoB", 58) // covered=58, anyUnknown=false
+		c, backend := buildHealProbeClient(t, 60)
+		shipHNSW(t, backend, "repoB", 58) // covered=58, anyUnknown=false
 		snap, err := c.segmentMgr.ShippedManifestSnapshot(ctx, kgtypes.GraphCode, "repoB")
 		require.NoError(t, err)
 		degenerate, err := c.segmentPoolDegenerate(ctx, kgtypes.GraphCode, "repoB", snap)
@@ -301,8 +154,8 @@ func TestSegmentPoolDegenerateCoverageProbe(t *testing.T) {
 	})
 
 	t.Run("CASE C small graph below floor no-flap", func(t *testing.T) {
-		c := buildHealProbeClient(t, 10)
-		shipHNSW(t, c, "repoC", 1) // covered=1, embedded=10 < floor → ratio never consulted
+		c, backend := buildHealProbeClient(t, 10)
+		shipHNSW(t, backend, "repoC", 1) // covered=1, embedded=10 < floor → ratio never consulted
 		snap, err := c.segmentMgr.ShippedManifestSnapshot(ctx, kgtypes.GraphCode, "repoC")
 		require.NoError(t, err)
 		degenerate, err := c.segmentPoolDegenerate(ctx, kgtypes.GraphCode, "repoC", snap)
@@ -311,8 +164,8 @@ func TestSegmentPoolDegenerateCoverageProbe(t *testing.T) {
 	})
 
 	t.Run("CASE D migration all-zero-doc_count storm guard disarms", func(t *testing.T) {
-		c := buildHealProbeClient(t, 60000)
-		shipHNSW(t, c, "repoD", 0, 0) // every HNSW meta doc_count==0 → anyUnknown=true
+		c, backend := buildHealProbeClient(t, 60000)
+		shipHNSW(t, backend, "repoD", 0, 0) // every HNSW meta doc_count==0 → anyUnknown=true
 		snap, err := c.segmentMgr.ShippedManifestSnapshot(ctx, kgtypes.GraphCode, "repoD")
 		require.NoError(t, err)
 		degenerate, err := c.segmentPoolDegenerate(ctx, kgtypes.GraphCode, "repoD", snap)

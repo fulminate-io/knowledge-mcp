@@ -4,6 +4,7 @@ package auth
 
 import (
 	"context"
+	"errors"
 	"sync"
 )
 
@@ -45,4 +46,16 @@ func (s *testStore) Delete(_ context.Context, key string) error {
 	}
 	delete(s.data, key)
 	return nil
+}
+
+// setErrStore is a [Store] fake whose Set always fails, standing in for an
+// OS-keychain write failure on a headless/detached daemon. Get and Delete
+// delegate to the embedded testStore so reads (refresh token, client id) and
+// seeding still work — only the persist step is broken.
+type setErrStore struct {
+	*testStore
+}
+
+func (s setErrStore) Set(_ context.Context, _, _ string) error {
+	return errors.New("keychain write failed (test stand-in)")
 }

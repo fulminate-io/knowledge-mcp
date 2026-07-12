@@ -458,6 +458,7 @@ type rebuildClientDeps struct {
 func (rebuildClientDeps) LocalLiveness() LocalLiveness                 { return nil }
 func (rebuildClientDeps) Sink() collector.Sink                         { return nil }
 func (rebuildClientDeps) RootDir() string                              { return "" }
+func (rebuildClientDeps) UsageAnalyzer() UsageAnalyzerAPI              { return nil }
 func (rebuildClientDeps) WorkerRuntime() WorkerRuntimeAPI              { return nil }
 func (rebuildClientDeps) WorkerReady() bool                            { return true }
 func (rebuildClientDeps) PropReady() bool                              { return true }

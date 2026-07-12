@@ -93,6 +93,7 @@ type graphTypeTestDeps struct {
 func (d graphTypeTestDeps) LocalLiveness() LocalLiveness                 { return nil }
 func (d graphTypeTestDeps) Sink() collector.Sink                         { return nil }
 func (d graphTypeTestDeps) RootDir() string                              { return "" }
+func (d graphTypeTestDeps) UsageAnalyzer() UsageAnalyzerAPI              { return nil }
 func (d graphTypeTestDeps) WorkerRuntime() WorkerRuntimeAPI              { return nil }
 func (d graphTypeTestDeps) WorkerReady() bool                            { return true }
 func (d graphTypeTestDeps) PropReady() bool                              { return true }

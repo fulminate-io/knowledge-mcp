@@ -168,6 +168,7 @@ func (f fakeTensionsProvider) GetTensions() ([]clientthought.TensionReport, bool
 func (d interceptTestDeps) LocalLiveness() LocalLiveness         { return nil }
 func (d interceptTestDeps) Sink() collector.Sink                 { return nil }
 func (d interceptTestDeps) RootDir() string                      { return "" }
+func (d interceptTestDeps) UsageAnalyzer() UsageAnalyzerAPI      { return nil }
 func (d interceptTestDeps) WorkerRuntime() WorkerRuntimeAPI      { return nil }
 func (d interceptTestDeps) WorkerReady() bool                    { return true }
 func (d interceptTestDeps) PropReady() bool                      { return !d.propNotReady }

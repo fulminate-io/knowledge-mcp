@@ -112,6 +112,61 @@ func TestInterceptQueryRules_NoMatch(t *testing.T) {
 	assert.Equal(t, want, got)
 }
 
+// TestInterceptQueryRules_JSON asserts the format:"json" branch returns the
+// {graph, type, results, total} browse envelope (agent graph-explorer contract),
+// while the default (no-format) caller still receives the human markdown. Reuses
+// browseJSONEnvelope defined in intercept_query_decisions_test.go (same package).
+func TestInterceptQueryRules_JSON(t *testing.T) {
+	gc := seedRulesFixture()
+	deps := &logE2EDeps{gc: gc}
+	args := mustMarshal(t, map[string]any{"type": "rule", "format": "json"})
+
+	handled, res := InterceptQueryRules(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
+	require.True(t, handled)
+	require.False(t, res.IsError, "intercept error: %v", res.Content)
+
+	var env browseJSONEnvelope
+	require.NoError(t, json.Unmarshal([]byte(extractText(res)), &env),
+		"format:json must return parseable browse JSON, got: %s", extractText(res))
+	assert.Equal(t, "knowledge", env.Graph)
+	assert.Equal(t, "rule", env.Type)
+	assert.Equal(t, 3, env.Total)
+	require.Len(t, env.Results, 3)
+	// Fixture order: gamma, beta, alpha.
+	assert.Equal(t, "000000000000000000000000000000a3", env.Results[0].ID)
+	assert.Equal(t, "rule-gamma", env.Results[0].Name)
+	assert.Equal(t, "rule", env.Results[0].Type)
+	assert.Equal(t, "active", env.Results[0].Status)
+	assert.Equal(t, "rule-alpha", env.Results[2].Name)
+
+	// Default (no-format) caller MUST still receive the human markdown.
+	mdArgs := mustMarshal(t, map[string]any{"type": "rule"})
+	handledMD, resMD := InterceptQueryRules(deps, kgtools.CallToolParams{Name: "query", Arguments: mdArgs})
+	require.True(t, handledMD)
+	require.False(t, resMD.IsError)
+	assert.Contains(t, extractText(resMD), "Rules (")
+}
+
+// TestInterceptQueryRules_JSON_Empty asserts the JSON branch serializes an empty
+// result set as results:[] (total 0) rather than the "No rules recorded" prose —
+// the empty markdown text would break the caller's JSON.parse.
+func TestInterceptQueryRules_JSON_Empty(t *testing.T) {
+	gc := &rulesFakeGc{rules: nil}
+	deps := &logE2EDeps{gc: gc}
+	args := mustMarshal(t, map[string]any{"type": "rule", "format": "json"})
+
+	handled, res := InterceptQueryRules(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
+	require.True(t, handled)
+	require.False(t, res.IsError)
+
+	var env browseJSONEnvelope
+	require.NoError(t, json.Unmarshal([]byte(extractText(res)), &env),
+		"empty result must still be parseable JSON, got: %s", extractText(res))
+	assert.Equal(t, "rule", env.Type)
+	assert.Equal(t, 0, env.Total)
+	assert.Empty(t, env.Results)
+}
+
 func TestInterceptQueryRules_WrongType_FallsThrough(t *testing.T) {
 	gc := seedRulesFixture()
 	deps := &logE2EDeps{gc: gc}

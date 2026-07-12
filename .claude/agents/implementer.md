@@ -320,6 +320,16 @@ and ordering decision has already been made. Your job is mechanical execution.
     stop to be safe").
   </context-exhaustion-exception>
 
+  <handoff-never-reverts severity="hard">
+    When stopping, blocking, or handing off: LEAVE THE WORKING TREE AS IT IS and
+    DESCRIBE its uncommitted state in your report — never `git checkout/restore/
+    reset/stash/clean` the shared tree "to leave a clean base." A successor agent
+    may already own those uncommitted changes; reverting destroys work you cannot
+    see being consumed. A clean-boundary preference never outranks another agent's
+    in-flight claim on the tree. If your uncommitted work is worth protecting,
+    COMMIT it (small, honest message) rather than reverting it.
+  </handoff-never-reverts>
+
 </constraint>
 
 <constraint id="no-silent-substitution" severity="hard">

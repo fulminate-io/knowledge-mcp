@@ -124,6 +124,12 @@ func constructClient(f Config) *client {
 		local:     tcp,
 		router:    router,
 		authState: authState,
+		// Retain the ONE token source selectAuthSources just built for the
+		// Router so the segment/sync/transcript control transports share it
+		// (via buildCloudSyncTransport) instead of each minting a fresh cold
+		// keychain source. This is also what carries the resolved
+		// Config.AuthToken (flag/config) into those transports.
+		cloudTokenSource: tokenSource,
 		// claimRegistry is created here so ClaimRegistry() (consumed by
 		// InterceptHive) and the daemon Monitor (wired in runServe) share the
 		// SAME instance — the claims InterceptHive records are the ones the
@@ -164,4 +170,17 @@ func constructClient(f Config) *client {
 		startKeepaliveFn(tcp, context.Background())
 	}
 	return c
+}
+
+// buildCloudSyncTransport constructs the sync *auth.Transport over the SHARED
+// process-wide cloud token source (c.cloudTokenSource) rather than minting a
+// fresh cold keychain source. It is the factory the daemon threads into the
+// segment control plane, the sync push/pull intercept, and the transcript
+// upload loop so all three present the one warm credential — the exact wrap
+// cli.BuildSyncTransport performs, over the retained source. The (*auth.Transport,
+// error) shape matches the seam every consumer expects; the error is always nil
+// here (construction cannot fail once the source is in hand) but is retained to
+// satisfy that shape.
+func (c *client) buildCloudSyncTransport() (*auth.Transport, error) {
+	return auth.NewSyncTransport(cli.CloudEndpoint, c.cloudTokenSource), nil
 }

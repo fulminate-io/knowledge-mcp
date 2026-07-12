@@ -129,6 +129,19 @@ func renderBrowseJSON(c browseContext, nodes []*knowledgev1.Node, total int) kgt
 	})
 }
 
+// BrowseJSONResult builds the {graph, type, results, total} browse-JSON envelope
+// — the handleBrowseJSON contract every server-side type-browse emits and the
+// agent graph-explorer BrowseResponse consumes — from an already-fetched node
+// set. Exported so the client-side type-browse intercepts that render markdown by
+// default (decisions, rules) can honor format:"json" with the SAME envelope the
+// server browse returns for every other node type, reusing the nodes they already
+// fetched (no second wire call). An empty fields list yields the full-node
+// projection (fullNodeJSON: id/name/type/status?/metadata?); a non-empty list
+// projects through ProjectNodeJSON. tools→engine import is one-way (no cycle).
+func BrowseJSONResult(graphLabel, nodeType string, nodes []*knowledgev1.Node, total int, fields []string) kgtools.ToolResult {
+	return renderBrowseJSON(browseContext{Label: graphLabel, NodeType: nodeType, Fields: fields}, nodes, total)
+}
+
 // fullNodeJSON mirrors the server fullNodeJSON (tools_query_dispatch_project.go):
 // id + name + type, plus status + metadata when present.
 func fullNodeJSON(n *knowledgev1.Node) map[string]any {

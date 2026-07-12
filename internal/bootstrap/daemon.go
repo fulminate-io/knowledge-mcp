@@ -22,15 +22,16 @@ import (
 	"time"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
-	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
 	"github.com/fulminate-io/knowledge-mcp/internal/llmproviders"
+	"github.com/fulminate-io/knowledge-mcp/internal/tools"
 )
 
 // the bind-first startup change UNIFIED SHUTDOWN BUDGET (keep these in sync with the Makefile
 // daemon-stop drain loop count): on SIGTERM, runServe drains SIX Stops
-// SEQUENTIALLY in LIFO defer order — reaper.Stop + monitor.Stop (deferred in
-// runServe), then drainOnShutdown's wireJoinDeadline wait + pipeline.Stop +
-// runtime.Stop + propLoop.Stop. The budget inequality is:
+// SEQUENTIALLY in LIFO defer order — reaper.Stop + monitor.Stop (both marshaled by
+// the startHiveLoops stop closure deferred in runServe, reaper first), then
+// drainOnShutdown's wireJoinDeadline wait + pipeline.Stop + runtime.Stop +
+// propLoop.Stop. The budget inequality is:
 //
 //	reaper.Stop + monitor.Stop + wireJoinDeadline + pipeline.Stop + runtime.Stop +
 //	propLoop.Stop  <=  Makefile daemon-stop drain window.
@@ -41,7 +42,7 @@ import (
 // seconds — the per-Stop deadlines below are abandon-backstops, not expected
 // durations. Pinned to 3s each → 6 * 3s = 18s worst-case, under the Makefile's 20s
 // drain window. If you change one of these, re-check the Makefile loop count (and
-// the reaper/monitor Stop deadlines in runServe) so the inequality still holds.
+// the reaper/monitor Stop deadlines in startHiveLoops) so the inequality still holds.
 const (
 	// wireJoinDeadline bounds how long drainOnShutdown waits for the background
 	// wiring goroutine (wireRuntimesBackground) to finish before it gives up and
@@ -91,6 +92,17 @@ func buildClient(f Config) (*client, func(), error) {
 	// knowledge-server, so the proactive spawn below is skipped for them.
 	c := constructClient(f)
 	stage("constructClient done")
+
+	// Install the shared-source sync-transport builder SYNCHRONOUSLY here,
+	// before the MCP listener binds and before wireRuntimesBackground is
+	// spawned as a goroutine. The push/pull intercepts read this package
+	// func-value from handler goroutines; a single pre-bind write establishes
+	// a happens-before edge with every read, so no atomic/mutex is needed.
+	// Wiring it from the background goroutine instead would be an
+	// unsynchronized data race against those reads. c.cloudTokenSource is
+	// already set (by constructClient) so the builder presents the one shared
+	// cloud credential.
+	tools.SetSyncTransportBuilder(c.buildCloudSyncTransport)
 
 	maybeSpawnLocalServer(c, f)
 	stage("ensureServerReachable done")
@@ -202,6 +214,15 @@ func (c *client) wireRuntimesBackground(ctx context.Context, f Config) {
 		stage("wireWorkerRuntime done")
 	} else {
 		slog.Debug("dream worker runtime skipped (--no-worker-runtime)")
+		// A --headless daemon skips the worker runtime, so config.LoadOrAutoDetect
+		// (reached ONLY via wireWorkerRuntime → buildRuntime) never runs. Load
+		// ~/.knowledge/config here — independently of the worker runtime — so the
+		// [credentials] section resolves config-first for BuildEmbedder (query
+		// embedder + rerank) below. Degrade-not-die + never-write; precheck stays
+		// gated on !NoWorkerRuntime so this does NOT resurrect it.
+		if f.Headless {
+			loadHeadlessConfig()
+		}
 	}
 	// c.runtime is assigned above (wireWorkerRuntime, or left nil on degrade);
 	// the atomic Store publishes it — a reader seeing WorkerReady()==true observes
@@ -251,11 +272,13 @@ func (c *client) wireRuntimesBackground(ctx context.Context, f Config) {
 	// the background goroutine rather than blocking the MCP handshake.
 	//
 	// Gated on !NoWorkerRuntime for the SAME reason wireWorkerRuntime is:
-	// config.LoadOrAutoDetect is loaded inside wireWorkerRuntime, so a
-	// --no-worker-runtime process (which skips wireWorkerRuntime) never
-	// loaded config and RunPrecheck → config.Active() would panic. Such a
-	// process makes no LLM calls of its own, so it has no consumer to
-	// precheck anyway.
+	// config.LoadOrAutoDetect is loaded inside wireWorkerRuntime, so a plain
+	// --no-worker-runtime process (which skips wireWorkerRuntime) never loaded
+	// config and RunPrecheck → config.Active() would panic. A --headless process
+	// DOES load config here (loadHeadlessConfig in the else-branch above), but the
+	// precheck stays gated: like any --no-worker-runtime process it makes no LLM
+	// calls of its own, so it has no consumer to precheck — and keeping the gate
+	// means config-loaded-but-no-worker never resurrects the precheck.
 	if !f.NoWorkerRuntime {
 		_ = llmproviders.RunPrecheck(context.Background(), f.SkipLLMPrecheck)
 		stage("llmproviders.RunPrecheck spawned (async)")
@@ -295,6 +318,12 @@ func (c *client) wireRuntimesBackground(ctx context.Context, f Config) {
 			"error", err)
 	}
 	stage("instruction bootstrap done")
+
+	// Background hourly transcript upload — gated on NoTranscriptUpload (set under
+	// --headless) so an embedded daemon spawns no upload loops. See
+	// maybeStartTranscriptUpload for the full rationale.
+	c.maybeStartTranscriptUpload(ctx, f)
+	stage("transcript upload loop spawned")
 }
 
 // runServe is the `knowledge serve` daemon entry — the sole MCP-serving
@@ -322,6 +351,12 @@ func runServe(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+
+	// Normalize --headless into its implied gate set ONCE, before cfg flows into
+	// either consumer: buildClient → wireRuntimesBackground (the worker /
+	// propagation / pipeline / transcript gates) and the runServe-scope hive
+	// monitor / reaper block below both read the expanded bools.
+	applyHeadless(&cfg)
 
 	// Mirror bootstrap.Run's setup (run.go:62-71) — runServe is a
 	// subcommand entry that does not pass through Run.
@@ -366,77 +401,11 @@ func runServe(args []string) error {
 	// flag is set.
 	go c.wireRuntimesBackground(c.wireCtx, cfg)
 
-	// Build the Tier-2 hive supervisor once. nil when config is unloaded or the
-	// supervisor model is unresolvable — the escalation path then degrades to the
-	// conservative log-only fallback below.
-	sup, _ := llmproviders.BuildHiveSupervisor(context.Background())
-
-	// Wire the hive daemon Monitor: it shares the *client's claim Registry (the
-	// SAME instance ClaimRegistry() returns, so InterceptHive's recorded claims
-	// are the ones the Monitor renews), reads live sessions via
-	// hs.SessionSnapshots, renews the cloud lease via the login-routed c.router,
-	// and records each tick's Mcp→harness resolution into the shared BanSet (the
-	// SAME instance BanSet() returns, so the InterceptHive ban gate can translate
-	// a request's Mcp-Session-Id to the banned harness id).
-	//
-	// The EscalationFunc runs the Tier-2 supervisor when one is configured: it
-	// formats the worker transcript, judges it, and drives ack-on-behalf /
-	// evict+ban / conservative resume-renew (the SupervisorHandler owns the
-	// verdict→action matrix). When no supervisor is configured it falls back to a
-	// log-only warning. The handler needs the monitor's ResumeRenew, but the
-	// closure is passed INTO NewMonitor, so monitor is declared first and assigned
-	// after — the escalate closure only runs from a tick AFTER Start, by which
-	// point monitor is non-nil.
-	var monitor *hivemonitor.Monitor
-	escalate := func(claim hivemonitor.Claim, sessionID string, state hivemonitor.LivenessState, handle hivemonitor.TranscriptHandle) {
-		if sup == nil {
-			slog.Warn("hive monitor: worker no longer making progress — no supervisor configured, lease will lapse",
-				"session", sessionID, "msg", claim.MsgID, "hive", claim.Hive, "state", state.String())
-			return
-		}
-		handler := hivemonitor.NewSupervisorHandler(c.router, c.banSet, monitor, sup)
-		handler.Handle(context.Background(), claim, sessionID, state, handle)
-	}
-	monitor = hivemonitor.NewMonitor(
-		c.claimRegistry,
-		hs.SessionSnapshots,
-		c.router,
-		c.banSet, // HarnessResolver: records mcp→harness for the ban gate.
-		escalate,
-		hivemonitor.DefaultMonitorConfig(),
-	)
-	if err := monitor.Start(context.Background()); err != nil {
-		slog.Warn("hive monitor: failed to start; lease heartbeats disabled this session", "error", err)
-	} else {
-		defer func() {
-			// daemonStopDeadline (3s): the Monitor cancels its ctx before its bounded
-			// wg.Wait, so it drains sub-second; the cap is the abandon-backstop. See
-			// the unified shutdown-budget comment on daemonStopDeadline.
-			stopCtx, stopCancel := context.WithTimeout(context.Background(), daemonStopDeadline)
-			defer stopCancel()
-			_ = monitor.Stop(stopCtx)
-		}()
-	}
-
-	// Wire the deterministic peer machine-down reaper alongside the Monitor: it
-	// shares c.router (the same login-routed HiveCaller — EVICT routes cloud when
-	// logged in, fails loud locally otherwise) and hs.SessionSnapshots (the same
-	// live-session source). No supervisor / escalate closure — the reaper is
-	// purely a stale-last_seen timestamp comparison, role-gated by cloud member
-	// roles. Same start-error-tolerant + deferred-Stop pattern as the Monitor.
-	reaper := hivemonitor.NewHiveReaper(hs.SessionSnapshots, c.router, hivemonitor.DefaultReaperConfig())
-	if err := reaper.Start(context.Background()); err != nil {
-		slog.Warn("hive reaper: failed to start; peer machine-down sweep disabled this session", "error", err)
-	} else {
-		defer func() {
-			// daemonStopDeadline (3s): the reaper cancels its ctx before its bounded
-			// wg.Wait, so it drains sub-second; the cap is the abandon-backstop. See
-			// the unified shutdown-budget comment on daemonStopDeadline.
-			stopCtx, stopCancel := context.WithTimeout(context.Background(), daemonStopDeadline)
-			defer stopCancel()
-			_ = reaper.Stop(stopCtx)
-		}()
-	}
+	// Wire the hive daemon Monitor + peer machine-down reaper, each gated on its
+	// Config bool (NoHiveMonitor / NoHiveReaper, both set under --headless). The
+	// returned closure drains whichever loops started; deferring it here keeps the
+	// hive Stops ahead of drainOnShutdown (deferred earlier, so it runs last).
+	defer c.startHiveLoops(cfg, hs)()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)
 	defer stop()

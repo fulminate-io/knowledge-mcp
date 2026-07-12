@@ -362,6 +362,8 @@ Use `think` for non-obvious hypotheses during investigation.
 
 Structured markdown — every section populated or explicitly marked empty. (Template in workflow below.)
 
+**DELIVER the report — emitting is not delivering.** When you run as a background/teammate agent, your final assistant text is NOT reliably shown to the orchestrator; a report that only exists in your transcript is a silent sign-off. Your LAST action before finishing MUST be an explicit send of the full report to the orchestrator (`SendMessage` to `main` when that tool is available; otherwise make the report your entire final message). Going idle without the orchestrator holding the report is a gate violation equal to not producing one.
+
 ## Report Template
 
 ```markdown

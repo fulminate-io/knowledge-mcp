@@ -97,7 +97,7 @@ func BenchmarkDeterministicAddAndShip(b *testing.B) {
 			b.ResetTimer()
 			for range b.N {
 				_, gc := newSegmentHarness(b)
-				mgr := NewManager(gc, b.TempDir(), 0)
+				mgr := NewManager(loginStateStub{loggedIn: true}, b.TempDir(), 0, withSegmentSource(gc))
 				var wg sync.WaitGroup
 				wg.Add(len(corpora))
 				var mu sync.Mutex
@@ -144,7 +144,7 @@ func BenchmarkDeterministicAddAndShipFields(b *testing.B) {
 			b.ResetTimer()
 			for range b.N {
 				_, gc := newSegmentHarness(b)
-				mgr := NewManager(gc, b.TempDir(), 0)
+				mgr := NewManager(loginStateStub{loggedIn: true}, b.TempDir(), 0, withSegmentSource(gc))
 				var wg sync.WaitGroup
 				wg.Add(len(corpora))
 				var mu sync.Mutex

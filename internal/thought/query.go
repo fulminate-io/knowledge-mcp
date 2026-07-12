@@ -245,13 +245,14 @@ func applyRecallFilters(ctx context.Context, gc Caller, candidates []ThoughtResu
 	}
 	chargeMap := chargeMapForThoughts(ctx, gc, ids)
 
+	now := time.Now()
 	var results []ThoughtResult
 	for _, c := range candidates {
 		if !thoughtMatchesFilters(ctx, gc, c.Node, opts) {
 			continue
 		}
 
-		props := computePropertiesFromCharges(chargeMap[c.Node.Id])
+		props := computePropertiesFromCharges(chargeMap[c.Node.Id], now)
 
 		if !propertyFiltersMatch(props, opts, c.Node) {
 			continue

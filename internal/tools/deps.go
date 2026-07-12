@@ -328,6 +328,13 @@ type ClientDeps interface {
 	Sink() collector.Sink
 	RootDir() string
 	WorkerRuntime() WorkerRuntimeAPI
+	// UsageAnalyzer returns the client-side agent-flow analyzer (embedded DuckDB over
+	// the local transcript parquet cache) the analyze_usage intercept dispatches
+	// through. Returns nil in router-less / headless test fixtures (and if the cache
+	// root is unresolvable) — InterceptAnalyzeUsage nil-checks and renders the
+	// cold-cache --seed hint. The analyzer needs no router/network; it reads the local
+	// cache only.
+	UsageAnalyzer() UsageAnalyzerAPI
 	// ClaimRegistry returns the client-side hive claim registry recording
 	// which MCP session holds which work claims. InterceptHive Binds on a
 	// successful claim and Clears on ack/fail; the daemon Monitor reads it each

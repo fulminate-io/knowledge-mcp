@@ -36,6 +36,7 @@ type thoughtTestDeps struct{}
 func (thoughtTestDeps) LocalLiveness() LocalLiveness                 { return nil }
 func (thoughtTestDeps) Sink() collector.Sink                         { return nil }
 func (thoughtTestDeps) RootDir() string                              { return "" }
+func (thoughtTestDeps) UsageAnalyzer() UsageAnalyzerAPI              { return nil }
 func (thoughtTestDeps) WorkerRuntime() WorkerRuntimeAPI              { return nil }
 func (thoughtTestDeps) WorkerReady() bool                            { return true }
 func (thoughtTestDeps) PropReady() bool                              { return true }

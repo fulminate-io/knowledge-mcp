@@ -185,6 +185,76 @@ func TestOAuthTokenSource_PreExpiryRefresh(t *testing.T) {
 	}
 }
 
+// TestOAuthTokenSource_PersistFailStillCachesToken is the load-bearing
+// guard for the headless-daemon fix: when the credential store cannot
+// persist the rotated refresh token, the freshly acquired access token
+// must still be cached and served (not discarded), the rotation-persist
+// failure is best-effort (a WARN, not a returned error), and the old
+// refresh token is left in place because the failed Set never wrote the
+// new one.
+func TestOAuthTokenSource_PersistFailStillCachesToken(t *testing.T) {
+	var calls atomic.Int32
+	newAccess := signTestJWT(t, []string{PermMCPKnowledgeRead, PermDeployBYOC}, time.Now().Add(1*time.Hour).Unix())
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(TokenResponse{ //nolint:gosec // test fixture with literal string values
+			AccessToken:  newAccess,
+			RefreshToken: "frt_new",
+			TokenType:    "Bearer",
+			ExpiresIn:    3600,
+		})
+	}))
+	defer srv.Close()
+
+	// Seed the client id + refresh token on the real backing store (Set
+	// works here), then swap in a wrapper whose Set fails so only the
+	// rotation persist is broken while Get still resolves.
+	base := newTestStore()
+	if err := base.Set(context.Background(), KeyRefreshToken, "frt_old"); err != nil {
+		t.Fatalf("seed refresh: %v", err)
+	}
+	src := newOAuthSourceForTest(base, srv.URL) // seeds KeyClientID into base
+	src.store = setErrStore{base}
+
+	// First call: cache empty → refresh path. Persist of the rotated token
+	// fails, but the acquired access token must be returned without error.
+	tok, perms, err := src.Token(context.Background())
+	if err != nil {
+		t.Fatalf("Token: persist failure must not surface as an error, got %v", err)
+	}
+	if tok != newAccess {
+		t.Errorf("expected the newly acquired access token to be returned despite persist failure")
+	}
+	if !perms.Has(PermDeployBYOC) {
+		t.Errorf("unexpected permissions: %v", perms.List())
+	}
+
+	// Second call within expiry: must hit the in-memory cache — zero
+	// network calls — proving the token was cached, not re-refreshed.
+	calls.Store(0)
+	tok2, _, err := src.Token(context.Background())
+	if err != nil {
+		t.Fatalf("Token (cached): %v", err)
+	}
+	if tok2 != newAccess {
+		t.Errorf("second call returned a different token")
+	}
+	if got := calls.Load(); got != 0 {
+		t.Errorf("expected cache hit on 2nd call (0 network calls), got %d", got)
+	}
+
+	// Rotation was NOT persisted: the store still holds the OLD refresh
+	// token because the failed Set never wrote 'frt_new'.
+	stored, err := base.Get(context.Background(), KeyRefreshToken)
+	if err != nil {
+		t.Fatalf("store.Get(KeyRefreshToken): %v", err)
+	}
+	if stored != "frt_old" {
+		t.Errorf("expected store to still hold frt_old (rotation not persisted), got %q", stored)
+	}
+}
+
 // TestOAuthTokenSource_RefreshFailureWarnsOnce asserts the warn-once
 // guard fires exactly once per failure streak and is returned as an
 // error each call.

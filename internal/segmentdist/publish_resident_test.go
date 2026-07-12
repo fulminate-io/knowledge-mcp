@@ -9,6 +9,7 @@ import (
 
 	"github.com/stretchr/testify/require"
 
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
@@ -37,7 +38,7 @@ func TestPublishResident(t *testing.T) {
 		// so each batch seals one segment; the doc counts are >= the coverage floor
 		// so the publish gate is armed (real corpus, not disarmed-tiny).
 		const corpusSegs = 4
-		mgr := NewManager(gc, t.TempDir(), 0)
+		mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 		for b := range corpusSegs {
 			batch := hnswVecDocs(searchCorpusN)
 			for i := range batch {
@@ -61,7 +62,7 @@ func TestPublishResident(t *testing.T) {
 
 		// Process 1 ships a multi-segment corpus.
 		const corpusSegs = 3
-		p1 := NewManager(gc, t.TempDir(), 0)
+		p1 := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 		for b := range corpusSegs {
 			batch := hnswVecDocs(searchCorpusN)
 			for i := range batch {
@@ -77,7 +78,7 @@ func TestPublishResident(t *testing.T) {
 		// flush. Because the resident set IS the full re-imported corpus, the
 		// coverage gate passes and the published manifest references the WHOLE corpus
 		// — so the refcount-GC reaps nothing.
-		p2 := NewManager(gc, t.TempDir(), 0)
+		p2 := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 		dm := p2.managerFor(kgtypes.GraphCode, "reloadRepo")
 		require.NoError(t, dm.load(ctx))
 		require.Len(t, dm.engine.Export(), corpusSegs,
@@ -101,7 +102,7 @@ func TestPublishResident(t *testing.T) {
 
 		// Process 1 ships a multi-segment corpus.
 		const corpusSegs = 4
-		p1 := NewManager(gc, t.TempDir(), 0)
+		p1 := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 		for b := range corpusSegs {
 			batch := hnswVecDocs(searchCorpusN)
 			for i := range batch {
@@ -116,8 +117,8 @@ func TestPublishResident(t *testing.T) {
 		// load() — the resident set is just the tail (1 of corpusSegs+1 segments),
 		// far below the coverage ratio. The publish MUST be gated (skipped), so the
 		// prior corpus survives — this is the corpus-wipe guard.
-		cc2 := &countingCaller{inner: gc}
-		p2 := NewManager(cc2, t.TempDir(), 0)
+		cc2 := gc.server.viewFor(&knowledgev1.GraphSelector{}, "")
+		p2 := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(cc2))
 		tail := hnswVecDocs(searchCorpusN)
 		for i := range tail {
 			tail[i].ID = fmt.Sprintf("dg-tail-%s", tail[i].ID)

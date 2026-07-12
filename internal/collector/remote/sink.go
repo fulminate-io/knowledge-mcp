@@ -64,10 +64,14 @@ var _ collector.Sink = (*UploadSink)(nil)
 
 // WriteResult mints a per-collection epoch, byte-packs the nodes and the edges
 // into SEPARATE CollectChunk requests, sends each chunk, then a single Finalize
-// with the same epoch. Nodes pack at DefaultBatchBytes (4 MiB) and carry NO
-// edges; edges pack into their OWN chunks at kgwire.MaxCloudRequestBytes (64 MiB)
-// with nil Nodes — so no single request body crosses the cloud cap even when the
-// edge tail is large (the Cloudflare-fronted endpoint 413s oversize bodies).
+// with the same epoch. Nodes AND edges both pack at DefaultBatchBytes (4 MiB) —
+// nodes carry NO edges, edge chunks carry nil Nodes — so no single request body
+// exceeds the bite-sized 4 MiB frame. Edges previously packed at
+// kgwire.MaxCloudRequestBytes (64 MiB), but the fronting proxy on the cloud
+// ingest path rejects bodies FAR below 64 MiB: a single ~14 MiB edge chunk
+// (≈110k ID-addressed CALLS edges from a large repo) drew a raw HTTP 400 from the
+// proxy while the 4 MiB node chunks all passed. An intermediary only sees body
+// size, so edges now share the node cap.
 // Spreading edges across multiple chunks is SAFE: collector edges are
 // ID-addressed (FromIdx/ToIdx == -1, FromID/ToID set — see kgwire.BatchEdge
 // build sites), so they resolve regardless of which chunk a referenced node
@@ -91,12 +95,12 @@ func (s *UploadSink) WriteResult(ctx context.Context, collectorName string, resu
 	}
 	nodeChunks := BatchNodes(result.Nodes, DefaultBatchBytes)
 	protoEdges := kgwire.BatchEdgesToProto(result.Edges)
-	// Edges ride their OWN chunks at the 64 MiB cloud cap, NEVER on a node-chunk:
-	// node-chunks stay ≤4 MiB and edge-chunks stay ≤64 MiB, so every emitted
-	// CollectChunk request body is ≤64 MiB regardless of how large the edge tail
-	// grows. The server dedups (From,Type,To) tuples across chunks, so any N edge
-	// chunks land the full edge set exactly once.
-	edgeChunks := BatchEdgesProto(protoEdges, kgwire.MaxCloudRequestBytes)
+	// Edges ride their OWN chunks at the SAME 4 MiB cap as nodes, NEVER on a
+	// node-chunk: both node- and edge-chunks stay ≤4 MiB, so every emitted
+	// CollectChunk request body stays bite-sized regardless of how large the edge
+	// tail grows. The server dedups (From,Type,To) tuples across chunks, so any N
+	// edge chunks land the full edge set exactly once.
+	edgeChunks := BatchEdgesProto(protoEdges, DefaultBatchBytes)
 
 	// build assembles a CollectChunkRequest carrying one node group and/or one
 	// edge group under the shared epoch + graph identity.

@@ -5,6 +5,7 @@ package thought
 import (
 	"context"
 	"errors"
+	"time"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
@@ -58,6 +59,9 @@ func TraceThoughts(ctx context.Context, gc Caller, startID, direction string, de
 
 	visited := map[string]bool{startID: true}
 	queue := []traceQueueItem{{id: startID, depth: 0}}
+	// One now for the whole trace: thought props on each fanned-out step are
+	// recency-weighted at a single consistent instant.
+	now := time.Now()
 	var results []TraceStep
 
 	for len(queue) > 0 {
@@ -72,7 +76,7 @@ func TraceThoughts(ctx context.Context, gc Caller, startID, direction string, de
 		}
 
 		for _, et := range edgeTypes {
-			newSteps, newItems := expandTraceNeighbors(ctx, gc, curr.id, curr.depth, et, dirs, visited)
+			newSteps, newItems := expandTraceNeighbors(ctx, gc, curr.id, curr.depth, et, dirs, visited, now)
 			results = append(results, newSteps...)
 			queue = append(queue, newItems...)
 		}
@@ -121,6 +125,7 @@ func expandTraceNeighbors(
 	et kgtypes.EdgeType,
 	dirs []bool,
 	visited map[string]bool,
+	now time.Time,
 ) (steps []TraceStep, items []traceQueueItem) {
 	for _, forward := range dirs {
 		neighbors, err := fetchEdgeNeighborsTyped(ctx, gc, currID, et, forward)
@@ -176,7 +181,7 @@ func expandTraceNeighbors(
 				Direction: dirLabel,
 			}
 			if kgtypes.NodeType(node.Type) == kgtypes.NodeThought {
-				step.Properties = computePropertiesFromCharges(chargeMap[nid])
+				step.Properties = computePropertiesFromCharges(chargeMap[nid], now)
 			}
 			steps = append(steps, step)
 			items = append(items, traceQueueItem{id: nid, depth: currDepth + 1, edgeType: et, dir: dirLabel})

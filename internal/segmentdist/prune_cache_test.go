@@ -49,7 +49,7 @@ func poolReport(rep PruneCacheReport, format string) *PruneCacheGraphReport {
 func TestPruneCacheForceLoad(t *testing.T) {
 	_, gc := newSegmentHarness(t)
 	ctx := context.Background()
-	mgr := NewManager(gc, t.TempDir(), 0)
+	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 
 	require.NoError(t, mgr.AddAndShip(ctx, kgtypes.GraphCode, "forceRepo", hnswVecDocs(1024)))
 	dm := mgr.managerFor(kgtypes.GraphCode, "forceRepo")
@@ -77,7 +77,7 @@ func TestPruneCacheForceLoad(t *testing.T) {
 func TestPruneCacheDetUnion(t *testing.T) {
 	_, gc := newSegmentHarness(t)
 	ctx := context.Background()
-	mgr := NewManager(gc, t.TempDir(), 0)
+	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 
 	// Build a deterministic segment (Add-only) then FlushDeterministic to seal+ship it.
 	require.NoError(t, mgr.AddDeterministic(ctx, kgtypes.GraphCode, "detRepo", hnswVecDocs(1024)))
@@ -125,7 +125,7 @@ func TestPruneCacheOnDisk(t *testing.T) {
 func TestPruneCacheSubset(t *testing.T) {
 	_, gc := newSegmentHarness(t)
 	ctx := context.Background()
-	mgr := NewManager(gc, t.TempDir(), 0)
+	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 	require.NoError(t, mgr.AddAndShip(ctx, kgtypes.GraphCode, "subsetRepo", hnswVecDocs(1024)))
 	dm := mgr.managerFor(kgtypes.GraphCode, "subsetRepo")
 
@@ -148,7 +148,7 @@ func TestPruneCacheSubset(t *testing.T) {
 func TestPruneCacheDriverDryRun(t *testing.T) {
 	_, gc := newSegmentHarness(t)
 	ctx := context.Background()
-	mgr := NewManager(gc, t.TempDir(), 0)
+	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 	require.NoError(t, mgr.AddAndShip(ctx, kgtypes.GraphCode, "dryRepo", hnswVecDocs(1024)))
 
 	hnswDir := graphCacheDirFor(mgr.cacheDir, kgtypes.GraphCode, "dryRepo", hnsw.New().Name())
@@ -175,7 +175,7 @@ func TestPruneCacheDriverExecute(t *testing.T) {
 	svc, gc := newSegmentHarness(t)
 	_ = svc
 	ctx := context.Background()
-	mgr := NewManager(gc, t.TempDir(), 0)
+	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 
 	// Ship a real HNSW + BM25 corpus (warms each format's L2 cache with real .seg files).
 	require.NoError(t, mgr.AddAndShip(ctx, kgtypes.GraphCode, "execRepo", hnswVecDocs(1024)))
@@ -227,7 +227,7 @@ func TestPruneCacheDriverExecute(t *testing.T) {
 func TestPruneCacheUnloadedButLiveSurvives(t *testing.T) {
 	_, gc := newSegmentHarness(t)
 	ctx := context.Background()
-	mgr := NewManager(gc, t.TempDir(), 0)
+	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 	require.NoError(t, mgr.AddAndShip(ctx, kgtypes.GraphCode, "unloadRepo", hnswVecDocs(1024)))
 
 	hnswDir := graphCacheDirFor(mgr.cacheDir, kgtypes.GraphCode, "unloadRepo", hnsw.New().Name())
@@ -267,7 +267,7 @@ func TestPruneCacheUnloadedButLiveSurvives(t *testing.T) {
 func TestPruneCacheList0Abort(t *testing.T) {
 	_, gc := newSegmentHarness(t)
 	ctx := context.Background()
-	mgr := NewManager(gc, t.TempDir(), 0)
+	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 	require.NoError(t, mgr.AddAndShip(ctx, kgtypes.GraphCode, "abortRepo", hnswVecDocs(1024)))
 
 	hnswDir := graphCacheDirFor(mgr.cacheDir, kgtypes.GraphCode, "abortRepo", hnsw.New().Name())
@@ -299,7 +299,7 @@ func TestPruneCacheList0Abort(t *testing.T) {
 func TestPruneCacheNoOpEmptyGraph(t *testing.T) {
 	_, gc := newSegmentHarness(t)
 	ctx := context.Background()
-	mgr := NewManager(gc, t.TempDir(), 0)
+	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 
 	rep, err := mgr.PruneCache(ctx, []PruneCacheTarget{{GraphType: kgtypes.GraphCode, Name: "emptyRepo"}}, true)
 	require.NoError(t, err)
@@ -317,7 +317,7 @@ func TestPruneCacheNoOpEmptyGraph(t *testing.T) {
 func TestPruneCacheLiveSearchAfterPrune(t *testing.T) {
 	_, gc := newSegmentHarness(t)
 	ctx := context.Background()
-	mgr := NewManager(gc, t.TempDir(), 0)
+	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 
 	docs := hnswVecDocs(1024)
 	require.NoError(t, mgr.AddAndShip(ctx, kgtypes.GraphCode, "searchRepo", docs))

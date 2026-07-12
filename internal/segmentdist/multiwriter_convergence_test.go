@@ -72,8 +72,8 @@ func TestMultiWriterConvergenceRefcount(t *testing.T) {
 	shared := convergeDocs(16, 0) // tiny ⇒ coverage ratio disarms; deterministic ⇒ shared X
 
 	// Both writers build the SAME corpus ⇒ the SAME content-hash X.
-	x0 := addShipFlush(t, w0, gt, name, shared)
-	x1 := addShipFlush(t, w1, gt, name, shared)
+	x0 := addShipFlush(t, w0.Manager, gt, name, shared)
+	x1 := addShipFlush(t, w1.Manager, gt, name, shared)
 	require.Equal(t, x0, x1,
 		"two writers building the same deterministic corpus mint the SAME content-hash id (a determinism regression fails here)")
 	x := x0
@@ -90,8 +90,8 @@ func TestMultiWriterConvergenceRefcount(t *testing.T) {
 	// over the SAME graph builds a DIFFERENT corpus and publishes, REPLACING writer0's
 	// manifest with one that omits X (the restart/republish shape: manifest is keyed
 	// by writer_id, swapped on publish).
-	w0b := restartFleetMember(t, w0.caller, 0, t.TempDir())
-	y := addShipFlush(t, w0b, gt, name, convergeDocs(16, 1))
+	w0b := restartFleetMember(t, svc, 0, t.TempDir())
+	y := addShipFlush(t, w0b.Manager, gt, name, convergeDocs(16, 1))
 	require.NotEqual(t, x, y, "writer0's replacement corpus mints a DIFFERENT id")
 
 	require.NotContains(t, writerManifest(svc, target, w0.writerID, "hnsw"), x,
@@ -102,8 +102,8 @@ func TestMultiWriterConvergenceRefcount(t *testing.T) {
 		"X SURVIVES writer0 dropping it — writer1 still references it (a refcount that reaps here is broken)")
 
 	// NEGATIVE ARM part 2 — writer1 ALSO drops X ⇒ no manifest references it ⇒ reaped.
-	w1b := restartFleetMember(t, w1.caller, 1, t.TempDir())
-	z := addShipFlush(t, w1b, gt, name, convergeDocs(16, 2))
+	w1b := restartFleetMember(t, svc, 1, t.TempDir())
+	z := addShipFlush(t, w1b.Manager, gt, name, convergeDocs(16, 2))
 	require.NotEqual(t, x, z)
 
 	require.Equal(t, 0, blobRefCount(svc, target, x),
@@ -123,8 +123,8 @@ func TestMultiWriterSafeCoexistence(t *testing.T) {
 	target := graphSelector(gt, name)
 
 	// Distinct corpora ⇒ distinct content-hash ids.
-	a := addShipFlush(t, w0, gt, name, convergeDocs(16, 10))
-	b := addShipFlush(t, w1, gt, name, convergeDocs(16, 20))
+	a := addShipFlush(t, w0.Manager, gt, name, convergeDocs(16, 10))
+	b := addShipFlush(t, w1.Manager, gt, name, convergeDocs(16, 20))
 	require.NotEqual(t, a, b, "distinct corpora mint distinct ids")
 
 	// Both survive after both publishes; neither reaped the other's blob.

@@ -3,15 +3,15 @@
 package hivemonitor
 
 import (
-	"bufio"
 	"context"
-	"encoding/json"
 	"io/fs"
 	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/fulminate-io/knowledge-mcp/internal/transcripts"
 )
 
 // TranscriptFormat names the on-disk transcript shape, selecting the tail
@@ -63,17 +63,6 @@ func (h TranscriptHandle) Resolved() bool { return h.Path != "" }
 //nolint:gochecknoglobals // overridable home seam for testability; mirrors the exec-seam idiom.
 var homeDir = os.UserHomeDir
 
-// codexSessionMeta is the codex rollout's first-line self-declaration:
-// {"type":"session_meta","payload":{"id":...,"cwd":...}}. Only the fields the
-// resolver matches on are decoded.
-type codexSessionMeta struct {
-	Type    string `json:"type"`
-	Payload struct {
-		ID  string `json:"id"`
-		Cwd string `json:"cwd"`
-	} `json:"payload"`
-}
-
 // ResolveTranscript deterministically binds a session to its EXACT transcript
 // file. It branches on the peer process command:
 //
@@ -101,7 +90,7 @@ func ResolveTranscript(ctx context.Context, snap SessionSnapshot) (TranscriptHan
 		// rollout-*.jsonl open for writing, so the peer PID names the EXACT file
 		// via lsof — immune to the cwd collision two same-directory agents cause.
 		if path, ok := codexWriteRolloutForPID(ctx, snap.PID); ok {
-			if meta, metaOK := readCodexSessionMeta(path); metaOK {
+			if meta, metaOK := transcripts.ReadCodexSessionMeta(path); metaOK {
 				return TranscriptHandle{Path: path, HarnessSessionID: meta.Payload.ID, Format: FormatCodex}, nil
 			}
 		}
@@ -125,19 +114,13 @@ func resolveClaudeTranscript(ctx context.Context, snap SessionSnapshot) (Transcr
 	if err != nil {
 		return TranscriptHandle{}, err
 	}
-	path := filepath.Join(home, ".claude", "projects", encodeClaudeCwd(snap.Cwd), sid+".jsonl")
+	path := filepath.Join(home, ".claude", "projects", transcripts.EncodeClaudeCwd(snap.Cwd), sid+".jsonl")
 	if _, statErr := os.Stat(path); statErr != nil {
 		// File not present yet (or never) — unresolved, not an error.
 		//nolint:nilerr // a missing transcript is "unresolved", not a read failure.
 		return TranscriptHandle{}, nil
 	}
 	return TranscriptHandle{Path: path, HarnessSessionID: sid, Format: FormatClaude}, nil
-}
-
-// encodeClaudeCwd applies the documented claude project-dir encoding: every '/'
-// in the absolute cwd becomes '-' (e.g. /Users/jonathan/code → -Users-jonathan-code).
-func encodeClaudeCwd(cwd string) string {
-	return strings.ReplaceAll(cwd, "/", "-")
 }
 
 // resolveCodexTranscript is the FALLBACK codex resolver (the primary is the
@@ -169,7 +152,7 @@ func resolveCodexTranscript(snap SessionSnapshot) (TranscriptHandle, error) {
 		if d.IsDir() || !strings.HasPrefix(d.Name(), "rollout-") || !strings.HasSuffix(d.Name(), ".jsonl") {
 			return nil
 		}
-		meta, ok := readCodexSessionMeta(path)
+		meta, ok := transcripts.ReadCodexSessionMeta(path)
 		if !ok || meta.Payload.Cwd != snap.Cwd {
 			return nil
 		}
@@ -212,31 +195,4 @@ func resolveCodexTranscript(snap SessionSnapshot) (TranscriptHandle, error) {
 			"chosen", chosen.path)
 	}
 	return TranscriptHandle{Path: chosen.path, HarnessSessionID: chosen.session, Format: FormatCodex}, nil
-}
-
-// readCodexSessionMeta reads ONLY the first line of a codex rollout and decodes
-// its session_meta self-declaration. Returns (meta, false) on any read/decode
-// failure or when the first line is not a session_meta record.
-func readCodexSessionMeta(path string) (codexSessionMeta, bool) {
-	f, err := os.Open(path) //nolint:gosec // path comes from a WalkDir under ~/.codex/sessions, not user text.
-	if err != nil {
-		return codexSessionMeta{}, false
-	}
-	defer f.Close()
-
-	sc := bufio.NewScanner(f)
-	// A session_meta line is small, but bump the buffer to match the readers'
-	// 8MiB cap so an unusually large first line is not truncated.
-	sc.Buffer(make([]byte, 0, 64*1024), 8*1024*1024)
-	if !sc.Scan() {
-		return codexSessionMeta{}, false
-	}
-	var meta codexSessionMeta
-	if err := json.Unmarshal(sc.Bytes(), &meta); err != nil {
-		return codexSessionMeta{}, false
-	}
-	if meta.Type != "session_meta" {
-		return codexSessionMeta{}, false
-	}
-	return meta, true
 }

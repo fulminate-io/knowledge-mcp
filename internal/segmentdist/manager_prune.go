@@ -4,6 +4,7 @@ package segmentdist
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
@@ -131,17 +132,13 @@ func (m *distManager[Q, S]) shipNew(
 	// is held only around each response's bookkeeping, NEVER across the Ship RPC.
 	var maxGen uint64
 	for _, sub := range BatchSegmentBlobs(diff, kgwire.MaxCloudRequestBytes) {
-		resp, err := m.source.caller.Ship(ctx, &knowledgev1.ShipRequest{
-			Target:   m.target,
-			Blobs:    sub,
-			WriterId: m.source.writerID,
-		})
+		stamped, err := m.source.Ship(ctx, sub)
 		if err != nil {
 			return err
 		}
 
 		m.shipMu.Lock()
-		for _, meta := range resp.GetStamped() {
+		for _, meta := range stamped {
 			m.shippedIDs[meta.GetId()] = struct{}{}
 			// locallyShipped records ONLY ids this process actually shipped — the
 			// ROLE-B (embed) prune-eligible set. Populated regardless of the caller's
@@ -232,11 +229,11 @@ func (m *distManager[Q, S]) reconcilePrune(
 // server reaps a blob only when NO writer's manifest references it (multi-writer
 // safe by construction).
 //
-// extraReferenced carries sibling-engine resident ids that share this format +
-// graphKey and must stay referenced by THIS manifest (the HNSW embed∪deterministic
-// union — both engines key one "hnsw" manifest, so the embed publish must include
-// the deterministic engine's resident ids or it would reap them). It is nil for
-// formats with a single engine (BM25).
+// extraReferenced carries sibling-engine resident digests (id + doc_count) that
+// share this format + graphKey and must stay referenced by THIS manifest (the HNSW
+// embed∪deterministic union — both engines key one "hnsw" manifest, so the embed
+// publish must include the deterministic engine's resident digests or it would reap
+// them). It is nil for formats with a single engine (BM25).
 //
 // CRITICAL: the published set is the RESIDENT m.engine.Export(),
 // NOT a force-reloaded set. A force-reload (List(0)+load+Export) re-imports
@@ -261,7 +258,7 @@ func (m *distManager[Q, S]) reconcilePrune(
 // RETURN: the ids that dropped out (per the role's set). The empty-set / coverage
 // gate inside publishResident protects against a degenerate publish.
 func (m *distManager[Q, S]) shipAndPublish(
-	ctx context.Context, extraReferenced []searchengine.SegmentID,
+	ctx context.Context, extraReferenced []segmentDigest,
 	reconcileAgainst map[searchengine.SegmentID]struct{},
 ) ([]searchengine.SegmentID, error) {
 	if err := m.ensureShippedSeeded(ctx); err != nil {
@@ -299,24 +296,30 @@ func (m *distManager[Q, S]) shipAndPublish(
 // deterministic rebuild). Separated from shipAndPublish so the merge/reclaim paths
 // can re-publish without re-running the ship-new diff.
 func (m *distManager[Q, S]) publishResident(
-	ctx context.Context, all []searchengine.SegmentBlob, extraReferenced []searchengine.SegmentID,
+	ctx context.Context, all []searchengine.SegmentBlob, extraReferenced []segmentDigest,
 	reconcileAgainst map[searchengine.SegmentID]struct{},
 ) ([]searchengine.SegmentID, error) {
 	liveSet := make(map[searchengine.SegmentID]struct{}, len(all)+len(extraReferenced))
+	// manifestDigests carries the per-digest doc_count to the wire (the GCS manifest
+	// stores it as the coverage-read denominator; the RPC path drops it). manifestIDs
+	// is the id-only view the coverage gate + dropped-reconcile below still use.
+	manifestDigests := make([]segmentDigest, 0, len(all)+len(extraReferenced))
 	manifestIDs := make([]searchengine.SegmentID, 0, len(all)+len(extraReferenced))
 	for _, b := range all {
 		if _, dup := liveSet[b.ID]; dup {
 			continue
 		}
 		liveSet[b.ID] = struct{}{}
+		manifestDigests = append(manifestDigests, segmentDigest{ID: b.ID, DocCount: b.DocCount})
 		manifestIDs = append(manifestIDs, b.ID)
 	}
-	for _, id := range extraReferenced {
-		if _, dup := liveSet[id]; dup {
+	for _, d := range extraReferenced {
+		if _, dup := liveSet[d.ID]; dup {
 			continue
 		}
-		liveSet[id] = struct{}{}
-		manifestIDs = append(manifestIDs, id)
+		liveSet[d.ID] = struct{}{}
+		manifestDigests = append(manifestDigests, d)
+		manifestIDs = append(manifestIDs, d.ID)
 	}
 
 	// SAFETY GATE (empty/degenerate-publish corpus-wipe guard): a publish swaps this
@@ -349,7 +352,18 @@ func (m *distManager[Q, S]) publishResident(
 		return nil, nil
 	}
 
-	if _, err := m.source.PublishManifest(m.format, manifestIDs); err != nil {
+	if _, err := m.source.PublishManifest(m.format, manifestDigests); err != nil {
+		// A server-side completeness failure (the GCS agent 409'd because a
+		// referenced blob is not yet present) is NOT a hard error: treat it as a
+		// logged SKIP — the prior manifest stays intact and no bookkeeping reconcile
+		// runs, matching the degenerate-publish skip semantics above. The unshipped
+		// blob heals on a later pass once its PUT succeeds and it re-enters the
+		// resident→published set.
+		if incomplete, ok := errors.AsType[*manifestIncompleteError](err); ok {
+			slog.Warn("segmentdist: publish SKIPPED (agent reported missing blob(s) — manifest+blobs left intact)",
+				"format", m.format, "missing", incomplete.Missing)
+			return nil, nil
+		}
 		return nil, err
 	}
 
@@ -415,7 +429,16 @@ func (m *distManager[Q, S]) publishCoverageOK(
 		return false, "resident doc count below coverage ratio of shipped corpus", nil
 	}
 
-	// Subset-completeness against List(0).
+	// Subset-completeness against List(0). SKIPPED when the source verifies
+	// completeness server-side (the GCS agent HEAD-verifies + 409s on missing): there
+	// List(0) IS the published manifest, so a resident set that legitimately includes
+	// newly-shipped-but-not-yet-published blobs is NEVER a subset and would deadlock
+	// the first/every add-publish. The agent's manifest/publish HEAD-verify (surfaced
+	// as a manifestIncompleteError → logged skip in publishResident) is the
+	// completeness authority on that path instead.
+	if m.source.verifiesCompletenessServerSide() {
+		return true, "", nil
+	}
 	subset, err := m.liveSetSubsetOfList0(ctx, liveSet)
 	if err != nil {
 		return false, "", err

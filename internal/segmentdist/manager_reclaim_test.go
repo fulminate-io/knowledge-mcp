@@ -3,7 +3,6 @@
 package segmentdist
 
 import (
-	"context"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -19,9 +18,9 @@ func newReclaimManager(t *testing.T, dir string) (*distManager[mockQuery, mockSt
 	t.Helper()
 	_, gc := newSegmentHarness(t)
 	target := &knowledgev1.GraphSelector{Graph: "code", Repo: "reclaim"}
-	src := newRPCSegmentSource(gc, target, "", context.Background())
+	gc.target = target
 	ic := newInstrumentedCache(newDiskSegmentCache(dir, 0))
-	dm := newDistManager[mockQuery, mockStats](newMockEngine(), src, ic, target, "")
+	dm := newDistManager[mockQuery, mockStats](newMockEngine(), gc, ic, target, "")
 	return dm, ic
 }
 

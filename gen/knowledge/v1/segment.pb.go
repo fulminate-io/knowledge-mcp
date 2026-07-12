@@ -23,581 +23,15 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// ShipRequest carries a batch of segment blobs the client built/merged for one
-// graph. target is the REUSED GraphSelector routing envelope every Engine RPC
-// shares (engine.proto:139, cross-file import like ingest.proto:14). blobs ride
-// as the opaque SegmentBlobProto carrier — the server stores the bytes verbatim
-// and never decodes them.
-type ShipRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Target        *GraphSelector         `protobuf:"bytes,1,opt,name=target,proto3" json:"target,omitempty"`
-	Blobs         []*SegmentBlobProto    `protobuf:"bytes,2,rep,name=blobs,proto3" json:"blobs,omitempty"`
-	WriterId      string                 `protobuf:"bytes,3,opt,name=writer_id,json=writerId,proto3" json:"writer_id,omitempty"` // stable per-machine identity; stamps last-connection liveness (additive)
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *ShipRequest) Reset() {
-	*x = ShipRequest{}
-	mi := &file_knowledge_v1_segment_proto_msgTypes[0]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *ShipRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*ShipRequest) ProtoMessage() {}
-
-func (x *ShipRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_knowledge_v1_segment_proto_msgTypes[0]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use ShipRequest.ProtoReflect.Descriptor instead.
-func (*ShipRequest) Descriptor() ([]byte, []int) {
-	return file_knowledge_v1_segment_proto_rawDescGZIP(), []int{0}
-}
-
-func (x *ShipRequest) GetTarget() *GraphSelector {
-	if x != nil {
-		return x.Target
-	}
-	return nil
-}
-
-func (x *ShipRequest) GetBlobs() []*SegmentBlobProto {
-	if x != nil {
-		return x.Blobs
-	}
-	return nil
-}
-
-func (x *ShipRequest) GetWriterId() string {
-	if x != nil {
-		return x.WriterId
-	}
-	return ""
-}
-
-// ShipResponse returns each shipped blob's server-stamped metadata: the
-// content-hash id plus the server-assigned monotonic Generation (decision
-// 09ce4090 caveat 3 — the server is the ordering point). For an id that already
-// existed the stamped meta echoes the EXISTING generation (idempotent Put).
-type ShipResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Stamped       []*SegmentMetaProto    `protobuf:"bytes,1,rep,name=stamped,proto3" json:"stamped,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *ShipResponse) Reset() {
-	*x = ShipResponse{}
-	mi := &file_knowledge_v1_segment_proto_msgTypes[1]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *ShipResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*ShipResponse) ProtoMessage() {}
-
-func (x *ShipResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_knowledge_v1_segment_proto_msgTypes[1]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use ShipResponse.ProtoReflect.Descriptor instead.
-func (*ShipResponse) Descriptor() ([]byte, []int) {
-	return file_knowledge_v1_segment_proto_rawDescGZIP(), []int{1}
-}
-
-func (x *ShipResponse) GetStamped() []*SegmentMetaProto {
-	if x != nil {
-		return x.Stamped
-	}
-	return nil
-}
-
-// ListDeltaRequest asks for the segment metadata delta for one graph. delta =
-// every segment whose server-stamped generation is STRICTLY GREATER than
-// since_gen (since_gen == 0 lists every segment).
-type ListDeltaRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Target        *GraphSelector         `protobuf:"bytes,1,opt,name=target,proto3" json:"target,omitempty"`
-	SinceGen      uint64                 `protobuf:"varint,2,opt,name=since_gen,json=sinceGen,proto3" json:"since_gen,omitempty"`
-	WriterId      string                 `protobuf:"bytes,3,opt,name=writer_id,json=writerId,proto3" json:"writer_id,omitempty"` // stable per-machine identity; stamps last-connection liveness (additive)
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *ListDeltaRequest) Reset() {
-	*x = ListDeltaRequest{}
-	mi := &file_knowledge_v1_segment_proto_msgTypes[2]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *ListDeltaRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*ListDeltaRequest) ProtoMessage() {}
-
-func (x *ListDeltaRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_knowledge_v1_segment_proto_msgTypes[2]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use ListDeltaRequest.ProtoReflect.Descriptor instead.
-func (*ListDeltaRequest) Descriptor() ([]byte, []int) {
-	return file_knowledge_v1_segment_proto_rawDescGZIP(), []int{2}
-}
-
-func (x *ListDeltaRequest) GetTarget() *GraphSelector {
-	if x != nil {
-		return x.Target
-	}
-	return nil
-}
-
-func (x *ListDeltaRequest) GetSinceGen() uint64 {
-	if x != nil {
-		return x.SinceGen
-	}
-	return 0
-}
-
-func (x *ListDeltaRequest) GetWriterId() string {
-	if x != nil {
-		return x.WriterId
-	}
-	return ""
-}
-
-// ListDeltaResponse returns the SegmentMetaProto descriptors for the delta,
-// ordered by ascending generation. The client Fetches the ids it lacks.
-type ListDeltaResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Metas         []*SegmentMetaProto    `protobuf:"bytes,1,rep,name=metas,proto3" json:"metas,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *ListDeltaResponse) Reset() {
-	*x = ListDeltaResponse{}
-	mi := &file_knowledge_v1_segment_proto_msgTypes[3]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *ListDeltaResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*ListDeltaResponse) ProtoMessage() {}
-
-func (x *ListDeltaResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_knowledge_v1_segment_proto_msgTypes[3]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use ListDeltaResponse.ProtoReflect.Descriptor instead.
-func (*ListDeltaResponse) Descriptor() ([]byte, []int) {
-	return file_knowledge_v1_segment_proto_rawDescGZIP(), []int{3}
-}
-
-func (x *ListDeltaResponse) GetMetas() []*SegmentMetaProto {
-	if x != nil {
-		return x.Metas
-	}
-	return nil
-}
-
-// FetchRequest asks for the opaque bytes of the listed segments. ids are
-// content-hash SegmentIDs (the client learns them from ListDelta).
-type FetchRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Target        *GraphSelector         `protobuf:"bytes,1,opt,name=target,proto3" json:"target,omitempty"`
-	Ids           []string               `protobuf:"bytes,2,rep,name=ids,proto3" json:"ids,omitempty"`
-	WriterId      string                 `protobuf:"bytes,3,opt,name=writer_id,json=writerId,proto3" json:"writer_id,omitempty"` // stable per-machine identity; stamps last-connection liveness (additive)
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *FetchRequest) Reset() {
-	*x = FetchRequest{}
-	mi := &file_knowledge_v1_segment_proto_msgTypes[4]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *FetchRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*FetchRequest) ProtoMessage() {}
-
-func (x *FetchRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_knowledge_v1_segment_proto_msgTypes[4]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use FetchRequest.ProtoReflect.Descriptor instead.
-func (*FetchRequest) Descriptor() ([]byte, []int) {
-	return file_knowledge_v1_segment_proto_rawDescGZIP(), []int{4}
-}
-
-func (x *FetchRequest) GetTarget() *GraphSelector {
-	if x != nil {
-		return x.Target
-	}
-	return nil
-}
-
-func (x *FetchRequest) GetIds() []string {
-	if x != nil {
-		return x.Ids
-	}
-	return nil
-}
-
-func (x *FetchRequest) GetWriterId() string {
-	if x != nil {
-		return x.WriterId
-	}
-	return ""
-}
-
-// FetchResponse returns the opaque SegmentBlobProto bytes for the requested
-// ids. A missing id is simply absent from blobs (the client treats it as a
-// miss and retries/rebuilds per its own policy).
-type FetchResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Blobs         []*SegmentBlobProto    `protobuf:"bytes,1,rep,name=blobs,proto3" json:"blobs,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *FetchResponse) Reset() {
-	*x = FetchResponse{}
-	mi := &file_knowledge_v1_segment_proto_msgTypes[5]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *FetchResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*FetchResponse) ProtoMessage() {}
-
-func (x *FetchResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_knowledge_v1_segment_proto_msgTypes[5]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use FetchResponse.ProtoReflect.Descriptor instead.
-func (*FetchResponse) Descriptor() ([]byte, []int) {
-	return file_knowledge_v1_segment_proto_rawDescGZIP(), []int{5}
-}
-
-func (x *FetchResponse) GetBlobs() []*SegmentBlobProto {
-	if x != nil {
-		return x.Blobs
-	}
-	return nil
-}
-
-// PruneRequest asks the server to DELETE the listed segments for one graph. ids
-// are content-hash SegmentIDs the client merged away (the inverse of the ship
-// diff). Mirrors FetchRequest's shape (target + ids) — same routing+id carrier,
-// no novelty.
-type PruneRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Target        *GraphSelector         `protobuf:"bytes,1,opt,name=target,proto3" json:"target,omitempty"`
-	Ids           []string               `protobuf:"bytes,2,rep,name=ids,proto3" json:"ids,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *PruneRequest) Reset() {
-	*x = PruneRequest{}
-	mi := &file_knowledge_v1_segment_proto_msgTypes[6]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *PruneRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*PruneRequest) ProtoMessage() {}
-
-func (x *PruneRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_knowledge_v1_segment_proto_msgTypes[6]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use PruneRequest.ProtoReflect.Descriptor instead.
-func (*PruneRequest) Descriptor() ([]byte, []int) {
-	return file_knowledge_v1_segment_proto_rawDescGZIP(), []int{6}
-}
-
-func (x *PruneRequest) GetTarget() *GraphSelector {
-	if x != nil {
-		return x.Target
-	}
-	return nil
-}
-
-func (x *PruneRequest) GetIds() []string {
-	if x != nil {
-		return x.Ids
-	}
-	return nil
-}
-
-// PruneResponse returns how many segments the server actually deleted. A
-// requested id that was already absent simply does not count — Prune is
-// idempotent (re-pruning a deleted id is a no-op, not an error).
-type PruneResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Deleted       uint64                 `protobuf:"varint,1,opt,name=deleted,proto3" json:"deleted,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *PruneResponse) Reset() {
-	*x = PruneResponse{}
-	mi := &file_knowledge_v1_segment_proto_msgTypes[7]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *PruneResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*PruneResponse) ProtoMessage() {}
-
-func (x *PruneResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_knowledge_v1_segment_proto_msgTypes[7]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use PruneResponse.ProtoReflect.Descriptor instead.
-func (*PruneResponse) Descriptor() ([]byte, []int) {
-	return file_knowledge_v1_segment_proto_rawDescGZIP(), []int{7}
-}
-
-func (x *PruneResponse) GetDeleted() uint64 {
-	if x != nil {
-		return x.Deleted
-	}
-	return 0
-}
-
-// PublishRequest carries the FULL live id-set this writer holds for one
-// (graphKey, writer_id, format) — its manifest. Modeled on PruneRequest's
-// target+ids carrier (no novel shape) plus the registry-model dimensions the
-// prune request lacks: writer_id (which writer's manifest to swap) and format
-// (BM25 / HNSW-embed / deterministic-HNSW share one graphKey bucket, kept
-// distinct by this tag). ids is the complete set the writer references, NOT a
-// delta — the server replaces the writer's prior manifest with this set
-// wholesale, then refcount-GCs blobs that dropped to zero references. target
-// reuses the GraphSelector routing envelope imported at line 14.
-type PublishRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Target        *GraphSelector         `protobuf:"bytes,1,opt,name=target,proto3" json:"target,omitempty"`
-	WriterId      string                 `protobuf:"bytes,2,opt,name=writer_id,json=writerId,proto3" json:"writer_id,omitempty"` // stable per-machine identity addressing this writer's manifest
-	Format        string                 `protobuf:"bytes,3,opt,name=format,proto3" json:"format,omitempty"`                     // format tag distinguishing manifests within one graphKey bucket
-	Ids           []string               `protobuf:"bytes,4,rep,name=ids,proto3" json:"ids,omitempty"`                           // the complete live id-set this writer publishes (its manifest)
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *PublishRequest) Reset() {
-	*x = PublishRequest{}
-	mi := &file_knowledge_v1_segment_proto_msgTypes[8]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *PublishRequest) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*PublishRequest) ProtoMessage() {}
-
-func (x *PublishRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_knowledge_v1_segment_proto_msgTypes[8]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use PublishRequest.ProtoReflect.Descriptor instead.
-func (*PublishRequest) Descriptor() ([]byte, []int) {
-	return file_knowledge_v1_segment_proto_rawDescGZIP(), []int{8}
-}
-
-func (x *PublishRequest) GetTarget() *GraphSelector {
-	if x != nil {
-		return x.Target
-	}
-	return nil
-}
-
-func (x *PublishRequest) GetWriterId() string {
-	if x != nil {
-		return x.WriterId
-	}
-	return ""
-}
-
-func (x *PublishRequest) GetFormat() string {
-	if x != nil {
-		return x.Format
-	}
-	return ""
-}
-
-func (x *PublishRequest) GetIds() []string {
-	if x != nil {
-		return x.Ids
-	}
-	return nil
-}
-
-// PublishResponse returns how many __segments blobs the refcount-GC deleted
-// after the manifest swap. Mirrors PruneResponse.deleted: idempotent — a
-// re-publish of an unchanged manifest deletes 0, and a blob still referenced by
-// any (this or another writer's) manifest is never counted/deleted.
-type PublishResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Deleted       uint64                 `protobuf:"varint,1,opt,name=deleted,proto3" json:"deleted,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
-}
-
-func (x *PublishResponse) Reset() {
-	*x = PublishResponse{}
-	mi := &file_knowledge_v1_segment_proto_msgTypes[9]
-	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-	ms.StoreMessageInfo(mi)
-}
-
-func (x *PublishResponse) String() string {
-	return protoimpl.X.MessageStringOf(x)
-}
-
-func (*PublishResponse) ProtoMessage() {}
-
-func (x *PublishResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_knowledge_v1_segment_proto_msgTypes[9]
-	if x != nil {
-		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
-		if ms.LoadMessageInfo() == nil {
-			ms.StoreMessageInfo(mi)
-		}
-		return ms
-	}
-	return mi.MessageOf(x)
-}
-
-// Deprecated: Use PublishResponse.ProtoReflect.Descriptor instead.
-func (*PublishResponse) Descriptor() ([]byte, []int) {
-	return file_knowledge_v1_segment_proto_rawDescGZIP(), []int{9}
-}
-
-func (x *PublishResponse) GetDeleted() uint64 {
-	if x != nil {
-		return x.Deleted
-	}
-	return 0
-}
-
-// SegmentBlobProto mirrors searchengine.SegmentBlob (cmd/knowledge/internal/
-// searchengine/segment.go:49-54) field-for-field, RE-DECLARED here (NOT imported
-// from the client engine) so the server stays engine-FREE: the server links
-// only this generated carrier, never the searchengine package. bytes is the
-// opaque encoded segment — the server stores it verbatim and never decodes it.
-// generation is the server-stamped ordering value on a RESPONSE carrier; on a
-// Ship REQUEST the server DISCARDS the inbound value and stamps its own
-// (the server is the ordering point). doc_count rides the ship carrier (additive
-// field 5) so the server can PERSIST the per-segment live doc count alongside
-// the opaque bytes — the segment-coverage levers read it back via ListDelta
-// metas without fetching/decoding any blob.
+// SegmentBlobProto is the whole-segment content-addressed carrier: opaque encoded
+// bytes plus routing metadata. doc_count rides field 5 so the coverage levers can
+// PERSIST the per-segment live doc count alongside the opaque bytes and read it
+// back off a List meta without fetching/decoding any blob.
 type SegmentBlobProto struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`                              // content-hash SegmentID
 	Format        string                 `protobuf:"bytes,2,opt,name=format,proto3" json:"format,omitempty"`                      // format tag (e.g. "bm25", "hnsw") — opaque routing string
-	Generation    uint64                 `protobuf:"varint,3,opt,name=generation,proto3" json:"generation,omitempty"`             // server-stamped ordering value (response); discarded on Ship request
+	Generation    uint64                 `protobuf:"varint,3,opt,name=generation,proto3" json:"generation,omitempty"`             // ordering value (response); discarded on Ship request
 	Bytes         []byte                 `protobuf:"bytes,4,opt,name=bytes,proto3" json:"bytes,omitempty"`                        // opaque encoded segment — never decoded server-side
 	DocCount      int32                  `protobuf:"varint,5,opt,name=doc_count,json=docCount,proto3" json:"doc_count,omitempty"` // searchengine.SegmentBlob.DocCount — persisted for coverage
 	unknownFields protoimpl.UnknownFields
@@ -606,7 +40,7 @@ type SegmentBlobProto struct {
 
 func (x *SegmentBlobProto) Reset() {
 	*x = SegmentBlobProto{}
-	mi := &file_knowledge_v1_segment_proto_msgTypes[10]
+	mi := &file_knowledge_v1_segment_proto_msgTypes[0]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -618,7 +52,7 @@ func (x *SegmentBlobProto) String() string {
 func (*SegmentBlobProto) ProtoMessage() {}
 
 func (x *SegmentBlobProto) ProtoReflect() protoreflect.Message {
-	mi := &file_knowledge_v1_segment_proto_msgTypes[10]
+	mi := &file_knowledge_v1_segment_proto_msgTypes[0]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -631,7 +65,7 @@ func (x *SegmentBlobProto) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SegmentBlobProto.ProtoReflect.Descriptor instead.
 func (*SegmentBlobProto) Descriptor() ([]byte, []int) {
-	return file_knowledge_v1_segment_proto_rawDescGZIP(), []int{10}
+	return file_knowledge_v1_segment_proto_rawDescGZIP(), []int{0}
 }
 
 func (x *SegmentBlobProto) GetId() string {
@@ -669,16 +103,14 @@ func (x *SegmentBlobProto) GetDocCount() int32 {
 	return 0
 }
 
-// SegmentMetaProto mirrors searchengine.SegmentMeta (segment.go:58-64)
-// field-for-field, RE-DECLARED here (NOT imported) for the same engine-free
-// reason as SegmentBlobProto. It is the lightweight descriptor ListDelta/Ship
-// return without shipping bytes; doc_count/dead_count feed the client's delta
-// selection + merge metrics.
+// SegmentMetaProto mirrors searchengine.SegmentMeta field-for-field — the
+// lightweight descriptor a List/Ship leg returns without shipping bytes;
+// doc_count/dead_count feed the client's delta selection + merge metrics.
 type SegmentMetaProto struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`                                 // content-hash SegmentID
 	Format        string                 `protobuf:"bytes,2,opt,name=format,proto3" json:"format,omitempty"`                         // format tag — opaque routing string
-	Generation    uint64                 `protobuf:"varint,3,opt,name=generation,proto3" json:"generation,omitempty"`                // server-stamped ordering value
+	Generation    uint64                 `protobuf:"varint,3,opt,name=generation,proto3" json:"generation,omitempty"`                // ordering value
 	DocCount      int32                  `protobuf:"varint,4,opt,name=doc_count,json=docCount,proto3" json:"doc_count,omitempty"`    // searchengine.SegmentMeta.DocCount
 	DeadCount     int32                  `protobuf:"varint,5,opt,name=dead_count,json=deadCount,proto3" json:"dead_count,omitempty"` // searchengine.SegmentMeta.DeadCount
 	unknownFields protoimpl.UnknownFields
@@ -687,7 +119,7 @@ type SegmentMetaProto struct {
 
 func (x *SegmentMetaProto) Reset() {
 	*x = SegmentMetaProto{}
-	mi := &file_knowledge_v1_segment_proto_msgTypes[11]
+	mi := &file_knowledge_v1_segment_proto_msgTypes[1]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -699,7 +131,7 @@ func (x *SegmentMetaProto) String() string {
 func (*SegmentMetaProto) ProtoMessage() {}
 
 func (x *SegmentMetaProto) ProtoReflect() protoreflect.Message {
-	mi := &file_knowledge_v1_segment_proto_msgTypes[11]
+	mi := &file_knowledge_v1_segment_proto_msgTypes[1]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -712,7 +144,7 @@ func (x *SegmentMetaProto) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use SegmentMetaProto.ProtoReflect.Descriptor instead.
 func (*SegmentMetaProto) Descriptor() ([]byte, []int) {
-	return file_knowledge_v1_segment_proto_rawDescGZIP(), []int{11}
+	return file_knowledge_v1_segment_proto_rawDescGZIP(), []int{1}
 }
 
 func (x *SegmentMetaProto) GetId() string {
@@ -754,37 +186,7 @@ var File_knowledge_v1_segment_proto protoreflect.FileDescriptor
 
 const file_knowledge_v1_segment_proto_rawDesc = "" +
 	"\n" +
-	"\x1aknowledge/v1/segment.proto\x12\fknowledge.v1\x1a\x19knowledge/v1/engine.proto\"\x95\x01\n" +
-	"\vShipRequest\x123\n" +
-	"\x06target\x18\x01 \x01(\v2\x1b.knowledge.v1.GraphSelectorR\x06target\x124\n" +
-	"\x05blobs\x18\x02 \x03(\v2\x1e.knowledge.v1.SegmentBlobProtoR\x05blobs\x12\x1b\n" +
-	"\twriter_id\x18\x03 \x01(\tR\bwriterId\"H\n" +
-	"\fShipResponse\x128\n" +
-	"\astamped\x18\x01 \x03(\v2\x1e.knowledge.v1.SegmentMetaProtoR\astamped\"\x81\x01\n" +
-	"\x10ListDeltaRequest\x123\n" +
-	"\x06target\x18\x01 \x01(\v2\x1b.knowledge.v1.GraphSelectorR\x06target\x12\x1b\n" +
-	"\tsince_gen\x18\x02 \x01(\x04R\bsinceGen\x12\x1b\n" +
-	"\twriter_id\x18\x03 \x01(\tR\bwriterId\"I\n" +
-	"\x11ListDeltaResponse\x124\n" +
-	"\x05metas\x18\x01 \x03(\v2\x1e.knowledge.v1.SegmentMetaProtoR\x05metas\"r\n" +
-	"\fFetchRequest\x123\n" +
-	"\x06target\x18\x01 \x01(\v2\x1b.knowledge.v1.GraphSelectorR\x06target\x12\x10\n" +
-	"\x03ids\x18\x02 \x03(\tR\x03ids\x12\x1b\n" +
-	"\twriter_id\x18\x03 \x01(\tR\bwriterId\"E\n" +
-	"\rFetchResponse\x124\n" +
-	"\x05blobs\x18\x01 \x03(\v2\x1e.knowledge.v1.SegmentBlobProtoR\x05blobs\"U\n" +
-	"\fPruneRequest\x123\n" +
-	"\x06target\x18\x01 \x01(\v2\x1b.knowledge.v1.GraphSelectorR\x06target\x12\x10\n" +
-	"\x03ids\x18\x02 \x03(\tR\x03ids\")\n" +
-	"\rPruneResponse\x12\x18\n" +
-	"\adeleted\x18\x01 \x01(\x04R\adeleted\"\x8c\x01\n" +
-	"\x0ePublishRequest\x123\n" +
-	"\x06target\x18\x01 \x01(\v2\x1b.knowledge.v1.GraphSelectorR\x06target\x12\x1b\n" +
-	"\twriter_id\x18\x02 \x01(\tR\bwriterId\x12\x16\n" +
-	"\x06format\x18\x03 \x01(\tR\x06format\x12\x10\n" +
-	"\x03ids\x18\x04 \x03(\tR\x03ids\"+\n" +
-	"\x0fPublishResponse\x12\x18\n" +
-	"\adeleted\x18\x01 \x01(\x04R\adeleted\"\x8d\x01\n" +
+	"\x1aknowledge/v1/segment.proto\x12\fknowledge.v1\"\x8d\x01\n" +
 	"\x10SegmentBlobProto\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x16\n" +
 	"\x06format\x18\x02 \x01(\tR\x06format\x12\x1e\n" +
@@ -801,13 +203,7 @@ const file_knowledge_v1_segment_proto_rawDesc = "" +
 	"generation\x12\x1b\n" +
 	"\tdoc_count\x18\x04 \x01(\x05R\bdocCount\x12\x1d\n" +
 	"\n" +
-	"dead_count\x18\x05 \x01(\x05R\tdeadCount2\xe9\x02\n" +
-	"\x0eSegmentService\x12=\n" +
-	"\x04Ship\x12\x19.knowledge.v1.ShipRequest\x1a\x1a.knowledge.v1.ShipResponse\x12L\n" +
-	"\tListDelta\x12\x1e.knowledge.v1.ListDeltaRequest\x1a\x1f.knowledge.v1.ListDeltaResponse\x12@\n" +
-	"\x05Fetch\x12\x1a.knowledge.v1.FetchRequest\x1a\x1b.knowledge.v1.FetchResponse\x12@\n" +
-	"\x05Prune\x12\x1a.knowledge.v1.PruneRequest\x1a\x1b.knowledge.v1.PruneResponse\x12F\n" +
-	"\aPublish\x12\x1c.knowledge.v1.PublishRequest\x1a\x1d.knowledge.v1.PublishResponseB@Z>github.com/fulminate-io/knowledge/gen/knowledge/v1;knowledgev1b\x06proto3"
+	"dead_count\x18\x05 \x01(\x05R\tdeadCountB@Z>github.com/fulminate-io/knowledge/gen/knowledge/v1;knowledgev1b\x06proto3"
 
 var (
 	file_knowledge_v1_segment_proto_rawDescOnce sync.Once
@@ -821,47 +217,17 @@ func file_knowledge_v1_segment_proto_rawDescGZIP() []byte {
 	return file_knowledge_v1_segment_proto_rawDescData
 }
 
-var file_knowledge_v1_segment_proto_msgTypes = make([]protoimpl.MessageInfo, 12)
+var file_knowledge_v1_segment_proto_msgTypes = make([]protoimpl.MessageInfo, 2)
 var file_knowledge_v1_segment_proto_goTypes = []any{
-	(*ShipRequest)(nil),       // 0: knowledge.v1.ShipRequest
-	(*ShipResponse)(nil),      // 1: knowledge.v1.ShipResponse
-	(*ListDeltaRequest)(nil),  // 2: knowledge.v1.ListDeltaRequest
-	(*ListDeltaResponse)(nil), // 3: knowledge.v1.ListDeltaResponse
-	(*FetchRequest)(nil),      // 4: knowledge.v1.FetchRequest
-	(*FetchResponse)(nil),     // 5: knowledge.v1.FetchResponse
-	(*PruneRequest)(nil),      // 6: knowledge.v1.PruneRequest
-	(*PruneResponse)(nil),     // 7: knowledge.v1.PruneResponse
-	(*PublishRequest)(nil),    // 8: knowledge.v1.PublishRequest
-	(*PublishResponse)(nil),   // 9: knowledge.v1.PublishResponse
-	(*SegmentBlobProto)(nil),  // 10: knowledge.v1.SegmentBlobProto
-	(*SegmentMetaProto)(nil),  // 11: knowledge.v1.SegmentMetaProto
-	(*GraphSelector)(nil),     // 12: knowledge.v1.GraphSelector
+	(*SegmentBlobProto)(nil), // 0: knowledge.v1.SegmentBlobProto
+	(*SegmentMetaProto)(nil), // 1: knowledge.v1.SegmentMetaProto
 }
 var file_knowledge_v1_segment_proto_depIdxs = []int32{
-	12, // 0: knowledge.v1.ShipRequest.target:type_name -> knowledge.v1.GraphSelector
-	10, // 1: knowledge.v1.ShipRequest.blobs:type_name -> knowledge.v1.SegmentBlobProto
-	11, // 2: knowledge.v1.ShipResponse.stamped:type_name -> knowledge.v1.SegmentMetaProto
-	12, // 3: knowledge.v1.ListDeltaRequest.target:type_name -> knowledge.v1.GraphSelector
-	11, // 4: knowledge.v1.ListDeltaResponse.metas:type_name -> knowledge.v1.SegmentMetaProto
-	12, // 5: knowledge.v1.FetchRequest.target:type_name -> knowledge.v1.GraphSelector
-	10, // 6: knowledge.v1.FetchResponse.blobs:type_name -> knowledge.v1.SegmentBlobProto
-	12, // 7: knowledge.v1.PruneRequest.target:type_name -> knowledge.v1.GraphSelector
-	12, // 8: knowledge.v1.PublishRequest.target:type_name -> knowledge.v1.GraphSelector
-	0,  // 9: knowledge.v1.SegmentService.Ship:input_type -> knowledge.v1.ShipRequest
-	2,  // 10: knowledge.v1.SegmentService.ListDelta:input_type -> knowledge.v1.ListDeltaRequest
-	4,  // 11: knowledge.v1.SegmentService.Fetch:input_type -> knowledge.v1.FetchRequest
-	6,  // 12: knowledge.v1.SegmentService.Prune:input_type -> knowledge.v1.PruneRequest
-	8,  // 13: knowledge.v1.SegmentService.Publish:input_type -> knowledge.v1.PublishRequest
-	1,  // 14: knowledge.v1.SegmentService.Ship:output_type -> knowledge.v1.ShipResponse
-	3,  // 15: knowledge.v1.SegmentService.ListDelta:output_type -> knowledge.v1.ListDeltaResponse
-	5,  // 16: knowledge.v1.SegmentService.Fetch:output_type -> knowledge.v1.FetchResponse
-	7,  // 17: knowledge.v1.SegmentService.Prune:output_type -> knowledge.v1.PruneResponse
-	9,  // 18: knowledge.v1.SegmentService.Publish:output_type -> knowledge.v1.PublishResponse
-	14, // [14:19] is the sub-list for method output_type
-	9,  // [9:14] is the sub-list for method input_type
-	9,  // [9:9] is the sub-list for extension type_name
-	9,  // [9:9] is the sub-list for extension extendee
-	0,  // [0:9] is the sub-list for field type_name
+	0, // [0:0] is the sub-list for method output_type
+	0, // [0:0] is the sub-list for method input_type
+	0, // [0:0] is the sub-list for extension type_name
+	0, // [0:0] is the sub-list for extension extendee
+	0, // [0:0] is the sub-list for field type_name
 }
 
 func init() { file_knowledge_v1_segment_proto_init() }
@@ -869,16 +235,15 @@ func file_knowledge_v1_segment_proto_init() {
 	if File_knowledge_v1_segment_proto != nil {
 		return
 	}
-	file_knowledge_v1_engine_proto_init()
 	type x struct{}
 	out := protoimpl.TypeBuilder{
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_knowledge_v1_segment_proto_rawDesc), len(file_knowledge_v1_segment_proto_rawDesc)),
 			NumEnums:      0,
-			NumMessages:   12,
+			NumMessages:   2,
 			NumExtensions: 0,
-			NumServices:   1,
+			NumServices:   0,
 		},
 		GoTypes:           file_knowledge_v1_segment_proto_goTypes,
 		DependencyIndexes: file_knowledge_v1_segment_proto_depIdxs,

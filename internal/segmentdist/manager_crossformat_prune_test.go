@@ -34,7 +34,7 @@ func TestDeterministicShipKeepsBothFormatsResolvable(t *testing.T) {
 
 	// Ship via the DETERMINISTIC rebuild path: Add BOTH formats, then the single
 	// serial FlushDeterministic finalize — exactly what RebuildSegments drives.
-	shipper := NewManager(gc, t.TempDir(), 0)
+	shipper := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 	require.NoError(t, shipper.AddDeterministic(ctx, kgtypes.GraphKnowledge, "kg", docs))
 	require.NoError(t, shipper.AddFields(ctx, kgtypes.GraphKnowledge, "kg", docs))
 	_, err := shipper.FlushDeterministic(ctx, kgtypes.GraphKnowledge, "kg")
@@ -48,7 +48,7 @@ func TestDeterministicShipKeepsBothFormatsResolvable(t *testing.T) {
 
 	// A FRESH read manager resolves the target's STORED vector by id — the exact
 	// read mode:'similar' performs. This is the user-visible failure under the bug.
-	fresh := NewManager(gc, t.TempDir(), 0)
+	fresh := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 	vec, ok, err := fresh.VectorByID(ctx, kgtypes.GraphKnowledge, "kg", targetID)
 	require.NoError(t, err)
 	require.True(t, ok, "VectorByID must resolve the deterministic-shipped vector after a both-formats rebuild ship")
@@ -65,7 +65,7 @@ func TestEmbedShipKeepsBothFormatsResolvable(t *testing.T) {
 
 	docs, targetID, targetVec, _ := searchCorpus(7)
 
-	mgr := NewManager(gc, t.TempDir(), 0)
+	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 	require.NoError(t, mgr.AddAndShip(ctx, kgtypes.GraphKnowledge, "kg", docs))
 	require.NoError(t, mgr.AddAndShipFields(ctx, kgtypes.GraphKnowledge, "kg", docs))
 
@@ -73,7 +73,7 @@ func TestEmbedShipKeepsBothFormatsResolvable(t *testing.T) {
 	require.Positive(t, hnsw, "embed HNSW segment must survive the BM25 ship's reconcilePrune")
 	require.Positive(t, bm25, "embed BM25 segment must survive")
 
-	fresh := NewManager(gc, t.TempDir(), 0)
+	fresh := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 	vec, ok, err := fresh.VectorByID(ctx, kgtypes.GraphKnowledge, "kg", targetID)
 	require.NoError(t, err)
 	require.True(t, ok, "VectorByID resolves the embed-shipped vector when both formats coexist on one graph key")
@@ -82,7 +82,7 @@ func TestEmbedShipKeepsBothFormatsResolvable(t *testing.T) {
 
 // countShippedByFormat tallies the fake server's stored blobs by Format across
 // every graph key.
-func countShippedByFormat(svc *fakeSegmentService) (hnsw, bm25 int) {
+func countShippedByFormat(svc *sharedServerFake) (hnsw, bm25 int) {
 	svc.mu.Lock()
 	defer svc.mu.Unlock()
 	for _, blobs := range svc.byKey {

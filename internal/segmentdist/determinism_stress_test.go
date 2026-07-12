@@ -38,7 +38,7 @@ func shipDeterministicAndExport(t *testing.T, docs []searchengine.Document) sear
 	t.Helper()
 	_, gc := newSegmentHarness(t)
 	// The embed ship path builds deterministically by default now — no seam to set.
-	mgr := NewManager(gc, t.TempDir(), 0)
+	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 
 	require.NoError(t, mgr.AddAndShip(context.Background(), kgtypes.GraphKnowledge, "kg", docs))
 
@@ -94,7 +94,7 @@ func TestDeterministicExactTop1Recovery500(t *testing.T) {
 	ctx := context.Background()
 
 	_, gc := newSegmentHarness(t)
-	mgr := NewManager(gc, t.TempDir(), 0)
+	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 
 	// n < MinSegmentDocs(1024): AddAndShip just buffers, so Flush force-seals the
 	// sub-threshold tail into one searchable segment.

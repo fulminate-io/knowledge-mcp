@@ -4,57 +4,35 @@ package segmentdist
 
 import (
 	"context"
-	"net/http"
-	"net/http/httptest"
 	"testing"
 
-	"connectrpc.com/connect"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
-	"github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1/knowledgev1connect"
-	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine/formats/hnsw"
 )
 
-// emptyFetchService wraps fakeSegmentService but serves an EMPTY Fetch — the
-// server reports the corpus metas via ListDelta (with a real DocCount) yet hands
-// back no blobs, so a load() imports NOTHING despite the shipped denominator being
-// non-zero. This models the post-restart incident: the server holds the full
+// newEmptyFetchHarness returns a shared server fake and a view over it whose Fetch
+// serves EMPTY (no blobs, no error) even when the server holds the ids — the
+// server reports the corpus metas via List (with a real DocCount) yet a load()
+// imports NOTHING. This models the post-restart incident: the server holds the full
 // shipped HNSW corpus (List shows it, the doc-count sums above the floor) but the
 // live in-memory engine stays empty after load — the collapse the resident-vs-
 // shipped probe must catch and segmentPoolDegenerate (server-vs-server) cannot.
-type emptyFetchService struct {
-	*fakeSegmentService
-}
-
-func (f *emptyFetchService) Fetch(
-	_ context.Context, _ *connect.Request[knowledgev1.FetchRequest],
-) (*connect.Response[knowledgev1.FetchResponse], error) {
-	return connect.NewResponse(&knowledgev1.FetchResponse{}), nil
-}
-
-// newReconcileHarness stands up an h2c server behind the given handler and returns
-// a GraphClient pointed at it (satisfies segmentCaller).
-func newReconcileHarness(t *testing.T, svc knowledgev1connect.SegmentServiceHandler) *graphclient.GraphClient {
+func newEmptyFetchHarness(t *testing.T) *fakeSegmentSource {
 	t.Helper()
-	mux := http.NewServeMux()
-	path, hdlr := knowledgev1connect.NewSegmentServiceHandler(svc)
-	mux.Handle(path, hdlr)
-	srv := httptest.NewServer(h2c.NewHandler(mux, &http2.Server{}))
-	t.Cleanup(srv.Close)
-	return graphclient.NewGraphClientForURL(srv.URL)
+	view := newSharedServerFake().viewFor(&knowledgev1.GraphSelector{}, "")
+	view.emptyFetch = true
+	return view
 }
 
-// shipHNSWMetas ships HNSW-format blobs carrying the given doc counts to target so
-// the server's ListDelta surfaces them (the shipped denominator). The bytes are a
-// placeholder — the reconcile tests that need a degenerate load pair this with the
-// emptyFetchService so the blobs never decode.
-func shipHNSWMetas(t *testing.T, gc *graphclient.GraphClient, target *knowledgev1.GraphSelector, docCounts ...int) {
+// shipHNSWMetas ships HNSW-format blobs carrying the given doc counts to target via
+// the view so the server's List surfaces them (the shipped denominator). The bytes
+// are a placeholder — the reconcile tests that need a degenerate load pair this with
+// the empty-Fetch view so the blobs never decode.
+func shipHNSWMetas(t *testing.T, view *fakeSegmentSource, target *knowledgev1.GraphSelector, docCounts ...int) {
 	t.Helper()
 	blobs := make([]*knowledgev1.SegmentBlobProto, 0, len(docCounts))
 	for i, dc := range docCounts {
@@ -63,8 +41,7 @@ func shipHNSWMetas(t *testing.T, gc *graphclient.GraphClient, target *knowledgev
 			DocCount: int32(dc), Bytes: []byte("seg"),
 		})
 	}
-	_, err := gc.Ship(context.Background(), &knowledgev1.ShipRequest{Target: target, Blobs: blobs})
-	require.NoError(t, err)
+	view.server.ship(target, "", blobs)
 }
 
 // TestReconcileResidentDegenerate_ColdHeals proves the probe does NOT false-positive
@@ -78,12 +55,12 @@ func TestReconcileResidentDegenerate_ColdHeals(t *testing.T) {
 
 	// Ship a real HNSW corpus (1024 docs == one sealed segment) via a producer
 	// Manager pointed at the same server.
-	producer := NewManager(gc, t.TempDir(), 0)
+	producer := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 	require.NoError(t, producer.AddAndShip(ctx, kgtypes.GraphCode, "coldRepo", hnswVecDocs(1024)))
 	require.GreaterOrEqual(t, serverHNSWDocCount(t, gc, target), residentBackstopFloor)
 
 	// A FRESH consumer Manager starts cold (resident 0). The probe load()s first.
-	consumer := NewManager(gc, t.TempDir(), 0)
+	consumer := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 	require.Equal(t, 0, consumer.ResidentDocCount(kgtypes.GraphCode, "coldRepo"),
 		"the cold consumer has not loaded yet")
 
@@ -101,8 +78,7 @@ func TestReconcileResidentDegenerate_ColdHeals(t *testing.T) {
 // empty) — the case the read-side recoverIfDegenerate would also catch, but here on
 // the startup/periodic edge with no Search.
 func TestReconcileResidentDegenerate_Incident(t *testing.T) {
-	svc := &emptyFetchService{fakeSegmentService: newFakeSegmentService()}
-	gc := newReconcileHarness(t, svc)
+	gc := newEmptyFetchHarness(t)
 	ctx := context.Background()
 	target := &knowledgev1.GraphSelector{Graph: "code", Repo: "incidentRepo"}
 
@@ -110,7 +86,7 @@ func TestReconcileResidentDegenerate_Incident(t *testing.T) {
 	// the empty Fetch means a load imports nothing.
 	shipHNSWMetas(t, gc, target, 64, 64)
 
-	mgr := NewManager(gc, t.TempDir(), 0)
+	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 	degenerate, err := mgr.ReconcileResidentDegenerate(ctx, kgtypes.GraphCode, "incidentRepo")
 	require.NoError(t, err)
 	require.True(t, degenerate,
@@ -137,14 +113,14 @@ func TestReconcileResidentDegenerate_PartialL2HealsViaServerReimport(t *testing.
 
 	// Server holds a real, Fetch-able full HNSW corpus (>> floor) shipped by a
 	// producer Manager pointed at the same server.
-	producer := NewManager(gc, t.TempDir(), 0)
+	producer := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 	require.NoError(t, producer.AddAndShip(ctx, kgtypes.GraphCode, "partialHealRepo", hnswVecDocs(1024)))
 
 	// Consumer Manager. Grab the SAME dm ReconcileResidentDegenerate will use, then
 	// force the partial-L2-already-loaded state: import a sub-floor segment, latch
 	// l2Loaded=true, and bump importedGen so a plain load() would short-circuit and
 	// re-import nothing.
-	consumer := NewManager(gc, t.TempDir(), 0)
+	consumer := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 	dm := consumer.managerFor(kgtypes.GraphCode, "partialHealRepo")
 
 	partial := buildHNSWSegment(t, vecContentDocsSeed(10, 5000)) // one 10-doc segment (< floor 64)
@@ -174,43 +150,40 @@ func TestReconcileResidentDegenerate_Disarms(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("pre-doc_count blob disarms (DocCount==0)", func(t *testing.T) {
-		svc := &emptyFetchService{fakeSegmentService: newFakeSegmentService()}
-		gc := newReconcileHarness(t, svc)
+		gc := newEmptyFetchHarness(t)
 		target := &knowledgev1.GraphSelector{Graph: "code", Repo: "unknownRepo"}
 		// A shipped HNSW meta with DocCount==0 (old pre-doc_count blob) → denominator
 		// untrustworthy → disarm.
 		shipHNSWMetas(t, gc, target, 0)
-		mgr := NewManager(gc, t.TempDir(), 0)
+		mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 		degenerate, err := mgr.ReconcileResidentDegenerate(ctx, kgtypes.GraphCode, "unknownRepo")
 		require.NoError(t, err)
 		require.False(t, degenerate, "a pre-doc_count blob disarms the ratio (conservative-unknown)")
 	})
 
 	t.Run("sub-floor corpus disarms", func(t *testing.T) {
-		svc := &emptyFetchService{fakeSegmentService: newFakeSegmentService()}
-		gc := newReconcileHarness(t, svc)
+		gc := newEmptyFetchHarness(t)
 		target := &knowledgev1.GraphSelector{Graph: "code", Repo: "tinyRepo"}
 		// Shipped corpus of 4 docs (< floor 64) → too small for the ratio → disarm.
 		shipHNSWMetas(t, gc, target, 4)
-		mgr := NewManager(gc, t.TempDir(), 0)
+		mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 		degenerate, err := mgr.ReconcileResidentDegenerate(ctx, kgtypes.GraphCode, "tinyRepo")
 		require.NoError(t, err)
 		require.False(t, degenerate, "a sub-floor shipped corpus disarms the ratio (tiny-graph no-flap)")
 	})
 }
 
-// serverHNSWDocCount sums the HNSW-format shipped doc counts on the server for one
-// graph via a throwaway source — the shipped denominator the probe reads.
-func serverHNSWDocCount(t *testing.T, gc *graphclient.GraphClient, target *knowledgev1.GraphSelector) int {
+// serverHNSWDocCount sums the HNSW-format shipped doc counts on the shared server
+// for one graph — the shipped denominator the probe reads. It reads the server the
+// view is bound to directly (List(0) over that target).
+func serverHNSWDocCount(t *testing.T, view *fakeSegmentSource, target *knowledgev1.GraphSelector) int {
 	t.Helper()
-	src := newRPCSegmentSource(gc, target, "", context.Background())
-	metas, err := src.List(context.Background(), 0)
-	require.NoError(t, err)
+	metas := view.server.listDelta(target, "", 0)
 	total := 0
 	hnswName := hnsw.New().Name()
 	for _, m := range metas {
-		if m.Format == hnswName {
-			total += m.DocCount
+		if m.GetFormat() == hnswName {
+			total += int(m.GetDocCount())
 		}
 	}
 	return total

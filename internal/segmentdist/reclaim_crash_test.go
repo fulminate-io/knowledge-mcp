@@ -3,7 +3,6 @@
 package segmentdist
 
 import (
-	"context"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -91,9 +90,8 @@ func diskCacheIDs(c *diskSegmentCache) map[string]struct{} {
 // with a synthetic MergeResult while faults are injected at the cache boundary.
 func newReclaimDMOverCache(t *testing.T, cache segmentL2Cache) *distManager[mockQuery, mockStats] {
 	t.Helper()
-	_, gc := newSegmentHarness(t)
 	target := graphSelector(kgtypes.GraphCode, "crash")
-	src := newRPCSegmentSource(gc, target, "", context.Background())
+	src := newSharedServerFake().viewFor(target, "")
 	return newDistManager[mockQuery, mockStats](newMockEngine(), src, cache, target, "")
 }
 

@@ -71,7 +71,7 @@ func TestManagerMergeReclaim(t *testing.T) {
 
 	t.Run("hnsw", func(t *testing.T) {
 		_, gc := newSegmentHarness(t)
-		mgr := NewManager(gc, t.TempDir(), 0)
+		mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 		gt, name := kgtypes.GraphCode, "mergereclaim-hnsw"
 
 		// AddAndShip seals + ships one 1024-doc segment, warming its L2 file.
@@ -97,7 +97,7 @@ func TestManagerMergeReclaim(t *testing.T) {
 
 	t.Run("bm25", func(t *testing.T) {
 		_, gc := newSegmentHarness(t)
-		mgr := NewManager(gc, t.TempDir(), 0)
+		mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 		gt, name := kgtypes.GraphCode, "mergereclaim-bm25"
 
 		require.NoError(t, mgr.AddAndShipFields(ctx, gt, name, docs))
@@ -151,7 +151,7 @@ func TestDetManagerNoAutoReclaim(t *testing.T) {
 	ctx := context.Background()
 
 	_, gc := newSegmentHarness(t)
-	mgr := NewManager(gc, t.TempDir(), 0)
+	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 	gt, name := kgtypes.GraphCode, "noreclaim-det"
 
 	// Seal one deterministic segment (Add-only; no ship on this path).

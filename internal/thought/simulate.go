@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"time"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 
@@ -57,10 +58,13 @@ func SimulateRemoveCharge(ctx context.Context, gc Caller, chargeID string) (Simu
 	// invariant — never per-thought N+1).
 	chargeMap := chargeMapForThoughts(ctx, gc, thoughtIDs)
 
+	// One now for the whole pass: before/after are computed at the SAME
+	// instant so the recency scalar cancels cleanly between them.
+	now := time.Now()
 	for _, tid := range thoughtIDs {
 		charges := chargeMap[tid]
-		before := computePropertiesFromCharges(charges)
-		after := computePropertiesExcluding(charges, chargeID)
+		before := computePropertiesFromCharges(charges, now)
+		after := computePropertiesExcluding(charges, chargeID, now)
 
 		result.AffectedThoughts = append(result.AffectedThoughts, SimulatedChange{
 			ThoughtID: tid,
@@ -104,7 +108,9 @@ func SimulateInvalidateThought(ctx context.Context, gc Caller, thoughtID string)
 	}
 	chargeMap := chargeMapForThoughts(ctx, gc, chargeIDs)
 
-	before := computePropertiesFromCharges(chargeMap[thoughtID])
+	// One now for the whole pass (recency scalar is read-time, see fold).
+	now := time.Now()
+	before := computePropertiesFromCharges(chargeMap[thoughtID], now)
 	result.AffectedThoughts = append(result.AffectedThoughts, SimulatedChange{
 		ThoughtID: thoughtID,
 		Before:    before,
@@ -116,7 +122,7 @@ func SimulateInvalidateThought(ctx context.Context, gc Caller, thoughtID string)
 		if !ok || kgtypes.NodeType(n.Type) != kgtypes.NodeThought {
 			continue
 		}
-		nBefore := computePropertiesFromCharges(chargeMap[nid])
+		nBefore := computePropertiesFromCharges(chargeMap[nid], now)
 		result.AffectedThoughts = append(result.AffectedThoughts, SimulatedChange{
 			ThoughtID: nid,
 			Before:    nBefore,
@@ -141,10 +147,13 @@ func SimulateAddCharge(ctx context.Context, gc Caller, thoughtID, polarity strin
 	}
 
 	chargeMap := chargeMapForThoughts(ctx, gc, []string{thoughtID})
-	before := computePropertiesFromCharges(chargeMap[thoughtID])
+	now := time.Now()
+	before := computePropertiesFromCharges(chargeMap[thoughtID], now)
 
 	after := before
 	w := weight
+	// The hypothetical new charge is age 0 → recencyScalar == 1.0, so it is
+	// added at FULL weight (no scalar) on top of the already-decayed `before`.
 	switch polarity {
 	case "positive":
 		after.PositiveWeight += w
@@ -195,14 +204,14 @@ func RunSimulation(ctx context.Context, gc Caller, action, target, polarity stri
 // specific charge. Signature change: now takes a pre-loaded charges
 // slice instead of issuing GetChargesForThought internally. Caller is
 // expected to have bulk-fetched via chargeMapForThoughts upstream.
-func computePropertiesExcluding(charges []*knowledgev1.Node, excludeChargeID string) ThoughtProperties {
+func computePropertiesExcluding(charges []*knowledgev1.Node, excludeChargeID string, now time.Time) ThoughtProperties {
 	var props ThoughtProperties
 	for _, c := range charges {
 		if c.Id == excludeChargeID {
 			continue
 		}
 		props.ChargeCount++
-		w := parseFloat(kgtypes.Value(c, "weight"))
+		w := parseFloat(kgtypes.Value(c, "weight")) * recencyScalar(now, c.GetUpdatedAt())
 		switch kgtypes.Value(c, "polarity") {
 		case "positive":
 			props.PositiveWeight += w

@@ -7,12 +7,9 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
-	"sort"
-	"sync"
 	"sync/atomic"
 	"testing"
 
-	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 	"golang.org/x/net/http2"
@@ -31,168 +28,18 @@ import (
 // reported ready, segment Manager wired and populated) returns REAL BM25 results
 // rather than the "client segment engine unavailable" error.
 //
-// It is self-contained: a single h2c httptest server mounts BOTH the
-// SegmentService (so the Manager can ship + load real BM25 segments) AND the
-// EngineService (so composeKnowledgeSearch's hydrate read resolves the ranked Hit
-// IDs to nodes). The Manager and the hydrate GraphCaller are therefore the SAME
-// GraphClient pointed at that one server — which is exactly the production shape
-// where the client's router serves both the segment RPCs and the engine reads.
+// With the SegmentService deleted, the offline (NOT-logged-in) Manager runs on the
+// L2-local segment source: AddAndShipFields ships to the on-disk L2 cache with ZERO
+// server RPC, and the search arm reads BM25 over those L2 segments. The httptest
+// server mounts only the EngineService (so composeKnowledgeSearch's hydrate read
+// resolves the ranked Hit IDs to nodes) — the segment lifecycle is entirely local.
 
-// inMemSegmentService is a compact in-memory SegmentServiceHandler: monotonic
-// generations on Ship, ListDelta/Fetch from a per-graphKey map. It is the minimal
-// shape the client Manager's ship + cache-first load round-trips against (mirrors
-// the segmentdist package's own fakeSegmentService, replicated here because that
-// double is package-private to segmentdist).
-type inMemSegmentService struct {
-	mu    sync.Mutex
-	byKey map[string][]*knowledgev1.SegmentBlobProto
-	gen   uint64
-	// manifests mirrors the real server's registry: graphKey -> (writerID+format)
-	// -> id-set. Publish swaps a writer's manifest and refcount-GCs blobs no
-	// manifest references.
-	manifests map[string]map[string]map[string]bool
-}
+// notLoggedInCaller is the not-logged-in loginState the offline Manager takes so the
+// source factory selects the L2-local segmentSource (no server segment RPC). It is
+// the tools-side analog of segmentdist's own login stub (unexported there).
+type notLoggedInCaller struct{}
 
-func newInMemSegmentService() *inMemSegmentService {
-	return &inMemSegmentService{
-		byKey:     map[string][]*knowledgev1.SegmentBlobProto{},
-		manifests: map[string]map[string]map[string]bool{},
-	}
-}
-
-func (f *inMemSegmentService) key(t *knowledgev1.GraphSelector) string {
-	return t.GetGraph() + ":" + t.GetRepo() + t.GetAccount() + t.GetName()
-}
-
-func (f *inMemSegmentService) blobMeta(b *knowledgev1.SegmentBlobProto) *knowledgev1.SegmentMetaProto {
-	return &knowledgev1.SegmentMetaProto{
-		Id: b.GetId(), Format: b.GetFormat(), Generation: b.GetGeneration(), DocCount: b.GetDocCount(),
-	}
-}
-
-func (f *inMemSegmentService) Ship(
-	_ context.Context, req *connect.Request[knowledgev1.ShipRequest],
-) (*connect.Response[knowledgev1.ShipResponse], error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	k := f.key(req.Msg.GetTarget())
-	existing := map[string]*knowledgev1.SegmentBlobProto{}
-	for _, b := range f.byKey[k] {
-		existing[b.GetId()] = b
-	}
-	var stamped []*knowledgev1.SegmentMetaProto
-	for _, b := range req.Msg.GetBlobs() {
-		if cur, ok := existing[b.GetId()]; ok {
-			stamped = append(stamped, f.blobMeta(cur))
-			continue
-		}
-		f.gen++
-		stored := &knowledgev1.SegmentBlobProto{
-			Id: b.GetId(), Format: b.GetFormat(), Generation: f.gen,
-			DocCount: b.GetDocCount(), Bytes: b.GetBytes(),
-		}
-		f.byKey[k] = append(f.byKey[k], stored)
-		existing[b.GetId()] = stored
-		stamped = append(stamped, f.blobMeta(stored))
-	}
-	return connect.NewResponse(&knowledgev1.ShipResponse{Stamped: stamped}), nil
-}
-
-func (f *inMemSegmentService) ListDelta(
-	_ context.Context, req *connect.Request[knowledgev1.ListDeltaRequest],
-) (*connect.Response[knowledgev1.ListDeltaResponse], error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	k := f.key(req.Msg.GetTarget())
-	var metas []*knowledgev1.SegmentMetaProto
-	for _, b := range f.byKey[k] {
-		if b.GetGeneration() > req.Msg.GetSinceGen() {
-			metas = append(metas, f.blobMeta(b))
-		}
-	}
-	sort.Slice(metas, func(i, j int) bool { return metas[i].GetGeneration() < metas[j].GetGeneration() })
-	return connect.NewResponse(&knowledgev1.ListDeltaResponse{Metas: metas}), nil
-}
-
-func (f *inMemSegmentService) Fetch(
-	_ context.Context, req *connect.Request[knowledgev1.FetchRequest],
-) (*connect.Response[knowledgev1.FetchResponse], error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	k := f.key(req.Msg.GetTarget())
-	want := map[string]bool{}
-	for _, id := range req.Msg.GetIds() {
-		want[id] = true
-	}
-	var blobs []*knowledgev1.SegmentBlobProto
-	for _, b := range f.byKey[k] {
-		if want[b.GetId()] {
-			blobs = append(blobs, b)
-		}
-	}
-	return connect.NewResponse(&knowledgev1.FetchResponse{Blobs: blobs}), nil
-}
-
-func (f *inMemSegmentService) Prune(
-	_ context.Context, req *connect.Request[knowledgev1.PruneRequest],
-) (*connect.Response[knowledgev1.PruneResponse], error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	k := f.key(req.Msg.GetTarget())
-	del := map[string]bool{}
-	for _, id := range req.Msg.GetIds() {
-		del[id] = true
-	}
-	kept := f.byKey[k][:0]
-	var removed uint64
-	for _, b := range f.byKey[k] {
-		if del[b.GetId()] {
-			removed++
-			continue
-		}
-		kept = append(kept, b)
-	}
-	f.byKey[k] = kept
-	return connect.NewResponse(&knowledgev1.PruneResponse{Deleted: removed}), nil
-}
-
-// Publish swaps this writer's manifest and refcount-GCs blobs no manifest
-// references — the in-memory mirror of the real server's registry-model publish.
-func (f *inMemSegmentService) Publish(
-	_ context.Context, req *connect.Request[knowledgev1.PublishRequest],
-) (*connect.Response[knowledgev1.PublishResponse], error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	k := f.key(req.Msg.GetTarget())
-	if f.manifests[k] == nil {
-		f.manifests[k] = map[string]map[string]bool{}
-	}
-	mk := req.Msg.GetWriterId() + "\x00" + req.Msg.GetFormat()
-	set := map[string]bool{}
-	for _, id := range req.Msg.GetIds() {
-		set[id] = true
-	}
-	f.manifests[k][mk] = set
-
-	referenced := map[string]bool{}
-	for _, s := range f.manifests[k] {
-		for id := range s {
-			referenced[id] = true
-		}
-	}
-
-	kept := f.byKey[k][:0]
-	var removed uint64
-	for _, b := range f.byKey[k] {
-		if referenced[b.GetId()] {
-			kept = append(kept, b)
-			continue
-		}
-		removed++
-	}
-	f.byKey[k] = kept
-	return connect.NewResponse(&knowledgev1.PublishResponse{Deleted: removed}), nil
-}
+func (notLoggedInCaller) LoggedIn(context.Context) bool { return false }
 
 // offlineBM25Corpus builds a fixed-size BM25 corpus (== MinSegmentDocs default, so
 // AddAndShipFields seals exactly one segment) where one designated target doc
@@ -233,10 +80,10 @@ func TestInterceptSearchKnowledge_OfflineReturnsRealResults(t *testing.T) {
 
 	docs, targetID, uniqueTerm := offlineBM25Corpus(7)
 
-	// One server, both services: SegmentService (Manager ship/load) + EngineService
-	// (the hydrate read). The Engine handler returns the target node so
-	// composeKnowledgeSearch's hydrateEngineHits resolves the ranked Hit by id-map.
-	seg := newInMemSegmentService()
+	// One server, EngineService only (the hydrate read): the Engine handler returns
+	// the target node so composeKnowledgeSearch's hydrateEngineHits resolves the
+	// ranked Hit by id-map. The segment lifecycle is entirely local (L2), so no
+	// SegmentService mount exists.
 	eng := &dispatchEngineHandler{
 		execHits: &execHits,
 		resp:     cannedNodesResp(&knowledgev1.Node{Id: targetID, Type: "finding", SymbolName: "OfflineHit"}),
@@ -246,18 +93,19 @@ func TestInterceptSearchKnowledge_OfflineReturnsRealResults(t *testing.T) {
 	mux.Handle(hp, hh)
 	ep, eh := knowledgev1connect.NewEngineServiceHandler(eng)
 	mux.Handle(ep, eh)
-	sp, sh := knowledgev1connect.NewSegmentServiceHandler(seg)
-	mux.Handle(sp, sh)
 	srv := httptest.NewServer(h2c.NewHandler(mux, &http2.Server{}))
 	t.Cleanup(srv.Close)
 
 	gc := graphclient.NewGraphClientForURL(srv.URL)
 
 	// Populate the Manager with real BM25 segments under knowledge/"default" (the
-	// graph+name composeKnowledgeSearch queries). Ship the field-bearing docs only —
-	// the offline degrade arm is BM25-over-existing-segments, no vectors.
-	mgr := segmentdist.NewManager(gc, t.TempDir(), 0)
+	// graph+name composeKnowledgeSearch queries). A NOT-logged-in caller routes the
+	// Manager to the L2-local source, so AddAndShipFields + Flush seal the field-bearing
+	// docs into the on-disk L2 cache with ZERO server RPC — the offline degrade arm is
+	// BM25-over-local-L2, no vectors.
+	mgr := segmentdist.NewManager(notLoggedInCaller{}, t.TempDir(), 0)
 	require.NoError(t, mgr.AddAndShipFields(ctx, kgtypes.GraphKnowledge, knowledgeDefaultName, docs))
+	require.NoError(t, mgr.Flush(ctx, kgtypes.GraphKnowledge, knowledgeDefaultName))
 
 	// Offline-but-ready: Embedder()==nil (emb left nil), PipelineReady()==true
 	// (pipelineNotReady false), and the wired populated Manager.

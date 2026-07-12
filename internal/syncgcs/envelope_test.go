@@ -209,6 +209,63 @@ func TestOpenEnvelopeWrongDEKFails(t *testing.T) {
 	}
 }
 
+// TestOpenPushObjectRoundTrip proves OpenPushObject reverses a client-sealed PUSH
+// object using an agent-unwrapped DEK: SealEnvelope produces the push framing, the
+// test unwraps the DEK with the private key (as the agent's fetch handler does),
+// then OpenPushObject recovers the original plaintext. A wrong objectPath (AAD
+// mismatch), a wrong DEK, and a truncated header all error.
+func TestOpenPushObjectRoundTrip(t *testing.T) {
+	priv, err := rsa.GenerateKey(rand.Reader, 3072)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	pubPEM := mustPublicKeyPEM(t, &priv.PublicKey)
+
+	plaintext := []byte("KGV4 a representative serialized segment blob of nontrivial length")
+	blob, err := SealEnvelope(plaintext, pubPEM, testObjectPath)
+	if err != nil {
+		t.Fatalf("SealEnvelope: %v", err)
+	}
+
+	// Agent side: RSA-OAEP-SHA256 unwrap the DEK from the push header (mirrors the
+	// agent fetch handler's readWrappedDEK + KMS AsymmetricDecrypt).
+	wrappedLen := binary.BigEndian.Uint32(blob[:EnvelopeWrappedDEKLenSize])
+	wrappedDEK := blob[EnvelopeWrappedDEKLenSize : EnvelopeWrappedDEKLenSize+int(wrappedLen)]
+	dek, err := rsa.DecryptOAEP(sha256.New(), rand.Reader, priv, wrappedDEK, nil)
+	if err != nil {
+		t.Fatalf("DecryptOAEP (agent unwrap): %v", err)
+	}
+
+	got, err := OpenPushObject(blob, dek, testObjectPath)
+	if err != nil {
+		t.Fatalf("OpenPushObject: %v", err)
+	}
+	if !bytes.Equal(got, plaintext) {
+		t.Fatalf("OpenPushObject recovered %q, want %q", got, plaintext)
+	}
+
+	// Wrong object path (AAD mismatch) must fail.
+	if _, err := OpenPushObject(blob, dek, "sync/acct-2/other.seg"); err == nil {
+		t.Fatal("OpenPushObject with a different object path must fail")
+	}
+	// Wrong DEK must fail.
+	wrongDEK := make([]byte, EnvelopeDEKSize)
+	if _, err := rand.Read(wrongDEK); err != nil {
+		t.Fatalf("rand: %v", err)
+	}
+	if _, err := OpenPushObject(blob, wrongDEK, testObjectPath); err == nil {
+		t.Fatal("OpenPushObject with a wrong DEK must fail")
+	}
+	// Truncated header (fewer than 4 bytes) must fail.
+	if _, err := OpenPushObject([]byte{0x00, 0x01}, dek, testObjectPath); err == nil {
+		t.Fatal("OpenPushObject on a truncated header must fail")
+	}
+	// Out-of-range wrapped-DEK length prefix must fail (u32 = 0 and > cap).
+	if _, err := OpenPushObject([]byte{0x00, 0x00, 0x00, 0x00, 0x00}, dek, testObjectPath); err == nil {
+		t.Fatal("OpenPushObject on a zero wrapped-DEK length must fail")
+	}
+}
+
 func mustPublicKeyPEM(t *testing.T, pub *rsa.PublicKey) string {
 	t.Helper()
 	der, err := x509.MarshalPKIXPublicKey(pub)

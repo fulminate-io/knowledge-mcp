@@ -36,6 +36,7 @@ type repoTestDeps struct {
 func (d *repoTestDeps) LocalLiveness() LocalLiveness         { return nil }
 func (d *repoTestDeps) Sink() collector.Sink                 { return nil }
 func (d *repoTestDeps) RootDir() string                      { return d.rootDir }
+func (d *repoTestDeps) UsageAnalyzer() UsageAnalyzerAPI      { return nil }
 func (d *repoTestDeps) WorkerRuntime() WorkerRuntimeAPI      { return nil }
 func (d *repoTestDeps) WorkerReady() bool                    { return true }
 func (d *repoTestDeps) PropReady() bool                      { return true }

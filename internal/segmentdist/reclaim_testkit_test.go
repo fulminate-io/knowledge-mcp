@@ -3,7 +3,6 @@
 package segmentdist
 
 import (
-	"context"
 	"testing"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
@@ -32,8 +31,8 @@ func reclaimEngineOpts[Q, S any](dmPtr **distManager[Q, S], countTarget int) sea
 	}
 }
 
-// buildHNSWReclaimManager wires a REAL HNSW distManager over a fresh fake segment
-// source + an instrumented cache (wrapping a real *diskSegmentCache rooted at
+// buildHNSWReclaimManager wires a REAL HNSW distManager over a fresh shared server
+// fake + an instrumented cache (wrapping a real *diskSegmentCache rooted at
 // cacheDir), with reclaimMerged installed as OnMerge. countTarget gates the
 // count-driven merge trigger (pass a high value like 1<<30 to disable it; a low
 // value to force count-driven merges).
@@ -41,19 +40,20 @@ func buildHNSWReclaimManager(
 	t *testing.T, gt kgtypes.GraphType, name, cacheDir string, countTarget int,
 ) (*distManager[[]byte, struct{}], *instrumentedCache) {
 	t.Helper()
-	_, gc := newSegmentHarness(t)
-	return buildHNSWReclaimManagerOn(t, gc, gt, name, cacheDir, countTarget)
+	return buildHNSWReclaimManagerOn(t, newSharedServerFake().viewFor(graphSelector(gt, name), ""), gt, name, cacheDir, countTarget)
 }
 
-// buildHNSWReclaimManagerOn is buildHNSWReclaimManager over an EXISTING caller +
+// buildHNSWReclaimManagerOn is buildHNSWReclaimManager over an EXISTING source +
 // cache dir — the seam restart tests need to reconstruct a fresh distManager (new
-// locallyShipped/importedGen) against the SAME server + same on-disk L2.
+// locallyShipped/importedGen) against the SAME server + same on-disk L2 (pass a view
+// over the same *sharedServerFake across the two phases), and the L2-fallback tests
+// pass a fault-injecting source wrapper.
 func buildHNSWReclaimManagerOn(
-	t *testing.T, caller segmentCaller, gt kgtypes.GraphType, name, cacheDir string, countTarget int,
+	t *testing.T, src segmentSource, gt kgtypes.GraphType, name, cacheDir string, countTarget int,
 ) (*distManager[[]byte, struct{}], *instrumentedCache) {
 	t.Helper()
 	target := graphSelector(gt, name)
-	src := newRPCSegmentSource(caller, target, "", context.Background())
+	bindViewTarget(src, target)
 	ic := newInstrumentedCache(newDiskSegmentCache(cacheDir, 0))
 
 	var dm *distManager[[]byte, struct{}]
@@ -67,17 +67,16 @@ func buildBM25ReclaimManager(
 	t *testing.T, gt kgtypes.GraphType, name, cacheDir string, countTarget int,
 ) (*distManager[bm25.Query, *bm25.CorpusStats], *instrumentedCache) {
 	t.Helper()
-	_, gc := newSegmentHarness(t)
-	return buildBM25ReclaimManagerOn(t, gc, gt, name, cacheDir, countTarget)
+	return buildBM25ReclaimManagerOn(t, newSharedServerFake().viewFor(graphSelector(gt, name), ""), gt, name, cacheDir, countTarget)
 }
 
 // buildBM25ReclaimManagerOn is the BM25 counterpart of buildHNSWReclaimManagerOn.
 func buildBM25ReclaimManagerOn(
-	t *testing.T, caller segmentCaller, gt kgtypes.GraphType, name, cacheDir string, countTarget int,
+	t *testing.T, src segmentSource, gt kgtypes.GraphType, name, cacheDir string, countTarget int,
 ) (*distManager[bm25.Query, *bm25.CorpusStats], *instrumentedCache) {
 	t.Helper()
 	target := graphSelector(gt, name)
-	src := newRPCSegmentSource(caller, target, "", context.Background())
+	bindViewTarget(src, target)
 	ic := newInstrumentedCache(newDiskSegmentCache(cacheDir, 0))
 
 	var dm *distManager[bm25.Query, *bm25.CorpusStats]

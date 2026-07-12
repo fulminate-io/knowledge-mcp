@@ -29,6 +29,7 @@ type fakeAssembleDeps struct {
 func (d *fakeAssembleDeps) LocalLiveness() LocalLiveness                 { return nil }
 func (d *fakeAssembleDeps) Sink() collector.Sink                         { return nil }
 func (d *fakeAssembleDeps) RootDir() string                              { return "" }
+func (d *fakeAssembleDeps) UsageAnalyzer() UsageAnalyzerAPI              { return nil }
 func (d *fakeAssembleDeps) WorkerRuntime() WorkerRuntimeAPI              { return nil }
 func (d *fakeAssembleDeps) WorkerReady() bool                            { return true }
 func (d *fakeAssembleDeps) PropReady() bool                              { return true }

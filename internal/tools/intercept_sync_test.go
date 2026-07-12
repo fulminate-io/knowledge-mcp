@@ -139,6 +139,7 @@ type pullDeps struct {
 func (d pullDeps) LocalLiveness() LocalLiveness                 { return nil }
 func (d pullDeps) Sink() collector.Sink                         { return nil }
 func (d pullDeps) RootDir() string                              { return "" }
+func (d pullDeps) UsageAnalyzer() UsageAnalyzerAPI              { return nil }
 func (d pullDeps) WorkerRuntime() WorkerRuntimeAPI              { return nil }
 func (d pullDeps) WorkerReady() bool                            { return true }
 func (d pullDeps) PropReady() bool                              { return true }
@@ -313,6 +314,45 @@ func TestInterceptSync_Push_NoLocalServer_FailsLoud(t *testing.T) {
 	assert.Contains(t, textOf(out), "no local server is wired",
 		"surfaces the actionable cloud-first error")
 	assert.Contains(t, textOf(out), "knowledge install")
+}
+
+// TestSetSyncTransportBuilder_PushPullResolveThroughIt proves the exported
+// production injection setter is the seam the push AND pull intercepts resolve
+// their transport through: a builder installed via SetSyncTransportBuilder (the
+// call the daemon makes with c.buildCloudSyncTransport) is invoked once per arm,
+// and a nil fn is ignored so the default is never cleared.
+func TestSetSyncTransportBuilder_PushPullResolveThroughIt(t *testing.T) {
+	// SetSyncTransportBuilder mutates the package var directly (no restore of
+	// its own), so snapshot + restore around the test.
+	prev := syncTransportBuilder
+	t.Cleanup(func() { syncTransportBuilder = prev })
+
+	backend := newFakeSyncBackend(t)
+	backend.pullPlaintext = []byte("KGV4 cloud image")
+
+	var builderCalls int
+	SetSyncTransportBuilder(func() (*auth.Transport, error) {
+		builderCalls++
+		src := auth.StaticTokenSource{AccessToken: "tok", Permissions: auth.PermissionSet{auth.PermMCPKnowledgeWrite: {}}}
+		return auth.NewSyncTransport(backend.srv.URL, src), nil
+	})
+
+	// A nil fn must be ignored (the fallback is never cleared).
+	SetSyncTransportBuilder(nil)
+
+	// Push arm resolves the installed builder.
+	exp := &fakeExporter{bytesOut: []byte("KGV4 local bytes")}
+	handledPush, outPush := InterceptSync(interceptTestDeps{gc: exp}, syncParams(t, map[string]any{"operation": "push"}))
+	require.True(t, handledPush)
+	assert.False(t, outPush.IsError, "push must succeed through the installed builder: %q", textOf(outPush))
+	assert.Equal(t, 1, builderCalls, "push resolved its transport through the SetSyncTransportBuilder-installed builder")
+
+	// Pull arm resolves the SAME installed builder.
+	local := &fakeOverwriter{nodes: 1, edges: 0}
+	handledPull, outPull := InterceptSync(pullDeps{local: local}, syncParams(t, map[string]any{"operation": "pull"}))
+	require.True(t, handledPull)
+	assert.False(t, outPull.IsError, "pull must succeed through the installed builder: %q", textOf(outPull))
+	assert.Equal(t, 2, builderCalls, "pull also resolved its transport through the installed builder")
 }
 
 // textOf extracts the first text content block of a ToolResult for assertions.

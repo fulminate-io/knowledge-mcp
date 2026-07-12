@@ -17,6 +17,7 @@ import (
 	"log/slog"
 	"sort"
 	"strings"
+	"time"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
@@ -144,10 +145,11 @@ func DetectPersistedClusters(ctx context.Context, gc Caller) ([]ThoughtCluster, 
 	}
 	chargesByID := fetchChargesFor(ctx, gc, allMembers)
 
+	now := time.Now()
 	clusters := make([]ThoughtCluster, 0, len(groups))
 	for cid, members := range groups {
 		cluster := ThoughtCluster{ID: cid, ThoughtIDs: members, Size: len(members)}
-		cluster.AvgValence, cluster.AvgMagnitude, cluster.Label = computeClusterAggregatesFromMaps(members, nodeByID, chargesByID)
+		cluster.AvgValence, cluster.AvgMagnitude, cluster.Label = computeClusterAggregatesFromMaps(members, nodeByID, chargesByID, now)
 		if strings.TrimSpace(cluster.Label) == "" {
 			cluster.Label = cluster.ID
 		}
@@ -228,6 +230,7 @@ func buildClusterObjects(ctx context.Context, gc Caller, groups map[string][]str
 	nodeByID := fetchNodesByIDs(ctx, gc, allMembers)
 	chargesByID := fetchChargesFor(ctx, gc, allMembers)
 
+	now := time.Now()
 	clusters := make([]ThoughtCluster, 0, len(groups))
 	assignments := make(map[string]string, len(allMembers))
 	// groupKey IS the canonical community label (the min-member-node-ID assigned by
@@ -243,7 +246,7 @@ func buildClusterObjects(ctx context.Context, gc Caller, groups map[string][]str
 			ThoughtIDs: members,
 			Size:       len(members),
 		}
-		cluster.AvgValence, cluster.AvgMagnitude, cluster.Label = computeClusterAggregatesFromMaps(members, nodeByID, chargesByID)
+		cluster.AvgValence, cluster.AvgMagnitude, cluster.Label = computeClusterAggregatesFromMaps(members, nodeByID, chargesByID, now)
 		if strings.TrimSpace(cluster.Label) == "" {
 			cluster.Label = cluster.ID
 		}
@@ -262,11 +265,11 @@ func buildClusterObjects(ctx context.Context, gc Caller, groups map[string][]str
 // computeClusterAggregatesFromMaps computes per-cluster averages + a
 // label from prebuilt node+charge maps. Pure read; never issues a wire
 // call.
-func computeClusterAggregatesFromMaps(members []string, nodeByID map[string]*knowledgev1.Node, chargesByID map[string][]*knowledgev1.Node) (avgValence, avgMagnitude float64, label string) {
+func computeClusterAggregatesFromMaps(members []string, nodeByID map[string]*knowledgev1.Node, chargesByID map[string][]*knowledgev1.Node, now time.Time) (avgValence, avgMagnitude float64, label string) {
 	var totalValence, totalMagnitude float64
 	var bestMag float64
 	for _, mid := range members {
-		props := computePropertiesFromCharges(chargesByID[mid])
+		props := computePropertiesFromCharges(chargesByID[mid], now)
 		totalValence += props.Valence
 		totalMagnitude += props.Magnitude
 		if props.Magnitude > bestMag {

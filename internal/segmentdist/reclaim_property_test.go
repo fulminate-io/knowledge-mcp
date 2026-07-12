@@ -40,7 +40,7 @@ const (
 type propGraph struct {
 	name    string
 	dir     string
-	caller  segmentCaller
+	caller  *fakeSegmentSource
 	dm      *distManager[[]byte, struct{}]
 	ic      *instrumentedCache
 	nextDoc int

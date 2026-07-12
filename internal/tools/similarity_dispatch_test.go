@@ -148,6 +148,7 @@ type similarityDispatchDeps struct {
 func (d similarityDispatchDeps) LocalLiveness() LocalLiveness                 { return nil }
 func (d similarityDispatchDeps) Sink() collector.Sink                         { return nil }
 func (d similarityDispatchDeps) RootDir() string                              { return "" }
+func (d similarityDispatchDeps) UsageAnalyzer() UsageAnalyzerAPI              { return nil }
 func (d similarityDispatchDeps) WorkerRuntime() WorkerRuntimeAPI              { return nil }
 func (d similarityDispatchDeps) WorkerReady() bool                            { return true }
 func (d similarityDispatchDeps) PropReady() bool                              { return !d.propNotReady }

@@ -23,10 +23,15 @@ import (
 // depend on wall-clock.
 var fixedNow = time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 
-// mkCharge builds a charge node with the given polarity, weight, and CreatedAt
-// (unix nanos). The node IDs are unique per call site via the caller-supplied id.
+// mkCharge builds a charge node with the given polarity, weight, and timestamp.
+// CreatedAt AND UpdatedAt are both set to the timestamp: a charge is created once
+// and not subsequently mutated, so the two coincide (matching production charge
+// nodes). UpdatedAt drives the read-time recency scalar in the fold
+// (computePropertiesFromCharges); the staleness/belief-reversal facets read
+// CreatedAt — both must carry the age the fixture intends. The node IDs are unique
+// per call site via the caller-supplied id.
 func mkCharge(id, polarity string, weight float64, createdAt time.Time) *knowledgev1.Node {
-	ch := &knowledgev1.Node{Id: id, Type: string(kgtypes.NodeCharge), CreatedAt: createdAt.UnixNano()}
+	ch := &knowledgev1.Node{Id: id, Type: string(kgtypes.NodeCharge), CreatedAt: createdAt.UnixNano(), UpdatedAt: createdAt.UnixNano()}
 	kgtypes.SetValue(ch, "polarity", polarity)
 	kgtypes.SetValue(ch, "weight", fmt.Sprintf("%g", weight))
 	return ch

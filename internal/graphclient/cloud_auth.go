@@ -55,7 +55,6 @@ func NewCloudGraphClient(baseURL string, ts auth.TokenSource) *GraphClient {
 		health:     knowledgev1connect.NewHealthServiceClient(httpClient, baseURL, connect.WithInterceptors()),
 		ingest:     knowledgev1connect.NewIngestServiceClient(httpClient, baseURL, connect.WithInterceptors()),
 		engine:     knowledgev1connect.NewEngineServiceClient(httpClient, baseURL, connect.WithInterceptors()),
-		segment:    knowledgev1connect.NewSegmentServiceClient(httpClient, baseURL, connect.WithInterceptors()),
 	}
 }
 

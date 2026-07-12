@@ -136,6 +136,7 @@ type workerTestDeps struct {
 func (d workerTestDeps) LocalLiveness() LocalLiveness                 { return nil }
 func (d workerTestDeps) Sink() collector.Sink                         { return nil }
 func (d workerTestDeps) RootDir() string                              { return "" }
+func (d workerTestDeps) UsageAnalyzer() UsageAnalyzerAPI              { return nil }
 func (d workerTestDeps) WorkerRuntime() WorkerRuntimeAPI              { return d.runtime }
 func (d workerTestDeps) WorkerReady() bool                            { return !d.notReady }
 func (d workerTestDeps) PropReady() bool                              { return true }

@@ -41,7 +41,7 @@ func TestRestartShipDoesNotPruneFullCorpus(t *testing.T) {
 	// AddAndShip of MinSegmentDocs (searchCorpusN) vectors seals + ships one
 	// segment (distinct content hashes across batches → 3 server segments).
 	const corpusSegs = 3
-	p1 := NewManager(gc, t.TempDir(), 0)
+	p1 := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 	for b := range corpusSegs {
 		batch := hnswVecDocs(searchCorpusN)
 		for i := range batch {
@@ -56,8 +56,8 @@ func TestRestartShipDoesNotPruneFullCorpus(t *testing.T) {
 	// Process 2: RESTART. Fresh Manager against the SAME server. A fresh per-graph
 	// distManager has locallyShipped EMPTY; ensureShippedSeeded seeds shippedIDs
 	// from the full server List(0) on the first AddAndShip.
-	cc2 := &countingCaller{inner: gc}
-	p2 := NewManager(cc2, t.TempDir(), 0)
+	cc2 := gc.server.viewFor(&knowledgev1.GraphSelector{}, "")
+	p2 := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(cc2))
 
 	// A SINGLE AddAndShip of one new segment, BEFORE any Search/VectorByID load().
 	tail := hnswVecDocs(searchCorpusN)
@@ -104,7 +104,7 @@ func TestRebuildReplacesDegeneratePoolPrunesOld(t *testing.T) {
 	// Process 1: ship a degenerate old corpus via the embed HNSW path. One sealed
 	// segment of MinSegmentDocs vectors is the "old pool" the rebuild will replace.
 	oldDocs := hnswVecDocs(searchCorpusN)
-	p1 := NewManager(gc, t.TempDir(), 0)
+	p1 := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 	require.NoError(t, p1.AddAndShip(ctx, kgtypes.GraphCode, "rebuildRepo", oldDocs))
 	oldIDs := shippedHNSWIDs(svc)
 	require.NotEmpty(t, oldIDs, "process 1 ships at least one old HNSW segment")
@@ -112,7 +112,7 @@ func TestRebuildReplacesDegeneratePoolPrunesOld(t *testing.T) {
 	// Process 2: RESTART. Fresh Manager runs the DETERMINISTIC rebuild of the SAME
 	// graph with a DIFFERENT corpus, producing byte-different deterministic ids.
 	rebuildDocs := hnswVecDocs(searchCorpusN + 32)
-	p2 := NewManager(gc, t.TempDir(), 0)
+	p2 := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 	require.NoError(t, p2.AddDeterministic(ctx, kgtypes.GraphCode, "rebuildRepo", rebuildDocs))
 	pruned, err := p2.FlushDeterministic(ctx, kgtypes.GraphCode, "rebuildRepo")
 	require.NoError(t, err)
@@ -269,7 +269,7 @@ func TestRestartLoadImportsFullCorpusAfterShip(t *testing.T) {
 	// AddAndShip of searchCorpusN (== MinSegmentDocs) vectors seals + ships exactly
 	// one segment (distinct content hashes across batches → corpusSegs segments).
 	const corpusSegs = 3
-	p1 := NewManager(gc, t.TempDir(), 0)
+	p1 := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 	for b := range corpusSegs {
 		batch := hnswVecDocs(searchCorpusN)
 		for i := range batch {
@@ -284,7 +284,7 @@ func TestRestartLoadImportsFullCorpusAfterShip(t *testing.T) {
 	// of one new tail segment — this seals T into the engine (resident once) and
 	// shipNew advances shippedGen to the server-stamped gen N, leaving importedGen
 	// at 0 (the cursor split: ship does NOT poison the load floor).
-	p2 := NewManager(gc, t.TempDir(), 0)
+	p2 := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 	tail := hnswVecDocs(searchCorpusN)
 	for i := range tail {
 		tail[i].ID = fmt.Sprintf("tail-%s", tail[i].ID)
@@ -342,8 +342,8 @@ func TestRestartLoadImportsFullCorpusAfterShip(t *testing.T) {
 	require.True(t, anyTailHit, "the tail docs are searchable after the cold load")
 }
 
-// shippedHNSWIDs returns the set of HNSW-format segment ids the fake server holds.
-func shippedHNSWIDs(svc *fakeSegmentService) map[string]struct{} {
+// shippedHNSWIDs returns the set of HNSW-format segment ids the shared server holds.
+func shippedHNSWIDs(svc *sharedServerFake) map[string]struct{} {
 	svc.mu.Lock()
 	defer svc.mu.Unlock()
 	ids := map[string]struct{}{}

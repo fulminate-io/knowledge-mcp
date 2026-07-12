@@ -72,6 +72,16 @@ func InterceptQueryRules(deps ClientDeps, params kgtools.CallToolParams) (bool, 
 		rules = append(rules, n)
 	}
 
+	// JSON callers (the agent graph-explorer) get the {graph, type, results,
+	// total} browse envelope — the SAME shape the server browse returns for every
+	// non-intercepted node type — reusing the rules already fetched+filtered. This
+	// MUST precede the markdown empty-case returns below so an empty result set
+	// serializes as results:[] rather than the "No rules recorded" prose (which
+	// would break the caller's JSON.parse).
+	if a.Format == "json" {
+		return true, engine.BrowseJSONResult("knowledge", "rule", rules, len(rules), a.Fields)
+	}
+
 	if len(rules) == 0 {
 		if scopeArgs.Scope != "" {
 			return true, kgtools.TextResult("No rules found matching scope: " + scopeArgs.Scope)

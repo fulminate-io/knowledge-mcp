@@ -359,6 +359,10 @@ func runProjectDomainIntercepts(c *client, params kgtools.CallToolParams) (bool,
 	if handled, res := tools.InterceptHelp(c, params); handled {
 		return true, res
 	}
+	// analyze_usage: client-owned agent-flow analyzer over the local transcript cache.
+	if handled, res := tools.InterceptAnalyzeUsage(c, params); handled {
+		return true, res
+	}
 	return false, kgtools.ToolResult{}
 }
 
