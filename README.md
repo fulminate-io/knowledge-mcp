@@ -2,24 +2,106 @@
 
 *An engineering operating system for LLMs.*
 
-LLMs have great short-term memory and zero long-term memory. They grep
-when they should search a graph. They guess at infrastructure they've
-never seen. The reasoning that produced last week's decision lives in
-someone's scrollback. Knowledge is the layer that fixes this — the
-persistent runtime your coding LLM lives inside, across sessions,
-machines, and teammates.
+LLMs have great short-term memory and zero long-term memory. Knowledge
+fixes this. It runs as a local MCP server: collectors pull your code,
+cloud infrastructure, logs, and docs into a queryable graph; your LLM
+searches that graph instead of grepping, externalizes its reasoning as
+hypotheses charged with evidence, and runs tickets and plans against
+state that survives every context boundary — across sessions, machines,
+and teammates.
 
-Knowledge runs as a local MCP server. Collectors pull your code, cloud
-infrastructure, logs, docs, and patterns into a queryable graph. The
-LLM searches that graph instead of grepping. It externalizes hypotheses
-and charges them with evidence as it learns. It runs your tickets and
-plans and reviews against state that survives every context boundary.
-The four kernel layers are simple: collectors are the drivers, search
-and traverse are the syscalls, thoughts and decisions and plans are the
-persistent state, and brainstorm → ticket → plan → revise → implement
-is the process model.
+## Install
 
----
+Homebrew is the recommended path on macOS and Linux. It installs two
+binaries — the `knowledge` CLI (which includes the shared MCP daemon)
+and the `knowledge-server` graph server:
+
+```bash
+brew tap fulminate-io/knowledge
+brew install knowledge
+```
+
+Start both background services (run as **your user** — do not `sudo`; a
+root LaunchDaemon can't read your login keychain):
+
+```bash
+brew services start knowledge-server   # local graph server  (127.0.0.1:15022)
+brew services start knowledge          # shared MCP daemon    (127.0.0.1:15023)
+```
+
+Wire your editor — one command registers the MCP daemon and installs
+the curated agents and skills:
+
+```bash
+knowledge install-claude-assets   # Claude Code
+knowledge install-codex-assets    # Codex CLI
+```
+
+Restart your editor so it picks up the new MCP server, then trigger the
+first index from inside the LLM:
+
+```jsonc
+collect({ "type": "code", "id": "/absolute/path/to/repo" })
+```
+
+The first pass takes 30s–2min for a typical repo: tree-sitter chunks
+the files, the LLM summarizes each node. Subsequent indexes are
+incremental — only changed files re-summarize.
+
+No credentials are required to get here. On first run the server
+auto-detects an LLM provider: it prefers a logged-in Claude or Codex
+CLI on `$PATH`, then falls back to `ANTHROPIC_API_KEY`,
+`OPENAI_API_KEY`, or `GEMINI_API_KEY` from the environment.
+
+Full walkthroughs: **[Set up with Claude Code](./docs/guides/setup-claude.md)**
+· **[Set up with Codex](./docs/guides/setup-codex.md)**. `knowledge doctor`
+diagnoses install and daemon/server health. Connecting another MCP
+client by hand? Point it at the daemon's streamable-HTTP endpoint:
+`http://127.0.0.1:15023/mcp`.
+
+### From source
+
+Requirements: Go 1.26+, CGO enabled (tree-sitter C bindings). Building
+from source produces the `knowledge` binary only; run `knowledge
+install` afterwards to fetch the matching prebuilt `knowledge-server`
+from GitHub releases (checksum-verified).
+
+```bash
+git clone https://github.com/fulminate-io/knowledge-mcp.git
+cd knowledge-mcp
+CGO_ENABLED=1 go build -o bin/knowledge .
+```
+
+Source-built users (no `brew services`) run the processes by hand:
+
+```bash
+knowledge serve                    # MCP daemon on 127.0.0.1:15023
+knowledge start / status / stop    # knowledge-server lifecycle (15022)
+```
+
+## Two keys worth setting
+
+Both are optional; both change what you get.
+
+| Key | With it | Without it |
+| --- | --- | --- |
+| `VOYAGE_API_KEY` | Hybrid semantic + keyword search — the LLM finds code and knowledge by meaning | Keyword (BM25) search only |
+| `LINEAR_API_KEY` | Projects and tickets sync to Linear in real time; status flows both ways | Tickets stay local to the graph |
+
+Get a Voyage key at [voyageai.com](https://voyageai.com); the Linear
+key is a personal API key from Linear's settings (Settings → API).
+Both go in `~/.knowledge/config` (TOML, auto-created on first run;
+config wins over the environment):
+
+```toml
+[credentials]
+voyage_api_key = "..."
+linear_api_key = "..."
+```
+
+To pin LLM providers and models explicitly, the same file takes
+`[default]` and per-consumer sections — see
+[Configuration](./docs/guides/config.md) for the full reference.
 
 ## How it works
 
@@ -75,341 +157,56 @@ flowchart TD
     linkStyle 5,6,7 stroke:#C04040,stroke-width:2px,stroke-dasharray:6 4
 ```
 
----
-
-## 1. Reasoning that survives sessions
-
-Most "LLM memory" tools are RAG: chunk a document, embed it, retrieve
-the top-k by cosine similarity. That works for facts. It doesn't work
-for reasoning under uncertainty.
-
-Knowledge has a thought graph. Hypotheses are first-class nodes. As
-evidence comes in, you attach charges — positive or negative, with a
-weight and a reason. DeGroot-style propagation lets contradictory
-beliefs find equilibrium across the graph; consistency scores let you
-filter to the contested ones precisely because the system tracks where
-the disagreements live. The LLM externalizes its working beliefs in
-one session and recalls the contested threads next session, with the
-full charge history intact.
-
-```jsonc
-thoughts({ "operation": "think",
-           "content": "Auth retry storms correlate with deploys",
-           "session": "auth-retry-rca" })
-thoughts({ "operation": "charge", "thought": "<id>",
-           "polarity": "positive", "weight": 5,
-           "reasoning": "Grafana shows storm onset within 90s of every deploy" })
-thoughts({ "operation": "recall", "query": "retry", "consistency_max": 0.6 })
-```
-
-The reasoning loop is the differentiator. Every other capability in
-Knowledge — search, planning, decisions — feeds the loop or runs on
-top of it.
-
-## 2. Search across everything you have
-
-Knowledge runs hybrid BM25 + vector search across every graph it knows
-about: code, decisions, findings, cloud resources, log streams, and
-docs. One query surface, every source — the LLM doesn't pick a
-backend, it asks for what it wants.
-
-Code search covers 30+ languages with tree-sitter chunking and a binary
-HNSW index, plus structural AST search for the shapes regex can't
-express — every `defer x.Close()`, every goroutine without a recover,
-every public function returning an error, every framework-specific
-call site. The AST DSL works the same way across every language it
-parses; patterns in one language port without rewriting.
-
-```jsonc
-search({ "queries": ["retry backoff", "circuit breaker"], "repo": "all" })
-ast({ "language": "go", "pattern": "defer $X.Close()" })
-```
-
-Results from any graph link to nodes you can traverse. Walk from a
-search hit to its callers, to the decision that introduced it, to the
-cloud resource that consumes it, to the log stream that tracks it. The
-graphs are connected; the search is, too.
-
-## 3. Real workflow integration
-
-Knowledge tickets are real tickets. The flow:
-
-**Brainstorm.** The LLM externalizes hypotheses, searches prior
-decisions for context, and pulls in architecture patterns from the
-practice graph. The output is a research project with charges and a
-clear next step — not a chat transcript that evaporates when the
-window closes.
-
-**Ticket.** Filed against a project, synced to Linear in real time.
-Create a ticket in Knowledge and it shows up in Linear with the right
-team workflow state; status updates flow both ways. Tickets carry
-pattern endorsements and an explicit out-of-scope section so the
-planner stays in its lane.
-
-**Plan.** Phased decomposition with success criteria per step. Every
-step links back to the ticket it implements and the patterns it's
-building toward. Plans live in the graph; they can be assembled into
-full context with one call.
-
-**Revise.** A reviewer agent walks the plan before implementation —
-checks reuse against the existing codebase, flags scope creep, audits
-language anti-patterns the ticket flagged, gates implementation on
-high-severity findings. Cheap to run; catches expensive mistakes.
-
-**Implement.** Steps execute one at a time. Status flows back through
-the ticket into Linear. Failures land as findings linked to the step,
-not as lost work — the next session picks up where the last one
-stopped.
-
-Linear sync runs today. Jira, GitHub Issues, and Asana are on the
-roadmap.
-
-## 4. Persistent context the LLM trusts
-
-The graph is only useful if it reflects reality. Knowledge ships with
-collectors for the surfaces a coding LLM cares about, each populating
-its own graph type:
-
-**Code.** Tree-sitter chunkers across 30+ languages produce per-file
-AST nodes — functions, types, calls, imports — indexed for hybrid
-search and walked as a static call graph. Branch overlays index
-non-default branches as thin diffs over main; only changed nodes
-re-summarize and re-embed.
-
-**Cloud.** AWS, GCP, Azure, and Kubernetes resources land as nodes
-with their topology preserved. The Helm chart that deploys a service,
-the IAM role that grants its access, the secret it mounts — all
-queryable, all linkable to the code that defines them.
-
-**Logs.** Ephemeral per-query graphs from CloudWatch, Loki,
-Elasticsearch, Stackdriver, and Kubernetes Events. Templates cluster
-by message shape; streams correlate to cloud resources automatically.
-Pull logs for an incident, walk to the resource that emitted them,
-walk to the code that runs on that resource — one query.
-
-**Web.** URLs ingest into a structured graph: titles, sections, links,
-extracted entities. The LLM reads documentation as a graph it can
-traverse, not as a string it has to summarize.
-
-**PDF.** Page-aware chunks with structural reading order, font
-fingerprints, and bounding boxes. Specs and papers come in as nodes
-the LLM can search and cite, not as raw text.
-
-Cross-graph traversal auto-resolves proxies. Walk from a failing log
-line back to the code that emitted it, the cloud resource it ran on,
-and the decision behind that code — in one call. The graph is the
-context layer; the LLM trusts it because it's traceable end-to-end.
-
----
-
-## Install
-
-### Homebrew
-
-The recommended path on macOS and Linux. `brew install knowledge` pulls
-in two formulae — the `knowledge` binary (CLI + the shared MCP daemon)
-and the `knowledge-server` graph server — and registers a launchd
-service for each.
-
-```bash
-brew tap fulminate-io/knowledge
-brew install knowledge
-```
-
-Start both background services (run as **your user** — do not `sudo`; a
-root LaunchDaemon can't read your login keychain, which breaks Fulminate
-Cloud auth):
-
-```bash
-brew services start knowledge-server   # local graph server  (127.0.0.1:15022)
-brew services start knowledge          # shared MCP daemon    (127.0.0.1:15023)
-```
-
-The daemon is the MCP endpoint your editor connects to; the graph server
-backs it locally. Wire your editor with `knowledge install-claude-assets`
-or `knowledge install-codex-assets` (below) — they point the editor at
-the daemon for you.
-
-### From source
-
-Requirements: Go 1.26+, CGO enabled (tree-sitter C bindings). Optional:
-[Voyage AI key](https://voyageai.com) for vector search;
-[Fulminate Cloud account](https://fulminate.io) for paid cloud features.
-
-Building from source produces the `knowledge` binary only (CLI + the
-shared MCP daemon). The `knowledge-server` graph server is a prebuilt
-download — it ships via the Homebrew formula or a release tarball and is
-not built from this repo. After building, run `knowledge install` to
-fetch the matching `knowledge-server` from the GitHub releases — it
-verifies the checksum and installs it next to `knowledge`.
-
-```bash
-CGO_ENABLED=1 go install github.com/fulminate-io/knowledge-mcp@latest
-```
-
-Or build from source:
-
-```bash
-git clone https://github.com/fulminate-io/knowledge-mcp.git
-cd knowledge-mcp
-CGO_ENABLED=1 go build -o bin/knowledge .
-```
-
-That produces the `knowledge` binary. (`make build` does the same and
-also refreshes the embedded Claude Code agents and skills.)
-
-### Running it
-
-Two long-lived processes:
-
-- **`knowledge serve`** — the shared MCP daemon. A streamable-HTTP MCP
-  server on `127.0.0.1:15023` (path `/mcp`); this is what your editor
-  connects to. `brew services start knowledge` runs it.
-- **`knowledge-server`** — the local graph server on `127.0.0.1:15022`,
-  file-backed under `~/.knowledge/`. The daemon talks to it for local
-  work and sync. `brew services start knowledge-server` runs it.
-
-Source-built users (no `brew services`) run them by hand:
-
-```bash
-knowledge serve                    # MCP daemon on 127.0.0.1:15023
-knowledge start / status / stop    # knowledge-server lifecycle (15022)
-knowledge doctor                   # diagnose install + daemon/server health
-```
-
-**Fulminate Cloud** (paid, team-shared) — log in once and the daemon
-routes your tool calls to the hosted graph server:
-
-```bash
-knowledge login      # browser-PKCE OAuth flow; token stored in your keychain
-```
-
-When you're logged in, the daemon serves every tool call from cloud; the
-local `knowledge-server` is then needed only for `sync`. Logged out, the
-daemon runs fully local against `knowledge-server`.
-
-### Claude Code integration
-
-One command wires Claude Code to the daemon and installs the curated
-catalog:
-
-```bash
-knowledge install-claude-assets
-```
-
-→ Full walkthrough: **[Set up with Claude Code](./docs/guides/setup-claude.md)**.
-
-That does two things:
-
-- **Registers the MCP daemon** with Claude Code (`claude mcp add-json -s
-  user knowledge '{"type":"http","url":"http://127.0.0.1:15023/mcp","timeout":180000}'`)
-  — no manual `.mcp.json` editing.
-- **Writes the curated agents** (`~/.claude/agents/*.md`) and skills
-  (`~/.claude/skills/*/SKILL.md`) so Claude Code picks them up.
-
-**Keeping them in sync:** the catalog is embedded in the `knowledge`
-binary, so re-run `install-claude-assets` after every upgrade to refresh
-your installed copies — a startup hint warns when they drift. Preview
-before writing with `--dry-run`, see exactly what would change with
-`--diff`, and list each file with `--verbose`.
-
-### Codex CLI integration
-
-Codex consumes the same curated catalog. One command wires Codex to the
-daemon and installs the agents and skills:
-
-```bash
-knowledge install-codex-assets
-```
-
-→ Full walkthrough: **[Set up with Codex](./docs/guides/setup-codex.md)**.
-
-That does two things:
-
-- **Registers the MCP daemon** with Codex (`codex mcp add knowledge
-  --url http://127.0.0.1:15023/mcp`; Codex names the streamable-HTTP
-  target with `--url`) — no manual `config.toml` editing.
-- **Writes the catalog** using Codex's native layout (split roots):
-  - skills → `~/.agents/skills/<name>/SKILL.md` (verbatim copies of the
-    Claude skills — Codex interprets the same constructs)
-  - agents → `~/.codex/agents/<name>.toml` (the Claude agents converted
-    to Codex subagent TOML: `name`, `description`, `developer_instructions`)
-  - a clobber-safe knowledge-priming block in `~/.codex/AGENTS.md`,
-    bounded by managed markers so any prose you keep there is preserved
-
-**Keeping them in sync:** the catalog is embedded in the binary, so
-re-run `install-codex-assets` after every upgrade to refresh your
-installed copies — a startup hint warns when they drift. Preview with
-`--dry-run`, see exactly what would change with `--diff`, list each file
-with `--verbose`. Skills you've added yourself and any non-managed prose
-in `~/.codex/AGENTS.md` are left untouched.
-
-## First index
-
-`install-claude-assets` / `install-codex-assets` already registered the
-daemon with your editor, so there's no `.mcp.json` to hand-edit. Restart
-your editor so it picks up the new MCP server, then trigger an initial
-index from inside the LLM:
-
-```jsonc
-collect({ "type": "code", "id": "/absolute/path/to/repo" })
-```
-
-First pass takes 30s–2min for typical repos: tree-sitter chunks the
-files, the LLM summarizes each node, Voyage embeds them. Subsequent
-indexes are incremental — only changed files re-summarize. Branch
-overlays and auto-compaction recovery run in the background.
-
-> Connecting another MCP client by hand? Point it at the daemon's
-> streamable-HTTP endpoint: `http://127.0.0.1:15023/mcp`.
-
-### LLM and embedding providers
-
-Bring your own key. On first run the server auto-detects a provider:
-it prefers a logged-in Claude or Codex CLI when one is on `$PATH`,
-then falls back to an API key from the environment —
-`ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `GEMINI_API_KEY`. Set
-`VOYAGE_API_KEY` to enable vector search; without it, search runs on
-BM25 alone.
-
-To pin providers and models explicitly, edit `~/.knowledge/config`
-(TOML, auto-created on first run):
-
-```toml
-[default]
-provider = "anthropic"        # anthropic | openai | gemini | claude-cli | codex-cli
-model    = "claude-haiku-4-5"
-
-[summarizer]                   # optional — overrides [default] for code summarization
-provider = "openai"
-model    = "gpt-4o-mini"
-
-[credentials]                  # optional — overrides the matching env vars
-voyage_api_key = "..."
-```
+The four kernel layers are simple: collectors are the drivers, search
+and traverse are the syscalls, thoughts and decisions and plans are the
+persistent state, and brainstorm → ticket → plan → revise → implement
+is the process model.
+
+## What you get
+
+**Reasoning that survives sessions.** Hypotheses are first-class graph
+nodes; evidence attaches as weighted positive or negative charges, and
+propagation lets contradictory beliefs find equilibrium. The LLM
+externalizes its working beliefs in one session and recalls the
+contested threads in the next, full charge history intact. This is the
+differentiator — everything else feeds it. See
+[Reasoning](./docs/guides/reasoning.md).
+
+**Search across everything you have.** Hybrid BM25 + vector search over
+one query surface: code (30+ languages, tree-sitter chunked), decisions,
+findings, cloud resources, log streams, and docs — plus structural AST
+search for the shapes regex can't express. Results are graph nodes: walk
+from a search hit to its callers, to the decision that introduced it, to
+the cloud resource that runs it.
+
+**Real workflow integration.** Brainstorm → ticket → plan → revise →
+implement, with every artifact in the graph and tickets synced to
+Linear in real time. Failures land as findings linked to the step, not
+as lost work — the next session picks up where the last one stopped.
+Jira, GitHub Issues, and Asana are on the roadmap.
+
+**Persistent context the LLM trusts.** Collectors for code, cloud
+(AWS, GCP, Azure, Kubernetes), logs (CloudWatch, Loki, Elasticsearch,
+Stackdriver, K8s Events), web pages, and PDFs — each a graph, all
+cross-linked. Walk from a failing log line to the code that emitted it,
+the resource it ran on, and the decision behind that code, in one call.
+
+The full narrative for each pillar lives in the
+[guides](./docs/guides/index.md).
 
 ## Documentation
 
-Full step-by-step guides ship in [`docs/guides/`](./docs/guides/index.md):
-
-**Setup** — first run, end to end:
-
-- [Set up with Claude Code](./docs/guides/setup-claude.md)
-- [Set up with Codex](./docs/guides/setup-codex.md)
-- [Configuration](./docs/guides/config.md) — the `~/.knowledge/config` file: providers, models, credentials, and fallback chains
-
-**Concepts** — the mental model:
-
-- [Concepts](./docs/guides/concepts.md) — the graph families, the selector vocabulary, and the client / daemon / graph-server topology
-- [Reasoning](./docs/guides/reasoning.md) — the thought graph: recall → think → charge → reflect, and DeGroot propagation
-
-**Collection** — getting data in:
-
-- [Web](./docs/guides/web-collection.md) · [PDF](./docs/guides/pdf-collection.md) · [Transformer recipes](./docs/guides/recipes.md)
-
-**Reference**:
-
-- [Binaries & CLI flags](./docs/guides/binaries.md) · [Agents](./docs/guides/agents.md) · [Skills](./docs/guides/skills.md)
+Step-by-step guides ship in [`docs/guides/`](./docs/guides/index.md):
+setup ([Claude Code](./docs/guides/setup-claude.md),
+[Codex](./docs/guides/setup-codex.md),
+[Configuration](./docs/guides/config.md)), the mental model
+([Concepts](./docs/guides/concepts.md),
+[Reasoning](./docs/guides/reasoning.md)), collection
+([Web](./docs/guides/web-collection.md) ·
+[PDF](./docs/guides/pdf-collection.md) ·
+[Recipes](./docs/guides/recipes.md)), and reference
+([Binaries & CLI](./docs/guides/binaries.md) ·
+[Agents](./docs/guides/agents.md) · [Skills](./docs/guides/skills.md)).
 
 ## Tools
 
@@ -424,30 +221,22 @@ daily: `search`, `ast`, `traverse`, `thoughts`, `record_decision`,
 
 Knowledge OSS runs entirely local — bring your own LLM, zero
 credentials, full feature set. For teams that want a hosted shared
-graph, always-on investigation agents, and enterprise governance,
+graph, always-on investigation agents, webhook reception, scheduled
+workflows, and enterprise governance (SSO/SCIM, RBAC, audit, BYOC),
 [Fulminate Cloud](https://fulminate.io) offers capabilities that
-structurally can't run on a laptop:
-
-- Multi-user shared graph with bidirectional sync
-- Always-on autonomous investigation against your synced graph
-- Webhook reception (GitHub, PagerDuty, Alertmanager, Grafana,
-  Datadog, …)
-- Scheduled and event-triggered workflows
-- SSO/SCIM, RBAC, audit, BYOC for enterprise
-
-All Fulminate Cloud tiers are BYOK — bring your LLM key, Fulminate
-never resells tokens. Connect via `knowledge login`. Browser-only by
-design — headless environments are not supported. Sign up at
-[fulminate.io](https://fulminate.io).
+structurally can't run on a laptop. All tiers are BYOK — bring your
+LLM key, Fulminate never resells tokens.
 
 ```bash
-knowledge login    # browser-PKCE OAuth flow
+knowledge login    # browser-PKCE OAuth flow; token stored in your keychain
 knowledge logout   # revoke + clear keychain
 ```
 
-A subscription with `mcp:knowledge:write` permission unlocks the
-`sync` MCP tool: push local graph state to cloud, pull team-visible
-state down, promote a working copy as the team head.
+Logged in, the daemon serves tool calls from the hosted graph server;
+logged out, it runs fully local. A subscription with
+`mcp:knowledge:write` permission unlocks the `sync` tool: push local
+graph state to cloud, pull team-visible state down, promote a working
+copy as the team head.
 
 ## Status
 
