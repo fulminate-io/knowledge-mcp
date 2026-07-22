@@ -99,6 +99,27 @@ func TestRenderStarter_Credentials(t *testing.T) {
 	}
 }
 
+// TestRenderStarter_NoProvider proves the degrade render: an empty
+// DetectedProvider yields a valid, parseable config with NO active
+// provider (Default.Provider == "") plus commented guidance — the
+// BM25-only "unconfigured" state.
+func TestRenderStarter_NoProvider(t *testing.T) {
+	body, err := RenderStarter(DetectedProvider{}, Credentials{})
+	if err != nil {
+		t.Fatalf("RenderStarter(no provider): %v", err)
+	}
+	if !strings.Contains(body, "No LLM provider was detected") {
+		t.Fatalf("unconfigured render must carry provider guidance:\n%s", body)
+	}
+	cfg, err := Parse([]byte(body))
+	if err != nil {
+		t.Fatalf("Parse(unconfigured render): %v", err)
+	}
+	if cfg.Default.Provider != "" {
+		t.Fatalf("unconfigured config must have empty Default.Provider; got %q", cfg.Default.Provider)
+	}
+}
+
 func TestRender_InvalidProvider(t *testing.T) {
 	_, err := Render(DetectedProvider{Provider: Provider("bedrock"), Model: "claude-3"})
 	if err == nil {

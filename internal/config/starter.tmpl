@@ -26,9 +26,19 @@
 schema_version = 1
 
 [default]
-provider = "{{.Provider}}"
+{{if .Provider}}provider = "{{.Provider}}"
 model    = "{{.Model}}"
 {{if .CLIBin}}cli_bin  = "{{.CLIBin}}"
+{{end}}{{else}}# No LLM provider was detected on this machine, so summarization and
+# semantic (embedding) search are DISABLED — BM25 keyword search still
+# works. To enable them, set ONE provider below + its key, then re-run
+# `knowledge setup` (or edit here and restart the daemon):
+#   provider = "anthropic"   # + ANTHROPIC_API_KEY (or [credentials] below)
+#   provider = "openai"      # + OPENAI_API_KEY
+#   provider = "gemini"      # + GEMINI_API_KEY
+#   provider = "claude-cli"  # + cli_bin = "/absolute/path/to/claude"
+#   provider = "codex-cli"   # + cli_bin = "/absolute/path/to/codex"
+# model    = "..."
 {{end}}
 # Per-consumer overrides inherit unset fields from [default]. Summarizers
 # do simple text extraction (haiku-class is plenty); dream phases, the

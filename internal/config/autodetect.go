@@ -5,11 +5,19 @@ package config
 import (
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"os"
 	"os/exec"
 	"path/filepath"
 )
+
+// ErrNoProvider is the sentinel the auto-detect walk returns when NO LLM
+// provider is usable in the current environment (no claude/codex CLI on
+// PATH, no ANTHROPIC/OPENAI/GEMINI key). Callers use errors.Is to treat
+// it as a VALID degraded state — write an unconfigured starter, run
+// BM25-only — rather than a hard failure (the degrade-not-die invariant).
+var ErrNoProvider = errors.New("config: no LLM provider available")
 
 // detectDeps is the dependency-injection seam for auto-detect. Tests
 // inject deterministic lookPath / getenv functions; production code uses
@@ -133,7 +141,7 @@ func detectWalk(deps detectDeps, precedence []Provider) (DetectedProvider, error
 			return DetectedProvider{Provider: p, Model: defaultModels[p], CLIBin: cliBin}, nil
 		}
 	}
-	return DetectedProvider{}, fmt.Errorf("config: auto-detect: no provider available; checked %v", precedence)
+	return DetectedProvider{}, fmt.Errorf("%w; checked %v", ErrNoProvider, precedence)
 }
 
 // providerAvailability returns (true, "") for an available API provider,
@@ -183,10 +191,31 @@ func LoadOrAutoDetect(path string, bindAddr net.Addr) (*Config, bool, error) {
 	if err != nil {
 		return nil, wroteStarter, err
 	}
+	// Degrade-not-die: a config with NO LLM provider configured is a VALID
+	// unconfigured state — summarization + semantic (embedding) features
+	// are disabled, BM25 keyword search still works. Skip the summarizer
+	// validation and log a loud note rather than failing the daemon's boot.
+	if !providerConfigured(cfg) {
+		slog.Warn("config: no LLM provider configured — summarization and semantic search are disabled (BM25-only still works); install the claude CLI or set ANTHROPIC_API_KEY/OPENAI_API_KEY/GEMINI_API_KEY, then re-run `knowledge setup`", "path", path)
+		return cfg, wroteStarter, nil
+	}
 	if err := cfg.Validate([]Consumer{ConsumerSummarizer}); err != nil {
 		return nil, wroteStarter, fmt.Errorf("config.LoadOrAutoDetect: validate %s: %w", path, err)
 	}
 	return cfg, wroteStarter, nil
+}
+
+// providerConfigured reports whether the config names an LLM provider for
+// the summarizer (via [default] or [summarizer]). When false the config is
+// a valid unconfigured degrade state, NOT an error.
+func providerConfigured(cfg *Config) bool {
+	if cfg == nil {
+		return false
+	}
+	if cfg.Default.Provider != "" {
+		return true
+	}
+	return cfg.Summarizer != nil && cfg.Summarizer.Provider != ""
 }
 
 // ensureFileExists checks for path. If it's missing, the auto-detector
@@ -210,7 +239,14 @@ func ensureFileExists(path string, bindAddr net.Addr) (bool, error) {
 		detected, detectErr = detectServer(deps)
 	}
 	if detectErr != nil {
-		return false, detectErr
+		// Degrade-not-die: no provider on this box → write an UNCONFIGURED
+		// starter (BM25-only) so the daemon still boots, rather than
+		// failing. Any other detect error still propagates.
+		if !errors.Is(detectErr, ErrNoProvider) {
+			return false, detectErr
+		}
+		slog.Warn("config: no LLM provider detected on first run — writing an unconfigured starter (BM25-only); install the claude CLI or set ANTHROPIC_API_KEY/OPENAI_API_KEY/GEMINI_API_KEY, then re-run `knowledge setup`", "path", path)
+		detected = DetectedProvider{} // unconfigured render
 	}
 	body, err := Render(detected)
 	if err != nil {

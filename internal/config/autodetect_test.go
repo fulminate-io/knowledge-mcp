@@ -157,8 +157,11 @@ func TestDetectLocal_NoneAvailable(t *testing.T) {
 	if err == nil {
 		t.Fatal("detectLocal(empty): want error, got nil")
 	}
-	if !strings.Contains(err.Error(), "no provider available") {
-		t.Errorf("error does not mention no-provider-available: %v", err)
+	if !errors.Is(err, ErrNoProvider) {
+		t.Errorf("error should wrap ErrNoProvider: %v", err)
+	}
+	if !strings.Contains(err.Error(), "checked") {
+		t.Errorf("error should name the checked providers: %v", err)
 	}
 }
 
@@ -347,6 +350,47 @@ func TestLoadOrAutoDetect_LoopbackVsServer(t *testing.T) {
 			t.Errorf("server walk did not pick anthropic:\n%s", body)
 		}
 	})
+}
+
+// TestLoadOrAutoDetect_NoProviderDegrades is the daemon-boot degrade-not-die
+// case: with NO provider anywhere (no CLI on PATH, no API keys), first-run
+// writes an UNCONFIGURED starter (empty Default.Provider) and returns NO
+// error, and a subsequent load of that provider-less config also returns
+// no error — so the daemon boots BM25-only instead of failing.
+func TestLoadOrAutoDetect_NoProviderDegrades(t *testing.T) {
+	t.Cleanup(SetForTest(nil))
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "config")
+	for _, k := range []string{"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY", "VOYAGE_API_KEY", "LINEAR_API_KEY"} {
+		t.Setenv(k, "")
+	}
+	t.Setenv("PATH", t.TempDir()) // no claude/codex resolvable
+	addr := &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 15022}
+
+	cfg, wrote, err := LoadOrAutoDetect(cfgPath, addr)
+	if err != nil {
+		t.Fatalf("first-run with no provider must degrade-not-die; got err %v", err)
+	}
+	if !wrote {
+		t.Errorf("wroteStarter = false; want true (unconfigured starter written)")
+	}
+	if cfg.Default.Provider != "" {
+		t.Errorf("degraded config must have empty Default.Provider; got %q", cfg.Default.Provider)
+	}
+
+	// Re-load the on-disk provider-less config: must also NOT error (the
+	// daemon-boot path — LoadOrAutoDetect skips the summarizer Validate).
+	t.Cleanup(SetForTest(nil))
+	cfg2, wrote2, err2 := LoadOrAutoDetect(cfgPath, addr)
+	if err2 != nil {
+		t.Fatalf("re-load of a provider-less config must not error; got %v", err2)
+	}
+	if wrote2 {
+		t.Errorf("second load must not rewrite (config present)")
+	}
+	if cfg2.Default.Provider != "" {
+		t.Errorf("re-loaded config provider = %q; want empty", cfg2.Default.Provider)
+	}
 }
 
 // TestLoadOrAutoDetect_StatError exercises the "stat returned a non

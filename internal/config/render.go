@@ -83,11 +83,17 @@ func RenderStarter(detected DetectedProvider, creds Credentials) (string, error)
 	if err != nil {
 		return "", err
 	}
-	if !detected.Provider.IsValid() {
-		return "", fmt.Errorf("config.RenderStarter: invalid provider %q", detected.Provider)
-	}
-	if detected.Model == "" {
-		return "", fmt.Errorf("config.RenderStarter: empty model for provider %q", detected.Provider)
+	// An EMPTY provider is the valid "unconfigured" render (no provider
+	// detected — BM25-only degrade): the template emits a commented
+	// [default] guidance block instead of an active provider/model. Only
+	// validate when a provider IS supplied.
+	if detected.Provider != "" {
+		if !detected.Provider.IsValid() {
+			return "", fmt.Errorf("config.RenderStarter: invalid provider %q", detected.Provider)
+		}
+		if detected.Model == "" {
+			return "", fmt.Errorf("config.RenderStarter: empty model for provider %q", detected.Provider)
+		}
 	}
 	var buf bytes.Buffer
 	if err := tmpl.Execute(&buf, starterView{DetectedProvider: detected, Credentials: creds}); err != nil {

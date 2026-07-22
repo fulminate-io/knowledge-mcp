@@ -119,6 +119,14 @@ func seedConfig(t *testing.T, cfgPath, body string) {
 
 func readCreds(t *testing.T, cfgPath string) *config.Credentials {
 	t.Helper()
+	return readConfig(t, cfgPath).Credentials
+}
+
+// readConfig reads + parses the written config, failing the test on any
+// read/parse error. Proves the written file is valid TOML (the degrade
+// path must still produce a parseable config).
+func readConfig(t *testing.T, cfgPath string) *config.Config {
+	t.Helper()
 	data, err := os.ReadFile(cfgPath) //nolint:gosec // test path under temp HOME
 	if err != nil {
 		t.Fatalf("read config: %v", err)
@@ -127,5 +135,5 @@ func readCreds(t *testing.T, cfgPath string) *config.Credentials {
 	if err != nil {
 		t.Fatalf("parse config: %v", err)
 	}
-	return cfg.Credentials
+	return cfg
 }

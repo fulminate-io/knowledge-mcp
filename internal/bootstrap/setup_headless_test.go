@@ -76,6 +76,35 @@ func TestSetup_Headless_PersistsEnvCreds(t *testing.T) {
 	})
 }
 
+// TestSetup_Headless_NoProviderDegrades: headless first-run with ZERO
+// detectable providers (no CLI on PATH, no API key) must COMPLETE — it
+// writes a valid, parseable UNCONFIGURED config (empty Default.Provider),
+// prints the actionable no-provider note, and returns nil (exit 0). The
+// degrade-not-die invariant: BM25-only, daemon still boots.
+func TestSetup_Headless_NoProviderDegrades(t *testing.T) {
+	cfgPath := setupHome(t)
+	clearCredEnv(t) // no API keys
+	emptyPATH(t)    // no claude/codex on PATH
+	_ = spySelfUpdate(t, "")
+	out := captureStdout(t, func() {
+		if err := runSetup([]string{"--headless", "--no-self-update", "--no-service"}); err != nil {
+			t.Fatalf("headless no-provider must degrade-not-die (exit 0); got err %v", err)
+		}
+	})
+	if !strings.Contains(out, noProviderNote) {
+		t.Fatalf("expected the actionable no-provider note; got %q", out)
+	}
+	cfg := readConfig(t, cfgPath)
+	if cfg.Default.Provider != "" {
+		t.Fatalf("unconfigured config must have empty Default.Provider; got %q", cfg.Default.Provider)
+	}
+	// A no-provider box also has no voyage key — the reduced-accuracy
+	// warning still fires alongside the provider note.
+	if !strings.Contains(out, reducedAccuracyWarning) {
+		t.Fatalf("expected the reduced-accuracy warning with no voyage key; got %q", out)
+	}
+}
+
 // TestSetup_HeadlessReconfigure_CustomizationLoss:
 // an active [dream] fires the warning and PROCEEDS with no prompt (no
 // hang); a default/credentials-only config prints no warning.

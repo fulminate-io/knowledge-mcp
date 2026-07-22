@@ -93,6 +93,13 @@ const reducedAccuracyWarning = "knowledge setup: no Voyage API key set — searc
 // carries hand-edited sections the template regenerate would drop.
 const customizationLossWarning = "knowledge setup: --reconfigure regenerates ~/.knowledge/config from the template — any hand-edited [summarizer]/[dream]/[supervisor]/[topics] sections or health_probe_interval will be lost and must be re-applied by hand."
 
+// noProviderNote is printed when setup finds NO LLM provider (no
+// claude/codex CLI on PATH, no ANTHROPIC/OPENAI/GEMINI key). Setup still
+// COMPLETES — it writes an unconfigured (BM25-only) config, installs
+// units, and brings the daemon up: the degrade-not-die invariant. The
+// note tells the user exactly how to enable the disabled features later.
+const noProviderNote = "knowledge setup: no LLM provider detected (no claude/codex CLI on PATH, no ANTHROPIC_API_KEY/OPENAI_API_KEY/GEMINI_API_KEY). Proceeding with an unconfigured, BM25-only setup — the daemon starts and keyword search works, but summarization and semantic search are disabled. To enable them: install the claude CLI (or set one of the API keys), then re-run `knowledge setup`."
+
 // runSetup is the entry point dispatched from RunSubcommand. Parses the
 // behavior flags, decides first-run vs update, writes config when
 // appropriate, self-updates the binaries, installs CLI assets, and runs
@@ -209,7 +216,15 @@ func writeGuidedConfig(cfgPath string, existing bool) (proceed bool, err error) 
 
 	detected, derr := config.AutoDetect(setupLoopbackAddr())
 	if derr != nil {
-		return false, fmt.Errorf("knowledge setup: auto-detect provider: %w", derr)
+		if !errors.Is(derr, config.ErrNoProvider) {
+			return false, fmt.Errorf("knowledge setup: auto-detect provider: %w", derr)
+		}
+		// Degrade-not-die: no provider detected → present the provider list
+		// with NO preselection (detected stays zero-value, so the prompt
+		// default is empty). The user picks one, or skips (empty input) →
+		// unconfigured, BM25-only config. Setup still completes.
+		fmt.Fprintln(os.Stdout, noProviderNote)
+		detected = config.DetectedProvider{}
 	}
 	chosen := resolveChosenProvider(scanner, detected)
 
@@ -281,7 +296,17 @@ func writeHeadlessConfig(cfgPath string, existing bool) error {
 
 	detected, derr := config.AutoDetect(setupLoopbackAddr())
 	if derr != nil {
-		return fmt.Errorf("knowledge setup: auto-detect provider: %w", derr)
+		if !errors.Is(derr, config.ErrNoProvider) {
+			return fmt.Errorf("knowledge setup: auto-detect provider: %w", derr)
+		}
+		// Degrade-not-die: no provider on this box → write an unconfigured
+		// (BM25-only) starter so the daemon still boots. detected stays
+		// zero-value, which RenderStarter emits as the commented [default]
+		// guidance block. Any env-provided credential keys are still
+		// persisted below so a later `knowledge setup` (with a provider
+		// installed) has them on hand.
+		fmt.Fprintln(os.Stdout, noProviderNote)
+		detected = config.DetectedProvider{}
 	}
 
 	// Existing config wins; env fills only unset keys. Keys with no env

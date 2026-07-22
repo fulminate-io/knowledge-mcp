@@ -69,6 +69,53 @@ func TestSetup_Guided_WritesCredentials(t *testing.T) {
 	})
 }
 
+// TestSetup_Guided_NoProviderDegrades: guided first-run with ZERO
+// detectable providers presents the provider list with NO preselection.
+// Skipping the provider prompt (empty input) COMPLETES with an
+// unconfigured (BM25-only) config and the no-provider note — exit 0.
+func TestSetup_Guided_NoProviderDegrades(t *testing.T) {
+	t.Run("skip provider → unconfigured", func(t *testing.T) {
+		cfgPath := setupHome(t)
+		clearCredEnv(t)
+		emptyPATH(t)
+		forceTTY(t, true)
+		_ = spySelfUpdate(t, "")
+		withScriptedStdin(t, "\n\n\n") // skip provider, skip voyage, skip linear
+		out := captureStdout(t, func() {
+			if err := runSetup([]string{"--no-self-update", "--no-service"}); err != nil {
+				t.Fatalf("guided no-provider skip must degrade-not-die; got err %v", err)
+			}
+		})
+		if !strings.Contains(out, noProviderNote) {
+			t.Fatalf("expected the actionable no-provider note; got %q", out)
+		}
+		cfg := readConfig(t, cfgPath)
+		if cfg.Default.Provider != "" {
+			t.Fatalf("skip must yield empty Default.Provider; got %q", cfg.Default.Provider)
+		}
+	})
+
+	t.Run("pick provider → provider written", func(t *testing.T) {
+		cfgPath := setupHome(t)
+		clearCredEnv(t)
+		emptyPATH(t)
+		forceTTY(t, true)
+		_ = spySelfUpdate(t, "")
+		withScriptedStdin(t, "openai\n\n\n") // pick openai despite no detection, skip keys
+		out := captureStdout(t, func() {
+			if err := runSetup([]string{"--no-self-update", "--no-service"}); err != nil {
+				t.Fatalf("guided no-provider pick must complete; got err %v", err)
+			}
+		})
+		if !strings.Contains(out, noProviderNote) {
+			t.Fatalf("expected the no-provider note before the list prompt; got %q", out)
+		}
+		if cfg := readConfig(t, cfgPath); cfg.Default.Provider != "openai" {
+			t.Fatalf("picked provider must land in the written config; got %q", cfg.Default.Provider)
+		}
+	})
+}
+
 // TestSetup_GuidedReconfigure_PreservesVoyage: on
 // guided --reconfigure, an empty voyage answer PRESERVES the stored key;
 // a new provider lands; no reduced-accuracy warning.
