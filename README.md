@@ -12,30 +12,45 @@ and teammates.
 
 ## Install
 
-Homebrew is the recommended path on macOS and Linux. It installs two
-binaries — the `knowledge` CLI (which includes the shared MCP daemon)
-and the `knowledge-server` graph server:
+One line, macOS (Apple Silicon) or Linux (x86_64 / arm64):
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/fulminate-io/knowledge-mcp/main/install.sh | sh
+```
+
+The script downloads the latest release of both binaries
+(checksum-verified) into `~/.knowledge/bin`, then hands off to
+`knowledge setup`, which writes your first-run config (auto-detecting
+an LLM provider), installs the curated agents and skills for Claude
+Code and/or Codex if those CLIs are present, registers the MCP daemon
+with them, and installs user-level services (launchd on macOS,
+`systemd --user` on Linux) so the graph server (127.0.0.1:15022) and
+MCP daemon (127.0.0.1:15023) start at login. Everything runs as
+**your user** — no `sudo` anywhere.
+
+Re-running the same line upgrades in place; your config is never
+touched. To configure interactively (pick a provider, paste optional
+API keys), run `knowledge setup` in a terminal any time. Headless
+provisioning: append flags after `sh -s --` (e.g. `--headless`,
+`--no-service`); credentials come from the environment
+(`ANTHROPIC_API_KEY`, `VOYAGE_API_KEY`, `LINEAR_API_KEY`, ...) or
+`~/.knowledge/config` — never from flags. On Windows, follow the
+[manual install guide](./docs/guides/install-windows.md).
+
+### Homebrew (alternative)
 
 ```bash
 brew tap fulminate-io/knowledge
 brew install knowledge
-```
-
-Start both background services (run as **your user** — do not `sudo`; a
-root LaunchDaemon can't read your login keychain):
-
-```bash
 brew services start knowledge-server   # local graph server  (127.0.0.1:15022)
 brew services start knowledge          # shared MCP daemon    (127.0.0.1:15023)
+knowledge install-claude-assets        # wire Claude Code (or: install-codex-assets)
 ```
 
-Wire your editor — one command registers the MCP daemon and installs
-the curated agents and skills:
+Run the services as **your user** — do not `sudo`; a root LaunchDaemon
+can't read your login keychain.
 
-```bash
-knowledge install-claude-assets   # Claude Code
-knowledge install-codex-assets    # Codex CLI
-```
+### First index
 
 Restart your editor so it picks up the new MCP server, then trigger the
 first index from inside the LLM:
