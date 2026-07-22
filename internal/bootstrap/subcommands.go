@@ -13,7 +13,7 @@ import (
 
 // RunSubcommand inspects os.Args[1] and, when it matches one of the
 // recognized CLI subcommands (login/logout/start/stop/status/serve/
-// install-claude-assets/install-codex-assets/transcript-upload/doctor/version),
+// install/setup/install-claude-assets/install-codex-assets/transcript-upload/tunnel/doctor/version),
 // dispatches to the appropriate handler.
 // Returns (handled=true, exitCode) when it handled the invocation so
 // the caller exits immediately. Returns (false, 0) when the first arg
@@ -47,13 +47,17 @@ func RunSubcommand() (handled bool, exitCode int) {
 	case "serve":
 		err = runServe(rest)
 	case "install":
-		err = runInstall(rest)
+		_, err = runInstall(rest)
+	case "setup":
+		err = runSetup(rest)
 	case "install-claude-assets":
 		err = runInstallClaudeAssets(rest)
 	case "install-codex-assets":
 		err = runInstallCodexAssets(rest)
 	case "transcript-upload":
 		err = cli.TranscriptUploadCmd(rest)
+	case "tunnel":
+		err = cli.TunnelCmd(rest)
 	case "doctor":
 		err = runDoctor(rest)
 	case "version":

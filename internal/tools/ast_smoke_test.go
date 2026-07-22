@@ -56,7 +56,7 @@ func (t *T) MethodThree()                   {}
 // 3 method_declaration nodes from the same file.
 func TestAstSmoke_KindFunctionDeclaration(t *testing.T) {
 	repoDir := astSmokeFixture(t)
-	deps := astTestDeps{rootDir: repoDir}
+	deps := astTestDeps{rootDir: repoDir, rootDirSet: true} // explicit root: walk the fixture, not the guard path
 
 	body, isErr, _ := callAst(t, deps, `{
 		"operation": "match",
@@ -78,7 +78,7 @@ func TestAstSmoke_KindFunctionDeclaration(t *testing.T) {
 // only method_declaration nodes (3 of them) and excludes top-level funcs.
 func TestAstSmoke_KindMethodDeclaration(t *testing.T) {
 	repoDir := astSmokeFixture(t)
-	deps := astTestDeps{rootDir: repoDir}
+	deps := astTestDeps{rootDir: repoDir, rootDirSet: true} // explicit root: walk the fixture, not the guard path
 
 	body, isErr, _ := callAst(t, deps, `{
 		"operation": "match",
@@ -100,7 +100,7 @@ func TestAstSmoke_KindMethodDeclaration(t *testing.T) {
 // (default 100). The exact count varies with grammar internals; assert > 0.
 func TestAstSmoke_NoWhereStructuralOnly(t *testing.T) {
 	repoDir := astSmokeFixture(t)
-	deps := astTestDeps{rootDir: repoDir}
+	deps := astTestDeps{rootDir: repoDir, rootDirSet: true} // explicit root: walk the fixture, not the guard path
 
 	body, isErr, _ := callAst(t, deps, `{
 		"operation": "count",

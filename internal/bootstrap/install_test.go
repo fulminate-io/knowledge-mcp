@@ -99,12 +99,23 @@ func buildZip(t *testing.T, files map[string][]byte) []byte {
 // releaseStub captures the inputs needed to spin up an httptest
 // release-API mux that newReleaseServer exposes.
 type releaseStub struct {
-	tag        string
-	assetName  string
-	archive    []byte
-	checksums  []byte
-	notFound   bool // when true /releases/tags/<tag> returns 404
-	respondErr bool // when true return 500 on any request (mismatch UX)
+	tag       string
+	assetName string
+	archive   []byte
+	checksums []byte
+	// clientAssetName / clientArchive optionally add a SECOND release
+	// asset (the knowledge client) so dual-binary install tests can
+	// serve both binaries from one release. Left zero for the
+	// server-only tests. checksums must cover both assets when set.
+	clientAssetName string
+	clientArchive   []byte
+	// reportedTag, when set, is the tag_name the release JSON reports —
+	// decoupled from the request path `tag` so downgrade-guard tests can
+	// simulate a resolved release LOWER than the requested/installed one.
+	// Defaults to tag.
+	reportedTag string
+	notFound    bool // when true /releases/tags/<tag> returns 404
+	respondErr  bool // when true return 500 on any request (mismatch UX)
 }
 
 // newReleaseServer spins up an httptest.Server that serves the
@@ -121,7 +132,14 @@ func newReleaseServer(t *testing.T, s releaseStub) *httptest.Server {
 			{Name: s.assetName, BrowserDownloadURL: srv.URL + "/dl/" + s.assetName},
 			{Name: "checksums.txt", BrowserDownloadURL: srv.URL + "/dl/checksums.txt"},
 		}
-		body, err := json.Marshal(releaseResponse{TagName: s.tag, Assets: assets})
+		if s.clientAssetName != "" {
+			assets = append(assets, releaseAsset{Name: s.clientAssetName, BrowserDownloadURL: srv.URL + "/dl/" + s.clientAssetName})
+		}
+		reportedTag := s.tag
+		if s.reportedTag != "" {
+			reportedTag = s.reportedTag
+		}
+		body, err := json.Marshal(releaseResponse{TagName: reportedTag, Assets: assets})
 		if err != nil {
 			t.Fatalf("marshal release: %v", err)
 		}
@@ -151,10 +169,18 @@ func newReleaseServer(t *testing.T, s releaseStub) *httptest.Server {
 		}
 		_, _ = w.Write(releaseJSON())
 	})
-	mux.HandleFunc("/dl/"+s.assetName, func(w http.ResponseWriter, _ *http.Request) {
+	// Assets are served at <tag>/<asset> to match resolveReleaseURLs'
+	// build-time construction (releaseBaseURL + "/" + tag + "/" + asset);
+	// pointHTTPClientAt sets releaseBaseURL = srv.URL.
+	mux.HandleFunc("/"+s.tag+"/"+s.assetName, func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write(s.archive)
 	})
-	mux.HandleFunc("/dl/checksums.txt", func(w http.ResponseWriter, _ *http.Request) {
+	if s.clientAssetName != "" {
+		mux.HandleFunc("/"+s.tag+"/"+s.clientAssetName, func(w http.ResponseWriter, _ *http.Request) {
+			_, _ = w.Write(s.clientArchive)
+		})
+	}
+	mux.HandleFunc("/"+s.tag+"/checksums.txt", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write(s.checksums)
 	})
 	srv = httptest.NewServer(mux)
@@ -200,6 +226,12 @@ func pointHTTPClientAt(t *testing.T, srv *httptest.Server) {
 		Timeout:   10 * time.Second,
 		Transport: &rewritingTransport{target: srv.URL, base: http.DefaultTransport},
 	})
+	// The API base is reached via the rewriting transport (fetchRelease
+	// builds githubAPIBaseURL URLs); asset downloads are constructed from
+	// releaseBaseURL, so point it straight at the test server.
+	prev := releaseBaseURL
+	releaseBaseURL = srv.URL
+	t.Cleanup(func() { releaseBaseURL = prev })
 }
 
 // sha256Hex returns the hex-encoded sha256 digest of data.

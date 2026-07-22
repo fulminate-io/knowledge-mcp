@@ -100,6 +100,20 @@ const helpManage = `# manage — Server operations
   live set is not a subset is SKIPPED untouched and surfaced in the report rather than
   pruned. Honors format=json for the structured report.
 
+## Repo manifest registration
+  manage({ "operation": "register_repo", "name": "myrepo", "root": "/abs/path/to/myrepo" })  — record a repo name → checkout dir
+
+  register_repo records a repo name → absolute checkout directory in the
+  machine-local manifest (~/.knowledge/repos.json) — the same registry a code
+  collect populates. It is PURELY CLIENT-SIDE and MACHINE-LOCAL: the mapping is
+  written to this machine's disk and never forwarded to the server, because the
+  path is machine-specific and must never leave this host. It is IDEMPOTENT:
+  re-registering a name overwrites its recorded path, so a name can be re-pointed
+  at a moved or renamed checkout.
+  Use it so a cross-repo ast walk (repo:<name>) can resolve a bare repo name to
+  its real directory WITHOUT having to collect the repo first. root must be an
+  existing absolute directory; name is the repo name to record.
+
 ## Cross-graph linking
   manage({ "operation": "link" })  — run image, Helm, and Dockerfile linkers to create code-to-cloud edges
 

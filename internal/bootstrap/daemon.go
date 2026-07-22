@@ -27,30 +27,31 @@ import (
 )
 
 // the bind-first startup change UNIFIED SHUTDOWN BUDGET (keep these in sync with the Makefile
-// daemon-stop drain loop count): on SIGTERM, runServe drains SIX Stops
+// daemon-stop drain loop count): on SIGTERM, runServe drains SEVEN Stops
 // SEQUENTIALLY in LIFO defer order — reaper.Stop + monitor.Stop (both marshaled by
 // the startHiveLoops stop closure deferred in runServe, reaper first), then
 // drainOnShutdown's wireJoinDeadline wait + pipeline.Stop + runtime.Stop +
-// propLoop.Stop. The budget inequality is:
+// propLoop.Stop + collectRuntime.Stop. The budget inequality is:
 //
 //	reaper.Stop + monitor.Stop + wireJoinDeadline + pipeline.Stop + runtime.Stop +
-//	propLoop.Stop  <=  Makefile daemon-stop drain window.
+//	propLoop.Stop + collectRuntime.Stop  <=  Makefile daemon-stop drain window.
 //
 // Every Stop is cooperative (the monitor + reaper cancel their ctx before their
-// bounded wg.Wait; PropagationLoop.Stop cancels baseCtx before its inFlight drain;
-// the pipeline drains its bounded worker pool), so a clean drain finishes in a few
-// seconds — the per-Stop deadlines below are abandon-backstops, not expected
-// durations. Pinned to 3s each → 6 * 3s = 18s worst-case, under the Makefile's 20s
-// drain window. If you change one of these, re-check the Makefile loop count (and
-// the reaper/monitor Stop deadlines in startHiveLoops) so the inequality still holds.
+// bounded wg.Wait; PropagationLoop.Stop and CollectRuntime.Stop cancel baseCtx
+// before their inFlight drain; the pipeline drains its bounded worker pool), so a
+// clean drain finishes in a few seconds — the per-Stop deadlines below are
+// abandon-backstops, not expected durations. Pinned to 3s each → 7 * 3s = 21s
+// worst-case, under the Makefile's 24s drain window. If you change one of these,
+// re-check the Makefile loop count (and the reaper/monitor Stop deadlines in
+// startHiveLoops) so the inequality still holds.
 const (
 	// wireJoinDeadline bounds how long drainOnShutdown waits for the background
 	// wiring goroutine (wireRuntimesBackground) to finish before it gives up and
 	// drains only the already-ready subsystems.
 	wireJoinDeadline = 3 * time.Second
 	// daemonStopDeadline is the per-Stop drain bound for the pipeline, dream
-	// Runner, PropagationLoop, hive monitor, and hive reaper. See the budget note
-	// above.
+	// Runner, PropagationLoop, collect runtime, hive monitor, and hive reaper. See
+	// the budget note above.
 	daemonStopDeadline = 3 * time.Second
 )
 
@@ -143,7 +144,7 @@ func buildClient(f Config) (*client, func(), error) {
 // by the mark*Ready atomic Store, and a nil/half-wired handle is never Stopped.
 // Each Stop stays nil-safe as defense-in-depth.
 //
-// Deadline budget (reconciled in Phase 3): wireJoinDeadline + the three sequential
+// Deadline budget (reconciled in Phase 3): wireJoinDeadline + the four sequential
 // Stop deadlines below must fit inside the Makefile daemon-stop SIGTERM window so
 // a clean drain completes before SIGKILL.
 func (c *client) drainOnShutdown() {
@@ -158,10 +159,11 @@ func (c *client) drainOnShutdown() {
 		}
 	}
 	// Flag-gated drain in the fixed order (pipeline, dream Runner,
-	// PropagationLoop). The readiness flag guarantees the handle was published
-	// before we read it; the nil-check is belt-and-suspenders. Each Stop is bounded
-	// to daemonStopDeadline (3s) — see the unified shutdown-budget comment on that
-	// const and the Makefile daemon-stop drain loop.
+	// PropagationLoop, then the always-constructed collect runtime). The readiness
+	// flag guarantees the handle was published before we read it; the nil-check is
+	// belt-and-suspenders. Each Stop is bounded to daemonStopDeadline (3s) — see
+	// the unified shutdown-budget comment on that const and the Makefile
+	// daemon-stop drain loop.
 	if c.PipelineReady() && c.pipeline != nil {
 		stopCtx, stopCancel := context.WithTimeout(context.Background(), daemonStopDeadline)
 		defer stopCancel()
@@ -181,6 +183,13 @@ func (c *client) drainOnShutdown() {
 	}
 	if c.PropReady() && c.propLoop != nil {
 		c.propLoop.Stop(daemonStopDeadline)
+	}
+	// collectRuntime is constructed synchronously at boot (constructClient), never
+	// in the background-wire window, so it needs no readiness flag — a plain
+	// nil-guard suffices. Stop cancels its baseCtx (unwinding an in-flight detached
+	// collect at the next RPC boundary) then bounded-drains the run goroutine.
+	if c.collectRuntime != nil {
+		c.collectRuntime.Stop(daemonStopDeadline)
 	}
 }
 
@@ -351,6 +360,10 @@ func runServe(args []string) error {
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	// Record whether --root was explicitly set (vs the "." default) via the
+	// SAME shared helper ParseFlags uses, so the ast walk-root guard sees an
+	// identical was-set bit on both parse paths.
+	applyRootDirSet(fs, &cfg)
 
 	// Normalize --headless into its implied gate set ONCE, before cfg flows into
 	// either consumer: buildClient → wireRuntimesBackground (the worker /

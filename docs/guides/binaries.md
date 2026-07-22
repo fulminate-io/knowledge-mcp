@@ -41,7 +41,7 @@ individual subsystem off for offline or low-noise development.
 | `--embed-channel-size` | `10000` | Client-side LLM pipeline: EmbedWork channel buffer size (full = collector blocks) |
 | `--embed-rpm` | `0` | Client-side LLM pipeline: max embed (Voyage) API requests per MINUTE across all embed workers; 0 = unlimited (default, preserves current 20-worker behavior). Proactive throttle for low-tier Voyage accounts — paces the opening burst so it respects the account RPM before the first 429. Companion to the reactive Retry-After backoff. |
 | `--embed-workers` | `20` | Client-side LLM pipeline: count of embed worker goroutines |
-| `--graph-storage` | `~/.knowledge/` | Directory for graph storage (display-only; server owns the bin file) |
+| `--graph-storage` | `~/.knowledge/` | Directory for graph storage: the server writes its .bin here, and the client roots its segment cache + worker runtime under it (default ~/.knowledge/) |
 | `--headless` | `false` | Run as an embedded/supervisor-managed daemon: serve the loopback /mcp endpoint and resolve query embeddings, but skip every background content + coordination loop. Implies --no-worker-runtime, --no-propagation-runtime, --skip-llm-precheck and --no-llm-pipeline, and additionally disables the hive monitor, hive reaper, and transcript upload loops. Still loads ~/.knowledge/config (so [credentials] resolve config-first) and still seeds .claude agents/skills. Does not change auth. |
 | `--log-file` |  | Log file path (logs to both stderr and file when set) |
 | `--log-level` | `info` | Log level: debug, info, warn, error |
@@ -54,7 +54,7 @@ individual subsystem off for offline or low-noise development.
 | `--pprof` | `true` | Start the pprof profiling HTTP endpoint on 127.0.0.1:15021 (/debug/pprof/) at boot. Also reachable on demand via manage(pprof_start). Use to profile client-side work such as collect. Default-on during the general-stability investigation window; flip to false once the startup-timeout flake is diagnosed. |
 | `--pprof-port` | `15021` | TCP port for the pprof profiling HTTP endpoint (loopback only) |
 | `--reflect-backstop-interval` | `24h0m0s` | Client-side reflection: cadence of the full-corpus reflection backstop pass that resets DF-Leiden incremental drift. The hourly loop runs incrementally; once this interval elapses since the last full pass, the next tick forces a full Leiden recompute. Default 24h (nightly). |
-| `--root` | `.` | Project root directory (display-only; server is the one that collects from root) |
+| `--root` | `.` | Project root the client walks for ast + topology, and the current-tree fallback for resolving a bare repo name (default ".") |
 | `--skip-llm-precheck` | `false` | Skip the live-ping check that runs against every configured (provider, model) tuple at client startup. Use for offline development or CI sandboxes; default is to fail-fast at boot rather than at first tool call. |
 | `--summary-batch-size` | `20` | Client-side LLM pipeline: items per summary worker batch |
 | `--summary-channel-size` | `10000` | Client-side LLM pipeline: SummaryWork channel buffer size (full = collector blocks) |
@@ -80,7 +80,7 @@ outlives any single session.
 | `--embed-channel-size` | `10000` | Client-side LLM pipeline: EmbedWork channel buffer size (full = collector blocks) |
 | `--embed-rpm` | `0` | Client-side LLM pipeline: max embed (Voyage) API requests per MINUTE across all embed workers; 0 = unlimited (default, preserves current 20-worker behavior). Proactive throttle for low-tier Voyage accounts — paces the opening burst so it respects the account RPM before the first 429. Companion to the reactive Retry-After backoff. |
 | `--embed-workers` | `20` | Client-side LLM pipeline: count of embed worker goroutines |
-| `--graph-storage` | `~/.knowledge/` | Directory for graph storage (display-only; server owns the bin file) |
+| `--graph-storage` | `~/.knowledge/` | Directory for graph storage: the server writes its .bin here, and the client roots its segment cache + worker runtime under it (default ~/.knowledge/) |
 | `--headless` | `false` | Run as an embedded/supervisor-managed daemon: serve the loopback /mcp endpoint and resolve query embeddings, but skip every background content + coordination loop. Implies --no-worker-runtime, --no-propagation-runtime, --skip-llm-precheck and --no-llm-pipeline, and additionally disables the hive monitor, hive reaper, and transcript upload loops. Still loads ~/.knowledge/config (so [credentials] resolve config-first) and still seeds .claude agents/skills. Does not change auth. |
 | `--http-port` | `15023` | Loopback TCP port for the streamable-HTTP MCP endpoint (/mcp). Distinct from --port (the graph server). |
 | `--log-file` |  | Log file path (logs to both stderr and file when set) |
@@ -94,7 +94,7 @@ outlives any single session.
 | `--pprof` | `true` | Start the pprof profiling HTTP endpoint on 127.0.0.1:15021 (/debug/pprof/) at boot. Also reachable on demand via manage(pprof_start). Use to profile client-side work such as collect. Default-on during the general-stability investigation window; flip to false once the startup-timeout flake is diagnosed. |
 | `--pprof-port` | `15021` | TCP port for the pprof profiling HTTP endpoint (loopback only) |
 | `--reflect-backstop-interval` | `24h0m0s` | Client-side reflection: cadence of the full-corpus reflection backstop pass that resets DF-Leiden incremental drift. The hourly loop runs incrementally; once this interval elapses since the last full pass, the next tick forces a full Leiden recompute. Default 24h (nightly). |
-| `--root` | `.` | Project root directory (display-only; server is the one that collects from root) |
+| `--root` | `.` | Project root the client walks for ast + topology, and the current-tree fallback for resolving a bare repo name (default ".") |
 | `--skip-llm-precheck` | `false` | Skip the live-ping check that runs against every configured (provider, model) tuple at client startup. Use for offline development or CI sandboxes; default is to fail-fast at boot rather than at first tool call. |
 | `--summary-batch-size` | `20` | Client-side LLM pipeline: items per summary worker batch |
 | `--summary-channel-size` | `10000` | Client-side LLM pipeline: SummaryWork channel buffer size (full = collector blocks) |
@@ -176,6 +176,7 @@ a quick way to see whether an update is available.
 <!-- BEGIN GENERATED: flags-install -->
 | Flag | Default | Description |
 | --- | --- | --- |
+| `--allow-downgrade` | `false` | Permit installing a release OLDER than the currently-installed version (default: refuse) |
 | `--check` | `false` | Compare installed server version against latest release without writing |
 | `--dest` |  | Destination directory for knowledge-server (default: sibling of running stdio binary) |
 <!-- END GENERATED: flags-install -->

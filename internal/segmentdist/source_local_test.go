@@ -14,8 +14,8 @@ import (
 
 // TestLocalSegmentSource_ZeroNetworkOverL2 exercises the OSS-local segmentSource
 // against a REAL diskSegmentCache (no caller, no server): all five legs operate
-// over L2 alone. The type holds only a cache + format — there is no segmentCaller
-// field, so a SegmentService RPC is structurally impossible to issue.
+// over L2 alone. The type holds only a cache + format — there is no transport
+// field, so a network call is structurally impossible to issue.
 func TestLocalSegmentSource_ZeroNetworkOverL2(t *testing.T) {
 	ctx := context.Background()
 	cache := newDiskSegmentCache(t.TempDir(), 0)

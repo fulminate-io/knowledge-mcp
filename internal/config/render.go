@@ -48,26 +48,50 @@ type DetectedProvider struct {
 	CLIBin   string
 }
 
-// Render returns the TOML body of a starter config seeded with detected.
+// starterView is the template data model: the detected provider fields
+// (promoted via embedding so the existing {{.Provider}}/{{.Model}}/
+// {{.CLIBin}} references keep working) plus a Credentials value. When
+// any Credentials field is non-empty the template emits a REAL,
+// uncommented [credentials] table with ONLY the set keys; when all are
+// empty it emits the commented guidance block (byte-identical to the
+// pre-credentials starter).
+type starterView struct {
+	DetectedProvider
+	Credentials Credentials
+}
+
+// Render returns the TOML body of a starter config seeded with detected
+// and NO credentials — the commented [credentials] guidance block. It
+// is the credential-free shim over RenderStarter; existing callers
+// (ensureFileExists, the golden tests) get byte-identical output.
+func Render(detected DetectedProvider) (string, error) {
+	return RenderStarter(detected, Credentials{})
+}
+
+// RenderStarter returns the TOML body of a starter config seeded with
+// detected and any supplied credentials. Credential values are written
+// into a real [credentials] table (only the set keys appear); an empty
+// Credentials leaves the commented guidance block instead. The output
+// round-trips through config.Parse.
 //
 // The template lives in starter.tmpl and is parsed once via sync.Once.
 // Per-consumer example blocks in the starter are LITERAL TOML comments
 // (not template logic), so the rendered output differs across detected
-// providers only in the [default] block.
-func Render(detected DetectedProvider) (string, error) {
+// providers only in the [default] block and the [credentials] tail.
+func RenderStarter(detected DetectedProvider, creds Credentials) (string, error) {
 	tmpl, err := loadStarterTemplate()
 	if err != nil {
 		return "", err
 	}
 	if !detected.Provider.IsValid() {
-		return "", fmt.Errorf("config.Render: invalid provider %q", detected.Provider)
+		return "", fmt.Errorf("config.RenderStarter: invalid provider %q", detected.Provider)
 	}
 	if detected.Model == "" {
-		return "", fmt.Errorf("config.Render: empty model for provider %q", detected.Provider)
+		return "", fmt.Errorf("config.RenderStarter: empty model for provider %q", detected.Provider)
 	}
 	var buf bytes.Buffer
-	if err := tmpl.Execute(&buf, detected); err != nil {
-		return "", fmt.Errorf("config.Render: execute: %w", err)
+	if err := tmpl.Execute(&buf, starterView{DetectedProvider: detected, Credentials: creds}); err != nil {
+		return "", fmt.Errorf("config.RenderStarter: execute: %w", err)
 	}
 	return buf.String(), nil
 }

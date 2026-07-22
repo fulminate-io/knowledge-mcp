@@ -172,7 +172,7 @@ func (c *client) runInterceptChainInner(ctx context.Context, params kgtools.Call
 	if handled, res := tools.InterceptLogsTraversal(c, params); handled {
 		return params, true, res
 	}
-	if handled, res := tools.InterceptAst(c, params); handled {
+	if handled, res := tools.InterceptAst(ctx, c, params); handled {
 		return params, true, res
 	}
 	// Deterministic verified-negation gate. MUST run BEFORE both InterceptThoughts

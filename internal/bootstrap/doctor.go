@@ -15,9 +15,11 @@
 package bootstrap
 
 import (
+	"context"
 	"flag"
 	"fmt"
 	"os"
+	"time"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 )
@@ -76,19 +78,7 @@ func runDoctor(args []string) error {
 		return err
 	}
 
-	checks := []checkResult{
-		checkServer(f.port),
-		checkCodeStaleness(f.port),
-		checkConfig(f.configFile),
-	}
-	checks = append(checks, checkConsumerCLIs(f.configFile)...)
-	checks = append(checks,
-		checkVoyage(f.configFile),
-		checkFulminateAuth(),
-		checkClaudeAssets(),
-		checkClaudeMD(),
-		checkClaudeSettings(),
-	)
+	checks := defaultChecks(f.port, f.configFile)
 	if f.deep {
 		checks = append(checks, checkProvidersDeep(f.configFile))
 	}
@@ -115,6 +105,48 @@ func runDoctor(args []string) error {
 		os.Exit(1)
 	}
 	return nil
+}
+
+// defaultChecks builds the NON-DEEP diagnostic check slice shared by the
+// `knowledge doctor` CLI (runDoctor) and the MCP manage(status) doctor block
+// (the bootstrap client's DoctorChecks). Ordering + content match the historical
+// runDoctor sequence exactly so the CLI output is unchanged. The opt-in --deep
+// reachability check (checkProvidersDeep) is DELIBERATELY excluded: it makes
+// ~30s of provider network calls and must never run on a status poll — the CLI
+// caller appends it separately behind its --deep flag.
+//
+// SCOPE: these are the CORE in-daemon checks. checkCodeStaleness is
+// single-repo/cwd-based; run inside the daemon it typically reports "code index:
+// last collected unknown" for the daemon's launch dir — it is included AS-IS as
+// one general check (it never errors). Per-graph index freshness (multi-repo
+// commits-behind) is deferred to a fast-follow ticket; no such machinery here.
+//
+// LIVENESS IS PROBED EXACTLY ONCE per run (probe once, no retries): one
+// GraphClient, one bounded no-retry HealthService.Check, and the result is
+// threaded into every check that needs the server. Before this, checkServer
+// and checkCodeStaleness each dialed their own client, and on an install with
+// a remote backend (no local server by design) each probe slept through the
+// reconnect interceptor's retry ladder — ~13s of a ~14.5s manage(status).
+func defaultChecks(port int, configFile string) []checkResult {
+	gc := graphclient.NewGraphClient(port)
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	healthy := gc.HealthyCtx(ctx)
+	cancel()
+
+	checks := []checkResult{
+		checkServer(gc, port, healthy),
+		checkCodeStaleness(gc, healthy),
+		checkConfig(configFile),
+	}
+	checks = append(checks, checkConsumerCLIs(configFile)...)
+	checks = append(checks,
+		checkVoyage(configFile),
+		checkFulminateAuth(),
+		checkClaudeAssets(),
+		checkClaudeMD(),
+		checkClaudeSettings(),
+	)
+	return checks
 }
 
 // glyphFor returns the prefix glyph for a check status. Unicode-only;

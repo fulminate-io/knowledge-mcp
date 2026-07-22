@@ -17,7 +17,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"time"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/assets"
 	"github.com/fulminate-io/knowledge-mcp/internal/auth"
@@ -25,21 +24,21 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 )
 
-// checkServer dials the TCP loopback port + asks for Status. ok when
-// the server is up and responding; info when it's not (might just
-// not be started yet — `knowledge start` to bring it up).
-func checkServer(port int) checkResult {
-	gc := graphclient.NewGraphClient(port)
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-	if !gc.HealthyCtx(ctx) {
+// checkServer reports on the local graph server. ok when the server is up and
+// responding; warn when it's not — users on a remote backend should see that
+// the local server is absent (it changes what `collect`/local search can do)
+// even though it is a normal state for them, so it's a warn, not an err. Liveness
+// is decided by the caller's single shared probe (defaultChecks) — this check
+// never dials on its own.
+func checkServer(gc *graphclient.GraphClient, port int, healthy bool) checkResult {
+	if !healthy {
 		detail := "run `knowledge start` to spawn it, or `brew services start knowledge` for a launchd-managed instance"
 		if !serverBinaryInstalled() {
 			detail = "knowledge-server binary not found — run `knowledge install` to download it, then `knowledge start`"
 		}
 		return checkResult{
 			name:   "server",
-			status: statusInfo,
+			status: statusWarn,
 			msg:    fmt.Sprintf("not running on port %d", port),
 			detail: detail,
 		}

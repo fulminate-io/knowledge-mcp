@@ -31,14 +31,14 @@ const shipPartitionSanityBound = 90 << 20 // 94371840 bytes — well under Cloud
 //	(b) every recorded per-Ship proto.Size stays within the partition sanity bound
 //	    (~90 MiB, well under Cloudflare's ~100 MiB cap) — the must-never-fire
 //	    tripwire as a partition-range guard rather than a strict ≤64 MiB cap;
-//	(c) fakeSegmentService.byKey holds EVERY input blob id after the ship (full
+//	(c) the sharedServerFake's byKey holds EVERY input blob id after the ship (full
 //	    reassembly server-side — none dropped, regardless of input size);
 //	(d) shippedIDs/locallyShipped and the L2 cache are warmed for every blob
 //	    (the per-response side-effects survive across the sub-batches).
 //
 // The diff is synthesized directly (the same shape ship() builds) so the blob
 // byte sizes are controlled precisely without materializing 64 MiB of mock docs;
-// the manager + fakeSegmentService harness is the real ship round-trip.
+// the manager + sharedServerFake harness is the real ship round-trip.
 func TestShipNewPartitionsOversizedDiff(t *testing.T) {
 	svc, gc := newSegmentHarness(t)
 	target := &knowledgev1.GraphSelector{Graph: "code", Repo: "shipsplit"}
@@ -80,7 +80,7 @@ func TestShipNewPartitionsOversizedDiff(t *testing.T) {
 			i+1, size, shipPartitionSanityBound)
 	}
 
-	// (c) full reassembly server-side: fakeSegmentService.byKey holds every id.
+	// (c) full reassembly server-side: the sharedServerFake's byKey holds every id.
 	svc.mu.Lock()
 	stored := map[string]bool{}
 	for _, b := range svc.byKey[svc.key(target)] {

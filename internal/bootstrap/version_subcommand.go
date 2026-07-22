@@ -24,6 +24,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
@@ -33,8 +34,10 @@ import (
 // (the ldflags-injected client binary version, already published into
 // bootstrap.Version by cmd/knowledge/main.go's init()) on its own line, then
 // best-effort probes the running daemon and, on success, prints a second
-// `server <version>` line. It NEVER returns a non-nil error or exits non-zero
-// because the daemon is down — the SERVER line is purely additive.
+// `server <version>` line, followed by a shared skew line when the two known
+// stamps differ (renderVersionOutput). It NEVER returns a non-nil error or
+// exits non-zero because the daemon is down — the SERVER and skew lines are
+// purely additive.
 //
 // --http-port selects the loopback port the daemon's streamable-HTTP MCP
 // endpoint (/mcp) listens on; it defaults to graphclient.DefaultMCPHTTPPort
@@ -59,12 +62,28 @@ func runVersion(args []string) error {
 		*port = graphclient.DefaultMCPHTTPPort
 	}
 
-	fmt.Fprintf(os.Stdout, "knowledge %s\n", Version)
-
-	if serverVersion, ok := probeDaemonVersion(*port); ok {
-		fmt.Fprintf(os.Stdout, "server %s\n", serverVersion)
-	}
+	serverVersion, ok := probeDaemonVersion(*port)
+	fmt.Fprint(os.Stdout, renderVersionOutput(Version, serverVersion, ok))
 	return nil
+}
+
+// renderVersionOutput builds the `knowledge version` output body: a
+// `knowledge <clientVer>` line, a `server <daemonVer>` line (only when the
+// daemon probe succeeded), and — when both stamps are known and differ — the
+// shared graphclient.VersionSkewLine (the SAME skew source manage(status) uses,
+// so the two surfaces cannot drift). Pure and side-effect-free so the skew
+// formatting is unit-testable without a live daemon; runVersion keeps the
+// probe + os.Stdout write and delegates all formatting here.
+func renderVersionOutput(clientVer, daemonVer string, daemonKnown bool) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "knowledge %s\n", clientVer)
+	if daemonKnown {
+		fmt.Fprintf(&b, "server %s\n", daemonVer)
+	}
+	if line, skewed := graphclient.VersionSkewLine(clientVer, daemonVer); skewed {
+		fmt.Fprintf(&b, "%s\n", line)
+	}
+	return b.String()
 }
 
 // probeDaemonVersion best-effort reads the running `knowledge serve` daemon's

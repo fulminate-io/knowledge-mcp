@@ -4,6 +4,7 @@ package tools
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/pipeline"
@@ -47,18 +48,94 @@ func handleResumePipeline(deps ClientDeps) kgtools.ToolResult {
 	return textResult("Pipeline RESUMED: the summary + embed workers are re-enabled and will resume processing on the next batch.")
 }
 
+// axisStatusDTO is the explicitly-tagged wire shape for ONE axis's circuit
+// breaker in the manage(pipeline_status) format:json response. It exists because
+// pipeline.AxisStatus (pipeline/types.go) carries NO json tags and no
+// MarshalJSON — a default marshal would emit PascalCase keys (Paused/
+// ActiveSummarizer) and DominantClass (an ErrClass int) as a NUMBER, which the
+// snake_case web type would read as all-undefined. dominant_class is PINNED to a
+// STRING via ErrClass.Label(); since is RFC3339 (empty for the zero time). The
+// wire DTO lives here in tools (which owns the MCP tool JSON contract), NOT on
+// the pipeline domain struct.
+type axisStatusDTO struct {
+	Paused           bool   `json:"paused"`
+	Reason           string `json:"reason"`
+	Since            string `json:"since"`
+	DominantClass    string `json:"dominant_class"`
+	DominantCount    int    `json:"dominant_count"`
+	Breakdown        string `json:"breakdown"`
+	ActiveSummarizer string `json:"active_summarizer"`
+}
+
+// pipelineStatusDTO is the explicitly-tagged wire shape for the whole
+// manage(pipeline_status) format:json response. Enabled is false (and the axes
+// zero) when no pipeline is wired, so the web can degrade cleanly. The top-level
+// aggregate (paused/reason/since/breakdown) mirrors the existing footer's
+// whole-pipeline view; Summary/Embed carry the independent per-axis detail.
+type pipelineStatusDTO struct {
+	Enabled   bool          `json:"enabled"`
+	Paused    bool          `json:"paused"`
+	Reason    string        `json:"reason"`
+	Since     string        `json:"since"`
+	Breakdown string        `json:"breakdown"`
+	Summary   axisStatusDTO `json:"summary"`
+	Embed     axisStatusDTO `json:"embed"`
+}
+
+// axisSinceString renders a breaker "since" timestamp as RFC3339 (UTC), or "" for
+// the zero time (a running axis has never tripped). Distinct from
+// transcriptHealthTS, which renders the zero time as "never".
+func axisSinceString(ts time.Time) string {
+	if ts.IsZero() {
+		return ""
+	}
+	return ts.UTC().Format(time.RFC3339)
+}
+
+// newAxisStatusDTO projects a pipeline.AxisStatus into the tagged wire shape,
+// pinning dominant_class to the human-readable ErrClass.Label() string.
+func newAxisStatusDTO(a pipeline.AxisStatus) axisStatusDTO {
+	return axisStatusDTO{
+		Paused:           a.Paused,
+		Reason:           a.Reason,
+		Since:            axisSinceString(a.Since),
+		DominantClass:    a.DominantClass.Label(),
+		DominantCount:    a.DominantCount,
+		Breakdown:        a.Breakdown,
+		ActiveSummarizer: a.ActiveSummarizer,
+	}
+}
+
 // handlePipelineStatus reports the PER-AXIS paused/running state of the summary
 // and embed breakers, including each paused axis's reason, since, and
 // dominant-class breakdown, plus how to resume. The breakers are independent, so
 // one axis can be paused while the other runs — the render names each axis
 // explicitly. Degrades to "(pipeline disabled)" when no pipeline is wired
 // (--no-llm-pipeline, or neither summarizer nor embedder configured at boot).
-func handlePipelineStatus(deps ClientDeps) kgtools.ToolResult {
+//
+// format=="json" emits the explicitly-tagged pipelineStatusDTO (snake_case,
+// dominant_class as a string) for the Daemon Status web Pipeline card; every
+// other format keeps the operator-facing text render unchanged.
+func handlePipelineStatus(deps ClientDeps, format string) kgtools.ToolResult {
 	pp, ok := deps.(pipelinePauser)
 	if !ok {
 		return errorResult("manage(pipeline_status): pipeline control is unavailable — the client is running in degraded mode")
 	}
 	st, wired := pp.PipelineStatus()
+	if format == "json" {
+		if !wired {
+			return jsonResult(pipelineStatusDTO{Enabled: false})
+		}
+		return jsonResult(pipelineStatusDTO{
+			Enabled:   true,
+			Paused:    st.Paused,
+			Reason:    st.Reason,
+			Since:     axisSinceString(st.Since),
+			Breakdown: st.Breakdown,
+			Summary:   newAxisStatusDTO(st.Summary),
+			Embed:     newAxisStatusDTO(st.Embed),
+		})
+	}
 	if !wired {
 		return textResult("Pipeline: (pipeline disabled) — no LLM summary/embed pipeline is wired in this process.")
 	}

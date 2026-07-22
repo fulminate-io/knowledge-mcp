@@ -5,6 +5,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -19,6 +20,7 @@ import (
 // modFake routes Match(package)/Match(file) Executes + the Stats RPC for the
 // list_modules + code-stats composers.
 type modFake struct {
+	mu         sync.Mutex // Execute/Stats run concurrently under the coverage fan-out
 	packages   []knowledgev1.Node
 	files      []knowledgev1.Node
 	matchCalls int
@@ -26,7 +28,9 @@ type modFake struct {
 }
 
 func (f *modFake) Execute(_ context.Context, req *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error) {
+	f.mu.Lock()
 	f.matchCalls++
+	f.mu.Unlock()
 	nt := req.GetQuery().GetSelection().GetNodeType()
 	var nodes []knowledgev1.Node
 	switch kgtypes.NodeType(nt) {

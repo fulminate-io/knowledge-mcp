@@ -16,12 +16,11 @@ import (
 )
 
 // TestSegmentDistributionE2E wires the whole distribution flow on the MOCK
-// SegmentFormat (no real HNSW/BM25): a real httptest SegmentService server (the
-// generated handler over an in-memory blob store that mirrors the server
-// contract — monotonic generation, idempotent-by-content-hash Put, list-delta,
-// fetch; the real server handler lives in the SEPARATE knowledge-server module
-// and is unit-tested there), a client GraphClient pointed at it, a mock-format
-// SegmentedIndex engine, the diskSegmentCache, and the distManager.
+// SegmentFormat (no real HNSW/BM25): an in-memory sharedServerFake modeling the
+// segment registry (monotonic generation, idempotent-by-content-hash ship,
+// list-delta, fetch, manifest publish + refcount-GC), a fakeSegmentSource view over
+// it injected into the Manager, a mock-format SegmentedIndex engine, the
+// diskSegmentCache, and the distManager.
 //
 // Sequence (the ticket's mock-format scenario): Add → ship → fresh load
 // (delta-pull, cold Fetch, Import) → search hits → unload → search miss →

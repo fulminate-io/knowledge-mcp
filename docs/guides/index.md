@@ -26,6 +26,10 @@ of these guides assume: the kernel/OS framing, the ten graph families, the
 selector vocabulary, the client/daemon/server topology, and how code, cloud, and
 knowledge link into one connected graph.
 
+Then read [Capabilities](capabilities.md) — the four capability pillars in
+depth: the reasoning loop, unified search, workflow integration, and the
+collectors.
+
 ## Setup
 
 - [Set up with Claude Code](setup-claude.md) — first-run setup for Claude Code.

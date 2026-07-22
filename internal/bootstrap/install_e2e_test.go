@@ -26,73 +26,151 @@ import (
 // instead of runInstall, supplying goos/goarch directly. See the
 // happy-path tests below.
 
-// runInstallForTest is a test-only seam that mirrors runInstall's
-// pipeline body but takes goos/goarch as arguments instead of
-// detecting them via runtime constants. Production runInstall
-// flows: parseFlags → detectPlatform → runInstallFor; tests flow:
-// runInstallForTest. The pipeline body itself (download + verify +
-// extract + write) is identical.
+// runInstallForTest is a test-only seam that mirrors runInstallFull
+// but takes goos/goarch as arguments instead of detecting them via
+// runtime constants. It fetches the release once then drives the REAL
+// installBothBinaries (server sibling + client self-update) so tests
+// exercise production glue, not a divergent copy. The client leg reads
+// getExecutable — tests stub it (withStubExecutable) so the client
+// lands in a temp dir instead of overwriting the real test binary.
 func runInstallForTest(t *testing.T, ctx context.Context, goos, goarch, flagDest string) error { //nolint:unparam // goarch kept as a parameter to keep the pipeline signature symmetric with detectPlatformFor
 	t.Helper()
 	if _, _, err := detectPlatformFor(goos, goarch); err != nil {
 		return err
 	}
 	tag, isLatest := resolveReleaseTag(Version)
-	asset := assetName(goos, goarch)
-
 	rel, err := fetchRelease(ctx, githubAPIBaseURL, tag, isLatest)
 	if err != nil {
 		return err
 	}
-	archiveURL, checksumsURL, err := resolveReleaseURLs(rel, asset)
-	if err != nil {
-		return err
-	}
-	archiveBytes, err := downloadAsset(ctx, archiveURL)
-	if err != nil {
-		return err
-	}
-	checksumsBytes, err := downloadAsset(ctx, checksumsURL)
-	if err != nil {
-		return err
-	}
-	checksums := parseChecksums(checksumsBytes)
-	expected, ok := checksums[asset]
-	if !ok {
-		return errors.New("checksums.txt missing entry for " + asset)
-	}
-	if err := verifyChecksum(archiveBytes, expected, asset); err != nil {
-		return err
-	}
-	binBytes, err := extractArchive(archiveBytes, goos)
-	if err != nil {
-		return err
-	}
-	destDir, err := resolveInstallDest(flagDest)
-	if err != nil {
-		return err
-	}
-	absDestDir, _ := filepath.Abs(destDir)
-	_, err = writeAtomic(destDir, binBytes, goos)
-	if err != nil {
-		if errors.Is(err, fs.ErrPermission) {
-			return errors.New("knowledge install: cannot write knowledge-server to " + absDestDir + ": permission denied.\n  Retry as: sudo knowledge install\n  Or pick a writable directory on $PATH: knowledge install --dest ~/.local/bin")
-		}
-		return err
-	}
-	return nil
+	return installBothBinaries(ctx, rel, goos, goarch, flagDest)
 }
 
+// TestInstall_HappyPath_TarGz is the dual-binary e2e: a single
+// release carries BOTH the knowledge-server and knowledge client
+// assets, and runInstall writes both — server into --dest, client
+// over the running binary (getExecutable stubbed into dest so the
+// client lands in the temp tree). Both pass checksum verification.
 func TestInstall_HappyPath_TarGz(t *testing.T) {
-	binContent := []byte("#!/bin/sh\necho v1.2.3\n")
-	asset := "knowledge-server-linux-amd64.tar.gz"
-	archive := buildTarGz(t, map[string][]byte{"knowledge-server": binContent})
-	checksums := makeChecksums(map[string][]byte{asset: archive})
+	serverContent := []byte("#!/bin/sh\necho server v1.2.3\n")
+	clientContent := []byte("#!/bin/sh\necho client v1.2.3\n")
+	serverAsset := "knowledge-server-linux-amd64.tar.gz"
+	clientAsset := "knowledge-linux-amd64.tar.gz"
+	serverArchive := buildTarGz(t, map[string][]byte{"knowledge-server": serverContent})
+	clientArchive := buildTarGz(t, map[string][]byte{"knowledge": clientContent})
+	checksums := makeChecksums(map[string][]byte{serverAsset: serverArchive, clientAsset: clientArchive})
+
+	srv := newReleaseServer(t, releaseStub{
+		tag:             "v1.2.3",
+		assetName:       serverAsset,
+		archive:         serverArchive,
+		clientAssetName: clientAsset,
+		clientArchive:   clientArchive,
+		checksums:       checksums,
+	})
+	pointHTTPClientAt(t, srv)
+	withVersion(t, "v1.2.3")
+
+	dest := t.TempDir()
+	// The client self-update overwrites the running binary in place.
+	// Stub getExecutable to a path inside dest so the client lands in
+	// the temp tree instead of clobbering the real test binary.
+	withStubExecutable(t, filepath.Join(dest, "knowledge"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := runInstallForTest(t, ctx, "linux", "amd64", dest); err != nil {
+		t.Fatalf("runInstall: %v", err)
+	}
+
+	for _, tc := range []struct {
+		name string
+		want []byte
+	}{
+		{"knowledge-server", serverContent},
+		{"knowledge", clientContent},
+	} {
+		installed := filepath.Join(dest, tc.name)
+		info, err := os.Stat(installed)
+		if err != nil {
+			t.Fatalf("stat %s: %v", installed, err)
+		}
+		if runtime.GOOS != "windows" && info.Mode().Perm()&0o111 == 0 {
+			t.Fatalf("%s is not executable: mode=%v", tc.name, info.Mode().Perm())
+		}
+		got, err := os.ReadFile(installed) //nolint:gosec // test fixture path under t.TempDir
+		if err != nil {
+			t.Fatalf("read %s: %v", tc.name, err)
+		}
+		if !bytes.Equal(got, tc.want) {
+			t.Fatalf("%s content mismatch: got %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// TestInstall_DualBinary_RenamedClient covers the renamed-client
+// case: getExecutable resolves to a binary NOT named "knowledge", and
+// the client must be written to that exact path (dir + basename of the
+// running binary), overwriting it in place — not a stray "knowledge"
+// dropped beside it.
+func TestInstall_DualBinary_RenamedClient(t *testing.T) {
+	serverContent := []byte("server bytes")
+	clientContent := []byte("client bytes")
+	serverAsset := "knowledge-server-linux-amd64.tar.gz"
+	clientAsset := "knowledge-linux-amd64.tar.gz"
+	serverArchive := buildTarGz(t, map[string][]byte{"knowledge-server": serverContent})
+	clientArchive := buildTarGz(t, map[string][]byte{"knowledge": clientContent})
+	checksums := makeChecksums(map[string][]byte{serverAsset: serverArchive, clientAsset: clientArchive})
+
+	srv := newReleaseServer(t, releaseStub{
+		tag:             "v1.2.3",
+		assetName:       serverAsset,
+		archive:         serverArchive,
+		clientAssetName: clientAsset,
+		clientArchive:   clientArchive,
+		checksums:       checksums,
+	})
+	pointHTTPClientAt(t, srv)
+	withVersion(t, "v1.2.3")
+
+	dest := t.TempDir()
+	renamed := filepath.Join(dest, "kn-custom")
+	withStubExecutable(t, renamed)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := runInstallForTest(t, ctx, "linux", "amd64", dest); err != nil {
+		t.Fatalf("runInstall: %v", err)
+	}
+
+	got, err := os.ReadFile(renamed) //nolint:gosec // test fixture path under t.TempDir
+	if err != nil {
+		t.Fatalf("read renamed client %s: %v", renamed, err)
+	}
+	if !bytes.Equal(got, clientContent) {
+		t.Fatalf("renamed client content mismatch: got %q, want %q", got, clientContent)
+	}
+	// No stray "knowledge" written beside the renamed binary.
+	if _, err := os.Stat(filepath.Join(dest, "knowledge")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("stray knowledge binary must NOT exist beside the renamed client; stat err = %v", err)
+	}
+}
+
+// TestInstall_DualBinary_Windows drives the dual-binary harness with
+// goos=windows (Linux-CI-deterministic since goos threads through
+// installBothBinaries/writeAtomic). Only knowledge-server.exe is
+// written — the client self-update is skipped because remove-then-
+// rename clobbers a running .exe — and the unsupported note prints.
+func TestInstall_DualBinary_Windows(t *testing.T) {
+	serverContent := []byte("MZ...server...")
+	serverAsset := "knowledge-server-windows-amd64.zip"
+	serverArchive := buildZip(t, map[string][]byte{"knowledge-server.exe": serverContent})
+	checksums := makeChecksums(map[string][]byte{serverAsset: serverArchive})
 
 	srv := newReleaseServer(t, releaseStub{
 		tag:       "v1.2.3",
-		assetName: asset,
-		archive:   archive,
+		assetName: serverAsset,
+		archive:   serverArchive,
 		checksums: checksums,
 	})
 	pointHTTPClientAt(t, srv)
@@ -101,26 +179,24 @@ func TestInstall_HappyPath_TarGz(t *testing.T) {
 	dest := t.TempDir()
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
-	if err := runInstallForTest(t, ctx, "linux", "amd64", dest); err != nil {
-		t.Fatalf("runInstall: %v", err)
+	var runErr error
+	out := captureStdout(t, func() {
+		runErr = runInstallForTest(t, ctx, "windows", "amd64", dest)
+	})
+	if runErr != nil {
+		t.Fatalf("runInstall windows: %v", runErr)
 	}
 
-	installed := filepath.Join(dest, "knowledge-server")
-	info, err := os.Stat(installed)
-	if err != nil {
-		t.Fatalf("stat %s: %v", installed, err)
+	if _, err := os.Stat(filepath.Join(dest, "knowledge-server.exe")); err != nil {
+		t.Fatalf("server .exe must be written: %v", err)
 	}
-	if runtime.GOOS != "windows" {
-		if info.Mode().Perm()&0o111 == 0 {
-			t.Fatalf("installed file is not executable: mode=%v", info.Mode().Perm())
+	for _, name := range []string{"knowledge", "knowledge.exe"} {
+		if _, err := os.Stat(filepath.Join(dest, name)); !errors.Is(err, fs.ErrNotExist) {
+			t.Fatalf("client %s must NOT be written on windows; stat err = %v", name, err)
 		}
 	}
-	got, err := os.ReadFile(installed) //nolint:gosec // test fixture path under t.TempDir
-	if err != nil {
-		t.Fatalf("read installed: %v", err)
-	}
-	if !bytes.Equal(got, binContent) {
-		t.Fatalf("installed content mismatch: got %q, want %q", got, binContent)
+	if !strings.Contains(out, "client self-update unsupported on Windows; re-download manually") {
+		t.Fatalf("windows run must print the client-skip note; got %q", out)
 	}
 }
 

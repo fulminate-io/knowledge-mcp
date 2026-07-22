@@ -63,6 +63,19 @@ model    = "{{.Model}}"
 # agnostic (brew services / systemd / k8s all read this file) — chmod the
 # file 600 if you do. The default provider="claude-cli" needs none of the
 # LLM keys (it auths via your `claude` login).
+{{if or .Credentials.VoyageAPIKey .Credentials.LinearAPIKey .Credentials.AnthropicAPIKey .Credentials.OpenAIAPIKey .Credentials.GeminiAPIKey}}
+[credentials]
+{{if .Credentials.VoyageAPIKey}}voyage_api_key    = "{{.Credentials.VoyageAPIKey}}"
+{{end -}}
+{{if .Credentials.LinearAPIKey}}linear_api_key    = "{{.Credentials.LinearAPIKey}}"
+{{end -}}
+{{if .Credentials.AnthropicAPIKey}}anthropic_api_key = "{{.Credentials.AnthropicAPIKey}}"
+{{end -}}
+{{if .Credentials.OpenAIAPIKey}}openai_api_key    = "{{.Credentials.OpenAIAPIKey}}"
+{{end -}}
+{{if .Credentials.GeminiAPIKey}}gemini_api_key    = "{{.Credentials.GeminiAPIKey}}"
+{{end -}}
+{{else -}}
 #
 # [credentials]
 # voyage_api_key    = "..."
@@ -70,3 +83,4 @@ model    = "{{.Model}}"
 # anthropic_api_key = "..."
 # openai_api_key    = "..."
 # gemini_api_key    = "..."
+{{end -}}

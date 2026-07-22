@@ -196,7 +196,7 @@ func summaryAutoTripStatus() pipeline.PipelineStatus {
 func TestPipelineStatusNamesSummaryAxisOnly(t *testing.T) {
 	deps := &fixedStatusDeps{fakeDeps: &fakeDeps{}, st: summaryAutoTripStatus()}
 
-	txt := resultTextLocal(handlePipelineStatus(deps))
+	txt := resultTextLocal(handlePipelineStatus(deps, ""))
 	for _, want := range []string{"summary: PAUSED", "auth/quota", "auth=18, timeout=2", "embed: RUNNING"} {
 		if !strings.Contains(txt, want) {
 			t.Fatalf("pipeline_status = %q, missing %q", txt, want)
@@ -220,6 +220,96 @@ func TestPipelinePausedFooterNamesSummaryAxisOnly(t *testing.T) {
 	if strings.Contains(footer, "embed axis PAUSED") {
 		t.Fatalf("footer %q names the embed axis paused, but only summary tripped", footer)
 	}
+}
+
+// TestHandlePipelineStatus_JSON is the step criterion for the format:json
+// branch: the output unmarshals to snake_case keys (guarding against the
+// default-PascalCase-marshal regression the tagless pipeline structs would
+// cause), dominant_class is a STRING (ErrClass.Label()) not a number, a disabled
+// pipeline degrades to {enabled:false}, and the text format output is unchanged.
+func TestHandlePipelineStatus_JSON(t *testing.T) {
+	t.Run("summary-axis auto-trip serializes snake_case with string dominant_class", func(t *testing.T) {
+		deps := &fixedStatusDeps{fakeDeps: &fakeDeps{}, st: summaryAutoTripStatus()}
+
+		res := handlePipelineStatus(deps, "json")
+		if res.IsError {
+			t.Fatalf("json pipeline_status errored: %q", resultTextLocal(res))
+		}
+		// Decode into a raw map so the KEYS themselves are asserted snake_case —
+		// a PascalCase regression (tagless struct marshal) fails these lookups.
+		var got map[string]any
+		if err := json.Unmarshal([]byte(resultTextLocal(res)), &got); err != nil {
+			t.Fatalf("json unmarshal: %v", err)
+		}
+		if got["enabled"] != true {
+			t.Fatalf("enabled = %v, want true", got["enabled"])
+		}
+		if got["paused"] != true {
+			t.Fatalf("paused = %v, want true", got["paused"])
+		}
+		summary, ok := got["summary"].(map[string]any)
+		if !ok {
+			t.Fatalf("summary axis missing / wrong shape: %v", got["summary"])
+		}
+		if summary["paused"] != true {
+			t.Fatalf("summary.paused = %v, want true", summary["paused"])
+		}
+		// dominant_class must be the STRING label, never the ErrClass int.
+		dc, ok := summary["dominant_class"].(string)
+		if !ok {
+			t.Fatalf("summary.dominant_class = %v (%T), want a string via Label()", summary["dominant_class"], summary["dominant_class"])
+		}
+		if !strings.Contains(dc, "auth/quota") {
+			t.Fatalf("summary.dominant_class = %q, want the auth/quota label", dc)
+		}
+		if _, hasActive := summary["active_summarizer"]; !hasActive {
+			t.Fatalf("summary axis missing active_summarizer key: %v", summary)
+		}
+		// Embed axis is running (not paused) in this fixture.
+		embed, ok := got["embed"].(map[string]any)
+		if !ok {
+			t.Fatalf("embed axis missing / wrong shape: %v", got["embed"])
+		}
+		if embed["paused"] != false {
+			t.Fatalf("embed.paused = %v, want false", embed["paused"])
+		}
+	})
+
+	t.Run("disabled pipeline degrades to enabled:false", func(t *testing.T) {
+		disabled := &disabledPipelineDeps{fakeDeps: &fakeDeps{}}
+		res := handlePipelineStatus(disabled, "json")
+		if res.IsError {
+			t.Fatalf("disabled json pipeline_status errored: %q", resultTextLocal(res))
+		}
+		var got map[string]any
+		if err := json.Unmarshal([]byte(resultTextLocal(res)), &got); err != nil {
+			t.Fatalf("json unmarshal: %v", err)
+		}
+		if got["enabled"] != false {
+			t.Fatalf("disabled enabled = %v, want false", got["enabled"])
+		}
+	})
+
+	t.Run("text format unchanged", func(t *testing.T) {
+		deps := &fixedStatusDeps{fakeDeps: &fakeDeps{}, st: summaryAutoTripStatus()}
+		txt := resultTextLocal(handlePipelineStatus(deps, ""))
+		for _, want := range []string{"summary: PAUSED", "embed: RUNNING", "resume_pipeline"} {
+			if !strings.Contains(txt, want) {
+				t.Fatalf("text pipeline_status = %q, missing %q", txt, want)
+			}
+		}
+	})
+}
+
+// disabledPipelineDeps is a pipelinePauser whose PipelineStatus reports NOT wired
+// (the --no-llm-pipeline / no-provider degrade), so the json branch emits
+// {enabled:false}.
+type disabledPipelineDeps struct{ *fakeDeps }
+
+func (d *disabledPipelineDeps) PausePipeline(string) {}
+func (d *disabledPipelineDeps) ResumePipeline()      {}
+func (d *disabledPipelineDeps) PipelineStatus() (pipeline.PipelineStatus, bool) {
+	return pipeline.PipelineStatus{}, false
 }
 
 // TestRenderAxisStatus_ActiveSummarizerOnRunningPath asserts the live active

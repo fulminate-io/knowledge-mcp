@@ -98,6 +98,8 @@ Six leaves:
 
 Sibling-form alternation: pass 'patterns: [string, ...]' instead of 'pattern' when one logical rule has multiple syntactic shapes. Results unioned; same where applies to each.
 
+Walk root: ast is FILESYSTEM-based — it walks a directory on disk, chosen from the 'repo' arg. Omit repo to walk the current tree (the session cwd, or the daemon's --root); pass an ABSOLUTE PATH to walk that checkout directly; pass a bare repo NAME to walk where that repo was last collected on THIS machine (the ~/.knowledge manifest). When repo is omitted AND --root was left at its default AND no session cwd is known, the call FAILS LOUD rather than silently walking the daemon's process cwd — pass repo:<name|/abs/path> or start the daemon with --root <dir>. Every match/count result echoes 'walked_root' (the directory actually walked); when files_scanned is 0 the result carries a wrong-root hint.
+
 Examples:
 
   // Every defer X.Close() inside a for-loop, NOT also inside a closure (so the goroutine pattern wins):

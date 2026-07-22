@@ -12,6 +12,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/graphtypecrud"
 	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
+	"github.com/fulminate-io/knowledge-mcp/internal/tools"
 	"github.com/fulminate-io/knowledge-mcp/internal/workercrud"
 )
 
@@ -118,12 +119,13 @@ func constructClient(f Config) *client {
 	router := graphclient.NewRouterWithMachineAuth(tcp, cli.CloudEndpoint, tokenSource, authState, machineAuth)
 
 	c := &client{
-		rootDir:   f.RootDir,
-		port:      f.Port,
-		version:   Version,
-		local:     tcp,
-		router:    router,
-		authState: authState,
+		rootDir:    f.RootDir,
+		rootDirSet: f.RootDirSet,
+		port:       f.Port,
+		version:    Version,
+		local:      tcp,
+		router:     router,
+		authState:  authState,
 		// Retain the ONE token source selectAuthSources just built for the
 		// Router so the segment/sync/transcript control transports share it
 		// (via buildCloudSyncTransport) instead of each minting a fresh cold
@@ -139,6 +141,10 @@ func constructClient(f Config) *client {
 		// and the daemon Monitor (which records mcp→harness resolutions and bans
 		// cloud-evicted members) share the SAME instance.
 		banSet: hivemonitor.NewBanSet(),
+		// collectRuntime is constructed EARLY and unconditionally (zero
+		// dependencies — no router/pipeline) so a detached collect always has a
+		// runtime to launch under once it passes the PipelineReady gate.
+		collectRuntime: tools.NewCollectRuntime(),
 	}
 	// Per-call login-aware routing: the sink re-picks the IngestService
 	// backend on every CollectChunk/Finalize/FetchCloudSubgraph via the

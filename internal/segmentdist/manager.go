@@ -46,10 +46,11 @@ type segmentL2Cache interface {
 	Keys() []searchengine.SegmentID
 }
 
-// distManager ties one graph's searchengine.SegmentedIndex to the SegmentService
-// wire: it SHIPS newly-built segments (diffing against what the server already
-// holds), LAZILY LOADS the server's delta into the engine (cache-first), and
-// UNLOADS / RELOADS resident segments to bound memory. It is generic over the
+// distManager ties one graph's searchengine.SegmentedIndex to its segmentSource
+// (the cloud GCS source when logged in, the local L2-only source otherwise): it
+// SHIPS newly-built segments (diffing against what the source already holds),
+// LAZILY LOADS the source's delta into the engine (cache-first), and UNLOADS /
+// RELOADS resident segments to bound memory. It is generic over the
 // engine's [Q, S] format parameters so it works against ANY SegmentFormat (the
 // mock format in tests; the real HNSW/BM25 formats once the migration wires the
 // engine into client search).
@@ -59,12 +60,14 @@ type distManager[Q, S any] struct {
 	cache  segmentL2Cache
 	target *knowledgev1.GraphSelector
 
-	// format is this engine's segment format name (e.g. "hnsw", "bm25"). The
-	// server keys blobs by graphKey ONLY (segment_store.go: <type>:<name>, no
-	// format dimension), so a single graph's List/Fetch returns BOTH this graph's
-	// HNSW and BM25 blobs. load/reload MUST drop the blobs of the OTHER format —
-	// importing a BM25 blob into the HNSW engine (or vice versa) makes Decode fail
-	// ("unsupported binary hnsw serial version"). An empty format means "no
+	// format is this engine's segment format name (e.g. "hnsw", "bm25"). Each
+	// segment source is scoped to one (graph, format) — the cloud source reads a
+	// per-(graph, format) agent manifest and the local L2 cache is rooted per-format
+	// (graphCacheDirFor) — so a source's List/Fetch returns only THIS engine's
+	// format. keepFormat stays as the defensive guard: importing an other-format
+	// blob into this engine (a BM25 blob into the HNSW engine, or vice versa) makes
+	// Decode fail ("unsupported binary hnsw serial version"), so any stray
+	// cross-format blob is dropped rather than imported. An empty format means "no
 	// filter" (the mock-format engine in tests, which ships its own format only).
 	format string
 
@@ -116,7 +119,15 @@ type distManager[Q, S any] struct {
 	// RE-ARMS the seed — replacing the old sync.Once+seedErr, which consumed the
 	// Once on the first (possibly failed) attempt and poisoned shipping for the
 	// process lifetime. Guarded by shipMu.
-	seeded         bool
+	seeded bool
+	// publishPending is the shipMu-guarded republish-retry bit: SET when shipped
+	// content changed but publishResident did not complete a successful
+	// PublishManifest (coverage-read List error, coverage-gate skip, 409
+	// manifestIncompleteError skip, or transport error), CLEARED on PublishManifest
+	// success. It rides existing pipeline ticks — the embed gate re-attempts the
+	// publish while it is set even when hasUnshippedExport() is false (ship stamped
+	// the ids but the publish never landed).
+	publishPending bool
 	shippedIDs     map[searchengine.SegmentID]struct{}
 	locallyShipped map[searchengine.SegmentID]struct{}
 
@@ -144,13 +155,14 @@ type distManager[Q, S any] struct {
 
 	// l2Authoritative is true IFF this manager's source is the OSS-local L2-only
 	// source (localSegmentSource) — i.e. the not-logged-in/OSS path where there is no
-	// server segment store. Derived once from the source type at construction (a
+	// cloud segment registry. Derived once from the source type at construction (a
 	// localSegmentSource ⟺ l2Authoritative), so the flag and the source impl are
 	// provably consistent. It is the single lever the load/degeneracy/reclaim paths
 	// branch on to switch the server-fallback legs OFF: L2-only load() (the cold-L2
 	// server-Fetch fallback becomes unreachable), the OSS degeneracy collapse
 	// (resident-vs-embedded, no server presence probe), and the local-L2 reclaim.
-	// rpc/fake sources leave it false, preserving the cloud path unchanged.
+	// the cloud (gcs) and test-fake sources leave it false, preserving the cloud
+	// path unchanged.
 	l2Authoritative bool
 }
 
@@ -175,7 +187,8 @@ func newDistManager[Q, S any](
 ) *distManager[Q, S] {
 	// Derive l2Authoritative from the source TYPE (no signature change → none of the
 	// newDistManager callers change): a localSegmentSource is the OSS-local L2-only
-	// source, every other source (rpc/fake) is server-backed. This keeps the flag and
+	// source; every other source (the cloud GCS source, the fail-loud sentinel, or a
+	// test fake) is not, so it leaves l2Authoritative false. This keeps the flag and
 	// the source impl provably consistent.
 	_, isLocal := source.(*localSegmentSource)
 	return &distManager[Q, S]{

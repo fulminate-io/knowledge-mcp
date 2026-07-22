@@ -87,10 +87,14 @@ type Stats struct {
 
 // MatchResults is the LLM-facing output of a Match+Hydrate round-trip. Hint
 // is populated when len(Matches) == 0 with the ticket-specified guidance text.
+// WalkedRoot echoes the directory the walk actually ran over so the caller can
+// tell which tree produced (or failed to produce) the matches; the handler
+// populates it from the resolved repoDir.
 type MatchResults struct {
-	Matches []MatchResult `json:"matches"`
-	Stats   Stats         `json:"stats"`
-	Hint    string        `json:"hint,omitempty"`
+	Matches    []MatchResult `json:"matches"`
+	Stats      Stats         `json:"stats"`
+	WalkedRoot string        `json:"walked_root,omitempty"`
+	Hint       string        `json:"hint,omitempty"`
 }
 
 // emptyResultHint is the LLM-facing guidance text emitted when Hydrate
@@ -98,6 +102,14 @@ type MatchResults struct {
 // to confirm the walk produced no candidates, then a wildcard pattern $_ +
 // `kind` leaf on $match to confirm the outer construct exists at all.
 const emptyResultHint = "no matches — try broader scope, simplify the pattern, sanity-check with operation:\"count\" on a simpler pattern, or use pattern:\"$_\" with where:{kind:{of:\"$match\",is:\"<kind>\"}} to confirm the outer construct exists"
+
+// ZeroScanHint is the LLM-facing guidance text emitted when the walk scanned
+// ZERO files (FilesScanned == 0) — a strong wrong-root signal, distinct from
+// scanned-but-no-match (which keeps emptyResultHint). walkedRoot is the resolved
+// directory the walk ran over; language is the raw user-supplied language string.
+func ZeroScanHint(walkedRoot, language string) string {
+	return fmt.Sprintf("walked %s: no %s files found — wrong root? pass repo:<name|/abs/path> or check --root", walkedRoot, language)
+}
 
 // codeNodeIndex resolves a (file_path, line) to the smallest enclosing
 // function-ish code-graph node. Per-call, NOT cached.

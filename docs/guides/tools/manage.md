@@ -79,11 +79,11 @@ A full error round auto-pauses the pipeline and it does not self-heal —
 | `format` | string |  |  | Output format: 'text' (default) or 'json' (structured) |
 | `graph` | string |  |  | Target graph type for clear_llm_failures (knowledge, code, practice, cloud, cicd) |
 | `kube_context` | string |  |  | Kubeconfig context name from ~/.kube/config. Required when provider=k8s and auth_type=kubeconfig. Auth is resolved via client-go using the operator's environment (gcloud/aws-iam-authenticator/service-account tokens). |
-| `name` | string |  |  | Repository name (or log_backend name for configure_log_backend; or query_id for discard_logs) |
-| `operation` | string | yes | status, pprof_start, pprof_stop, delete_branch, list_branches, link, configure_log_backend, list_log_backends, list_logs, discard_logs, set_metadata_overrides, promote_metadata, clear_llm_failures, pause_pipeline, resume_pipeline, pipeline_status, prune, prune-cache, rebuild_cache, rebuild_segments, drop_graph | Operation to perform |
+| `name` | string |  |  | Repository name (the repo name to record for register_repo; or log_backend name for configure_log_backend; or query_id for discard_logs) |
+| `operation` | string | yes | status, pprof_start, pprof_stop, delete_branch, list_branches, link, configure_log_backend, list_log_backends, list_logs, discard_logs, set_metadata_overrides, promote_metadata, clear_llm_failures, pause_pipeline, resume_pipeline, pipeline_status, prune, prune-cache, rebuild_cache, rebuild_segments, drop_graph, register_repo | Operation to perform |
 | `precise_calls` | boolean |  |  | Enable precise Go call graph via RTA (slower but more accurate CALLS edges) |
 | `provider` | string |  |  | Log backend provider for configure_log_backend (cloudwatch, loki, elasticsearch, stackdriver, k8s, ...) |
 | `reason` | string |  |  | For pause_pipeline: optional operator reason surfaced by pipeline_status. Defaults to a generic 'manually paused by operator' string when omitted. |
-| `root` | string |  |  | Root directory path for reindex |
+| `root` | string |  |  | Absolute checkout directory for register_repo |
 | `url` | string |  |  | Log backend base URL for configure_log_backend |
 <!-- END GENERATED: params -->

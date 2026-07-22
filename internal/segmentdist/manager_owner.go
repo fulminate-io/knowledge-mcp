@@ -76,8 +76,8 @@ type ManagerOption func(*Manager)
 // builder that selects the cloud (GCS) segment source on the logged-in path. The
 // production caller wraps cli.BuildSyncTransport (which returns the *auth.Transport
 // satisfying SegmentControlTransport). Without this option a Manager has no transport
-// builder and the logged-in path falls back to the RPC segment source (prior
-// behavior).
+// builder, so the logged-in path resolves to the fail-loud errorSegmentSource
+// sentinel (a logged-in client with no segment transport is misconfigured).
 func WithSegmentTransport(builder func() (SegmentControlTransport, error)) ManagerOption {
 	return func(m *Manager) { m.segTransport = builder }
 }
@@ -121,8 +121,10 @@ func NewManager(caller loginState, cacheDir string, maxBytes int64, opts ...Mana
 
 // AddAndShip routes docs to the (graphType, graphName) engine, Adds them (the
 // engine coalesces internally up to MinSegmentDocs — a sub-threshold batch just
-// buffers, no graph rebuild), then ships any newly-sealed segments (the ship is a
-// diff-gated no-op when nothing new sealed). Returns the first error from Add or
+// buffers, no graph rebuild), then — ONLY when a segment sealed (hasUnshippedExport)
+// or a prior publish is pending retry (publishRetryPending) — ships+publishes. A
+// sub-threshold coalescing tick (~16 docs, still unsealed) returns early with no
+// ship, no publish, and no seed/List. Returns the first error from Add or
 // ship; the pipeline caller treats any error as best-effort (WARN, never fail
 // writeback) — a dropped ship is RETRIED on the next embed dirty-gen, including a
 // transient seed-List failure: the seed re-arms (it latches only on a List(0)
@@ -135,6 +137,11 @@ func (m *Manager) AddAndShip(ctx context.Context, gt kgtypes.GraphType, name str
 	dm := m.managerFor(gt, name)
 	if err := dm.engine.Add(docs); err != nil {
 		return err
+	}
+	// LIFECYCLE GATE (see doc comment): skip a no-progress ship/publish pass when
+	// nothing sealed and no publish retry is pending.
+	if !dm.hasUnshippedExport() && !dm.publishRetryPending() {
+		return nil
 	}
 	// REGISTRY MODEL: publish this writer's RESIDENT live set as its
 	// "hnsw" manifest, unioned with the deterministic engine's resident ids (both
@@ -186,8 +193,10 @@ func (m *Manager) hasDetManager(gt kgtypes.GraphType, name string) bool {
 // AddAndShipFields is the BM25 counterpart to AddAndShip: it routes field-bearing
 // Documents to the (graphType, graphName) BM25 engine, Adds them (the engine
 // coalesces internally up to MinSegmentDocs — a sub-threshold batch just buffers,
-// no segment seal), then ships any newly-sealed segments (diff-gated no-op when
-// nothing new sealed). Returns the first error from Add or ship; the pipeline
+// no segment seal), then — ONLY when a segment sealed (hasUnshippedExport) or a
+// prior publish is pending retry (publishRetryPending) — ships+publishes. A
+// sub-threshold coalescing tick returns early with no ship, no publish, and no
+// seed/List. Returns the first error from Add or ship; the pipeline
 // caller treats any error as best-effort (WARN, never fail writeback) — a dropped
 // ship is RETRIED on the next embed dirty-gen, including a transient seed-List
 // failure: the seed re-arms (it latches only on a List(0) success —
@@ -201,6 +210,11 @@ func (m *Manager) AddAndShipFields(ctx context.Context, gt kgtypes.GraphType, na
 	if err := dm.engine.Add(docs); err != nil {
 		return err
 	}
+	// LIFECYCLE GATE (see doc comment): skip a no-progress ship/publish pass when
+	// nothing sealed and no publish retry is pending.
+	if !dm.hasUnshippedExport() && !dm.publishRetryPending() {
+		return nil
+	}
 	// REGISTRY MODEL: publish the BM25 resident live set as its "bm25"
 	// manifest. BM25 has a single engine per graph (no deterministic variant), so
 	// there is no sibling-engine union to carry — the manifest is exactly this
@@ -210,8 +224,12 @@ func (m *Manager) AddAndShipFields(ctx context.Context, gt kgtypes.GraphType, na
 }
 
 // Flush force-seals the sub-threshold coalescing tail of BOTH the HNSW and the
-// BM25 engine for one (graphType, graphName), then ships the newly-sealed
-// segments. It is the migration's force-seal: AddAndShip/AddAndShipFields leave
+// BM25 engine for one (graphType, graphName), then — per format, AFTER that
+// force-seal — ships+publishes the newly-sealed tail. Each format's ship/publish is
+// gated on hasUnshippedExport()||publishRetryPending(), so a no-progress re-Flush
+// (empty tail, everything already shipped, no pending retry) is a true no-op; the
+// engine.Flush() force-seal itself is never gated. It is the migration's force-seal:
+// AddAndShip/AddAndShipFields leave
 // a trailing buffer of fewer than MinSegmentDocs unsealed (and a whole graph
 // with fewer than MinSegmentDocs indexed nodes produces ZERO sealed segments);
 // Flush seals that tail so the graph becomes searchable. Returns the first error
@@ -228,16 +246,26 @@ func (m *Manager) Flush(ctx context.Context, gt kgtypes.GraphType, name string) 
 	}
 	// REGISTRY MODEL: embed force-seal of the sub-threshold tail, then
 	// publish the resident live set as the manifest (unioned with the deterministic
-	// engine's resident ids for the shared "hnsw" manifest) — restart-safe.
-	if _, err := hnsw.shipAndPublish(ctx, m.detResidentHNSWIDs(gt, name), hnsw.locallyShipped); err != nil {
-		return err
+	// engine's resident ids for the shared "hnsw" manifest) — restart-safe. The
+	// ship/publish is gated AFTER the force-seal: a genuinely-sealed tail still
+	// ships, but a no-progress re-Flush (empty tail, nothing unshipped, no pending
+	// retry) is skipped.
+	if hnsw.hasUnshippedExport() || hnsw.publishRetryPending() {
+		if _, err := hnsw.shipAndPublish(ctx, m.detResidentHNSWIDs(gt, name), hnsw.locallyShipped); err != nil {
+			return err
+		}
 	}
 	bm := m.bm25ManagerFor(gt, name)
 	if err := bm.engine.Flush(); err != nil {
 		return err
 	}
-	_, err := bm.shipAndPublish(ctx, nil, bm.locallyShipped)
-	return err
+	// Same gate for the BM25 leg, after its own force-seal.
+	if bm.hasUnshippedExport() || bm.publishRetryPending() {
+		if _, err := bm.shipAndPublish(ctx, nil, bm.locallyShipped); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // AddDeterministic is the CONCURRENT-SAFE, Add-ONLY entrypoint of the

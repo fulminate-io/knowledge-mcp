@@ -17,7 +17,7 @@ func TestInstall_Check_UpToDate(t *testing.T) {
 	dir := t.TempDir()
 	withStubInstalledServer(t, dir, "v1.2.3")
 
-	asset := assetName(runtime.GOOS, runtime.GOARCH)
+	asset := assetName(runtime.GOOS, runtime.GOARCH, "knowledge-server")
 	srv := newReleaseServer(t, releaseStub{
 		tag:       "v1.2.3",
 		assetName: asset,
@@ -35,9 +35,14 @@ func TestInstall_Check_UpToDate(t *testing.T) {
 
 	wantLatest := fmt.Sprintf("latest    = v1.2.3 for %s-%s", runtime.GOOS, runtime.GOARCH)
 	for _, want := range []string{
-		"installed = v1.2.3",
-		wantLatest,
-		"up to date",
+		// Client line (from bootstrap.Version).
+		"client installed = v1.2.3",
+		"client " + wantLatest,
+		"client up to date",
+		// Server line (from the sibling --version probe).
+		"server installed = v1.2.3",
+		"server " + wantLatest,
+		"server up to date",
 	} {
 		if !strings.Contains(out, want) {
 			t.Fatalf("--check output %q must contain %q", out, want)
@@ -49,7 +54,7 @@ func TestInstall_Check_UpdateAvailable(t *testing.T) {
 	dir := t.TempDir()
 	withStubInstalledServer(t, dir, "v1.2.2")
 
-	asset := assetName(runtime.GOOS, runtime.GOARCH)
+	asset := assetName(runtime.GOOS, runtime.GOARCH, "knowledge-server")
 	srv := newReleaseServer(t, releaseStub{
 		tag:       "v1.2.3",
 		assetName: asset,
@@ -66,8 +71,12 @@ func TestInstall_Check_UpdateAvailable(t *testing.T) {
 	})
 
 	for _, want := range []string{
-		"installed = v1.2.2",
-		"update available",
+		// Client is the running v1.2.3 binary — up to date.
+		"client installed = v1.2.3",
+		"client up to date",
+		// Server is the stale v1.2.2 sibling — update available.
+		"server installed = v1.2.2",
+		"server update available",
 		"installed=v1.2.2",
 		"latest=v1.2.3",
 	} {
@@ -105,7 +114,7 @@ func TestInstall_Check_BoundedByContext(t *testing.T) {
 	withStubExecutable(t, stdioStub)
 	withPATH(t, "")
 
-	asset := assetName(runtime.GOOS, runtime.GOARCH)
+	asset := assetName(runtime.GOOS, runtime.GOARCH, "knowledge-server")
 	srv := newReleaseServer(t, releaseStub{
 		tag:       "v1.2.3",
 		assetName: asset,
@@ -125,10 +134,15 @@ func TestInstall_Check_BoundedByContext(t *testing.T) {
 	if elapsed > 4*time.Second {
 		t.Fatalf("runCheck did not honor ctx deadline: elapsed=%v", elapsed)
 	}
-	// runCheck swallows the exec error and prints the "version
-	// unknown" branch so the output still gives the user a
-	// useful summary.
-	if !strings.Contains(out, "version unknown") {
-		t.Fatalf("--check output %q must report `version unknown` when exec is bounded by ctx", out)
+	// runCheck swallows the server exec error and prints the "version
+	// unknown" branch so the output still gives the user a useful
+	// summary — while the client line still reports its own version.
+	for _, want := range []string{
+		"client installed = v1.2.3",
+		"server installed = installed (version unknown",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("--check output %q must contain %q", out, want)
+		}
 	}
 }

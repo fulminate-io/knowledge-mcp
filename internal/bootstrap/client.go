@@ -44,9 +44,10 @@ type toolSchema struct {
 // no graph store, no tool handler, no propagation loop (those live in the
 // server binary).
 type client struct {
-	rootDir string // display-only — preserved so existing --root invocations stay accepted
-	port    int    // TCP port the server listens on
-	version string // binary version (reported in MCP initialize)
+	rootDir    string // project root (--root); the ast intercept walks source files under it locally
+	rootDirSet bool   // whether --root was explicitly set (vs the "." default) — gates the ast walk-root fail-loud guard
+	port       int    // TCP port the server listens on
+	version    string // binary version (reported in MCP initialize)
 	// local is the connect-go client to the LOCAL graph server (127.0.0.1).
 	// Replaces the prior `client` field as part of the routing rework. The
 	// genuinely always-local callers (sync push, sync list) reach it via the
@@ -174,6 +175,16 @@ type client struct {
 	// — no store-shaped wrapper — so propagation routes cloud-when-logged-in.
 	propLoop *clientthought.PropagationLoop
 
+	// collectRuntime is the standing, daemon-lifetime runtime that owns detached
+	// collect goroutines and tracks per-target run status. Constructed
+	// EARLY and unconditionally in constructClient (it has zero dependencies —
+	// no router/pipeline), so it is always available by the time a collect runs
+	// behind the PipelineReady gate. The collect intercept races a run against
+	// its 60s DetachAfter; drainOnShutdown Stops it. Never nil for a
+	// constructClient-built client; the accessors nil-guard for direct test
+	// fixtures.
+	collectRuntime *tools.CollectRuntime
+
 	// Tool-schema cache: built once by loadSchemas on the first
 	// tools/list request from the client-owned catalog
 	// (tools.AllToolSchemas), then reused for the rest of the process.
@@ -245,6 +256,23 @@ func (c *client) CloudStatusInfo() (bool, string) {
 	return c.authState.IsLoggedIn(context.Background()), cli.CloudEndpoint
 }
 
+// ClientVersion returns the in-process client binary version — the
+// ldflags-injected bootstrap.Version, already the CLIENT version because
+// handleServerStatus always runs client-side. Satisfies the optional
+// tools.versionInfo interface read by manage(status); always known (no probe),
+// never empty ("dev" when unstamped).
+func (c *client) ClientVersion() string { return Version }
+
+// DaemonVersion best-effort probes the running local `knowledge serve` daemon
+// for its version, REUSING the existing probeDaemonVersion MCP-initialize
+// round-trip (version_subcommand.go) against graphclient.DefaultMCPHTTPPort.
+// Satisfies the optional tools.versionInfo interface; returns ("", false) on
+// ANY failure (no daemon, timeout, malformed reply) so manage(status) degrades
+// to a client-version-only render with no error.
+func (c *client) DaemonVersion() (string, bool) {
+	return probeDaemonVersion(graphclient.DefaultMCPHTTPPort)
+}
+
 // ResetPipelineFailedCounters zeroes the session-lifetime failed counters.
 // Satisfies the optional tools.pipelineResetter interface called by
 // clear_llm_failures after removing on-disk markers.
@@ -265,6 +293,23 @@ func (c *client) WakePipeline() {
 	}
 }
 
+// CollectRuntime returns the standing collect runtime so the collect intercept
+// (via the optional tools.collectRuntimeProvider interface) can launch a
+// detached run and race it against the 60s detach threshold. Nil-guarded for
+// direct test fixtures that build *client without constructClient.
+func (c *client) CollectRuntime() *tools.CollectRuntime { return c.collectRuntime }
+
+// CollectRunSnapshot returns the per-target collect-run snapshot manage(status)
+// renders (satisfies the optional tools.collectRunReporter interface). Returns
+// nil when the runtime was not constructed (direct test fixture), so the status
+// section degrades to nothing exactly like the pipeline/transcript overlays.
+func (c *client) CollectRunSnapshot() []tools.CollectRunStatus {
+	if c.collectRuntime == nil {
+		return nil
+	}
+	return c.collectRuntime.Snapshot()
+}
+
 // Sink returns the remote upload sink. Satisfies tools.ClientDeps — the
 // collect intercept path streams chunks to the server via this sink rather
 // than opening knowledge.bin directly.
@@ -275,6 +320,12 @@ func (c *client) Sink() collector.Sink { return c.sink }
 // tools.ClientDeps; the server has no repo (remote-server mode) so AST
 // parsing must happen on the client where the files live.
 func (c *client) RootDir() string { return c.rootDir }
+
+// RootDirSet reports whether --root was explicitly passed (vs the "." default).
+// Consumed via the rootDirSourcer optional interface by the ast walk-root guard:
+// a defaulted root plus no session cwd makes an omitted repo fail loud rather
+// than silently walking the process cwd.
+func (c *client) RootDirSet() bool { return c.rootDirSet }
 
 // WorkerRuntime returns the client-side dream runtime so the worker
 // trigger / status MCP intercepts (Phase H) can dispatch through it.

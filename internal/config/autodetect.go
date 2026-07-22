@@ -81,6 +81,32 @@ func IsLoopback(addr net.Addr) bool {
 	}
 }
 
+// DefaultModelFor returns the seed model the auto-detector uses for
+// provider p — the value `knowledge setup`'s guided flow writes into
+// [default].model when the user overrides the detected provider with a
+// different one. Returns "" for an unknown provider (the caller then
+// leaves model unset, which RenderStarter rejects — a clean error
+// rather than a silent bad config). Read-only accessor over the same
+// defaultModels map AutoDetect uses; adds no new config state.
+func DefaultModelFor(p Provider) Model {
+	return defaultModels[p]
+}
+
+// AutoDetect runs the provider auto-detect walk against the real PATH
+// and environment and returns the first available provider — the
+// value the guided-setup flow uses as its provider prompt default.
+// A loopback bindAddr selects localPrecedence (CLI providers eligible);
+// any other (or nil) addr selects serverPrecedence (API-only). It is a
+// thin exported wrapper over the existing detectLocal/detectServer
+// machinery — it adds NO config schema and writes nothing.
+func AutoDetect(bindAddr net.Addr) (DetectedProvider, error) {
+	deps := defaultDetectDeps()
+	if IsLoopback(bindAddr) {
+		return detectLocal(deps)
+	}
+	return detectServer(deps)
+}
+
 // detectLocal walks localPrecedence and returns the first available
 // provider plus its default model. Availability for CLI providers is
 // determined by exec.LookPath; for API providers, by env-var presence.

@@ -4,6 +4,8 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -25,6 +27,7 @@ import (
 // knowledge row is rendered via the explicit empty-name selector, not enumeration,
 // and a non-code embeddable graph now renders a real segment-coverage cell.
 type coverageFake struct {
+	mu         sync.Mutex // Stats is called concurrently by the coverage fan-out
 	reqs       []*knowledgev1.StatsRequest
 	statsByKey map[string]*knowledgev1.GraphStats
 }
@@ -48,7 +51,9 @@ func (f *coverageFake) Execute(_ context.Context, req *knowledgev1.ExecuteReques
 }
 
 func (f *coverageFake) Stats(_ context.Context, req *knowledgev1.StatsRequest) (*knowledgev1.StatsResponse, error) {
+	f.mu.Lock()
 	f.reqs = append(f.reqs, req)
+	f.mu.Unlock()
 	// Resolve the row label the renderer would use: empty Graph → knowledge; a code
 	// graph carries the repo field, a practice graph the language field.
 	sel := req.GetTarget()
@@ -129,6 +134,73 @@ func (d *coverageDeps) SimilarityForcer() SimilarityForcer           { return ni
 func (d *coverageDeps) BlindSpotProvider() BlindSpotProvider { return nil }
 func (d *coverageDeps) ClusterProvider() ClusterProvider     { return nil }
 func (d *coverageDeps) TensionsProvider() TensionsProvider   { return nil }
+
+// TestCollectCoverageRows_JSONShape is the step criterion for the coverage[] JSON
+// block: rows serialize with the PINNED snake_case keys the web types against, the
+// graph-label field serializes as `graph` (not `label`), a segment graph whose
+// live resident is below its covered count surfaces live_resident < seg_covered
+// (the web's live-0 WARN lever), and a graph with no segment pool carries
+// has_segments=false so the web renders '—' instead of '0 of 0 (live 0)'.
+func TestCollectCoverageRows_JSONShape(t *testing.T) {
+	fake := &coverageFake{statsByKey: map[string]*knowledgev1.GraphStats{
+		"knowledge":   {NonProxyNodeCount: 10, SummarizedCount: 4, BinaryVectorCount: 4, SummaryFailureCount: 1, EmbedFailureCount: 2},
+		"code/myrepo": {NonProxyNodeCount: 8, SummarizedCount: 8, BinaryVectorCount: 8},
+		"practice/go": {NonProxyNodeCount: 20, SummarizedCount: 20, BinaryVectorCount: 12},
+	}}
+	// code/myrepo: segments cover 6 of 8 embedded but the LIVE engine is resident
+	// with only 2 — a collapse the web WARNs on (live_resident < seg_covered).
+	seg := &coverageSegReader{
+		coveredByKey:  map[string]int{"knowledge": 0, "code/myrepo": 6, "practice/go": 0},
+		residentByKey: map[string]int{"knowledge": 0, "code/myrepo": 2, "practice/go": 0},
+	}
+	rows := collectCoverageRows(context.Background(), &coverageDeps{gc: fake, segCov: seg})
+	require.NotEmpty(t, rows)
+
+	raw, err := json.Marshal(rows)
+	require.NoError(t, err)
+	var decoded []map[string]any
+	require.NoError(t, json.Unmarshal(raw, &decoded))
+
+	// Every row carries EXACTLY the pinned snake_case keys — `graph` (not `label`).
+	wantKeys := []string{"graph", "total", "summarized", "embedded", "seg_covered", "live_resident", "has_segments", "summary_fail", "embed_fail"}
+	for i, row := range decoded {
+		for _, k := range wantKeys {
+			_, present := row[k]
+			assert.True(t, present, "row %d missing key %q", i, k)
+		}
+		_, hasLabel := row["label"]
+		assert.False(t, hasLabel, "row %d must serialize the graph-label field as `graph`, not `label`", i)
+	}
+
+	byGraph := map[string]map[string]any{}
+	for _, row := range decoded {
+		byGraph[row["graph"].(string)] = row
+	}
+
+	// knowledge row carries the failure counts under snake_case keys.
+	k := byGraph["knowledge"]
+	require.NotNil(t, k)
+	assert.EqualValues(t, 1, k["summary_fail"])
+	assert.EqualValues(t, 2, k["embed_fail"])
+
+	// code/myrepo: segment-bearing, live resident collapsed below covered.
+	code := byGraph["code/myrepo"]
+	require.NotNil(t, code)
+	assert.Equal(t, true, code["has_segments"])
+	assert.EqualValues(t, 6, code["seg_covered"])
+	assert.EqualValues(t, 2, code["live_resident"])
+	assert.Less(t, code["live_resident"].(float64), code["seg_covered"].(float64),
+		"a collapsed live pool must surface live_resident < seg_covered for the web WARN")
+
+	// A graph with no rebuildable segments carries has_segments=false so the web
+	// renders '—' rather than '0 of 0 (live 0)'.
+	nonSeg := newCoverageRow("linkage", &knowledgev1.GraphStats{NonProxyNodeCount: 3}, 0, 0, false)
+	nsRaw, err := json.Marshal(nonSeg)
+	require.NoError(t, err)
+	var ns map[string]any
+	require.NoError(t, json.Unmarshal(nsRaw, &ns))
+	assert.Equal(t, false, ns["has_segments"], "a non-segment graph serializes has_segments=false")
+}
 
 // TestRenderLLMCoverage_Table pins the per-graph coverage rendering:
 //   - the knowledge row is present even though its enumerated name is empty (T3-2)

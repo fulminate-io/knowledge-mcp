@@ -27,15 +27,16 @@ import (
 const maxExtractedBytes = 200 << 20
 
 // extractArchive decompresses archiveBytes and returns the bytes of
-// the single expected entry: knowledge-server (or .exe on Windows).
+// the single expected entry: binBase (or binBase+".exe" on Windows),
+// where binBase is "knowledge-server" or "knowledge".
 // Returns an error when the archive has zero, multiple, or
 // misnamed regular files — there is no fallback / heuristic
 // matching, the release pipeline produces exactly-one-file archives
 // and anything else means the asset is wrong.
-func extractArchive(archiveBytes []byte, goos string) ([]byte, error) {
-	want := "knowledge-server"
+func extractArchive(archiveBytes []byte, goos, binBase string) ([]byte, error) {
+	want := binBase
 	if goos == "windows" {
-		want = "knowledge-server.exe"
+		want = binBase + ".exe"
 	}
 	if goos == "windows" {
 		return extractZip(archiveBytes, want)

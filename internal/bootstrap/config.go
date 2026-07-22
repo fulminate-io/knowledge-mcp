@@ -88,7 +88,14 @@ var Version = "dev"
 type Config struct {
 	GraphStorage string
 	RootDir      string
-	Port         int
+	// RootDirSet reports whether --root was explicitly passed (vs the built-in
+	// "." default). Set by applyRootDirSet AFTER fs.Parse via fs.Visit — a
+	// value-compare against "." would misclassify an explicit --root=. as
+	// defaulted. Consumed by the ast walk-root guard: an omitted repo with no
+	// session cwd AND a defaulted root fails loud instead of silently walking
+	// the process cwd.
+	RootDirSet bool
+	Port       int
 	// AuthToken is an opaque machine bearer token presented on every request,
 	// bypassing the interactive browser-based login flow and the platform
 	// keychain. Populated from the --auth-token flag (defaulting to the
@@ -165,8 +172,8 @@ type Config struct {
 // runServe (the `serve` daemon entry) so both accept an identical client-flag
 // surface from one definition — adding a knob in one place covers both.
 func registerConfigFlags(fs *flag.FlagSet, cfg *Config) {
-	fs.StringVar(&cfg.GraphStorage, "graph-storage", "~/.knowledge/", "Directory for graph storage (display-only; server owns the bin file)")
-	fs.StringVar(&cfg.RootDir, "root", ".", "Project root directory (display-only; server is the one that collects from root)")
+	fs.StringVar(&cfg.GraphStorage, "graph-storage", "~/.knowledge/", "Directory for graph storage: the server writes its .bin here, and the client roots its segment cache + worker runtime under it (default ~/.knowledge/)")
+	fs.StringVar(&cfg.RootDir, "root", ".", "Project root the client walks for ast + topology, and the current-tree fallback for resolving a bare repo name (default \".\")")
 	fs.IntVar(&cfg.Port, "port", graphclient.DefaultPort, "TCP port the graph server listens on")
 	fs.StringVar(&cfg.AuthToken, "auth-token", os.Getenv("KNOWLEDGE_AUTH_TOKEN"), "Opaque machine bearer token presented on every request, bypassing the interactive browser login and the platform keychain. Defaults to the KNOWLEDGE_AUTH_TOKEN environment variable; an explicit flag value wins. Empty leaves the interactive login path intact.")
 	fs.StringVar(&cfg.LogLevel, "log-level", "info", "Log level: debug, info, warn, error")
@@ -196,6 +203,20 @@ func registerConfigFlags(fs *flag.FlagSet, cfg *Config) {
 	fs.DurationVar(&cfg.ReflectBackstopInterval, "reflect-backstop-interval", 24*time.Hour, "Client-side reflection: cadence of the full-corpus reflection backstop pass that resets DF-Leiden incremental drift. The hourly loop runs incrementally; once this interval elapses since the last full pass, the next tick forces a full Leiden recompute. Default 24h (nightly).")
 }
 
+// applyRootDirSet records whether --root was explicitly passed on fs. It is the
+// SOLE assignment site of cfg.RootDirSet, called by BOTH parse paths (ParseFlags
+// and runServe) so the was-set logic cannot diverge between them. MUST be called
+// AFTER fs.Parse: flag.Visit only reports flags actually set on THIS FlagSet, so
+// a value-compare against "." (which the ticket rejects) is never needed — an
+// explicit --root=. still counts as set.
+func applyRootDirSet(fs *flag.FlagSet, cfg *Config) {
+	fs.Visit(func(fl *flag.Flag) {
+		if fl.Name == "root" {
+			cfg.RootDirSet = true
+		}
+	})
+}
+
 // ParseFlags parses args into a Config. Caller passes os.Args[1:] from
 // main(). Returns flag.ErrHelp (verbatim) when --help was requested so
 // the caller can detect and exit 0; the FlagSet's own usage text already
@@ -207,5 +228,6 @@ func ParseFlags(args []string) (Config, error) {
 	if err := fs.Parse(args); err != nil {
 		return Config{}, err
 	}
+	applyRootDirSet(fs, &cfg)
 	return cfg, nil
 }

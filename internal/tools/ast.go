@@ -29,6 +29,7 @@ import (
 
 	"github.com/fulminate-io/knowledge-mcp/internal/ast"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/treesitter"
+	"github.com/fulminate-io/knowledge-mcp/internal/session"
 )
 
 // InterceptAst is the entry point invoked by mcp.go's intercept chain.
@@ -38,7 +39,7 @@ import (
 // All five ops (match, search, count, explain, list_node_kinds) run
 // client-side. There is no fallthrough to the server — the server-side
 // dispatch errors out for the ast tool by design.
-func InterceptAst(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
+func InterceptAst(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	if params.Name != "ast" {
 		return false, kgtools.ToolResult{}
 	}
@@ -46,7 +47,6 @@ func InterceptAst(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools
 	if err := json.Unmarshal(params.Arguments, &a); err != nil {
 		return true, errorResult("invalid arguments: " + err.Error())
 	}
-	ctx := context.Background()
 	switch a.Operation {
 	case "match":
 		return true, handleAstMatch(ctx, deps, a)
@@ -143,6 +143,14 @@ func handleAstMatch(ctx context.Context, deps ClientDeps, a astArgs) kgtools.Too
 	if herr != nil {
 		return errorResult("hydrate: " + herr.Error())
 	}
+	// Echo the directory actually walked so the caller can tell which tree
+	// produced the matches. When NOTHING was scanned (zero files), override the
+	// generic no-match hint with the wrong-root hint — scanned-but-no-match keeps
+	// the emptyResultHint Hydrate already set.
+	results.WalkedRoot = repoDir
+	if walk.FilesScanned == 0 {
+		results.Hint = ast.ZeroScanHint(repoDir, a.Language)
+	}
 	return jsonResult(results)
 }
 
@@ -181,13 +189,20 @@ func handleAstCount(ctx context.Context, deps ClientDeps, a astArgs) kgtools.Too
 	for _, r := range raws {
 		byFile[r.FilePath]++
 	}
-	return jsonResult(map[string]any{
+	res := map[string]any{
 		"total":         len(raws),
 		"by_file":       byFile,
+		"walked_root":   repoDir,
 		"files_scanned": walk.FilesScanned,
 		"files_skipped": walk.FilesSkipped,
 		"duration_ms":   walk.DurationMS,
-	})
+	}
+	// count has no scanned-but-no-match hint, so its only hint is the wrong-root
+	// one: fire it exactly when zero files were scanned.
+	if walk.FilesScanned == 0 {
+		res["hint"] = ast.ZeroScanHint(repoDir, a.Language)
+	}
+	return jsonResult(res)
 }
 
 // buildAstPatterns parses one or more DSL patterns from the args.
@@ -269,19 +284,27 @@ func scopeFromArgs(a astArgs) ast.Scope {
 	}
 }
 
+// rootDirSourcer is the OPTIONAL deps capability exposing whether the daemon's
+// --root was explicitly set (vs the built-in "." default). Type-asserted rather
+// than added to ClientDeps so the many test fakes that never set a root are
+// unaffected; the production *client implements it over Config.RootDirSet.
+type rootDirSourcer interface{ RootDirSet() bool }
+
 // resolveRepoDir returns the directory the AST walk should run over, honoring
 // the repo arg so an ast call from a session rooted at repo Y can target a
 // named repo X that is checked out as a sibling directory.
 //
 // Base is effectiveCwd(ctx, deps): the per-session workspace cwd carried on ctx
-// (HTTP transport) when present, else the process --root (stdio default). Using
-// effectiveCwd here ALSO corrects a latent bug — the prior implementation walked
-// deps.RootDir() unconditionally, ignoring the session cwd, so even a same-repo
-// HTTP ast call walked --root instead of the caller's session tree.
+// (HTTP transport) when present, else deps.RootDir() (the process --root, the
+// stdio default). The session cwd rides in on the chain ctx that InterceptAst
+// now threads through, so an HTTP ast call walks the caller's session tree while
+// a stdio call walks --root.
 //
 // Resolution:
 //   - empty base → typed "--root is empty" error (unchanged contract).
-//   - repoArg == "" → return base (walk the current tree; default behavior).
+//   - repoArg == "" → walk base (the current tree) — but fail loud FIRST when
+//     there is no session cwd AND --root was left at its "." default, so a
+//     rootless daemon does not silently walk its own process cwd.
 //   - repoArg is an ABSOLUTE PATH → an explicit directory IS the user's
 //     instruction: when it stats as a directory, walk it directly (no sibling
 //     probe, no ResolveCwd gate — it can target ANY local checkout, not just a
@@ -320,6 +343,18 @@ func resolveRepoDir(ctx context.Context, deps ClientDeps, repoArg string) (strin
 	}
 	repoArg = strings.TrimSpace(repoArg)
 	if repoArg == "" {
+		// Fail loud when the walk root is a pure default: no session cwd rode in
+		// over the transport AND --root was left at its "." built-in default. In
+		// that case `base` is just the daemon's process cwd, which almost never
+		// is the tree the caller means — walking it silently hands back results
+		// labeled for the wrong repo. Two inputs are read SEPARATELY: an explicit
+		// --root OR a live session cwd each preserve the walk. A deps that does
+		// not expose RootDirSet() (older/partial fakes) keeps the fallback.
+		if session.WorkspaceCwdFromContext(ctx) == "" {
+			if rs, ok := deps.(rootDirSourcer); ok && !rs.RootDirSet() {
+				return "", fmt.Errorf("ast: no repo specified and the daemon has no project root — pass repo:<name|/abs/path> or start the daemon with --root <dir>")
+			}
+		}
 		return base, nil
 	}
 
@@ -365,5 +400,5 @@ func resolveRepoDir(ctx context.Context, deps ClientDeps, repoArg string) (strin
 	// manifest above is the only name→dir source, because it stores the actual
 	// collect-time path; absent a manifest entry, an absolute checkout path is the
 	// reliable cross-repo target.
-	return "", fmt.Errorf("ast: repo %q is not the current tree and is not in the local manifest (~/.knowledge/repos.json — populated when you `collect` a repo). Collect it first, pass an absolute checkout path, e.g. repo=\"/path/to/%s\", or omit repo to walk the current tree", repoArg, repoArg)
+	return "", fmt.Errorf("ast: repo %q is not the current tree and is not in the local manifest (~/.knowledge/repos.json — populated when you `collect` a repo). Collect it first, register its path with manage(operation:\"register_repo\", name:%q, root:\"/abs/path\"), pass an absolute checkout path, e.g. repo=\"/path/to/%s\", or omit repo to walk the current tree", repoArg, repoArg, repoArg)
 }

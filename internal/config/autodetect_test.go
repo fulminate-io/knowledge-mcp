@@ -170,6 +170,37 @@ func TestDetectServer_NoneAvailable(t *testing.T) {
 	}
 }
 
+// TestAutoDetect_Precedence exercises the exported AutoDetect wrapper
+// against real PATH/env fixtures (it uses defaultDetectDeps internally,
+// so the seam is the process env, not an injected detectDeps). A
+// loopback addr must take localPrecedence (claude-cli on PATH wins);
+// a non-loopback addr must take serverPrecedence (CLI excluded, so the
+// anthropic API key wins).
+func TestAutoDetect_Precedence(t *testing.T) {
+	dir := t.TempDir()
+	stubClaude(t, dir)
+	t.Setenv("PATH", dir)
+	t.Setenv("ANTHROPIC_API_KEY", "sk-test")
+	t.Setenv("OPENAI_API_KEY", "")
+	t.Setenv("GEMINI_API_KEY", "")
+
+	loopback, err := AutoDetect(&net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 15022})
+	if err != nil {
+		t.Fatalf("AutoDetect(loopback): %v", err)
+	}
+	if loopback.Provider != ProviderClaudeCLI {
+		t.Errorf("AutoDetect(loopback).Provider = %q; want %q", loopback.Provider, ProviderClaudeCLI)
+	}
+
+	server, err := AutoDetect(&net.TCPAddr{IP: net.IPv4(0, 0, 0, 0), Port: 15022})
+	if err != nil {
+		t.Fatalf("AutoDetect(non-loopback): %v", err)
+	}
+	if server.Provider != ProviderAnthropic {
+		t.Errorf("AutoDetect(non-loopback).Provider = %q; want %q (server precedence excludes CLI)", server.Provider, ProviderAnthropic)
+	}
+}
+
 // TestLoadOrAutoDetect_FirstRun runs the orchestrator end-to-end against
 // a tempdir with ANTHROPIC_API_KEY set. The walk picks anthropic, the
 // starter is rendered, and Validate succeeds (anthropic is API + key

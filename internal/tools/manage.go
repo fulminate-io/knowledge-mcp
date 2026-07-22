@@ -104,7 +104,7 @@ func InterceptManage(deps ClientDeps, params kgtools.CallToolParams) (bool, kgto
 	case "resume_pipeline":
 		return true, handleResumePipeline(deps)
 	case "pipeline_status":
-		return true, handlePipelineStatus(deps)
+		return true, handlePipelineStatus(deps, a.Format)
 	case "set_metadata_overrides":
 		return true, handleClientSetMetadataOverrides(context.Background(), deps, a)
 	case "delete_branch":
@@ -121,6 +121,8 @@ func InterceptManage(deps ClientDeps, params kgtools.CallToolParams) (bool, kgto
 		return true, handleClientPruneCache(context.Background(), deps, a)
 	case "drop_graph":
 		return true, handleClientDropGraph(context.Background(), deps, a)
+	case "register_repo":
+		return true, handleRegisterRepo(a)
 	}
 	return false, kgtools.ToolResult{}
 }
@@ -243,11 +245,14 @@ type manageArgs struct {
 // instead of zeros so the operator can tell the difference between
 // "queue empty" and "pipeline never wired."
 func handleServerStatus(deps ClientDeps, format string) kgtools.ToolResult {
-	// Logged-in users target the CLOUD graph: report node/edge/vector/bm25
-	// counts via the already-routed Stats RPC, omitting local-daemon-only
-	// fields (PID, graph_path, pipeline counters). The type-assert + the
-	// loggedIn check degrade to the existing local-daemon path below when
-	// either misses, so the logged-out behavior is unchanged.
+	// Logged-in users target the CLOUD graph for the node/edge/vector totals via
+	// the already-routed Stats RPC. The cloud branch's JSON body ALSO carries the
+	// local-daemon fields (pid, graph_path, pipeline counters, coverage[],
+	// doctor[]) via the shared addLocalDaemonJSON helper — CEO decision: always
+	// show local-daemon fields, even when logged in — so the Daemon Status page's
+	// Doctor/Pipeline/Coverage cards populate regardless of login. The type-assert
+	// + the loggedIn check degrade to the local-daemon path below when either
+	// misses, so the logged-out behavior is unchanged.
 	if csi, ok := deps.(cloudStatusInfo); ok {
 		if loggedIn, host := csi.CloudStatusInfo(); loggedIn {
 			return handleCloudStatus(deps, host, format)
@@ -255,24 +260,35 @@ func handleServerStatus(deps ClientDeps, format string) kgtools.ToolResult {
 	}
 	gc := deps.LocalLiveness()
 	if !gc.Healthy() {
+		// No daemon to probe here, but the client version is always known
+		// in-process — render it so `manage(status)` always carries the client
+		// line (no daemon line, no skew line without a daemon to compare).
+		clientVer := clientVersionOnly(deps)
 		if format == "json" {
-			return jsonResult(map[string]any{"status": "not_running"})
+			m := map[string]any{"status": "not_running"}
+			addVersionJSON(m, clientVer, "", false)
+			return jsonResult(m)
 		}
-		return textResult("Graph server: NOT RUNNING")
+		return textResult("Graph server: NOT RUNNING" + renderVersionLines(clientVer, "", false))
 	}
+	clientVer, daemonVer, daemonKnown := versionSection(deps)
+	if format == "json" {
+		// All the local-daemon facts (pid/graph_path/counts + pipeline counters +
+		// coverage[] + doctor[] + transcript + collect_runs) go through the shared
+		// addLocalDaemonJSON helper so the local AND cloud JSON paths stay in sync.
+		m := map[string]any{}
+		addLocalDaemonJSON(context.Background(), deps, m)
+		m["status"] = "running"
+		addVersionJSON(m, clientVer, daemonVer, daemonKnown)
+		return jsonResult(m)
+	}
+	// TEXT branch: fetch the local status directly for the human render (the JSON
+	// branch above returns first, so this is the only Status RPC on that path).
 	status, err := gc.Status()
 	if err != nil {
 		return errorResult("status failed: " + err.Error())
 	}
 	metrics, pipelineOK := overlayPipelineMetrics(deps, status)
-	if format == "json" {
-		status["status"] = "running"
-		status["pipeline_enabled"] = pipelineOK
-		if th, ok := transcriptUploadHealth(deps); ok {
-			addTranscriptHealthJSON(status, th)
-		}
-		return jsonResult(status)
-	}
 	pipelineLine := "  Summarization: (pipeline disabled)\n  Embedding: (pipeline disabled)"
 	if pipelineOK {
 		// These counters are PROCESS-LIFETIME runtime metrics — they reset on
@@ -289,20 +305,28 @@ func handleServerStatus(deps ClientDeps, format string) kgtools.ToolResult {
 	if th, ok := transcriptUploadHealth(deps); ok {
 		transcriptBlock = renderTranscriptHealthText(th)
 	}
+	doctorBlock := ""
+	if checks, ok := doctorChecks(context.Background(), deps); ok {
+		doctorBlock = renderDoctorText(checks)
+	}
 	return textResult(fmt.Sprintf(
-		"Graph server: RUNNING\n  PID: %.0f\n  Nodes: %.0f\n  Edges: %.0f\n  Vectors: %.0f\n  BM25 docs: %.0f\n  Path: %s\n%s%s%s",
+		"Graph server: RUNNING\n  PID: %.0f\n  Nodes: %.0f\n  Edges: %.0f\n  Vectors: %.0f\n  BM25 docs: %.0f\n  Path: %s\n%s%s%s%s%s%s",
 		status["pid"], status["nodes"], status["edges"], status["binary_vectors"], status["bm25_docs"], status["graph_path"],
-		pipelineLine, renderLLMCoverage(context.Background(), deps), transcriptBlock))
+		pipelineLine, renderLLMCoverage(context.Background(), deps), transcriptBlock, collectRunSection(deps), doctorBlock,
+		renderVersionLines(clientVer, daemonVer, daemonKnown)))
 }
 
 // handleCloudStatus reports the CLOUD graph stats for a logged-in user via
 // the already-routed Stats RPC (deps.GraphCaller() is the *Router,
-// which satisfies the statsRPC seam). It renders the shared
-// engine.RenderStatsBreakdown body under a "Backend: cloud (<host>)"
-// preamble — naturally emitting Nodes/Edges/Vectors/BM25 and OMITTING
-// PID/graph_path/summary_*/embed_* because GraphStats carries none of those
-// local-daemon fields. The empty GraphSelector targets the default
-// knowledge graph, identical to intercept_query_stats.go.
+// which satisfies the statsRPC seam). The TEXT body renders the shared
+// engine.RenderStatsBreakdown under a "Backend: cloud (<host>)" preamble and
+// omits the local-daemon-only fields (GraphStats carries none of them). The JSON
+// body, by contrast, LAYERS the local-daemon fields (pid, graph_path, pipeline
+// counters, coverage[], doctor[]) via addLocalDaemonJSON and then overwrites the
+// node/edge/vector totals with the CLOUD figures on top — so the Daemon Status
+// web page shows every card even when logged in (CEO: always show local-daemon
+// fields). The empty GraphSelector targets the default knowledge graph, identical
+// to intercept_query_stats.go.
 func handleCloudStatus(deps ClientDeps, host, format string) kgtools.ToolResult {
 	gc := deps.GraphCaller()
 	if gc == nil {
@@ -319,18 +343,21 @@ func handleCloudStatus(deps ClientDeps, host, format string) kgtools.ToolResult 
 		return errorResult("manage(status): cloud stats failed: " + err.Error())
 	}
 	stats := resp.GetGraphStats()
+	clientVer, daemonVer, daemonKnown := versionSection(deps)
 	if format == "json" {
-		m := map[string]any{
-			"status":         "running",
-			"backend":        "cloud",
-			"host":           host,
-			"nodes":          stats.GetNodeCount(),
-			"edges":          stats.GetEdgeCount(),
-			"binary_vectors": stats.GetBinaryVectorCount(),
-		}
-		if th, ok := transcriptUploadHealth(deps); ok {
-			addTranscriptHealthJSON(m, th)
-		}
+		// Local-daemon facts first (pid/graph_path/pipeline/coverage[]/doctor[]/
+		// transcript/collect_runs + any local node/edge counts) …
+		m := map[string]any{}
+		addLocalDaemonJSON(context.Background(), deps, m)
+		// … then the cloud identity + CLOUD graph totals layered ON TOP,
+		// overwriting any local node/edge/vector counts with the cloud figures.
+		m["status"] = "running"
+		m["backend"] = "cloud"
+		m["host"] = host
+		m["nodes"] = stats.GetNodeCount()
+		m["edges"] = stats.GetEdgeCount()
+		m["binary_vectors"] = stats.GetBinaryVectorCount()
+		addVersionJSON(m, clientVer, daemonVer, daemonKnown)
 		return jsonResult(m)
 	}
 	transcriptBlock := ""
@@ -338,35 +365,9 @@ func handleCloudStatus(deps ClientDeps, host, format string) kgtools.ToolResult 
 		transcriptBlock = renderTranscriptHealthText(th)
 	}
 	return textResult(fmt.Sprintf(
-		"## Graph server: cloud\n  Backend: cloud (%s)\n\n%s%s%s",
-		host, engine.RenderStatsBreakdown(stats), renderLLMCoverage(context.Background(), deps), transcriptBlock))
-}
-
-// overlayPipelineMetrics reads the client-side LLM pipeline counters and
-// merges them into the status map (so format=json carriers the live
-// values too). Returns (Metrics, true) when the deps satisfy the
-// optional pipelineMetricser interface AND the pipeline was wired;
-// (zero, false) when either the type assert misses (test fakes) or the
-// pipeline is disabled (--no-llm-pipeline). Callers render the disabled
-// case visibly so it doesn't look like the pipeline silently failed.
-func overlayPipelineMetrics(deps ClientDeps, status map[string]any) (pipeline.Metrics, bool) {
-	pm, ok := deps.(pipelineMetricser)
-	if !ok {
-		return pipeline.Metrics{}, false
-	}
-	m, wired := pm.PipelineMetrics()
-	if !wired {
-		return pipeline.Metrics{}, false
-	}
-	status["summary_queued"] = float64(m.SummaryQueued)
-	status["summary_running"] = float64(m.SummaryRunning)
-	status["summary_succeeded"] = float64(m.SummarySucceeded)
-	status["summary_failed"] = float64(m.SummaryFailed)
-	status["embed_queued"] = float64(m.EmbedQueued)
-	status["embed_running"] = float64(m.EmbedRunning)
-	status["embed_succeeded"] = float64(m.EmbedSucceeded)
-	status["embed_failed"] = float64(m.EmbedFailed)
-	return m, true
+		"## Graph server: cloud\n  Backend: cloud (%s)\n\n%s%s%s%s%s",
+		host, engine.RenderStatsBreakdown(stats), renderLLMCoverage(context.Background(), deps), transcriptBlock, collectRunSection(deps),
+		renderVersionLines(clientVer, daemonVer, daemonKnown)))
 }
 
 // transcriptUploadHealth reads the background transcript-upload loop's health snapshot.

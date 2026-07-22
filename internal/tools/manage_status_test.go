@@ -8,6 +8,7 @@ import (
 	"maps"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -72,7 +73,7 @@ func (d *cloudStatusDeps) CloudStatusInfo() (bool, string) { return d.loggedIn, 
 // invoked — used by the logged-out branch-selection gate test to prove the
 // cloud branch was NOT taken.
 type statsCallRecorder struct {
-	statsCalled bool
+	statsCalled atomic.Bool // Stats may be called concurrently by the coverage fan-out
 	stats       *knowledgev1.GraphStats
 }
 
@@ -81,7 +82,7 @@ func (r *statsCallRecorder) Execute(_ context.Context, _ *knowledgev1.ExecuteReq
 }
 
 func (r *statsCallRecorder) Stats(_ context.Context, _ *knowledgev1.StatsRequest) (*knowledgev1.StatsResponse, error) {
-	r.statsCalled = true
+	r.statsCalled.Store(true)
 	return &knowledgev1.StatsResponse{GraphStats: r.stats}, nil
 }
 
@@ -165,7 +166,7 @@ func TestHandleServerStatus_LoggedOut_SelectsLocalBranch(t *testing.T) {
 	// Local path with a closed server reports NOT RUNNING — it does not panic
 	// and it does not route to cloud.
 	assert.Contains(t, textBodyTools(res), "NOT RUNNING")
-	assert.False(t, rec.statsCalled, "logged-out status must not route to the cloud Stats RPC")
+	assert.False(t, rec.statsCalled.Load(), "logged-out status must not route to the cloud Stats RPC")
 }
 
 // fakeLiveness is a healthy LocalLiveness returning a fixed status map, so the local

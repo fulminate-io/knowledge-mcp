@@ -32,7 +32,7 @@ import (
 //     cache, Imports the full set, and advances importedGen. A cold process has
 //     importedGen==0, so List(0) returns the full stored corpus.
 //   - OSS L2-AUTHORITATIVE (l2Authoritative): a genuinely-cold L2 has NOTHING to
-//     recover FROM — there is no server segment store, and the OSS source's Fetch is
+//     recover FROM — there is no cloud segment registry, and the OSS source's Fetch is
 //     L2-only. load() returns with an empty engine; the boot-delay/periodic heal then
 //     rebuilds from the local embedded node graph. loadFromServer is UNREACHABLE on
 //     this path (decouple #3).

@@ -229,10 +229,10 @@ func TestGraphCacheDirsAreFormatDistinct(t *testing.T) {
 }
 
 // TestHasShippedSegments is the auto-heal presence-probe criterion: the cheap
-// presence probe drives ListDelta(sinceGen=0) through the existing fake
-// SegmentService and returns (false,nil) when the server holds no segments,
-// (true,nil) when it holds one+. It must NEVER Fetch a blob — the probe is
-// presence-only (metas), so the countingCaller's Fetch counter stays at zero.
+// presence probe drives a List(sinceGen=0) through the injected fakeSegmentSource
+// and returns (false,nil) when the registry holds no segments, (true,nil) when it
+// holds one+. It must NEVER Fetch a blob — the probe is presence-only (metas), so
+// the fake's Fetch counter stays at zero.
 func TestHasShippedSegments(t *testing.T) {
 	_, gc := newSegmentHarness(t)
 	cc := gc

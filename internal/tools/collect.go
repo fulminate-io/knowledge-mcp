@@ -44,14 +44,6 @@ func InterceptCollect(deps ClientDeps, params kgtools.CallToolParams) (bool, kgt
 	if params.Name != "collect" {
 		return false, kgtools.ToolResult{}
 	}
-	// A collect spikes the heap hard — the chunker holds every file's
-	// results until upload, and the precise Go call-graph build loads a
-	// whole module + its dependency closure (ASTs + type info + SSA) live
-	// at once. This is a long-lived stdio daemon, so once the collect is
-	// done that working set is pure garbage; force a GC + scavenge on the
-	// way out so RSS drops back to baseline immediately instead of after
-	// the background scavenger eventually gets to it.
-	defer debug.FreeOSMemory()
 
 	var a collectArgs
 	if err := json.Unmarshal(params.Arguments, &a); err != nil {
@@ -72,9 +64,25 @@ func InterceptCollect(deps ClientDeps, params kgtools.CallToolParams) (bool, kgt
 		return true, runLogsCollect(deps, a)
 	}
 
+	// Resolve the standing collect runtime via the optional seam. Present on the
+	// production *client; absent on a router-less/degraded test client, in which
+	// case collectWaitOrDetach falls back to a synchronous run.
+	var rt *CollectRuntime
+	if p, ok := deps.(collectRuntimeProvider); ok {
+		rt = p.CollectRuntime()
+	}
+
 	// ctx is hoisted above the registered-type probe (which needs it for the
 	// ByName wire lookup) and the builtin cascade plumbing below both reuse it.
-	ctx := context.Background()
+	// Derive its base from the runtime so a DETACHED builtin run rides baseCtx (a
+	// daemon Stop cancels it) rather than a bare Background; the cascade-set +
+	// resolution-map + web-crawl-opts enrichment below decorates THIS ctx, and the
+	// no-arg work closure captures the fully-enriched result.
+	base := context.Background()
+	if rt != nil {
+		base = rt.BaseContext()
+	}
+	ctx := base
 
 	// Registered (non-builtin) graph type: a collect whose type misses the
 	// builtin collector registry but matches a registered GraphTypeDef runs the
@@ -140,43 +148,16 @@ func InterceptCollect(deps ClientDeps, params kgtools.CallToolParams) (bool, kgt
 		}
 	}
 
-	if err := collector.Collect(ctx, a.Type, a.ID, opts); err != nil {
-		// collector.Collect already wraps with "collect <type>:" — adding
-		// our own "collect <type> <id>:" prefix produces a duplicate "collect
-		// <type>:" stutter. Use the inner error verbatim; type information
-		// survives via the pipeline's wrap.
-		return true, errorResult(err.Error())
-	}
-	// Record the repo→path mapping in the machine-local manifest so the
-	// name→dir consumers (ast cross-repo walk, branch auto-detect, the
-	// correct-dir/branch-aware staleness footer) can map this repo's NAME back
-	// to where it was collected from on THIS machine. Code only: the manifest
-	// keys on the code-graph repo name (filepath.Base(id)), exactly how `collect`
-	// keys the graph, and a.ID is already absolute here (the code collector
-	// rejects relative paths). Best-effort and machine-LOCAL — never synced.
-	recordCollectedRepo(a.Type, a.ID)
-	// Post-collect linker tail-call. Replaces the former server-side
-	// runPostCollectLinker that ran on the collect-write path.
-	// Gated on the same collector types that previously triggered the
-	// server-side path. Best-effort: failures slog.Warn but the
-	// user-facing textResult is unchanged.
-	runPostCollectLinker(ctx, deps, a.Type)
-	// Post-collect PostPopulate tail-call, SIBLING to the linker.
-	// Runs the registered postpopulate hook for the collector family over the
-	// wire, enriching the per-account/per-repo graph with the structural edges
-	// the linker does not own (SG/NACL rules, cross-account trust, image
-	// lineage, k8s selector/cluster linkage, CICD OIDC federation, codesync
-	// hierarchy). Best-effort, like the linker.
-	runPostCollectPostPopulate(ctx, deps, a.Type)
-	// Wake the LLM pipeline: the just-collected graph may have idle-backed-off
-	// its scan cadence toward the hour-long ceiling, so nudge every collector to
-	// re-scan now and discover + enrich the freshly-uploaded nodes instead of
-	// waiting out its idle interval. Best-effort, optional capability (no
-	// pipeline wired → skipped).
-	if w, ok := deps.(pipelineWaker); ok {
-		w.WakePipeline()
-	}
-	return true, textResult(fmt.Sprintf("Collected %s %s — streamed to server.", a.Type, a.ID))
+	// Route the builtin collect through the standing runtime: cap the synchronous
+	// wait at 60s, coalesce a duplicate target already in flight, and detach the
+	// run past the cap. work is a NO-ARG closure over the fully-enriched ctx built
+	// above (cascade set + resolution map + web-crawl opts) — Start injects no ctx,
+	// so there is no bare-baseCtx an implementation could substitute and drop that
+	// enrichment. successText is the CURRENT literal so the sub-60s / fallback path
+	// stays byte-identical.
+	work := func() error { return builtinCollectWork(ctx, deps, a, opts) }
+	successText := fmt.Sprintf("Collected %s %s — streamed to server.", a.Type, a.ID)
+	return true, collectWaitOrDetach(rt, collectTargetKey(a.Type, a.ID), fmt.Sprintf("%s %s", a.Type, a.ID), successText, work)
 }
 
 // recordCollectedRepo upserts the just-collected code repo's name→absolute-path
@@ -232,6 +213,11 @@ func withWebCrawlOptions(ctx context.Context, a collectArgs) (context.Context, b
 // recipe) is rejected with a typed error. DryRun previews the projection and
 // returns Stats without writing.
 func runRecipeCollect(ctx context.Context, deps ClientDeps, a collectArgs) kgtools.ToolResult {
+	// recipe.RunRecipe reads the source graph into an in-memory view and holds the
+	// projected result, so scavenge on the way out — mirrors builtinCollectWork's
+	// heap-spike defer. Top-of-function placement wastes nothing: the sole earlier
+	// return is the cheap 'recipe required' validation error below.
+	defer debug.FreeOSMemory()
 	if a.Recipe == "" {
 		return errorResult(fmt.Sprintf("collect %s transformer=recipe: 'recipe' (the recipe name) is required", a.Type))
 	}
@@ -278,6 +264,13 @@ func tryRegisteredCollect(ctx context.Context, deps ClientDeps, a collectArgs) (
 	if !found {
 		return false, kgtools.ToolResult{}
 	}
+	// The registered external collector holds the full CollectResult in memory
+	// until deps.Sink().WriteResult below, so scavenge on the way out. Placed AFTER
+	// the three early return-false guards (builtin type / nil CRUD / not-found) so
+	// a builtin collect — which returns at the first guard, synchronously, on the
+	// front of every `collect` — does not eat a useless STW GC (builtinCollectWork
+	// already scavenges its own path).
+	defer debug.FreeOSMemory()
 	res, err := externalcollector.RunExternal(ctx, def, a.Params, a.ID)
 	if err != nil {
 		return true, errorResult(err.Error())

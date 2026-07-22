@@ -25,7 +25,7 @@ import (
 // Pattern parse → Compile → Match → Hydrate → JSON marshal pipeline.
 func TestAstIntegration_Match(t *testing.T) {
 	repoDir := astIntegrationFixture(t)
-	deps := astTestDeps{rootDir: repoDir}
+	deps := astTestDeps{rootDir: repoDir, rootDirSet: true} // explicit root: walk the fixture, not the guard path
 
 	body, isErr, _ := callAst(t, deps, `{
 		"operation":"match",
@@ -55,7 +55,7 @@ func TestAstIntegration_Match(t *testing.T) {
 // subdir and verifies main.go matches are excluded.
 func TestAstIntegration_MatchPackagePrefixes(t *testing.T) {
 	repoDir := astIntegrationFixture(t)
-	deps := astTestDeps{rootDir: repoDir}
+	deps := astTestDeps{rootDir: repoDir, rootDirSet: true} // explicit root: walk the fixture, not the guard path
 
 	// Use a kind-only where-tree (against the built-in $match capture) to
 	// find every function_declaration. This is the v2 idiom for the
@@ -83,7 +83,7 @@ func TestAstIntegration_MatchPackagePrefixes(t *testing.T) {
 // function_declaration results.
 func TestAstIntegration_MatchExcludesTests(t *testing.T) {
 	repoDir := astIntegrationFixture(t)
-	deps := astTestDeps{rootDir: repoDir}
+	deps := astTestDeps{rootDir: repoDir, rootDirSet: true} // explicit root: walk the fixture, not the guard path
 
 	// `func $N($$$ARGS) { $$$BODY }` matches Go function_declaration nodes
 	// and binds the name as $N. Skip the where-tree — pattern shape alone
@@ -110,7 +110,7 @@ func TestAstIntegration_MatchExcludesTests(t *testing.T) {
 // (repo-relative path keys, no absolute leak).
 func TestAstIntegration_Count(t *testing.T) {
 	repoDir := astIntegrationFixture(t)
-	deps := astTestDeps{rootDir: repoDir}
+	deps := astTestDeps{rootDir: repoDir, rootDirSet: true} // explicit root: walk the fixture, not the guard path
 
 	// Kind-only where-tree counts every function_declaration in scope.
 	// Wildcard pattern + $match kind gate is the v2 idiom for "find every
@@ -177,7 +177,7 @@ func TestAstIntegration_Explain(t *testing.T) {
 // NoOpBackend (EnclosingNodeID stays empty client-side).
 func TestAstIntegration_KindLeafFindsMethods(t *testing.T) {
 	repoDir := astIntegrationFixture(t)
-	deps := astTestDeps{rootDir: repoDir}
+	deps := astTestDeps{rootDir: repoDir, rootDirSet: true} // explicit root: walk the fixture, not the guard path
 
 	body, isErr, _ := callAst(t, deps, `{
 		"operation":"match",
@@ -227,7 +227,7 @@ func TestAstIntegration_ListNodeKinds(t *testing.T) {
 // text surfaces when the query returns 0 matches.
 func TestAstIntegration_EmptyResultHint(t *testing.T) {
 	repoDir := astIntegrationFixture(t)
-	deps := astTestDeps{rootDir: repoDir}
+	deps := astTestDeps{rootDir: repoDir, rootDirSet: true} // explicit root: walk the fixture, not the guard path
 
 	body, isErr, _ := callAst(t, deps, `{
 		"operation":"match",

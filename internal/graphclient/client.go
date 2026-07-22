@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"time"
 
 	"connectrpc.com/connect"
 	"golang.org/x/net/http2"
@@ -38,6 +39,13 @@ type GraphClient struct {
 	health knowledgev1connect.HealthServiceClient
 	ingest knowledgev1connect.IngestServiceClient
 	engine knowledgev1connect.EngineServiceClient
+
+	// probe is the health client WITHOUT the reconnect interceptor. Liveness
+	// probes (Healthy / HealthyCtx) are questions, not operations: "the server
+	// is down" is a valid answer, so a probe must fail fast on ECONNREFUSED
+	// instead of sleeping through the ~4.25s retry-backoff window. Real RPCs
+	// (including HealthService.Status) stay on the retrying clients.
+	probe knowledgev1connect.HealthServiceClient
 }
 
 // NewGraphClient creates a GraphClient that connects to the given TCP
@@ -85,6 +93,7 @@ func NewGraphClientForURL(baseURL string) *GraphClient {
 		health:     knowledgev1connect.NewHealthServiceClient(httpClient, baseURL, retry),
 		ingest:     knowledgev1connect.NewIngestServiceClient(httpClient, baseURL, retry),
 		engine:     knowledgev1connect.NewEngineServiceClient(httpClient, baseURL, retry),
+		probe:      knowledgev1connect.NewHealthServiceClient(httpClient, baseURL),
 	}
 }
 
@@ -226,22 +235,33 @@ func (c *GraphClient) OverwriteGraph(
 }
 
 // Healthy checks if the graph server is running and responsive. Uses
-// HealthService.Check — an empty request/response ping.
+// HealthService.Check — an empty request/response ping. SINGLE attempt, no
+// retries, bounded at 1s: a liveness probe's "down" is a definitive answer
+// (ECONNREFUSED on loopback is instant), so it never rides the reconnect
+// interceptor's backoff window; an install pointed at a remote backend has no
+// local server at all and must not pay a retry ladder to learn that.
+// Nil-safe: a nil *GraphClient (a cloud-only user has no local client — the
+// c.local field is a typed nil, e.g. when manage(status)'s addLocalDaemonJSON
+// probes local liveness on the logged-in cloud path) reports NOT healthy
+// rather than panicking on the nil-receiver field access.
 func (c *GraphClient) Healthy() bool {
-	ctx := context.Background()
-	_, err := c.health.Check(ctx, connect.NewRequest(&knowledgev1.HealthCheckRequest{}))
-	return err == nil
+	if c == nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	return c.HealthyCtx(ctx)
 }
 
-// HealthyCtx is the ctx-aware variant of Healthy. Callers needing a
-// bounded per-attempt probe budget pass context.WithTimeout — useful
-// for poll loops where a wedged server (TCP open but Check never
-// returns) must not stall the caller through the unary reconnect
-// interceptor's full retry budget. Healthy's context.Background is the
-// right shape for the keepalive loop; HealthyCtx covers everything
-// else (diagnostics, install-time sanity checks).
+// HealthyCtx is the ctx-aware variant of Healthy: same single-attempt no-retry
+// probe, with the attempt budget owned by the caller's ctx. Poll loops
+// (waitForServer) supply their own cadence; a probe that failed IS the poll
+// result, so per-attempt retries would only skew the loop's timing.
 func (c *GraphClient) HealthyCtx(ctx context.Context) bool {
-	_, err := c.health.Check(ctx, connect.NewRequest(&knowledgev1.HealthCheckRequest{}))
+	if c == nil {
+		return false
+	}
+	_, err := c.probe.Check(ctx, connect.NewRequest(&knowledgev1.HealthCheckRequest{}))
 	return err == nil
 }
 

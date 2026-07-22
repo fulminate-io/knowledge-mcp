@@ -11,13 +11,13 @@ import (
 
 // localSegmentSource is the OSS-local segmentSource: it satisfies the full
 // segmentSource seam (searchengine.SegmentSource List/Fetch plus the ship/prune/
-// publish legs) over the L2 disk cache ALONE, issuing ZERO SegmentService RPC. It
-// is the pluggable-backend second implementation, selected by the capability gate
-// when the caller is not cloud-capable (not logged in) — the OSS path, where there
-// is no server segment store to consult. rpcSegmentSource remains the logged-in/
-// cloud implementation; the two share no server code (their bodies are disjoint),
-// which is why an L2-only sibling is a distinct impl rather than an extension of
-// the RPC one.
+// publish legs) over the L2 disk cache ALONE, issuing ZERO network calls. It is
+// one of the two production segmentSource implementations the factory selects
+// (newSegmentSource, manager_factory.go): the login gate picks this L2-only source
+// when the caller is not logged in — the OSS path, where there is no cloud segment
+// registry to consult. gcsSegmentSource is the logged-in/cloud implementation; the
+// two share no code (their bodies are disjoint), which is why the L2-only source is
+// a distinct impl rather than an extension of the cloud one.
 //
 // SOURCE OF TRUTH: on this path the L2 cache is authoritative. Segment identity is
 // the content-hash (already the blob id — no server generation ordering, decouple
@@ -71,8 +71,8 @@ func (s *localSegmentSource) Fetch(_ context.Context, ids []searchengine.Segment
 // Ship stamps the input blobs locally — the content-hash id IS the identity
 // (decouple #1: no server generation ordering) — and returns the metas the
 // manager's shipNew consumes (shipNew owns the cache.Put from the returned metas).
-// No network. Mirrors the inMemSegmentService.blobMeta shape
-// (Id/Format/Generation/DocCount), stamping Generation 0.
+// No network. Returns the Id/Format/Generation/DocCount meta shape shipNew consumes,
+// stamping Generation 0.
 func (s *localSegmentSource) Ship(_ context.Context, blobs []*knowledgev1.SegmentBlobProto) ([]*knowledgev1.SegmentMetaProto, error) {
 	metas := make([]*knowledgev1.SegmentMetaProto, 0, len(blobs))
 	for _, b := range blobs {

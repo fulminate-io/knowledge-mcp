@@ -54,7 +54,7 @@ func (m *distManager[Q, S]) recoverIfDegenerate(ctx context.Context) error {
 	}
 
 	// Below the floor: read the server's shipped doc count for THIS graph over the
-	// EXISTING source (do NOT build a new rpcSegmentSource) and apply the shared
+	// EXISTING source (do NOT build a new segment source) and apply the shared
 	// disarm rules (List error, pre-doc_count blob, sub-floor corpus).
 	shipped, disarm, err := m.shippedDocCountForRatio(ctx)
 	if err != nil {

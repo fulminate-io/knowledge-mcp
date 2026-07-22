@@ -344,9 +344,17 @@ func (m *distManager[Q, S]) publishResident(
 	// the engine is fully loaded.
 	ok, reason, err := m.publishCoverageOK(ctx, liveSet)
 	if err != nil {
+		// The ship already stamped shippedIDs, but the coverage-read List failed
+		// before PublishManifest — set the retry bit so a later sub-threshold tick
+		// re-attempts the publish (hasUnshippedExport is now false).
+		m.setPublishPending()
 		return nil, err
 	}
 	if !ok {
+		// Coverage/subset gate skipped the publish (degenerate/incomplete live set).
+		// The ship landed but no manifest was published — set the retry bit so the
+		// publish is re-attempted once the live set heals.
+		m.setPublishPending()
 		slog.Warn("segmentdist: publish SKIPPED (degenerate/incomplete live set — manifest+blobs left intact)",
 			"format", m.format, "live", len(manifestIDs), "reason", reason)
 		return nil, nil
@@ -360,10 +368,17 @@ func (m *distManager[Q, S]) publishResident(
 		// blob heals on a later pass once its PUT succeeds and it re-enters the
 		// resident→published set.
 		if incomplete, ok := errors.AsType[*manifestIncompleteError](err); ok {
+			// 409: the agent reported a referenced blob not yet present. The ship
+			// landed but the manifest did not — set the retry bit so a later tick
+			// re-publishes once the missing blob heals.
+			m.setPublishPending()
 			slog.Warn("segmentdist: publish SKIPPED (agent reported missing blob(s) — manifest+blobs left intact)",
 				"format", m.format, "missing", incomplete.Missing)
 			return nil, nil
 		}
+		// Transport error on PublishManifest — the ship landed but the publish did
+		// not; set the retry bit so a later tick re-attempts it.
+		m.setPublishPending()
 		return nil, err
 	}
 
@@ -375,6 +390,9 @@ func (m *distManager[Q, S]) publishResident(
 	// superseded). The dropped ids are removed from BOTH bookkeeping views to keep
 	// them consistent.
 	m.shipMu.Lock()
+	// PublishManifest succeeded — clear the retry bit under the reconcile lock we
+	// already hold (no new acquisition).
+	m.publishPending = false
 	var dropped []searchengine.SegmentID
 	for id := range reconcileAgainst {
 		if _, live := liveSet[id]; !live {

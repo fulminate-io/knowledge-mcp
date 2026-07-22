@@ -46,10 +46,10 @@ const (
 // gcsSegmentSource is the cloud (logged-in) segmentSource: it ships each
 // content-hash blob as a full-object presigned PUT to GCS, publishes completeness
 // through the agent manifest endpoint, and fetches via agent presign-GET →
-// GetObject → push-shape decrypt. It holds NO L2 cache: like rpcSegmentSource it is
-// a REMOTE source, and the distManager owns the L2 cache separately (load() is
-// L2-first, so the source's Fetch is only reached on an L2 miss). List/Fetch derive
-// wholly from the agent manifest + GCS objects.
+// GetObject → push-shape decrypt. It holds NO L2 cache: it is a REMOTE source, and
+// the distManager owns the L2 cache separately (load() is L2-first, so the source's
+// Fetch is only reached on an L2 miss). List/Fetch derive wholly from the agent
+// manifest + GCS objects.
 type gcsSegmentSource struct {
 	transport segmentControlTransport
 	// graphType is the canonical wire string (string(gt)) — stable across all four

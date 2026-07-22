@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/config"
+	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 )
 
 // writeConfig writes body to a temp config file and returns its path.
@@ -263,9 +264,10 @@ func TestCheckServer_BinaryAbsentSuggestsInstall(t *testing.T) {
 	tmp := t.TempDir()
 	withStubExecutable(t, filepath.Join(tmp, "stdio_stub"))
 	withPATH(t, tmp) // no knowledge-server sibling, none on PATH
-	res := checkServer(pickFreePort(t))
-	if res.status != statusInfo {
-		t.Fatalf("status = %v, want statusInfo (server down)", res.status)
+	port := pickFreePort(t)
+	res := checkServer(graphclient.NewGraphClient(port), port, false)
+	if res.status != statusWarn {
+		t.Fatalf("status = %v, want statusWarn (server down)", res.status)
 	}
 	if !strings.Contains(res.detail, "knowledge install") {
 		t.Errorf("detail %q should name `knowledge install` when binary absent", res.detail)
@@ -277,9 +279,10 @@ func TestCheckServer_BinaryPresentSuggestsStart(t *testing.T) {
 	stubExecutable(t, tmp, serverBinaryName)
 	withStubExecutable(t, filepath.Join(tmp, "stdio_stub"))
 	withPATH(t, tmp)
-	res := checkServer(pickFreePort(t))
-	if res.status != statusInfo {
-		t.Fatalf("status = %v, want statusInfo (server down)", res.status)
+	port := pickFreePort(t)
+	res := checkServer(graphclient.NewGraphClient(port), port, false)
+	if res.status != statusWarn {
+		t.Fatalf("status = %v, want statusWarn (server down)", res.status)
 	}
 	if !strings.Contains(res.detail, "knowledge start") {
 		t.Errorf("detail %q should name `knowledge start` when binary present", res.detail)

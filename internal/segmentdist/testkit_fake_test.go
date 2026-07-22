@@ -268,6 +268,9 @@ type fakeSegmentSource struct {
 	verifies bool
 	// listErr, when set, fails List (the seed-List transient-failure probe).
 	listErr error
+	// publishErr, when set, fails PublishManifest with it (the publishPending
+	// retry probe). publishCalls still counts the attempt.
+	publishErr error
 }
 
 var _ segmentSource = (*fakeSegmentSource)(nil)
@@ -346,6 +349,9 @@ func (s *fakeSegmentSource) Prune(ids []searchengine.SegmentID) (int, error) {
 
 func (s *fakeSegmentSource) PublishManifest(format string, digests []segmentDigest) (int, error) {
 	s.publishCalls.Add(1)
+	if s.publishErr != nil {
+		return 0, s.publishErr
+	}
 	ids := make([]searchengine.SegmentID, len(digests))
 	for i, d := range digests {
 		ids[i] = d.ID

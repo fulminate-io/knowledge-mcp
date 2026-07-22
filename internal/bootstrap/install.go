@@ -25,23 +25,38 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 )
 
-// githubAPIBaseURL is the production base URL for the public release
-// API. Overridable as a parameter (not a flag) so install_test.go can
-// point fetchers at an httptest.Server. The OSS server distribution
-// rides github.com/fulminate-io/knowledge-mcp releases.
-const githubAPIBaseURL = "https://api.github.com"
+// githubAPIBaseURL is the release-metadata API base (resolves the
+// "latest" tag / a pinned tag). releaseBaseURL is the release-asset
+// download base. BOTH are package VARS overridable ONLY at build time
+// via `-ldflags "-X …/bootstrap.githubAPIBaseURL=…"` /
+// `-X …/bootstrap.releaseBaseURL=…` — legit for staging mirrors,
+// air-gapped installs, and local/CI testing. There is deliberately NO
+// runtime env var, flag, or config key (the shipped binary's endpoints
+// are build-time only — the no-endpoint-override rule). Release builds
+// keep the canonical GitHub defaults; tests override the vars directly.
+//
+// Asset download URLs are CONSTRUCTED from releaseBaseURL + tag + name
+// (see resolveReleaseURLs) rather than taken from the release JSON's
+// browser_download_url, so the download source is a build-time constant
+// and a mirror override can never be defeated by remote-supplied URLs.
+var (
+	githubAPIBaseURL = "https://api.github.com"
+	releaseBaseURL   = "https://github.com/fulminate-io/knowledge-mcp/releases/download"
+)
 
 // installFlags holds the parsed flags for `knowledge install`.
 //
 // --check is declared here so flag parsing is shared with the
 // read-only-mode body in runCheck.
 type installFlags struct {
-	dest  string
-	check bool
+	dest           string
+	check          bool
+	allowDowngrade bool
 }
 
 // registerInstallFlags registers the `knowledge install` flags on fs, binding
@@ -52,40 +67,51 @@ type installFlags struct {
 func registerInstallFlags(fs *flag.FlagSet, f *installFlags) {
 	fs.StringVar(&f.dest, "dest", "", "Destination directory for knowledge-server (default: sibling of running stdio binary)")
 	fs.BoolVar(&f.check, "check", false, "Compare installed server version against latest release without writing")
+	fs.BoolVar(&f.allowDowngrade, "allow-downgrade", false, "Permit installing a release OLDER than the currently-installed version (default: refuse)")
 }
 
 // runInstall is the entry point dispatched from RunSubcommand. Parses
 // flags, branches on --check, otherwise runs the full download +
 // verify + extract + atomic-install pipeline.
-func runInstall(args []string) error {
+//
+// Returns the release tag that was resolved and installed (the value
+// `knowledge setup`'s update leg threads to the post-restart
+// version-identity check, since the running process's compiled-in
+// bootstrap.Version goes stale after the on-disk binary swap). The
+// --check and error paths return "".
+func runInstall(args []string) (string, error) {
 	fs := flag.NewFlagSet("knowledge install", flag.ContinueOnError)
 	var f installFlags
 	registerInstallFlags(fs, &f)
 	if err := fs.Parse(args); err != nil {
-		return err
+		return "", err
 	}
 
 	if f.check {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		return runCheck(ctx)
+		return "", runCheck(ctx)
 	}
 
-	return runInstallFull(f.dest)
+	return runInstallFull(f.dest, f.allowDowngrade)
 }
 
-// runInstallFull implements the download + verify + extract + write
-// pipeline. The pipeline aborts on the FIRST verification failure
-// (sha256 mismatch / archive-shape violation) — nothing reaches the
-// destination until every check passes.
-func runInstallFull(flagDest string) error {
+// runInstallFull fetches the matching release ONCE, then installs
+// both binaries from it: knowledge-server into the sibling directory
+// (or --dest) and the knowledge client over the running binary in
+// place (unix only). Each binary's tail — download + verify + extract
+// + atomic write — aborts on the FIRST verification failure so nothing
+// partial reaches disk. See installBothBinaries in install_client.go.
+// Returns the resolved release tag (rel.TagName) on success so the
+// caller can thread the actually-installed version to a post-install
+// check; "" on any error.
+func runInstallFull(flagDest string, allowDowngrade bool) (string, error) {
 	goos, goarch, err := detectPlatform()
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	tag, isLatest := resolveReleaseTag(Version)
-	asset := assetName(goos, goarch)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
@@ -94,79 +120,102 @@ func runInstallFull(flagDest string) error {
 
 	rel, err := fetchRelease(ctx, githubAPIBaseURL, tag, isLatest)
 	if err != nil {
-		return err
-	}
-	archiveURL, checksumsURL, err := resolveReleaseURLs(rel, asset)
-	if err != nil {
-		return err
+		return "", err
 	}
 
-	archiveBytes, err := downloadAsset(ctx, archiveURL)
-	if err != nil {
-		return fmt.Errorf("download %s: %w", asset, err)
-	}
-	checksumsBytes, err := downloadAsset(ctx, checksumsURL)
-	if err != nil {
-		return fmt.Errorf("download checksums.txt: %w", err)
-	}
-
-	checksums := parseChecksums(checksumsBytes)
-	expected, ok := checksums[asset]
-	if !ok {
-		return fmt.Errorf("checksums.txt missing entry for %s", asset)
-	}
-	if err := verifyChecksum(archiveBytes, expected, asset); err != nil {
-		return err
-	}
-
-	binBytes, err := extractArchive(archiveBytes, goos)
-	if err != nil {
-		return err
-	}
-
-	destDir, err := resolveInstallDest(flagDest)
-	if err != nil {
-		return err
-	}
-	absDestDir, _ := filepath.Abs(destDir)
-
-	finalPath, err := writeAtomic(destDir, binBytes, goos)
-	if err != nil {
-		if errors.Is(err, fs.ErrPermission) {
-			return fmt.Errorf("knowledge install: cannot write knowledge-server to %s: permission denied.\n  Retry as: sudo knowledge install\n  Or pick a writable directory on $PATH: knowledge install --dest ~/.local/bin", absDestDir)
-		}
-		return err
-	}
-
-	fmt.Fprintf(os.Stdout, "knowledge install: wrote %s (%d bytes, %s)\n", finalPath, len(binBytes), rel.TagName)
-	return nil
-}
-
-// resolveReleaseURLs picks the archive asset + the checksums.txt
-// asset from the release JSON. Returns a clear error when either is
-// missing — typically means the release was published for a
-// different platform set or the upload was incomplete.
-func resolveReleaseURLs(rel *releaseResponse, asset string) (archiveURL, checksumsURL string, err error) {
-	for _, a := range rel.Assets {
-		switch a.Name {
-		case asset:
-			archiveURL = a.BrowserDownloadURL
-		case "checksums.txt":
-			checksumsURL = a.BrowserDownloadURL
+	// Downgrade guard: refuse to install a release OLDER than the
+	// currently-installed client (protects a dev/pre-release box, or a
+	// user mid-release-window, from a bare `knowledge install` silently
+	// clobbering a newer build with an older published release). Skipped
+	// when either version is unparseable (e.g. an un-ldflagged "dev"
+	// build) or --allow-downgrade is set.
+	if !allowDowngrade {
+		if cmp, ok := compareReleaseVersions(rel.TagName, Version); ok && cmp < 0 {
+			return "", fmt.Errorf("knowledge install: resolved release %s is OLDER than the installed %s — refusing to downgrade. Re-run with --allow-downgrade to override", rel.TagName, Version)
 		}
 	}
-	if archiveURL == "" {
-		return "", "", fmt.Errorf("release %s has no asset named %s", rel.TagName, asset)
+
+	if err := installBothBinaries(ctx, rel, goos, goarch, flagDest); err != nil {
+		return "", err
 	}
-	if checksumsURL == "" {
-		return "", "", fmt.Errorf("release %s has no checksums.txt asset", rel.TagName)
-	}
-	return archiveURL, checksumsURL, nil
+	return rel.TagName, nil
 }
 
-// runCheck is the read-only --check body: report the installed
-// server version, the latest published release, and whether an
-// update is available. Never writes to disk.
+// resolveReleaseURLs CONSTRUCTS the archive + checksums.txt download
+// URLs for tag from the build-time releaseBaseURL — deliberately NOT
+// from the release JSON's browser_download_url, so the download source
+// is a build-time constant a mirror override fully controls. Layout
+// matches the GitHub releases/download path: <base>/<tag>/<asset>.
+func resolveReleaseURLs(tag, asset string) (archiveURL, checksumsURL string) {
+	return releaseBaseURL + "/" + tag + "/" + asset,
+		releaseBaseURL + "/" + tag + "/checksums.txt"
+}
+
+// compareReleaseVersions compares two release tags (vMAJOR.MINOR.PATCH
+// with an optional -suffix such as -dev/-rc1). Returns (-1|0|+1, true)
+// on a successful parse of BOTH, or (0, false) when either is
+// unparseable (e.g. the un-ldflagged "dev" sentinel) so callers can
+// skip a comparison they cannot make. The numeric MAJOR.MINOR.PATCH
+// core dominates; when cores tie, a suffixed (pre-release) tag sorts
+// BELOW an unsuffixed one, and two suffixed tags compare equal at the
+// core (a v0.4.11-dev installed vs a v0.4.10 resolved is a downgrade
+// because 0.4.11 > 0.4.10, independent of the -dev suffix).
+func compareReleaseVersions(a, b string) (int, bool) {
+	ca, sa, oka := parseSemverCore(a)
+	cb, sb, okb := parseSemverCore(b)
+	if !oka || !okb {
+		return 0, false
+	}
+	for i := range 3 {
+		if ca[i] != cb[i] {
+			if ca[i] < cb[i] {
+				return -1, true
+			}
+			return 1, true
+		}
+	}
+	// Cores tie: a pre-release (has suffix) sorts below a final release.
+	switch {
+	case sa && !sb:
+		return -1, true
+	case !sa && sb:
+		return 1, true
+	default:
+		return 0, true
+	}
+}
+
+// parseSemverCore parses "vMAJOR.MINOR.PATCH[-suffix]" into its numeric
+// core [3]int and whether it carried a pre-release suffix. Returns
+// ok=false for anything that doesn't match (e.g. "dev", "latest", "").
+func parseSemverCore(v string) (core [3]int, prerelease bool, ok bool) {
+	v = strings.TrimPrefix(strings.TrimSpace(v), "v")
+	if v == "" {
+		return core, false, false
+	}
+	if i := strings.IndexByte(v, '-'); i >= 0 {
+		prerelease = true
+		v = v[:i]
+	}
+	parts := strings.Split(v, ".")
+	if len(parts) != 3 {
+		return core, false, false
+	}
+	for i, p := range parts {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 0 {
+			return core, false, false
+		}
+		core[i] = n
+	}
+	return core, prerelease, true
+}
+
+// runCheck is the read-only --check body: report, for BOTH the
+// knowledge client (the running binary, from bootstrap.Version) and
+// the sibling knowledge-server, the installed version, the latest
+// published release, and whether an update is available. Never writes
+// to disk.
 //
 // The caller supplies ctx with a deadline so the locator + --version
 // exec are bounded — a corrupt or wrong-arch binary that hangs on
@@ -187,6 +236,12 @@ func runCheck(ctx context.Context) error {
 		resolvedTag = rel.TagName
 	}
 
+	// Client = the running binary; its version is the compiled-in
+	// bootstrap.Version.
+	reportBinaryStatus("client", Version, resolvedTag, goos, goarch)
+
+	// Server = the sibling knowledge-server; probe its --version,
+	// bounded by ctx so a hung binary can't wedge the check.
 	installed := "not installed"
 	binPath, ferr := findServerBinary()
 	if ferr == nil {
@@ -198,19 +253,33 @@ func runCheck(ctx context.Context) error {
 			installed = strings.TrimSpace(string(out))
 		}
 	}
+	reportBinaryStatus("server", installed, resolvedTag, goos, goarch)
+	return nil
+}
 
-	fmt.Fprintf(os.Stdout, "knowledge install --check: installed = %s\n", installed)
-	fmt.Fprintf(os.Stdout, "knowledge install --check: latest    = %s for %s-%s\n", resolvedTag, goos, goarch)
+// reportBinaryStatus prints the installed/latest/staleness triple for
+// one binary (label "client" or "server") given its installed version
+// string and the resolved latest release tag.
+func reportBinaryStatus(label, installed, resolvedTag, goos, goarch string) {
+	fmt.Fprintf(os.Stdout, "knowledge install --check: %s installed = %s\n", label, installed)
+	fmt.Fprintf(os.Stdout, "knowledge install --check: %s latest    = %s for %s-%s\n", label, resolvedTag, goos, goarch)
 
 	switch {
 	case installed == resolvedTag:
-		fmt.Fprintln(os.Stdout, "knowledge install --check: up to date")
+		fmt.Fprintf(os.Stdout, "knowledge install --check: %s up to date\n", label)
 	case installed == "not installed" || strings.HasPrefix(installed, "installed (version unknown"):
-		fmt.Fprintln(os.Stdout, "knowledge install --check: update available — run `knowledge install`")
+		fmt.Fprintf(os.Stdout, "knowledge install --check: %s update available — run `knowledge install`\n", label)
 	default:
-		fmt.Fprintf(os.Stdout, "knowledge install --check: update available (installed=%s, latest=%s) — run `knowledge install`\n", installed, resolvedTag)
+		// When the installed build is NEWER than the resolved latest
+		// (a dev/pre-release box, or a user mid-release-window), a plain
+		// "update available" would mislead — `knowledge install` would
+		// REFUSE the downgrade. Report it as such.
+		if cmp, ok := compareReleaseVersions(resolvedTag, installed); ok && cmp < 0 {
+			fmt.Fprintf(os.Stdout, "knowledge install --check: %s installed is NEWER than latest (installed=%s, latest=%s) — no update; `knowledge install` would refuse the downgrade\n", label, installed, resolvedTag)
+			return
+		}
+		fmt.Fprintf(os.Stdout, "knowledge install --check: %s update available (installed=%s, latest=%s) — run `knowledge install`\n", label, installed, resolvedTag)
 	}
-	return nil
 }
 
 // detectPlatform returns the (goos, goarch) pair for the running
@@ -252,10 +321,11 @@ func archiveExt(goos string) string {
 }
 
 // assetName returns the release-asset basename for the given goos/
-// goarch pair. Matches the `artifact:` strings in the release matrix
+// goarch pair and binary basename (binBase is "knowledge-server" or
+// "knowledge"). Matches the `artifact:` strings in the release matrix
 // exactly.
-func assetName(goos, goarch string) string {
-	return fmt.Sprintf("knowledge-server-%s-%s%s", goos, goarch, archiveExt(goos))
+func assetName(goos, goarch, binBase string) string {
+	return fmt.Sprintf("%s-%s-%s%s", binBase, goos, goarch, archiveExt(goos))
 }
 
 // resolveReleaseTag maps the running stdio binary's version to a
@@ -355,10 +425,13 @@ func resolveInstallDest(flagDest string) (string, error) {
 // the tempfile is created the tempfile is removed (best effort).
 // Permission errors surface as fs.ErrPermission so the caller can
 // translate into the multi-line UX hint without parsing error text.
-func writeAtomic(destDir string, binBytes []byte, goos string) (string, error) {
-	finalName := "knowledge-server"
+//
+// finalBase is the binary basename to install ("knowledge-server" or
+// "knowledge"); the +".exe" suffix is applied on Windows.
+func writeAtomic(destDir string, binBytes []byte, goos, finalBase string) (string, error) {
+	finalName := finalBase
 	if goos == "windows" {
-		finalName = "knowledge-server.exe"
+		finalName = finalBase + ".exe"
 	}
 	finalPath := filepath.Join(destDir, finalName)
 	if abs, err := filepath.Abs(finalPath); err == nil {

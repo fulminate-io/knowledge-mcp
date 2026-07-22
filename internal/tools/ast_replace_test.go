@@ -55,7 +55,7 @@ func TestAstSchema_ReplaceOperation(t *testing.T) {
 // dry_run=true / non-empty diffs with files unchanged.
 func TestAstReplace_DispatchAndValidation(t *testing.T) {
 	repoDir := astIntegrationFixture(t)
-	deps := astTestDeps{rootDir: repoDir}
+	deps := astTestDeps{rootDir: repoDir, rootDirSet: true} // explicit root: walk the fixture, not the guard path
 
 	t.Run("missing_replacement_errors", func(t *testing.T) {
 		body, isErr, _ := callAst(t, deps, `{
@@ -98,7 +98,7 @@ func TestAstReplace_DispatchAndValidation(t *testing.T) {
 func TestAstReplace_DryRunPointerSemantics(t *testing.T) {
 	t.Run("explicit_false_applies", func(t *testing.T) {
 		repoDir := astIntegrationFixture(t)
-		deps := astTestDeps{rootDir: repoDir}
+		deps := astTestDeps{rootDir: repoDir, rootDirSet: true} // explicit root: walk the fixture, not the guard path
 
 		body, isErr, _ := callAst(t, deps, `{
 			"operation":"replace",
@@ -122,7 +122,7 @@ func TestAstReplace_DryRunPointerSemantics(t *testing.T) {
 
 	t.Run("absent_defaults_to_dry_run", func(t *testing.T) {
 		repoDir := astIntegrationFixture(t)
-		deps := astTestDeps{rootDir: repoDir}
+		deps := astTestDeps{rootDir: repoDir, rootDirSet: true} // explicit root: walk the fixture, not the guard path
 		before, err := os.ReadFile(filepath.Join(repoDir, "main.go"))
 		require.NoError(t, err)
 
@@ -150,7 +150,7 @@ func TestAstReplace_DryRunPointerSemantics(t *testing.T) {
 func TestAstReplace_EmptyReplacement_Deletes(t *testing.T) {
 	t.Run("explicit_empty_deletes_on_apply", func(t *testing.T) {
 		repoDir := astIntegrationFixture(t)
-		deps := astTestDeps{rootDir: repoDir}
+		deps := astTestDeps{rootDir: repoDir, rootDirSet: true} // explicit root: walk the fixture, not the guard path
 		before, err := os.ReadFile(filepath.Join(repoDir, "main.go"))
 		require.NoError(t, err)
 		require.Contains(t, string(before), "defer f.Close()", "fixture must contain the target defer")
@@ -176,7 +176,7 @@ func TestAstReplace_EmptyReplacement_Deletes(t *testing.T) {
 
 	t.Run("explicit_empty_previews_under_default_dry_run", func(t *testing.T) {
 		repoDir := astIntegrationFixture(t)
-		deps := astTestDeps{rootDir: repoDir}
+		deps := astTestDeps{rootDir: repoDir, rootDirSet: true} // explicit root: walk the fixture, not the guard path
 		before, err := os.ReadFile(filepath.Join(repoDir, "main.go"))
 		require.NoError(t, err)
 
@@ -222,7 +222,7 @@ func run() {
 // leave it unchanged.
 func TestHandleAstReplace_OverlapRefused(t *testing.T) {
 	repoDir := astReplaceNestFixture(t)
-	deps := astTestDeps{rootDir: repoDir}
+	deps := astTestDeps{rootDir: repoDir, rootDirSet: true} // explicit root: walk the fixture, not the guard path
 	before, err := os.ReadFile(filepath.Join(repoDir, "main.go"))
 	require.NoError(t, err)
 
@@ -251,7 +251,7 @@ func TestHandleAstReplace_OverlapRefused(t *testing.T) {
 // replacement containing $$ emits a single literal $ in the rewritten file.
 func TestHandleAstReplace_LiteralDollarEscape(t *testing.T) {
 	repoDir := astIntegrationFixture(t)
-	deps := astTestDeps{rootDir: repoDir}
+	deps := astTestDeps{rootDir: repoDir, rootDirSet: true} // explicit root: walk the fixture, not the guard path
 
 	// $$ -> literal $ (the byte after the two dollars is a space, NOT a third
 	// $, so it is the escape — not a $$$ sequence ref). $X -> the captured

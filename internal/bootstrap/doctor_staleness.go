@@ -24,20 +24,21 @@ import (
 // checkCodeStaleness resolves the current repo, reads its recorded collection
 // metadata off the GraphInfo catalog, and reports drift. Never returns
 // statusErr — a stale or unknown index is informational, not a failure.
-func checkCodeStaleness(port int) checkResult {
+// Liveness comes from the caller's single shared probe (defaultChecks); this
+// check never dials its own probe.
+func checkCodeStaleness(gc *graphclient.GraphClient, healthy bool) checkResult {
 	cwd, err := os.Getwd()
 	if err != nil {
 		return staleResult(statusInfo, "cannot resolve working dir", "")
 	}
 	repo := filepath.Base(cwd)
 
-	gc := graphclient.NewGraphClient(port)
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-	defer cancel()
-	if !gc.HealthyCtx(ctx) {
+	if !healthy {
 		return staleResult(statusInfo, "server not running — code-index staleness unknown",
 			"run `knowledge start`, then `knowledge doctor` again")
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
 
 	syncCommit, collectedAt, ok := tools.RecordedCodeSyncMeta(ctx, gc.Execute, repo)
 	if !ok {
