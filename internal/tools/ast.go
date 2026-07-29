@@ -136,10 +136,17 @@ func handleAstMatch(ctx context.Context, deps ClientDeps, a astArgs) kgtools.Too
 	// guess (empty / abs path / current tree all resolve to a real dir above).
 	a.Repo = filepath.Base(repoDir)
 
+	// Hydration reads the branch overlay the same way file_symbols does. Derived
+	// here because ast carries no branch arg: autoDetectBranch resolves the repo's
+	// recorded on-disk directory from the manifest and reads its current branch,
+	// keyed on the same graph name hydration uses. It returns "" on a manifest
+	// miss or detached HEAD, which falls through to the base graph as before.
+	branch := autoDetectBranch(ctx, a.Repo)
+
 	// nil GraphCaller is tolerated — the hydrator's b.gc == nil branch returns
 	// empty hydration without error, matching the prior behavior where
 	// the bare GraphClient could legitimately be nil in test harnesses.
-	results, herr := ast.Hydrate(ctx, graphClientHydratorBackend{gc: deps.GraphCaller(), repo: a.Repo}, raws, walk)
+	results, herr := ast.Hydrate(ctx, graphClientHydratorBackend{gc: deps.GraphCaller(), repo: a.Repo, branch: branch}, raws, walk)
 	if herr != nil {
 		return errorResult("hydrate: " + herr.Error())
 	}

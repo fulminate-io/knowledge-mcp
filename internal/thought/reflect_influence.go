@@ -82,7 +82,7 @@ func ReflectInfluence(ctx context.Context, gc Caller, limit int, profile *Person
 	var matrix TrustMatrix
 	var chargeMap map[string][]*knowledgev1.Node
 	if profile != nil {
-		matrix, err = BuildTrustMatrixWithPersonality(ctx, gc, thoughtIDs, *profile, nodeByID, now)
+		matrix, err = BuildTrustMatrixWithPersonality(ctx, gc, thoughtIDs, *profile, nodeByID, now, nil)
 		if err != nil {
 			return InfluenceRanking{}, err
 		}
@@ -95,7 +95,7 @@ func ReflectInfluence(ctx context.Context, gc Caller, limit int, profile *Person
 	} else {
 		// Non-profile (default) path: the charge map is FUSED with the matrix build
 		// — reused for the partition, no second full-corpus charge read.
-		matrix, chargeMap, err = BuildTrustMatrixWithCharges(ctx, gc, thoughtIDs, now)
+		matrix, chargeMap, err = BuildTrustMatrixWithCharges(ctx, gc, thoughtIDs, now, nil)
 		if err != nil {
 			return InfluenceRanking{}, err
 		}

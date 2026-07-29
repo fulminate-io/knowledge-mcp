@@ -63,7 +63,7 @@ func DetectThoughtClusters(ctx context.Context, gc Caller, gamma float64) ([]Tho
 	if gamma <= 0 {
 		gamma = 0.5
 	}
-	nodeIDs, adj, err := fetchAdjacency(ctx, gc, "all", nil)
+	nodeIDs, adj, err := fetchAdjacency(ctx, gc, "all", nil, nil) // standalone helper: no resident cache, always drain.
 	if err != nil {
 		return nil, fmt.Errorf("thought: detect clusters: %w", err)
 	}
@@ -82,7 +82,7 @@ func DetectAllClusters(ctx context.Context, gc Caller, gamma float64) ([]Thought
 	if gamma <= 0 {
 		gamma = 0.5
 	}
-	nodeIDs, adj, err := fetchAdjacency(ctx, gc, "all_types", nil)
+	nodeIDs, adj, err := fetchAdjacency(ctx, gc, "all_types", nil, nil) // all_types spans every node type — not the thought-only cache.
 	if err != nil {
 		return nil, fmt.Errorf("thought: detect all clusters: %w", err)
 	}
@@ -112,13 +112,14 @@ var ErrClustersNotComputed = errors.New("thought: persisted cluster state not co
 // personality/clusters surfaces use this so they return within the tool ceiling
 // instead of recomputing the full adjacency + Leiden pass live.
 //
-// RPCs: the paged thought drain (~13 bounded pages) + one bulk fetchChargesFor +
-// the node payloads already in hand from the drain — all bounded, well within
-// the 180s ceiling. Cold case (N>0 nodes drained, none carry cluster_id) →
-// (nil, ErrClustersNotComputed) so the caller renders it loudly; truly empty
-// graph (zero nodes) → (nil, nil).
-func DetectPersistedClusters(ctx context.Context, gc Caller) ([]ThoughtCluster, error) {
-	nodes, err := fetchAllThoughtNodes(ctx, gc)
+// Corpus source: a warm CorpusSource serves the NodeThought set from the
+// resident cache (O(1)); a nil/cold src drains the paged thought browse (~13 bounded
+// pages). Either way + one bulk fetchChargesFor + the node payloads already in hand —
+// all bounded, well within the 180s ceiling. Cold case (N>0 nodes, none carry
+// cluster_id) → (nil, ErrClustersNotComputed) so the caller renders it loudly; truly
+// empty graph (zero nodes) → (nil, nil).
+func DetectPersistedClusters(ctx context.Context, gc Caller, src CorpusSource) ([]ThoughtCluster, error) {
+	nodes, err := fetchAllThoughtNodes(ctx, gc, src)
 	if err != nil {
 		return nil, fmt.Errorf("thought: detect persisted clusters: %w", err)
 	}
@@ -169,10 +170,10 @@ func DetectPersistedClusters(ctx context.Context, gc Caller) ([]ThoughtCluster, 
 // partitionFromPersisted reads the persisted cluster_id metadata back into a lean
 // node→cluster partition map (tid → cluster_id) for every node that carries a
 // non-empty cluster_id. It is the charge-free, partition-only core of the
-// cold-start Leiden rehydration path (graph.RehydrateLeidenState): it drains the
-// thought corpus once via fetchAllThoughtNodes and issues NO fetchChargesFor and
-// NO Leiden — rehydration needs only the equivalence classes, not labeled
-// ThoughtCluster aggregates.
+// cold-start Leiden rehydration path (graph.RehydrateLeidenState): it reads the
+// thought corpus once via fetchAllThoughtNodes (resident cache when src is warm,
+// else a drain) and issues NO fetchChargesFor and NO Leiden — rehydration needs only
+// the equivalence classes, not labeled ThoughtCluster aggregates.
 //
 // Returns an empty (non-nil) map when no node carries cluster_id, so the caller
 // distinguishes a true first run (nothing to rehydrate → full pass) from a
@@ -181,8 +182,8 @@ func DetectPersistedClusters(ctx context.Context, gc Caller) ([]ThoughtCluster, 
 // (cluster_id → members) alongside a nodeByID map for its aggregates, so the
 // shared reuse is the fetchAllThoughtNodes drain + the kgtypes.Value accessor,
 // not the grouping loop.
-func partitionFromPersisted(ctx context.Context, gc Caller) (map[string]string, error) {
-	nodes, err := fetchAllThoughtNodes(ctx, gc)
+func partitionFromPersisted(ctx context.Context, gc Caller, src CorpusSource) (map[string]string, error) {
+	nodes, err := fetchAllThoughtNodes(ctx, gc, src)
 	if err != nil {
 		return nil, fmt.Errorf("thought: partition from persisted: %w", err)
 	}

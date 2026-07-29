@@ -44,6 +44,39 @@ type PropagationLoop struct {
 	scanner    PipelineScanner
 	summarizer TopicSummarizer
 
+	// corpus is the resident thought-corpus cache. corpusScanner is the
+	// CorpusDelta wire seam it drains through. Both nil-tolerant: a nil corpusScanner
+	// leaves the loop in DEGRADED mode — the full drainThoughtBrowse path, behavior-
+	// equivalent to pre-cache — so tests that leave it nil keep the old semantics.
+	// The production bootstrap wires the routed CorpusDelta client via WithTopicDeps.
+	corpus        *corpusCache
+	corpusScanner CorpusDeltaScanner
+
+	// vectorResident and coverageGate are the OPTIONAL in-process vector seam set
+	// via WithVectorDeps: leaf attachment resolves member vectors from the client's
+	// resident segment engines (ZERO RPC) when the gate reports the HNSW pool
+	// trustworthy, and falls back to the server drain when it declines. Both
+	// nil-tolerant — a nil pair is DEGRADED mode and takes the drain, which is
+	// byte-identical to the pre-resident behavior every existing test exercises.
+	vectorResident VectorResident
+	coverageGate   SegmentCoverageGate
+
+	// pendingLeafRetry holds leaves that were candidates but had no resident vector
+	// yet. It is REQUIRED because a newly-embedded thought does not re-enter the
+	// dirty seed when its vector arrives. The embed writeback DOES run db.Update —
+	// it clears the embed-failure marker — but changedFields compares metadata
+	// key-by-key against a map read, so setting a key to "" when it was ABSENT reads
+	// as unchanged and yields no changed fields; AddNode then preserves UpdatedAt
+	// (its content-identity check), so the node never re-dirties. If changedFields
+	// ever starts reporting that write, this set becomes redundant — check there
+	// before deleting it.
+	//
+	// Under resident resolution it matters MORE than under the drain: a vector
+	// becomes resolvable only after the daemon's own embed drain produces it AND the
+	// carrying segment is shipped and imported, so freshness lags by more than one
+	// pass. Guarded by p.mu.
+	pendingLeafRetry map[string]bool
+
 	// interval is the per-tick cadence. Defaults to PropagationInterval
 	// (one hour) in production. Tests override via newPropagationLoopForTest
 	// to drive ticks deterministically without sleeping for an hour.
@@ -130,7 +163,7 @@ type PropagationLoop struct {
 // Config.ReflectBackstopInterval as backstopInterval. The clock defaults to
 // time.Now; tests override it via newPropagationLoopForTest.
 func NewPropagationLoop(gc Caller, backstopInterval time.Duration) *PropagationLoop {
-	baseCtx, baseCancel := context.WithCancel(context.Background()) //nolint:gosec // G118: baseCancel is stored on the loop and invoked by Stop
+	baseCtx, baseCancel := newPropagationBaseContext()
 	p := &PropagationLoop{
 		gc:               gc,
 		interval:         PropagationInterval,
@@ -167,55 +200,9 @@ func (p *PropagationLoop) clockNow() time.Time {
 	return p.clock()
 }
 
-// GetClusters returns the most recently detected clusters and
-// personality profile. Both may be nil if cluster detection has not
-// run yet.
-func (p *PropagationLoop) GetClusters() ([]ThoughtCluster, *PersonalityProfile) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.lastClusters, p.lastProfile
-}
-
-// GetBlindSpots returns the most recently computed faceted blind-spot report.
-// A zero-value report (Computed=false) is the cold sentinel returned before the
-// propagation loop has completed a tick (including right after a daemon restart);
-// the on-demand handler reads Computed to render the not-yet-computed message.
-// This is the seam the blind_spots handler serves the cache through — p.mu-guarded,
-// mirroring GetClusters.
-func (p *PropagationLoop) GetBlindSpots() BlindSpotReport {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.lastBlindSpots
-}
-
-// GetClustersCached returns the most recently detected clusters + personality
-// profile from the loop tick, plus a `computed` flag that is false until the
-// loop has stored at least one tick (the cold sentinel). Mirrors GetBlindSpots'
-// Computed-false cold path. Distinct from GetClusters() (kept unchanged for its
-// similarity_lever callers) only by carrying the cold flag.
-func (p *PropagationLoop) GetClustersCached() ([]ThoughtCluster, *PersonalityProfile, bool) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.lastClusters, p.lastProfile, p.lastComputed
-}
-
-// GetTensions returns the most recently computed tension reports plus the cold
-// flag (false before the first tick). Mirrors GetBlindSpots.
-func (p *PropagationLoop) GetTensions() ([]TensionReport, bool) {
-	p.mu.Lock()
-	defer p.mu.Unlock()
-	return p.lastTensions, p.lastComputed
-}
-
-// TriggerClusterDetection runs cluster detection synchronously and
-// caches the result. Used by client-side reflective handlers when the
-// cache is cold.
-func (p *PropagationLoop) TriggerClusterDetection() {
-	if p == nil {
-		return
-	}
-	p.runClusterDetection()
-}
+// The p.mu-guarded accessors over this loop's cached tick output (GetClusters,
+// GetBlindSpots, GetClustersCached, GetTensions) and the synchronous cold-cache
+// TriggerClusterDetection live in loop_accessors.go.
 
 // runBackgroundPropagation is the hourly-tick entry. It brackets the pass for
 // Stop()-drain (inFlight.Add, ORTHOGONAL to the single-flight coalescing below),
@@ -290,6 +277,13 @@ func (p *PropagationLoop) runPass(ctxProbe context.Context, forceFull bool) (Pro
 	defer cancel()
 	start := time.Now()
 
+	// Refresh the resident thought-corpus cache BEFORE detection so every rewired
+	// consumer reads a fresh Snapshot() this pass. Reached only on a non-quiet tick
+	// (the quiet gate returned above), so a quiet tick issues ZERO CorpusDelta calls.
+	// Nil-tolerant: a degraded loop (no cache/scanner) is a no-op and consumers stay
+	// on the full-drain path.
+	p.refreshCorpusCache(ctx)
+
 	// Every pass triggers a cluster detection. No conditional guard — the trigger
 	// semantics are deliberately simple per OQ1 lock (one tick = one detection +
 	// one propagation; the manual lever is the same single detection + propagation).
@@ -330,7 +324,7 @@ func (p *PropagationLoop) runPass(ctxProbe context.Context, forceFull bool) (Pro
 	// Skip the bulk hydrate when profile is nil (no personality adjustment; the
 	// diff then keeps every row, preserving prior behavior). dirtySeed scopes the
 	// DeGroot recompute to the closure on a warm tick; nil ⇒ full pass.
-	result, err := RunPropagationScoped(ctx, p.gc, profile, p.fetchNodeMap(ctx, profile), dirtySeed)
+	result, err := RunPropagationScoped(ctx, p.gc, profile, p.fetchNodeMap(ctx, profile), dirtySeed, p) // resident cache.
 	if err != nil {
 		// LOUD degradation: a per-tick deadline means the corpus is larger than
 		// the budget — report how many thoughts were fetched before the cap so a
@@ -462,9 +456,22 @@ func (p *PropagationLoop) logScopedPassAccounting(result PropagationResult, dirt
 // persisted propagated_* for the untouched-component carry-forward/diff).
 // Skipping the hydrate in the nil-profile case avoids an unnecessary
 // gc.Call on a no-personality path (the diff then keeps every row — cold case).
+//
+// When the resident corpus cache is warm the node map is built DIRECTLY
+// from the snapshot (the full Node payloads — with cluster_id + propagated_* — are
+// already in hand), eliminating both the listAllThoughtIDs browse and the
+// fetchNodesByIDs hydrate. A cold/degraded loop falls back to the two-round-trip
+// browse+hydrate.
 func (p *PropagationLoop) fetchNodeMap(ctx context.Context, profile *PersonalityProfile) map[string]*knowledgev1.Node {
 	if profile == nil {
 		return nil
+	}
+	if nodes, warm := p.CorpusSnapshot(); warm {
+		m := make(map[string]*knowledgev1.Node, len(nodes))
+		for _, n := range nodes {
+			m[n.GetId()] = n
+		}
+		return m
 	}
 	ids, _ := listAllThoughtIDs(ctx, p.gc)
 	return fetchNodesByIDs(ctx, p.gc, ids)

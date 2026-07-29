@@ -64,7 +64,7 @@ type reflectTestDeps struct {
 // clusters/profile through the provider seam.
 func reflectGranularityDeps(gc *reflectFakeCaller) reflectTestDeps {
 	ctx := context.Background()
-	clusters, err := clientthought.DetectPersistedClusters(ctx, gc)
+	clusters, err := clientthought.DetectPersistedClusters(ctx, gc, nil)
 	if err != nil {
 		panic("reflectGranularityDeps: DetectPersistedClusters: " + err.Error())
 	}
@@ -101,8 +101,10 @@ func (d reflectTestDeps) SegmentShipper() SegmentShipper               { return 
 func (d reflectTestDeps) SegmentPruner() SegmentPruner                 { return nil }
 func (d reflectTestDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
 func (d reflectTestDeps) PipelineScanner() PipelineScanner             { return nil }
-func (d reflectTestDeps) ReflectionForcer() ReflectionForcer           { return nil }
-func (d reflectTestDeps) SimilarityForcer() SimilarityForcer           { return nil }
+
+func (d reflectTestDeps) ClearHealLatch(kgtypes.GraphType, string) {}
+func (d reflectTestDeps) ReflectionForcer() ReflectionForcer       { return nil }
+func (d reflectTestDeps) SimilarityForcer() SimilarityForcer       { return nil }
 
 func (d reflectTestDeps) BlindSpotProvider() BlindSpotProvider { return nil }
 

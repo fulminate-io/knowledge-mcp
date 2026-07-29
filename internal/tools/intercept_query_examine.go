@@ -37,7 +37,7 @@ const examineAncestryMaxHops = 5
 
 // InterceptQueryExamine claims query(mode:examine). Returns (false,_) for any
 // other tool or mode so the next chain step takes over with the original params.
-func InterceptQueryExamine(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
+func InterceptQueryExamine(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	if params.Name != "query" {
 		return false, kgtools.ToolResult{}
 	}
@@ -66,7 +66,7 @@ func InterceptQueryExamine(deps ClientDeps, params kgtools.CallToolParams) (bool
 		return true, errorResult("examine: graph client unavailable")
 	}
 
-	data, found, err := composeInspectData(context.Background(), gc.Execute, id)
+	data, found, err := composeInspectData(ctx, gc.Execute, id)
 	if err != nil {
 		return true, errorResult("examine failed: " + err.Error())
 	}

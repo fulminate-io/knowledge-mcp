@@ -3,7 +3,6 @@
 package tools
 
 import (
-	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -209,7 +208,7 @@ func TestInterceptSearchCode_RoutesViaComposeCodeSearch(t *testing.T) {
 	deps := &interceptDeps{gc: gc, segMgr: mgr}
 	// The search tool carries the query under `query` (not `text`).
 	raw := json.RawMessage(`{"graph":"code","query":"foo","repo":"knowledge"}`)
-	handled, res := interceptSearchCode(context.Background(), deps, gc.Execute, raw)
+	handled, res := interceptSearchCode(opCtx(), deps, gc.Execute, raw)
 	require.True(t, handled, "graph=code must be claimed client-side")
 	require.False(t, res.IsError, textBodyTools(res))
 	body := textBodyTools(res)
@@ -238,7 +237,7 @@ func TestInterceptSearchCode_JSONAndText(t *testing.T) {
 	}
 
 	t.Run("format:json returns the SearchJSONResponse envelope", func(t *testing.T) {
-		handled, res := interceptSearchCode(context.Background(), seed(t), nil,
+		handled, res := interceptSearchCode(opCtx(), seed(t), nil,
 			json.RawMessage(`{"graph":"code","query":"foo","repo":"knowledge","format":"json"}`))
 		require.True(t, handled, "graph=code must be claimed client-side")
 		require.False(t, res.IsError, textBodyTools(res))
@@ -254,7 +253,7 @@ func TestInterceptSearchCode_JSONAndText(t *testing.T) {
 	})
 
 	t.Run("no format stays on the text path", func(t *testing.T) {
-		handled, res := interceptSearchCode(context.Background(), seed(t), nil,
+		handled, res := interceptSearchCode(opCtx(), seed(t), nil,
 			json.RawMessage(`{"graph":"code","query":"foo","repo":"knowledge"}`))
 		require.True(t, handled)
 		require.False(t, res.IsError, textBodyTools(res))
@@ -273,7 +272,7 @@ func TestInterceptSearchCode_JSONAndText(t *testing.T) {
 func TestInterceptSearchCode_NoQueryFallsThrough(t *testing.T) {
 	mgr := &fakeSegmentSearcher{}
 	deps := &interceptDeps{segMgr: mgr}
-	handled, _ := interceptSearchCode(context.Background(), deps, nil, json.RawMessage(`{"graph":"code"}`))
+	handled, _ := interceptSearchCode(opCtx(), deps, nil, json.RawMessage(`{"graph":"code"}`))
 	assert.False(t, handled, "no query → fall through")
 	assert.Equal(t, int64(0), mgr.calls.Load(), "no client Search fires when there is no query")
 }

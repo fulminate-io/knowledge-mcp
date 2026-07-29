@@ -70,7 +70,7 @@ func TestReflectSummary_TopicLabel(t *testing.T) {
 	clusters := []ThoughtCluster{{ID: "c1", Label: "member-A", Size: 9}}
 
 	ApplyTopicLabels(context.Background(), gc, clusters, nil)
-	summary := ReflectSummary(context.Background(), gc, clusters)
+	summary := ReflectSummary(context.Background(), gc, clusters, nil)
 
 	if len(summary.TopClusters) != 1 {
 		t.Fatalf("TopClusters = %d, want 1", len(summary.TopClusters))

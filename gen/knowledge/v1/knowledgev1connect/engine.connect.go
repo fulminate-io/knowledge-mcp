@@ -52,6 +52,9 @@ const (
 	// EngineServicePipelineGenPollProcedure is the fully-qualified name of the EngineService's
 	// PipelineGenPoll RPC.
 	EngineServicePipelineGenPollProcedure = "/knowledge.v1.EngineService/PipelineGenPoll"
+	// EngineServiceCorpusDeltaProcedure is the fully-qualified name of the EngineService's CorpusDelta
+	// RPC.
+	EngineServiceCorpusDeltaProcedure = "/knowledge.v1.EngineService/CorpusDelta"
 	// EngineServiceExportGraphProcedure is the fully-qualified name of the EngineService's ExportGraph
 	// RPC.
 	EngineServiceExportGraphProcedure = "/knowledge.v1.EngineService/ExportGraph"
@@ -118,6 +121,20 @@ type EngineServiceClient interface {
 	// axes the collector pipeline drains); the reflect + segment_rebuild axes stay
 	// on the existing PipelineScan RPC.
 	PipelineGenPoll(context.Context, *connect.Request[v1.PipelineGenPollRequest]) (*connect.Response[v1.PipelineGenPollResponse], error)
+	// CorpusDelta is the O(delta) thought-corpus change feed the client daemon
+	// uses to keep a resident corpus cache fresh WITHOUT re-draining the whole
+	// graph every tick. Given a set of per-layer keyset cursors it returns only the
+	// rows changed in (cursor, safe_horizon H] — including tombstoned rows so
+	// deletes propagate — plus H itself and a per-layer reconciliation probe, all
+	// folded into ONE response served on ONE read-only snapshot. It is a SIBLING
+	// RPC (like PipelineGenPoll), NOT a new PipelineScan axis: PipelineScanItem
+	// cannot carry a full Node, and PipelineScanResponse has no room for the
+	// horizon or the reconciliation counts. Like PipelineScan/PipelineGenPoll it
+	// does NOT use the GraphSelector envelope — it carries a flat (graph_type,
+	// graph_name) pair and resolves its own scoped DB. node_types filters to the
+	// thought-corpus set ("thought","charge","thought_session"); empty = the
+	// thought-corpus default set (the reader substitutes those three types).
+	CorpusDelta(context.Context, *connect.Request[v1.CorpusDeltaRequest]) (*connect.Response[v1.CorpusDeltaResponse], error)
 	// ExportGraph is the bulk-graph-export read serving BOTH build flavors: it
 	// serializes the target graph's full byte image and returns the bytes. It
 	// mirrors the Stats read shape exactly (resolveTargetDB(target) → serialize →
@@ -194,6 +211,12 @@ func NewEngineServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(engineServiceMethods.ByName("PipelineGenPoll")),
 			connect.WithClientOptions(opts...),
 		),
+		corpusDelta: connect.NewClient[v1.CorpusDeltaRequest, v1.CorpusDeltaResponse](
+			httpClient,
+			baseURL+EngineServiceCorpusDeltaProcedure,
+			connect.WithSchema(engineServiceMethods.ByName("CorpusDelta")),
+			connect.WithClientOptions(opts...),
+		),
 		exportGraph: connect.NewClient[v1.ExportGraphRequest, v1.ExportGraphResponse](
 			httpClient,
 			baseURL+EngineServiceExportGraphProcedure,
@@ -218,6 +241,7 @@ type engineServiceClient struct {
 	hive            *connect.Client[v1.HiveRequest, v1.HiveResponse]
 	pipelineScan    *connect.Client[v1.PipelineScanRequest, v1.PipelineScanResponse]
 	pipelineGenPoll *connect.Client[v1.PipelineGenPollRequest, v1.PipelineGenPollResponse]
+	corpusDelta     *connect.Client[v1.CorpusDeltaRequest, v1.CorpusDeltaResponse]
 	exportGraph     *connect.Client[v1.ExportGraphRequest, v1.ExportGraphResponse]
 	overwriteGraph  *connect.Client[v1.OverwriteGraphRequest, v1.OverwriteGraphResponse]
 }
@@ -255,6 +279,11 @@ func (c *engineServiceClient) PipelineScan(ctx context.Context, req *connect.Req
 // PipelineGenPoll calls knowledge.v1.EngineService.PipelineGenPoll.
 func (c *engineServiceClient) PipelineGenPoll(ctx context.Context, req *connect.Request[v1.PipelineGenPollRequest]) (*connect.Response[v1.PipelineGenPollResponse], error) {
 	return c.pipelineGenPoll.CallUnary(ctx, req)
+}
+
+// CorpusDelta calls knowledge.v1.EngineService.CorpusDelta.
+func (c *engineServiceClient) CorpusDelta(ctx context.Context, req *connect.Request[v1.CorpusDeltaRequest]) (*connect.Response[v1.CorpusDeltaResponse], error) {
+	return c.corpusDelta.CallUnary(ctx, req)
 }
 
 // ExportGraph calls knowledge.v1.EngineService.ExportGraph.
@@ -325,6 +354,20 @@ type EngineServiceHandler interface {
 	// axes the collector pipeline drains); the reflect + segment_rebuild axes stay
 	// on the existing PipelineScan RPC.
 	PipelineGenPoll(context.Context, *connect.Request[v1.PipelineGenPollRequest]) (*connect.Response[v1.PipelineGenPollResponse], error)
+	// CorpusDelta is the O(delta) thought-corpus change feed the client daemon
+	// uses to keep a resident corpus cache fresh WITHOUT re-draining the whole
+	// graph every tick. Given a set of per-layer keyset cursors it returns only the
+	// rows changed in (cursor, safe_horizon H] — including tombstoned rows so
+	// deletes propagate — plus H itself and a per-layer reconciliation probe, all
+	// folded into ONE response served on ONE read-only snapshot. It is a SIBLING
+	// RPC (like PipelineGenPoll), NOT a new PipelineScan axis: PipelineScanItem
+	// cannot carry a full Node, and PipelineScanResponse has no room for the
+	// horizon or the reconciliation counts. Like PipelineScan/PipelineGenPoll it
+	// does NOT use the GraphSelector envelope — it carries a flat (graph_type,
+	// graph_name) pair and resolves its own scoped DB. node_types filters to the
+	// thought-corpus set ("thought","charge","thought_session"); empty = the
+	// thought-corpus default set (the reader substitutes those three types).
+	CorpusDelta(context.Context, *connect.Request[v1.CorpusDeltaRequest]) (*connect.Response[v1.CorpusDeltaResponse], error)
 	// ExportGraph is the bulk-graph-export read serving BOTH build flavors: it
 	// serializes the target graph's full byte image and returns the bytes. It
 	// mirrors the Stats read shape exactly (resolveTargetDB(target) → serialize →
@@ -397,6 +440,12 @@ func NewEngineServiceHandler(svc EngineServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(engineServiceMethods.ByName("PipelineGenPoll")),
 		connect.WithHandlerOptions(opts...),
 	)
+	engineServiceCorpusDeltaHandler := connect.NewUnaryHandler(
+		EngineServiceCorpusDeltaProcedure,
+		svc.CorpusDelta,
+		connect.WithSchema(engineServiceMethods.ByName("CorpusDelta")),
+		connect.WithHandlerOptions(opts...),
+	)
 	engineServiceExportGraphHandler := connect.NewUnaryHandler(
 		EngineServiceExportGraphProcedure,
 		svc.ExportGraph,
@@ -425,6 +474,8 @@ func NewEngineServiceHandler(svc EngineServiceHandler, opts ...connect.HandlerOp
 			engineServicePipelineScanHandler.ServeHTTP(w, r)
 		case EngineServicePipelineGenPollProcedure:
 			engineServicePipelineGenPollHandler.ServeHTTP(w, r)
+		case EngineServiceCorpusDeltaProcedure:
+			engineServiceCorpusDeltaHandler.ServeHTTP(w, r)
 		case EngineServiceExportGraphProcedure:
 			engineServiceExportGraphHandler.ServeHTTP(w, r)
 		case EngineServiceOverwriteGraphProcedure:
@@ -464,6 +515,10 @@ func (UnimplementedEngineServiceHandler) PipelineScan(context.Context, *connect.
 
 func (UnimplementedEngineServiceHandler) PipelineGenPoll(context.Context, *connect.Request[v1.PipelineGenPollRequest]) (*connect.Response[v1.PipelineGenPollResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("knowledge.v1.EngineService.PipelineGenPoll is not implemented"))
+}
+
+func (UnimplementedEngineServiceHandler) CorpusDelta(context.Context, *connect.Request[v1.CorpusDeltaRequest]) (*connect.Response[v1.CorpusDeltaResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("knowledge.v1.EngineService.CorpusDelta is not implemented"))
 }
 
 func (UnimplementedEngineServiceHandler) ExportGraph(context.Context, *connect.Request[v1.ExportGraphRequest]) (*connect.Response[v1.ExportGraphResponse], error) {

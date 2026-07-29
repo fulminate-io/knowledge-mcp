@@ -26,6 +26,8 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
+
 	"gopkg.in/yaml.v3"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
@@ -58,6 +60,12 @@ func runInstructionBootstrap(ctx context.Context, gc instructionBootstrapGC, roo
 	if gc == nil {
 		return fmt.Errorf("instruction bootstrap: graph caller unavailable")
 	}
+
+	// One-shot boot-time work with no originating tool call: stamp the
+	// query-origin operation ONCE here so every graph call below inherits it.
+	// The pre-flight is the call that must not be missed — on an
+	// already-seeded graph it is the only one the bootstrap makes.
+	ctx = graphclient.WithOperation(ctx, graphclient.OpInstructionBootstrap)
 
 	// Pre-flight: skip when any agent node already exists.
 	if hasAgentNodes(ctx, gc) {

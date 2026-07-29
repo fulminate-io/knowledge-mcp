@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"fmt"
 
+	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
+
 	"connectrpc.com/connect"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
@@ -26,6 +28,9 @@ func (s *UploadSink) FetchCloudSubgraph(
 	graphNames []string,
 	typePrefixes []string,
 ) (*cloudresolver.CloudSubgraph, error) {
+	// A read, unlike its chunk/finalize siblings, and driven by the log-graph
+	// cloud resolver rather than a collect — its own term keeps that distinct.
+	ctx = graphclient.WithOperation(ctx, graphclient.OpCollectFetchSubgraph)
 	client, err := s.picker(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("remote sink: resolve ingest client: %w", err)

@@ -47,8 +47,10 @@ func (d *tailRoutingDeps) SegmentShipper() SegmentShipper               { return
 func (d *tailRoutingDeps) SegmentPruner() SegmentPruner                 { return nil }
 func (d *tailRoutingDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
 func (d *tailRoutingDeps) PipelineScanner() PipelineScanner             { return nil }
-func (d *tailRoutingDeps) ReflectionForcer() ReflectionForcer           { return nil }
-func (d *tailRoutingDeps) SimilarityForcer() SimilarityForcer           { return nil }
+
+func (d *tailRoutingDeps) ClearHealLatch(kgtypes.GraphType, string) {}
+func (d *tailRoutingDeps) ReflectionForcer() ReflectionForcer       { return nil }
+func (d *tailRoutingDeps) SimilarityForcer() SimilarityForcer       { return nil }
 
 func (d *tailRoutingDeps) BlindSpotProvider() BlindSpotProvider { return nil }
 func (d *tailRoutingDeps) ClusterProvider() ClusterProvider     { return nil }

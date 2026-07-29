@@ -50,7 +50,7 @@ func TestInterceptQueryLineage_TextFormat_DeepChain_ByteIdentical(t *testing.T) 
 	deps := &parityDeps{gc: f.gc()}
 	args := mustMarshal(t, map[string]any{"mode": "lineage", "id": stepID})
 
-	handled, res := InterceptQueryLineage(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
+	handled, res := InterceptQueryLineage(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
 	require.True(t, handled)
 	require.False(t, res.IsError, "intercept error: %v", res.Content)
 
@@ -64,7 +64,7 @@ func TestInterceptQueryLineage_JSONFormat_ByteIdentical(t *testing.T) {
 	deps := &parityDeps{gc: f.gc()}
 	args := mustMarshal(t, map[string]any{"mode": "lineage", "id": stepID, "format": "json"})
 
-	handled, res := InterceptQueryLineage(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
+	handled, res := InterceptQueryLineage(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
 	require.True(t, handled)
 	require.False(t, res.IsError)
 
@@ -76,7 +76,7 @@ func TestInterceptQueryLineage_JSONFormat_ByteIdentical(t *testing.T) {
 func TestInterceptQueryLineage_MissingID_Errors(t *testing.T) {
 	deps := &parityDeps{gc: newParityFixture().gc()}
 	args := mustMarshal(t, map[string]any{"mode": "lineage"})
-	handled, res := InterceptQueryLineage(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
+	handled, res := InterceptQueryLineage(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
 	require.True(t, handled)
 	require.True(t, res.IsError)
 	assert.Contains(t, extractText(res), "lineage mode requires 'id' parameter")
@@ -93,7 +93,7 @@ func TestInterceptQueryLineage_RootNode_ShowsHint(t *testing.T) {
 	deps := &parityDeps{gc: f.gc()}
 	args := mustMarshal(t, map[string]any{"mode": "lineage", "id": rootID})
 
-	handled, res := InterceptQueryLineage(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
+	handled, res := InterceptQueryLineage(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
 	require.True(t, handled)
 	require.False(t, res.IsError)
 	assert.Contains(t, extractText(res), "(no lineage found — this is a root node)")
@@ -102,13 +102,13 @@ func TestInterceptQueryLineage_RootNode_ShowsHint(t *testing.T) {
 func TestInterceptQueryLineage_WrongTool_FallsThrough(t *testing.T) {
 	deps := &parityDeps{gc: newParityFixture().gc()}
 	args := mustMarshal(t, map[string]any{"mode": "lineage", "id": "x"})
-	handled, _ := InterceptQueryLineage(deps, kgtools.CallToolParams{Name: "search", Arguments: args})
+	handled, _ := InterceptQueryLineage(opCtx(), deps, kgtools.CallToolParams{Name: "search", Arguments: args})
 	assert.False(t, handled)
 }
 
 func TestInterceptQueryLineage_WrongMode_FallsThrough(t *testing.T) {
 	deps := &parityDeps{gc: newParityFixture().gc()}
 	args := mustMarshal(t, map[string]any{"mode": "evidence", "id": "x"})
-	handled, _ := InterceptQueryLineage(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
+	handled, _ := InterceptQueryLineage(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
 	assert.False(t, handled)
 }

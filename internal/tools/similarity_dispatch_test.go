@@ -18,6 +18,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
 	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	clientthought "github.com/fulminate-io/knowledge-mcp/internal/thought"
 )
 
@@ -90,7 +91,7 @@ func (f *fakeSimilarityForcer) StartSimilarityPass(link, merge float64, densify 
 	}
 	if f.completeInline {
 		if onComplete != nil {
-			onComplete(f.completeRep, f.completeErr)
+			onComplete(context.Background(), f.completeRep, f.completeErr)
 		}
 	} else {
 		f.pendingComplete = onComplete // non-sync: the test drives completion later.
@@ -167,11 +168,13 @@ func (d similarityDispatchDeps) SegmentShipper() SegmentShipper               { 
 func (d similarityDispatchDeps) SegmentPruner() SegmentPruner                 { return nil }
 func (d similarityDispatchDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
 func (d similarityDispatchDeps) PipelineScanner() PipelineScanner             { return nil }
-func (d similarityDispatchDeps) ReflectionForcer() ReflectionForcer           { return nil }
-func (d similarityDispatchDeps) SimilarityForcer() SimilarityForcer           { return d.forcer }
-func (d similarityDispatchDeps) BlindSpotProvider() BlindSpotProvider         { return nil }
-func (d similarityDispatchDeps) ClusterProvider() ClusterProvider             { return nil }
-func (d similarityDispatchDeps) TensionsProvider() TensionsProvider           { return nil }
+
+func (d similarityDispatchDeps) ClearHealLatch(kgtypes.GraphType, string) {}
+func (d similarityDispatchDeps) ReflectionForcer() ReflectionForcer       { return nil }
+func (d similarityDispatchDeps) SimilarityForcer() SimilarityForcer       { return d.forcer }
+func (d similarityDispatchDeps) BlindSpotProvider() BlindSpotProvider     { return nil }
+func (d similarityDispatchDeps) ClusterProvider() ClusterProvider         { return nil }
+func (d similarityDispatchDeps) TensionsProvider() TensionsProvider       { return nil }
 
 func callPropagate(deps ClientDeps, args string) kgtools.ToolResult {
 	return handlePropagateClient(context.Background(), deps, kgtools.CallToolParams{
@@ -479,3 +482,18 @@ func TestSimilarityTrigger_PersistFailureDegrades(t *testing.T) {
 
 // (the similarity_report fetch-op tests + the estimate-helper tests live in
 // similarity_report_test.go, which shares this file's fakeSimilarityForcer.)
+
+// TestSimilarityTrigger_CancelledCallStartsNoPass: a cancelled call must start NO
+// pass, create NO running event, and return a loud error. Scoped to cancellation
+// BEFORE the pass starts; an already-started pass is not abortable by a client
+// cancel (accepted residual). Direct call: callPropagate hardcodes Background().
+func TestSimilarityTrigger_CancelledCallStartsNoPass(t *testing.T) {
+	f := startedForcer() // scripted to ACQUIRE, so a pass WOULD start
+	ctx, cancel := context.WithCancel(opCtx())
+	cancel()
+	res := handlePropagateClient(ctx, similarityDispatchDeps{forcer: f}, kgtools.CallToolParams{
+		Name: "thoughts", Arguments: []byte(`{"similarity":true}`)})
+	assert.False(t, f.called, "a cancelled call must start NO pass")
+	assert.False(t, f.beginCalled, "a cancelled call must create NO running event")
+	assert.True(t, res.IsError, "a cancelled call must return a loud error, not a started message")
+}

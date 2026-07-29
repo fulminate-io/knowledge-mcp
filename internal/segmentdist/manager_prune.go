@@ -155,6 +155,8 @@ func (m *distManager[Q, S]) shipNew(
 	}
 
 	m.advanceGen(&m.shippedGen, maxGen)
+	// New blobs landed — the shipped denominator this manager memoized is stale.
+	m.invalidateCoverageMemo()
 	return nil
 }
 
@@ -352,10 +354,18 @@ func (m *distManager[Q, S]) publishResident(
 	}
 	if !ok {
 		// Coverage/subset gate skipped the publish (degenerate/incomplete live set).
-		// The ship landed but no manifest was published — set the retry bit so the
-		// publish is re-attempted once the live set heals.
-		m.setPublishPending()
+		// The ship landed but no manifest was published — mark the coverage skip so the
+		// publish is re-attempted once the live set heals. Unlike the transient causes
+		// (List error / 409 / transport) which retry indefinitely, this cause cannot
+		// self-clear by retrying (a re-attempt reads the SAME sub-ratio resident), so
+		// markCoverageSkip BOUNDS the re-arm: after coverageSkipMaxStreak consecutive
+		// skips at a non-rising resident it stops re-arming (terminal WARN) until the
+		// resident actually rises — breaking the self-sustaining publish-retry read loop.
+		m.markCoverageSkip()
+		// The identity trio leads every skip WARN — a skip logged without the
+		// manager's target cannot be attributed to a graph.
 		slog.Warn("segmentdist: publish SKIPPED (degenerate/incomplete live set — manifest+blobs left intact)",
+			"graph", m.target.GetGraph(), "name", m.target.GetName(), "repo", m.target.GetRepo(),
 			"format", m.format, "live", len(manifestIDs), "reason", reason)
 		return nil, nil
 	}
@@ -373,6 +383,7 @@ func (m *distManager[Q, S]) publishResident(
 			// re-publishes once the missing blob heals.
 			m.setPublishPending()
 			slog.Warn("segmentdist: publish SKIPPED (agent reported missing blob(s) — manifest+blobs left intact)",
+				"graph", m.target.GetGraph(), "name", m.target.GetName(), "repo", m.target.GetRepo(),
 				"format", m.format, "missing", incomplete.Missing)
 			return nil, nil
 		}
@@ -381,6 +392,9 @@ func (m *distManager[Q, S]) publishResident(
 		m.setPublishPending()
 		return nil, err
 	}
+
+	// The manifest just swapped — it IS the new shipped denominator.
+	m.invalidateCoverageMemo()
 
 	// Reconcile bookkeeping: the ids in reconcileAgainst (the caller's ROLE set)
 	// that dropped out of the published live set are now reaped server-side (their
@@ -391,8 +405,11 @@ func (m *distManager[Q, S]) publishResident(
 	// them consistent.
 	m.shipMu.Lock()
 	// PublishManifest succeeded — clear the retry bit under the reconcile lock we
-	// already hold (no new acquisition).
+	// already hold (no new acquisition), and reset the coverage-skip bound so a future
+	// degenerate publish re-arms fresh (streak from zero, lastSkipResident zeroed).
 	m.publishPending = false
+	m.coverageSkipStreak = 0
+	m.lastSkipResident = 0
 	var dropped []searchengine.SegmentID
 	for id := range reconcileAgainst {
 		if _, live := liveSet[id]; !live {
@@ -416,7 +433,8 @@ func (m *distManager[Q, S]) publishResident(
 //	    the subset gate yet drive a full refcount-GC — the exact corpus wipe. An
 //	    empty manifest is always rejected.
 //	(2) COVERAGE-RATIO FLOOR: the resident doc count vs the server's shipped doc
-//	    count for this format, via the SAME shippedDocCountForRatio +
+//	    count for this format (read through the publish-path memo,
+//	    shippedDocCountForRatioCached), via the SAME shippedDocCountForRatio +
 //	    residentBackstopFloor/residentBackstopRatio policy the read-side
 //	    recoverIfDegenerate uses (conservative-unknown on a pre-doc_count blob,
 //	    sub-floor tiny-graph disarm). A resident set far below the shipped corpus is
@@ -433,9 +451,11 @@ func (m *distManager[Q, S]) publishCoverageOK(
 		return false, "empty live set", nil
 	}
 
-	// Coverage-ratio floor — reuse the read-side backstop policy verbatim.
+	// Coverage-ratio floor — the read-side backstop policy verbatim, read through a
+	// short-TTL memo: a cached denominator may only CONFIRM a skip (see
+	// shippedDocCountForRatioCached for why a memo-derived pass is re-derived first).
 	resident := m.engine.ResidentDocCount()
-	shipped, disarm, err := m.shippedDocCountForRatio(ctx)
+	shipped, disarm, cached, err := m.shippedDocCountForRatioCached(ctx)
 	if err != nil {
 		return false, "", err
 	}
@@ -443,8 +463,18 @@ func (m *distManager[Q, S]) publishCoverageOK(
 	// the corpus is below the floor (tiny graph): the ratio is not meaningful, so the
 	// coverage check does not block — a tiny/legacy graph legitimately publishes its
 	// whole set. A non-disarmed below-ratio resident set is the degenerate case.
-	if !disarm && float64(resident) < residentBackstopRatio*float64(shipped) {
+	if belowCoverageRatio(resident, shipped, disarm) {
 		return false, "resident doc count below coverage ratio of shipped corpus", nil
+	}
+	if cached {
+		m.invalidateCoverageMemo()
+		shipped, disarm, _, err = m.shippedDocCountForRatioCached(ctx)
+		if err != nil {
+			return false, "", err
+		}
+		if belowCoverageRatio(resident, shipped, disarm) {
+			return false, "resident doc count below coverage ratio of shipped corpus", nil
+		}
 	}
 
 	// Subset-completeness against List(0). SKIPPED when the source verifies

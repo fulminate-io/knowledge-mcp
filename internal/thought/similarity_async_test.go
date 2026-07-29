@@ -37,7 +37,7 @@ func TestStartSimilarityPass_CoalesceNoSpawn(t *testing.T) {
 
 	var onStartedCalled, onCompleteCalled bool
 	started := p.StartSimilarityPass(0, 0, DensifyParams{}, func() { onStartedCalled = true },
-		func(SimilarityReport, error) { onCompleteCalled = true })
+		func(context.Context, SimilarityReport, error) { onCompleteCalled = true })
 	assert.False(t, started, "a held guard must coalesce → started=false")
 	assert.False(t, onStartedCalled, "onStarted must NOT fire on a coalesce (no orphan running event)")
 	assert.False(t, onCompleteCalled, "onComplete must NOT fire on a coalesce")
@@ -57,7 +57,7 @@ func TestStartSimilarityPass_StartsAndReleases(t *testing.T) {
 	done := make(chan SimilarityReport, 1)
 
 	started := p.StartSimilarityPass(0, 0, DensifyParams{}, func() { onStartedBeforeReturn = true },
-		func(rep SimilarityReport, _ error) { done <- rep })
+		func(_ context.Context, rep SimilarityReport, _ error) { done <- rep })
 	require.True(t, started, "an uncontended acquire must start the pass")
 	assert.True(t, onStartedBeforeReturn, "onStarted must run synchronously before StartSimilarityPass returns")
 
@@ -95,7 +95,7 @@ func TestStartSimilarityPass_StopDrains(t *testing.T) {
 	var mu sync.Mutex
 
 	started := p.StartSimilarityPass(0, 0, DensifyParams{}, nil,
-		func(SimilarityReport, error) {
+		func(context.Context, SimilarityReport, error) {
 			<-releaseComplete // block the callback until the test unblocks it
 			mu.Lock()
 			completeReturned = true
@@ -139,7 +139,7 @@ func TestStartSimilarityPass_ReleasesOnError(t *testing.T) {
 
 	done := make(chan error, 1)
 	started := p.StartSimilarityPass(0, 0, DensifyParams{}, nil,
-		func(_ SimilarityReport, err error) { done <- err })
+		func(_ context.Context, _ SimilarityReport, err error) { done <- err })
 	require.True(t, started)
 
 	select {

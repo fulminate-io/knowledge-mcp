@@ -4,6 +4,7 @@ package content
 
 import (
 	"context"
+	"sort"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
@@ -17,10 +18,13 @@ import (
 // fakeCaller, extended with type-filtered node browse and node-set edge
 // matching (the two access shapes the content family exercises).
 //
-//   - RETURN_MODE_EDGES        → edges incident to the plan's Ids set, optionally
+//   - RETURN_MODE_EDGES        → edges incident to the plan's Ids set, or EVERY
+//     edge when the plan carries no ids (the match-all form), optionally
 //     filtered to the plan's EdgeTypes.
 //   - ById != ""               → the single matching node.
-//   - Selection.NodeTypes set  → nodes whose Type is in that set (FetchNodesByType).
+//   - Selection.NodeType set   → nodes of that type (FetchNodesByType, whose
+//     keyset drain also has after_id / limit honored below).
+//   - Selection.NodeTypes set  → nodes whose Type is in that set.
 //   - otherwise                → every seeded node (FetchAllNodes).
 type fakeCaller struct {
 	nodes []*knowledgev1.Node
@@ -40,12 +44,42 @@ func (f *fakeCaller) Execute(_ context.Context, req *knowledgev1.ExecuteRequest)
 				break
 			}
 		}
+	case q.GetSelection().GetNodeType() != "":
+		resp.Nodes = keysetPage(f.matchNodeTypes([]string{q.GetSelection().GetNodeType()}), q.AfterId, int(q.GetLimit()))
 	case len(q.GetSelection().GetNodeTypes()) > 0:
 		resp.Nodes = f.matchNodeTypes(q.GetSelection().GetNodeTypes())
 	default:
 		resp.Nodes = f.nodes
 	}
 	return resp, nil
+}
+
+// keysetPage applies the server's browse paging contract to an already-filtered
+// node set: ids strictly AFTER the cursor, ascending, capped at limit. Only
+// applied when after_id is PRESENT, so the un-cursored browses keep serving in
+// seeded order.
+//
+// Honoring the cursor is not cosmetic fidelity here. A caller that DRAINS pages
+// terminates on the first short page, so a cursor-blind fake that re-serves the
+// whole set forever never terminates once the fixture holds at least a page of
+// nodes — a hang rather than a failed assertion.
+func keysetPage(nodes []*knowledgev1.Node, afterID *string, limit int) []*knowledgev1.Node {
+	if afterID != nil {
+		sort.Slice(nodes, func(i, j int) bool { return nodes[i].GetId() < nodes[j].GetId() })
+		if cursor := *afterID; cursor != "" {
+			kept := nodes[:0]
+			for _, n := range nodes {
+				if n.GetId() > cursor {
+					kept = append(kept, n)
+				}
+			}
+			nodes = kept
+		}
+	}
+	if limit > 0 && len(nodes) > limit {
+		nodes = nodes[:limit]
+	}
+	return nodes
 }
 
 // matchNodeTypes returns the seeded nodes whose Type is in the requested set,
@@ -64,10 +98,12 @@ func (f *fakeCaller) matchNodeTypes(types []string) []*knowledgev1.Node {
 	return out
 }
 
-// matchEdges returns the seeded edges incident to any node in ids, optionally
-// filtered to edgeTypes — the both-direction node-set union the real server's
-// RETURN_MODE_EDGES node-set carrier produces.
+// matchEdges serves the RETURN_MODE_EDGES carrier. A non-empty id set is the
+// pivot form (edges incident to any pivot); an EMPTY id set is the MATCH-ALL
+// form (every edge of the fixture, type filter still applied), mirroring the
+// engine, where a plan with no pivot discriminant means "all edges".
 func (f *fakeCaller) matchEdges(ids, edgeTypes []string) []*knowledgev1.Edge {
+	matchAll := len(ids) == 0
 	idset := make(map[string]struct{}, len(ids))
 	for _, id := range ids {
 		idset[id] = struct{}{}
@@ -83,7 +119,7 @@ func (f *fakeCaller) matchEdges(ids, edgeTypes []string) []*knowledgev1.Edge {
 	for _, e := range f.edges {
 		_, fromIn := idset[e.GetFromId()]
 		_, toIn := idset[e.GetToId()]
-		if !fromIn && !toIn {
+		if !matchAll && !fromIn && !toIn {
 			continue
 		}
 		if typeset != nil {

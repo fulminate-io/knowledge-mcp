@@ -29,7 +29,7 @@ import (
 // calls go server-side via the Phase 1 graph-wide handler. Only the
 // per-node traversal — which needs zstd decompression of chunk content
 // and engine-side alias resolution — runs client-side.
-func InterceptLogsTraversal(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
+func InterceptLogsTraversal(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	if params.Name != "traverse" {
 		return false, kgtools.ToolResult{}
 	}
@@ -49,5 +49,5 @@ func InterceptLogsTraversal(deps ClientDeps, params kgtools.CallToolParams) (boo
 		a.Direction = "out"
 	}
 	h := &Handler{Deps: deps}
-	return true, h.traverseLogs(context.Background(), a)
+	return true, h.traverseLogs(ctx, a)
 }

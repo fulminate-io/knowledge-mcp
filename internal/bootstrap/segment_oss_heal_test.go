@@ -3,7 +3,6 @@
 package bootstrap
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -65,7 +64,7 @@ func buildOSSHealClient(t *testing.T, embedded int32, codeRepos ...string) (*cli
 // caller records ZERO SegmentService legs — proving no ShippedManifestSnapshot
 // ListDelta escape (the T2 regression guard).
 func TestHealNeedsRebuildLocal_OSSZeroRPC(t *testing.T) {
-	ctx := context.Background()
+	ctx := opCtx()
 
 	t.Run("a: empty L2 + embedded>=floor -> rebuild, zero legs, rebuild also zero legs", func(t *testing.T) {
 		const repo = "ossEmptyRepo"
@@ -130,7 +129,7 @@ func TestHealNeedsRebuildLocal_OSSZeroRPC(t *testing.T) {
 // embed-drain AddAndShip+Flush (zero SegmentService legs) between the two heal
 // invocations. The second invocation then returns false.
 func TestHealNeedsRebuildLocal_NonFlapping(t *testing.T) {
-	ctx := context.Background()
+	ctx := opCtx()
 	const repo = "ossNonFlapRepo"
 	c, _ := buildOSSHealClient(t, 30, repo) // embedded 30, empty L2 initially
 

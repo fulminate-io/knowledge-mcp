@@ -26,7 +26,7 @@ import (
 
 // InterceptQueryStats claims query(mode:stats) for graph in {"",knowledge}. Returns
 // (false,_) for any other tool/graph/mode so the next chain step takes over.
-func InterceptQueryStats(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
+func InterceptQueryStats(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	if params.Name != "query" {
 		return false, kgtools.ToolResult{}
 	}
@@ -45,7 +45,7 @@ func InterceptQueryStats(deps ClientDeps, params kgtools.CallToolParams) (bool, 
 	if !ok {
 		return true, errorResult("knowledge stats: stats seam unavailable")
 	}
-	return true, knowledgeStats(context.Background(), sc, a)
+	return true, knowledgeStats(ctx, sc, a)
 }
 
 // knowledgeStats renders the default knowledge graph stats body: Stats RPC →
@@ -92,6 +92,7 @@ func fetchKnowledgeSamples(ctx context.Context, exec engine.ExecuteFn, stats *kn
 			Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
 				Selection: &knowledgev1.Selection{NodeType: nt},
 				Limit:     2,
+				SkipTotal: true,
 			}},
 			Target: target,
 		})

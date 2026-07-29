@@ -78,7 +78,7 @@ func TestRehydrateEquivalence_PartitionFromPersisted(t *testing.T) {
 		thoughtWithCluster("t5", "cB"),
 	}}
 
-	partition, err := partitionFromPersisted(ctx, fc)
+	partition, err := partitionFromPersisted(ctx, fc, nil)
 	require.NoError(t, err)
 	require.Equal(t, map[string]string{
 		"t1": "cA", "t2": "cA", "t3": "cA", "t4": "cB", "t5": "cB",
@@ -173,7 +173,7 @@ func TestLeidenRehydrate_BridgingEdgeJoinsViaIncremental(t *testing.T) {
 	}
 
 	// Rehydrate from persisted cluster_id.
-	partition, err := partitionFromPersisted(ctx, fc)
+	partition, err := partitionFromPersisted(ctx, fc, nil)
 	require.NoError(t, err)
 	require.Len(t, partition, 6)
 	state := graph.RehydrateLeidenState(partition, baselineAdj, gamma)

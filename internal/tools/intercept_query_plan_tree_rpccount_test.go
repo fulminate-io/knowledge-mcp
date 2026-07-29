@@ -126,7 +126,7 @@ func TestInterceptQueryPlanTree_JSON_RPCCountConstant(t *testing.T) {
 		args, err := json.Marshal(map[string]any{"mode": "plan_tree", "id": rootID, "format": "json"})
 		require.NoError(t, err)
 
-		handled, res := InterceptQueryPlanTree(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
+		handled, res := InterceptQueryPlanTree(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
 		require.True(t, handled)
 		require.False(t, res.IsError, "intercept error: %v", res.Content)
 
@@ -145,7 +145,7 @@ func TestInterceptQueryPlanTree_Text_RPCCountConstant(t *testing.T) {
 		args, err := json.Marshal(map[string]any{"mode": "plan_tree", "id": rootID})
 		require.NoError(t, err)
 
-		handled, res := InterceptQueryPlanTree(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
+		handled, res := InterceptQueryPlanTree(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
 		require.True(t, handled)
 		require.False(t, res.IsError, "intercept error: %v", res.Content)
 
@@ -165,7 +165,7 @@ func TestInterceptQueryPlanTree_Text_DependsOnFetchError_StillRenders(t *testing
 	args, err := json.Marshal(map[string]any{"mode": "plan_tree", "id": rootID})
 	require.NoError(t, err)
 
-	handled, res := InterceptQueryPlanTree(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
+	handled, res := InterceptQueryPlanTree(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
 	require.True(t, handled)
 	require.False(t, res.IsError, "depends-on fetch error must NOT error the whole render: %v", res.Content)
 

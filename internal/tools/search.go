@@ -46,11 +46,11 @@ import (
 //
 // Returns (handled, result). When handled is false, the next interceptor
 // (or the bare server call) takes over with the ORIGINAL params.
-func InterceptSearch(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
+func InterceptSearch(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	if params.Name != "search" {
 		return false, kgtools.ToolResult{}
 	}
-	ctx := context.Background()
+
 	// graph=logs short-circuit. Decoded here so the rewrite/
 	// embed/rerank pipeline below never sees a log-graph payload it
 	// wasn't designed for.

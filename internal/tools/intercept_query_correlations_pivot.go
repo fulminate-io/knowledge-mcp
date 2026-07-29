@@ -32,7 +32,7 @@ import (
 
 // InterceptQueryCorrelationsPivot claims query(mode in {correlations,pivot}) for
 // non-logs graphs.
-func InterceptQueryCorrelationsPivot(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
+func InterceptQueryCorrelationsPivot(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	if params.Name != "query" {
 		return false, kgtools.ToolResult{}
 	}
@@ -50,7 +50,7 @@ func InterceptQueryCorrelationsPivot(deps ClientDeps, params kgtools.CallToolPar
 	if gc == nil {
 		return true, errorResult(a.Mode + ": graph client unavailable")
 	}
-	ctx := context.Background()
+
 	if a.Mode == "correlations" {
 		return true, composeCorrelations(ctx, gc.Execute, a)
 	}

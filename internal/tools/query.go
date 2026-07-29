@@ -34,11 +34,11 @@ var queryModesNeedingEmbedding = map[string]struct{}{
 // Returns (handled, result). When the gate misses (wrong mode, no
 // embedder, empty query, etc.) returns (false, _) so the next chain
 // step (or the bare server call) takes over with the ORIGINAL params.
-func InterceptQuery(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
+func InterceptQuery(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	if params.Name != "query" {
 		return false, kgtools.ToolResult{}
 	}
-	ctx := context.Background()
+
 	emb := deps.Embedder()
 	if emb == nil {
 		return false, kgtools.ToolResult{}

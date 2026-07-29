@@ -20,6 +20,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
 	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -59,8 +60,10 @@ func (d astTestDeps) SegmentShipper() SegmentShipper               { return nil 
 func (d astTestDeps) SegmentPruner() SegmentPruner                 { return nil }
 func (d astTestDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
 func (d astTestDeps) PipelineScanner() PipelineScanner             { return nil }
-func (d astTestDeps) ReflectionForcer() ReflectionForcer           { return nil }
-func (d astTestDeps) SimilarityForcer() SimilarityForcer           { return nil }
+
+func (d astTestDeps) ClearHealLatch(kgtypes.GraphType, string) {}
+func (d astTestDeps) ReflectionForcer() ReflectionForcer       { return nil }
+func (d astTestDeps) SimilarityForcer() SimilarityForcer       { return nil }
 
 func (d astTestDeps) BlindSpotProvider() BlindSpotProvider { return nil }
 func (d astTestDeps) ClusterProvider() ClusterProvider     { return nil }

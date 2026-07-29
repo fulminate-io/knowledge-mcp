@@ -53,6 +53,15 @@ func (p *PropagationLoop) Start() {
 // propagate already in flight at startup) the boot detection is skipped: the
 // in-flight pass already produces fresh clusters. The boot detection runs OUTSIDE
 // the per-tick budget ctx (unchanged).
+//
+// Before the detection itself it WARMS the resident corpus cache, the same
+// refreshCorpusCache runPass performs at the top of an hourly tick. Without it a
+// daemon restart ran a fully cold pass: every rewired consumer inside the detection
+// found a cold cache and re-drained the corpus itself. The cold cost is unchanged
+// in kind — an empty cache makes the delta drain return the whole corpus — but it
+// is paid ONCE through the CorpusDelta keyset path instead of once per consumer.
+// Nil-tolerant: a degraded loop (no cache/scanner, and every test fake) is an exact
+// no-op, keeping the pre-cache behavior.
 func (p *PropagationLoop) runBootClusterDetection() {
 	release, ok := AcquireReflectionPass(ReflectionPassKey)
 	if !ok {
@@ -61,6 +70,12 @@ func (p *PropagationLoop) runBootClusterDetection() {
 		return
 	}
 	defer release()
+	// The 6-minute bracket mirrors runPass's outer budget so the boot drain cannot
+	// outlive the same bound; baseContext (not Background) so a daemon Stop during
+	// boot unwinds the drain at the next RPC boundary.
+	ctx, cancel := context.WithTimeout(p.baseContext(), 6*time.Minute)
+	defer cancel()
+	p.refreshCorpusCache(ctx)
 	p.runClusterDetection()
 }
 

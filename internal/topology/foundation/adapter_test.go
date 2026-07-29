@@ -110,6 +110,42 @@ func TestNewGonumGraphSubsetFiltersNodesAndEdges(t *testing.T) {
 	}
 }
 
+// TestNewGonumGraphEdgeReadShape pins WHICH edge read each build issues. With no
+// subset the materialized node set IS the graph, so the build sends the match-all
+// plan (no pivot) rather than handing every node id back as a pivot set; with a
+// subset it keeps the id-pivoted read so it pulls only the edges it can map.
+func TestNewGonumGraphEdgeReadShape(t *testing.T) {
+	seed := func() *fakeCaller {
+		return &fakeCaller{
+			nodes: []*knowledgev1.Node{node("a", "function"), node("b", "function"), node("c", "type")},
+			edges: []*knowledgev1.Edge{edge("a", "b", 1), edge("b", "c", 1)},
+		}
+	}
+
+	all := seed()
+	if _, err := NewGonumGraph(context.Background(), all, kgtypes.GraphCode, "repo", nil); err != nil {
+		t.Fatalf("NewGonumGraph: %v", err)
+	}
+	if got := all.lastPlan.GetIds(); len(got) != 0 {
+		t.Fatalf("no-subset build must send the match-all edge plan (no pivot ids), got %v", got)
+	}
+
+	sub := seed()
+	subset := func(n *knowledgev1.Node) bool { return n.Type == "function" }
+	if _, err := NewGonumGraph(context.Background(), sub, kgtypes.GraphCode, "repo", subset); err != nil {
+		t.Fatalf("NewGonumGraph subset: %v", err)
+	}
+	got := sub.lastPlan.GetIds()
+	if len(got) != 2 {
+		t.Fatalf("subset build must pivot on the materialized ids, got %v", got)
+	}
+	for _, id := range got {
+		if id != "a" && id != "b" {
+			t.Fatalf("subset pivot must hold only materialized ids, got %v", got)
+		}
+	}
+}
+
 func TestNewGonumGraphNilCaller(t *testing.T) {
 	if _, err := NewGonumGraph(context.Background(), nil, kgtypes.GraphCode, "repo", nil); err == nil {
 		t.Fatalf("want error for nil caller")

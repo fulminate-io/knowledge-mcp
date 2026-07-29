@@ -19,6 +19,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
 	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	clientthought "github.com/fulminate-io/knowledge-mcp/internal/thought"
 )
 
@@ -189,6 +190,8 @@ func (d interceptTestDeps) SegmentShipper() SegmentShipper               { retur
 func (d interceptTestDeps) SegmentPruner() SegmentPruner                 { return nil }
 func (d interceptTestDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
 func (d interceptTestDeps) PipelineScanner() PipelineScanner             { return nil }
+
+func (d interceptTestDeps) ClearHealLatch(kgtypes.GraphType, string) {}
 func (d interceptTestDeps) ReflectionForcer() ReflectionForcer {
 	if d.forcer == nil {
 		return nil
@@ -229,7 +232,7 @@ func TestInterceptCreateProject_NoBackend_ClaimsLocalOnly(t *testing.T) {
 		},
 	}
 	deps := interceptTestDeps{gc: fc}
-	handled, res := InterceptCreateProject(deps, kgtools.CallToolParams{
+	handled, res := InterceptCreateProject(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "create_project",
 		Arguments: json.RawMessage(`{"name":"p","description":"d","summary":"s"}`),
 	})
@@ -239,7 +242,7 @@ func TestInterceptCreateProject_NoBackend_ClaimsLocalOnly(t *testing.T) {
 
 func TestInterceptCreateProject_WrongTool_FallsThrough(t *testing.T) {
 	deps := interceptTestDeps{backend: &fakeBackend{}, gc: &fakeGraphCaller{}}
-	handled, _ := InterceptCreateProject(deps, kgtools.CallToolParams{Name: "query"})
+	handled, _ := InterceptCreateProject(opCtx(), deps, kgtools.CallToolParams{Name: "query"})
 	assert.False(t, handled)
 }
 
@@ -249,7 +252,7 @@ func TestInterceptCreateProject_LinearError_ReturnsErrorResult(t *testing.T) {
 		createProjectErr: errors.New("linear: 401 unauthorized"),
 	}
 	deps := interceptTestDeps{backend: fb, gc: &fakeGraphCaller{}}
-	handled, res := InterceptCreateProject(deps, kgtools.CallToolParams{
+	handled, res := InterceptCreateProject(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "create_project",
 		Arguments: json.RawMessage(`{"name":"p","description":"d","summary":"s","group":"FUL"}`),
 	})
@@ -270,7 +273,7 @@ func TestInterceptCreateProject_Success_StampsBackendMetadata(t *testing.T) {
 		Content: []kgtools.ContentBlock{{Type: "text", Text: `{"ids":["proj-local-id"]}`}},
 	}}
 	deps := interceptTestDeps{backend: fb, gc: fc}
-	handled, res := InterceptCreateProject(deps, kgtools.CallToolParams{
+	handled, res := InterceptCreateProject(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "create_project",
 		Arguments: json.RawMessage(`{"name":"p","description":"d","summary":"s","group":"FUL"}`),
 	})
@@ -296,7 +299,7 @@ func TestInterceptCreateProject_GroupNotFound_Errors(t *testing.T) {
 		groupsResult: []backends.Group{{Key: "FUL", ID: "team-1"}},
 	}
 	deps := interceptTestDeps{backend: fb, gc: &fakeGraphCaller{}}
-	handled, res := InterceptCreateProject(deps, kgtools.CallToolParams{
+	handled, res := InterceptCreateProject(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "create_project",
 		Arguments: json.RawMessage(`{"name":"p","description":"d","summary":"s","group":"WRONG"}`),
 	})
@@ -315,7 +318,7 @@ func TestInterceptCreateProject_AutoDefaultsSingleGroup(t *testing.T) {
 		Content: []kgtools.ContentBlock{{Type: "text", Text: `{"ids":["proj-x"]}`}},
 	}}
 	deps := interceptTestDeps{backend: fb, gc: fc}
-	handled, res := InterceptCreateProject(deps, kgtools.CallToolParams{
+	handled, res := InterceptCreateProject(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "create_project",
 		Arguments: json.RawMessage(`{"name":"p","description":"d","summary":"s"}`),
 	})
@@ -333,7 +336,7 @@ func TestInterceptCreateProject_ForwardError_NamesLinearID(t *testing.T) {
 	// Linear identifiers so the operator can reconcile.
 	fc := &fakeGraphCaller{mutateError: errors.New("connect: refused")}
 	deps := interceptTestDeps{backend: fb, gc: fc}
-	handled, res := InterceptCreateProject(deps, kgtools.CallToolParams{
+	handled, res := InterceptCreateProject(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "create_project",
 		Arguments: json.RawMessage(`{"name":"p","description":"d","summary":"s","group":"FUL"}`),
 	})
@@ -358,7 +361,7 @@ func TestInterceptCreateProject_LocalOnly_SummaryClampsAndWarns(t *testing.T) {
 	}}
 	deps := interceptTestDeps{gc: fc}
 	longSummary := strings.Repeat("a", 600)
-	handled, res := InterceptCreateProject(deps, kgtools.CallToolParams{
+	handled, res := InterceptCreateProject(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "create_project",
 		Arguments: json.RawMessage(`{"name":"p","description":"d","summary":"` + longSummary + `","format":"json"}`),
 	})
@@ -391,7 +394,7 @@ func TestInterceptCreateProject_Backend_ClampsBeforeLinearPush(t *testing.T) {
 	}}
 	deps := interceptTestDeps{backend: fb, gc: fc}
 	longSummary := strings.Repeat("a", 600)
-	handled, res := InterceptCreateProject(deps, kgtools.CallToolParams{
+	handled, res := InterceptCreateProject(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "create_project",
 		Arguments: json.RawMessage(`{"name":"p","description":"d","summary":"` + longSummary + `","group":"FUL","format":"json"}`),
 	})

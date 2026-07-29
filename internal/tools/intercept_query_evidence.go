@@ -26,7 +26,7 @@ import (
 
 // InterceptQueryEvidence claims query(mode:"evidence"). Returns
 // (true, result) on match.
-func InterceptQueryEvidence(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
+func InterceptQueryEvidence(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	if params.Name != "query" {
 		return false, kgtools.ToolResult{}
 	}
@@ -46,7 +46,6 @@ func InterceptQueryEvidence(deps ClientDeps, params kgtools.CallToolParams) (boo
 		return true, errorResult("evidence: graph caller unavailable")
 	}
 
-	ctx := context.Background()
 	decision, err := render.FetchNode(ctx, gc, a.ID)
 	if err != nil {
 		return true, errorResult(fmt.Sprintf("query failed: %s", err))

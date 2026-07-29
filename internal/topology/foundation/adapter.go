@@ -38,9 +38,10 @@ import (
 //     wire (one Execute), apply the subset filter, assign a gonum int64 ID,
 //     populate the bidi maps, and add the node to the embedded
 //     WeightedDirectedGraph.
-//  2. Edge materialization — fetch every edge incident to the materialized
-//     node set in ONE bulk Execute and SetWeightedEdge any pair where both
-//     endpoints survived the subset filter.
+//  2. Edge materialization — fetch the edges in ONE bulk Execute (the match-all
+//     read when there is no subset predicate, else a pivot read over the
+//     materialized ids) and SetWeightedEdge any pair where both endpoints
+//     survived the subset filter.
 //
 // Errors from the wire are wrapped with "topology: ..." context and returned
 // without a partial graph (we never return a non-nil result alongside a
@@ -83,7 +84,7 @@ func newGonumGraph(
 	if err := g.materializeNodes(ctx, caller, graphType, name, subset); err != nil {
 		return nil, err
 	}
-	if err := g.materializeEdges(ctx, caller, graphType, name); err != nil {
+	if err := g.materializeEdges(ctx, caller, graphType, name, subset == nil); err != nil {
 		return nil, err
 	}
 	return g, nil
@@ -116,12 +117,17 @@ func (g *GonumGraph) materializeNodes(ctx context.Context, caller GraphCaller, g
 	return nil
 }
 
-// materializeEdges runs pass 2 of the build: fetch every edge incident to the
-// materialized node set in ONE bulk Execute (FetchEdges) and SetWeightedEdge
-// any pair where both endpoints survived the subset filter. Edges that
-// reference an unmaterialized node (because the subset predicate excluded it)
-// are silently dropped. This is the N+1 avoidance — a single bulk edge read
-// over the whole node set, never a per-node edge fetch.
+// materializeEdges runs pass 2 of the build: fetch the edges in ONE bulk Execute
+// and SetWeightedEdge any pair where both endpoints survived the subset filter.
+// Edges that reference an unmaterialized node (because the subset predicate
+// excluded it) are silently dropped. This is the N+1 avoidance — a single bulk
+// edge read, never a per-node edge fetch.
+//
+// allNodes says the build had no subset predicate, so the materialized node set
+// IS the graph. That case takes the match-all read (FetchAllEdges), which asks
+// for the graph's edges directly instead of handing every node id back to the
+// backend as a pivot set — the id list was only ever a spelling of "all". A
+// subset build keeps the pivot read so it pulls only the edges it can use.
 //
 // Self-loops (edges where source == target) are also silently dropped. Two
 // reasons: (1) gonum's simple.WeightedDirectedGraph PANICS on SetWeightedEdge
@@ -136,15 +142,11 @@ func (g *GonumGraph) materializeNodes(ctx context.Context, caller GraphCaller, g
 // as the unweighted baseline (1.0); analyzers that want strict unweighted
 // semantics should construct the graph via NewGonumGraphUnweighted, which
 // forces every edge to weight 1.0 regardless of the stored value.
-func (g *GonumGraph) materializeEdges(ctx context.Context, caller GraphCaller, graphType kgtypes.GraphType, name string) error {
-	ids := make([]string, 0, len(g.stringToInt))
-	for s := range g.stringToInt {
-		ids = append(ids, s)
-	}
-	if len(ids) == 0 {
+func (g *GonumGraph) materializeEdges(ctx context.Context, caller GraphCaller, graphType kgtypes.GraphType, name string, allNodes bool) error {
+	if len(g.stringToInt) == 0 {
 		return nil
 	}
-	edges, err := FetchEdges(ctx, caller, graphType, name, ids, nil)
+	edges, err := g.fetchMaterializeEdges(ctx, caller, graphType, name, allNodes)
 	if err != nil {
 		return fmt.Errorf("topology: materialize edges: %w", err)
 	}
@@ -169,4 +171,19 @@ func (g *GonumGraph) materializeEdges(ctx context.Context, caller GraphCaller, g
 		g.SetWeightedEdge(g.NewWeightedEdge(simple.Node(fromInt), simple.Node(toInt), weight))
 	}
 	return nil
+}
+
+// fetchMaterializeEdges picks the bulk edge read for the build: the match-all
+// read when every node was materialized, the pivot read over the materialized
+// ids otherwise. Both return the same edges for the pairs this graph can map —
+// the subset build just stops short of pulling edges whose endpoints it dropped.
+func (g *GonumGraph) fetchMaterializeEdges(ctx context.Context, caller GraphCaller, graphType kgtypes.GraphType, name string, allNodes bool) ([]knowledgev1.Edge, error) {
+	if allNodes {
+		return FetchAllEdges(ctx, caller, graphType, name, nil)
+	}
+	ids := make([]string, 0, len(g.stringToInt))
+	for s := range g.stringToInt {
+		ids = append(ids, s)
+	}
+	return FetchEdges(ctx, caller, graphType, name, ids, nil)
 }

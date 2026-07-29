@@ -315,7 +315,7 @@ func handleReflectSummary(ctx context.Context, deps ClientDeps, a queryReflectAr
 	// Prefer persisted topic-summary text over the member-SymbolName label wherever
 	// a topic doc exists (lever-produced); unsummarized clusters keep their label.
 	clientthought.ApplyTopicLabels(ctx, gc, clusters, nil)
-	summary := clientthought.ReflectSummary(ctx, gc, clusters)
+	summary := clientthought.ReflectSummary(ctx, gc, clusters, corpusSourceFromDeps(deps))
 	// granularity:"topic" rolls clusters sharing a topic into one TopClusters row
 	// (Size summed, valence/magnitude size-weighted, label = topic summary). Empty/
 	// "cluster" leaves the default per-cluster TopClusters byte-identical.
@@ -394,7 +394,7 @@ func handleReflectClusters(ctx context.Context, deps ClientDeps, a queryReflectA
 	if gc == nil {
 		return errorResult("clusters: graph client unavailable")
 	}
-	clusters, err := clientthought.DetectPersistedClusters(ctx, gc)
+	clusters, err := clientthought.DetectPersistedClusters(ctx, gc, corpusSourceFromDeps(deps))
 	if errors.Is(err, clientthought.ErrClustersNotComputed) {
 		return textResult(coldClusterStateMessage)
 	}
@@ -436,7 +436,7 @@ func handleRecallClusters(ctx context.Context, deps ClientDeps, allTypes bool, f
 	// for cluster-only views and thoughts(recall) for text-mode recall.
 	// Reads persisted cluster_id state (DetectPersistedClusters), not a live
 	// recompute, to stay within the tool ceiling.
-	clusters, err := clientthought.DetectPersistedClusters(ctx, gc)
+	clusters, err := clientthought.DetectPersistedClusters(ctx, gc, corpusSourceFromDeps(deps))
 	if err != nil {
 		return errorResult("cluster detection failed: " + err.Error())
 	}

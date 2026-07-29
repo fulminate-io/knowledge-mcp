@@ -71,7 +71,7 @@ func registeredDef(binPath string) *knowledgev1.GraphTypeDef {
 }
 
 func callCollect(deps ClientDeps, args string) (bool, kgtools.ToolResult) {
-	return InterceptCollect(deps, kgtools.CallToolParams{
+	return InterceptCollect(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "collect",
 		Arguments: json.RawMessage(args),
 	})

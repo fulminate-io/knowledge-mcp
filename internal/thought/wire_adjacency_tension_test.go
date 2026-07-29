@@ -18,7 +18,8 @@ import (
 // tests. Each thought carries one charge of the given polarity (weight 7 → |v|=1,
 // magnitude ≈ 2.08 ≥ 0.5) and an optional cluster_id; tensionEdges are the
 // explicit human reasoning edges. It serves the same read shapes as tensionFake
-// (type=thought browse, tensionEdgeTypes read, EdgeChargedBy read, Ids hydrate)
+// (type=charge seed browse, type=thought browse, tensionEdgeTypes read,
+// EdgeChargedBy read, Ids hydrate)
 // but over an arbitrary node/edge set so a clique + multi-cluster corpus can be
 // expressed.
 type tensionCorpus struct {
@@ -106,6 +107,15 @@ func (c *tensionCorpus) Execute(_ context.Context, req *knowledgev1.ExecuteReque
 	if q.GetOffset() > 0 {
 		return &knowledgev1.ExecuteResponse{}, nil
 	}
+	// The charged-universe seed browses type=charge; every other type browse keeps
+	// serving the thought corpus. Both walk c.order, so both are deterministic.
+	if sel := q.GetSelection(); sel != nil && sel.GetNodeType() == string(kgtypes.NodeCharge) {
+		var charges []*knowledgev1.Node
+		for _, id := range c.order {
+			charges = append(charges, cloneNode(c.charges[c.chargeOf[id]]))
+		}
+		return &knowledgev1.ExecuteResponse{Nodes: charges}, nil
+	}
 	var nodes []*knowledgev1.Node
 	for _, id := range c.order {
 		nodes = append(nodes, cloneNode(c.thoughts[id]))
@@ -133,7 +143,7 @@ func TestReflectTensions_CliqueCollapsesPerClusterPair(t *testing.T) {
 	c.addThought("qn", "negative", "Q")
 	c.addEdge("p", "qn")
 
-	tensions, err := ReflectTensions(context.Background(), c)
+	tensions, err := ReflectTensions(context.Background(), c, nil)
 	require.NoError(t, err)
 	require.Len(t, tensions, 2,
 		"the four X↔Y clique pairs collapse to ONE representative; the P↔Q pair is a second — two cluster-pairs, two rows")
@@ -161,7 +171,7 @@ func TestReflectTensions_CapsAtConst(t *testing.T) {
 		c.addThought(neg, "negative", fmt.Sprintf("Q%d", i))
 		c.addEdge(pos, neg)
 	}
-	tensions, err := ReflectTensions(context.Background(), c)
+	tensions, err := ReflectTensions(context.Background(), c, nil)
 	require.NoError(t, err)
 	assert.Len(t, tensions, tensionReportCap,
 		"output is capped at tensionReportCap even when candidate cluster-pairs exceed it")

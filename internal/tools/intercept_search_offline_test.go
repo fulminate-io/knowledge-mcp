@@ -115,7 +115,7 @@ func TestInterceptSearchKnowledge_OfflineReturnsRealResults(t *testing.T) {
 
 	// Text-only query (no query vector) on a unique high-IDF term → the BM25 arm
 	// ranks the target #1; composeKnowledgeSearch hydrates it via the Engine read.
-	handled, res := InterceptSearch(deps, searchParams(t, map[string]any{
+	handled, res := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{
 		"query": uniqueTerm, "graph": "knowledge",
 	}))
 

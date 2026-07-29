@@ -158,7 +158,7 @@ func TestTopicSimilarityEdge_NotTensionEligible(t *testing.T) {
 	}
 	f := newTensionFake([]*knowledgev1.Edge{edge})
 
-	tensions, err := ReflectTensions(context.Background(), f)
+	tensions, err := ReflectTensions(context.Background(), f, nil)
 	require.NoError(t, err)
 	assert.Empty(t, tensions,
 		"a topic-similarity (machine) relates-to edge must NOT surface a tension — it is clustering signal, not disagreement")

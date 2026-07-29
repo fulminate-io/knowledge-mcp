@@ -44,7 +44,7 @@ func pipelineControlCall(t *testing.T, deps ClientDeps, op, reason string) kgtoo
 	if err != nil {
 		t.Fatalf("marshal args: %v", err)
 	}
-	handled, res := InterceptManage(deps, kgtools.CallToolParams{Name: "manage", Arguments: raw})
+	handled, res := InterceptManage(opCtx(), deps, kgtools.CallToolParams{Name: "manage", Arguments: raw})
 	if !handled {
 		t.Fatalf("manage(%s) was not handled by InterceptManage", op)
 	}

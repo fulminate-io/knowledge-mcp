@@ -14,6 +14,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 )
@@ -70,7 +71,7 @@ type codeSearchArgs struct {
 // InterceptQueryCodeSearch claims query(graph:code) with text/queries and no id
 // (the search shape). Returns (false,_) otherwise (id → analyze; stats → code
 // stats; non-code → other intercepts).
-func InterceptQueryCodeSearch(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
+func InterceptQueryCodeSearch(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	if params.Name != "query" {
 		return false, kgtools.ToolResult{}
 	}
@@ -89,7 +90,7 @@ func InterceptQueryCodeSearch(deps ClientDeps, params kgtools.CallToolParams) (b
 	if gc == nil {
 		return true, errorResult("code search: graph client unavailable")
 	}
-	ctx := context.Background()
+
 	queryVecs := buildCodeQueryVecs(maybeEmbedCodeQueries(ctx, codeEmbedder(deps), queries), a.QueryVector)
 	return true, composeCodeSearch(ctx, deps, gc.Execute, a, queries, queryVecs)
 }
@@ -327,87 +328,6 @@ func composeCodeSearchSingleRepo(ctx context.Context, deps ClientDeps, cdeps cod
 	return appendStalenessFooter(ctx, deps, cdeps.exec, a.Repo, a.Branch, res)
 }
 
-// composeCodeSearchMultiRepo resolves the repo set then fans the per-repo
-// searches in PARALLEL (NumCPU-bounded pool), merges by score, and renders the
-// cross-repo shape.
-func composeCodeSearchMultiRepo(ctx context.Context, deps ClientDeps, cdeps codeSearchDeps, a codeSearchArgs, queries []string, queryVecs [][]byte, limit int, includeSource, groupByFile bool) kgtools.ToolResult {
-	repos := a.Repos
-	if len(repos) == 0 { // repo=all → enumerate loaded code graphs.
-		names, err := listGraphNamesOfType(ctx, deps, "code")
-		if err != nil {
-			return errorResult("resolve repos: " + err.Error())
-		}
-		repos = names
-	}
-	if len(repos) == 0 {
-		return textResult("No code graphs found.")
-	}
-
-	type repoResult struct {
-		repo     string
-		perQuery [][]engine.CodeResolvedResult
-	}
-	var (
-		mu  sync.Mutex
-		all []repoResult
-		wg  sync.WaitGroup
-	)
-	sem := make(chan struct{}, max(1, runtime.NumCPU()))
-	for _, repo := range repos {
-		wg.Add(1)
-		go func(repo string) {
-			defer wg.Done()
-			sem <- struct{}{}
-			defer func() { <-sem }()
-			target := &knowledgev1.GraphSelector{Graph: "code", Repo: repo}
-			pq := searchAllQueries(ctx, cdeps, target, queries, queryVecs, limit, a.PathPrefix, repo)
-			mu.Lock()
-			all = append(all, repoResult{repo: repo, perQuery: pq})
-			mu.Unlock()
-		}(repo)
-	}
-	wg.Wait()
-
-	// Merge per-query across repos, sort by score desc, cap to limit
-	// (mergeMultiRepoResults shape).
-	merged := make([][]engine.CodeResolvedResult, len(queries))
-	repoNames := make([]string, 0, len(all))
-	for _, rr := range all {
-		repoNames = append(repoNames, rr.repo)
-		for i := range queries {
-			if i < len(rr.perQuery) {
-				merged[i] = append(merged[i], rr.perQuery[i]...)
-			}
-		}
-	}
-	sort.Strings(repoNames)
-	for i := range merged {
-		sort.Slice(merged[i], func(x, y int) bool { return merged[i][x].Score > merged[i][y].Score })
-		if len(merged[i]) > limit {
-			merged[i] = merged[i][:limit]
-		}
-	}
-	merged = applyCodeResultFilters(merged, a)
-
-	if a.Format == "json" {
-		return engine.RenderForCaller(strings.Join(queries, " "), flattenCodeResults(merged), "json", nil, "")
-	}
-
-	counts := make([]int, len(queries))
-	for i := range merged {
-		counts[i] = len(merged[i])
-	}
-	var sb strings.Builder
-	sb.WriteString("Cross-repo search across " + strings.Join(repoNames, ", ") + "\n")
-	engine.WriteCodePerQuerySearchHeader(&sb, queries, counts, codeSearchModeLabel(queryVecs))
-	if groupByFile {
-		engine.FormatCodePerQueryGroupByFile(&sb, queries, merged)
-	} else {
-		engine.FormatCodePerQueryCrossRepo(&sb, queries, merged, includeSource)
-	}
-	return textResult(sb.String())
-}
-
 // searchAllQueries runs one RETURN_MODE_SEARCH Execute per query (parallel,
 // NumCPU-bounded), mirroring SearchOneGraph's per-query goroutine fan-out, and
 // returns per-query resolved results (path_prefix filtered, repo-tagged).
@@ -447,9 +367,71 @@ func searchOneCodeQuery(ctx context.Context, cdeps codeSearchDeps, target *knowl
 // hydrates the ranked Hit IDs into CodeResolvedResults. The graph name for the
 // code engine is the repo (segmentdist.graphSelector routes GraphCode's name to
 // the Repo field). path_prefix is applied post-hydrate, matching the server arm.
+// SEGMENT-POOL KEY SYMMETRY. The pipeline SHIPS segments under the
+// OVERLAY-QUALIFIED graph name — worker_embed.go passes key.GraphName verbatim to
+// AddAndShip/AddAndShipFields, and that name is "repo@branch" whenever the gap
+// scan read from a branch overlay (the same reason pipeline/rpc.go splits it back
+// apart on writeback). Reading under the BARE repo alone therefore opens a pool
+// nothing has filled since the last default-branch collect, and re-collecting can
+// never repair it: the coverage probe and heal factory key on the pipeline's name
+// too, so they see that pool healthy and never inspect the one the reader opens.
+//
+// BOTH pools are required, not just the overlay. The bare pool holds the
+// full-corpus segment written by the default-branch collect; the overlay pool
+// accumulates per-collect deltas on top of it. Overlay-only would silently drop
+// every file untouched since the branch was cut — the bulk of any repo.
+//
+// Dedup is by node ID with the OVERLAY winning, mirroring the composite
+// base+overlay precedence that hydrateEngineHits applies one call later. Scores
+// from the two pools are produced against different IDF corpora and so are not
+// strictly comparable; the merge still orders on them, which is a RANKING
+// approximation only — a node present in both pools always resolves to exactly
+// one entry, so recall and identity are exact. A pool that errors or does not
+// exist contributes nothing rather than failing the search, so a repo on its
+// default branch (where no overlay pool was ever written) behaves as before.
+// mergeOverlayOverBase unions two pools' hits with the OVERLAY winning any id
+// present in both, then re-ranks and truncates to limit.
+//
+// Overlay-wins mirrors the composite base+overlay precedence hydrateEngineHits
+// applies one call later, so a node changed on the branch resolves to the branch
+// version rather than to two entries or to the stale base one.
+//
+// The re-rank is a RANKING APPROXIMATION and deliberately so: the two pools score
+// against different IDF corpora, so their scores are not strictly comparable.
+// Ordering across the union is therefore approximate — but dedup is by id, so
+// recall and identity are exact, which is what correctness depends on.
+func mergeOverlayOverBase(overlayHits, baseHits []searchengine.Hit, limit int) []searchengine.Hit {
+	seen := make(map[string]struct{}, len(overlayHits))
+	for _, h := range overlayHits {
+		seen[h.ID] = struct{}{}
+	}
+	merged := overlayHits
+	for _, h := range baseHits {
+		if _, dup := seen[h.ID]; dup {
+			continue
+		}
+		merged = append(merged, h)
+	}
+	sort.SliceStable(merged, func(i, j int) bool { return merged[i].Score > merged[j].Score })
+	if len(merged) > limit {
+		merged = merged[:limit]
+	}
+	return merged
+}
+
 func searchOneCodeQueryClient(ctx context.Context, cdeps codeSearchDeps, target *knowledgev1.GraphSelector, query string, queryVec []byte, limit int, pathPrefix, repo string) []engine.CodeResolvedResult {
-	hits, err := cdeps.mgr.Search(ctx, kgtypes.GraphCode, target.GetRepo(), query, queryVec, limit)
-	if err != nil || len(hits) == 0 {
+	base := target.GetRepo()
+	hits, err := cdeps.mgr.Search(ctx, kgtypes.GraphCode, base, query, queryVec, limit)
+	if err != nil {
+		hits = nil
+	}
+	if overlay := overlayName(base, target.GetBranch()); overlay != base {
+		overlayHits, overlayErr := cdeps.mgr.Search(ctx, kgtypes.GraphCode, overlay, query, queryVec, limit)
+		if overlayErr == nil && len(overlayHits) > 0 {
+			hits = mergeOverlayOverBase(overlayHits, hits, limit)
+		}
+	}
+	if len(hits) == 0 {
 		return nil
 	}
 	sel := hydrateSelector{Graph: "code", Repo: target.GetRepo(), Branch: target.GetBranch()}

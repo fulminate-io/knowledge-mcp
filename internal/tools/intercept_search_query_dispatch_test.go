@@ -119,6 +119,12 @@ func (h *dispatchEngineHandler) PipelineGenPoll(
 	return nil, connect.NewError(connect.CodeUnimplemented, nil)
 }
 
+func (h *dispatchEngineHandler) CorpusDelta(
+	context.Context, *connect.Request[knowledgev1.CorpusDeltaRequest],
+) (*connect.Response[knowledgev1.CorpusDeltaResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, nil)
+}
+
 func (h *dispatchEngineHandler) ExportGraph(
 	context.Context, *connect.Request[knowledgev1.ExportGraphRequest],
 ) (*connect.Response[knowledgev1.ExportGraphResponse], error) {
@@ -200,8 +206,10 @@ func (d *interceptDeps) SegmentShipper() SegmentShipper               { return n
 func (d *interceptDeps) SegmentPruner() SegmentPruner                 { return nil }
 func (d *interceptDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
 func (d *interceptDeps) PipelineScanner() PipelineScanner             { return nil }
-func (d *interceptDeps) ReflectionForcer() ReflectionForcer           { return nil }
-func (d *interceptDeps) SimilarityForcer() SimilarityForcer           { return nil }
+
+func (d *interceptDeps) ClearHealLatch(kgtypes.GraphType, string) {}
+func (d *interceptDeps) ReflectionForcer() ReflectionForcer       { return nil }
+func (d *interceptDeps) SimilarityForcer() SimilarityForcer       { return nil }
 
 func (d *interceptDeps) BlindSpotProvider() BlindSpotProvider { return nil }
 func (d *interceptDeps) ClusterProvider() ClusterProvider     { return nil }
@@ -258,7 +266,7 @@ func TestInterceptSearch_EmbedThenClientEngine(t *testing.T) {
 	mgr := &fakeSegmentSearcher{hits: []searchengine.Hit{{ID: "n1", Score: 0.9}}}
 	deps := &interceptDeps{gc: gc, emb: stubEmbedder{calls: &embedCalls}, segMgr: mgr}
 
-	handled, out := InterceptSearch(deps, searchParams(t, map[string]any{"query": "x", "graph": "knowledge"}))
+	handled, out := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{"query": "x", "graph": "knowledge"}))
 	require.True(t, handled)
 	assert.GreaterOrEqual(t, embedCalls.Load(), int64(1), "client embed pre-step ran")
 	assert.Equal(t, int64(1), mgr.calls.Load(), "knowledge arm drove the CLIENT engine")
@@ -274,7 +282,7 @@ func TestInterceptSearch_LogsShortCircuit(t *testing.T) {
 	gc := newInterceptHarness(t, &execHits, cannedSearchResp(t))
 	deps := &interceptDeps{gc: gc, emb: stubEmbedder{calls: &embedCalls}}
 
-	handled, _ := InterceptSearch(deps, searchParams(t, map[string]any{"graph": "logs", "name": "q1", "text": "err"}))
+	handled, _ := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{"graph": "logs", "name": "q1", "text": "err"}))
 	require.True(t, handled, "logs search is handled client-side")
 	assert.Equal(t, int64(0), execHits.Load(), "logs short-circuit does NOT hit Execute")
 }
@@ -292,7 +300,7 @@ func TestInterceptQuery_EmbedThenNonCompilableDenied(t *testing.T) {
 
 	raw, err := json.Marshal(map[string]any{"query": "x"})
 	require.NoError(t, err)
-	handled, out := InterceptQuery(deps, kgtools.CallToolParams{Name: "query", Arguments: raw})
+	handled, out := InterceptQuery(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: raw})
 	require.True(t, handled)
 	assert.GreaterOrEqual(t, embedCalls.Load(), int64(1), "client embed pre-step ran")
 	// query-field-only is not compilable → Dispatch DENIES (no legacy fallback).
@@ -316,7 +324,7 @@ func TestInterceptQuery_TextModeCompilesToExecute(t *testing.T) {
 	// search plan that compiles to Execute).
 	raw, err := json.Marshal(map[string]any{"query": "x", "text": "x"})
 	require.NoError(t, err)
-	handled, out := InterceptQuery(deps, kgtools.CallToolParams{Name: "query", Arguments: raw})
+	handled, out := InterceptQuery(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: raw})
 	require.True(t, handled)
 	assert.GreaterOrEqual(t, embedCalls.Load(), int64(1), "client embed pre-step ran")
 	assert.Equal(t, int64(1), execHits.Load(), "compilable query routes through Engine.Execute")
@@ -368,7 +376,7 @@ func TestInterceptSearchCode_DistinctCallerVectors(t *testing.T) {
 		mgr := &recordingCodeSearcher{}
 		// No embedder: the caller vector is the only vector source.
 		deps := &interceptDeps{gc: gc, emb: nil, segMgr: mgr}
-		handled, _ := InterceptSearch(deps, searchParams(t, map[string]any{
+		handled, _ := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{
 			"graph": "code", "query": "x", "repo": "knowledge", "query_vector": vec,
 		}))
 		require.True(t, handled, "graph=code is claimed client-side")
@@ -393,7 +401,7 @@ func TestInterceptSearchCode_ConceptualQueryAutoEmbeds(t *testing.T) {
 	deps := &interceptDeps{gc: gc, emb: stubEmbedder{calls: &embedCalls, batchCalls: &batchCalls}, segMgr: mgr}
 
 	const q = "verify a user identity before granting access"
-	handled, _ := InterceptSearch(deps, searchParams(t, map[string]any{
+	handled, _ := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{
 		"graph": "code", "query": q, "repo": "knowledge",
 	}))
 	require.True(t, handled)
@@ -417,7 +425,7 @@ func TestInterceptSearchCode_PerQueryDistinctVectors(t *testing.T) {
 
 	const q1 = "authentication and identity verification"
 	const q2 = "binary tree traversal algorithm"
-	handled, _ := InterceptSearch(deps, searchParams(t, map[string]any{
+	handled, _ := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{
 		"graph": "code", "queries": []string{q1, q2}, "repo": "knowledge",
 	}))
 	require.True(t, handled)

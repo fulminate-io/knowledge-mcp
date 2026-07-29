@@ -19,11 +19,11 @@ import (
 // the requested edge-type set so a tensionEdgeTypes read and an EdgeChargedBy
 // read get different answers, and (b) hydrate charge nodes so the real
 // computePropertiesFromCharges derivation runs. It serves exactly the reads
-// fetchTensionEdges + fetchChargesFor + fetchNodesByIDs issue:
+// fetchTensionEdges issues (the hydrate + charge join now happen inside it):
 //
-//   - the per-type universe browses (fetchTensionUniverseNodes drains
-//     thought/finding/research) → the seeded nodes whose Type matches each
-//     browse's requested Selection.NodeType;
+//   - the type=charge universe seed browse (fetchTensionUniverseNodes inverts the
+//     universe onto the charged set) → the seeded charge nodes; any other
+//     Selection.NodeType browse still serves the matching seeded claim nodes;
 //   - a RETURN_MODE_EDGES read filtered to tensionEdgeTypes → tensionEdges;
 //   - a RETURN_MODE_EDGES read filtered to EdgeChargedBy → chargeEdges
 //     (thought→charge), driving the per-thought valence;
@@ -101,15 +101,17 @@ func (f *tensionFake) Execute(_ context.Context, req *knowledgev1.ExecuteRequest
 	if q.GetOffset() > 0 {
 		return &knowledgev1.ExecuteResponse{}, nil
 	}
-	// A type browse (first page). fetchTensionUniverseNodes now drains three
-	// types (thought/finding/research) via separate single-type browses, so the
-	// fake answers each by the requested Selection.NodeType: return only the
-	// seeded nodes whose Type matches. A type with no seeded nodes (e.g. research
-	// when only thoughts are seeded) returns an empty page — the existing
-	// thought-only tension cases are unchanged.
+	// A type browse (first page), answered by the requested Selection.NodeType.
+	// fetchTensionUniverseNodes seeds from the CHARGE set, so the charge browse is
+	// the one the cold (nil-src) universe build takes; it is served in chargeEdges
+	// order for determinism. The claim-type browses remain answerable so a fixture
+	// that still drains one behaves as before.
 	wantType := ""
 	if sel := q.GetSelection(); sel != nil {
 		wantType = sel.GetNodeType()
+	}
+	if wantType == string(kgtypes.NodeCharge) {
+		return &knowledgev1.ExecuteResponse{Nodes: f.chargeBrowse()}, nil
 	}
 	var nodes []*knowledgev1.Node
 	for _, id := range f.order {
@@ -120,6 +122,23 @@ func (f *tensionFake) Execute(_ context.Context, req *knowledgev1.ExecuteRequest
 		nodes = append(nodes, cloneNode(n))
 	}
 	return &knowledgev1.ExecuteResponse{Nodes: nodes}, nil
+}
+
+// chargeBrowse serves the seeded charge nodes in chargeEdges order (deterministic,
+// unlike a map walk), each cloned exactly as the hydrate arm does.
+func (f *tensionFake) chargeBrowse() []*knowledgev1.Node {
+	var out []*knowledgev1.Node
+	seen := map[string]bool{}
+	for _, e := range f.chargeEdges {
+		if seen[e.GetToId()] {
+			continue
+		}
+		seen[e.GetToId()] = true
+		if c, ok := f.charges[e.GetToId()]; ok {
+			out = append(out, cloneNode(c))
+		}
+	}
+	return out
 }
 
 // newTensionFake builds a two-thought corpus A (one positive charge) and B (one
@@ -158,7 +177,7 @@ func newTensionFake(tensionEdges []*knowledgev1.Edge) *tensionFake {
 // have paired them via deriveSessionSiblings.
 func TestReflectTensions_NoExplicitEdge_NoPair(t *testing.T) {
 	f := newTensionFake(nil) // no explicit edge between A and B
-	tensions, err := ReflectTensions(context.Background(), f)
+	tensions, err := ReflectTensions(context.Background(), f, nil)
 	require.NoError(t, err)
 	assert.Empty(t, tensions,
 		"opposite-valence thoughts with no explicit reasoning edge must NOT pair (co-session membership alone is not a tension)")
@@ -171,7 +190,7 @@ func TestReflectTensions_ContradictsEdge_PairsOnce(t *testing.T) {
 	f := newTensionFake([]*knowledgev1.Edge{
 		{Type: "contradicts", FromId: "A", ToId: "B"},
 	})
-	tensions, err := ReflectTensions(context.Background(), f)
+	tensions, err := ReflectTensions(context.Background(), f, nil)
 	require.NoError(t, err)
 	require.Len(t, tensions, 1,
 		"an explicit contradicts edge between opposite-valence thoughts must yield exactly one tension")
@@ -189,7 +208,7 @@ func TestReflectTensions_MachineEdge_NoPair(t *testing.T) {
 	f := newTensionFake([]*knowledgev1.Edge{
 		{Type: string(kgtypes.EdgeRelatesTo), FromId: "A", ToId: "B", Method: densifyMethod},
 	})
-	tensions, err := ReflectTensions(context.Background(), f)
+	tensions, err := ReflectTensions(context.Background(), f, nil)
 	require.NoError(t, err)
 	assert.Empty(t, tensions,
 		"a machine topic-densify relates-to edge must NOT pair thoughts (machine links are clustering signal, not tension)")
@@ -206,7 +225,7 @@ func TestReflectTensions_NextEdge_NoPair(t *testing.T) {
 	f := newTensionFake([]*knowledgev1.Edge{
 		{Type: string(kgtypes.EdgeNext), FromId: "A", ToId: "B"},
 	})
-	tensions, err := ReflectTensions(context.Background(), f)
+	tensions, err := ReflectTensions(context.Background(), f, nil)
 	require.NoError(t, err)
 	assert.Empty(t, tensions,
 		"a next-only opposing-valence pair is a same-session temporal arc, not a tension — the temporal edge types are excluded from tensionEdgeTypes")
@@ -222,7 +241,7 @@ func TestReflectTensions_RelatesToEdge_PairsOnce(t *testing.T) {
 	f := newTensionFake([]*knowledgev1.Edge{
 		{Type: string(kgtypes.EdgeRelatesTo), FromId: "A", ToId: "B"},
 	})
-	tensions, err := ReflectTensions(context.Background(), f)
+	tensions, err := ReflectTensions(context.Background(), f, nil)
 	require.NoError(t, err)
 	require.Len(t, tensions, 1,
 		"a human relates-to edge between opposite-valence thoughts must yield exactly one tension")
@@ -233,9 +252,10 @@ func TestReflectTensions_RelatesToEdge_PairsOnce(t *testing.T) {
 // newFindingTensionFake builds a two-FINDING corpus F1 (one positive charge) and
 // F2 (one negative charge), both magnitude≥0.5 and |Δvalence|=2, joined by the
 // supplied explicit thought↔thought reasoning edge. It is the cross-node-type
-// analog of newTensionFake: the nodes carry NodeFinding type, so the fake's
-// type-browse branch serves them only to the finding browse — proving the widened
-// fetchTensionUniverseNodes drains findings and ReflectTensions pairs them.
+// analog of newTensionFake: the claim nodes carry NodeFinding type and reach the
+// universe as the parents of their charges — proving the charge-seeded
+// fetchTensionUniverseNodes admits findings, not just thoughts, and ReflectTensions
+// pairs them.
 func newFindingTensionFake(edges []*knowledgev1.Edge) *tensionFake {
 	mkFinding := func(id string) *knowledgev1.Node {
 		return &knowledgev1.Node{Id: id, Type: string(kgtypes.NodeFinding), UpdatedAt: 1000}
@@ -264,16 +284,17 @@ func newFindingTensionFake(edges []*knowledgev1.Edge) *tensionFake {
 // TestReflectTensions_FindingFinding_CrossNodeType (FAILS-WHEN-ABSENT) is the
 // headline cross-node-type behavior: two opposing-valence FINDING nodes joined by
 // an explicit `contradicts` edge surface as exactly one cross-node-type tension. It
-// goes red if fetchTensionEdges is reverted to the thought-only
-// fetchAllThoughtNodes drain (the findings would never enter the node universe, so
-// no pair would form). PairCount==1 confirms graceful degradation for nodes that
+// goes red if the universe is ever narrowed back to thoughts only — whether by a
+// thought-only drain or by seeding the charge walk from thought ids — since the
+// findings would never enter it and no pair would form. PairCount==1 confirms
+// graceful degradation for nodes that
 // carry no cluster_id: each forms its own singleton group keyed by node id, never
 // collapsed together.
 func TestReflectTensions_FindingFinding_CrossNodeType(t *testing.T) {
 	f := newFindingTensionFake([]*knowledgev1.Edge{
 		{Type: "contradicts", FromId: "F1", ToId: "F2"},
 	})
-	tensions, err := ReflectTensions(context.Background(), f)
+	tensions, err := ReflectTensions(context.Background(), f, nil)
 	require.NoError(t, err)
 	require.Len(t, tensions, 1,
 		"two opposing-valence findings joined by a contradicts edge must yield exactly one cross-node-type tension")
@@ -327,7 +348,7 @@ func TestReflectTensions_UnclusteredFindings_NotCollapsedTogether(t *testing.T) 
 			{Type: string(kgtypes.EdgeChargedBy), FromId: "F4", ToId: "cF4"},
 		},
 	}
-	tensions, err := ReflectTensions(context.Background(), f)
+	tensions, err := ReflectTensions(context.Background(), f, nil)
 	require.NoError(t, err)
 	require.Len(t, tensions, 2,
 		"two independent unclustered finding pairs must NOT collapse — each is its own per-id singleton group")

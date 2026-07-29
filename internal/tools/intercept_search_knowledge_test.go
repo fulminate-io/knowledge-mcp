@@ -80,7 +80,7 @@ func TestInterceptSearchKnowledge_RoutesToClientEngine(t *testing.T) {
 	}}
 	deps := &interceptDeps{gc: gc, emb: stubEmbedder{calls: &embedCalls}, segMgr: mgr}
 
-	handled, out := InterceptSearch(deps, searchParams(t, map[string]any{"query": "x", "graph": "knowledge"}))
+	handled, out := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{"query": "x", "graph": "knowledge"}))
 	require.True(t, handled)
 	require.False(t, out.IsError, "result is not an error: %v", engine.FirstTextContent(out))
 
@@ -111,7 +111,7 @@ func TestInterceptSearchKnowledge_ClientEngineWithoutEmbedder(t *testing.T) {
 	mgr := &fakeSegmentSearcher{hits: []searchengine.Hit{{ID: "n1", Score: 0.7}}}
 	deps := &interceptDeps{gc: gc, segMgr: mgr} // emb nil → BM25-only arm
 
-	handled, out := InterceptSearch(deps, searchParams(t, map[string]any{"query": "x", "graph": "knowledge"}))
+	handled, out := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{"query": "x", "graph": "knowledge"}))
 	require.True(t, handled)
 	require.False(t, out.IsError, "result is not an error: %v", engine.FirstTextContent(out))
 
@@ -180,7 +180,7 @@ func TestInterceptQueryKnowledgeSearch_BareRecentTemporalBrowse(t *testing.T) {
 	mgr := &fakeSegmentSearcher{}
 	deps := &interceptDeps{gc: gc, segMgr: mgr}
 
-	handled, out := InterceptQueryKnowledgeSearch(deps, queryParams(t, map[string]any{
+	handled, out := InterceptQueryKnowledgeSearch(opCtx(), deps, queryParams(t, map[string]any{
 		"mode": "recent", "limit": 2, "format": "json",
 	}))
 	require.True(t, handled, "bare recent is claimed + served client-side")
@@ -221,7 +221,7 @@ func TestInterceptQueryKnowledgeSearch_TextBearingRecentUnchanged(t *testing.T) 
 	mgr := &fakeSegmentSearcher{hits: []searchengine.Hit{{ID: "n1", Score: 0.9}}}
 	deps := &interceptDeps{gc: gc, emb: stubEmbedder{calls: &embedCalls}, segMgr: mgr}
 
-	handled, out := InterceptQueryKnowledgeSearch(deps, queryParams(t, map[string]any{
+	handled, out := InterceptQueryKnowledgeSearch(opCtx(), deps, queryParams(t, map[string]any{
 		"mode": "recent", "text": "foo",
 	}))
 	require.True(t, handled)
@@ -250,7 +250,7 @@ func TestInterceptQueryKnowledgeSearch_RecentWithTypesFilter(t *testing.T) {
 	mgr := &fakeSegmentSearcher{}
 	deps := &interceptDeps{gc: gc, segMgr: mgr}
 
-	handled, out := InterceptQueryKnowledgeSearch(deps, queryParams(t, map[string]any{
+	handled, out := InterceptQueryKnowledgeSearch(opCtx(), deps, queryParams(t, map[string]any{
 		"mode": "recent", "types": []string{"project", "ticket"}, "limit": 5, "format": "json",
 	}))
 	require.True(t, handled)

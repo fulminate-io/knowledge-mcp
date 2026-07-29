@@ -19,7 +19,7 @@ import (
 // InterceptNegationGate with the given fake gc, and report (handled, rejected).
 func runGate(t *testing.T, gc GraphCaller, tool string, args map[string]any) (handled, rejected bool) {
 	t.Helper()
-	handled, res := InterceptNegationGate(interceptTestDeps{gc: gc}, negationParams(t, tool, args))
+	handled, res := InterceptNegationGate(opCtx(), interceptTestDeps{gc: gc}, negationParams(t, tool, args))
 	return handled, res.IsError
 }
 

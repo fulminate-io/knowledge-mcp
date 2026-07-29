@@ -88,7 +88,7 @@ func TestNewCloudGraphClient_AttachesBearer(t *testing.T) {
 
 	// Issue one Execute. The handler returns a malformed payload — we ignore
 	// the decode error; the assertion is on the request header captured server-side.
-	_, _ = gc.Execute(context.Background(), &knowledgev1.ExecuteRequest{})
+	_, _ = gc.Execute(opCtx(), &knowledgev1.ExecuteRequest{})
 
 	got := h.observed()
 	require.NotEmpty(t, got, "handler should have seen at least one request")
@@ -132,7 +132,7 @@ func TestNewCloudGraphClient_RetriesOn401(t *testing.T) {
 	src := &cloudRefresher{current: "tok-stale"}
 	gc := NewCloudGraphClient(srv.URL, src)
 
-	_, _ = gc.Execute(context.Background(), &knowledgev1.ExecuteRequest{})
+	_, _ = gc.Execute(opCtx(), &knowledgev1.ExecuteRequest{})
 
 	got := h.observed()
 	require.GreaterOrEqual(t, len(got), 2,
@@ -161,7 +161,7 @@ func TestCloudAuth_StaticTokenSource_NoRetryOn401(t *testing.T) {
 
 	// The Execute returns an error (the 401 surfaces, the payload never decodes);
 	// the assertion is purely on the upstream request count + bearer attachment.
-	_, _ = gc.Execute(context.Background(), &knowledgev1.ExecuteRequest{})
+	_, _ = gc.Execute(opCtx(), &knowledgev1.ExecuteRequest{})
 
 	got := h.observed()
 	require.Len(t, got, 1,
@@ -235,7 +235,7 @@ func TestCloudExecute_UnaryPOSTOverHTTP11(t *testing.T) {
 			Query: &knowledgev1.QueryPlan{ById: "x"},
 		},
 	}
-	resp, err := gc.Execute(context.Background(), req)
+	resp, err := gc.Execute(opCtx(), req)
 	require.NoError(t, err, "cloud Execute must succeed over HTTP/1.1")
 	require.NotNil(t, resp)
 	require.Len(t, resp.GetNodes(), 1, "the canned node round-trips")

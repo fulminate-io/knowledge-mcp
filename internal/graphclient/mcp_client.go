@@ -220,6 +220,14 @@ func (m *MCPClient) dispatchToolCall(ctx context.Context, req kgtools.JSONRPCReq
 
 	slog.Debug("mcpClient: tool call entry", "tool", params.Name, "args", clipArgs(string(params.Arguments), 400))
 
+	// Stamp the query-origin operation for the whole call. This is THE tool-side
+	// entry point: every covered RPC issued while handling this call — by the
+	// intercept chain, by a wire helper, by the engine dispatch below — inherits
+	// it from ctx, so no call site does its own bookkeeping and none can be
+	// forgotten. A sub-path that wants finer attribution (a fallback scan, a
+	// hydrate pass) re-stamps a refinement term on its own derived ctx.
+	ctx = WithOperation(ctx, OperationForTool(params.Name))
+
 	// Run the client-side intercept chain. The chain may handle the call
 	// inline OR rewrite params (e.g. repo:+branch: injection for code-graph
 	// calls) and fall through. Capture the rewritten params so the proxy

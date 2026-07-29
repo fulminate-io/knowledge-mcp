@@ -47,8 +47,10 @@ func (d *logE2EDeps) SegmentShipper() SegmentShipper               { return nil 
 func (d *logE2EDeps) SegmentPruner() SegmentPruner                 { return nil }
 func (d *logE2EDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
 func (d *logE2EDeps) PipelineScanner() PipelineScanner             { return nil }
-func (d *logE2EDeps) ReflectionForcer() ReflectionForcer           { return nil }
-func (d *logE2EDeps) SimilarityForcer() SimilarityForcer           { return nil }
+
+func (d *logE2EDeps) ClearHealLatch(kgtypes.GraphType, string) {}
+func (d *logE2EDeps) ReflectionForcer() ReflectionForcer       { return nil }
+func (d *logE2EDeps) SimilarityForcer() SimilarityForcer       { return nil }
 
 func (d *logE2EDeps) BlindSpotProvider() BlindSpotProvider { return nil }
 func (d *logE2EDeps) ClusterProvider() ClusterProvider     { return nil }
@@ -91,7 +93,7 @@ func TestE2E_QueryGraphLogs_Correlations(t *testing.T) {
 		"graph": "logs", "name": queryID, "mode": "correlations",
 	})
 	require.NoError(t, err)
-	handled, res := InterceptLogsQuery(deps, kgtools.CallToolParams{
+	handled, res := InterceptLogsQuery(opCtx(), deps, kgtools.CallToolParams{
 		Name: "query", Arguments: args,
 	})
 	require.True(t, handled, "InterceptLogsQuery must claim graph=logs")
@@ -110,7 +112,7 @@ func TestE2E_TraverseGraphLogs_Template(t *testing.T) {
 		"graph": "logs", "name": queryID, "start": "tpl-a", "direction": "out",
 	})
 	require.NoError(t, err)
-	handled, res := InterceptLogsTraversal(deps, kgtools.CallToolParams{
+	handled, res := InterceptLogsTraversal(opCtx(), deps, kgtools.CallToolParams{
 		Name: "traverse", Arguments: args,
 	})
 	require.True(t, handled, "InterceptLogsTraversal must claim graph=logs+start")
@@ -129,7 +131,7 @@ func TestE2E_ManageListLogs(t *testing.T) {
 		"operation": "list_logs", "format": "json",
 	})
 	require.NoError(t, err)
-	handled, res := InterceptLogsManage(deps, kgtools.CallToolParams{
+	handled, res := InterceptLogsManage(opCtx(), deps, kgtools.CallToolParams{
 		Name: "manage", Arguments: args,
 	})
 	require.True(t, handled, "InterceptLogsManage must claim list_logs")
@@ -149,7 +151,7 @@ func TestE2E_ManageDiscardLogs(t *testing.T) {
 		"operation": "discard_logs", "name": queryID,
 	})
 	require.NoError(t, err)
-	handled, res := InterceptLogsManage(deps, kgtools.CallToolParams{
+	handled, res := InterceptLogsManage(opCtx(), deps, kgtools.CallToolParams{
 		Name: "manage", Arguments: args,
 	})
 	require.True(t, handled, "InterceptLogsManage must claim discard_logs")
@@ -162,7 +164,7 @@ func TestE2E_ManageDiscardLogs(t *testing.T) {
 	// DROP_GRAPH removed it from the fake's catalog.
 	listArgs, err := json.Marshal(map[string]any{"operation": "list_logs"})
 	require.NoError(t, err)
-	handled, listRes := InterceptLogsManage(deps, kgtools.CallToolParams{
+	handled, listRes := InterceptLogsManage(opCtx(), deps, kgtools.CallToolParams{
 		Name: "manage", Arguments: listArgs,
 	})
 	require.True(t, handled)
@@ -190,7 +192,7 @@ func TestE2E_ClientSide_ConfigureLogBackend(t *testing.T) {
 		"kube_context": "docker-desktop",
 	})
 	require.NoError(t, err)
-	handled, res := InterceptLogsManage(deps, kgtools.CallToolParams{
+	handled, res := InterceptLogsManage(opCtx(), deps, kgtools.CallToolParams{
 		Name: "manage", Arguments: args,
 	})
 	require.True(t, handled, "InterceptLogsManage must claim configure_log_backend")
@@ -212,7 +214,7 @@ func TestE2E_ClientSide_ListLogBackends(t *testing.T) {
 		"operation": "list_log_backends",
 	})
 	require.NoError(t, err)
-	handled, res := InterceptLogsManage(deps, kgtools.CallToolParams{
+	handled, res := InterceptLogsManage(opCtx(), deps, kgtools.CallToolParams{
 		Name: "manage", Arguments: args,
 	})
 	require.True(t, handled, "InterceptLogsManage must claim list_log_backends")
@@ -228,23 +230,23 @@ func TestE2E_NonLogsCalls_FallThrough(t *testing.T) {
 
 	t.Run("query non-logs", func(t *testing.T) {
 		args, _ := json.Marshal(map[string]any{"graph": "knowledge"})
-		handled, _ := InterceptLogsQuery(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
+		handled, _ := InterceptLogsQuery(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
 		assert.False(t, handled)
 	})
 	t.Run("traverse non-logs", func(t *testing.T) {
 		args, _ := json.Marshal(map[string]any{"graph": "code", "start": "x"})
-		handled, _ := InterceptLogsTraversal(deps, kgtools.CallToolParams{Name: "traverse", Arguments: args})
+		handled, _ := InterceptLogsTraversal(opCtx(), deps, kgtools.CallToolParams{Name: "traverse", Arguments: args})
 		assert.False(t, handled)
 	})
 	t.Run("manage non-logs", func(t *testing.T) {
 		args, _ := json.Marshal(map[string]any{"operation": "status"})
-		handled, _ := InterceptLogsManage(deps, kgtools.CallToolParams{Name: "manage", Arguments: args})
+		handled, _ := InterceptLogsManage(opCtx(), deps, kgtools.CallToolParams{Name: "manage", Arguments: args})
 		assert.False(t, handled)
 	})
 	t.Run("traverse logs no start", func(t *testing.T) {
 		// Graph-wide enumeration → server-side, intercept must fall through.
 		args, _ := json.Marshal(map[string]any{"graph": "logs", "name": "x"})
-		handled, _ := InterceptLogsTraversal(deps, kgtools.CallToolParams{Name: "traverse", Arguments: args})
+		handled, _ := InterceptLogsTraversal(opCtx(), deps, kgtools.CallToolParams{Name: "traverse", Arguments: args})
 		assert.False(t, handled, "graph-wide traverse should fall through to the server")
 	})
 }

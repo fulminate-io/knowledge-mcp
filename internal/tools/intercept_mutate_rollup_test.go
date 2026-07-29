@@ -31,7 +31,7 @@ func TestInterceptMutate_StatusRollup_OneTraverse_OneUpdate(t *testing.T) {
 		},
 	}
 	deps := interceptTestDeps{gc: fc}
-	handled, res := InterceptMutate(deps, kgtools.CallToolParams{
+	handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "mutate",
 		Arguments: json.RawMessage(`{"operation":"update","id":"plan-1","status":"completed"}`),
 	})
@@ -53,7 +53,7 @@ func TestInterceptMutate_StatusRollup_TerminalDescendants_Skipped(t *testing.T) 
 		},
 	}
 	deps := interceptTestDeps{gc: fc}
-	_, res := InterceptMutate(deps, kgtools.CallToolParams{
+	_, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "mutate",
 		Arguments: json.RawMessage(`{"operation":"update","id":"plan-1","status":"completed"}`),
 	})
@@ -83,7 +83,7 @@ func TestInterceptMutate_StatusRollup_ExpandFalse_NoCascade(t *testing.T) {
 		},
 	}
 	deps := interceptTestDeps{gc: fc}
-	handled, _ := InterceptMutate(deps, kgtools.CallToolParams{
+	handled, _ := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "mutate",
 		Arguments: json.RawMessage(`{"operation":"update","id":"plan-1","status":"completed","expand_to_descendants":false}`),
 	})
@@ -108,7 +108,7 @@ func TestInterceptMutate_StatusRollup_ExpandAbsent_StillCascades(t *testing.T) {
 		},
 	}
 	deps := interceptTestDeps{gc: fc}
-	handled, res := InterceptMutate(deps, kgtools.CallToolParams{
+	handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "mutate",
 		Arguments: json.RawMessage(`{"operation":"update","id":"plan-1","status":"completed"}`),
 	})
@@ -131,7 +131,7 @@ func TestInterceptMutate_StatusRollup_ExpandTrue_StillCascades(t *testing.T) {
 		},
 	}
 	deps := interceptTestDeps{gc: fc}
-	handled, res := InterceptMutate(deps, kgtools.CallToolParams{
+	handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "mutate",
 		Arguments: json.RawMessage(`{"operation":"update","id":"plan-1","status":"completed","expand_to_descendants":true}`),
 	})

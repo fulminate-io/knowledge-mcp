@@ -48,15 +48,63 @@ const (
 	// propagation epsilon loosens.
 	influenceEpsilon = 1e-6
 	magnitudeDecay   = 0.7
+	// valenceSelfDamping is the lazy-iteration self-loop damping factor d applied to
+	// the PropagateValence DeGroot step: vNext = (1-d)*v + d*(M*v). Structurally this
+	// iterates the lazy walk (1-d)I + d*M instead of M. With d=0.5 every eigenvalue λ
+	// of the row-stochastic M maps to (1-d)+dλ, shifting the spectrum into the right
+	// half of the unit disk — so the period-2 mode at λ=-1 (which M leaves undamped,
+	// flipping the pair every iteration forever) maps to 0 and is killed outright, and
+	// every other mode also lands inside the disk and converges. It does NOT make the
+	// path monotone (complex eigenvalues still spiral inward, i.e. can overshoot); the
+	// guarantee is convergence without sustained oscillation, not no-overshoot. d=0.5
+	// keeps already-converged fixed points exactly in place (a power of two averages
+	// without rounding for power-of-two values).
+	valenceSelfDamping = 0.5
+	// writebackDeadband is the minimum change in a persisted propagated_* value that
+	// justifies re-persisting it. Pinned to defaultEpsilon (1e-4): a recomputed value
+	// within this band of the persisted value is not written back. This sits below any
+	// observable consumer effect — persisted propagated values are never rendered
+	// directly; they feed only recall's magnitude sort and the valence/magnitude
+	// threshold filters. A sub-deadband-stale value can only reorder genuine near-ties,
+	// which the non-stable sort already resolves arbitrarily, and can only sit
+	// sub-deadband from a filter threshold — below the granularity any consumer
+	// distinguishes. The band suppresses churn writes from values that merely jittered
+	// below what any reader can observe.
+	writebackDeadband = defaultEpsilon
 )
+
+// propagatedValueChangedBand is the per-key band predicate for the propagated_*
+// writeback diff: it reports whether want differs from the persisted cur by at least
+// band — the drift below which a re-persist is not worthwhile. An unset persisted
+// value (cur == "") ALWAYS writes — this first-persist guard is load-bearing: without
+// a stored value, consumers fall back to the raw Properties value, so the propagated
+// value must be written at least once. Otherwise the write is gated on
+// |want - cur| >= band. The band is chosen PER COMPONENT by the caller: a converged
+// component floors at writebackDeadband, a non-converged component widens it to the
+// component's own oscillation amplitude so residual jitter — below what any consumer
+// can observe — stops re-writing every tick.
+func propagatedValueChangedBand(cur, want string, band float64) bool {
+	if cur == "" {
+		return true // first-persist guard: an unset value must always be written.
+	}
+	return math.Abs(parseFloat(want)-parseFloat(cur)) >= band
+}
+
+// propagatedValueChanged is the fixed-band specialization of
+// propagatedValueChangedBand at the writebackDeadband floor — the predicate for a
+// propagated_* diff with no per-component band, and the exact behavior in effect
+// before the per-component widening.
+func propagatedValueChanged(cur, want string) bool {
+	return propagatedValueChangedBand(cur, want, writebackDeadband)
+}
 
 // BuildTrustMatrix constructs a row-stochastic trust matrix for the
 // given thoughts. Thin wrapper over BuildTrustMatrixWithCharges that drops the
 // charge map — its (TrustMatrix, error) signature is the contract every caller
 // that does not need the charge map relies on (BuildTrustMatrixWithPersonality,
 // BlindSpotInfluenceVector, the propagation drivers).
-func BuildTrustMatrix(ctx context.Context, gc Caller, thoughtIDs []string, now time.Time) (TrustMatrix, error) {
-	matrix, _, err := BuildTrustMatrixWithCharges(ctx, gc, thoughtIDs, now)
+func BuildTrustMatrix(ctx context.Context, gc Caller, thoughtIDs []string, now time.Time, src CorpusSource) (TrustMatrix, error) {
+	matrix, _, err := BuildTrustMatrixWithCharges(ctx, gc, thoughtIDs, now, src)
 	return matrix, err
 }
 
@@ -64,13 +112,17 @@ func BuildTrustMatrix(ctx context.Context, gc Caller, thoughtIDs []string, now t
 // full-corpus charge map it already fetched, so a caller that needs per-thought
 // charge data (e.g. ReflectInfluence's evidence-aware partition) reuses it
 // instead of issuing a second full-corpus charge read. It builds the cross-edge
-// fanout via fetchAdjacency(ctx, gc, "all", thoughtIDs) — the reduced
+// fanout via fetchAdjacency(ctx, gc, "all", thoughtIDs, src) — the reduced
 // Execute-seam adjacency composition (a paged type-browse + one bulk edges read,
 // no legacy adjacency tool op) — and the self-trust charge map via
 // chargeMapForThoughts (→ fetchChargesFor, the bulk-charge Execute seam).
+// src is the resident corpus seam: a warm CorpusSource serves the thought-node
+// arm of that adjacency read from the in-process cache, so a warm caller pays no
+// paged browse at all; nil (an on-demand handler with no loop in hand, or a test)
+// keeps the full drain.
 // fillSparseRows operates entirely from those two prebuilt maps; the charge map
 // is returned rather than discarded.
-func BuildTrustMatrixWithCharges(ctx context.Context, gc Caller, thoughtIDs []string, now time.Time) (TrustMatrix, map[string][]*knowledgev1.Node, error) {
+func BuildTrustMatrixWithCharges(ctx context.Context, gc Caller, thoughtIDs []string, now time.Time, src CorpusSource) (TrustMatrix, map[string][]*knowledgev1.Node, error) {
 	n := len(thoughtIDs)
 	if n == 0 {
 		return TrustMatrix{}, nil, nil
@@ -79,7 +131,7 @@ func BuildTrustMatrixWithCharges(ctx context.Context, gc Caller, thoughtIDs []st
 	for i, id := range thoughtIDs {
 		idIndex[id] = i
 	}
-	_, adj, err := fetchAdjacency(ctx, gc, "all", thoughtIDs)
+	_, adj, err := fetchAdjacency(ctx, gc, "all", thoughtIDs, src) // resident cache when warm; else drain.
 	if err != nil {
 		return TrustMatrix{}, nil, fmt.Errorf("thought: BuildTrustMatrix: adjacency: %w", err)
 	}
@@ -169,7 +221,10 @@ func PropagateValence(matrix TrustMatrix, initialValence map[string]float64, max
 			for _, e := range matrix.Rows[i] {
 				sum += e.Val * v[e.Col]
 			}
-			vNext[i] = sum
+			// Lazy-iteration self-loop damping: blend the previous value with the
+			// neighbor consensus instead of jumping fully to it, which kills the
+			// period-2 oscillating mode (λ=-1) that the undamped step orbits forever.
+			vNext[i] = (1-valenceSelfDamping)*v[i] + valenceSelfDamping*sum
 			delta := math.Abs(vNext[i] - v[i])
 			if delta > maxDelta {
 				maxDelta = delta

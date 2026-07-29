@@ -129,7 +129,7 @@ func TestBuildLeafProvenance_SessionByElimination(t *testing.T) {
 	leafVec := vecBitsFrom(centroid, 38) // sim ≈ 0.851.
 	vi := map[string][]byte{"leaf": leafVec, "m1": centroid, "m2": centroid}
 	adj2 := map[string][]string{"leaf": {"m1"}, "m1": {"leaf", "m2"}, "m2": {"m1"}}
-	stats := attachLeaves(co, cs, adj2, vi, prov)
+	stats := attachLeaves(co, cs, adj2, vi, prov, nil)
 	if stats.byProvenance[provenanceSessionSibling] != 1 {
 		t.Fatalf("byProvenance=%v, want 1 session-sibling attach by elimination", stats.byProvenance)
 	}
@@ -154,7 +154,7 @@ func TestLeafAttach_OnlySingletonsAreCandidates(t *testing.T) {
 	vi := map[string][]byte{"leaf": base, "m1": base, "m2": base}
 	adj := map[string][]string{"leaf": {"m1"}, "m1": {"leaf", "m2"}, "m2": {"m1"}}
 
-	stats := attachLeaves(co, cs, adj, vi, realProv([2]string{"leaf", "m1"}))
+	stats := attachLeaves(co, cs, adj, vi, realProv([2]string{"leaf", "m1"}), nil)
 
 	if stats.candidates != 1 {
 		t.Fatalf("candidates = %d, want 1 (only the singleton leaf)", stats.candidates)
@@ -176,7 +176,7 @@ func TestLeafAttach_LinkedGateRealEdge(t *testing.T) {
 	vi := map[string][]byte{"leaf": leafVec, "m1": centroid, "m2": centroid}
 	adj := map[string][]string{"leaf": {"m1"}, "m1": {"leaf", "m2"}, "m2": {"m1"}}
 
-	stats := attachLeaves(co, cs, adj, vi, realProv([2]string{"leaf", "m1"}))
+	stats := attachLeaves(co, cs, adj, vi, realProv([2]string{"leaf", "m1"}), nil)
 
 	if co["leaf"] != "C" {
 		t.Fatalf("leaf community = %q, want C (real edge, sim≈0.70 >= 0.60)", co["leaf"])
@@ -200,7 +200,7 @@ func TestLeafAttach_SessionGateVetoesSameSim(t *testing.T) {
 	adj := map[string][]string{"leaf": {"m1"}, "m1": {"leaf", "m2"}, "m2": {"m1"}}
 
 	// NO provenance entry for leaf→m1 → session-sibling by elimination.
-	stats := attachLeaves(co, cs, adj, vi, map[string]map[string]string{})
+	stats := attachLeaves(co, cs, adj, vi, map[string]map[string]string{}, nil)
 
 	if co["leaf"] != "leaf" {
 		t.Fatalf("leaf community = %q, want unchanged 'leaf' (session-only sim 0.70 < 0.80)", co["leaf"])
@@ -220,7 +220,7 @@ func TestLeafAttach_SessionGateAttachesAbove(t *testing.T) {
 	vi := map[string][]byte{"leaf": leafVec, "m1": centroid, "m2": centroid}
 	adj := map[string][]string{"leaf": {"m1"}, "m1": {"leaf", "m2"}, "m2": {"m1"}}
 
-	stats := attachLeaves(co, cs, adj, vi, map[string]map[string]string{})
+	stats := attachLeaves(co, cs, adj, vi, map[string]map[string]string{}, nil)
 
 	if co["leaf"] != "C" {
 		t.Fatalf("leaf community = %q, want C (session sim≈0.85 >= 0.80)", co["leaf"])
@@ -244,7 +244,7 @@ func TestLeafAttach_LowerGateWinsBothProvenances(t *testing.T) {
 	adj := map[string][]string{"leaf": {"m1", "m2"}, "m1": {"leaf", "m2"}, "m2": {"leaf", "m1"}}
 
 	// Only leaf→m1 is a real edge; leaf→m2 is session-sibling by elimination.
-	stats := attachLeaves(co, cs, adj, vi, realProv([2]string{"leaf", "m1"}))
+	stats := attachLeaves(co, cs, adj, vi, realProv([2]string{"leaf", "m1"}), nil)
 
 	if co["leaf"] != "C" {
 		t.Fatalf("leaf community = %q, want C (lower 0.60 gate wins via the real edge)", co["leaf"])
@@ -273,7 +273,7 @@ func TestLeafAttach_TieBreakLowestClusterID(t *testing.T) {
 		"a1":   {"leaf", "a2"}, "a2": {"a1"},
 		"b1": {"leaf", "b2"}, "b2": {"b1"},
 	}
-	attachLeaves(co, cs, adj, vi, realProv([2]string{"leaf", "a1"}, [2]string{"leaf", "b1"}))
+	attachLeaves(co, cs, adj, vi, realProv([2]string{"leaf", "a1"}, [2]string{"leaf", "b1"}), nil)
 	if co["leaf"] != "Ca" {
 		t.Fatalf("equal-sim tie: leaf community = %q, want lowest id Ca", co["leaf"])
 	}
@@ -290,7 +290,7 @@ func TestLeafAttach_TieBreakLowestClusterID(t *testing.T) {
 		"a1":   far, "a2": far,
 		"b1": near, "b2": near,
 	}
-	attachLeaves(co2, cs2, adj, vi2, realProv([2]string{"leaf", "a1"}, [2]string{"leaf", "b1"}))
+	attachLeaves(co2, cs2, adj, vi2, realProv([2]string{"leaf", "a1"}, [2]string{"leaf", "b1"}), nil)
 	if co2["leaf"] != "Cb" {
 		t.Fatalf("unequal-sim: leaf community = %q, want higher-sim Cb regardless of id order", co2["leaf"])
 	}
@@ -313,7 +313,7 @@ func TestLeafAttach_VectorlessSkipped(t *testing.T) {
 		"shortVec": {"m1"},
 		"m1":       {"noVec", "shortVec", "m2"}, "m2": {"m1"},
 	}
-	stats := attachLeaves(co, cs, adj, vi, realProv([2]string{"noVec", "m1"}, [2]string{"shortVec", "m1"}))
+	stats := attachLeaves(co, cs, adj, vi, realProv([2]string{"noVec", "m1"}, [2]string{"shortVec", "m1"}), nil)
 
 	if co["noVec"] != "noVec" || co["shortVec"] != "shortVec" {
 		t.Fatalf("vector-less leaves attached: noVec=%q shortVec=%q", co["noVec"], co["shortVec"])
@@ -345,7 +345,7 @@ func TestLeafAttach_NonRecursive(t *testing.T) {
 	}
 	stats := attachLeaves(co, cs, adj, vi, realProv(
 		[2]string{"B", "A1"}, [2]string{"B", "C"}, [2]string{"C", "B"},
-	))
+	), nil)
 
 	if co["B"] != "CA" {
 		t.Fatalf("B community = %q, want CA (B attaches this pass)", co["B"])
@@ -367,7 +367,7 @@ func TestLeafAttach_PairUnaffected(t *testing.T) {
 	vi := map[string][]byte{"p1": centroid, "p2": centroid}
 	adj := map[string][]string{"p1": {"p2"}, "p2": {"p1"}}
 
-	stats := attachLeaves(co, cs, adj, vi, map[string]map[string]string{})
+	stats := attachLeaves(co, cs, adj, vi, map[string]map[string]string{}, nil)
 
 	if stats.candidates != 0 {
 		t.Fatalf("candidates = %d, want 0 — a 2-member community has no singleton leaves", stats.candidates)
@@ -387,7 +387,7 @@ func TestLeafAttach_NilCentroidClusterAttachesNoLeaf(t *testing.T) {
 	vi := map[string][]byte{"leaf": vec(70)}
 	adj := map[string][]string{"leaf": {"m1"}, "m1": {"leaf", "m2"}, "m2": {"m1"}}
 
-	stats := attachLeaves(co, cs, adj, vi, realProv([2]string{"leaf", "m1"}))
+	stats := attachLeaves(co, cs, adj, vi, realProv([2]string{"leaf", "m1"}), nil)
 
 	if co["leaf"] != "leaf" {
 		t.Fatalf("leaf attached to a nil-centroid cluster: community = %q", co["leaf"])

@@ -69,20 +69,22 @@ type TensionReport struct {
 // thought id so they are never collapsed together. Representatives rank by
 // evidence-weighted delta (delta × (1+DistinctEvidence)) descending.
 //
-// Issues the tension-local reads (ONE bulk node browse + ONE bulk edge read over
-// tensionEdgeTypes via fetchTensionEdges) + ONE bulk fetchNodesByIDs + ONE bulk
-// fetchChargesFor (T2-3 perf lock). NO per-thought wire calls inside the loop; the
-// group-by + rank are pure in-memory over the already-fetched nodeByID + charges.
-func ReflectTensions(ctx context.Context, gc Caller) ([]TensionReport, error) {
-	nodeIDs, humanEdges, idSet, err := fetchTensionEdges(ctx, gc)
+// Every read is inside fetchTensionEdges, over the CHARGED universe rather than the
+// full claim corpus: the charge seed (resident when src is warm, else one
+// type=charge drain) + ONE bulk EdgeChargedBy read + ONE bulk parent hydrate + ONE
+// bulk edge read over tensionEdgeTypes. The nodeByID and charge maps come back from
+// that build, so this function issues NO further wire calls — the separate
+// full-universe fetchNodesByIDs + fetchChargesFor it used to run are gone. The
+// group-by + rank are pure in-memory over those maps. src is the resident corpus
+// seam; nil (an on-demand handler, or a test) takes the drain path.
+func ReflectTensions(ctx context.Context, gc Caller, src CorpusSource) ([]TensionReport, error) {
+	nodeIDs, humanEdges, idSet, nodeByID, charges, err := fetchTensionEdges(ctx, gc, src)
 	if err != nil {
 		return nil, err
 	}
 	if len(nodeIDs) == 0 {
 		return nil, nil
 	}
-	nodeByID := fetchNodesByIDs(ctx, gc, nodeIDs)
-	charges := fetchChargesFor(ctx, gc, nodeIDs)
 
 	now := time.Now()
 	propsCache := make(map[string]ThoughtProperties, len(nodeIDs))

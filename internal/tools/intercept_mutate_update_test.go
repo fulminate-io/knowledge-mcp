@@ -252,7 +252,7 @@ func TestInterceptMutate_TypedRouter_AfterBackendAndRollup(t *testing.T) {
 			"c1": {Content: []kgtools.ContentBlock{{Type: "text", Text: string(body)}}},
 		}}
 		deps := interceptTestDeps{byName: map[string]backends.Backend{}, gc: fc}
-		handled, res := InterceptMutate(deps, kgtools.CallToolParams{
+		handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 			Name:      "mutate",
 			Arguments: json.RawMessage(`{"operation":"update","id":"c1","command":"go test ./..."}`),
 		})
@@ -268,7 +268,7 @@ func TestInterceptMutate_TypedRouter_AfterBackendAndRollup(t *testing.T) {
 			"t1": nodeResultJSON(t, "t1", "ticket", map[string]string{}),
 		}}
 		deps := interceptTestDeps{byName: map[string]backends.Backend{"linear": &fakeBackend{}}, gc: fc}
-		handled, _ := InterceptMutate(deps, kgtools.CallToolParams{
+		handled, _ := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 			Name:      "mutate",
 			Arguments: json.RawMessage(`{"operation":"update","id":"t1","name":"renamed"}`),
 		})

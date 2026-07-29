@@ -74,8 +74,10 @@ func (d *ppTriggerDeps) SegmentShipper() SegmentShipper               { return n
 func (d *ppTriggerDeps) SegmentPruner() SegmentPruner                 { return nil }
 func (d *ppTriggerDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
 func (d *ppTriggerDeps) PipelineScanner() PipelineScanner             { return nil }
-func (d *ppTriggerDeps) ReflectionForcer() ReflectionForcer           { return nil }
-func (d *ppTriggerDeps) SimilarityForcer() SimilarityForcer           { return nil }
+
+func (d *ppTriggerDeps) ClearHealLatch(kgtypes.GraphType, string) {}
+func (d *ppTriggerDeps) ReflectionForcer() ReflectionForcer       { return nil }
+func (d *ppTriggerDeps) SimilarityForcer() SimilarityForcer       { return nil }
 
 func (d *ppTriggerDeps) BlindSpotProvider() BlindSpotProvider { return nil }
 func (d *ppTriggerDeps) ClusterProvider() ClusterProvider     { return nil }
@@ -131,7 +133,7 @@ func TestInterceptCollect_FiresPostPopulateHookOnLivePath(t *testing.T) {
 	deps := &ppTriggerDeps{sink: noopSink{}, gc: fc}
 
 	args := json.RawMessage(`{"type":"` + ppTriggerStubName + `","id":"pp-id","force":true}`)
-	handled, result := InterceptCollect(deps, kgtools.CallToolParams{
+	handled, result := InterceptCollect(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "collect",
 		Arguments: args,
 	})

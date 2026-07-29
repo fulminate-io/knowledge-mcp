@@ -24,6 +24,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
 	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -155,8 +156,10 @@ func (d workerTestDeps) SegmentShipper() SegmentShipper               { return n
 func (d workerTestDeps) SegmentPruner() SegmentPruner                 { return nil }
 func (d workerTestDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
 func (d workerTestDeps) PipelineScanner() PipelineScanner             { return nil }
-func (d workerTestDeps) ReflectionForcer() ReflectionForcer           { return nil }
-func (d workerTestDeps) SimilarityForcer() SimilarityForcer           { return nil }
+
+func (d workerTestDeps) ClearHealLatch(kgtypes.GraphType, string) {}
+func (d workerTestDeps) ReflectionForcer() ReflectionForcer       { return nil }
+func (d workerTestDeps) SimilarityForcer() SimilarityForcer       { return nil }
 
 func (d workerTestDeps) BlindSpotProvider() BlindSpotProvider { return nil }
 func (d workerTestDeps) ClusterProvider() ClusterProvider     { return nil }
@@ -170,7 +173,7 @@ func callWorker(t *testing.T, deps ClientDeps, argsJSON string) (handled bool, b
 		Name:      "worker",
 		Arguments: json.RawMessage(argsJSON),
 	}
-	h, res := InterceptWorker(deps, params)
+	h, res := InterceptWorker(opCtx(), deps, params)
 	if !h {
 		return false, "", false
 	}
@@ -185,7 +188,7 @@ func TestInterceptWorker_NameFiltering(t *testing.T) {
 	deps := workerTestDeps{runtime: &fakeRuntime{}}
 	for _, name := range []string{"ast", "collect", "manage", "search", "query", ""} {
 		params := kgtools.CallToolParams{Name: name, Arguments: json.RawMessage(`{}`)}
-		handled, res := InterceptWorker(deps, params)
+		handled, res := InterceptWorker(opCtx(), deps, params)
 		assert.False(t, handled, "tool %q must not be handled by InterceptWorker", name)
 		assert.Empty(t, res.Content, "non-worker call must return zero ToolResult")
 	}
@@ -398,7 +401,7 @@ func TestInterceptWorker_UnknownOpHandledClientSide(t *testing.T) {
 		Name:      "worker",
 		Arguments: json.RawMessage(`{"operation":"banana"}`),
 	}
-	handled, res := InterceptWorker(deps, params)
+	handled, res := InterceptWorker(opCtx(), deps, params)
 	require.True(t, handled, "unknown op must be handled client-side")
 	require.True(t, res.IsError)
 	require.NotEmpty(t, res.Content)
@@ -420,7 +423,7 @@ func TestInterceptWorker_MalformedArgs(t *testing.T) {
 		Name:      "worker",
 		Arguments: json.RawMessage(`{"operation":}`), // syntactically invalid
 	}
-	handled, res := InterceptWorker(deps, params)
+	handled, res := InterceptWorker(opCtx(), deps, params)
 	require.True(t, handled, "malformed args must be handled, not fall through")
 	require.True(t, res.IsError)
 	require.NotEmpty(t, res.Content)

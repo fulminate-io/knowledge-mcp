@@ -19,6 +19,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
 	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
 // fakeGraphTypeCRUD satisfies GraphTypeCRUDAPI without a real wire-loopback
@@ -112,8 +113,10 @@ func (d graphTypeTestDeps) SegmentShipper() SegmentShipper               { retur
 func (d graphTypeTestDeps) SegmentPruner() SegmentPruner                 { return nil }
 func (d graphTypeTestDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
 func (d graphTypeTestDeps) PipelineScanner() PipelineScanner             { return nil }
-func (d graphTypeTestDeps) ReflectionForcer() ReflectionForcer           { return nil }
-func (d graphTypeTestDeps) SimilarityForcer() SimilarityForcer           { return nil }
+
+func (d graphTypeTestDeps) ClearHealLatch(kgtypes.GraphType, string) {}
+func (d graphTypeTestDeps) ReflectionForcer() ReflectionForcer       { return nil }
+func (d graphTypeTestDeps) SimilarityForcer() SimilarityForcer       { return nil }
 
 func (d graphTypeTestDeps) BlindSpotProvider() BlindSpotProvider { return nil }
 func (d graphTypeTestDeps) ClusterProvider() ClusterProvider     { return nil }
@@ -122,7 +125,7 @@ func (d graphTypeTestDeps) TensionsProvider() TensionsProvider   { return nil }
 func callGraphType(t *testing.T, deps ClientDeps, argsJSON string) (handled bool, body string, isErr bool) {
 	t.Helper()
 	params := kgtools.CallToolParams{Name: "custom_collector", Arguments: json.RawMessage(argsJSON)}
-	h, res := InterceptGraphType(deps, params)
+	h, res := InterceptGraphType(opCtx(), deps, params)
 	if !h {
 		return false, "", false
 	}
@@ -137,7 +140,7 @@ func TestInterceptGraphType_NameFiltering(t *testing.T) {
 	deps := graphTypeTestDeps{crud: &fakeGraphTypeCRUD{}}
 	for _, name := range []string{"graph_type", "worker", "ast", "collect", "manage", "search", ""} {
 		params := kgtools.CallToolParams{Name: name, Arguments: json.RawMessage(`{}`)}
-		handled, res := InterceptGraphType(deps, params)
+		handled, res := InterceptGraphType(opCtx(), deps, params)
 		assert.False(t, handled, "tool %q must not be handled by InterceptGraphType", name)
 		assert.Empty(t, res.Content, "non-custom_collector call must return zero ToolResult")
 	}

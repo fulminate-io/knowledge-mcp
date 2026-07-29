@@ -124,6 +124,11 @@ func byIDNodeRead(ctx context.Context, exec ExecuteFn, id string, includeTombsto
 // regardless of edge/peer cardinality. Returns nil (the renderer omits the
 // Edges section) when the node has no edges.
 func composeEdgeSummary(ctx context.Context, exec ExecuteFn, id string, includeTombstones bool, target *knowledgev1.GraphSelector) ([]nodeEdgeInfo, error) {
+	if id == "" {
+		// An edges plan with no pivot means "every edge of the graph" — never what
+		// an empty by-id summary wants.
+		return nil, nil
+	}
 	// (2) RETURN_MODE_EDGES: raw []knowledgev1.Edge for the by-id pivot, both
 	// directions (Forward unset → BothEdges in collectEdgesForReturnMode).
 	edgesPlan := &knowledgev1.QueryPlan{
@@ -298,6 +303,11 @@ func findLinkageProxies(ctx context.Context, exec ExecuteFn, nodeID string) ([]*
 // proxy: a RETURN_MODE_EDGES read for the proxy's edges (both directions) + ONE
 // bulk peer hydrate, building []crossLink with proxyInfoWire for each peer.
 func collectProxyCrossLinks(ctx context.Context, exec ExecuteFn, proxy *knowledgev1.Node) ([]crossLink, error) {
+	if proxy.GetId() == "" {
+		// An edges plan with no pivot means "every edge of the graph" — never what
+		// a per-proxy cross-link read wants.
+		return nil, nil
+	}
 	edgesResp, err := exec(ctx, &knowledgev1.ExecuteRequest{
 		Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
 			ById:       proxy.Id,

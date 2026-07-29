@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"runtime/debug"
 
+	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
+
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
@@ -40,7 +42,7 @@ import (
 // takes id as an absolute path to a .pdf file and dispatches directly
 // to collector.Collect — no per-type context plumbing is required
 // because the chunker reads everything from the file itself.
-func InterceptCollect(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
+func InterceptCollect(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	if params.Name != "collect" {
 		return false, kgtools.ToolResult{}
 	}
@@ -61,7 +63,7 @@ func InterceptCollect(deps ClientDeps, params kgtools.CallToolParams) (bool, kgt
 		return true, errorResult("collect: daemon still starting — LLM pipeline not ready yet, retry shortly")
 	}
 	if a.Type == "logs" {
-		return true, runLogsCollect(deps, a)
+		return true, runLogsCollect(ctx, deps, a)
 	}
 
 	// Resolve the standing collect runtime via the optional seam. Present on the
@@ -75,14 +77,21 @@ func InterceptCollect(deps ClientDeps, params kgtools.CallToolParams) (bool, kgt
 	// ctx is hoisted above the registered-type probe (which needs it for the
 	// ByName wire lookup) and the builtin cascade plumbing below both reuse it.
 	// Derive its base from the runtime so a DETACHED builtin run rides baseCtx (a
-	// daemon Stop cancels it) rather than a bare Background; the cascade-set +
-	// resolution-map + web-crawl-opts enrichment below decorates THIS ctx, and the
-	// no-arg work closure captures the fully-enriched result.
-	base := context.Background()
+	// daemon Stop cancels it) rather than the caller's per-call ctx, which dies
+	// with the tool call; without a runtime the base stays the caller's ctx, so a
+	// synchronous collect on a degraded client dies with a cancelled call. The
+	// cascade-set + resolution-map + web-crawl-opts enrichment below decorates
+	// THIS ctx, and the no-arg work closure captures the fully-enriched result.
+	base := ctx
 	if rt != nil {
-		base = rt.BaseContext()
+		// Adopt the runtime's CANCELLATION root but carry the query-origin
+		// operation across. BaseContext is a daemon-lifetime context holding no
+		// per-call values, so switching to it bare would silently drop the stamp
+		// for the rest of the collect — including the registered-type ByName wire
+		// lookup below, which issues a covered RPC.
+		base = graphclient.WithOperation(rt.BaseContext(), graphclient.OperationForTool(params.Name))
 	}
-	ctx := base
+	ctx = base
 
 	// Registered (non-builtin) graph type: a collect whose type misses the
 	// builtin collector registry but matches a registered GraphTypeDef runs the

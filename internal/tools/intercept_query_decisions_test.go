@@ -84,7 +84,7 @@ func TestInterceptQueryDecisions_Listing_ByteIdentical(t *testing.T) {
 	deps := &logE2EDeps{gc: gc}
 	args := mustMarshal(t, map[string]any{"type": "decision", "limit": 10})
 
-	handled, res := InterceptQueryDecisions(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
+	handled, res := InterceptQueryDecisions(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
 	require.True(t, handled)
 	require.False(t, res.IsError, "intercept error: %v", res.Content)
 
@@ -103,7 +103,7 @@ func TestInterceptQueryDecisions_TopicSearch_ByteIdentical(t *testing.T) {
 	deps := &logE2EDeps{gc: gc}
 	args := mustMarshal(t, map[string]any{"type": "decision", "text": "cap-dec", "limit": 10})
 
-	handled, res := InterceptQueryDecisions(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
+	handled, res := InterceptQueryDecisions(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
 	require.True(t, handled)
 	require.False(t, res.IsError)
 
@@ -127,7 +127,7 @@ func TestInterceptQueryDecisions_TopicSearch_ClientEngine(t *testing.T) {
 	deps := &interceptDeps{gc: gc, segMgr: mgr}
 	args := mustMarshal(t, map[string]any{"type": "decision", "text": "foo", "limit": 5})
 
-	handled, res := InterceptQueryDecisions(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
+	handled, res := InterceptQueryDecisions(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
 	require.True(t, handled)
 	require.False(t, res.IsError, "%v", engine.FirstTextContent(res))
 
@@ -159,7 +159,7 @@ func TestInterceptQueryDecisions_Listing_JSON(t *testing.T) {
 	deps := &logE2EDeps{gc: gc}
 	args := mustMarshal(t, map[string]any{"type": "decision", "limit": 10, "format": "json"})
 
-	handled, res := InterceptQueryDecisions(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
+	handled, res := InterceptQueryDecisions(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
 	require.True(t, handled)
 	require.False(t, res.IsError, "intercept error: %v", res.Content)
 
@@ -180,7 +180,7 @@ func TestInterceptQueryDecisions_Listing_JSON(t *testing.T) {
 	// The default (no-format) caller MUST still receive the human markdown — the
 	// intercept only diverges on format:"json".
 	mdArgs := mustMarshal(t, map[string]any{"type": "decision", "limit": 10})
-	handledMD, resMD := InterceptQueryDecisions(deps, kgtools.CallToolParams{Name: "query", Arguments: mdArgs})
+	handledMD, resMD := InterceptQueryDecisions(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: mdArgs})
 	require.True(t, handledMD)
 	require.False(t, resMD.IsError)
 	assert.Contains(t, extractText(resMD), "Decisions (")
@@ -191,7 +191,7 @@ func TestInterceptQueryDecisions_Listing_WireShape_NoIncludeTombstones(t *testin
 	deps := &logE2EDeps{gc: gc}
 	args := mustMarshal(t, map[string]any{"type": "decision", "limit": 10})
 
-	handled, _ := InterceptQueryDecisions(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
+	handled, _ := InterceptQueryDecisions(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
 	require.True(t, handled)
 	require.Len(t, gc.execs, 1)
 	q := gc.execs[0].GetQuery()
@@ -208,7 +208,7 @@ func TestInterceptQueryDecisions_WrongType_FallsThrough(t *testing.T) {
 	deps := &logE2EDeps{gc: gc}
 	args := mustMarshal(t, map[string]any{"type": "finding"})
 
-	handled, _ := InterceptQueryDecisions(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
+	handled, _ := InterceptQueryDecisions(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
 	assert.False(t, handled)
 }
 
@@ -217,6 +217,6 @@ func TestInterceptQueryDecisions_WrongTool_FallsThrough(t *testing.T) {
 	deps := &logE2EDeps{gc: gc}
 	args := mustMarshal(t, map[string]any{"type": "decision"})
 
-	handled, _ := InterceptQueryDecisions(deps, kgtools.CallToolParams{Name: "search", Arguments: args})
+	handled, _ := InterceptQueryDecisions(opCtx(), deps, kgtools.CallToolParams{Name: "search", Arguments: args})
 	assert.False(t, handled)
 }

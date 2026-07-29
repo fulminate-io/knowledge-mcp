@@ -33,9 +33,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
-	"os/exec"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -92,12 +90,35 @@ const sshLoginUser = "fulminate"
 const tunnelUsage = `knowledge tunnel — open an SSH connection to your dev environment
 
 Usage:
-  knowledge tunnel [--print-proxy-command] <env-name>
+  knowledge tunnel [--print-proxy-command] [--new | --reuse <name>] <env-name>
+  knowledge tunnel --list-sessions <env-name>
+  knowledge tunnel --kill <name> <env-name>
+  knowledge tunnel --rename [<old>=]<new> <env-name>
+  knowledge tunnel --command "<cmd>" <env-name>
+  knowledge tunnel <env-name> -- <cmd...>
 
 Fetches a short-lived SSH certificate for the named dev environment and opens
 an SSH connection to it via the Fulminate relay. <env-name> selects which of
 your account's environments to connect to (the per-account env label); omit it
 to connect to your oldest environment.
+
+Flags may appear before or after the env name. Command mode: pass
+--command "<cmd>" or a "-- <cmd...>" passthrough (everything after a standalone
+--) to run a single command non-interactively (no PTY), stream its stdout/stderr,
+and exit with its remote status — SSM-style. A one-shot command attaches to no
+tmux session.
+
+Sessions: each connection attaches a named tmux session inside the dev VM. With
+no flag, a stable per-env default named for this machine ("cli-<host>") is used
+(persisted under ~/.knowledge/ssh/<env>.session), so re-running reattaches the
+same session and a headless harness survives a disconnect — and it reads legibly
+in --list-sessions, distinct from the web terminal's "web-<os>-<browser>" session.
+--new rotates the default to a fresh human-readable "cli-<host>-<word>";
+--reuse <name> (alias --session <name>) attaches a session by a label you choose,
+creating it on demand, without changing the default; --list-sessions prints the
+env's current sessions and exits; --kill <name> destroys a session and exits;
+--rename <new> renames the default (--rename <old>=<new> renames a specific
+session, and the persisted default follows the rename) and exits.
 
 The ephemeral private key never leaves this machine — only the public key is
 sent to be certified. The connection is tunneled through the Fulminate relay
@@ -109,25 +130,41 @@ instead of connecting directly.
 // TunnelCmd implements `knowledge tunnel <env-name>`. Returns nil on success; a
 // non-nil error is printed to stderr + exit 1 by the caller (bootstrap
 // RunSubcommand). Mirrors LoginCmd's flag/usage/signal shape — flag, not cobra.
+//
+// Flags may appear in ANY order relative to the env name (parseTunnelFlags
+// permutes around it), and a standalone `--` separates the flag side from a
+// verbatim remote command — so `tunnel <env> --new` and `tunnel <env> -- ls -la`
+// both behave as written rather than leaking the trailing tokens into ssh.
 func TunnelCmd(args []string) error {
-	fs := flag.NewFlagSet("tunnel", flag.ContinueOnError)
-	fs.SetOutput(os.Stdout)
-	fs.Usage = func() { fmt.Fprint(os.Stdout, tunnelUsage) }
-	printProxy := fs.Bool("print-proxy-command", false,
-		"print a ~/.ssh/config ProxyCommand line instead of connecting")
-	proxy := fs.Bool("proxy", false,
-		"act as the SSH ProxyCommand transport: dial the relay ws and pipe stdin/stdout (used internally by the emitted ProxyCommand line)")
+	fs, tf := newTunnelFlagSet()
 
-	if err := fs.Parse(args); err != nil {
+	// Split off the remote command (everything after a standalone `--`) BEFORE
+	// flag parsing, then permute-parse the flag side so local flags are recognized
+	// wherever they sit relative to the env positional.
+	flagArgs, dashCmd := splitAtDoubleDash(args)
+
+	env, err := parseTunnelFlags(fs, flagArgs)
+	if err != nil {
 		if errors.Is(err, flag.ErrHelp) {
 			return nil
 		}
 		return err
 	}
 
-	env := ""
-	if fs.NArg() > 0 {
-		env = fs.Arg(0)
+	// A one-shot remote command may be supplied EITHER via --command (a single
+	// shell string) OR as a `-- <cmd...>` passthrough — never both.
+	cmdTokens, err := resolveTunnelCommand(*tf.command, dashCmd)
+	if err != nil {
+		return err
+	}
+
+	// --reuse and --session are aliases for pinning a specific session name.
+	pinned := *tf.session
+	if pinned == "" {
+		pinned = *tf.reuse
+	}
+	if *tf.session != "" && *tf.reuse != "" && *tf.session != *tf.reuse {
+		return fmt.Errorf("--session and --reuse both set to different names (%q vs %q) — use one", *tf.session, *tf.reuse)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt)
@@ -135,17 +172,25 @@ func TunnelCmd(args []string) error {
 
 	// --proxy is the transport leg invoked by ssh itself (via the emitted
 	// ProxyCommand line); it dials the relay ws and pipes bytes, never spawning ssh.
-	if *proxy {
+	if *tf.proxy {
 		return runProxy(ctx, CloudEndpoint, env)
 	}
 
-	return runTunnel(ctx, CloudEndpoint, env, *printProxy)
+	return runTunnel(ctx, CloudEndpoint, env, tunnelOpts{
+		printProxy:    *tf.printProxy,
+		newSession:    *tf.newSession,
+		pinnedSession: pinned,
+		listSessions:  *tf.listSessions,
+		killSession:   *tf.kill,
+		renameSession: *tf.rename,
+		command:       cmdTokens,
+	})
 }
 
 // runTunnel wires the one-shot connect: token → keygen → cert fetch → on-disk
-// identity → ssh (or ProxyCommand emit). The SSH host is DERIVED from the API
-// endpoint (the relay is served at the same host as the API).
-func runTunnel(ctx context.Context, apiURL, env string, printProxy bool) error {
+// identity → session-name resolution → ssh (or ProxyCommand emit). The SSH host is
+// DERIVED from the API endpoint (the relay is served at the same host as the API).
+func runTunnel(ctx context.Context, apiURL, env string, opts tunnelOpts) error {
 	token, err := tunnelToken(ctx)
 	if err != nil {
 		return err
@@ -203,17 +248,48 @@ func runTunnel(ctx context.Context, apiURL, env string, printProxy bool) error {
 	// certificate against the `@cert-authority <env_id>` line in the known_hosts we just wrote;
 	// the transport is the ProxyCommand.
 	proxyCmd := proxyCommandArg(sshSelf(), env)
-	if printProxy {
+
+	// --list-sessions: run a one-shot `tmux ls` through the NON-interactive
+	// ForceCommand branch (ssh sets SSH_ORIGINAL_COMMAND), which enumerates the dev
+	// env's existing tmux sessions to stdout for use with --reuse. It is itself a
+	// one-shot non-interactive command (see runTunnelCommand) and deliberately does
+	// NOT thread FULMINATE_SESSION — it neither attaches nor creates a session.
+	// The non-interactive short-circuits (--list-sessions, --kill, one-shot command
+	// mode) each run a single command over the ForceCommand's NON-interactive branch,
+	// attach to no tmux session, and thread no FULMINATE_SESSION. runOneShot handles
+	// whichever was requested; handled=true means we return its result rather than
+	// falling through to the interactive session path.
+	if handled, err := runOneShot(ctx, dir, env, keyPath, certPath, sshLoginUser+"@"+envID, knownHostsPath, proxyCmd, opts); handled {
+		return err
+	}
+
+	// Resolve the tmux session name delivered to the VM via SetEnv/AcceptEnv
+	// FULMINATE_SESSION: the persisted per-env default (reattach on re-run), a fresh
+	// name (--new), or a pinned existing name (--reuse/--session). A generated or
+	// rotated default is written back to the per-env sidecar; a pinned name is not.
+	sessionName, persist, err := resolveSessionName(dir, env, opts.pinnedSession, opts.newSession)
+	if err != nil {
+		return err
+	}
+	if persist {
+		if err := writeSessionSidecar(dir, env, sessionName); err != nil {
+			return err
+		}
+	}
+	fmt.Fprintf(os.Stderr, "dev session: %s (use --new for a fresh one, --list-sessions to see all)\n", sessionName)
+
+	if opts.printProxy {
 		// Emit ~/.ssh/config Host-block directives: the ProxyCommand invokes this binary
-		// in --proxy mode, the ephemeral identity + cert to present, AND the
-		// host-verification anchor (a per-invocation known_hosts keyed on env_id, with
-		// StrictHostKeyChecking on + HostKeyAlias set to env_id) so the pasted config
-		// cryptographically verifies the VM's sshd identity.
+		// in --proxy mode, the ephemeral identity + cert to present, the session name
+		// (SetEnv FULMINATE_SESSION), AND the host-verification anchor (a per-invocation
+		// known_hosts keyed on env_id, with StrictHostKeyChecking on + HostKeyAlias set
+		// to env_id) so the pasted config cryptographically verifies the VM's sshd identity.
 		fmt.Printf("ProxyCommand %s\n", proxyCmd)
 		fmt.Printf("User %s\n", sshLoginUser)
 		fmt.Printf("IdentityFile %s\n", keyPath)
 		fmt.Printf("CertificateFile %s\n", certPath)
 		fmt.Println("IdentitiesOnly yes")
+		fmt.Printf("SetEnv FULMINATE_SESSION=%s\n", sessionName)
 		fmt.Printf("UserKnownHostsFile %s\n", knownHostsPath)
 		fmt.Println("StrictHostKeyChecking yes")
 		fmt.Printf("HostKeyAlias %s\n", envID)
@@ -224,27 +300,9 @@ func runTunnel(ctx context.Context, apiURL, env string, printProxy bool) error {
 		"-o", "UserKnownHostsFile=" + knownHostsPath,
 		"-o", "StrictHostKeyChecking=yes",
 		"-o", "ProxyCommand=" + proxyCmd,
+		"-o", "SetEnv=FULMINATE_SESSION=" + sessionName,
 	})
-	return execSSH(ctx, args)
-}
-
-// sshSelf resolves the path to THIS binary for the emitted ProxyCommand line,
-// falling back to the bare name "knowledge" (resolved off PATH) when os.Executable
-// is unavailable — so a pasted ~/.ssh/config line is robust.
-func sshSelf() string {
-	if exe, err := os.Executable(); err == nil && exe != "" {
-		return exe
-	}
-	return "knowledge"
-}
-
-// proxyCommandArg builds the ProxyCommand invocation: `<self> tunnel --proxy [env]`.
-// The env arg is omitted when empty (connect to the oldest environment).
-func proxyCommandArg(self, env string) string {
-	if env == "" {
-		return self + " tunnel --proxy"
-	}
-	return self + " tunnel --proxy " + env
+	return sshRunner(ctx, args)
 }
 
 // tunnelToken obtains the WorkOS cloud access token that authorizes the connect
@@ -366,84 +424,4 @@ func fetchCert(ctx context.Context, client *http.Client, apiURL, token, publicKe
 		msg, _ := io.ReadAll(io.LimitReader(resp.Body, 512))
 		return "", "", "", fmt.Errorf("connect failed: status %d: %s", resp.StatusCode, strings.TrimSpace(string(msg)))
 	}
-}
-
-// writeIdentityFiles writes the ephemeral private key and the returned cert to
-// dir at 0600 (owner-only), in the OpenSSH-expected <name> / <name>-cert.pub
-// layout, and returns their paths.
-func writeIdentityFiles(dir, name string, kp *ephemeralKeyPair, cert string) (keyPath, certPath string, err error) {
-	keyPath = filepath.Join(dir, name)
-	certPath = filepath.Join(dir, name+"-cert.pub")
-	if err = os.WriteFile(keyPath, kp.privatePEM, 0o600); err != nil {
-		return "", "", fmt.Errorf("write private key: %w", err)
-	}
-	if err = os.WriteFile(certPath, []byte(cert), 0o600); err != nil {
-		return "", "", fmt.Errorf("write certificate: %w", err)
-	}
-	return keyPath, certPath, nil
-}
-
-// writeKnownHosts writes a per-invocation OpenSSH known_hosts file to dir at 0600
-// containing exactly one `@cert-authority <env_id> <host-ca-pubkey>` line — the trust
-// anchor that makes ssh accept the VM's sshd host CERTIFICATE iff it is signed by this
-// deploy's host-CA AND carries the env_id principal. Keying the marker line on env_id
-// (not a shared apiHost) is what stops two different environments' host keys colliding in
-// a shared known_hosts. The file is per-env (named off connectionName) so distinct envs
-// never share a file. hostCAPubKey is the server's HostCAPubKey (an OpenSSH authorized-key
-// line); its trailing whitespace is trimmed so the marker line is well-formed.
-func writeKnownHosts(dir, name, envID, hostCAPubKey string) (knownHostsPath string, err error) {
-	knownHostsPath = filepath.Join(dir, name+"-known_hosts")
-	line := fmt.Sprintf("@cert-authority %s %s\n", envID, strings.TrimSpace(hostCAPubKey))
-	if err = os.WriteFile(knownHostsPath, []byte(line), 0o600); err != nil {
-		return "", fmt.Errorf("write known_hosts: %w", err)
-	}
-	return knownHostsPath, nil
-}
-
-// buildSSHArgs builds the ssh argv for a cert-based connection: the ephemeral
-// identity (-i), its CertificateFile, IdentitiesOnly so only this key is
-// offered, then any extra args, then the target host.
-func buildSSHArgs(keyPath, certPath, target string, extra []string) []string {
-	args := []string{
-		"-i", keyPath,
-		"-o", "CertificateFile=" + certPath,
-		"-o", "IdentitiesOnly=yes",
-	}
-	args = append(args, extra...)
-	args = append(args, target)
-	return args
-}
-
-// connectionName is the on-disk identity basename for an env (defaults when env
-// is empty).
-func connectionName(env string) string {
-	if env == "" {
-		return "dev"
-	}
-	return "dev-" + env
-}
-
-// sshSessionDir returns ~/.knowledge/ssh, created at 0700. Follows the inline
-// os.UserHomeDir + filepath.Join(home, ".knowledge", ...) pattern every other
-// ~/.knowledge consumer in this binary uses (there is no central helper).
-func sshSessionDir() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return "", fmt.Errorf("resolve home directory: %w", err)
-	}
-	sshDir := filepath.Join(home, ".knowledge", "ssh")
-	if err := os.MkdirAll(sshDir, 0o700); err != nil {
-		return "", fmt.Errorf("create %s: %w", sshDir, err)
-	}
-	return sshDir, nil
-}
-
-// execSSH runs ssh with the given argv, wiring the current stdio so the
-// resulting shell / editor Remote-SSH channel is interactive.
-func execSSH(ctx context.Context, args []string) error {
-	cmd := exec.CommandContext(ctx, "ssh", args...)
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-	return cmd.Run()
 }

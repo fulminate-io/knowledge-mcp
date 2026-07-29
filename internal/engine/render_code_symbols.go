@@ -103,10 +103,15 @@ func SortFileSymbolsByStartLine(nodes []*knowledgev1.Node) {
 }
 
 // RenderListModules ports the server ListModulesOnGraph rollup + render. The
-// composer supplies the package nodes + file nodes; this builds the
+// composer supplies the package nodes + the file PATHS; this builds the
 // longest-prefix file-count rollup and renders the "### Modules (n)" listing.
 // Returns "" when there are no modules (caller renders "No modules found.").
-func RenderListModules(packages, files []*knowledgev1.Node, pathPrefix string) string {
+//
+// Files arrive as bare paths rather than hydrated nodes because the rollup reads
+// nothing else from them — so the composer can enumerate file ids instead of
+// hydrating every file node's 21 columns. Packages stay hydrated: the listing
+// renders each module's Summary, which no ids carrier can serve.
+func RenderListModules(packages []*knowledgev1.Node, filePaths []string, pathPrefix string) string {
 	type moduleInfo struct {
 		node      *knowledgev1.Node
 		fileCount int
@@ -118,13 +123,13 @@ func RenderListModules(packages, files []*knowledgev1.Node, pathPrefix string) s
 		}
 		modules[n.Id] = &moduleInfo{node: n}
 	}
-	for _, n := range files {
-		if n.FilePath == "" {
+	for _, filePath := range filePaths {
+		if filePath == "" {
 			continue
 		}
 		bestModule := ""
 		for modID := range modules {
-			if strings.HasPrefix(n.FilePath, modID) && len(modID) > len(bestModule) {
+			if strings.HasPrefix(filePath, modID) && len(modID) > len(bestModule) {
 				bestModule = modID
 			}
 		}

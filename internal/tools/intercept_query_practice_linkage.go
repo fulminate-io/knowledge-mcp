@@ -42,7 +42,7 @@ import (
 // ById/Match/GRAPH_NAMES — no RETURN_MODE_SEARCH).
 
 // InterceptQueryPracticeLinkage claims query(graph in {practice,linkage}).
-func InterceptQueryPracticeLinkage(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
+func InterceptQueryPracticeLinkage(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	if params.Name != "query" {
 		return false, kgtools.ToolResult{}
 	}
@@ -56,13 +56,13 @@ func InterceptQueryPracticeLinkage(deps ClientDeps, params kgtools.CallToolParam
 		if !ok {
 			return true, res
 		}
-		return true, routePracticeClient(context.Background(), deps, sc, a)
+		return true, routePracticeClient(ctx, deps, sc, a)
 	case "linkage":
 		sc, res, ok := statsSeamFor(deps, "linkage")
 		if !ok {
 			return true, res
 		}
-		return true, routeLinkageClient(context.Background(), sc, a)
+		return true, routeLinkageClient(ctx, sc, a)
 	case "web", "pdf":
 		// web/pdf ranked text is retired without touching the wire — no gc needed.
 		return routeWebPDFClient(a)
@@ -373,6 +373,7 @@ func fetchPracticeSamples(ctx context.Context, exec engine.ExecuteFn, language s
 			Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
 				Selection: &knowledgev1.Selection{NodeType: nt},
 				Limit:     2,
+				SkipTotal: true,
 			}},
 			Target: &knowledgev1.GraphSelector{Graph: "practice", Language: language},
 		})

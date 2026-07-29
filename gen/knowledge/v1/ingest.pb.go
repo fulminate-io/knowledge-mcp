@@ -58,6 +58,8 @@ type CollectChunkRequest struct {
 	Nodes         []*Node                `protobuf:"bytes,7,rep,name=nodes,proto3" json:"nodes,omitempty"`      // INLINE typed Node bodies (engine.proto)
 	Edges         []*BatchEdge           `protobuf:"bytes,8,rep,name=edges,proto3" json:"edges,omitempty"`      // ID-addressed edges for this chunk
 	Promote       bool                   `protobuf:"varint,9,opt,name=promote,proto3" json:"promote,omitempty"` // code-only: force base + repoint default branch to current_branch
+	// client_context carries the per-request client provenance. See ClientContext.
+	ClientContext *ClientContext `protobuf:"bytes,10,opt,name=client_context,json=clientContext,proto3" json:"client_context,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -155,6 +157,13 @@ func (x *CollectChunkRequest) GetPromote() bool {
 	return false
 }
 
+func (x *CollectChunkRequest) GetClientContext() *ClientContext {
+	if x != nil {
+		return x.ClientContext
+	}
+	return nil
+}
+
 type CollectChunkResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -205,6 +214,8 @@ type FinalizeRequest struct {
 	GraphName     string                 `protobuf:"bytes,3,opt,name=graph_name,json=graphName,proto3" json:"graph_name,omitempty"`
 	CurrentBranch string                 `protobuf:"bytes,4,opt,name=current_branch,json=currentBranch,proto3" json:"current_branch,omitempty"`
 	Promote       bool                   `protobuf:"varint,5,opt,name=promote,proto3" json:"promote,omitempty"` // code-only: select base completion arm + delete the same-name overlay
+	// client_context carries the per-request client provenance. See ClientContext.
+	ClientContext *ClientContext `protobuf:"bytes,6,opt,name=client_context,json=clientContext,proto3" json:"client_context,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -272,6 +283,13 @@ func (x *FinalizeRequest) GetPromote() bool {
 		return x.Promote
 	}
 	return false
+}
+
+func (x *FinalizeRequest) GetClientContext() *ClientContext {
+	if x != nil {
+		return x.ClientContext
+	}
+	return nil
 }
 
 type FinalizeResponse struct {
@@ -440,9 +458,11 @@ func (x *BatchEdge) GetLastValidated() int64 {
 // "Deployment", "k8s:Service"] to skip irrelevant resource types). An
 // empty type_prefixes returns every cloud-resource node.
 type FetchCloudSubgraphRequest struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	GraphNames    []string               `protobuf:"bytes,1,rep,name=graph_names,json=graphNames,proto3" json:"graph_names,omitempty"`
-	TypePrefixes  []string               `protobuf:"bytes,2,rep,name=type_prefixes,json=typePrefixes,proto3" json:"type_prefixes,omitempty"`
+	state        protoimpl.MessageState `protogen:"open.v1"`
+	GraphNames   []string               `protobuf:"bytes,1,rep,name=graph_names,json=graphNames,proto3" json:"graph_names,omitempty"`
+	TypePrefixes []string               `protobuf:"bytes,2,rep,name=type_prefixes,json=typePrefixes,proto3" json:"type_prefixes,omitempty"`
+	// client_context carries the per-request client provenance. See ClientContext.
+	ClientContext *ClientContext `protobuf:"bytes,3,opt,name=client_context,json=clientContext,proto3" json:"client_context,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -487,6 +507,13 @@ func (x *FetchCloudSubgraphRequest) GetGraphNames() []string {
 func (x *FetchCloudSubgraphRequest) GetTypePrefixes() []string {
 	if x != nil {
 		return x.TypePrefixes
+	}
+	return nil
+}
+
+func (x *FetchCloudSubgraphRequest) GetClientContext() *ClientContext {
+	if x != nil {
+		return x.ClientContext
 	}
 	return nil
 }
@@ -605,7 +632,7 @@ var File_knowledge_v1_ingest_proto protoreflect.FileDescriptor
 
 const file_knowledge_v1_ingest_proto_rawDesc = "" +
 	"\n" +
-	"\x19knowledge/v1/ingest.proto\x12\fknowledge.v1\x1a\x19knowledge/v1/engine.proto\"\xc1\x02\n" +
+	"\x19knowledge/v1/ingest.proto\x12\fknowledge.v1\x1a\x19knowledge/v1/engine.proto\"\x85\x03\n" +
 	"\x13CollectChunkRequest\x12\x14\n" +
 	"\x05epoch\x18\x01 \x01(\x04R\x05epoch\x12\x1d\n" +
 	"\n" +
@@ -618,8 +645,10 @@ const file_knowledge_v1_ingest_proto_rawDesc = "" +
 	"\tsync_time\x18\x06 \x01(\x03R\bsyncTime\x12(\n" +
 	"\x05nodes\x18\a \x03(\v2\x12.knowledge.v1.NodeR\x05nodes\x12-\n" +
 	"\x05edges\x18\b \x03(\v2\x17.knowledge.v1.BatchEdgeR\x05edges\x12\x18\n" +
-	"\apromote\x18\t \x01(\bR\apromote\"\x16\n" +
-	"\x14CollectChunkResponse\"\xa6\x01\n" +
+	"\apromote\x18\t \x01(\bR\apromote\x12B\n" +
+	"\x0eclient_context\x18\n" +
+	" \x01(\v2\x1b.knowledge.v1.ClientContextR\rclientContext\"\x16\n" +
+	"\x14CollectChunkResponse\"\xea\x01\n" +
 	"\x0fFinalizeRequest\x12\x14\n" +
 	"\x05epoch\x18\x01 \x01(\x04R\x05epoch\x12\x1d\n" +
 	"\n" +
@@ -627,7 +656,8 @@ const file_knowledge_v1_ingest_proto_rawDesc = "" +
 	"\n" +
 	"graph_name\x18\x03 \x01(\tR\tgraphName\x12%\n" +
 	"\x0ecurrent_branch\x18\x04 \x01(\tR\rcurrentBranch\x12\x18\n" +
-	"\apromote\x18\x05 \x01(\bR\apromote\"\x12\n" +
+	"\apromote\x18\x05 \x01(\bR\apromote\x12B\n" +
+	"\x0eclient_context\x18\x06 \x01(\v2\x1b.knowledge.v1.ClientContextR\rclientContext\"\x12\n" +
 	"\x10FinalizeResponse\"\x92\x02\n" +
 	"\tBatchEdge\x12\x19\n" +
 	"\bfrom_idx\x18\x01 \x01(\x05R\afromIdx\x12\x15\n" +
@@ -642,11 +672,12 @@ const file_knowledge_v1_ingest_proto_rawDesc = "" +
 	"\x06method\x18\b \x01(\tR\x06method\x12\x1a\n" +
 	"\bevidence\x18\t \x01(\tR\bevidence\x12%\n" +
 	"\x0elast_validated\x18\n" +
-	" \x01(\x03R\rlastValidated\"a\n" +
+	" \x01(\x03R\rlastValidated\"\xa5\x01\n" +
 	"\x19FetchCloudSubgraphRequest\x12\x1f\n" +
 	"\vgraph_names\x18\x01 \x03(\tR\n" +
 	"graphNames\x12#\n" +
-	"\rtype_prefixes\x18\x02 \x03(\tR\ftypePrefixes\"V\n" +
+	"\rtype_prefixes\x18\x02 \x03(\tR\ftypePrefixes\x12B\n" +
+	"\x0eclient_context\x18\x03 \x01(\v2\x1b.knowledge.v1.ClientContextR\rclientContext\"V\n" +
 	"\x1aFetchCloudSubgraphResponse\x128\n" +
 	"\x06slices\x18\x01 \x03(\v2 .knowledge.v1.CloudSubgraphSliceR\x06slices\"|\n" +
 	"\x12CloudSubgraphSlice\x12\x1d\n" +
@@ -683,24 +714,28 @@ var file_knowledge_v1_ingest_proto_goTypes = []any{
 	(*FetchCloudSubgraphResponse)(nil), // 6: knowledge.v1.FetchCloudSubgraphResponse
 	(*CloudSubgraphSlice)(nil),         // 7: knowledge.v1.CloudSubgraphSlice
 	(*Node)(nil),                       // 8: knowledge.v1.Node
-	(*Edge)(nil),                       // 9: knowledge.v1.Edge
+	(*ClientContext)(nil),              // 9: knowledge.v1.ClientContext
+	(*Edge)(nil),                       // 10: knowledge.v1.Edge
 }
 var file_knowledge_v1_ingest_proto_depIdxs = []int32{
-	8, // 0: knowledge.v1.CollectChunkRequest.nodes:type_name -> knowledge.v1.Node
-	4, // 1: knowledge.v1.CollectChunkRequest.edges:type_name -> knowledge.v1.BatchEdge
-	7, // 2: knowledge.v1.FetchCloudSubgraphResponse.slices:type_name -> knowledge.v1.CloudSubgraphSlice
-	9, // 3: knowledge.v1.CloudSubgraphSlice.edges:type_name -> knowledge.v1.Edge
-	0, // 4: knowledge.v1.IngestService.CollectChunk:input_type -> knowledge.v1.CollectChunkRequest
-	2, // 5: knowledge.v1.IngestService.Finalize:input_type -> knowledge.v1.FinalizeRequest
-	5, // 6: knowledge.v1.IngestService.FetchCloudSubgraph:input_type -> knowledge.v1.FetchCloudSubgraphRequest
-	1, // 7: knowledge.v1.IngestService.CollectChunk:output_type -> knowledge.v1.CollectChunkResponse
-	3, // 8: knowledge.v1.IngestService.Finalize:output_type -> knowledge.v1.FinalizeResponse
-	6, // 9: knowledge.v1.IngestService.FetchCloudSubgraph:output_type -> knowledge.v1.FetchCloudSubgraphResponse
-	7, // [7:10] is the sub-list for method output_type
-	4, // [4:7] is the sub-list for method input_type
-	4, // [4:4] is the sub-list for extension type_name
-	4, // [4:4] is the sub-list for extension extendee
-	0, // [0:4] is the sub-list for field type_name
+	8,  // 0: knowledge.v1.CollectChunkRequest.nodes:type_name -> knowledge.v1.Node
+	4,  // 1: knowledge.v1.CollectChunkRequest.edges:type_name -> knowledge.v1.BatchEdge
+	9,  // 2: knowledge.v1.CollectChunkRequest.client_context:type_name -> knowledge.v1.ClientContext
+	9,  // 3: knowledge.v1.FinalizeRequest.client_context:type_name -> knowledge.v1.ClientContext
+	9,  // 4: knowledge.v1.FetchCloudSubgraphRequest.client_context:type_name -> knowledge.v1.ClientContext
+	7,  // 5: knowledge.v1.FetchCloudSubgraphResponse.slices:type_name -> knowledge.v1.CloudSubgraphSlice
+	10, // 6: knowledge.v1.CloudSubgraphSlice.edges:type_name -> knowledge.v1.Edge
+	0,  // 7: knowledge.v1.IngestService.CollectChunk:input_type -> knowledge.v1.CollectChunkRequest
+	2,  // 8: knowledge.v1.IngestService.Finalize:input_type -> knowledge.v1.FinalizeRequest
+	5,  // 9: knowledge.v1.IngestService.FetchCloudSubgraph:input_type -> knowledge.v1.FetchCloudSubgraphRequest
+	1,  // 10: knowledge.v1.IngestService.CollectChunk:output_type -> knowledge.v1.CollectChunkResponse
+	3,  // 11: knowledge.v1.IngestService.Finalize:output_type -> knowledge.v1.FinalizeResponse
+	6,  // 12: knowledge.v1.IngestService.FetchCloudSubgraph:output_type -> knowledge.v1.FetchCloudSubgraphResponse
+	10, // [10:13] is the sub-list for method output_type
+	7,  // [7:10] is the sub-list for method input_type
+	7,  // [7:7] is the sub-list for extension type_name
+	7,  // [7:7] is the sub-list for extension extendee
+	0,  // [0:7] is the sub-list for field type_name
 }
 
 func init() { file_knowledge_v1_ingest_proto_init() }

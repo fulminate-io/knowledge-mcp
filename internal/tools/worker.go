@@ -75,7 +75,7 @@ type WorkerCRUDAPI interface {
 //     server. The server still owns CRUD over graph-resident worker
 //     rows (Phase D's workercrud package); only the live runtime ops
 //     run client-side because the runtime itself lives in the client.
-func InterceptWorker(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
+func InterceptWorker(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	if params.Name != "worker" {
 		return false, kgtools.ToolResult{}
 	}
@@ -85,7 +85,7 @@ func InterceptWorker(deps ClientDeps, params kgtools.CallToolParams) (bool, kgto
 		// surface here rather than letting the server reparse.
 		return true, errorResult("worker: invalid arguments: " + err.Error())
 	}
-	ctx := context.Background()
+
 	switch a.Operation {
 	case "list":
 		return true, handleWorkerList(ctx, deps, a)

@@ -68,7 +68,7 @@ func callAdjacency(t *testing.T, deps ClientDeps, args map[string]any) (bool, kg
 	t.Helper()
 	raw, err := json.Marshal(args)
 	require.NoError(t, err)
-	return InterceptThoughts(deps, kgtools.CallToolParams{Name: "thoughts", Arguments: raw})
+	return InterceptThoughts(opCtx(), deps, kgtools.CallToolParams{Name: "thoughts", Arguments: raw})
 }
 
 // TestAdjacency_DispatchClaimed is the core QA repro: a schema-advertised op

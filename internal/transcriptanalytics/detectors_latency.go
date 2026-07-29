@@ -2,19 +2,15 @@
 
 package transcriptanalytics
 
-import (
-	"context"
-	"database/sql"
-	"fmt"
-)
+import "sort"
 
 // This file holds the per-tool LATENCY-DISTRIBUTION detector (p50/p90/p99) and the
-// per-tool TIME-TOTAL detector — the "where does wall-time go" pair. Both reuse the
-// idle guard so a genuine long run keeps its full weight while an idle-straddling row
-// is excluded.
+// per-tool TIME-TOTAL detector — the "where does wall-time go" pair — as pure-Go folds
+// over the loaded *corpus. Both consume accumulators built from idle-guarded rows so a
+// genuine long run keeps its full weight while an idle-straddling row is excluded.
 
-// ToolLatencyRow is one tool's trustworthy-execution-time distribution: the call
-// count plus p50/p90/p99 (milliseconds), over the idle-guarded rows.
+// ToolLatencyRow is one tool's trustworthy-execution-time distribution: the call count
+// plus p50/p90/p99 (milliseconds), approximated from the log2 latency histogram.
 type ToolLatencyRow struct {
 	ToolName string `json:"tool_name"`
 	Count    int64  `json:"count"`
@@ -31,71 +27,46 @@ type ToolTimeTotalRow struct {
 	CallCount       int64  `json:"call_count"`
 }
 
-// toolLatencyFrom computes the per-tool p50/p90/p99 latency distribution over an
-// explicit set of local parquet paths. quantile_cont returns DOUBLE, so each
-// percentile is CAST to BIGINT for the int64 Scan. The idle guard excludes interrupted
-// and >2h-ceiling rows STRUCTURALLY (never a magnitude cap) before the percentile is
-// taken; tool_name <> ” drops token rows. Ordered by p90 desc.
-func (s *Service) toolLatencyFrom(ctx context.Context, paths []string, f Filters) ([]ToolLatencyRow, error) {
-	where, args := f.where()
-	query := fmt.Sprintf(
-		`SELECT
-			%s,
-			COUNT(*) AS call_count,
-			CAST(quantile_cont(%s, 0.5) AS BIGINT) AS p50,
-			CAST(quantile_cont(%s, 0.9) AS BIGINT) AS p90,
-			CAST(quantile_cont(%s, 0.99) AS BIGINT) AS p99
-		FROM %s %s AND %s <> '' AND (%s)
-		GROUP BY %s
-		ORDER BY p90 DESC, %s ASC`,
-		colToolName,
-		colDurationMs, colDurationMs, colDurationMs,
-		fromClause(paths), where, colToolName, idleGuardExpr(),
-		colToolName,
-		colToolName,
-	)
-
-	var out []ToolLatencyRow
-	err := s.queryRows(ctx, query, args, func(rows *sql.Rows) error {
-		var r ToolLatencyRow
-		if err := rows.Scan(&r.ToolName, &r.Count, &r.P50, &r.P90, &r.P99); err != nil {
-			return err
+// toolLatency computes the per-tool p50/p90/p99 latency distribution from the corpus
+// latency histogram — mirroring the agent's QueryToolLatency (rollup_insights.go:49):
+// histPercentile over each tool's per-bucket counts, Count = the tool's trustworthy total.
+// Only trustworthy named-tool rows are in the histogram (built at fold-in). Ordered by p90
+// desc, then tool asc (the tie-break).
+func (c *corpus) toolLatency() []ToolLatencyRow {
+	out := make([]ToolLatencyRow, 0, len(c.latencyHist))
+	for tool, counts := range c.latencyHist {
+		total := c.latencyTotal[tool]
+		out = append(out, ToolLatencyRow{
+			ToolName: tool,
+			Count:    total,
+			P50:      histPercentile(counts, total, 0.5),
+			P90:      histPercentile(counts, total, 0.9),
+			P99:      histPercentile(counts, total, 0.99),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].P90 != out[j].P90 {
+			return out[i].P90 > out[j].P90
 		}
-		out = append(out, r)
-		return nil
+		return out[i].ToolName < out[j].ToolName
 	})
-	return out, err
+	return out
 }
 
-// toolTimeTotalFrom sums the trustworthy per-tool wall-time (de-idled via the CASE-WHEN
-// idle guard) grouped by tool, ordered by total time desc. tool_name <> ” drops token
-// rows. This is the direct per-tool time TOTAL, the counterpart to the latency
-// distribution.
-func (s *Service) toolTimeTotalFrom(ctx context.Context, paths []string, f Filters) ([]ToolTimeTotalRow, error) {
-	where, args := f.where()
-	query := fmt.Sprintf(
-		`SELECT
-			%s,
-			CAST(COALESCE(SUM(CASE WHEN %s THEN %s ELSE 0 END), 0) AS BIGINT) AS total_ms,
-			COUNT(*) AS call_count
-		FROM %s %s AND %s <> ''
-		GROUP BY %s
-		ORDER BY total_ms DESC, %s ASC`,
-		colToolName,
-		idleGuardExpr(), colDurationMs,
-		fromClause(paths), where, colToolName,
-		colToolName,
-		colToolName,
-	)
-
-	var out []ToolTimeTotalRow
-	err := s.queryRows(ctx, query, args, func(rows *sql.Rows) error {
-		var r ToolTimeTotalRow
-		if err := rows.Scan(&r.ToolName, &r.TotalDurationMs, &r.CallCount); err != nil {
-			return err
+// toolTimeTotals sums the trustworthy per-tool wall-time (TotalDurationMs) with the all-row
+// CallCount — mirroring the agent's toolTimeTotalPG (rollup_insights.go:100): SUM of the
+// idle-guarded durations, count over ALL rows with that tool (an interrupted/idle row still
+// counts, contributing 0ms). Ordered by total desc, then tool asc.
+func (c *corpus) toolTimeTotals() []ToolTimeTotalRow {
+	out := make([]ToolTimeTotalRow, 0, len(c.toolTime))
+	for tool, acc := range c.toolTime {
+		out = append(out, ToolTimeTotalRow{ToolName: tool, TotalDurationMs: acc.trustSum, CallCount: acc.count})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].TotalDurationMs != out[j].TotalDurationMs {
+			return out[i].TotalDurationMs > out[j].TotalDurationMs
 		}
-		out = append(out, r)
-		return nil
+		return out[i].ToolName < out[j].ToolName
 	})
-	return out, err
+	return out
 }

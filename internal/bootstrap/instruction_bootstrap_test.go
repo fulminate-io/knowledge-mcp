@@ -15,6 +15,7 @@ import (
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/enginetest"
+	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
@@ -38,6 +39,11 @@ type fakeBootstrapGC struct {
 type bootstrapCall struct {
 	tool string
 	req  *knowledgev1.ExecuteRequest
+	// op is the query-origin operation the call carried on its ctx. Recorded
+	// because the bootstrap runs at boot with no originating tool call, so an
+	// unstamped call reaches the wire as client.unstamped.
+	op   graphclient.Operation
+	opOK bool
 }
 
 // Call satisfies the interface; the bootstrap routes through Execute, so this
@@ -46,9 +52,10 @@ func (f *fakeBootstrapGC) Call(_ context.Context, _ string, _ json.RawMessage) (
 	return kgtools.ToolResult{}, nil
 }
 
-func (f *fakeBootstrapGC) Execute(_ context.Context, req *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error) {
+func (f *fakeBootstrapGC) Execute(ctx context.Context, req *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error) {
+	op, opOK := graphclient.OperationFromContext(ctx)
 	if req.GetQuery() != nil {
-		f.calls = append(f.calls, bootstrapCall{tool: "query", req: req})
+		f.calls = append(f.calls, bootstrapCall{tool: "query", req: req, op: op, opOK: opOK})
 		if f.queryError != nil {
 			return nil, f.queryError
 		}
@@ -59,7 +66,7 @@ func (f *fakeBootstrapGC) Execute(_ context.Context, req *knowledgev1.ExecuteReq
 		return enginetest.ResponseWithNodes(nodes...), nil
 	}
 	// mutate (create_batch) Execute.
-	f.calls = append(f.calls, bootstrapCall{tool: "mutate", req: req})
+	f.calls = append(f.calls, bootstrapCall{tool: "mutate", req: req, op: op, opOK: opOK})
 	if f.mutateError != nil {
 		return nil, f.mutateError
 	}

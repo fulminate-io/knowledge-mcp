@@ -54,6 +54,19 @@ func wirePropagationRuntime(c *client, f Config) {
 	// a degraded client (no summarizer) still runs centroids + cascade + links at lever
 	// time. Drift detection anchors to the stored topic_centroid, so no embedder is wired here.
 	loop.WithTopicDeps(scanner, newTopicSummarizerAdapter(context.Background()))
+	// Attach the CorpusDelta seam (same routedWireClient adapter) + resident cache:
+	// dirty ticks delta-drain the thought corpus into the cache instead of
+	// re-draining the whole graph. nil-tolerant — a client without it degrades to
+	// the full drainThoughtBrowse path.
+	loop.WithCorpusScanner(scanner)
+	// Attach the resident vector seam + its coverage gate. Both adapters resolve
+	// c.segmentMgr LAZILY, behind PipelineReady(), for two independent reasons: this
+	// function runs (and starts the loop) BEFORE ensureSegmentManager assigns
+	// c.segmentMgr, so an adapter capturing it here would be permanently nil and
+	// every pass would silently fall back to the full server drain; and the
+	// propagation goroutine's read of that field is only race-free through the
+	// pipelineReady publish edge. See propagation_vector_deps.go.
+	loop.WithVectorDeps(residentVectorAdapter{c: c}, coverageGateAdapter{c: c})
 	c.propLoop = loop
 	loop.Start()
 }

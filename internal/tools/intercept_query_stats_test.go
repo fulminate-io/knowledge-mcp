@@ -89,7 +89,7 @@ func TestInterceptQueryStats_Gate(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			handled, _ := InterceptQueryStats(nil, kgtools.CallToolParams{
+			handled, _ := InterceptQueryStats(opCtx(), nil, kgtools.CallToolParams{
 				Name: tc.tool, Arguments: json.RawMessage(tc.args),
 			})
 			assert.False(t, handled, "%s must NOT be claimed by InterceptQueryStats", tc.name)

@@ -42,7 +42,7 @@ var containerTypesForListProjects = []kgtypes.NodeType{
 // InterceptQueryListProjects claims container-type listing queries.
 // Returns (true, result) when the call shape matches; otherwise
 // returns (false, _) so the chain continues.
-func InterceptQueryListProjects(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
+func InterceptQueryListProjects(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	if params.Name != "query" {
 		return false, kgtools.ToolResult{}
 	}
@@ -74,7 +74,6 @@ func InterceptQueryListProjects(deps ClientDeps, params kgtools.CallToolParams) 
 		types = []kgtypes.NodeType{kgtypes.NodeType(a.Type)}
 	}
 
-	ctx := context.Background()
 	var nodes []*knowledgev1.Node
 	for _, t := range types {
 		fetched, err := fetchNodesByType(ctx, gc, string(t))

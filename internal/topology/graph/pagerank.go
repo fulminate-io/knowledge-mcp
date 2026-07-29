@@ -50,7 +50,9 @@ type PageRankAnalyzer struct{}
 func (PageRankAnalyzer) Name() string { return "pagerank" }
 
 // Run materializes the request graph as an unweighted view, runs the
-// full power iteration, and emits the top-K nodes as Finding values.
+// full power iteration, and emits the top-K nodes as Finding values. A
+// run that cannot converge within the iteration cap returns a
+// convergence-failure error rather than an unsettled score vector.
 func (a PageRankAnalyzer) Run(ctx context.Context, req foundation.Request) ([]foundation.Finding, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("topology/pagerank: %w", err)
@@ -74,7 +76,10 @@ func (a PageRankAnalyzer) Run(ctx context.Context, req foundation.Request) ([]fo
 		return nil, nil
 	}
 
-	scores := runFullPowerIteration(g, damping, tolerance)
+	scores, err := runFullPowerIteration(ctx, g, damping, tolerance, dfprMaxIterations)
+	if err != nil {
+		return nil, err
+	}
 	if len(scores) == 0 {
 		return nil, nil
 	}

@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"maps"
 	"time"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/topology/graph"
@@ -25,7 +26,7 @@ import (
 // nodes too). Returns ok=false (already logged) when the browse fails. The
 // EDGE-level leg is added by the caller from runLeidenStep's edgeChanges.
 func (p *PropagationLoop) deriveNodeDirtySeed(ctx context.Context) (dirtySeed map[string]bool, maxWatermark int64, ok bool) {
-	nodes, err := fetchAllThoughtNodes(ctx, p.gc)
+	nodes, err := fetchAllThoughtNodes(ctx, p.gc, p) // resident cache when warm; else drain.
 	if err != nil {
 		slog.Warn("cluster detection: thought-node browse failed", "error", err)
 		return nil, 0, false
@@ -82,7 +83,7 @@ func (p *PropagationLoop) runClusterDetection() {
 	defer cancel()
 
 	// 1. Get current adjacency via the bulk wire call.
-	nodeIDs, adj, err := fetchAdjacency(ctx, p.gc, "all", nil)
+	nodeIDs, adj, err := fetchAdjacency(ctx, p.gc, "all", nil, p) // resident cache when warm; else drain.
 	if err != nil {
 		// LOUD degradation: distinguish a budget cap from a real failure so a
 		// capped detection pass is never silently dropped. nodeIDs is the count
@@ -143,7 +144,7 @@ func (p *PropagationLoop) runClusterDetection() {
 	// in place HERE — before the groups build below — so the attached cluster_id is
 	// persisted by the existing buildClusterObjects path AND the next tick's
 	// incremental baseline (newLeidenState) stays consistent with the partition.
-	p.runLeafAttachment(ctx, communityOf, newLeidenState.CommSize, adj)
+	p.runLeafAttachment(ctx, communityOf, newLeidenState.CommSize, adj, dirtySeed, isFull)
 
 	// 4. Build clusters from partition.
 	groups := make(map[string][]string)
@@ -161,7 +162,7 @@ func (p *PropagationLoop) runClusterDetection() {
 	}
 
 	// 6. Compute tensions and blind spots.
-	tensions, err := ReflectTensions(ctx, p.gc)
+	tensions, err := ReflectTensions(ctx, p.gc, p)
 	if err != nil {
 		slog.Warn("tension computation failed", "error", err)
 		tensions = nil
@@ -192,7 +193,7 @@ func (p *PropagationLoop) runClusterDetection() {
 // extra per-thought fetch); clusters come from the tick's Leiden partition. No
 // per-thought fan-out, no N+1 — every read is a single bulk call.
 func (p *PropagationLoop) computeBlindSpots(ctx context.Context, nodeIDs []string, clusters []ThoughtCluster) BlindSpotReport {
-	influence := BlindSpotInfluenceVector(ctx, p.gc, nodeIDs)
+	influence := BlindSpotInfluenceVector(ctx, p.gc, nodeIDs, p)
 	sessionByThought := FetchSessionLabelsByThought(ctx, p.gc, nodeIDs)
 	charges := fetchChargesFor(ctx, p.gc, nodeIDs)
 	nodeByID := fetchNodesByIDs(ctx, p.gc, nodeIDs)
@@ -227,40 +228,94 @@ func (p *PropagationLoop) computeBlindSpots(ctx context.Context, nodeIDs []strin
 // commSize is newLeidenState.CommSize (community → member count); attachLeaves
 // zeros an attached leaf's old singleton entry and grows the target so both maps
 // stay consistent for persistence and the next incremental baseline.
-func (p *PropagationLoop) runLeafAttachment(ctx context.Context, communityOf map[string]string, commSize map[string]int, adj map[string][]string) {
-	if p.scanner == nil {
-		slog.Warn("thought: leaf-attachment SKIPPED — no member-vector scanner wired; " +
-			"singletons not attached this pass (degraded mode: detection completes normally)")
+func (p *PropagationLoop) runLeafAttachment(
+	ctx context.Context,
+	communityOf map[string]string,
+	commSize map[string]int,
+	adj map[string][]string,
+	dirtySeed map[string]bool,
+	isFull bool,
+) {
+	// CANDIDATES FIRST, VECTORS SECOND. This order is the multi-client
+	// incrementality: a warm pass with no new singletons does zero vector work of
+	// either kind — no resident lookups, no PipelineScan calls, no provenance edge
+	// read — instead of paying a full vector drain to discover it had nothing to do.
+	//
+	// A full pass (the 24h backstop, or a cold start) passes a NIL seed, so every
+	// singleton is a candidate exactly as before scoping existed.
+	seed := p.leafCandidateSeed(dirtySeed, isFull)
+	candidates := singletonCandidates(communityOf, commSize, seed)
+	if len(candidates) == 0 {
+		slog.Info("thought: leaf-attachment",
+			"candidates", 0, "scoped", seed != nil, "vector_work_skipped", true)
 		return
 	}
-	drainStart := time.Now()
-	vectorIndex, err := drainVectorIndex(ctx, p.scanner)
+
+	resolveStart := time.Now()
+	vectorIndex, source, reason, err := p.resolveMemberVectors(ctx, candidates, communityOf, commSize, adj)
 	if err != nil {
-		slog.Warn("thought: leaf-attachment SKIPPED — member-vector drain failed; singletons not attached this pass",
+		slog.Warn("thought: leaf-attachment SKIPPED — no member vectors this pass; singletons not attached "+
+			"(degraded mode: detection completes normally)",
 			"error", err,
-			"drain_ms", time.Since(drainStart).Milliseconds())
+			"vector_source", source,
+			"reason", reason,
+			"resolve_ms", time.Since(resolveStart).Milliseconds())
 		return
 	}
-	drainMS := time.Since(drainStart).Milliseconds()
+	resolveMS := time.Since(resolveStart).Milliseconds()
 
-	// Candidate leaves (singletons) for the ONE bulk provenance edge read.
-	var leafIDs []string
-	for id, comm := range communityOf {
-		if comm == id && commSize[id] == 1 {
-			leafIDs = append(leafIDs, id)
-		}
-	}
-	leafProvenance := buildLeafProvenance(ctx, p.gc, leafIDs)
+	// ONE bulk provenance edge read over the SCOPED candidate list, so it shrinks
+	// with the seed rather than spanning every singleton in the graph.
+	leafProvenance := buildLeafProvenance(ctx, p.gc, candidates)
 
-	stats := attachLeaves(communityOf, commSize, adj, vectorIndex, leafProvenance)
+	stats := attachLeaves(communityOf, commSize, adj, vectorIndex, leafProvenance, seed)
+	p.storeLeafRetry(stats.vectorlessIDs)
 
 	slog.Info("thought: leaf-attachment",
-		"drain_ms", drainMS,
+		"vector_source", source,
+		"gate_reason", reason,
+		"scoped", seed != nil,
+		"resolve_ms", resolveMS,
+		"vectors", len(vectorIndex),
 		"candidates", stats.candidates,
 		"attached", stats.attached,
 		"gate_vetoed", stats.gateVetoed,
 		"vectorless_skipped", stats.vectorlessSkipped,
 		"by_provenance", stats.byProvenance)
+}
+
+// leafCandidateSeed builds this pass's candidate narrowing: nil on a full pass
+// (every singleton is a candidate), otherwise the dirty seed UNION the leaves a
+// previous pass skipped for having no vector yet.
+//
+// ACCEPTED APPROXIMATION, stated so nobody silently "fixes" it: an OLD singleton in
+// neither set is not re-evaluated against updated centroids on a warm pass. That is
+// bounded by the existing 24h full-pass backstop, which passes isFull and therefore
+// a nil seed, making every singleton a candidate again. Same shape as the
+// rehydrateColdStart accepted limitation below.
+func (p *PropagationLoop) leafCandidateSeed(dirtySeed map[string]bool, isFull bool) map[string]bool {
+	if isFull {
+		return nil
+	}
+	seed := make(map[string]bool, len(dirtySeed)+len(p.pendingLeafRetry))
+	maps.Copy(seed, dirtySeed)
+	p.mu.Lock()
+	maps.Copy(seed, p.pendingLeafRetry)
+	p.mu.Unlock()
+	return seed
+}
+
+// storeLeafRetry REPLACES the vectorless-retry set with this pass's skipped leaves.
+// Replacing rather than accumulating is deliberate: a leaf that attached, or that
+// stopped being a singleton, must drop out, so the set cannot grow without bound.
+func (p *PropagationLoop) storeLeafRetry(vectorlessIDs []string) {
+	next := make(map[string]bool, len(vectorlessIDs))
+	for _, id := range vectorlessIDs {
+		next[id] = true
+	}
+	p.mu.Lock()
+	p.pendingLeafRetry = next
+	p.mu.Unlock()
 }
 
 // readLeidenBaseline reads the prior Leiden state + adjacency under the lock and
@@ -329,7 +384,7 @@ func (p *PropagationLoop) storeDetectionResults(r detectionResults) {
 // for the next tick's set-diff; on an empty partition (true first run) or a read
 // failure it returns (nil, the supplied adj) so runLeidenStep takes the full pass.
 func (p *PropagationLoop) rehydrateColdStart(ctx context.Context, adj map[string][]string, gamma float64) (*graph.LeidenState, map[string][]string) {
-	partition, err := partitionFromPersisted(ctx, p.gc)
+	partition, err := partitionFromPersisted(ctx, p.gc, p) // resident cache when warm; else drain.
 	if err != nil {
 		slog.Warn("thought: cold-start partition read failed — falling back to full pass", "error", err)
 		return nil, adj

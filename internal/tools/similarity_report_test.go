@@ -159,7 +159,7 @@ func TestSimilarityReport_EmptyState(t *testing.T) {
 func TestInterceptThoughts_RoutesSimilarityReport(t *testing.T) {
 	report := "# Topic Similarity Pass\n\n- routed\n"
 	f := &fakeSimilarityForcer{latestNode: completedEventNode(report), latestOK: true}
-	handled, res := InterceptThoughts(similarityDispatchDeps{forcer: f}, kgtools.CallToolParams{
+	handled, res := InterceptThoughts(opCtx(), similarityDispatchDeps{forcer: f}, kgtools.CallToolParams{
 		Name:      "thoughts",
 		Arguments: []byte(`{"operation":"similarity_report"}`),
 	})

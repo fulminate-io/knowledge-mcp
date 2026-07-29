@@ -86,6 +86,12 @@ func (e *cloudEngineBackend) PipelineGenPoll(
 	return nil, connect.NewError(connect.CodeUnimplemented, nil)
 }
 
+func (e *cloudEngineBackend) CorpusDelta(
+	context.Context, *connect.Request[knowledgev1.CorpusDeltaRequest],
+) (*connect.Response[knowledgev1.CorpusDeltaResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, nil)
+}
+
 func (e *cloudEngineBackend) ExportGraph(
 	context.Context, *connect.Request[knowledgev1.ExportGraphRequest],
 ) (*connect.Response[knowledgev1.ExportGraphResponse], error) {
@@ -194,14 +200,14 @@ func TestCloudAcceptanceAndDenyConjunction(t *testing.T) {
 	backendURL, backend := newCloudEngineBackend(t)
 
 	store := &acceptanceAuthStore{data: map[string]string{}}
-	require.NoError(t, store.Set(context.Background(), auth.KeyRefreshToken, "frt-stub"),
+	require.NoError(t, store.Set(opCtx(), auth.KeyRefreshToken, "frt-stub"),
 		"seed the store logged-in so the Router routes to cloud")
 	authState := auth.NewAuthState(store, time.Hour)
 
 	// nil local server + auth=true → every Execute routes to the cloud backend.
 	r := graphclient.NewRouter(nil, backendURL, acceptanceTokenSource{tok: "t"}, authState)
 
-	ctx := context.Background()
+	ctx := opCtx()
 
 	// HALF (a) ACCEPTANCE: a reducible search SUCCEEDS against the cloud backend.
 	// Dispatch is unqualified because this test lives IN package engine; the

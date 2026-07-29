@@ -24,7 +24,7 @@ func TestInterceptManage_LinkDispatch_RunsClientLinker(t *testing.T) {
 	}
 	deps := interceptTestDeps{gc: gc}
 
-	handled, res := InterceptManage(deps, kgtools.CallToolParams{
+	handled, res := InterceptManage(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "manage",
 		Arguments: json.RawMessage(`{"operation":"link"}`),
 	})
@@ -51,7 +51,7 @@ func TestInterceptManage_LinkDispatch_RunsClientLinker(t *testing.T) {
 // manage(link) must surface a clean error rather than panic.
 func TestInterceptManage_LinkDispatch_NilGraphCaller_Errors(t *testing.T) {
 	deps := interceptTestDeps{} // gc is nil
-	handled, res := InterceptManage(deps, kgtools.CallToolParams{
+	handled, res := InterceptManage(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "manage",
 		Arguments: json.RawMessage(`{"operation":"link"}`),
 	})

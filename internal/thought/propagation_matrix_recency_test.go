@@ -47,9 +47,9 @@ func TestMatrixRecency_DiagonalMatchesFold(t *testing.T) {
 	c.addEdge("N", "F") // reverse, in case fetchAdjacency is directional
 	ids := []string{"F", "N"}
 
-	matrixWC, chargeMap, err := BuildTrustMatrixWithCharges(ctx, c, ids, T)
+	matrixWC, chargeMap, err := BuildTrustMatrixWithCharges(ctx, c, ids, T, nil)
 	require.NoError(t, err)
-	matrixBare, err := BuildTrustMatrix(ctx, c, ids, T)
+	matrixBare, err := BuildTrustMatrix(ctx, c, ids, T, nil)
 	require.NoError(t, err)
 
 	// Oracle: the Phase-1-verified fold at the SAME injected T (expected value only;
@@ -74,7 +74,7 @@ func TestMatrixRecency_DiagonalMatchesFold(t *testing.T) {
 	u.addThought("N", "Neighbor", "1")
 	u.addEdge("F", "N")
 	u.addEdge("N", "F")
-	uniformMatrix, _, err := BuildTrustMatrixWithCharges(ctx, u, []string{"F", "N"}, T)
+	uniformMatrix, _, err := BuildTrustMatrixWithCharges(ctx, u, []string{"F", "N"}, T, nil)
 	require.NoError(t, err)
 	assert.Greater(t, focalDiagonal(t, matrixWC), focalDiagonal(t, uniformMatrix),
 		"mixed pos/neg ages raise the diagonal above the all-recent canceling baseline")
@@ -107,7 +107,7 @@ func TestMatrixRecency_InfluenceRankingPrecedence(t *testing.T) {
 	c.addEdge("O", "Hub")
 	ids := []string{"O", "R", "Hub"}
 
-	matrix, chargeMap, err := BuildTrustMatrixWithCharges(ctx, c, ids, T)
+	matrix, chargeMap, err := BuildTrustMatrixWithCharges(ctx, c, ids, T, nil)
 	require.NoError(t, err)
 	influence := ComputeInfluenceVector(matrix)
 	ranking := partitionInfluenceRanking(ctx, c, ids, influence, chargeMap, 10, T)

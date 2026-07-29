@@ -49,7 +49,7 @@ type recordDecisionJSONResult struct {
 }
 
 // InterceptRecordDecision handles the record_decision MCP call.
-func InterceptRecordDecision(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
+func InterceptRecordDecision(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	if params.Name != "record_decision" {
 		return false, kgtools.ToolResult{}
 	}
@@ -71,7 +71,6 @@ func InterceptRecordDecision(deps ClientDeps, params kgtools.CallToolParams) (bo
 		return true, errorResult("record_decision: rationale is required and must be non-empty (why this was decided)")
 	}
 
-	ctx := context.Background()
 	node := buildDecisionNode(a)
 	warnings, validRefs := validateInformedByRefs(ctx, gc, a.InformedBy)
 

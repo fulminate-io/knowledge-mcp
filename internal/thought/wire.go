@@ -60,9 +60,14 @@ const drainVectorPageSize = 2048
 //
 // HONEST PAYLOAD COST: the segment_rebuild axis ships the full BM25 text per node
 // alongside the 32-byte vector, so this drain pulls far more than 32 bytes/node.
-// That cost is ACCEPTED only because the drain is paid at LEVER time on demand
-// (zero hourly overhead) — not because the payload is small. A vectors_only scan
-// param would avoid the BM25 payload but is a server/proto change, out of scope.
+// It now has TWO callers: the similarity lever, which calls it unconditionally on
+// demand, and leaf attachment, which reaches it ONLY as the fallback for a
+// segment pool the coverage gate declined (degenerate, unmeasured, or not yet
+// wired). The cost is accepted because the hourly path normally resolves member
+// vectors from the client's RESIDENT segment engines with zero RPC and never
+// reaches this drain at all — not because the payload is small. A vectors_only
+// scan param would avoid the BM25 payload but is a server/proto change, out of
+// scope.
 //
 // A nil scanner returns a clear degraded-mode error (the caller is running with
 // no segment engine wired). A cold graph (empty first page) returns a non-nil
@@ -264,79 +269,6 @@ func FetchNodesByIDs(ctx context.Context, gc Caller, ids []string) map[string]*k
 	return fetchNodesByIDs(ctx, gc, ids)
 }
 
-// browsePageSize is the per-page row count for the offset-paging drain. 500 ≈
-// 13 pages for the current ~6102-thought corpus: a low RPC count with a bounded
-// per-page payload. A positive limit also bypasses the engine's limit<=0 →
-// browseDefaultLimit(10) rewrite (compile_query.go:354), which is exactly the
-// silent cap this paging drain exists to defeat.
-const browsePageSize = 500
-
-// drainPages is the shared offset-cursor drain core: it repeatedly invokes
-// fetchPage(offset) for an unknown-length type-browse, advancing the cursor by
-// the page length, and terminates on the first short or empty page. It carries a
-// seen-set keyed on node.Id so the returned slice has EXACTLY one entry per
-// distinct node even under concurrent writes: the local backend orders the
-// browse CreatedAt-desc, so a mid-drain insert shifts every subsequent offset by
-// one and would otherwise re-emit a page-boundary row — the seen-set drops the
-// re-emitted row rather than double-counting it. Serial by necessity: each
-// page's offset depends on the prior page's length, so the cursor cannot be
-// parallelized over an unknown total. Reused by drainThoughtBrowse (type-browse
-// closure) and the all_types adjacency drain (hand-built Selection closure).
-func drainPages(fetchPage func(offset int) ([]*knowledgev1.Node, error), pageSize int) ([]*knowledgev1.Node, error) {
-	var out []*knowledgev1.Node
-	seen := map[string]bool{}
-	for offset := 0; ; {
-		page, err := fetchPage(offset)
-		if err != nil {
-			return nil, err
-		}
-		for _, n := range page {
-			if seen[n.Id] {
-				continue
-			}
-			seen[n.Id] = true
-			out = append(out, n)
-		}
-		if len(page) < pageSize {
-			break // short (or empty) final page — corpus exhausted.
-		}
-		offset += len(page)
-	}
-	return out, nil
-}
-
-// drainThoughtBrowse drains every node of nodeType in bounded offset pages via
-// the executeViaEngine query seam. Each page sends a POSITIVE limit (pageSize),
-// which overrides the engine's browseDefaultLimit cap verbatim, plus the offset
-// cursor; the drain stops on the first short page. This is the corpus-complete
-// replacement for the old single limit:0 browse, which the engine silently
-// rewrote to 10 rows.
-func drainThoughtBrowse(ctx context.Context, gc Caller, nodeType string, pageSize int) ([]*knowledgev1.Node, error) {
-	if gc == nil {
-		return nil, nil
-	}
-	return drainPages(func(offset int) ([]*knowledgev1.Node, error) {
-		raw, err := json.Marshal(queryArgs{Type: nodeType, Limit: pageSize, Offset: offset})
-		if err != nil {
-			return nil, err
-		}
-		resp, err := executeViaEngine(ctx, gc, "query", raw)
-		if err != nil {
-			return nil, err
-		}
-		return engine.DecodeNodes(resp)
-	}, pageSize)
-}
-
-// fetchAllThoughtNodes returns every NodeThought in the graph by draining the
-// type=thought browse in bounded offset pages (drainThoughtBrowse). The typed
-// Nodes carrier per page already carries the full node payloads. Paging is
-// required: a single limit:0 browse is silently capped to browseDefaultLimit(10)
-// rows by the engine, so the drain is what makes this read corpus-complete.
-func fetchAllThoughtNodes(ctx context.Context, gc Caller) ([]*knowledgev1.Node, error) {
-	return drainThoughtBrowse(ctx, gc, string(kgtypes.NodeThought), browsePageSize)
-}
-
 // fetchOutgoingTargets returns peer IDs reachable from nodeID over any
 // outgoing edge at depth 1. One Execute traverse round-trip → the typed
 // traversal-results carrier ([]engine.TraversalResult, each carrying a full
@@ -419,7 +351,9 @@ func fetchEdgesForNode(ctx context.Context, gc Caller, nodeID string) (outgoing,
 // edge is outgoing when its FromID == nodeID, else incoming (the same relative-
 // direction rule render.filterEdges uses).
 func fetchEdgesOneDirection(ctx context.Context, gc Caller, nodeID string, forward bool) ([]knowledgev1.Edge, error) {
-	if gc == nil {
+	if gc == nil || nodeID == "" {
+		// An edges plan with no pivot means "every edge of the graph" — never what
+		// a single node's directional read wants.
 		return nil, nil
 	}
 	resp, err := gc.Execute(ctx, &knowledgev1.ExecuteRequest{

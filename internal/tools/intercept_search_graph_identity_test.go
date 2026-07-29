@@ -3,7 +3,6 @@
 package tools
 
 import (
-	"context"
 	"encoding/json"
 	"sync/atomic"
 	"testing"
@@ -52,7 +51,7 @@ func TestSearchJSONCarriesSourceGraph_AllFamilies(t *testing.T) {
 		mgr := &fakeSegmentSearcher{hits: []searchengine.Hit{{ID: "n1", Score: 0.9}}}
 		deps := &interceptDeps{gc: gc, emb: stubEmbedder{calls: &embedCalls}, segMgr: mgr}
 
-		handled, out := InterceptSearch(deps, searchParams(t, map[string]any{
+		handled, out := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{
 			"query": "x", "graph": "knowledge", "format": "json",
 		}))
 		require.True(t, handled)
@@ -75,7 +74,7 @@ func TestSearchJSONCarriesSourceGraph_AllFamilies(t *testing.T) {
 		deps := &interceptDeps{gc: gc, segMgr: mgr}
 
 		// Bare recent (empty text) → composeRecentBrowse. format:json drives the json arm.
-		handled, out := InterceptQueryKnowledgeSearch(deps, queryParams(t, map[string]any{
+		handled, out := InterceptQueryKnowledgeSearch(opCtx(), deps, queryParams(t, map[string]any{
 			"graph": "knowledge", "mode": "recent", "format": "json",
 		}))
 		require.True(t, handled)
@@ -94,7 +93,7 @@ func TestSearchJSONCarriesSourceGraph_AllFamilies(t *testing.T) {
 		mgr := &fakeSegmentSearcher{hits: []searchengine.Hit{{ID: "f.go:Foo", Score: 0.9}}}
 		deps := &interceptDeps{gc: gc, segMgr: mgr}
 
-		handled, res := interceptSearchCode(context.Background(), deps, gc.Execute,
+		handled, res := interceptSearchCode(opCtx(), deps, gc.Execute,
 			json.RawMessage(`{"graph":"code","query":"foo","repo":"knowledge","format":"json"}`))
 		require.True(t, handled)
 		require.False(t, res.IsError, textBodyTools(res))
@@ -120,7 +119,7 @@ func TestSearchJSONCarriesSourceGraph_AllFamilies(t *testing.T) {
 		})
 		deps := &interceptDeps{gc: gc, segMgr: mgr}
 
-		handled, res := interceptSearchCode(context.Background(), deps, gc.Execute,
+		handled, res := interceptSearchCode(opCtx(), deps, gc.Execute,
 			json.RawMessage(`{"graph":"code","query":"x","repo":"all","format":"json"}`))
 		require.True(t, handled)
 		require.False(t, res.IsError, textBodyTools(res))
@@ -155,7 +154,7 @@ func TestSearchJSONCarriesSourceGraph_AllFamilies(t *testing.T) {
 			mgr := &fakeSegmentSearcher{hits: []searchengine.Hit{{ID: "res-1", Score: 0.8}}}
 			deps := &interceptDeps{gc: gc, emb: stubEmbedder{calls: &embedCalls}, segMgr: mgr}
 
-			handled, out := InterceptQueryCloudCICD(deps, queryParams(t, map[string]any{
+			handled, out := InterceptQueryCloudCICD(opCtx(), deps, queryParams(t, map[string]any{
 				"graph": tc.graph, "account": "acct", "text": "bucket", "format": "json",
 			}))
 			require.True(t, handled)
@@ -175,7 +174,7 @@ func TestSearchJSONCarriesSourceGraph_AllFamilies(t *testing.T) {
 			"go": {{ID: "p:go", Score: 0.90}},
 		})
 		deps := &interceptDeps{gc: gc, segMgr: mgr}
-		res := routePracticeClient(context.Background(), deps, gc,
+		res := routePracticeClient(opCtx(), deps, gc,
 			queryArgs{Graph: "practice", Language: "go", Text: "pool", Format: "json"})
 		env := parseEnv(t, textBodyTools(res))
 		require.Len(t, env.Results, 1)
@@ -195,7 +194,7 @@ func TestSearchJSONCarriesSourceGraph_AllFamilies(t *testing.T) {
 			"python": {{ID: "p:py", Score: 0.70}},
 		})
 		deps := &interceptDeps{gc: gc, segMgr: mgr}
-		res := routePracticeClient(context.Background(), deps, gc,
+		res := routePracticeClient(opCtx(), deps, gc,
 			queryArgs{Graph: "practice", Language: "all", Text: "pool", Format: "json"})
 		env := parseEnv(t, textBodyTools(res))
 		require.Len(t, env.Results, 2)
@@ -209,7 +208,7 @@ func TestSearchJSONCarriesSourceGraph_AllFamilies(t *testing.T) {
 	})
 
 	t.Run("logs", func(t *testing.T) {
-		res := newSearchHandler(t).searchLogs(context.Background(), searchArgs{
+		res := newSearchHandler(t).searchLogs(opCtx(), searchArgs{
 			Graph: "logs", Name: testSearchQueryID, Query: "connection timeout", Limit: 10, Format: "json",
 		})
 		require.False(t, res.IsError, resultText(res))

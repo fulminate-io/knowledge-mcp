@@ -4,6 +4,8 @@ package remote
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/binary"
 	"fmt"
 	"log/slog"
 	"sync/atomic"
@@ -37,10 +39,113 @@ type IngestClientPicker func(ctx context.Context) (knowledgev1connect.IngestServ
 // caches a resolved client across calls.
 type UploadSink struct {
 	picker IngestClientPicker
-	// epoch is the per-collection monotonic counter minted client-side. Single
-	// process, so a local atomic is authoritative; every chunk of one collection
-	// AND its Finalize share the value from one Add(1). Zero-value valid.
+	// epoch is the per-collection identifier minted client-side by mintEpoch.
+	// It holds the LAST minted value so the mint stays monotonic within this
+	// process; every chunk of one collection AND its Finalize share one value.
+	// Zero-value valid (the first mint reads the wall clock, never 0).
+	//
+	// It is NOT a counter. A plain Add(1) from zero was authoritative only under
+	// the assumption that one process is the sole writer of a graph — which is
+	// false: every stdio client is its own process with its own sink, they all
+	// write the same shared graphs, and the value resets on restart. Distinct
+	// collections then REUSE a value, and the collect GC keys on it, so reuse
+	// silently corrupts: the base sweep tombstones "collect_epoch <> $1", so a
+	// reused value leaves another collection's nodes alive forever, and a reused
+	// value merges a crashed run's rows into this run's presence set, hiding
+	// deletions the GC exists to make. Both need no concurrency — only a
+	// restarted client landing on a value it used before.
 	epoch atomic.Uint64
+	// epochSalt is this sink's slot in the low bits of every epoch it mints.
+	// 0 means "not yet drawn" — see salt(). Zero-value valid.
+	epochSalt atomic.Uint64
+}
+
+// epochSaltBits is how many low bits of the epoch carry the per-process salt
+// instead of the clock. It trades timestamp precision for cross-process
+// separation: 20 bits leaves ~1ms of dating resolution (irrelevant against the
+// server's hours-long leak-reclaim window) and gives 2^20 process slots.
+const epochSaltBits = 20
+
+// newEpochSalt draws a salt in [1, 2^epochSaltBits). Never 0 — the sink treats a
+// zero salt as "not yet drawn", and a fixed salt would put every minter in one
+// slot and reinstate the collision the salt exists to prevent.
+func newEpochSalt() uint64 {
+	const mask = 1<<epochSaltBits - 1
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		// Degrade to the clock rather than to a constant.
+		if v := uint64(time.Now().UnixNano()) & mask; v != 0 {
+			return v
+		}
+		return 1
+	}
+	if v := binary.LittleEndian.Uint64(b[:]) & mask; v != 0 {
+		return v
+	}
+	return 1
+}
+
+// salt returns this sink's epoch salt, drawing it on first use so the zero-value
+// UploadSink stays valid.
+//
+// The salt is what disambiguates one minter from another at the same instant. Two
+// minters reading time.Now() inside the same tick compute the SAME nanoseconds and
+// share no atomic to break the tie, so a clock-only mint would reissue one value
+// to two collections — the exact reuse this mechanism exists to prevent. A
+// monotonic CAS cannot help: it is per-sink state, and each sink's CAS succeeds
+// independently of the other's.
+//
+// Scoped per SINK rather than per process deliberately. Production constructs one
+// sink per client process, so the two are equivalent there; making it per-sink
+// costs nothing and additionally separates any two sinks that ever coexist.
+func (s *UploadSink) salt() uint64 {
+	if v := s.epochSalt.Load(); v != 0 {
+		return v
+	}
+	if s.epochSalt.CompareAndSwap(0, newEpochSalt()) {
+		return s.epochSalt.Load()
+	}
+	return s.epochSalt.Load() // lost the race; the winner's salt is authoritative
+}
+
+// mintEpoch returns the identifier for one collection. It is:
+//
+//   - UNIQUE across processes and restarts — the high bits come from the wall
+//     clock and the low bits from this process's salt, so two clients collide
+//     only by drawing the same 1-in-2^20 salt AND minting within the same ~1ms.
+//     Contrast the old bare Add(1) from zero, where two clients collided on
+//     EVERY collect with certainty. Uniqueness is the property the collect GC
+//     depends on; ordering is not — every consumer compares for equality.
+//   - MONOTONIC within this process — the CAS floor advances by a whole salt
+//     slot, so a coarse or backwards clock cannot repeat or reverse a value we
+//     already minted, and the advance preserves the salt in the low bits.
+//   - SELF-DATING to ~1ms — the value IS approximately its own creation time,
+//     which is what lets the server reclaim presence rows leaked by collections
+//     that died before their cleanup ran, using an age predicate on the epoch
+//     itself. Do not replace this with a pure counter or a pure random value
+//     without giving __collect_seen its own timestamp column; the reclaim in
+//     runOverlayDeletionGC depends on this property.
+//
+// This is a PROBABILISTIC uniqueness guarantee. The only way to make it absolute
+// is to allocate the epoch server-side, once per collection, which needs a
+// collection delimiter the wire does not currently have.
+//
+// Nanoseconds fit the signed BIGINT the epoch persists into (~1.8e18 today vs a
+// 9.2e18 ceiling, good past 2262) — note every SQL call site casts int64, so a
+// value above MaxInt64 would persist NEGATIVE.
+func (s *UploadSink) mintEpoch() uint64 {
+	const saltMask = 1<<epochSaltBits - 1
+	now := uint64(time.Now().UnixNano())&^saltMask | s.salt()
+	for {
+		prev := s.epoch.Load()
+		next := now
+		if next <= prev {
+			next = prev + 1<<epochSaltBits // whole slot, so the salt survives
+		}
+		if s.epoch.CompareAndSwap(prev, next) {
+			return next
+		}
+	}
 }
 
 // NewUploadSink constructs an UploadSink wired to a FIXED IngestService client.
@@ -86,7 +191,7 @@ func (s *UploadSink) WriteResult(ctx context.Context, collectorName string, resu
 	if err != nil {
 		return fmt.Errorf("remote sink: resolve ingest client: %w", err)
 	}
-	epoch := s.epoch.Add(1)
+	epoch := s.mintEpoch()
 	// Sanitize node text BEFORE the proto marshal: the inline-Node wire marshals
 	// typed proto Node messages, and proto3 string fields reject invalid UTF-8 at
 	// marshal time. (The server re-sanitizes on write; double-sanitize is safe.)
@@ -161,7 +266,9 @@ func (s *UploadSink) WriteResult(ctx context.Context, collectorName string, resu
 		Promote:       result.Promote,
 	})
 	finStart := time.Now()
-	if _, err := client.Finalize(ctx, finReq); err != nil {
+	// Finalize does the epoch GC and promotion work, a different load shape from
+	// the chunk uploads above, so it carries its own term.
+	if _, err := client.Finalize(graphclient.WithOperation(ctx, graphclient.OpCollectFinalize), finReq); err != nil {
 		return fmt.Errorf("remote sink: Finalize: %w", err)
 	}
 	slog.Debug("remote sink: finalize done", "graph", result.GraphName, "branch", result.CurrentBranch,
@@ -177,6 +284,11 @@ func (s *UploadSink) WriteResult(ctx context.Context, collectorName string, resu
 // server's collect edge-landing path filters duplicate (From,Type,To) tuples
 // against the batch and the resident graph bundles.
 func (s *UploadSink) collectChunkWithRetry(ctx context.Context, msg *knowledgev1.CollectChunkRequest) error {
+	// Chunk upload is the heaviest ingest phase and is worth telling apart from
+	// the finalize that follows it, so it re-stamps a refinement over whatever
+	// the caller (the collect tool, or a background collector with no
+	// originating tool call) put on ctx.
+	ctx = graphclient.WithOperation(ctx, graphclient.OpCollectChunk)
 	client, err := s.picker(ctx)
 	if err != nil {
 		return fmt.Errorf("remote sink: resolve ingest client: %w", err)

@@ -211,9 +211,39 @@ func (f *cloudFixture) Execute(_ context.Context, req *knowledgev1.ExecuteReques
 	case q.GetById() != "":
 		resp.Nodes = nodeByID(acct, q.GetById())
 	default:
-		resp.Nodes = f.nodesFor(acct, q.GetSelection().GetNodeType(), q.GetSelection().GetNodeTypes(), q.GetSelection().GetMetadataPredicates())
+		resp.Nodes = keysetPage(
+			f.nodesFor(acct, q.GetSelection().GetNodeType(), q.GetSelection().GetNodeTypes(), q.GetSelection().GetMetadataPredicates()),
+			q.AfterId, int(q.GetLimit()))
 	}
 	return resp, nil
+}
+
+// keysetPage applies the server's browse paging contract to an already-filtered
+// node set: ids strictly AFTER the cursor, ascending, capped at limit. Only
+// applied when after_id is PRESENT, so the un-cursored browses keep serving in
+// seeded order.
+//
+// Honoring the cursor is not cosmetic fidelity here. A caller that DRAINS pages
+// terminates on the first short page, so a cursor-blind fake that re-serves the
+// whole set forever never terminates once the fixture holds at least a page of
+// nodes — a hang rather than a failed assertion.
+func keysetPage(nodes []*knowledgev1.Node, afterID *string, limit int) []*knowledgev1.Node {
+	if afterID != nil {
+		sort.Slice(nodes, func(i, j int) bool { return nodes[i].GetId() < nodes[j].GetId() })
+		if cursor := *afterID; cursor != "" {
+			kept := nodes[:0]
+			for _, n := range nodes {
+				if n.GetId() > cursor {
+					kept = append(kept, n)
+				}
+			}
+			nodes = kept
+		}
+	}
+	if limit > 0 && len(nodes) > limit {
+		nodes = nodes[:limit]
+	}
+	return nodes
 }
 
 // accountForTarget resolves the envelope GraphSelector to the synthetic

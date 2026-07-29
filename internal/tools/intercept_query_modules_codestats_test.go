@@ -17,8 +17,11 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
-// modFake routes Match(package)/Match(file) Executes + the Stats RPC for the
-// list_modules + code-stats composers.
+// modFake routes the package/file type-browse Executes + the Stats RPC for the
+// list_modules + code-stats composers. It serves whichever carrier the plan's
+// return mode asks for — the file arm reads IDS (the rollup needs only paths)
+// while the package arm reads hydrated nodes (the listing renders Summary) — and
+// honors the keyset cursor, without which a paging caller would never terminate.
 type modFake struct {
 	mu         sync.Mutex // Execute/Stats run concurrently under the coverage fan-out
 	packages   []knowledgev1.Node
@@ -31,16 +34,35 @@ func (f *modFake) Execute(_ context.Context, req *knowledgev1.ExecuteRequest) (*
 	f.mu.Lock()
 	f.matchCalls++
 	f.mu.Unlock()
-	nt := req.GetQuery().GetSelection().GetNodeType()
+	q := req.GetQuery()
 	var nodes []knowledgev1.Node
-	switch kgtypes.NodeType(nt) {
+	switch kgtypes.NodeType(q.GetSelection().GetNodeType()) {
 	case kgtypes.NodePackage:
 		nodes = f.packages
 	case kgtypes.NodeFile:
 		nodes = f.files
 	}
-	resp := enginetest.ResponseWithNodes(nodePtrs(nodes)...)
-	return resp, nil
+	ptrs := nodePtrs(nodes)
+	if cursor := q.GetAfterId(); cursor != "" {
+		kept := ptrs[:0]
+		for _, n := range ptrs {
+			if n.GetId() > cursor {
+				kept = append(kept, n)
+			}
+		}
+		ptrs = kept
+	}
+	if lim := int(q.GetLimit()); lim > 0 && len(ptrs) > lim {
+		ptrs = ptrs[:lim]
+	}
+	if q.GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_IDS {
+		ids := make([]string, 0, len(ptrs))
+		for _, n := range ptrs {
+			ids = append(ids, n.GetId())
+		}
+		return &knowledgev1.ExecuteResponse{Ids: ids}, nil
+	}
+	return enginetest.ResponseWithNodes(ptrs...), nil
 }
 
 func (f *modFake) Stats(_ context.Context, _ *knowledgev1.StatsRequest) (*knowledgev1.StatsResponse, error) {
@@ -118,9 +140,9 @@ func TestComposeCodeStats_JSON(t *testing.T) {
 // TestInterceptQueryModulesCodeStats_Gate asserts the graph=code mode gate.
 func TestInterceptQueryModulesCodeStats_Gate(t *testing.T) {
 	// non-code → not claimed.
-	handled, _ := InterceptQueryModulesCodeStats(nil, kgtools.CallToolParams{Name: "query", Arguments: json.RawMessage(`{"graph":"knowledge","mode":"modules"}`)})
+	handled, _ := InterceptQueryModulesCodeStats(opCtx(), nil, kgtools.CallToolParams{Name: "query", Arguments: json.RawMessage(`{"graph":"knowledge","mode":"modules"}`)})
 	assert.False(t, handled)
 	// code but mode=examine → not claimed.
-	handled, _ = InterceptQueryModulesCodeStats(nil, kgtools.CallToolParams{Name: "query", Arguments: json.RawMessage(`{"graph":"code","mode":"examine"}`)})
+	handled, _ = InterceptQueryModulesCodeStats(opCtx(), nil, kgtools.CallToolParams{Name: "query", Arguments: json.RawMessage(`{"graph":"code","mode":"examine"}`)})
 	assert.False(t, handled)
 }

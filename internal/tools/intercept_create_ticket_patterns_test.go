@@ -36,7 +36,7 @@ func runCreateTicketLocal(t *testing.T, fc *fakeGraphCaller, patternFragment str
 		args += "," + patternFragment
 	}
 	args += "}"
-	handled, res := InterceptCreateTicket(deps, kgtools.CallToolParams{
+	handled, res := InterceptCreateTicket(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "create_ticket",
 		Arguments: json.RawMessage(args),
 	})

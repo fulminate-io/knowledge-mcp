@@ -99,12 +99,12 @@ func TestComposeAnalyzeNode_DepthClamp(t *testing.T) {
 // TestInterceptQueryAnalyzeNode_Gate asserts the graph=code+id+!stats gate.
 func TestInterceptQueryAnalyzeNode_Gate(t *testing.T) {
 	// graph=knowledge → not claimed.
-	handled, _ := InterceptQueryAnalyzeNode(nil, kgtools.CallToolParams{Name: "query", Arguments: json.RawMessage(`{"graph":"knowledge","id":"x"}`)})
+	handled, _ := InterceptQueryAnalyzeNode(opCtx(), nil, kgtools.CallToolParams{Name: "query", Arguments: json.RawMessage(`{"graph":"knowledge","id":"x"}`)})
 	assert.False(t, handled)
 	// graph=code mode=stats → not claimed (code stats is a separate composer).
-	handled, _ = InterceptQueryAnalyzeNode(nil, kgtools.CallToolParams{Name: "query", Arguments: json.RawMessage(`{"graph":"code","id":"x","mode":"stats"}`)})
+	handled, _ = InterceptQueryAnalyzeNode(opCtx(), nil, kgtools.CallToolParams{Name: "query", Arguments: json.RawMessage(`{"graph":"code","id":"x","mode":"stats"}`)})
 	assert.False(t, handled)
 	// graph=code no id → not claimed (that's code search).
-	handled, _ = InterceptQueryAnalyzeNode(nil, kgtools.CallToolParams{Name: "query", Arguments: json.RawMessage(`{"graph":"code","text":"x"}`)})
+	handled, _ = InterceptQueryAnalyzeNode(opCtx(), nil, kgtools.CallToolParams{Name: "query", Arguments: json.RawMessage(`{"graph":"code","text":"x"}`)})
 	assert.False(t, handled)
 }

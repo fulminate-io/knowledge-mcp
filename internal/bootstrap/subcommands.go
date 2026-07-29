@@ -3,9 +3,11 @@
 package bootstrap
 
 import (
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/cli"
@@ -20,8 +22,11 @@ import (
 // is not a recognized subcommand so the no-subcommand fall-through
 // (bootstrap.Run, which directs the user to `knowledge serve`) runs.
 //
-// Errors from subcommands are printed to stderr; the returned exitCode
-// is non-zero on failure and 0 on clean completion.
+// Errors from subcommands are printed to stderr and return exit 1, EXCEPT a
+// propagated child status (an *exec.ExitError from a subcommand that shelled out,
+// e.g. `knowledge tunnel <env> --command …` forwarding ssh's remote exit code),
+// which surfaces as that exact code with no extra annotation. A clean completion
+// returns 0. (See subcommandExit.)
 //
 // (Despite the name overlap with cmd/knowledge-server/bootstrap's
 // RunAuthSubcommand, this handles more than auth — start/stop/status
@@ -66,10 +71,30 @@ func RunSubcommand() (handled bool, exitCode int) {
 		return false, 0
 	}
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "%s: %v\n", sub, err)
-		return true, 1
+		code, printMessage := subcommandExit(err)
+		if printMessage {
+			fmt.Fprintf(os.Stderr, "%s: %v\n", sub, err)
+		}
+		return true, code
 	}
 	return true, 0
+}
+
+// subcommandExit maps a subcommand's returned error to the process exit code and
+// whether to print a "<sub>: <err>" annotation. A subcommand that shells out — e.g.
+// `knowledge tunnel <env> --command …` runs ssh, which propagates the REMOTE
+// command's exit status as an *exec.ExitError — surfaces that EXACT code with NO
+// extra line (the child already wrote its own stdout/stderr, SSM-style). Every other
+// error is a generic failure: exit 1 with the annotation.
+func subcommandExit(err error) (code int, printMessage bool) {
+	if err == nil {
+		return 0, false
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() > 0 {
+		return exitErr.ExitCode(), false
+	}
+	return 1, true
 }
 
 // hasNoWorkerRuntimeFlag reports whether --no-worker-runtime appears

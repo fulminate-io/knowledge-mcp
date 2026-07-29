@@ -44,7 +44,7 @@ func TestHandleServerStatus_DoctorBlock(t *testing.T) {
 		var got struct {
 			Doctor []DoctorCheck `json:"doctor"`
 		}
-		require.NoError(t, json.Unmarshal([]byte(textBodyTools(handleServerStatus(deps, "json"))), &got))
+		require.NoError(t, json.Unmarshal([]byte(textBodyTools(handleServerStatus(opCtx(), deps, "json"))), &got))
 		require.NotEmpty(t, got.Doctor, "doctor[] must be present and non-empty when doctorChecker is implemented")
 		allowed := map[string]bool{"pass": true, "warn": true, "fail": true, "info": true}
 		for i, c := range got.Doctor {
@@ -58,7 +58,7 @@ func TestHandleServerStatus_DoctorBlock(t *testing.T) {
 		assert.Contains(t, last.Remediation, "add cli_bin")
 
 		// The human text render carries the compact "what's broken" block.
-		body := textBodyTools(handleServerStatus(deps, ""))
+		body := textBodyTools(handleServerStatus(opCtx(), deps, ""))
 		assert.Contains(t, body, "Doctor (what's broken):")
 		assert.Contains(t, body, "cli_bin not set in config")
 	})
@@ -67,10 +67,10 @@ func TestHandleServerStatus_DoctorBlock(t *testing.T) {
 		deps := &localNoHealthDeps{cloudStatusDeps: &cloudStatusDeps{loggedIn: false}, live: live}
 
 		var got map[string]any
-		require.NoError(t, json.Unmarshal([]byte(textBodyTools(handleServerStatus(deps, "json"))), &got))
+		require.NoError(t, json.Unmarshal([]byte(textBodyTools(handleServerStatus(opCtx(), deps, "json"))), &got))
 		assert.NotContains(t, got, "doctor", "a deps not implementing doctorChecker omits the doctor key")
 
-		body := textBodyTools(handleServerStatus(deps, ""))
+		body := textBodyTools(handleServerStatus(opCtx(), deps, ""))
 		assert.NotContains(t, body, "Doctor (what's broken):")
 	})
 }

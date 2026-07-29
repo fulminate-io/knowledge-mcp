@@ -128,8 +128,32 @@ type distManager[Q, S any] struct {
 	// publish while it is set even when hasUnshippedExport() is false (ship stamped
 	// the ids but the publish never landed).
 	publishPending bool
-	shippedIDs     map[searchengine.SegmentID]struct{}
-	locallyShipped map[searchengine.SegmentID]struct{}
+	// coverageSkipStreak + lastSkipResident bound the publishPending re-arm on the
+	// ONE self-sustaining cause: the coverage-ratio skip. markCoverageSkip (the
+	// replacement for the coverage-skip setPublishPending call) counts consecutive
+	// skips at a NON-RISING resident and stops re-arming once the streak passes
+	// coverageSkipMaxStreak — the read engine is stuck below the ratio, so retrying
+	// only re-reads the SAME sub-ratio resident and re-skips. lastSkipResident is the
+	// resident doc count at the last skip; a rise above it (genuine progress) resets
+	// the streak so a healing engine re-arms. Both guarded by shipMu; both cleared on
+	// a successful PublishManifest alongside publishPending. Deliberately asymmetric
+	// with the bootstrap heal breaker, which latches until a manual op/restart — this
+	// auto-re-arms on a resident rise.
+	coverageSkipStreak int
+	lastSkipResident   int
+	shippedIDs         map[searchengine.SegmentID]struct{}
+	locallyShipped     map[searchengine.SegmentID]struct{}
+
+	// onCoverageSuppressed is the nil-safe hook markCoverageSkip fires ONCE per
+	// suppression episode, on the streak's transition into suppression — the point
+	// at which retrying the publish can no longer help and only an outside event
+	// (a resident rise) can clear it. The Manager wires it at construction
+	// (manager_factory.go) to record this graph in its reconcile-nudge set; it is
+	// nil for a directly-constructed distManager, hence the nil check at the call
+	// site. Assigned once, before the manager is reachable by any other goroutine,
+	// and only READ afterwards — so unlike the streak fields above it needs no
+	// lock, and it is deliberately invoked OUTSIDE shipMu.
+	onCoverageSuppressed func()
 
 	// resident tracks the segments currently imported into the engine + an
 	// approximate resident-byte total (sum of imported blob byte lengths). Guarded
@@ -143,6 +167,18 @@ type distManager[Q, S any] struct {
 	// true, resets the load floor, and re-imports the corpus; concurrent searches see
 	// it already set and skip (the recovery will make the corpus resident shortly).
 	recovering atomic.Bool
+
+	// coverageMemo caches the PUBLISH-path shipped denominator ONLY — the result of
+	// this manager's shippedDocCountForRatio read inside publishCoverageOK — so a
+	// coverage-skip storm stops paying a List round-trip per attempt. Read the LIMIT
+	// with the coverage: it is invalidated by THIS manager's own ship and its own
+	// successful publish, and those hooks do NOT cover the deterministic-rebuild
+	// manager, which shares this manager's manifest but not its memo and is therefore
+	// observed only at TTL expiry (shippedDocCountForRatioCached carries the full
+	// reasoning, including why a memo-derived PASS is always re-derived before it is
+	// honored). It is never consulted by the read-side backstop (recoverIfDegenerate)
+	// or the reconcile probe (ReconcileResidentDegenerate) — both keep reading fresh.
+	coverageMemo atomic.Pointer[coverageDenominator]
 
 	// l2Loaded is the L2-first once-guard. load() is L2-PRIMARY: the FIRST act is a
 	// server-independent import of the L2-resident set (cache.Keys() -> reload()),

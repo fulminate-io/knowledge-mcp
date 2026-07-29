@@ -16,7 +16,7 @@ import (
 // gets claimed by the recall routing branch.
 func TestInterceptQueryReflect_TimelineModeClaimed(t *testing.T) {
 	deps := interceptTestDeps{gc: &fakeGraphCaller{}}
-	handled, res := interceptQueryReflect(deps, kgtools.CallToolParams{
+	handled, res := interceptQueryReflect(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "query",
 		Arguments: json.RawMessage(`{"mode":"timeline","limit":5}`),
 	})
@@ -30,7 +30,7 @@ func TestInterceptQueryReflect_TimelineModeClaimed(t *testing.T) {
 // is claimed by the recall routing.
 func TestInterceptQueryReflect_ChargesModeClaimed(t *testing.T) {
 	deps := interceptTestDeps{gc: &fakeGraphCaller{}}
-	handled, _ := interceptQueryReflect(deps, kgtools.CallToolParams{
+	handled, _ := interceptQueryReflect(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "query",
 		Arguments: json.RawMessage(`{"mode":"charges"}`),
 	})
@@ -51,7 +51,7 @@ func TestInterceptQueryReflect_ThoughtFilterClaimed(t *testing.T) {
 	} {
 		t.Run(body, func(t *testing.T) {
 			deps := interceptTestDeps{gc: &fakeGraphCaller{}}
-			handled, _ := interceptQueryReflect(deps, kgtools.CallToolParams{
+			handled, _ := interceptQueryReflect(opCtx(), deps, kgtools.CallToolParams{
 				Name:      "query",
 				Arguments: json.RawMessage(body),
 			})
@@ -66,7 +66,7 @@ func TestInterceptQueryReflect_ThoughtFilterClaimed(t *testing.T) {
 // them.
 func TestInterceptQueryReflect_NonKnowledgeGraphFallsThrough(t *testing.T) {
 	deps := interceptTestDeps{gc: &fakeGraphCaller{}}
-	handled, _ := interceptQueryReflect(deps, kgtools.CallToolParams{
+	handled, _ := interceptQueryReflect(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "query",
 		Arguments: json.RawMessage(`{"mode":"timeline","graph":"practice"}`),
 	})
@@ -77,7 +77,7 @@ func TestInterceptQueryReflect_NonKnowledgeGraphFallsThrough(t *testing.T) {
 // guard accepts the explicit `graph:"knowledge"` form.
 func TestInterceptQueryReflect_KnowledgeGraphExplicitClaimed(t *testing.T) {
 	deps := interceptTestDeps{gc: &fakeGraphCaller{}}
-	handled, _ := interceptQueryReflect(deps, kgtools.CallToolParams{
+	handled, _ := interceptQueryReflect(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "query",
 		Arguments: json.RawMessage(`{"mode":"timeline","graph":"knowledge"}`),
 	})
@@ -88,7 +88,7 @@ func TestInterceptQueryReflect_KnowledgeGraphExplicitClaimed(t *testing.T) {
 // claimed by the intercept.
 func TestInterceptQueryReflect_SimulateModeClaimed(t *testing.T) {
 	deps := interceptTestDeps{gc: &fakeGraphCaller{}}
-	handled, _ := interceptQueryReflect(deps, kgtools.CallToolParams{
+	handled, _ := interceptQueryReflect(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "query",
 		Arguments: json.RawMessage(`{"mode":"simulate","action":"add_charge","target":"t-1","polarity":"positive","weight":2}`),
 	})
@@ -99,7 +99,7 @@ func TestInterceptQueryReflect_SimulateModeClaimed(t *testing.T) {
 // examine without an `id` falls through (other examine kinds use `target`).
 func TestInterceptQueryReflect_ExamineNoID_FallsThrough(t *testing.T) {
 	deps := interceptTestDeps{gc: &fakeGraphCaller{}}
-	handled, _ := interceptQueryReflect(deps, kgtools.CallToolParams{
+	handled, _ := interceptQueryReflect(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "query",
 		Arguments: json.RawMessage(`{"mode":"examine"}`),
 	})

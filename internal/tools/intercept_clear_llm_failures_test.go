@@ -45,7 +45,7 @@ func TestMutateComposers_ClearLLMFailures_SingleGraph(t *testing.T) {
 		listGraphsResult: listGraphsResultJSON(t, [2]string{"code", "knowledge"}),
 	}
 	deps := interceptTestDeps{gc: fc}
-	handled, res := InterceptManage(deps, kgtools.CallToolParams{
+	handled, res := InterceptManage(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "manage",
 		Arguments: json.RawMessage(`{"operation":"clear_llm_failures","graph":"code","name":"knowledge"}`),
 	})
@@ -100,7 +100,7 @@ func TestMutateComposers_ClearLLMFailures_SkippedCountSurfaced(t *testing.T) {
 		listGraphsResult: listGraphsResultJSON(t, [2]string{"code", "knowledge"}),
 	}
 	deps := interceptTestDeps{gc: fc}
-	handled, res := InterceptManage(deps, kgtools.CallToolParams{
+	handled, res := InterceptManage(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "manage",
 		Arguments: json.RawMessage(`{"operation":"clear_llm_failures","graph":"code","name":"knowledge"}`),
 	})
@@ -124,7 +124,7 @@ func TestMutateComposers_ClearLLMFailures_NoSkipNoSkipText(t *testing.T) {
 		listGraphsResult: listGraphsResultJSON(t, [2]string{"code", "knowledge"}),
 	}
 	deps := interceptTestDeps{gc: fc}
-	handled, res := InterceptManage(deps, kgtools.CallToolParams{
+	handled, res := InterceptManage(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "manage",
 		Arguments: json.RawMessage(`{"operation":"clear_llm_failures","graph":"code","name":"knowledge"}`),
 	})
@@ -146,7 +146,7 @@ func TestMutateComposers_ClearLLMFailures_OnlyPhantomMarkers(t *testing.T) {
 		listGraphsResult: listGraphsResultJSON(t, [2]string{"code", "knowledge"}),
 	}
 	deps := interceptTestDeps{gc: fc}
-	handled, res := InterceptManage(deps, kgtools.CallToolParams{
+	handled, res := InterceptManage(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "manage",
 		Arguments: json.RawMessage(`{"operation":"clear_llm_failures","graph":"code","name":"knowledge"}`),
 	})
@@ -170,7 +170,7 @@ func TestMutateComposers_ClearLLMFailures_KnowledgeRootNilTarget(t *testing.T) {
 		listGraphsResult: listGraphsResultJSON(t, [2]string{"knowledge", "knowledge"}),
 	}
 	deps := interceptTestDeps{gc: fc}
-	handled, res := InterceptManage(deps, kgtools.CallToolParams{
+	handled, res := InterceptManage(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "manage",
 		Arguments: json.RawMessage(`{"operation":"clear_llm_failures","graph":"knowledge","name":"knowledge"}`),
 	})
@@ -195,7 +195,7 @@ func TestMutateComposers_ClearLLMFailures_MultiGraphFanOut(t *testing.T) {
 	]}`}}}
 	fc := &fakeGraphCaller{mutateAffected: 1, listGraphsResult: &listResult}
 	deps := interceptTestDeps{gc: fc}
-	handled, res := InterceptManage(deps, kgtools.CallToolParams{
+	handled, res := InterceptManage(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "manage",
 		Arguments: json.RawMessage(`{"operation":"clear_llm_failures"}`),
 	})
@@ -239,7 +239,7 @@ func TestMutateComposers_ClearLLMFailures_OverlayFanOut(t *testing.T) {
 		overlayKeysByBase: map[string][]string{"agent": {"agent@feature-x"}},
 	}
 	deps := interceptTestDeps{gc: fc}
-	handled, res := InterceptManage(deps, kgtools.CallToolParams{
+	handled, res := InterceptManage(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "manage",
 		Arguments: json.RawMessage(`{"operation":"clear_llm_failures","graph":"code","name":"agent"}`),
 	})
@@ -278,7 +278,7 @@ func TestMutateComposers_ClearLLMFailures_UnresolvableName(t *testing.T) {
 		listGraphsResult: listGraphsResultJSON(t, [2]string{"code", "agent"}),
 	}
 	deps := interceptTestDeps{gc: fc}
-	handled, res := InterceptManage(deps, kgtools.CallToolParams{
+	handled, res := InterceptManage(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "manage",
 		Arguments: json.RawMessage(`{"operation":"clear_llm_failures","graph":"code","name":"nonexistent"}`),
 	})
@@ -300,7 +300,7 @@ func TestMutateComposers_ClearLLMFailures_PerGraphErrorSurfaced(t *testing.T) {
 		mutateErrByTargetName: map[string]error{"bad": errTestPerGraphClear},
 	}
 	deps := interceptTestDeps{gc: fc}
-	handled, res := InterceptManage(deps, kgtools.CallToolParams{
+	handled, res := InterceptManage(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "manage",
 		Arguments: json.RawMessage(`{"operation":"clear_llm_failures","graph":"code"}`),
 	})

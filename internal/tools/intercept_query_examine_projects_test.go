@@ -175,7 +175,7 @@ func TestInterceptQueryExamineProjects_NonProjectDomain_FallsThrough(t *testing.
 
 	deps := &parityDeps{gc: f.gc()}
 	args := mustMarshal(t, map[string]any{"mode": "examine", "id": id})
-	handled, _ := InterceptQueryExamineProjects(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
+	handled, _ := InterceptQueryExamineProjects(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
 	assert.False(t, handled, "NodeFile must fall through to server-side renderer")
 }
 
@@ -186,7 +186,7 @@ func TestInterceptQueryExamineProjects_Thought_FallsThrough(t *testing.T) {
 
 	deps := &parityDeps{gc: f.gc()}
 	args := mustMarshal(t, map[string]any{"mode": "examine", "id": id})
-	handled, _ := InterceptQueryExamineProjects(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
+	handled, _ := InterceptQueryExamineProjects(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
 	assert.False(t, handled, "NodeThought must fall through to server-side handleExamine")
 }
 
@@ -196,28 +196,28 @@ func TestInterceptQueryExamineProjects_NonKnowledgeGraph_FallsThrough(t *testing
 	args := mustMarshal(t, map[string]any{
 		"mode": "examine", "id": "any", "graph": "cloud",
 	})
-	handled, _ := InterceptQueryExamineProjects(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
+	handled, _ := InterceptQueryExamineProjects(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
 	assert.False(t, handled, "non-knowledge graphs must fall through")
 }
 
 func TestInterceptQueryExamineProjects_EmptyID_FallsThrough(t *testing.T) {
 	deps := &parityDeps{gc: newParityFixture().gc()}
 	args := mustMarshal(t, map[string]any{"mode": "examine"})
-	handled, _ := InterceptQueryExamineProjects(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
+	handled, _ := InterceptQueryExamineProjects(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
 	assert.False(t, handled, "empty id must fall through so server emits canonical error")
 }
 
 func TestInterceptQueryExamineProjects_WrongMode_FallsThrough(t *testing.T) {
 	deps := &parityDeps{gc: newParityFixture().gc()}
 	args := mustMarshal(t, map[string]any{"mode": "evidence", "id": "x"})
-	handled, _ := InterceptQueryExamineProjects(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
+	handled, _ := InterceptQueryExamineProjects(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
 	assert.False(t, handled)
 }
 
 func TestInterceptQueryExamineProjects_WrongTool_FallsThrough(t *testing.T) {
 	deps := &parityDeps{gc: newParityFixture().gc()}
 	args := mustMarshal(t, map[string]any{"mode": "examine", "id": "x"})
-	handled, _ := InterceptQueryExamineProjects(deps, kgtools.CallToolParams{Name: "search", Arguments: args})
+	handled, _ := InterceptQueryExamineProjects(opCtx(), deps, kgtools.CallToolParams{Name: "search", Arguments: args})
 	assert.False(t, handled)
 }
 
@@ -230,7 +230,7 @@ func runExamineParity(t *testing.T, f *parityGraphFixture, id, format, goldenNam
 	args := mustMarshal(t, map[string]any{
 		"mode": "examine", "id": id, "format": format,
 	})
-	handled, res := InterceptQueryExamineProjects(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
+	handled, res := InterceptQueryExamineProjects(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
 	require.True(t, handled)
 	require.False(t, res.IsError, "intercept error: %v", res.Content)
 

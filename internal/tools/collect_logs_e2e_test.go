@@ -59,8 +59,10 @@ func (d *fakeDeps) SegmentShipper() SegmentShipper               { return nil }
 func (d *fakeDeps) SegmentPruner() SegmentPruner                 { return nil }
 func (d *fakeDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
 func (d *fakeDeps) PipelineScanner() PipelineScanner             { return nil }
-func (d *fakeDeps) ReflectionForcer() ReflectionForcer           { return nil }
-func (d *fakeDeps) SimilarityForcer() SimilarityForcer           { return nil }
+
+func (d *fakeDeps) ClearHealLatch(kgtypes.GraphType, string) {}
+func (d *fakeDeps) ReflectionForcer() ReflectionForcer       { return nil }
+func (d *fakeDeps) SimilarityForcer() SimilarityForcer       { return nil }
 
 func (d *fakeDeps) BlindSpotProvider() BlindSpotProvider { return nil }
 func (d *fakeDeps) ClusterProvider() ClusterProvider     { return nil }
@@ -186,7 +188,7 @@ func TestRunLogsCollect_E2E(t *testing.T) {
 
 	deps := &fakeDeps{sink: remote.NewUploadSink(srv.client)}
 
-	result := runLogsCollect(deps, collectArgs{
+	result := runLogsCollect(opCtx(), deps, collectArgs{
 		Type:     "logs",
 		Provider: provName,
 	})
@@ -266,7 +268,7 @@ func TestRunLogsCollect_FetchSubgraphError(t *testing.T) {
 
 	deps := &fakeDeps{sink: remote.NewUploadSink(srv.client)}
 
-	result := runLogsCollect(deps, collectArgs{
+	result := runLogsCollect(opCtx(), deps, collectArgs{
 		Type:     "logs",
 		Provider: provName,
 	})
@@ -296,7 +298,7 @@ func TestRunLogsCollect_FetchSubgraphError(t *testing.T) {
 // this point.
 func TestInterceptCollect_NotReadyGate(t *testing.T) {
 	deps := &fakeDeps{pipelineNotReady: true}
-	handled, res := InterceptCollect(deps, kgtools.CallToolParams{
+	handled, res := InterceptCollect(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "collect",
 		Arguments: json.RawMessage(`{"type":"code","id":"/tmp/somerepo"}`),
 	})

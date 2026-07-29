@@ -15,8 +15,10 @@ package content
 // SOURCE changes: the original consumed the graph family's shared
 // computeDegrees pass (degree.go), but that lives in the disjoint parallel
 // graph package this one cannot import. Per the plan, degree counts here come
-// from ONE bulk FetchEdges over the node set — a slim local degree-row compute
-// (in/out totals only; the histogram never reads the per-edge-type breakdown).
+// from ONE bulk edge read — the match-all read when no subset predicate narrows
+// the node set, else a pivot read over the surviving ids — feeding a slim local
+// degree-row compute (in/out totals only; the histogram never reads the
+// per-edge-type breakdown).
 //
 // Default buckets (inclusive lower, inclusive upper unless noted):
 //
@@ -40,6 +42,7 @@ import (
 	"sort"
 	"strings"
 
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/topology/foundation"
 )
 
@@ -110,8 +113,8 @@ func (a DegreeHistogramAnalyzer) Run(ctx context.Context, req foundation.Request
 }
 
 // computeDegreeRows fetches every node in the scoped graph (applying the subset
-// filter), fetches every edge incident to that node set in ONE bulk Execute,
-// and tallies in/out degree per node in memory. It mirrors the original
+// filter), fetches the edges in ONE bulk Execute, and tallies in/out degree per
+// node in memory. It mirrors the original
 // computeDegrees semantics exactly: an edge contributes to FanOut on its source
 // only when the source is a materialized (subset-passing) node, and to FanIn on
 // its destination only when BOTH endpoints are materialized — i.e. it counts
@@ -143,7 +146,17 @@ func computeDegreeRows(ctx context.Context, req foundation.Request) ([]degreeRow
 		return nil, nil
 	}
 
-	edges, err := foundation.FetchEdges(ctx, req.Caller, req.Graph, req.Name, ids, nil)
+	// With no subset predicate the id set IS every node of the graph, so ask for
+	// the graph's edges directly instead of sending all those ids back as a pivot
+	// set. A subset build keeps the pivot read so it pulls only usable edges.
+	// Either way the tally below ignores an edge whose source is not a
+	// materialized row, so the two reads produce identical rows.
+	var edges []knowledgev1.Edge
+	if req.Subset == nil {
+		edges, err = foundation.FetchAllEdges(ctx, req.Caller, req.Graph, req.Name, nil)
+	} else {
+		edges, err = foundation.FetchEdges(ctx, req.Caller, req.Graph, req.Name, ids, nil)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("fetch edges %s/%s: %w", req.Graph, req.Name, err)
 	}

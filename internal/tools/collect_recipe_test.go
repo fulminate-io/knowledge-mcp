@@ -79,11 +79,13 @@ func (d *recipeDeps) SegmentShipper() SegmentShipper               { return nil 
 func (d *recipeDeps) SegmentPruner() SegmentPruner                 { return nil }
 func (d *recipeDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
 func (d *recipeDeps) PipelineScanner() PipelineScanner             { return nil }
-func (d *recipeDeps) ReflectionForcer() ReflectionForcer           { return nil }
-func (d *recipeDeps) SimilarityForcer() SimilarityForcer           { return nil }
-func (d *recipeDeps) BlindSpotProvider() BlindSpotProvider         { return nil }
-func (d *recipeDeps) ClusterProvider() ClusterProvider             { return nil }
-func (d *recipeDeps) TensionsProvider() TensionsProvider           { return nil }
+
+func (d *recipeDeps) ClearHealLatch(kgtypes.GraphType, string) {}
+func (d *recipeDeps) ReflectionForcer() ReflectionForcer       { return nil }
+func (d *recipeDeps) SimilarityForcer() SimilarityForcer       { return nil }
+func (d *recipeDeps) BlindSpotProvider() BlindSpotProvider     { return nil }
+func (d *recipeDeps) ClusterProvider() ClusterProvider         { return nil }
+func (d *recipeDeps) TensionsProvider() TensionsProvider       { return nil }
 
 const recipeHandlerBody = `select section
 emit pattern {
@@ -127,7 +129,7 @@ func TestInterceptCollect_RecipeWeb_RunsClientSide(t *testing.T) {
 	sink := &recipeCaptureSink{}
 	deps := &recipeDeps{sink: sink, gc: recipeHandlerCaller()}
 
-	handled, res := InterceptCollect(deps, recipeCollectParams(t, "web"))
+	handled, res := InterceptCollect(opCtx(), deps, recipeCollectParams(t, "web"))
 	require.True(t, handled, "recipe collect must be handled client-side, never forwarded as (false,_)")
 	require.False(t, res.IsError, "expected a successful recipe run, got: %s", resultText(res))
 	require.Len(t, sink.results, 1, "the projected practice graph shipped to the Sink")
@@ -141,7 +143,7 @@ func TestInterceptCollect_RecipeTypeMismatch_Errors(t *testing.T) {
 	sink := &recipeCaptureSink{}
 	deps := &recipeDeps{sink: sink, gc: recipeHandlerCaller()}
 
-	handled, res := InterceptCollect(deps, recipeCollectParams(t, "pdf"))
+	handled, res := InterceptCollect(opCtx(), deps, recipeCollectParams(t, "pdf"))
 	require.True(t, handled, "a mismatch is still handled client-side, not forwarded")
 	require.True(t, res.IsError, "type mismatch must surface an error")
 	msg := resultText(res)

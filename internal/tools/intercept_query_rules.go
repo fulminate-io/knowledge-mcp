@@ -29,7 +29,7 @@ import (
 )
 
 // InterceptQueryRules claims query(type:"rule").
-func InterceptQueryRules(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
+func InterceptQueryRules(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	if params.Name != "query" {
 		return false, kgtools.ToolResult{}
 	}
@@ -56,7 +56,6 @@ func InterceptQueryRules(deps ClientDeps, params kgtools.CallToolParams) (bool, 
 		return true, errorResult("rules: graph caller unavailable")
 	}
 
-	ctx := context.Background()
 	allRules, err := fetchAllRules(ctx, gc)
 	if err != nil {
 		return true, errorResult(err.Error())

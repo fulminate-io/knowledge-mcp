@@ -95,7 +95,7 @@ func TestInterceptTopology_Gate(t *testing.T) {
 
 // TestInterceptQueryMetadataStats_Gate asserts the metadata_stats gate.
 func TestInterceptQueryMetadataStats_Gate(t *testing.T) {
-	handled, _ := InterceptQueryMetadataStats(nil, kgtools.CallToolParams{
+	handled, _ := InterceptQueryMetadataStats(opCtx(), nil, kgtools.CallToolParams{
 		Name: "query", Arguments: json.RawMessage(`{"mode":"stats"}`),
 	})
 	assert.False(t, handled, "non metadata_stats mode not claimed")

@@ -61,7 +61,7 @@ func TestInterceptQueryRules_Populated(t *testing.T) {
 	deps := &logE2EDeps{gc: gc}
 	args := mustMarshal(t, map[string]any{"type": "rule"})
 
-	handled, res := InterceptQueryRules(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
+	handled, res := InterceptQueryRules(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
 	require.True(t, handled)
 	require.False(t, res.IsError, "intercept error: %v", res.Content)
 
@@ -75,7 +75,7 @@ func TestInterceptQueryRules_Filtered(t *testing.T) {
 	deps := &logE2EDeps{gc: gc}
 	args := mustMarshal(t, map[string]any{"type": "rule", "scope": "*.go"})
 
-	handled, res := InterceptQueryRules(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
+	handled, res := InterceptQueryRules(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
 	require.True(t, handled)
 	require.False(t, res.IsError)
 
@@ -89,7 +89,7 @@ func TestInterceptQueryRules_Empty(t *testing.T) {
 	deps := &logE2EDeps{gc: gc}
 	args := mustMarshal(t, map[string]any{"type": "rule"})
 
-	handled, res := InterceptQueryRules(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
+	handled, res := InterceptQueryRules(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
 	require.True(t, handled)
 	require.False(t, res.IsError)
 
@@ -103,7 +103,7 @@ func TestInterceptQueryRules_NoMatch(t *testing.T) {
 	deps := &logE2EDeps{gc: gc}
 	args := mustMarshal(t, map[string]any{"type": "rule", "scope": "zzz_nothing"})
 
-	handled, res := InterceptQueryRules(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
+	handled, res := InterceptQueryRules(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
 	require.True(t, handled)
 	require.False(t, res.IsError)
 
@@ -121,7 +121,7 @@ func TestInterceptQueryRules_JSON(t *testing.T) {
 	deps := &logE2EDeps{gc: gc}
 	args := mustMarshal(t, map[string]any{"type": "rule", "format": "json"})
 
-	handled, res := InterceptQueryRules(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
+	handled, res := InterceptQueryRules(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
 	require.True(t, handled)
 	require.False(t, res.IsError, "intercept error: %v", res.Content)
 
@@ -141,7 +141,7 @@ func TestInterceptQueryRules_JSON(t *testing.T) {
 
 	// Default (no-format) caller MUST still receive the human markdown.
 	mdArgs := mustMarshal(t, map[string]any{"type": "rule"})
-	handledMD, resMD := InterceptQueryRules(deps, kgtools.CallToolParams{Name: "query", Arguments: mdArgs})
+	handledMD, resMD := InterceptQueryRules(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: mdArgs})
 	require.True(t, handledMD)
 	require.False(t, resMD.IsError)
 	assert.Contains(t, extractText(resMD), "Rules (")
@@ -155,7 +155,7 @@ func TestInterceptQueryRules_JSON_Empty(t *testing.T) {
 	deps := &logE2EDeps{gc: gc}
 	args := mustMarshal(t, map[string]any{"type": "rule", "format": "json"})
 
-	handled, res := InterceptQueryRules(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
+	handled, res := InterceptQueryRules(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
 	require.True(t, handled)
 	require.False(t, res.IsError)
 
@@ -171,7 +171,7 @@ func TestInterceptQueryRules_WrongType_FallsThrough(t *testing.T) {
 	gc := seedRulesFixture()
 	deps := &logE2EDeps{gc: gc}
 	args := mustMarshal(t, map[string]any{"type": "finding"})
-	handled, _ := InterceptQueryRules(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
+	handled, _ := InterceptQueryRules(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
 	assert.False(t, handled)
 }
 
@@ -179,6 +179,6 @@ func TestInterceptQueryRules_WrongTool_FallsThrough(t *testing.T) {
 	gc := seedRulesFixture()
 	deps := &logE2EDeps{gc: gc}
 	args := mustMarshal(t, map[string]any{"type": "rule"})
-	handled, _ := InterceptQueryRules(deps, kgtools.CallToolParams{Name: "search", Arguments: args})
+	handled, _ := InterceptQueryRules(opCtx(), deps, kgtools.CallToolParams{Name: "search", Arguments: args})
 	assert.False(t, handled)
 }

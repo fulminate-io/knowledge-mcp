@@ -57,7 +57,7 @@ func TestInterceptQueryEvidence_TextFormat_ByteIdentical(t *testing.T) {
 	deps := &parityDeps{gc: f.gc()}
 	args := mustMarshal(t, map[string]any{"mode": "evidence", "id": decID})
 
-	handled, res := InterceptQueryEvidence(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
+	handled, res := InterceptQueryEvidence(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
 	require.True(t, handled)
 	require.False(t, res.IsError, "intercept error: %v", res.Content)
 
@@ -71,7 +71,7 @@ func TestInterceptQueryEvidence_JSONFormat_ByteIdentical(t *testing.T) {
 	deps := &parityDeps{gc: f.gc()}
 	args := mustMarshal(t, map[string]any{"mode": "evidence", "id": decID, "format": "json"})
 
-	handled, res := InterceptQueryEvidence(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
+	handled, res := InterceptQueryEvidence(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
 	require.True(t, handled)
 	require.False(t, res.IsError)
 
@@ -83,7 +83,7 @@ func TestInterceptQueryEvidence_JSONFormat_ByteIdentical(t *testing.T) {
 func TestInterceptQueryEvidence_MissingID_Errors(t *testing.T) {
 	deps := &parityDeps{gc: newParityFixture().gc()}
 	args := mustMarshal(t, map[string]any{"mode": "evidence"})
-	handled, res := InterceptQueryEvidence(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
+	handled, res := InterceptQueryEvidence(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
 	require.True(t, handled)
 	require.True(t, res.IsError)
 	assert.Contains(t, extractText(res), "evidence mode requires 'id' parameter")
@@ -92,13 +92,13 @@ func TestInterceptQueryEvidence_MissingID_Errors(t *testing.T) {
 func TestInterceptQueryEvidence_WrongTool_FallsThrough(t *testing.T) {
 	deps := &parityDeps{gc: newParityFixture().gc()}
 	args := mustMarshal(t, map[string]any{"mode": "evidence", "id": "x"})
-	handled, _ := InterceptQueryEvidence(deps, kgtools.CallToolParams{Name: "search", Arguments: args})
+	handled, _ := InterceptQueryEvidence(opCtx(), deps, kgtools.CallToolParams{Name: "search", Arguments: args})
 	assert.False(t, handled)
 }
 
 func TestInterceptQueryEvidence_WrongMode_FallsThrough(t *testing.T) {
 	deps := &parityDeps{gc: newParityFixture().gc()}
 	args := mustMarshal(t, map[string]any{"mode": "plan_tree", "id": "x"})
-	handled, _ := InterceptQueryEvidence(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
+	handled, _ := InterceptQueryEvidence(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
 	assert.False(t, handled)
 }

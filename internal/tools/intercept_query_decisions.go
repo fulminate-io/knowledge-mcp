@@ -38,7 +38,7 @@ import (
 // InterceptQueryDecisions claims query(type:"decision"). Returns
 // (true, result) on match; otherwise (false, _) so the chain
 // continues.
-func InterceptQueryDecisions(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
+func InterceptQueryDecisions(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	if params.Name != "query" {
 		return false, kgtools.ToolResult{}
 	}
@@ -55,7 +55,6 @@ func InterceptQueryDecisions(deps ClientDeps, params kgtools.CallToolParams) (bo
 		return true, errorResult("query(decision): graph caller unavailable")
 	}
 
-	ctx := context.Background()
 	limit := int(a.Limit)
 	if limit <= 0 {
 		limit = 10

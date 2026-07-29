@@ -39,7 +39,7 @@ type createResearchQuest struct {
 }
 
 // InterceptCreateResearch handles the create_research MCP call.
-func InterceptCreateResearch(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
+func InterceptCreateResearch(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	if params.Name != "create_research" {
 		return false, kgtools.ToolResult{}
 	}
@@ -73,7 +73,6 @@ func InterceptCreateResearch(deps ClientDeps, params kgtools.CallToolParams) (bo
 		})
 	}
 
-	ctx := context.Background()
 	nodes, edges := buildResearchGraph(researchArgs)
 	bundleID := newBundleID()
 	ids, perr := PersistBatch(ctx, gc, nodes, edges, bundleID)

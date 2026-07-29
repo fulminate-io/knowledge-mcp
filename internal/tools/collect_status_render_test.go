@@ -49,7 +49,7 @@ func TestHandleServerStatus_CollectRuns_Text(t *testing.T) {
 		live:            fakeLiveness{status: runningStatusMap()},
 		runs:            scriptedCollectRuns(),
 	}
-	body := textBodyTools(handleServerStatus(deps, ""))
+	body := textBodyTools(handleServerStatus(opCtx(), deps, ""))
 	assert.Contains(t, body, "Collect runs:")
 	assert.Contains(t, body, "code /a: running")
 	assert.Contains(t, body, "elapsed)")
@@ -67,7 +67,7 @@ func TestHandleServerStatus_CollectRuns_JSON(t *testing.T) {
 		runs:            scriptedCollectRuns(),
 	}
 	var got map[string]any
-	require.NoError(t, json.Unmarshal([]byte(textBodyTools(handleServerStatus(deps, "json"))), &got))
+	require.NoError(t, json.Unmarshal([]byte(textBodyTools(handleServerStatus(opCtx(), deps, "json"))), &got))
 	raw, ok := got["collect_runs"]
 	require.True(t, ok, "collect_runs key present")
 	entries, ok := raw.([]any)
@@ -104,13 +104,13 @@ func TestHandleCloudStatus_CollectRuns(t *testing.T) {
 		runs:            scriptedCollectRuns(),
 	}
 
-	body := textBodyTools(handleServerStatus(deps, ""))
+	body := textBodyTools(handleServerStatus(opCtx(), deps, ""))
 	assert.Contains(t, body, "Backend: cloud (https://dev.fulminate.io)", "routed to the cloud status path")
 	assert.Contains(t, body, "Collect runs:")
 	assert.Contains(t, body, "aws acct: completed")
 
 	var got map[string]any
-	require.NoError(t, json.Unmarshal([]byte(textBodyTools(handleServerStatus(deps, "json"))), &got))
+	require.NoError(t, json.Unmarshal([]byte(textBodyTools(handleServerStatus(opCtx(), deps, "json"))), &got))
 	assert.Equal(t, "cloud", got["backend"])
 	assert.Contains(t, got, "collect_runs")
 }
@@ -120,12 +120,12 @@ func TestHandleCloudStatus_CollectRuns(t *testing.T) {
 // — no collect section, no collect_runs key.
 func TestHandleServerStatus_NoCollectRuns_Baseline(t *testing.T) {
 	deps := &localNoHealthDeps{cloudStatusDeps: &cloudStatusDeps{loggedIn: false}, live: fakeLiveness{status: runningStatusMap()}}
-	body := textBodyTools(handleServerStatus(deps, ""))
+	body := textBodyTools(handleServerStatus(opCtx(), deps, ""))
 	assert.Contains(t, body, "Graph server: RUNNING")
 	assert.NotContains(t, body, "Collect runs:")
 
 	var got map[string]any
-	require.NoError(t, json.Unmarshal([]byte(textBodyTools(handleServerStatus(deps, "json"))), &got))
+	require.NoError(t, json.Unmarshal([]byte(textBodyTools(handleServerStatus(opCtx(), deps, "json"))), &got))
 	assert.NotContains(t, got, "collect_runs")
 }
 
@@ -137,10 +137,10 @@ func TestHandleServerStatus_EmptyCollectRuns_NoSection(t *testing.T) {
 		live:            fakeLiveness{status: runningStatusMap()},
 		runs:            nil,
 	}
-	body := textBodyTools(handleServerStatus(deps, ""))
+	body := textBodyTools(handleServerStatus(opCtx(), deps, ""))
 	assert.NotContains(t, body, "Collect runs:")
 
 	var got map[string]any
-	require.NoError(t, json.Unmarshal([]byte(textBodyTools(handleServerStatus(deps, "json"))), &got))
+	require.NoError(t, json.Unmarshal([]byte(textBodyTools(handleServerStatus(opCtx(), deps, "json"))), &got))
 	assert.NotContains(t, got, "collect_runs")
 }

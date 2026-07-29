@@ -54,7 +54,7 @@ type criterionCreateArgs struct {
 
 // InterceptAddCriterion claims mutate(create, type:"criterion") and
 // orchestrates the create+link sequence client-side.
-func InterceptAddCriterion(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
+func InterceptAddCriterion(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	if params.Name != "mutate" {
 		return false, kgtools.ToolResult{}
 	}
@@ -72,7 +72,6 @@ func InterceptAddCriterion(deps ClientDeps, params kgtools.CallToolParams) (bool
 		return true, errorResult("mutate(create, type=criterion): graph caller unavailable")
 	}
 
-	ctx := context.Background()
 	if err := validateCriterionArgs(ctx, gc, a); err != nil {
 		return true, errorResult(err.Error())
 	}

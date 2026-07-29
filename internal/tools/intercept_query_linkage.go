@@ -81,22 +81,33 @@ func linkageStatsClient(ctx context.Context, gc statsRPC, format string) kgtools
 	return textResult(sb.String())
 }
 
-// renderLinkageProxyBreakdown fetches the proxy nodes (one Match(NodeProxy)
-// Execute, bounded by the proxy set) and renders the proxy-by-foreign_graph
-// breakdown the server linkageStats appended. Returns "" when there are no
-// proxies / the fetch fails (degrade gracefully — the stats body still renders).
+// renderLinkageProxyBreakdown drains the proxy nodes in bounded keyset pages and
+// renders the proxy-by-foreign_graph breakdown the server linkageStats appended.
+// Returns "" when there are no proxies / the fetch fails (degrade gracefully —
+// the stats body still renders).
+//
+// The nodes stay HYDRATED because the breakdown reads their foreign_graph
+// metadata, which no ids carrier serves; the paging is what bounds the read.
 func renderLinkageProxyBreakdown(ctx context.Context, gc statsRPC) string {
-	resp, err := gc.Execute(ctx, &knowledgev1.ExecuteRequest{
-		Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
-			Selection: &knowledgev1.Selection{NodeType: string(kgtypes.NodeProxy)},
-		}},
-		Target: &knowledgev1.GraphSelector{Graph: "linkage"},
-	})
-	if err != nil {
-		return ""
-	}
-	proxies, derr := engine.DecodeNodes(resp)
-	if derr != nil || len(proxies) == 0 {
+	proxies, err := engine.DrainKeysetPages(func(afterID string) ([]*knowledgev1.Node, error) {
+		cursor := afterID
+		resp, rerr := gc.Execute(ctx, &knowledgev1.ExecuteRequest{
+			Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
+				Selection: &knowledgev1.Selection{NodeType: string(kgtypes.NodeProxy)},
+				Limit:     int32(engine.BrowsePageSize),
+				// SET on every page including the first, where the value is empty:
+				// presence is what selects the keyset browse.
+				AfterId:   &cursor,
+				SkipTotal: true, // the drain never reads Total
+			}},
+			Target: &knowledgev1.GraphSelector{Graph: "linkage"},
+		})
+		if rerr != nil {
+			return nil, rerr
+		}
+		return engine.DecodeNodes(resp)
+	}, engine.BrowsePageSize)
+	if err != nil || len(proxies) == 0 {
 		return ""
 	}
 	counts := make(map[string]int)

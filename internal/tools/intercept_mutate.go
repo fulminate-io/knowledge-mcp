@@ -163,7 +163,7 @@ type findingReference struct {
 //   - Linear push failure (no local mutation; locked design).
 //   - Backend recorded on node but adapter not currently configured.
 //   - Linear-succeeded-then-forward-fail desync (operator-visible message).
-func InterceptMutate(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
+func InterceptMutate(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	if params.Name != "mutate" {
 		return false, kgtools.ToolResult{}
 	}
@@ -177,8 +177,6 @@ func InterceptMutate(deps ClientDeps, params kgtools.CallToolParams) (bool, kgto
 		// Server will surface its own parse error — don't double-error.
 		return false, kgtools.ToolResult{}
 	}
-
-	ctx := context.Background()
 
 	// Cross-graph link: the universal composer is reachable for ANY
 	// mutate(link), so a plain link whose FROM or TO is in a foreign graph (e.g.

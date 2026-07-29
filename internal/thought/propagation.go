@@ -43,6 +43,15 @@ type NonConvergedComponent struct {
 // lists (the worst-K by residual); the rest are summarized via NonConvergedOmitted.
 const nonConvergedReportCap = 5
 
+// residualBand is a node's per-component writeback band for the two propagated_*
+// keys. A converged component floors both at writebackDeadband; a non-converged
+// component widens them to its own oscillation amplitude so residual jitter below
+// observable precision stops re-writing every tick.
+type residualBand struct {
+	valence   float64
+	magnitude float64
+}
+
 // findConnectedComponents returns groups of thought IDs that are
 // connected. Pure local computation over a prebuilt adjacency map.
 func findConnectedComponents(thoughtIDs []string, adj map[string][]string) [][]string {
@@ -135,11 +144,13 @@ func currentPropagatedAccessor(nodeByID map[string]*knowledgev1.Node) func(id, k
 // The changed-only writeback diff still applies, so a no-change full pass writes
 // zero rows.
 //
-// Both existing callers (runBackgroundPropagation loop.go, handlePropagateClient
-// tools/thought.go) call this 4-arg form unchanged; the warm-tick scoping rides
-// RunPropagationScoped directly from runBackgroundPropagation.
-func RunPropagation(ctx context.Context, gc Caller, profile *PersonalityProfile, nodeByID map[string]*knowledgev1.Node) (PropagationResult, error) {
-	return RunPropagationScoped(ctx, gc, profile, nodeByID, nil)
+// The manual propagate tool (handlePropagateClient tools/thought.go) calls this
+// full form; the warm-tick scoping rides RunPropagationScoped directly from
+// runBackgroundPropagation. src forwards the resident corpus cache to the
+// adjacency thought-arm when warm (the loop passes itself; an on-demand caller
+// passes its CorpusProvider or nil).
+func RunPropagation(ctx context.Context, gc Caller, profile *PersonalityProfile, nodeByID map[string]*knowledgev1.Node, src CorpusSource) (PropagationResult, error) {
+	return RunPropagationScoped(ctx, gc, profile, nodeByID, nil, src)
 }
 
 // RunPropagationScoped executes propagation, optionally SCOPED to the
@@ -160,8 +171,8 @@ func RunPropagation(ctx context.Context, gc Caller, profile *PersonalityProfile,
 // diffMetadataUpdates with a current accessor reading propagated_* from nodeByID,
 // so a single bulk_update_metadata writes only the rows whose value CHANGED —
 // O(|changed|) regardless of N.
-func RunPropagationScoped(ctx context.Context, gc Caller, profile *PersonalityProfile, nodeByID map[string]*knowledgev1.Node, dirtySeed map[string]bool) (PropagationResult, error) {
-	nodeIDs, adj, err := fetchAdjacency(ctx, gc, "all", nil)
+func RunPropagationScoped(ctx context.Context, gc Caller, profile *PersonalityProfile, nodeByID map[string]*knowledgev1.Node, dirtySeed map[string]bool, src CorpusSource) (PropagationResult, error) {
+	nodeIDs, adj, err := fetchAdjacency(ctx, gc, "all", nil, src) // resident cache when warm; else drain.
 	if err != nil {
 		return PropagationResult{}, fmt.Errorf("thought: RunPropagationScoped: adjacency: %w", err)
 	}
@@ -196,6 +207,12 @@ func RunPropagationScoped(ctx context.Context, gc Caller, profile *PersonalityPr
 	// Accumulate per-thought writeback rows; single bulk update at the
 	// end (T2/T3 perf lock — no per-thought wire writes).
 	var allUpdates []map[string]any
+	// bandByNode records each recomputed member's per-component writeback band,
+	// keyed by node id. Declared ONCE above the loop: a component's band is derived
+	// from its own convergence residual, and every member of that component shares
+	// it. (Declaring it inside the loop would retain only the last component's
+	// entries — a silent trap the diff closure below depends on avoiding.)
+	bandByNode := make(map[string]residualBand, len(nodeIDs))
 	for _, component := range recomputed {
 		if err := ctx.Err(); err != nil {
 			return result, fmt.Errorf("propagation cancelled: %w", err)
@@ -231,6 +248,20 @@ func RunPropagationScoped(ctx context.Context, gc Caller, profile *PersonalityPr
 			})
 		}
 
+		// Per-component writeback band: floor at writebackDeadband, widen to the
+		// component's oscillation amplitude. A converged component has residual ≈ 0,
+		// so its band stays at the floor (converged behavior is unchanged). A
+		// non-converged component oscillates within ~residual each tick; band =
+		// k·residual with k=2 as the empirical safety margin (k=1 is the tighter
+		// documented fallback — one residual width — if churn must be traded for
+		// freshness). Below this band the value is jitter no consumer can observe, so
+		// re-persisting it is pure churn.
+		vBand := max(writebackDeadband, 2*vResidual)
+		mBand := max(writebackDeadband, 2*mResidual)
+		for _, id := range component {
+			bandByNode[id] = residualBand{valence: vBand, magnitude: mBand}
+		}
+
 		for _, id := range component {
 			pv := propagatedValence[id]
 			pm := propagatedMagnitude[id]
@@ -251,12 +282,34 @@ func RunPropagationScoped(ctx context.Context, gc Caller, profile *PersonalityPr
 	// summarizing the rest via NonConvergedOmitted.
 	finalizeConvergence(&result)
 
-	// Changed-only writeback: drop rows whose recomputed propagated_* already
-	// equals the persisted value (carry-forward equality), so the bulk write is
-	// O(|changed|). nodeByID may be nil (no-personality path) — diffMetadataUpdates
-	// then keeps every row (cold case), preserving the prior full-write behavior.
-	bulkPersistMetadata(ctx, gc, diffMetadataUpdates(allUpdates, currentPropagatedAccessor(nodeByID)))
+	// Changed-only writeback: drop rows whose recomputed propagated_* is within the
+	// per-component band of the persisted value (carry-forward equality), so the bulk
+	// write is O(|changed|). The band is per-node (bandByNode) and per-key: a value
+	// that drifted by less than its component's band is not re-persisted. nodeByID may
+	// be nil (no-personality path) — diffMetadataUpdatesFunc then keeps every row (cold
+	// case), preserving the prior full-write behavior.
+	bulkPersistMetadata(ctx, gc, diffMetadataUpdatesFunc(allUpdates, currentPropagatedAccessor(nodeByID), bandedWritebackPredicate(bandByNode)))
 	return result, nil
+}
+
+// bandedWritebackPredicate builds the propagated_* diff predicate: for each row it
+// selects the node's per-component band (bandByNode) and the per-key band
+// (propagated_valence → valence, propagated_magnitude → magnitude), then gates the
+// write on propagatedValueChangedBand. A node absent from bandByNode falls back to
+// the fixed floor — a totality-only branch, unreachable for propagation writeback
+// rows since every recomputed member is recorded before the writeback.
+func bandedWritebackPredicate(bandByNode map[string]residualBand) func(id, key, cur, want string) bool {
+	return func(id, key, cur, want string) bool {
+		band, ok := bandByNode[id]
+		if !ok {
+			return propagatedValueChangedBand(cur, want, writebackDeadband)
+		}
+		b := band.valence
+		if key == "propagated_magnitude" {
+			b = band.magnitude
+		}
+		return propagatedValueChangedBand(cur, want, b)
+	}
 }
 
 // finalizeConvergence derives Converged (len(NonConverged)==0) and caps the
@@ -320,7 +373,23 @@ func bulkPersistMetadata(ctx context.Context, gc Caller, updates []map[string]an
 // case (no persisted values to compare against, e.g. first pass): every row is
 // kept. A row whose "metadata" is absent or not a map[string]string is passed
 // through unchanged (cannot prove it unchanged, so never silently drop it).
+//
+// The exact-string "changed" predicate (cur != want) is the cluster_id semantics;
+// the propagated_* site supplies a per-node banded predicate instead via
+// diffMetadataUpdatesFunc.
 func diffMetadataUpdates(desired []map[string]any, current func(id string, key string) string) []map[string]any {
+	return diffMetadataUpdatesFunc(desired, current, func(_, _, cur, want string) bool { return cur != want })
+}
+
+// diffMetadataUpdatesFunc is diffMetadataUpdates parameterized by the per-key
+// "did this value change enough to persist" predicate keyChanged(id, key, cur,
+// want). It keeps a row when keyChanged reports true for at least one of the row's
+// metadata keys, and drops a row when every key reports unchanged. The nil-current
+// cold case, the id==""/non-map passthrough, and the any-key row semantics are
+// identical to diffMetadataUpdates — only the per-key comparison is pluggable. The
+// predicate receives id+key (not just cur/want) so the propagated_* writeback can
+// select a PER-NODE, per-key band rather than a single global deadband.
+func diffMetadataUpdatesFunc(desired []map[string]any, current func(id string, key string) string, keyChanged func(id, key, cur, want string) bool) []map[string]any {
 	if current == nil {
 		return desired // cold case: nothing persisted to diff against → keep all.
 	}
@@ -334,7 +403,7 @@ func diffMetadataUpdates(desired []map[string]any, current func(id string, key s
 		}
 		rowChanged := false
 		for k, v := range meta {
-			if current(id, k) != v {
+			if keyChanged(id, k, current(id, k), v) {
 				rowChanged = true
 				break
 			}

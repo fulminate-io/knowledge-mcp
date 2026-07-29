@@ -47,3 +47,19 @@ func (p *PropagationLoop) WithTopicDeps(scanner PipelineScanner, summarizer Topi
 	p.summarizer = summarizer
 	return p
 }
+
+// WithCorpusScanner attaches the OPTIONAL CorpusDelta wire seam + initializes the
+// resident thought-corpus cache, returning the loop for fluent
+// construction. The production bootstrap passes the routed CorpusDelta client; a
+// nil scanner leaves the loop in DEGRADED mode (corpus stays nil → the full
+// drainThoughtBrowse path, behavior-equivalent to pre-cache). Nil-tolerant on p.
+func (p *PropagationLoop) WithCorpusScanner(scanner CorpusDeltaScanner) *PropagationLoop {
+	if p == nil {
+		return nil
+	}
+	p.corpusScanner = scanner
+	if scanner != nil {
+		p.corpus = newCorpusCache()
+	}
+	return p
+}

@@ -47,7 +47,8 @@ type BuildAdjacencyOpts struct {
 // filtered against the same surviving set) reachable via opts.EdgeTypes.
 //
 // The build is two wire reads: one node browse (FetchAllNodes) and one
-// bulk incident-edge read (FetchEdges over the surviving node set). The
+// bulk edge read — match-all when no NodeFilter narrows the set, else a
+// pivot read over the surviving node set. The
 // edges are grouped per node in memory, treating every edge as
 // undirected (both endpoints gain the other as a neighbor) to match the
 // legacy forward+backward store walk.
@@ -76,18 +77,23 @@ func BuildAdjacency(
 		idSet[n.Id] = true
 	}
 
-	adj, err := buildAdjacencyEdges(ctx, caller, graphType, name, nodeIDs, idSet, opts.EdgeTypes)
+	adj, err := buildAdjacencyEdges(ctx, caller, graphType, name, nodeIDs, idSet, opts.EdgeTypes, opts.NodeFilter == nil)
 	if err != nil {
 		return nil, nil, err
 	}
 	return nodeIDs, adj, nil
 }
 
-// buildAdjacencyEdges fetches every edge incident to the surviving node
-// set in ONE bulk wire read and builds the undirected adjacency map. Each
-// edge contributes its other endpoint to BOTH endpoints' neighbor lists
-// (filtered to the surviving set), reproducing the forward+backward walk
-// the legacy store-backed collectNeighbors performed.
+// buildAdjacencyEdges fetches the edges in ONE bulk wire read and builds the
+// undirected adjacency map. Each edge contributes its other endpoint to BOTH
+// endpoints' neighbor lists (filtered to the surviving set), reproducing the
+// forward+backward walk the legacy store-backed collectNeighbors performed.
+//
+// allNodes says no NodeFilter narrowed the set, so nodeIDs IS every node of the
+// graph and the read takes the match-all form rather than listing every id as a
+// pivot. A filtered build keeps the pivot read so it pulls only usable edges.
+// Either way `link` drops an edge unless BOTH endpoints are in idSet, so the two
+// reads build the same adjacency.
 func buildAdjacencyEdges(
 	ctx context.Context,
 	caller foundation.GraphCaller,
@@ -96,6 +102,7 @@ func buildAdjacencyEdges(
 	nodeIDs []string,
 	idSet map[string]bool,
 	edgeTypes []kgtypes.EdgeType,
+	allNodes bool,
 ) (map[string][]string, error) {
 	adj := make(map[string][]string, len(nodeIDs))
 	for _, id := range nodeIDs {
@@ -105,7 +112,13 @@ func buildAdjacencyEdges(
 		return adj, nil
 	}
 
-	edges, err := foundation.FetchEdges(ctx, caller, graphType, name, nodeIDs, edgeTypes)
+	var edges []knowledgev1.Edge
+	var err error
+	if allNodes {
+		edges, err = foundation.FetchAllEdges(ctx, caller, graphType, name, edgeTypes)
+	} else {
+		edges, err = foundation.FetchEdges(ctx, caller, graphType, name, nodeIDs, edgeTypes)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("topology/community: neighbors: %w", err)
 	}

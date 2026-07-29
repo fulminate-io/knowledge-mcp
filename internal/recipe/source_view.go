@@ -55,8 +55,8 @@ type sourceView struct {
 // into an in-memory sourceView using EXACTLY two Execute RPCs, mirroring
 // foundation.newGonumGraph's materializeNodes + materializeEdges:
 //
-//  1. FetchAllNodes — one browse Execute returning every node.
-//  2. FetchEdges    — one RETURN_MODE_EDGES Execute over all node IDs.
+//  1. FetchAllNodes  — one browse Execute returning every node.
+//  2. FetchAllEdges  — one match-all RETURN_MODE_EDGES Execute (no pivot).
 //
 // No per-row Execute is issued during this load or during any subsequent
 // interpretation read; that is the load-bearing N+1-avoidance property the
@@ -81,20 +81,24 @@ func loadSourceView(
 		outEdges: make(map[string][]*knowledgev1.Edge),
 		inEdges:  make(map[string][]*knowledgev1.Edge),
 	}
-	ids := make([]string, 0, len(nodes))
 	for _, n := range nodes {
 		if n == nil {
 			continue
 		}
 		sv.byID[n.Id] = n
 		sv.byType[n.Type] = append(sv.byType[n.Type], n)
-		ids = append(ids, n.Id)
 	}
-	if len(ids) == 0 {
+	if len(sv.byID) == 0 {
 		return sv, nil
 	}
 
-	edges, err := foundation.FetchEdges(ctx, caller, graphType, name, ids, nil)
+	// Match-all: this view indexes EVERY node of the source graph unconditionally,
+	// so the edge read wants the whole edge set. It used to spell that by handing
+	// every node id back as a pivot set; the ids are gone now, and only the node
+	// browse remains as a round trip. The maps below are read by keyed lookup
+	// (edgesFrom / edgesTo), never ranged, so an entry keyed on an id no node
+	// carries is unreachable rather than visible.
+	edges, err := foundation.FetchAllEdges(ctx, caller, graphType, name, nil)
 	if err != nil {
 		return nil, fmt.Errorf("recipe: load source edges %s/%s: %w", graphType, name, err)
 	}

@@ -35,7 +35,7 @@ type modulesCodeStatsArgs struct {
 
 // InterceptQueryModulesCodeStats claims query(graph:code, mode in
 // {modules,stats}).
-func InterceptQueryModulesCodeStats(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
+func InterceptQueryModulesCodeStats(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	if params.Name != "query" {
 		return false, kgtools.ToolResult{}
 	}
@@ -51,13 +51,13 @@ func InterceptQueryModulesCodeStats(deps ClientDeps, params kgtools.CallToolPara
 		return true, errorResult(a.Mode + ": graph client unavailable")
 	}
 	if a.Mode == "modules" {
-		return true, composeListModules(context.Background(), deps, gc.Execute, a)
+		return true, composeListModules(ctx, deps, gc.Execute, a)
 	}
 	sc, ok := gc.(statsRPC)
 	if !ok {
 		return true, errorResult(a.Mode + ": stats seam unavailable")
 	}
-	return true, composeCodeStats(context.Background(), sc, a)
+	return true, composeCodeStats(ctx, sc, a)
 }
 
 // composeListModules dispatches single-repo vs multi-repo (repos[] / repo=all)
@@ -99,30 +99,72 @@ func composeListModulesMultiRepo(ctx context.Context, deps ClientDeps, exec engi
 	return textResult(sb.String())
 }
 
-// listModulesForRepo issues Match(package) + Match(file) for one repo graph and
-// renders via engine.RenderListModules (two Execute Match calls + in-memory
+// listModulesForRepo drains the package and file browses for one repo graph in
+// bounded keyset pages and renders via engine.RenderListModules (in-memory
 // rollup, no N+1).
+//
+// The two arms use DIFFERENT carriers because the rollup consumes them
+// asymmetrically: packages are hydrated because the listing renders each one's
+// Summary, while files are enumerated as bare ids because the rollup reads only
+// their path. The ids ARE the paths — the collector builds every file node with
+// Id == FilePath (parser/populate.go).
 func listModulesForRepo(ctx context.Context, exec engine.ExecuteFn, repo, pathPrefix string) string {
 	target := &knowledgev1.GraphSelector{Graph: "code", Repo: repo}
-	packages := matchNodesOfType(ctx, exec, target, kgtypes.NodePackage)
-	files := matchNodesOfType(ctx, exec, target, kgtypes.NodeFile)
-	return engine.RenderListModules(packages, files, pathPrefix)
+	packages := drainNodesOfType(ctx, exec, target, kgtypes.NodePackage)
+	filePaths := drainIDsOfType(ctx, exec, target, kgtypes.NodeFile)
+	return engine.RenderListModules(packages, filePaths, pathPrefix)
 }
 
-// matchNodesOfType issues ONE Match(type) Execute and decodes the nodes.
-func matchNodesOfType(ctx context.Context, exec engine.ExecuteFn, target *knowledgev1.GraphSelector, nt kgtypes.NodeType) []*knowledgev1.Node {
-	resp, err := exec(ctx, &knowledgev1.ExecuteRequest{
-		Plan:   &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{Selection: &knowledgev1.Selection{NodeType: string(nt)}}},
-		Target: target,
-	})
+// typeBrowsePage builds one bounded keyset page of a type browse. AfterId is SET
+// on every page including the first, where the value is empty: its PRESENCE is
+// what selects the keyset browse, and an omitted cursor would page in the
+// backend's default order so the cursor taken from page 1 skips every lower id.
+func typeBrowsePage(nt kgtypes.NodeType, cursor *string, mode knowledgev1.ReturnMode) *knowledgev1.QueryPlan {
+	return &knowledgev1.QueryPlan{
+		Selection:  &knowledgev1.Selection{NodeType: string(nt)},
+		ReturnMode: mode,
+		Limit:      int32(engine.BrowsePageSize),
+		AfterId:    cursor,
+		SkipTotal:  true, // the drain consumes only the payload, never Total
+	}
+}
+
+// drainNodesOfType drains every hydrated node of nt in bounded keyset pages.
+func drainNodesOfType(ctx context.Context, exec engine.ExecuteFn, target *knowledgev1.GraphSelector, nt kgtypes.NodeType) []*knowledgev1.Node {
+	nodes, err := engine.DrainKeysetPages(func(afterID string) ([]*knowledgev1.Node, error) {
+		cursor := afterID
+		resp, rerr := exec(ctx, &knowledgev1.ExecuteRequest{
+			Plan:   &knowledgev1.ExecuteRequest_Query{Query: typeBrowsePage(nt, &cursor, knowledgev1.ReturnMode_RETURN_MODE_UNSPECIFIED)},
+			Target: target,
+		})
+		if rerr != nil {
+			return nil, rerr
+		}
+		return engine.DecodeNodes(resp)
+	}, engine.BrowsePageSize)
 	if err != nil {
 		return nil
 	}
-	nodes, derr := engine.DecodeNodes(resp)
-	if derr != nil {
+	return nodes
+}
+
+// drainIDsOfType drains every node id of nt in bounded keyset pages.
+func drainIDsOfType(ctx context.Context, exec engine.ExecuteFn, target *knowledgev1.GraphSelector, nt kgtypes.NodeType) []string {
+	ids, err := engine.DrainKeysetIDs(func(afterID string) ([]string, error) {
+		cursor := afterID
+		resp, rerr := exec(ctx, &knowledgev1.ExecuteRequest{
+			Plan:   &knowledgev1.ExecuteRequest_Query{Query: typeBrowsePage(nt, &cursor, knowledgev1.ReturnMode_RETURN_MODE_IDS)},
+			Target: target,
+		})
+		if rerr != nil {
+			return nil, rerr
+		}
+		return resp.GetIds(), nil
+	}, engine.BrowsePageSize)
+	if err != nil {
 		return nil
 	}
-	return nodes
+	return ids
 }
 
 // composeCodeStats renders the code graph stats via the Stats RPC +
@@ -166,6 +208,7 @@ func fetchCodeTypeSamples(ctx context.Context, exec engine.ExecuteFn, repo strin
 			Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
 				Selection: &knowledgev1.Selection{NodeType: nt},
 				Limit:     2,
+				SkipTotal: true,
 			}},
 			Target: target,
 		})

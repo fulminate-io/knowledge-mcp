@@ -55,7 +55,7 @@ func TestHandleServerStatus_Version_LocalPath(t *testing.T) {
 			live:            live,
 			clientVer:       "dev", daemonVer: "v0.4.10", daemonKnown: true,
 		}
-		res := handleServerStatus(deps, "")
+		res := handleServerStatus(opCtx(), deps, "")
 		require.False(t, res.IsError, textBodyTools(res))
 		body := textBodyTools(res)
 		assert.Contains(t, body, "Graph server: RUNNING")
@@ -64,7 +64,7 @@ func TestHandleServerStatus_Version_LocalPath(t *testing.T) {
 		assert.Contains(t, body, "version skew:")
 
 		var got map[string]any
-		require.NoError(t, json.Unmarshal([]byte(textBodyTools(handleServerStatus(deps, "json"))), &got))
+		require.NoError(t, json.Unmarshal([]byte(textBodyTools(handleServerStatus(opCtx(), deps, "json"))), &got))
 		assert.Equal(t, "dev", got["client_version"])
 		assert.Equal(t, "v0.4.10", got["daemon_version"])
 		assert.Equal(t, true, got["version_skew"])
@@ -76,13 +76,13 @@ func TestHandleServerStatus_Version_LocalPath(t *testing.T) {
 			live:            live,
 			clientVer:       "v0.4.10", daemonVer: "v0.4.10", daemonKnown: true,
 		}
-		body := textBodyTools(handleServerStatus(deps, ""))
+		body := textBodyTools(handleServerStatus(opCtx(), deps, ""))
 		assert.Contains(t, body, "Client version: v0.4.10")
 		assert.Contains(t, body, "Daemon version: v0.4.10")
 		assert.NotContains(t, body, "version skew:")
 
 		var got map[string]any
-		require.NoError(t, json.Unmarshal([]byte(textBodyTools(handleServerStatus(deps, "json"))), &got))
+		require.NoError(t, json.Unmarshal([]byte(textBodyTools(handleServerStatus(opCtx(), deps, "json"))), &got))
 		assert.Equal(t, false, got["version_skew"])
 	})
 
@@ -92,7 +92,7 @@ func TestHandleServerStatus_Version_LocalPath(t *testing.T) {
 			live:            live,
 			clientVer:       "dev", daemonVer: "", daemonKnown: false,
 		}
-		res := handleServerStatus(deps, "")
+		res := handleServerStatus(opCtx(), deps, "")
 		require.False(t, res.IsError, "status must not fail because the daemon probe did")
 		body := textBodyTools(res)
 		assert.Contains(t, body, "Client version: dev")
@@ -100,7 +100,7 @@ func TestHandleServerStatus_Version_LocalPath(t *testing.T) {
 		assert.NotContains(t, body, "version skew:")
 
 		var got map[string]any
-		require.NoError(t, json.Unmarshal([]byte(textBodyTools(handleServerStatus(deps, "json"))), &got))
+		require.NoError(t, json.Unmarshal([]byte(textBodyTools(handleServerStatus(opCtx(), deps, "json"))), &got))
 		assert.Equal(t, "dev", got["client_version"])
 		assert.NotContains(t, got, "daemon_version")
 		assert.Equal(t, false, got["version_skew"])
@@ -108,13 +108,13 @@ func TestHandleServerStatus_Version_LocalPath(t *testing.T) {
 
 	t.Run("degrades when versionInfo not implemented", func(t *testing.T) {
 		deps := &localNoHealthDeps{cloudStatusDeps: &cloudStatusDeps{loggedIn: false}, live: live}
-		body := textBodyTools(handleServerStatus(deps, ""))
+		body := textBodyTools(handleServerStatus(opCtx(), deps, ""))
 		assert.Contains(t, body, "Graph server: RUNNING")
 		assert.NotContains(t, body, "Client version:")
 		assert.NotContains(t, body, "Version:")
 
 		var got map[string]any
-		require.NoError(t, json.Unmarshal([]byte(textBodyTools(handleServerStatus(deps, "json"))), &got))
+		require.NoError(t, json.Unmarshal([]byte(textBodyTools(handleServerStatus(opCtx(), deps, "json"))), &got))
 		assert.NotContains(t, got, "client_version")
 		assert.NotContains(t, got, "version_skew")
 	})
@@ -129,7 +129,7 @@ func TestHandleServerStatus_Version_NotRunning(t *testing.T) {
 		live:            unhealthyLiveness{},
 		clientVer:       "dev",
 	}
-	res := handleServerStatus(deps, "")
+	res := handleServerStatus(opCtx(), deps, "")
 	require.False(t, res.IsError, textBodyTools(res))
 	body := textBodyTools(res)
 	assert.Contains(t, body, "NOT RUNNING")
@@ -138,7 +138,7 @@ func TestHandleServerStatus_Version_NotRunning(t *testing.T) {
 	assert.NotContains(t, body, "version skew:")
 
 	var got map[string]any
-	require.NoError(t, json.Unmarshal([]byte(textBodyTools(handleServerStatus(deps, "json"))), &got))
+	require.NoError(t, json.Unmarshal([]byte(textBodyTools(handleServerStatus(opCtx(), deps, "json"))), &got))
 	assert.Equal(t, "not_running", got["status"])
 	assert.Equal(t, "dev", got["client_version"])
 	assert.NotContains(t, got, "daemon_version")
@@ -156,14 +156,14 @@ func TestHandleServerStatus_Version_CloudPath(t *testing.T) {
 			cloudStatusDeps: &cloudStatusDeps{gc: &modFake{stats: stats}, loggedIn: true, host: "https://dev.fulminate.io"},
 			clientVer:       "dev", daemonVer: "v0.4.10", daemonKnown: true,
 		}
-		body := textBodyTools(handleServerStatus(deps, ""))
+		body := textBodyTools(handleServerStatus(opCtx(), deps, ""))
 		assert.Contains(t, body, "Backend: cloud (https://dev.fulminate.io)", "routed to the cloud status path")
 		assert.Contains(t, body, "Client version: dev")
 		assert.Contains(t, body, "Daemon version: v0.4.10")
 		assert.Contains(t, body, "version skew:")
 
 		var got map[string]any
-		require.NoError(t, json.Unmarshal([]byte(textBodyTools(handleServerStatus(deps, "json"))), &got))
+		require.NoError(t, json.Unmarshal([]byte(textBodyTools(handleServerStatus(opCtx(), deps, "json"))), &got))
 		assert.Equal(t, "cloud", got["backend"])
 		assert.Equal(t, "dev", got["client_version"])
 		assert.Equal(t, "v0.4.10", got["daemon_version"])
@@ -172,13 +172,13 @@ func TestHandleServerStatus_Version_CloudPath(t *testing.T) {
 
 	t.Run("degrades on the cloud path when versionInfo not implemented", func(t *testing.T) {
 		deps := &cloudStatusDeps{gc: &modFake{stats: stats}, loggedIn: true, host: "https://dev.fulminate.io"}
-		body := textBodyTools(handleServerStatus(deps, ""))
+		body := textBodyTools(handleServerStatus(opCtx(), deps, ""))
 		assert.Contains(t, body, "Backend: cloud")
 		assert.NotContains(t, body, "Client version:")
 		assert.NotContains(t, body, "Version:")
 
 		var got map[string]any
-		require.NoError(t, json.Unmarshal([]byte(textBodyTools(handleServerStatus(deps, "json"))), &got))
+		require.NoError(t, json.Unmarshal([]byte(textBodyTools(handleServerStatus(opCtx(), deps, "json"))), &got))
 		assert.NotContains(t, got, "client_version")
 		assert.NotContains(t, got, "version_skew")
 	})

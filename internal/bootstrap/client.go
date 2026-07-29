@@ -153,7 +153,8 @@ type client struct {
 	// index UPDATES, which stay in the pipeline-gated body. Holding ONE instance is
 	// load-bearing: a second Manager would build duplicate engines (double memory)
 	// and miss the producer's loaded segments.
-	segmentMgr *segmentdist.Manager
+	segmentMgr  *segmentdist.Manager
+	healBreaker segmentHealBreaker // per-(graphType,name) auto-heal circuit breaker; zero value usable — see segment_heal_breaker.go
 
 	// claimRegistry + banSet are the client-side hive monitor state, created in
 	// constructClient and shared (SAME instance) with the daemon Monitor:

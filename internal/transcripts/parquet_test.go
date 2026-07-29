@@ -5,6 +5,8 @@ package transcripts
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -126,6 +128,62 @@ func TestWriteSessionParquetRoundTrip(t *testing.T) {
 	}
 	if got[0].RecordTS != "2026-06-29T12:00:00Z" {
 		t.Errorf("record_ts = %q, want RFC3339 string 2026-06-29T12:00:00Z", got[0].RecordTS)
+	}
+}
+
+// TestReadSessionParquetRoundTrip proves WriteSessionParquet → ReadSessionParquet
+// round-trips a Row slice back to equal Rows: record_ts is parsed from its on-disk
+// RFC3339Nano string back to time.Time (compared via time.Time.Equal, which is
+// offset-insensitive), Source is restored to the typed alias, and every other field is
+// the field-inverse of rowToParquet. This exercises the path-based reader the analytics
+// corpus loader consumes.
+func TestReadSessionParquetRoundTrip(t *testing.T) {
+	want := []Row{
+		{
+			Source: SourceClaude, SessionID: "s1", Project: "/repo", GitBranch: "main",
+			RecordTS: time.Date(2026, 6, 29, 12, 0, 0, 123456789, time.UTC), RecordType: "assistant",
+			Model: "claude-opus-4-8", InputTokens: 10, OutputTokens: 20, CacheReadTokens: 5,
+			CacheCreationTokens: 2, ToolName: "Bash", IsError: true, CLIVersion: "1.2.3",
+			UUID: "u1", ParentUUID: "p1", DurationMs: 1500, ToolInputHash: "h1",
+			ToolInputPreview: "ls", CacheCreation1hTokens: 40, CacheCreation5mTokens: 60,
+			ServiceTier: "std", WebSearchCount: 1, StopReason: "end_turn", IsMeta: true,
+			MCPServer: "srv", MCPTool: "mt", Skill: "sk",
+		},
+		{Source: SourceCodex, SessionID: "s1", RecordTS: time.Date(2026, 6, 29, 13, 0, 0, 0, time.UTC), InputTokens: 1, UUID: "u2"},
+	}
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "S1.parquet")
+	f, err := os.Create(path)
+	if err != nil {
+		t.Fatalf("create fixture: %v", err)
+	}
+	if err := WriteSessionParquet(want, f); err != nil {
+		_ = f.Close()
+		t.Fatalf("WriteSessionParquet: %v", err)
+	}
+	if err := f.Close(); err != nil {
+		t.Fatalf("close fixture: %v", err)
+	}
+
+	got, err := ReadSessionParquet(path)
+	if err != nil {
+		t.Fatalf("ReadSessionParquet: %v", err)
+	}
+	if len(got) != len(want) {
+		t.Fatalf("read %d rows, want %d", len(got), len(want))
+	}
+	for i := range want {
+		if !got[i].RecordTS.Equal(want[i].RecordTS) {
+			t.Errorf("row %d RecordTS = %v, want %v", i, got[i].RecordTS, want[i].RecordTS)
+		}
+		// Compare everything except RecordTS (time.Time == is loc-pointer sensitive) by
+		// zeroing the timestamp on copies.
+		g, w := got[i], want[i]
+		g.RecordTS, w.RecordTS = time.Time{}, time.Time{}
+		if g != w {
+			t.Errorf("row %d round-trip mismatch:\n got  %+v\n want %+v", i, g, w)
+		}
 	}
 }
 

@@ -14,10 +14,14 @@ import (
 )
 
 // fakeHive records every HIVE_OP_RENEW it receives and serves a scripted
-// Execute response (the hive_member status read).
+// Execute response (the hive_member status read). It also records every
+// ExecuteRequest so tests can assert the READ PLAN, not just its effects —
+// without that recording a member browse could lose its narrowing predicate
+// and every behavioral test would stay green.
 type fakeHive struct {
 	mu       sync.Mutex
 	reqs     []*knowledgev1.HiveRequest
+	execReqs []*knowledgev1.ExecuteRequest
 	execResp *knowledgev1.ExecuteResponse
 }
 
@@ -28,9 +32,10 @@ func (f *fakeHive) Hive(_ context.Context, req *knowledgev1.HiveRequest) (*knowl
 	return &knowledgev1.HiveResponse{AffectedCount: 1}, nil
 }
 
-func (f *fakeHive) Execute(_ context.Context, _ *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error) {
+func (f *fakeHive) Execute(_ context.Context, req *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.execReqs = append(f.execReqs, req)
 	if f.execResp != nil {
 		return f.execResp, nil
 	}

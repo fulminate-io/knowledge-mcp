@@ -5,6 +5,7 @@ package transcripts
 import (
 	"fmt"
 	"io"
+	"os"
 	"time"
 
 	"github.com/parquet-go/parquet-go"
@@ -111,6 +112,101 @@ func rowToParquet(r Row) parquetRow {
 		MCPTool:               r.MCPTool,
 		Skill:                 r.Skill,
 	}
+}
+
+// parquetToRow maps an on-disk parquetRow back to the normalized Row — the exact
+// field-inverse of rowToParquet, with two typed conversions reversed: record_ts is
+// parsed from its RFC3339Nano STRING back to time.Time (rowToParquet wrote it via
+// RecordTS.Format(time.RFC3339Nano)), and source is restored from string to the typed
+// Source alias. An EMPTY record_ts decodes to the zero time.Time (a pre-record_ts or
+// drift file), never an error; a NON-empty but unparseable record_ts is a typed error,
+// never a panic. SourceOffset stays zero — it is a transient client-only field that
+// never serializes (row.go:74).
+func parquetToRow(p parquetRow) (Row, error) {
+	var ts time.Time
+	if p.RecordTS != "" {
+		parsed, err := time.Parse(time.RFC3339Nano, p.RecordTS)
+		if err != nil {
+			return Row{}, fmt.Errorf("transcripts: parse record_ts %q: %w", p.RecordTS, err)
+		}
+		ts = parsed
+	}
+	return Row{
+		Source:              Source(p.Source),
+		SessionID:           p.SessionID,
+		Project:             p.Project,
+		GitBranch:           p.GitBranch,
+		RecordTS:            ts,
+		RecordType:          p.RecordType,
+		Model:               p.Model,
+		InputTokens:         p.InputTokens,
+		OutputTokens:        p.OutputTokens,
+		CacheReadTokens:     p.CacheReadTokens,
+		CacheCreationTokens: p.CacheCreationTokens,
+		ToolName:            p.ToolName,
+		IsError:             p.IsError,
+		CLIVersion:          p.CLIVersion,
+		UUID:                p.UUID,
+		ParentUUID:          p.ParentUUID,
+
+		DurationMs:            p.DurationMs,
+		ToolUseID:             p.ToolUseID,
+		IsSidechain:           p.IsSidechain,
+		AgentID:               p.AgentID,
+		SubagentType:          p.SubagentType,
+		ToolInputHash:         p.ToolInputHash,
+		ToolInputPreview:      p.ToolInputPreview,
+		CacheCreation1hTokens: p.CacheCreation1hTokens,
+		CacheCreation5mTokens: p.CacheCreation5mTokens,
+		ServiceTier:           p.ServiceTier,
+		WebSearchCount:        p.WebSearchCount,
+		WebFetchCount:         p.WebFetchCount,
+		StopReason:            p.StopReason,
+		IsAPIError:            p.IsAPIError,
+		IsMeta:                p.IsMeta,
+		Interrupted:           p.Interrupted,
+		MCPServer:             p.MCPServer,
+		MCPTool:               p.MCPTool,
+		Skill:                 p.Skill,
+	}, nil
+}
+
+// ReadSessionParquet reads one session parquet file at path back into a []Row — the
+// corpus-reader inverse of WriteSessionParquet, and the sole exported entry the
+// daemon-local analytics engine uses to load its cache (parquetRow is unexported here,
+// so the reader must live in this schema-owning package). It opens the file (an *os.File
+// is an io.ReaderAt), Stats it for the size parquet.Read needs, decodes into parquetRow
+// via parquet.Read[parquetRow], and maps each through parquetToRow. One file is resident
+// at a time, keeping per-file memory bounded (the file-by-file corpus-load contract). A
+// file MISSING the is_meta (or any enrichment) column zero-fills that field to its Go
+// zero value — the is_meta-missing→false→keep behavior proven by the Phase-0
+// spike (parquet_drift_test.go).
+func ReadSessionParquet(path string) ([]Row, error) {
+	f, err := os.Open(path) //nolint:gosec // path is a daemon-local cache file, never user input.
+	if err != nil {
+		return nil, fmt.Errorf("transcripts: open parquet %q: %w", path, err)
+	}
+	defer func() { _ = f.Close() }()
+
+	info, err := f.Stat()
+	if err != nil {
+		return nil, fmt.Errorf("transcripts: stat parquet %q: %w", path, err)
+	}
+
+	prows, err := parquet.Read[parquetRow](f, info.Size())
+	if err != nil {
+		return nil, fmt.Errorf("transcripts: read parquet %q: %w", path, err)
+	}
+
+	rows := make([]Row, 0, len(prows))
+	for i := range prows {
+		r, err := parquetToRow(prows[i])
+		if err != nil {
+			return nil, fmt.Errorf("transcripts: decode parquet %q row %d: %w", path, i, err)
+		}
+		rows = append(rows, r)
+	}
+	return rows, nil
 }
 
 // parquetRowGroupSize is the number of rows accumulated before a row group is

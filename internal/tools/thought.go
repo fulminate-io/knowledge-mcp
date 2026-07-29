@@ -103,26 +103,26 @@ type queryReflectArgs struct {
 //   - query(mode in {personality, influence, tensions, blind_spots,
 //     summary, evolution, clusters}): handled
 //   - everything else: fall through to server.
-func InterceptThoughts(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
+func InterceptThoughts(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	switch params.Name {
 	case "thoughts":
-		return interceptThoughtsOp(deps, params)
+		return interceptThoughtsOp(ctx, deps, params)
 	case "query":
-		return interceptQueryReflect(deps, params)
+		return interceptQueryReflect(ctx, deps, params)
 	}
 	return false, kgtools.ToolResult{}
 }
 
 // interceptThoughtsOp dispatches the reflective subset of the `thoughts`
 // tool. Unrecognized ops fall through unchanged.
-func interceptThoughtsOp(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
+func interceptThoughtsOp(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	var a thoughtsArgs
 	if err := json.Unmarshal(params.Arguments, &a); err != nil {
 		// Don't claim the call — let the server surface the parse
 		// error so the message matches every other parse-error site.
 		return false, kgtools.ToolResult{}
 	}
-	ctx := context.Background()
+
 	switch a.Operation {
 	case "think":
 		return true, handleThinkClient(ctx, deps, params)
@@ -149,7 +149,7 @@ func interceptThoughtsOp(deps ClientDeps, params kgtools.CallToolParams) (bool, 
 
 // interceptQueryReflect dispatches the reflective subset of query(mode:...).
 // Unrecognized modes fall through.
-func interceptQueryReflect(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
+func interceptQueryReflect(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	var a queryReflectArgs
 	if err := json.Unmarshal(params.Arguments, &a); err != nil {
 		return false, kgtools.ToolResult{}
@@ -159,7 +159,7 @@ func interceptQueryReflect(deps ClientDeps, params kgtools.CallToolParams) (bool
 	if a.Graph != "" && a.Graph != "knowledge" {
 		return false, kgtools.ToolResult{}
 	}
-	ctx := context.Background()
+
 	switch a.Mode {
 	case "personality":
 		return true, handleReflectPersonality(ctx, deps, a)
@@ -368,7 +368,7 @@ func handlePropagateClient(ctx context.Context, deps ClientDeps, params kgtools.
 		return textResult("propagate: a reflection pass is already in progress for this account — coalescing onto it")
 	}
 	defer release()
-	result, err := clientthought.RunPropagation(ctx, gc, nil, nil)
+	result, err := clientthought.RunPropagation(ctx, gc, nil, nil, corpusSourceFromDeps(deps))
 	if err != nil {
 		return errorResult("propagate failed: " + err.Error())
 	}
@@ -397,6 +397,23 @@ func similarityFetchContract(estimate string) string {
 		"This is only an estimate — the pass MAY take LONGER than this."
 }
 
+// corpusSourceFromDeps returns the resident thought-corpus cache when the
+// reflection loop is running in-process, else nil so the on-demand consumer drains.
+// It REUSES the existing ClusterProvider seam rather than adding a ClientDeps method
+// (which every test fake would have to implement): in production ClusterProvider()
+// returns the *clientthought.PropagationLoop, which ALSO implements
+// clientthought.CorpusSource (CorpusSnapshot). A test/degraded fake returns a
+// non-loop provider (or nil), the type assertion fails, and the consumer drains —
+// behavior-equivalent to the pre-cache on-demand path.
+func corpusSourceFromDeps(deps ClientDeps) clientthought.CorpusSource {
+	if cp := deps.ClusterProvider(); cp != nil {
+		if cs, ok := cp.(clientthought.CorpusSource); ok {
+			return cs
+		}
+	}
+	return nil
+}
+
 // fetchClusterContext reads the loop-persisted cluster state
 // (DetectPersistedClusters) + computes personality scalars in one synchronous
 // pass. It does NOT recompute clusters live (the loop owns the adjacency+Leiden
@@ -413,7 +430,7 @@ func fetchClusterContext(ctx context.Context, deps ClientDeps) ([]clientthought.
 	if gc == nil {
 		return nil, nil
 	}
-	clusters, err := clientthought.DetectPersistedClusters(ctx, gc)
+	clusters, err := clientthought.DetectPersistedClusters(ctx, gc, corpusSourceFromDeps(deps))
 	if err != nil || len(clusters) == 0 {
 		return clusters, nil
 	}

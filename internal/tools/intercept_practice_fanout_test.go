@@ -113,6 +113,12 @@ func (h *fanOutEngineHandler) PipelineGenPoll(
 	return nil, connect.NewError(connect.CodeUnimplemented, nil)
 }
 
+func (h *fanOutEngineHandler) CorpusDelta(
+	context.Context, *connect.Request[knowledgev1.CorpusDeltaRequest],
+) (*connect.Response[knowledgev1.CorpusDeltaResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, nil)
+}
+
 func (h *fanOutEngineHandler) ExportGraph(
 	context.Context, *connect.Request[knowledgev1.ExportGraphRequest],
 ) (*connect.Response[knowledgev1.ExportGraphResponse], error) {
@@ -214,7 +220,7 @@ func TestPracticeFanOut_MergesAttributedAcrossGraphs(t *testing.T) {
 	t.Run("SEARCH tool language:all", func(t *testing.T) {
 		gc, mgr := seed()
 		deps := &interceptDeps{gc: gc, segMgr: mgr}
-		handled, out := InterceptSearch(deps, searchParams(t, map[string]any{"graph": "practice", "language": "all", "query": "pool"}))
+		handled, out := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{"graph": "practice", "language": "all", "query": "pool"}))
 		require.True(t, handled)
 		require.False(t, out.IsError, "result is not an error: %s", textBodyTools(out))
 		assertMerged(t, textBodyTools(out), mgr)
@@ -223,7 +229,7 @@ func TestPracticeFanOut_MergesAttributedAcrossGraphs(t *testing.T) {
 	t.Run("QUERY tool Language:all", func(t *testing.T) {
 		gc, mgr := seed()
 		deps := &interceptDeps{gc: gc, segMgr: mgr}
-		res := routePracticeClient(context.Background(), deps, gc, queryArgs{Graph: "practice", Language: "all", Text: "pool"})
+		res := routePracticeClient(opCtx(), deps, gc, queryArgs{Graph: "practice", Language: "all", Text: "pool"})
 		assertMerged(t, textBodyTools(res), mgr)
 	})
 }
@@ -246,7 +252,7 @@ func TestPracticeSearch_JSONAndText(t *testing.T) {
 
 		gc, mgr := seed()
 		deps := &interceptDeps{gc: gc, segMgr: mgr}
-		jsonRes := routePracticeClient(context.Background(), deps, gc,
+		jsonRes := routePracticeClient(opCtx(), deps, gc,
 			queryArgs{Graph: "practice", Language: "go", Text: "pool", Format: "json"})
 		var env engine.SearchJSONResponse
 		require.NoError(t, json.Unmarshal([]byte(textBodyTools(jsonRes)), &env), "json branch must parse")
@@ -257,7 +263,7 @@ func TestPracticeSearch_JSONAndText(t *testing.T) {
 
 		gc2, mgr2 := seed()
 		deps2 := &interceptDeps{gc: gc2, segMgr: mgr2}
-		textRes := routePracticeClient(context.Background(), deps2, gc2,
+		textRes := routePracticeClient(opCtx(), deps2, gc2,
 			queryArgs{Graph: "practice", Language: "go", Text: "pool"})
 		body := textBodyTools(textRes)
 		assert.Contains(t, body, "GoWorkerPool", "text path renders RenderPracticeResults markdown")
@@ -280,7 +286,7 @@ func TestPracticeSearch_JSONAndText(t *testing.T) {
 
 		gc, mgr := seed()
 		deps := &interceptDeps{gc: gc, segMgr: mgr}
-		jsonRes := routePracticeClient(context.Background(), deps, gc,
+		jsonRes := routePracticeClient(opCtx(), deps, gc,
 			queryArgs{Graph: "practice", Language: "all", Text: "pool", Format: "json"})
 		var env engine.SearchJSONResponse
 		require.NoError(t, json.Unmarshal([]byte(textBodyTools(jsonRes)), &env), "fan-out json branch must parse")
@@ -293,7 +299,7 @@ func TestPracticeSearch_JSONAndText(t *testing.T) {
 
 		gc2, mgr2 := seed()
 		deps2 := &interceptDeps{gc: gc2, segMgr: mgr2}
-		textRes := routePracticeClient(context.Background(), deps2, gc2,
+		textRes := routePracticeClient(opCtx(), deps2, gc2,
 			queryArgs{Graph: "practice", Language: "all", Text: "pool"})
 		body := textBodyTools(textRes)
 		assert.Contains(t, body, "Searched 2 practice graphs (go, python)", "text path renders the fan-out markdown header")
@@ -315,7 +321,7 @@ func TestPracticeFanOut_NoSilentZeroWhenMatchesExist(t *testing.T) {
 			"rust": {}, // rust has no match — go still surfaces (no silent zero).
 		})
 		deps := &interceptDeps{gc: gc, segMgr: mgr}
-		handled, out := InterceptSearch(deps, searchParams(t, map[string]any{"graph": "practice", "language": "all", "query": "x"}))
+		handled, out := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{"graph": "practice", "language": "all", "query": "x"}))
 		require.True(t, handled)
 		body := textBodyTools(out)
 		assert.Contains(t, body, "Searched 2 practice graphs (go, rust)")
@@ -331,7 +337,7 @@ func TestPracticeFanOut_NoSilentZeroWhenMatchesExist(t *testing.T) {
 		})
 		deps := &interceptDeps{gc: gc, segMgr: mgr}
 		// No "language" key → omitted-language SEARCH must fan out (not silent-0).
-		handled, out := InterceptSearch(deps, searchParams(t, map[string]any{"graph": "practice", "query": "x"}))
+		handled, out := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{"graph": "practice", "query": "x"}))
 		require.True(t, handled)
 		body := textBodyTools(out)
 		assert.Equal(t, []string{"go"}, mgr.searchedNames())
@@ -357,7 +363,7 @@ func TestPracticeFanOut_SearchIgnoresLanguage(t *testing.T) {
 		})
 		deps := &interceptDeps{gc: gc, segMgr: mgr}
 		// A passed language:"go" is ignored — the SEARCH tool fans across ALL graphs.
-		handled, out := InterceptSearch(deps, searchParams(t, map[string]any{"graph": "practice", "language": "go", "query": "pool"}))
+		handled, out := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{"graph": "practice", "language": "go", "query": "pool"}))
 		require.True(t, handled)
 		require.False(t, out.IsError, "result is not an error: %s", textBodyTools(out))
 		body := textBodyTools(out)
@@ -373,7 +379,7 @@ func TestPracticeFanOut_SearchIgnoresLanguage(t *testing.T) {
 		// fan out into a search. listPracticeGraphs enumerates + renders the browse.
 		gc := newFanOutHarness(t, []string{"go", "python"})
 		deps := &interceptDeps{gc: gc, segMgr: newFanOutSegmentSearcher(nil)}
-		res := routePracticeClient(context.Background(), deps, gc, queryArgs{Graph: "practice"})
+		res := routePracticeClient(opCtx(), deps, gc, queryArgs{Graph: "practice"})
 		body := textBodyTools(res)
 		assert.Contains(t, body, "Practice graphs (2)")
 		assert.NotContains(t, body, "Searched", "empty-language QUERY is browse, not a fan-out search")
@@ -394,7 +400,7 @@ func TestPracticeFanOut_NoLanguageSpansLanguageGraphs(t *testing.T) {
 	})
 	deps := &interceptDeps{gc: gc, segMgr: mgr}
 	// No "language" key at all — a single search fans across every language graph.
-	handled, out := InterceptSearch(deps, searchParams(t, map[string]any{"graph": "practice", "query": "pool"}))
+	handled, out := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{"graph": "practice", "query": "pool"}))
 	require.True(t, handled)
 	require.False(t, out.IsError, "result is not an error: %s", textBodyTools(out))
 	body := textBodyTools(out)

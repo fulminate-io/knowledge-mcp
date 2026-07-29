@@ -4,6 +4,8 @@ package foundation
 
 import (
 	"context"
+	"fmt"
+	"sort"
 	"testing"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
@@ -20,14 +22,16 @@ type fakeCaller struct {
 	edges      []*knowledgev1.Edge          // RETURN_MODE_EDGES
 	graphNames []*knowledgev1.GraphInfo     // RETURN_MODE_GRAPH_NAMES
 
-	calls    int
-	lastPlan *knowledgev1.QueryPlan
+	calls     int
+	lastPlan  *knowledgev1.QueryPlan
+	lastPlans []*knowledgev1.QueryPlan
 }
 
 func (f *fakeCaller) Execute(_ context.Context, req *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error) {
 	f.calls++
 	q := req.GetQuery()
 	f.lastPlan = q
+	f.lastPlans = append(f.lastPlans, q)
 	resp := &knowledgev1.ExecuteResponse{}
 	switch {
 	case q.GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_EDGES:
@@ -39,9 +43,69 @@ func (f *fakeCaller) Execute(_ context.Context, req *knowledgev1.ExecuteRequest)
 			resp.Nodes = []*knowledgev1.Node{n}
 		}
 	default:
-		resp.Nodes = f.nodes
+		resp.Nodes = f.browse(q)
 	}
 	return resp, nil
+}
+
+// browse models the server's node-browse semantics over the seeded f.nodes,
+// closely enough that the difference between a type-INDEX selection and a
+// post-filter is observable — which is the whole point, since a fake that
+// returns f.nodes verbatim is green whether or not the read is capped.
+//
+// An EMPTY Selection.NodeType applies NO type filter. That rule is first because
+// it is load-bearing rather than a detail: the all-nodes reads (FetchAllNodes,
+// and every adapter_test case that reaches this arm through NewGonumGraph)
+// carry an empty Selection, and a fake treating empty as "match nothing" turns
+// all of them red.
+func (f *fakeCaller) browse(q *knowledgev1.QueryPlan) []*knowledgev1.Node {
+	sel := q.GetSelection()
+	out := make([]*knowledgev1.Node, 0, len(f.nodes))
+	for _, n := range f.nodes {
+		if t := sel.GetNodeType(); t != "" && n.GetType() != t {
+			continue // singular type — an INDEX selection, applied before the cap
+		}
+		out = append(out, n)
+	}
+
+	// The keyset cursor: ids strictly greater than the cursor, ascending. Only
+	// applied when after_id is PRESENT; absent, the seeded order is served so the
+	// pre-existing tests keep their current meaning.
+	if q.AfterId != nil {
+		sort.Slice(out, func(i, j int) bool { return out[i].GetId() < out[j].GetId() })
+		cursor := q.GetAfterId()
+		if cursor != "" {
+			kept := out[:0]
+			for _, n := range out {
+				if n.GetId() > cursor {
+					kept = append(kept, n)
+				}
+			}
+			out = kept
+		}
+	}
+
+	if lim := int(q.GetLimit()); lim > 0 && len(out) > lim {
+		out = out[:lim]
+	}
+
+	// The plural types key is a POST-FILTER applied AFTER the cap — reproducing
+	// the real defect ordering, which is what made the old plural-arm read return
+	// zero nodes on a graph holding more than a page of other types sorting first.
+	if types := sel.GetNodeTypes(); len(types) > 0 {
+		want := map[string]bool{}
+		for _, t := range types {
+			want[t] = true
+		}
+		kept := out[:0]
+		for _, n := range out {
+			if want[n.GetType()] {
+				kept = append(kept, n)
+			}
+		}
+		out = kept
+	}
+	return out
 }
 
 func node(id, typ string) *knowledgev1.Node {
@@ -71,8 +135,42 @@ func TestFetchNodesByType(t *testing.T) {
 	if f.calls != 1 {
 		t.Fatalf("want exactly 1 Execute, got %d", f.calls)
 	}
-	if got := f.lastPlan.GetSelection().GetNodeTypes(); len(got) != 1 || got[0] != "function" {
-		t.Fatalf("want plural-type selection [function], got %v", got)
+	if got := f.lastPlan.GetSelection().GetNodeType(); got != "function" {
+		t.Fatalf("want singular-type index selection function, got %q", got)
+	}
+	if got := f.lastPlan.GetSelection().GetNodeTypes(); len(got) != 0 {
+		t.Fatalf("the plural post-filter arm must not be taken, got %v", got)
+	}
+}
+
+// TestFetchNodesByType_HeterogeneousGraphUncapped is the ticket's correctness
+// claim, reproduced rather than asserted: 30 nodes of another type sort BEFORE
+// the 12 wanted ones, so the old plural-arm read capped to the first 10 by id —
+// all of type "other" — and then post-filtered them all away, returning ZERO
+// function nodes to the analyzer.
+func TestFetchNodesByType_HeterogeneousGraphUncapped(t *testing.T) {
+	var seeded []*knowledgev1.Node
+	for i := range 30 {
+		seeded = append(seeded, node(fmt.Sprintf("a%02d", i), "other"))
+	}
+	for i := range 12 {
+		seeded = append(seeded, node(fmt.Sprintf("z%02d", i), "function"))
+	}
+	f := &fakeCaller{nodes: seeded}
+
+	got, err := FetchNodesByType(context.Background(), f, kgtypes.GraphCode, "repo", kgtypes.NodeType("function"))
+	if err != nil {
+		t.Fatalf("FetchNodesByType: %v", err)
+	}
+	// The EXACT count, not merely non-emptiness: a partial fix returning one page
+	// must not pass.
+	if len(got) != 12 {
+		t.Fatalf("want all 12 function nodes, got %d", len(got))
+	}
+	for _, n := range got {
+		if n.GetType() != "function" {
+			t.Fatalf("want only function nodes, got %s of type %s", n.GetId(), n.GetType())
+		}
 	}
 }
 
@@ -134,6 +232,41 @@ func TestFetchEdges(t *testing.T) {
 	}
 	if f2.calls != 0 {
 		t.Fatalf("want 0 Execute for empty ids, got %d", f2.calls)
+	}
+}
+
+// TestFetchAllEdges asserts the match-all read: ONE Execute carrying a
+// RETURN_MODE_EDGES plan with no pivot of any shape, and the edge-type filter
+// when one is supplied. The absent pivot is what makes the backend read the
+// whole edge table directly instead of resolving an id predicate that selects
+// it anyway.
+func TestFetchAllEdges(t *testing.T) {
+	f := &fakeCaller{edges: []*knowledgev1.Edge{edge("a", "b", 2), edge("b", "c", 0)}}
+	got, err := FetchAllEdges(context.Background(), f, kgtypes.GraphCode, "repo", nil)
+	if err != nil {
+		t.Fatalf("FetchAllEdges: %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("want 2 edges, got %d", len(got))
+	}
+	if f.calls != 1 {
+		t.Fatalf("want exactly 1 Execute, got %d", f.calls)
+	}
+	if f.lastPlan.GetReturnMode() != knowledgev1.ReturnMode_RETURN_MODE_EDGES {
+		t.Fatalf("want RETURN_MODE_EDGES, got %v", f.lastPlan.GetReturnMode())
+	}
+	if len(f.lastPlan.GetIds()) != 0 || f.lastPlan.GetById() != "" || len(f.lastPlan.GetSelection().GetFromId()) != 0 {
+		t.Fatalf("match-all plan must carry no pivot discriminant, got %+v", f.lastPlan)
+	}
+
+	// An edge-type filter still rides the match-all plan.
+	f2 := &fakeCaller{edges: []*knowledgev1.Edge{edge("a", "b", 1)}}
+	if _, err := FetchAllEdges(context.Background(), f2, kgtypes.GraphCode, "repo",
+		[]kgtypes.EdgeType{kgtypes.EdgeCalls}); err != nil {
+		t.Fatalf("FetchAllEdges typed: %v", err)
+	}
+	if got := f2.lastPlan.GetSelection().GetEdgeTypes(); len(got) != 1 || got[0] != string(kgtypes.EdgeCalls) {
+		t.Fatalf("want edge_types [%s], got %v", kgtypes.EdgeCalls, got)
 	}
 }
 

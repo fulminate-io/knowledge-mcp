@@ -363,7 +363,7 @@ func TestInterceptQueryPlanTree_TextFormat_ByteIdentical_ToGolden(t *testing.T) 
 	args, err := json.Marshal(map[string]any{"mode": "plan_tree", "id": planID})
 	require.NoError(t, err)
 
-	handled, res := InterceptQueryPlanTree(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
+	handled, res := InterceptQueryPlanTree(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
 	require.True(t, handled)
 	require.False(t, res.IsError, "intercept produced error: %v", res.Content)
 
@@ -380,7 +380,7 @@ func TestInterceptQueryPlanTree_JSONFormat_ByteIdentical_ToGolden(t *testing.T) 
 	args, err := json.Marshal(map[string]any{"mode": "plan_tree", "id": planID, "format": "json"})
 	require.NoError(t, err)
 
-	handled, res := InterceptQueryPlanTree(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
+	handled, res := InterceptQueryPlanTree(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
 	require.True(t, handled)
 	require.False(t, res.IsError, "intercept produced error: %v", res.Content)
 
@@ -411,13 +411,13 @@ func TestInterceptQueryPlanTree_TombstonedChild_DroppedFromBothPaths(t *testing.
 
 	textArgs, err := json.Marshal(map[string]any{"mode": "plan_tree", "id": planID})
 	require.NoError(t, err)
-	_, textRes := InterceptQueryPlanTree(deps, kgtools.CallToolParams{Name: "query", Arguments: textArgs})
+	_, textRes := InterceptQueryPlanTree(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: textArgs})
 	require.False(t, textRes.IsError)
 	require.NotContains(t, extractText(textRes), "tombstoned-step", "tombstoned child must not render in text")
 
 	jsonArgs, err := json.Marshal(map[string]any{"mode": "plan_tree", "id": planID, "format": "json"})
 	require.NoError(t, err)
-	_, jsonRes := InterceptQueryPlanTree(deps, kgtools.CallToolParams{Name: "query", Arguments: jsonArgs})
+	_, jsonRes := InterceptQueryPlanTree(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: jsonArgs})
 	require.False(t, jsonRes.IsError)
 	require.NotContains(t, extractText(jsonRes), "tombstoned-step", "tombstoned child must not render in json")
 }
@@ -439,21 +439,21 @@ func TestBuildPlanTreeJSON_NoChildIndexEntry_OmitsChildrenKey(t *testing.T) {
 func TestInterceptQueryPlanTree_WrongTool_FallsThrough(t *testing.T) {
 	deps := &parityDeps{gc: newParityFixture().gc()}
 	args := mustMarshal(t, map[string]any{"mode": "plan_tree", "id": "anything"})
-	handled, _ := InterceptQueryPlanTree(deps, kgtools.CallToolParams{Name: "search", Arguments: args})
+	handled, _ := InterceptQueryPlanTree(opCtx(), deps, kgtools.CallToolParams{Name: "search", Arguments: args})
 	assert.False(t, handled, "wrong tool must fall through")
 }
 
 func TestInterceptQueryPlanTree_WrongMode_FallsThrough(t *testing.T) {
 	deps := &parityDeps{gc: newParityFixture().gc()}
 	args := mustMarshal(t, map[string]any{"mode": "examine", "id": "anything"})
-	handled, _ := InterceptQueryPlanTree(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
+	handled, _ := InterceptQueryPlanTree(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
 	assert.False(t, handled, "wrong mode must fall through")
 }
 
 func TestInterceptQueryPlanTree_MissingID_Errors(t *testing.T) {
 	deps := &parityDeps{gc: newParityFixture().gc()}
 	args := mustMarshal(t, map[string]any{"mode": "plan_tree"})
-	handled, res := InterceptQueryPlanTree(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
+	handled, res := InterceptQueryPlanTree(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
 	require.True(t, handled)
 	require.True(t, res.IsError)
 	assert.Contains(t, extractText(res), "plan_tree mode requires 'id' parameter")

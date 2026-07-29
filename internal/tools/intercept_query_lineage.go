@@ -29,7 +29,7 @@ import (
 
 // InterceptQueryLineage claims query(mode:"lineage"). Returns
 // (true, result) on match.
-func InterceptQueryLineage(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
+func InterceptQueryLineage(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	if params.Name != "query" {
 		return false, kgtools.ToolResult{}
 	}
@@ -49,7 +49,6 @@ func InterceptQueryLineage(deps ClientDeps, params kgtools.CallToolParams) (bool
 		return true, errorResult("lineage: graph caller unavailable")
 	}
 
-	ctx := context.Background()
 	node, err := render.FetchNode(ctx, gc, a.ID)
 	if err != nil {
 		return true, errorResult(fmt.Sprintf("query failed: %s", err))

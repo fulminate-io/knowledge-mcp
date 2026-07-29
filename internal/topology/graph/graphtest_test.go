@@ -127,8 +127,12 @@ func (f *graphFixture) nodeByID(id string) []*knowledgev1.Node {
 
 // edgesFor returns the fixture's edges incident to any node in ids and
 // matching one of edgeTypes (empty = any). Both directions are unioned,
-// matching the foundation FetchEdges node-SET both-direction semantics.
+// matching the foundation FetchEdges node-SET both-direction semantics. An
+// EMPTY id set is the MATCH-ALL form (foundation.FetchAllEdges): every edge of
+// the fixture, type filter still applied — mirroring the engine, where a plan
+// with no pivot discriminant means "all edges of the graph".
 func (f *graphFixture) edgesFor(ids, edgeTypes []string) []*knowledgev1.Edge {
+	matchAll := len(ids) == 0
 	idSet := map[string]bool{}
 	for _, id := range ids {
 		idSet[id] = true
@@ -140,7 +144,7 @@ func (f *graphFixture) edgesFor(ids, edgeTypes []string) []*knowledgev1.Edge {
 	var out []*knowledgev1.Edge
 	for i := range f.edges {
 		e := &f.edges[i]
-		if !idSet[e.from] && !idSet[e.to] {
+		if !matchAll && !idSet[e.from] && !idSet[e.to] {
 			continue
 		}
 		if len(typeSet) > 0 && !typeSet[string(e.edgeType)] {

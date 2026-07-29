@@ -38,18 +38,15 @@ const (
 // before any List. Only a below-floor engine pays the one List(0) shipped-count
 // probe.
 //
-// Single-flight: load() takes no package lock (shipMu guards ship state only), so
-// K concurrent degenerate searches would each reset the floor and re-import the
-// corpus. The recovering atomic.Bool CAS elects ONE recovering goroutine; the rest
-// skip (the winner's load() makes the corpus resident shortly). The flag is
-// released on EVERY exit path (incl. the load() error path) via defer. The Phase-1
-// Import dedup already makes a concurrent re-import merely wasteful (not
-// corrupting), so single-flight is a cost bound, not a correctness requirement —
-// kept belt-and-suspenders.
+// STRUCTURE: this is the thin LIVE wrapper — entry floor gate, one shipped-count
+// read, then delegate. The degeneracy test and the single-flighted recovery live in
+// recoverIfDegenerateWithShipped (manager_reconcile_arms.go), which takes the
+// denominator as a parameter so a caller that needs it for its own verdict reads it
+// ONCE instead of twice. There is exactly one copy of the recovery logic; this
+// wrapper exists because the read-side caller has no denominator of its own.
 func (m *distManager[Q, S]) recoverIfDegenerate(ctx context.Context) error {
 	// GATE: a healthy engine never pays the probe. resident >= floor → done, zero RPC.
-	resident := m.engine.ResidentDocCount()
-	if resident >= residentBackstopFloor {
+	if m.engine.ResidentDocCount() >= residentBackstopFloor {
 		return nil
 	}
 
@@ -62,34 +59,7 @@ func (m *distManager[Q, S]) recoverIfDegenerate(ctx context.Context) error {
 			"error", err)
 		return nil
 	}
-	if disarm {
-		return nil
-	}
-
-	// Degeneracy: the server holds a real corpus (>= floor) but the in-memory engine
-	// covers far less than the ratio of it.
-	if float64(resident) >= residentBackstopRatio*float64(shipped) {
-		return nil
-	}
-
-	// SINGLE-FLIGHT the recovery: only the CAS winner resets the floor + re-imports.
-	if !m.recovering.CompareAndSwap(false, true) {
-		return nil // another goroutine is already recovering this engine — skip.
-	}
-	defer m.recovering.Store(false)
-
-	// Reset the load floor to 0 so the forced load Lists(0) and re-imports the full
-	// corpus (Import dedup drops any already-resident segment), then force that load.
-	//
-	// Call loadFromServer directly, NOT load(): the degeneracy this net heals is an
-	// in-memory engine that covers far less than the SERVER's shipped corpus, and the
-	// missing segments are on the server, not in L2 (the L2-first primary path is
-	// exactly what produced/left the degenerate resident set). load() would either
-	// short-circuit on the l2Loaded once-guard (already set this process) or re-import
-	// only the L2 tail — neither recovers the server corpus. loadFromServer Lists(0)
-	// and Fetches the misses, which is the recovery's whole purpose.
-	m.importedGen.Store(0)
-	return m.loadFromServer(ctx)
+	return m.recoverIfDegenerateWithShipped(ctx, shipped, disarm)
 }
 
 // shippedDocCountForRatio sums this engine's keepFormat shipped doc count from one

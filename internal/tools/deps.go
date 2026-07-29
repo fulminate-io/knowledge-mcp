@@ -391,6 +391,14 @@ type ClientDeps interface {
 	// when no router is wired (degraded headless mode) — the driver errors
 	// "pipeline not wired" on nil.
 	PipelineScanner() PipelineScanner
+	// ClearHealLatch clears the per-(graphType, name) auto-heal breaker latch — the
+	// manual rebuild_segments re-arm. handleClientRebuildSegments calls it from the
+	// SUCCESS branch keyed on scanned>0: an operator asking for a rebuild that actually
+	// scanned nodes re-arms the automatic heal so it resumes after a manual
+	// intervention. Satisfied by *bootstrap.client (over its healBreaker). A no-op on a
+	// non-latched graph, and nil-safe: the *client method guards its own breaker, and a
+	// test fake can implement it as a plain no-op recorder.
+	ClearHealLatch(gt kgtypes.GraphType, name string)
 	// ReflectionForcer returns the on-demand full-corpus reflection backstop lever
 	// (thoughts(propagate, force_full:true) drives it). Returns the live
 	// *clientthought.PropagationLoop, or nil when the reflection loop is not running

@@ -45,6 +45,35 @@ type leafAttachStats struct {
 	gateVetoed        int
 	vectorlessSkipped int
 	byProvenance      map[string]int
+	// vectorlessIDs are the candidate leaves skipped for having no usable vector.
+	// The loop carries them into the next pass's candidate seed: a thought whose
+	// vector arrives later does NOT re-enter the dirty seed on its own, so without
+	// this list it would never be reconsidered until the 24h full-pass backstop.
+	vectorlessIDs []string
+}
+
+// singletonCandidates returns the sorted candidate leaves: Leiden singletons
+// (communityOf[id]==id && commSize[id]==1), optionally narrowed to a seed. A NIL
+// seed means EVERY singleton is a candidate — the full-pass/backstop behavior, and
+// the pre-scoping behavior every existing test exercises.
+//
+// It is shared by runLeafAttachment (which needs the candidate list BEFORE any
+// vector work, so a pass with no candidates can skip that work entirely) and
+// attachLeaves (which re-derives it under its own pre-mutation snapshot). One
+// definition, so the two cannot drift into disagreeing about what a candidate is.
+func singletonCandidates(communityOf map[string]string, commSize map[string]int, seed map[string]bool) []string {
+	var candidates []string
+	for id, comm := range communityOf {
+		if comm != id || commSize[id] != 1 {
+			continue
+		}
+		if seed != nil && !seed[id] {
+			continue
+		}
+		candidates = append(candidates, id)
+	}
+	sort.Strings(candidates)
+	return candidates
 }
 
 // provenanceSessionSibling is the elimination tag for a neighbor present in adj
@@ -66,6 +95,10 @@ const provenanceSessionSibling = "session-sibling"
 // recovered by buildLeafProvenance (a neighbor absent from this map but present in
 // adj is a session-sibling by elimination).
 //
+// candidateSeed narrows the candidate set to the ids the caller considers worth
+// re-evaluating this pass (the dirty seed union the vectorless-retry set). A NIL
+// seed means every singleton is a candidate — the full-pass behavior.
+//
 // SINGLE-PASS / NON-RECURSIVE INVARIANT: candidates and the target centroids are
 // snapshotted BEFORE any mutation, so a leaf attached this pass can neither become
 // a candidate nor a target this pass (a chain of leaves attaches one layer per
@@ -76,20 +109,14 @@ func attachLeaves(
 	adj map[string][]string,
 	vectorIndex map[string][]byte,
 	leafProvenance map[string]map[string]string,
+	candidateSeed map[string]bool,
 ) leafAttachStats {
 	stats := leafAttachStats{byProvenance: map[string]int{}}
 
 	// Snapshot the candidate leaves BEFORE any mutation (single-non-recursive-pass
-	// invariant): a node is a candidate leaf iff its Leiden community is a singleton
-	// (communityOf[id]==id AND commSize[id]==1; mirrors seedNewNodes' singleton
-	// shape). Sorted for deterministic iteration and tie-breaks.
-	var candidates []string
-	for id, comm := range communityOf {
-		if comm == id && commSize[id] == 1 {
-			candidates = append(candidates, id)
-		}
-	}
-	sort.Strings(candidates)
+	// invariant), narrowed to candidateSeed when the caller supplied one. Sorted for
+	// deterministic iteration and tie-breaks.
+	candidates := singletonCandidates(communityOf, commSize, candidateSeed)
 	stats.candidates = len(candidates)
 	if len(candidates) == 0 {
 		return stats
@@ -168,7 +195,10 @@ func attachOneLeaf(
 ) {
 	leafVec, ok := vectorIndex[leaf]
 	if !ok || len(leafVec) != vectorBytes {
-		stats.vectorlessSkipped++ // cannot gate → never attach (settled design point 6).
+		// Cannot gate → never attach (settled design point 6). Recorded by id, not
+		// just counted, so the loop can retry this leaf once its vector ships.
+		stats.vectorlessSkipped++
+		stats.vectorlessIDs = append(stats.vectorlessIDs, leaf)
 		return
 	}
 

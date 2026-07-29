@@ -114,7 +114,7 @@ func decisionInvoker(t *testing.T, fc *fakeGraphCaller, ticketID, session string
 	}{Operation: "record_decision", Name: "d", Choice: "X", Rationale: "because", TicketID: ticketID, Session: session, Links: links}
 	args, err := json.Marshal(a)
 	require.NoError(t, err)
-	_, res := InterceptRecordDecision(interceptTestDeps{gc: fc}, kgtools.CallToolParams{Name: "record_decision", Arguments: args})
+	_, res := InterceptRecordDecision(opCtx(), interceptTestDeps{gc: fc}, kgtools.CallToolParams{Name: "record_decision", Arguments: args})
 	return toolResultText(res), res.IsError, firstCreatePlan(t, fc)
 }
 

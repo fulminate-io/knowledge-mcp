@@ -17,11 +17,10 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
-// scriptedEdgesFakeCaller answers the graph-wide-edges composition over the
-// Execute carrier seam: (1) a Match-all RETURN_MODE_NODES enumeration
-// (nodes_json carrier), then (2) a RETURN_MODE_EDGES ids[]→union read
-// (edges_json carrier). Records every Execute request so tests can verify the
-// bounded 2-Execute contract (no per-node N+1).
+// scriptedEdgesFakeCaller answers the match-all edges read over the Execute
+// carrier seam: a RETURN_MODE_EDGES plan with no pivot discriminant, answered
+// from the edges_json carrier. Records every Execute request so tests can verify
+// the bounded 1-Execute contract (no node enumeration, no per-node N+1).
 type scriptedEdgesFakeCaller struct {
 	nodes []knowledgev1.Node
 	edges []*knowledgev1.Edge
@@ -42,10 +41,10 @@ func (f *scriptedEdgesFakeCaller) Execute(_ context.Context, req *knowledgev1.Ex
 	return resp, nil
 }
 
-// TestFetchAllLogEdges_TwoExecAllMetadata asserts the bounded 2-Execute contract
-// (Match-all nodes, then RETURN_MODE_EDGES union) and the end-to-end metadata
-// round-trip through the edges_json carrier.
-func TestFetchAllLogEdges_TwoExecAllMetadata(t *testing.T) {
+// TestFetchAllLogEdges_OneExecAllMetadata asserts the bounded 1-Execute contract
+// (a single match-all RETURN_MODE_EDGES read, no node enumeration) and the
+// end-to-end metadata round-trip through the edges_json carrier.
+func TestFetchAllLogEdges_OneExecAllMetadata(t *testing.T) {
 	gc := &scriptedEdgesFakeCaller{
 		nodes: []knowledgev1.Node{{Id: "tpl-a"}, {Id: "tpl-b"}, {Id: "chunk-1"}},
 		edges: []*knowledgev1.Edge{
@@ -61,7 +60,7 @@ func TestFetchAllLogEdges_TwoExecAllMetadata(t *testing.T) {
 	out, err := fetchAllLogEdges(context.Background(), gc, "q-fixture",
 		[]kgtypes.EdgeType{"CORRELATES_WITH", "CONTAINS"})
 	require.NoError(t, err)
-	assert.Len(t, gc.execs, 2, "exactly two Execute calls (node enumeration + edge union), no N+1")
+	assert.Len(t, gc.execs, 1, "exactly one Execute call (the match-all edge read), no node enumeration, no N+1")
 	require.Len(t, out, 2)
 
 	corr := &out[0]
@@ -78,21 +77,26 @@ func TestFetchAllLogEdges_TwoExecAllMetadata(t *testing.T) {
 	assert.Equal(t, string(kgtypes.EdgeType("CONTAINS")), contains.Type)
 	assert.InDelta(t, 0.0, contains.Confidence, 1e-9, "no edge_metadata → zero defaults")
 
-	// Verify the second Execute is the RETURN_MODE_EDGES union carrying the
-	// edge-type filter + every node id.
-	require.GreaterOrEqual(t, len(gc.execs), 2)
-	edgesQ := gc.execs[1].GetQuery()
+	// The one Execute is the match-all RETURN_MODE_EDGES read: the edge-type
+	// filter rides, and NO node ids are sent — the empty pivot discriminant is
+	// what makes the plan mean "every edge of the graph".
+	require.Len(t, gc.execs, 1)
+	edgesQ := gc.execs[0].GetQuery()
 	assert.Equal(t, knowledgev1.ReturnMode_RETURN_MODE_EDGES, edgesQ.GetReturnMode())
-	assert.ElementsMatch(t, []string{"tpl-a", "tpl-b", "chunk-1"}, edgesQ.GetSelection().GetIds())
+	assert.Empty(t, edgesQ.GetSelection().GetIds(), "match-all plan must carry no pivot ids")
+	assert.Empty(t, edgesQ.GetIds(), "match-all plan must carry no pivot ids")
+	assert.Empty(t, edgesQ.GetById(), "match-all plan must carry no by-id pivot")
+	assert.Empty(t, edgesQ.GetSelection().GetFromId(), "match-all plan must carry no from_id pivot")
 	assert.ElementsMatch(t, []string{"CORRELATES_WITH", "CONTAINS"}, edgesQ.GetSelection().GetEdgeTypes())
 }
 
-// TestFetchAllLogEdges_EmptyResponse asserts no nodes → no panic, empty slice
-// (and the edge-union Execute is skipped when there are zero nodes).
+// TestFetchAllLogEdges_EmptyResponse asserts an empty log graph → no panic,
+// empty slice, still exactly one Execute (the match-all read answers "no edges"
+// itself — there is no node enumeration left to short-circuit on).
 func TestFetchAllLogEdges_EmptyResponse(t *testing.T) {
 	gc := &scriptedEdgesFakeCaller{}
 	out, err := fetchAllLogEdges(context.Background(), gc, "q-empty", nil)
 	require.NoError(t, err)
 	assert.Empty(t, out)
-	assert.Len(t, gc.execs, 1, "empty node enumeration short-circuits before the edge union")
+	assert.Len(t, gc.execs, 1, "one match-all edge read, nothing else")
 }

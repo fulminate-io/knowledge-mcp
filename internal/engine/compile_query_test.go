@@ -104,6 +104,60 @@ func TestCompileQuery_TypeBrowse(t *testing.T) {
 	assert.Equal(t, int32(10), q.GetLimit())
 	assert.Equal(t, int32(5), q.GetOffset())
 	assert.Empty(t, q.GetQueries(), "browse is not a search")
+	assert.False(t, q.GetSkipTotal(), "skip_total unset by default → exact Total kept")
+}
+
+func TestCompileQuery_TypeBrowse_SkipTotal(t *testing.T) {
+	// With skip_total the type-browse plan carries it (the drain opt-out); an
+	// otherwise-identical browse without the flag leaves it false.
+	req, ok := compileQuery(json.RawMessage(`{"type":"thought","limit":500,"skip_total":true}`))
+	require.True(t, ok)
+	assert.True(t, req.GetQuery().GetSkipTotal(), "skip_total:true → p.GetSkipTotal()==true")
+
+	req2, ok := compileQuery(json.RawMessage(`{"type":"thought","limit":500}`))
+	require.True(t, ok)
+	assert.False(t, req2.GetQuery().GetSkipTotal(), "unset skip_total → p.GetSkipTotal()==false")
+}
+
+// TestCompileQuery_BrowseAfterID pins the type-browse arm's keyset lowering,
+// including the case that matters most: a SET but EMPTY cursor must reach the
+// plan as PRESENT (page 1 of a drain), distinct from an omitted field, which is
+// not a keyset browse at all. Collapsing the two would page page 1 in the
+// backend's default order and silently truncate the drain.
+func TestCompileQuery_BrowseAfterID(t *testing.T) {
+	t.Run("cursor with a value lowers, offset stays 0", func(t *testing.T) {
+		req, ok := compileQuery(json.RawMessage(`{"type":"thought","limit":500,"after_id":"t009"}`))
+		require.True(t, ok)
+		p := req.GetQuery()
+		require.NotNil(t, p.AfterId, "a set cursor makes this a keyset browse")
+		assert.Equal(t, "t009", p.GetAfterId())
+		assert.Zero(t, p.GetOffset(), "a keyset plan never carries an offset — the server rejects both together")
+	})
+
+	t.Run("SET EMPTY cursor stays present", func(t *testing.T) {
+		req, ok := compileQuery(json.RawMessage(`{"type":"thought","limit":500,"after_id":""}`))
+		require.True(t, ok)
+		p := req.GetQuery()
+		require.NotNil(t, p.AfterId,
+			"page 1 of a keyset drain sets an EMPTY cursor — it must lower as PRESENT, not collapse to unset")
+		assert.Empty(t, p.GetAfterId())
+		assert.Zero(t, p.GetOffset())
+	})
+
+	t.Run("omitted cursor is not a keyset browse", func(t *testing.T) {
+		req, ok := compileQuery(json.RawMessage(`{"type":"thought","limit":500,"offset":20}`))
+		require.True(t, ok)
+		p := req.GetQuery()
+		assert.Nil(t, p.AfterId, "no after_id key → ordinary offset paging, unchanged")
+		assert.Equal(t, int32(20), p.GetOffset())
+	})
+
+	t.Run("search arms never take a cursor", func(t *testing.T) {
+		req, ok := compileQuery(json.RawMessage(`{"text":"anything","after_id":"t009"}`))
+		require.True(t, ok)
+		assert.Nil(t, req.GetQuery().AfterId,
+			"a keyset cursor over a ranked result set is meaningless and must not be threaded")
+	})
 }
 
 func TestCompileQuery_MetaPredicates(t *testing.T) {

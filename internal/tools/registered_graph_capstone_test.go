@@ -54,7 +54,7 @@ func TestCapstone_RegisteredGraphBothToolsReturnHits(t *testing.T) {
 	t.Run("search tool returns the seeded content via the client engine", func(t *testing.T) {
 		deps, mgr, handler := newDeps(t)
 
-		handled, out := InterceptSearch(deps, searchParams(t, map[string]any{
+		handled, out := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{
 			"graph": customGraph,
 			"name":  customName,
 			"query": hitSymbol,
@@ -72,7 +72,7 @@ func TestCapstone_RegisteredGraphBothToolsReturnHits(t *testing.T) {
 	t.Run("query tool returns the seeded content via the client engine", func(t *testing.T) {
 		deps, mgr, handler := newDeps(t)
 
-		handled, out := InterceptQueryRegisteredGraphSearch(deps, queryParams(t, map[string]any{
+		handled, out := InterceptQueryRegisteredGraphSearch(opCtx(), deps, queryParams(t, map[string]any{
 			"graph": customGraph,
 			"name":  customName,
 			"mode":  "hybrid",

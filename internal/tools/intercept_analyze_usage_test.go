@@ -41,7 +41,7 @@ func (d analyzeUsageTestDeps) UsageAnalyzer() UsageAnalyzerAPI { return d.analyz
 
 func callAnalyzeUsage(t *testing.T, deps ClientDeps, argsJSON string) (handled bool, body string, isErr bool) {
 	t.Helper()
-	h, res := InterceptAnalyzeUsage(deps, kgtools.CallToolParams{
+	h, res := InterceptAnalyzeUsage(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "analyze_usage",
 		Arguments: json.RawMessage(argsJSON),
 	})
@@ -56,7 +56,7 @@ func callAnalyzeUsage(t *testing.T, deps ClientDeps, argsJSON string) (handled b
 func TestInterceptAnalyzeUsage_NameFiltering(t *testing.T) {
 	deps := analyzeUsageTestDeps{}
 	for _, name := range []string{"worker", "search", "query", ""} {
-		handled, _ := InterceptAnalyzeUsage(deps, kgtools.CallToolParams{Name: name, Arguments: json.RawMessage(`{}`)})
+		handled, _ := InterceptAnalyzeUsage(opCtx(), deps, kgtools.CallToolParams{Name: name, Arguments: json.RawMessage(`{}`)})
 		assert.False(t, handled, "tool %q must not be handled by InterceptAnalyzeUsage", name)
 	}
 }

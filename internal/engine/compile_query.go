@@ -61,6 +61,23 @@ type queryArgs struct {
 	// log-chunk fetch shapes). Empty/false = Content rides as the raw string.
 	ContentB64 bool `json:"content_b64"`
 
+	// SkipTotal opts the browse plan out of the paginating COUNT: the executor
+	// returns Total == offset+pageRows instead of the exact match count. Set only
+	// by callers that discard Total (the paged reflection drain); user-facing
+	// browses leave it false and keep their exact Total for the pagination footer.
+	SkipTotal bool `json:"skip_total"`
+
+	// AfterID selects the id-KEYSET browse and carries its page cursor. A
+	// POINTER because PRESENCE is the selector, not emptiness: page 1 of a drain
+	// carries a SET EMPTY cursor, and a plain string would marshal that
+	// indistinguishably from "no keyset browse" — under which the backend pages
+	// in its default order and the cursor taken from page 1 skips every lower
+	// id, silently returning a fraction of the corpus. Threaded onto the
+	// type-browse arm only; a keyset cursor over a ranked search result is
+	// meaningless. Mutually exclusive with Offset (the server rejects a plan
+	// carrying both).
+	AfterID *string `json:"after_id"`
+
 	// Format/Fields are render-only (Compile ignores them); Render reads them
 	// to pick text/json + projection.
 	Format string   `json:"format"`
@@ -259,14 +276,18 @@ func buildDefaultModePlan(a queryArgs) (*knowledgev1.QueryPlan, bool) {
 		applyBrowseLimitOffset(p, a.Limit, a.Offset)
 		applyTombstones(p, a.IncludeTombstones)
 		applyContentB64(p, a.ContentB64)
+		applySkipTotal(p, a.SkipTotal)
 		return p, true
 	case a.Type != "":
 		// Type-browse → Match(NodeType). Selection carries node_type + status +
-		// metadata predicates; Limit/Offset ride when supplied.
+		// metadata predicates; Limit/Offset ride when supplied, and after_id rides
+		// as the id-keyset cursor (this is the ONLY arm that takes it).
 		p := &knowledgev1.QueryPlan{Selection: browseSelection(a.Type, a.Status, a.Meta, a.FieldPredicates)}
 		applyBrowseLimitOffset(p, a.Limit, a.Offset)
 		applyTombstones(p, a.IncludeTombstones)
 		applyContentB64(p, a.ContentB64)
+		applySkipTotal(p, a.SkipTotal)
+		applyAfterID(p, a.AfterID)
 		return p, true
 	case len(a.Meta) > 0:
 		// Meta-only enumeration → Match("") + meta predicates (every node
@@ -409,6 +430,21 @@ func applyBrowseLimitOffset(p *knowledgev1.QueryPlan, limit, offset int) {
 	}
 }
 
+// applyAfterID threads the id-keyset cursor onto a browse plan, PRESERVING
+// PRESENCE: a non-nil cursor is copied through even when its value is the empty
+// string, because that is page 1 of a keyset drain and the plan field is
+// `optional` precisely so the backend can tell it from a browse that never asked
+// for a keyset. Nil leaves the plan on the ordinary offset paging paths. It never
+// touches Offset — the two are mutually exclusive and the server rejects a plan
+// carrying both.
+func applyAfterID(p *knowledgev1.QueryPlan, afterID *string) {
+	if afterID == nil {
+		return
+	}
+	cursor := *afterID
+	p.AfterId = &cursor
+}
+
 // applyTombstones threads the include_tombstones opt-in onto the plan.
 func applyTombstones(p *knowledgev1.QueryPlan, include bool) {
 	if include {
@@ -422,6 +458,16 @@ func applyTombstones(p *knowledgev1.QueryPlan, include bool) {
 func applyContentB64(p *knowledgev1.QueryPlan, contentB64 bool) {
 	if contentB64 {
 		p.ContentB64 = true
+	}
+}
+
+// applySkipTotal threads the skip_total opt-in onto the plan. Set only when the
+// caller discards Total (the paged reflection drain), so the single-layer
+// executor skips the paginating COUNT; user-facing browses leave it false and
+// keep their exact Total.
+func applySkipTotal(p *knowledgev1.QueryPlan, skipTotal bool) {
+	if skipTotal {
+		p.SkipTotal = true
 	}
 }
 

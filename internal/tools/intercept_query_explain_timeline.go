@@ -45,7 +45,7 @@ func copyEdge(e *knowledgev1.Edge) knowledgev1.Edge {
 
 // InterceptQueryExplainTimeline claims query(mode in {explain,timeline}) for
 // non-logs graphs.
-func InterceptQueryExplainTimeline(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
+func InterceptQueryExplainTimeline(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	if params.Name != "query" {
 		return false, kgtools.ToolResult{}
 	}
@@ -63,7 +63,7 @@ func InterceptQueryExplainTimeline(deps ClientDeps, params kgtools.CallToolParam
 	if gc == nil {
 		return true, errorResult(a.Mode + ": graph client unavailable")
 	}
-	ctx := context.Background()
+
 	if a.Mode == "explain" {
 		return true, composeExplain(ctx, gc.Execute, a)
 	}

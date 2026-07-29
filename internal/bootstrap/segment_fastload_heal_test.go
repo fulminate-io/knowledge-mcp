@@ -3,7 +3,6 @@
 package bootstrap
 
 import (
-	"context"
 	"fmt"
 	"math/rand/v2"
 	"testing"
@@ -69,7 +68,7 @@ func TestHealClosure_IntactCorpusLoadsNoRebuild(t *testing.T) {
 		embedded = 300 // >128 so the band floor<=N<embedded/2 is non-empty
 	)
 	c, eng, backend := buildReconcileClientWithSeg(t, embedded, repo)
-	ctx := context.Background()
+	ctx := opCtx()
 
 	// Ship a REAL decodable HNSW corpus of N=96 docs through the SAME router the
 	// consumer segmentMgr loads from. AddAndShip of a sub-MinSegmentDocs(1024) batch
@@ -124,7 +123,7 @@ func TestHealClosure_UnloadableCorpusStillRebuilds(t *testing.T) {
 	)
 	// realFetch=false: the default empty Fetch — a load imports nothing.
 	c, eng, backend := buildReconcileClientWithSeg(t, embedded, repo)
-	ctx := context.Background()
+	ctx := opCtx()
 
 	// Shipped metas summing to 128 (>> floor 64) via the []byte("seg") placeholder —
 	// it never decodes, so load imports nothing → resident stays 0. covered=128 <
@@ -165,7 +164,7 @@ func TestHealNeedsRebuild_ProbeErrorNeverRebuilds(t *testing.T) {
 	t.Run("probe error keeps resident, NO rebuild", func(t *testing.T) {
 		const repo = "probeErrRepo"
 		c, eng, backend := buildReconcileClientWithSeg(t, embedded, repo)
-		ctx := context.Background()
+		ctx := opCtx()
 
 		// Shipped metas summing to 128 (>> floor 64): covered=128 < 0.5*300=150 so
 		// segmentPoolDegenerate arms and the closure reaches the probe.
@@ -211,7 +210,7 @@ func TestHealNeedsRebuild_ProbeErrorNeverRebuilds(t *testing.T) {
 		// SUCCEEDS but imports nothing, so resident stays 0 < floor while shipped
 		// (64,64) >= floor → resDegen=true → rebuild.
 		c, eng, backend := buildReconcileClientWithSeg(t, embedded, repo)
-		ctx := context.Background()
+		ctx := opCtx()
 
 		shipHNSW(t, backend, repo, 64, 64)
 		eng.scanItems[repo] = makeReconcileScanPage(repo, 10)

@@ -88,7 +88,7 @@ func TestInterceptCollect_InstallsCascadeSets(t *testing.T) {
 	// the safety check on result.GraphType=cloud / GraphName=smoke would
 	// fire. Force makes the check unreachable regardless of ordering.
 	args := json.RawMessage(`{"type":"` + seedStubName + `","id":"seed-id","force":true}`)
-	handled, result := InterceptCollect(deps, kgtools.CallToolParams{
+	handled, result := InterceptCollect(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "collect",
 		Arguments: args,
 	})

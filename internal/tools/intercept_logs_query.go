@@ -24,7 +24,7 @@ import (
 // InterceptLogsQuery routes graph='logs' queries to the client-side
 // handleLogsQuery handler. Returns (handled, result). When the call is
 // not a graph='logs' query, returns (false, _) so the chain continues.
-func InterceptLogsQuery(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
+func InterceptLogsQuery(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	if params.Name != "query" {
 		return false, kgtools.ToolResult{}
 	}
@@ -38,5 +38,5 @@ func InterceptLogsQuery(deps ClientDeps, params kgtools.CallToolParams) (bool, k
 		return false, kgtools.ToolResult{}
 	}
 	h := &Handler{Deps: deps}
-	return true, h.handleLogsQuery(context.Background(), a)
+	return true, h.handleLogsQuery(ctx, a)
 }

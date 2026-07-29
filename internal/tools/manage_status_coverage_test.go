@@ -128,8 +128,10 @@ func (d *coverageDeps) SegmentShipper() SegmentShipper               { return ni
 func (d *coverageDeps) SegmentPruner() SegmentPruner                 { return nil }
 func (d *coverageDeps) SegmentCoverage() SegmentCoverageReader       { return d.segCov }
 func (d *coverageDeps) PipelineScanner() PipelineScanner             { return nil }
-func (d *coverageDeps) ReflectionForcer() ReflectionForcer           { return nil }
-func (d *coverageDeps) SimilarityForcer() SimilarityForcer           { return nil }
+
+func (d *coverageDeps) ClearHealLatch(kgtypes.GraphType, string) {}
+func (d *coverageDeps) ReflectionForcer() ReflectionForcer       { return nil }
+func (d *coverageDeps) SimilarityForcer() SimilarityForcer       { return nil }
 
 func (d *coverageDeps) BlindSpotProvider() BlindSpotProvider { return nil }
 func (d *coverageDeps) ClusterProvider() ClusterProvider     { return nil }

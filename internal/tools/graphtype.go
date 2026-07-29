@@ -38,7 +38,7 @@ type GraphTypeCRUDAPI interface {
 // InterceptGraphType is the entry point invoked by the intercept chain. Returns
 // (true, result) when the call was handled; (false, zero) when the call is not a
 // custom_collector call and should fall through. Mirrors InterceptWorker.
-func InterceptGraphType(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
+func InterceptGraphType(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	if params.Name != "custom_collector" {
 		return false, kgtools.ToolResult{}
 	}
@@ -46,7 +46,7 @@ func InterceptGraphType(deps ClientDeps, params kgtools.CallToolParams) (bool, k
 	if err := json.Unmarshal(params.Arguments, &a); err != nil {
 		return true, errorResult("custom_collector: invalid arguments: " + err.Error())
 	}
-	ctx := context.Background()
+
 	switch a.Operation {
 	case "register":
 		return true, handleGraphTypeRegister(ctx, deps, a)

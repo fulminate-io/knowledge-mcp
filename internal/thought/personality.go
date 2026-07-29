@@ -413,9 +413,10 @@ func externalChargeStats(clusterA ThoughtCluster, clusterB string, cache thought
 // BuildTrustMatrixWithPersonality constructs a trust matrix with
 // personality scalars applied. The cluster-membership map is read
 // from the prebuilt nodeByID map (one gc.Call("query", {ids:})
-// upstream).
-func BuildTrustMatrixWithPersonality(ctx context.Context, gc Caller, thoughtIDs []string, profile PersonalityProfile, nodeByID map[string]*knowledgev1.Node, now time.Time) (TrustMatrix, error) {
-	matrix, err := BuildTrustMatrix(ctx, gc, thoughtIDs, now)
+// upstream). src is forwarded to the underlying matrix build as the resident
+// corpus seam (nil = drain).
+func BuildTrustMatrixWithPersonality(ctx context.Context, gc Caller, thoughtIDs []string, profile PersonalityProfile, nodeByID map[string]*knowledgev1.Node, now time.Time, src CorpusSource) (TrustMatrix, error) {
+	matrix, err := BuildTrustMatrix(ctx, gc, thoughtIDs, now, src)
 	if err != nil {
 		return matrix, err
 	}

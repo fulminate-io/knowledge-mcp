@@ -40,6 +40,8 @@ import (
 	"slices"
 	"time"
 
+	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
+
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
@@ -86,10 +88,10 @@ import (
 // then falls back to forwarding to the server (NewMCPClient does this for
 // MCP traffic; mcpTool.InvokableRun does it for worker traffic).
 //
-// ctx carries the per-session workspace cwd (HTTP transport) so
-// InjectRepoIfCodeGraph resolves code-graph calls against the session's repo;
-// the stdio transport passes context.Background(). It is threaded into the
-// cwd-dependent intercepts (InjectRepoIfCodeGraph, InterceptTopology).
+// ctx is the CALLER's request context: the query-origin operation stamped at the
+// dispatch entry point, plus the HTTP daemon's per-session values (session id,
+// workspace cwd). It is threaded into EVERY intercept — each issues its RPCs on
+// it, so canceling the tool call stops the work it started.
 func (c *client) runInterceptChain(ctx context.Context, params kgtools.CallToolParams) (kgtools.CallToolParams, bool, kgtools.ToolResult) {
 	start := time.Now()
 	rewritten, handled, res := c.runInterceptChainInner(ctx, params)
@@ -106,7 +108,7 @@ func (c *client) runInterceptChain(ctx context.Context, params kgtools.CallToolP
 
 // runInterceptChainInner is the actual chain — kept separate so the outer
 // function can wrap with the timing footer in one place. ctx is threaded into
-// the cwd-dependent intercepts (InjectRepoIfCodeGraph, InterceptTopology).
+// every intercept AND the three cluster helpers, reaching the leaves they dispatch.
 func (c *client) runInterceptChainInner(ctx context.Context, params kgtools.CallToolParams) (kgtools.CallToolParams, bool, kgtools.ToolResult) {
 	// Phase 4: rewrite-style intercept that fills repo: + branch:
 	// (and the staleness trio when staleness:true) on code-graph tool
@@ -126,7 +128,7 @@ func (c *client) runInterceptChainInner(ctx context.Context, params kgtools.Call
 	}
 	params = rewritten
 
-	if handled, res := tools.InterceptSearch(c, params); handled {
+	if handled, res := tools.InterceptSearch(ctx, c, params); handled {
 		return params, true, res
 	}
 	// Per-graph + composite-mode + code query-domain intercepts. MUST run
@@ -136,10 +138,10 @@ func (c *client) runInterceptChainInner(ctx context.Context, params kgtools.Call
 	// THROUGH to a GENERIC search and the per-graph renderers (renderResourceSearch
 	// / renderPracticeResults) would never run. Each member self-gates on graph (or
 	// mode), so a knowledge/default query falls cleanly through to InterceptQuery.
-	if handled, res := runQueryDomainIntercepts(c, params); handled {
+	if handled, res := runQueryDomainIntercepts(ctx, c, params); handled {
 		return params, true, res
 	}
-	if handled, res := tools.InterceptQuery(c, params); handled {
+	if handled, res := tools.InterceptQuery(ctx, c, params); handled {
 		return params, true, res
 	}
 	// Phase 6: dead_code analyzer runs client-side because the
@@ -148,28 +150,28 @@ func (c *client) runInterceptChainInner(ctx context.Context, params kgtools.Call
 	if handled, res := tools.InterceptTopology(ctx, c, params); handled {
 		return params, true, res
 	}
-	if handled, res := tools.InterceptManage(c, params); handled {
+	if handled, res := tools.InterceptManage(ctx, c, params); handled {
 		return params, true, res
 	}
 	// `sync` rides the EngineService.Sync RPC client-side. Self-gates on
 	// params.Name=="sync".
-	if handled, res := tools.InterceptSync(c, params); handled {
+	if handled, res := tools.InterceptSync(ctx, c, params); handled {
 		return params, true, res
 	}
-	if handled, res := tools.InterceptLogsManage(c, params); handled {
+	if handled, res := tools.InterceptLogsManage(ctx, c, params); handled {
 		return params, true, res
 	}
-	if handled, res := tools.InterceptLogsQuery(c, params); handled {
+	if handled, res := tools.InterceptLogsQuery(ctx, c, params); handled {
 		return params, true, res
 	}
 	// Cluster of query-rendering intercepts (plan_tree,
 	// list_projects, decisions, evidence, lineage, rules, examine
 	// projects). Extracted out of this chain to keep the
 	// runInterceptChainInner statement count under the lint cap.
-	if handled, res := runQueryRenderingIntercepts(c, params); handled {
+	if handled, res := runQueryRenderingIntercepts(ctx, c, params); handled {
 		return params, true, res
 	}
-	if handled, res := tools.InterceptLogsTraversal(c, params); handled {
+	if handled, res := tools.InterceptLogsTraversal(ctx, c, params); handled {
 		return params, true, res
 	}
 	if handled, res := tools.InterceptAst(ctx, c, params); handled {
@@ -184,28 +186,28 @@ func (c *client) runInterceptChainInner(ctx context.Context, params kgtools.Call
 	// hallucinated / stale quote it returns (true, errResult) — the negation never
 	// reaches its write handler. Placed before InterceptThoughts (the earlier of the
 	// two negation claimants) satisfies the before-both ordering.
-	if handled, res := tools.InterceptNegationGate(c, params); handled {
+	if handled, res := tools.InterceptNegationGate(ctx, c, params); handled {
 		return params, true, res
 	}
-	if handled, res := tools.InterceptThoughts(c, params); handled {
+	if handled, res := tools.InterceptThoughts(ctx, c, params); handled {
 		return params, true, res
 	}
-	if handled, res := tools.InterceptAssemble(c, params); handled {
+	if handled, res := tools.InterceptAssemble(ctx, c, params); handled {
 		return params, true, res
 	}
 	if handled, res := tools.InterceptHive(ctx, c, params); handled {
 		return params, true, res
 	}
-	if handled, res := tools.InterceptWorker(c, params); handled {
+	if handled, res := tools.InterceptWorker(ctx, c, params); handled {
 		return params, true, res
 	}
-	if handled, res := tools.InterceptGraphType(c, params); handled {
+	if handled, res := tools.InterceptGraphType(ctx, c, params); handled {
 		return params, true, res
 	}
-	if handled, res := tools.InterceptCreateProject(c, params); handled {
+	if handled, res := tools.InterceptCreateProject(ctx, c, params); handled {
 		return params, true, res
 	}
-	if handled, res := tools.InterceptCreateTicket(c, params); handled {
+	if handled, res := tools.InterceptCreateTicket(ctx, c, params); handled {
 		return params, true, res
 	}
 	// Cluster of project-domain create / record / help
@@ -213,20 +215,20 @@ func (c *client) runInterceptChainInner(ctx context.Context, params kgtools.Call
 	// (false, _) for the wrong tool name so they no-op for unrelated
 	// calls. Extracted out of this chain to keep the runInterceptChainInner
 	// statement count under the lint cap.
-	if handled, res := runProjectDomainIntercepts(c, params); handled {
+	if handled, res := runProjectDomainIntercepts(ctx, c, params); handled {
 		return params, true, res
 	}
 	// Phase 2: mutate(create, type:criterion) moved client-
 	// side. Must fire BEFORE InterceptMutate (gates on op in
 	// {update, delete} — never claims create) so the criterion
 	// orchestration runs before any generic-mutate fall-through.
-	if handled, res := tools.InterceptAddCriterion(c, params); handled {
+	if handled, res := tools.InterceptAddCriterion(ctx, c, params); handled {
 		return params, true, res
 	}
-	if handled, res := tools.InterceptMutate(c, params); handled {
+	if handled, res := tools.InterceptMutate(ctx, c, params); handled {
 		return params, true, res
 	}
-	handled, res = tools.InterceptCollect(c, params)
+	handled, res = tools.InterceptCollect(ctx, c, params)
 	return params, handled, res
 }
 
@@ -234,26 +236,26 @@ func (c *client) runInterceptChainInner(ctx context.Context, params kgtools.Call
 // intercepts (plan_tree, list_projects, decisions, evidence, lineage,
 // rules, examine projects). Extracted from runInterceptChainInner to
 // satisfy the funlen lint cap.
-func runQueryRenderingIntercepts(c *client, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
-	if handled, res := tools.InterceptQueryPlanTree(c, params); handled {
+func runQueryRenderingIntercepts(ctx context.Context, c *client, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
+	if handled, res := tools.InterceptQueryPlanTree(ctx, c, params); handled {
 		return true, res
 	}
-	if handled, res := tools.InterceptQueryListProjects(c, params); handled {
+	if handled, res := tools.InterceptQueryListProjects(ctx, c, params); handled {
 		return true, res
 	}
-	if handled, res := tools.InterceptQueryDecisions(c, params); handled {
+	if handled, res := tools.InterceptQueryDecisions(ctx, c, params); handled {
 		return true, res
 	}
-	if handled, res := tools.InterceptQueryEvidence(c, params); handled {
+	if handled, res := tools.InterceptQueryEvidence(ctx, c, params); handled {
 		return true, res
 	}
-	if handled, res := tools.InterceptQueryLineage(c, params); handled {
+	if handled, res := tools.InterceptQueryLineage(ctx, c, params); handled {
 		return true, res
 	}
-	if handled, res := tools.InterceptQueryRules(c, params); handled {
+	if handled, res := tools.InterceptQueryRules(ctx, c, params); handled {
 		return true, res
 	}
-	if handled, res := tools.InterceptQueryExamineProjects(c, params); handled {
+	if handled, res := tools.InterceptQueryExamineProjects(ctx, c, params); handled {
 		return true, res
 	}
 	// Phase 2: general query(mode:examine) for every OTHER knowledge node
@@ -261,7 +263,7 @@ func runQueryRenderingIntercepts(c *client, params kgtools.CallToolParams) (bool
 	// InterceptQueryExamineProjects so project-domain types get the richer
 	// project-tree variant; this claims the rest, relocating the server
 	// handleInspectNode path client-side before the engineDispatch fall-through.
-	if handled, res := tools.InterceptQueryExamine(c, params); handled {
+	if handled, res := tools.InterceptQueryExamine(ctx, c, params); handled {
 		return true, res
 	}
 	return false, kgtools.ToolResult{}
@@ -275,19 +277,19 @@ func runQueryRenderingIntercepts(c *client, params kgtools.CallToolParams) (bool
 // runInterceptChainInner runs BEFORE InterceptQuery (see the call-site comment).
 // Phases 4-5 append their composite-mode / code intercepts into THIS helper —
 // one call site total, not one per intercept.
-func runQueryDomainIntercepts(c *client, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
+func runQueryDomainIntercepts(ctx context.Context, c *client, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	// GAP-A: query(mode:stats) on the knowledge/default graph. The per-graph stats
 	// intercepts below each gate on their own graph (cloud/cicd/code/practice/
 	// linkage), so a bare knowledge stats matched none and fell through to the
 	// generic deny. This member self-gates on mode==stats && graph∈{"",knowledge}.
-	if handled, res := tools.InterceptQueryStats(c, params); handled {
+	if handled, res := tools.InterceptQueryStats(ctx, c, params); handled {
 		return true, res
 	}
 	// Phase 2: knowledge text-search modes (mode=recent now; text/default
 	// added by the sibling reroute step) are served by the CLIENT knowledge engine
 	// (composeKnowledgeSearch) instead of a server RETURN_MODE_SEARCH dispatch.
 	// Self-gates on graph∈{"",knowledge} + the claimed mode.
-	if handled, res := tools.InterceptQueryKnowledgeSearch(c, params); handled {
+	if handled, res := tools.InterceptQueryKnowledgeSearch(ctx, c, params); handled {
 		return true, res
 	}
 	// Registered CUSTOM graph text-search (query(graph:<custom>, mode:text|recent|
@@ -296,22 +298,22 @@ func runQueryDomainIntercepts(c *client, params kgtools.CallToolParams) (bool, k
 	// non-builtin graph + a claimed text-search shape; runs before tools.InterceptQuery
 	// (the generic embed+engine.Dispatch tail) so a custom graph never reaches the
 	// retired server search.
-	if handled, res := tools.InterceptQueryRegisteredGraphSearch(c, params); handled {
+	if handled, res := tools.InterceptQueryRegisteredGraphSearch(ctx, c, params); handled {
 		return true, res
 	}
-	if handled, res := tools.InterceptQueryCloudCICD(c, params); handled {
+	if handled, res := tools.InterceptQueryCloudCICD(ctx, c, params); handled {
 		return true, res
 	}
-	if handled, res := tools.InterceptQueryPracticeLinkage(c, params); handled {
+	if handled, res := tools.InterceptQueryPracticeLinkage(ctx, c, params); handled {
 		return true, res
 	}
-	if handled, res := tools.InterceptQueryCorrelationsPivot(c, params); handled {
+	if handled, res := tools.InterceptQueryCorrelationsPivot(ctx, c, params); handled {
 		return true, res
 	}
-	if handled, res := tools.InterceptQueryExplainTimeline(c, params); handled {
+	if handled, res := tools.InterceptQueryExplainTimeline(ctx, c, params); handled {
 		return true, res
 	}
-	if handled, res := tools.InterceptQueryMetadataStats(c, params); handled {
+	if handled, res := tools.InterceptQueryMetadataStats(ctx, c, params); handled {
 		return true, res
 	}
 	// Phase 5: codegraph relocation. The code composers self-gate on
@@ -320,16 +322,16 @@ func runQueryDomainIntercepts(c *client, params kgtools.CallToolParams) (bool, k
 	// (file_symbols). They run AFTER InjectRepoIfCodeGraph (the first chain step)
 	// so repo:/branch: are already injected. compileQuery default-denies code, so
 	// these MUST claim client-side before the engineDispatch fall-through.
-	if handled, res := tools.InterceptQueryAnalyzeNode(c, params); handled {
+	if handled, res := tools.InterceptQueryAnalyzeNode(ctx, c, params); handled {
 		return true, res
 	}
-	if handled, res := tools.InterceptQueryCodeSearch(c, params); handled {
+	if handled, res := tools.InterceptQueryCodeSearch(ctx, c, params); handled {
 		return true, res
 	}
-	if handled, res := tools.InterceptQueryModulesCodeStats(c, params); handled {
+	if handled, res := tools.InterceptQueryModulesCodeStats(ctx, c, params); handled {
 		return true, res
 	}
-	if handled, res := tools.InterceptFileSymbols(c, params); handled {
+	if handled, res := tools.InterceptFileSymbols(ctx, c, params); handled {
 		return true, res
 	}
 	return false, kgtools.ToolResult{}
@@ -343,24 +345,24 @@ func runQueryDomainIntercepts(c *client, params kgtools.CallToolParams) (bool, k
 // runInterceptChainInner to satisfy the funlen lint cap; the dispatch
 // order matters only insofar as the underlying intercepts all gate on
 // tool name (no overlap).
-func runProjectDomainIntercepts(c *client, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
-	if handled, res := tools.InterceptCreatePlan(c, params); handled {
+func runProjectDomainIntercepts(ctx context.Context, c *client, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
+	if handled, res := tools.InterceptCreatePlan(ctx, c, params); handled {
 		return true, res
 	}
-	if handled, res := tools.InterceptCreateResearch(c, params); handled {
+	if handled, res := tools.InterceptCreateResearch(ctx, c, params); handled {
 		return true, res
 	}
-	if handled, res := tools.InterceptCreateTestPlan(c, params); handled {
+	if handled, res := tools.InterceptCreateTestPlan(ctx, c, params); handled {
 		return true, res
 	}
-	if handled, res := tools.InterceptRecordDecision(c, params); handled {
+	if handled, res := tools.InterceptRecordDecision(ctx, c, params); handled {
 		return true, res
 	}
-	if handled, res := tools.InterceptHelp(c, params); handled {
+	if handled, res := tools.InterceptHelp(ctx, c, params); handled {
 		return true, res
 	}
 	// analyze_usage: client-owned agent-flow analyzer over the local transcript cache.
-	if handled, res := tools.InterceptAnalyzeUsage(c, params); handled {
+	if handled, res := tools.InterceptAnalyzeUsage(ctx, c, params); handled {
 		return true, res
 	}
 	return false, kgtools.ToolResult{}
@@ -406,6 +408,10 @@ func formatClientDuration(d time.Duration) string {
 // client tool path, so engineDispatch is the only passthrough.
 func (c *client) dispatchForRunner() dream.DispatchFunc {
 	return func(ctx context.Context, name string, args json.RawMessage) (kgtools.ToolResult, error) {
+		// The worker is the SECOND tool-dispatch entry point (the MCP client is
+		// the first), so it stamps the query-origin operation the same way. Both
+		// paths must stamp or the worker's share of the load lands unattributed.
+		ctx = graphclient.WithOperation(ctx, graphclient.OperationForTool(name))
 		rewritten, handled, res := c.runInterceptChain(ctx, kgtools.CallToolParams{Name: name, Arguments: args})
 		if handled {
 			return res, nil
@@ -463,8 +469,9 @@ func buildRuntime(gc runtimeLister, port int, graphStorage string, dispatch drea
 // into the *client. It hands buildRuntime the login-aware c.router so the
 // Registry's worker-list loopback routes to cloud when logged in (no local
 // server) and local otherwise, and assigns the returned Runner to
-// c.runtime. After construction it calls Runner.Start(ctx) to install
-// triggers; per the file-level docstring this is mostly registry
+// c.runtime. After construction it calls startWorkerRuntime (Runner.Start
+// under a query-origin stamp) to install triggers; per the file-level
+// docstring this is mostly registry
 // validation in the client topology, so a Start failure is logged and
 // the runtime is still kept (manual triggers — the only invocation path
 // that matters today — work without Start).
@@ -474,7 +481,7 @@ func wireWorkerRuntime(c *client, f Config) error {
 		return err
 	}
 	c.runtime = runner
-	if err := runner.Start(context.Background()); err != nil {
+	if err := startWorkerRuntime(context.Background(), runner); err != nil {
 		slog.Warn("dream runner Start failed; manual triggers still work", "error", err)
 	}
 	return nil

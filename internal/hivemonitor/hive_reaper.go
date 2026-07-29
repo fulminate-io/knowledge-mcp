@@ -24,7 +24,8 @@ const machineDownThreshold = 10 * time.Minute
 // reaperSweepInterval is the reaper's sweep cadence — deliberately slower than
 // the 30s monitor tick: the reaper only needs to detect a stale member within
 // about one sweep of crossing the 10min threshold, so a 60s cadence is ample and
-// cheap (one member query per reaper hive).
+// cheap (one member query per live local session for the role gate, plus one per
+// reaped hive — every one of them predicate-narrowed).
 const reaperSweepInterval = 60 * time.Second
 
 // reaperEvictReason is the terminal DNF reason stamped on a machine-down
@@ -165,59 +166,68 @@ func (r *HiveReaper) sweep(ctx context.Context, now time.Time) {
 }
 
 // reaperHives builds the set of hives THIS daemon must reap — the ROLE GATE. It
-// resolves the harness session-id of every live local session, then reads the
-// account's hive_member nodes and keeps the hive of each member that (a) belongs
-// to one of this daemon's sessions AND (b) holds the reaper role. A daemon none
-// of whose members hold the reaper role yields an empty set and sweeps nothing.
-// Cloud is the single source of role truth — no client-side role record to
-// drift. Read failures are logged and yield no hives (this daemon reaps nothing
-// this sweep rather than aborting).
+// resolves the harness session-id of every live local session, reads THAT
+// SESSION's hive_member nodes, and keeps the hive of each returned member that
+// holds the reaper role. A daemon none of whose members hold the reaper role
+// yields an empty set and sweeps nothing. Cloud is the single source of role
+// truth — no client-side role record to drift. Read failures are logged and the
+// session is skipped (one unreadable session must not abort the sweep).
+//
+// The read is one browse PER LIVE LOCAL SESSION, each narrowed by a session
+// OP_EQ predicate — memberHivesFor's shape. It is deliberately N small browses
+// rather than one: the wire has no OP_IN, and the alternative (a bare whole-type
+// hive_member browse) reads every member ever registered in the account, a set
+// that only grows because eviction is a status UPDATE and never a delete.
 func (r *HiveReaper) reaperHives(ctx context.Context) []string {
 	if r.hive == nil || r.snapshots == nil {
 		return nil
 	}
-	mySessions := map[string]bool{}
+	var mySessions []string
+	seenSession := map[string]bool{}
 	for _, snap := range r.snapshots() {
 		handle, err := ResolveTranscript(ctx, snap)
 		if err != nil {
 			slog.Warn("hive reaper: transcript resolve error", "session", snap.ID, "error", err)
 			continue
 		}
-		if handle.Resolved() {
-			mySessions[handle.HarnessSessionID] = true
+		if handle.Resolved() && !seenSession[handle.HarnessSessionID] {
+			seenSession[handle.HarnessSessionID] = true
+			mySessions = append(mySessions, handle.HarnessSessionID)
 		}
-	}
-	if len(mySessions) == 0 {
-		return nil
-	}
-
-	resp, err := r.hive.Execute(ctx, &knowledgev1.ExecuteRequest{
-		Target: &knowledgev1.GraphSelector{Graph: "knowledge"},
-		Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
-			Selection: &knowledgev1.Selection{NodeTypes: []string{"hive_member"}},
-		}},
-	})
-	if err != nil {
-		slog.Warn("hive reaper: read members for role gate failed", "error", err)
-		return nil
 	}
 
 	seen := map[string]bool{}
 	var hives []string
-	for _, n := range resp.GetNodes() {
-		md := n.GetMetadata()
-		if !mySessions[md["session"]] {
+	for _, session := range mySessions {
+		resp, err := r.hive.Execute(ctx, &knowledgev1.ExecuteRequest{
+			Target: &knowledgev1.GraphSelector{Graph: "knowledge"},
+			Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
+				Selection: &knowledgev1.Selection{
+					NodeTypes: []string{"hive_member"},
+					MetadataPredicates: []*knowledgev1.MetadataPredicate{
+						{Key: "session", Op: knowledgev1.MetadataPredicate_OP_EQ, Value: session},
+					},
+				},
+			}},
+		})
+		if err != nil {
+			slog.Warn("hive reaper: read members for role gate failed", "session", session, "error", err)
 			continue
 		}
-		if !hasReaperRole(md["roles"]) {
-			continue
+		for _, n := range resp.GetNodes() {
+			md := n.GetMetadata()
+			// The predicate narrows server-side; a server that ignored it must not
+			// widen this daemon's reap set, so the session is re-checked here.
+			if md["session"] != session || !hasReaperRole(md["roles"]) {
+				continue
+			}
+			hive := md["hive"]
+			if hive == "" || seen[hive] {
+				continue
+			}
+			seen[hive] = true
+			hives = append(hives, hive)
 		}
-		hive := md["hive"]
-		if hive == "" || seen[hive] {
-			continue
-		}
-		seen[hive] = true
-		hives = append(hives, hive)
 	}
 	return hives
 }

@@ -177,12 +177,25 @@ func appendStepSubtree(phaseIdx, prevStepIdx int, step StepArgs, nodes []*knowle
 		edges = append(edges, kgwire.BatchEdge{FromIdx: stepIdx, ToIdx: prevStepIdx, Type: kgtypes.EdgeDependsOn})
 	}
 
-	for fp := range strings.SplitSeq(step.FilePaths, ",") {
-		fp = strings.TrimSpace(fp)
-		if fp != "" {
-			edges = append(edges, kgwire.BatchEdge{FromIdx: stepIdx, ToIdx: -1, ToID: "file:" + fp, Type: kgtypes.EdgeKGImplements})
-		}
-	}
+	// NO step->file edge is emitted here, deliberately.
+	//
+	// This loop used to emit ToID: "file:"+fp. That identity is a PHANTOM — the
+	// literal "file:" prefix appears nowhere else in the tree, so no such node is
+	// ever created, for any path, in any graph. Nor would the bare path work: file
+	// nodes live in the CODE graph while create_plan writes to KNOWLEDGE, and
+	// resolveWriteID only consults the graph being written.
+	//
+	// The edge therefore never once produced a working link, and failed in two
+	// different ways depending on path LENGTH — resolveWriteID returns unchecked at
+	// len(id) >= 32, so a long path silently persisted a dangling edge
+	// (peer_type ""), while a short one aborted the ENTIRE create_plan batch with
+	// "not_found: node file:... not found" and zero nodes written. That length
+	// dependence is why it read as intermittent.
+	//
+	// The paths are not lost: step.FilePaths is already persisted as file_paths
+	// metadata immediately above. Genuine cross-graph step->file linking goes
+	// through the linkage graph (mutate link_graph:"linkage" with the bare code
+	// path), which resolves correctly and is the supported mechanism.
 	for _, c := range step.Criteria {
 		cIdx := len(nodes)
 		nodes = append(nodes, BuildCriterionNode(c))

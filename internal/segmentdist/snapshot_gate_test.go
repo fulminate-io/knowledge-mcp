@@ -23,7 +23,7 @@ func TestShippedManifestSnapshot_CloudArmReadsGCSManifest(t *testing.T) {
 	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0,
 		WithSegmentTransport(func() (SegmentControlTransport, error) { return backend, nil }))
 
-	snap, err := mgr.ShippedManifestSnapshot(context.Background(), kgtypes.GraphCode, "repo")
+	snap, err := mgr.ShippedManifestSnapshot(context.Background(), kgtypes.GraphCode, "repo", "hnsw")
 	require.NoError(t, err)
 	require.Len(t, snap, 2)
 
@@ -40,7 +40,7 @@ func TestShippedManifestSnapshot_CloudArmReadsGCSManifest(t *testing.T) {
 
 	// Derived answers over the snapshot.
 	require.True(t, mgr.HasShippedFromSnapshot(snap), "presence is true — the manifest holds segments")
-	covered, anyUnknown := mgr.ShippedDocCountFromSnapshot(snap)
+	covered, anyUnknown := mgr.ShippedDocCountFromSnapshot(snap, "hnsw")
 	require.Equal(t, 42, covered, "summed HNSW doc count = 12 + 30")
 	require.False(t, anyUnknown, "no doc_count==0 digest, so anyUnknown is false")
 }
@@ -61,7 +61,7 @@ func TestShippedManifestSnapshot_OSSArmIsL2Sourced(t *testing.T) {
 	require.NoError(t, mgr.Flush(ctx, kgtypes.GraphCode, "repo"))
 
 	// The snapshot resolves to the L2-local set (presence true, DocCounts stamped 0).
-	snap, err := mgr.ShippedManifestSnapshot(ctx, kgtypes.GraphCode, "repo")
+	snap, err := mgr.ShippedManifestSnapshot(ctx, kgtypes.GraphCode, "repo", "hnsw")
 	require.NoError(t, err)
 	require.True(t, mgr.HasShippedFromSnapshot(snap), "the L2 snapshot holds the shipped segments (presence true)")
 

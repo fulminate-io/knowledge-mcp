@@ -75,23 +75,42 @@ func executeQuery(ctx context.Context, caller GraphCaller, payload map[string]an
 }
 
 // FetchNodesByType returns every node of nodeType in the scoped (graphType,
-// name) graph in ONE Execute: a plural-types browse ({graph, name/account,
-// types:[nodeType], limit:0}) whose typed Nodes carrier (engine.DecodeNodes)
-// carries the full node payloads. The legacy scoped.IterateAll(nodeType) reads
-// (cloud / content analyzers) become this call.
+// name) graph, drained in bounded id-keyset pages ({graph, name/account, type:
+// nodeType, limit: BrowsePageSize, after_id, skip_total}) whose typed Nodes
+// carrier (engine.DecodeNodes) carries the full node payloads. The legacy
+// scoped.IterateAll(nodeType) reads (cloud / content analyzers) become this call.
+//
+// The SINGULAR type key is load-bearing, not a spelling preference. It takes the
+// compiler's Selection.NodeType arm, which pushes the type filter into the INDEX
+// SELECTION so the filtering happens before any cap by construction; the plural
+// types key is a post-filter applied AFTER the cap, which silently returned zero
+// nodes on any graph holding more than a page of other types that sort first. It
+// is also the only compile arm that threads after_id, so the drain needs it.
+//
+// Results arrive in id-ASCENDING order (after_id presence pins the ordering on
+// both backends), NOT in the backend's default order as before — consumers must
+// not depend on the previous ordering.
 func FetchNodesByType(ctx context.Context, caller GraphCaller, graphType kgtypes.GraphType, name string, nodeType kgtypes.NodeType) ([]*knowledgev1.Node, error) {
-	payload := scopePayload(graphType, name)
-	payload["types"] = []string{string(nodeType)}
-	payload["limit"] = 0 // no cap — we want every node of the type
-	resp, err := executeQuery(ctx, caller, payload)
-	if err != nil {
-		return nil, err
-	}
-	nodes, err := engine.DecodeNodes(resp)
-	if err != nil {
-		return nil, fmt.Errorf("topology/wire: decode nodes-by-type: %w", err)
-	}
-	return nodes, nil
+	return engine.DrainKeysetPages(func(afterID string) ([]*knowledgev1.Node, error) {
+		payload := scopePayload(graphType, name)
+		payload["type"] = string(nodeType)
+		payload["limit"] = engine.BrowsePageSize
+		// The key is present on EVERY page including the first, where the value is
+		// the empty string: presence, not emptiness, selects the keyset browse. An
+		// omitted key leaves after_id unset and the backend pages in its own default
+		// order, so the cursor taken from page 1 skips every lower id.
+		payload["after_id"] = afterID
+		payload["skip_total"] = true // the drain discards Total
+		resp, err := executeQuery(ctx, caller, payload)
+		if err != nil {
+			return nil, err
+		}
+		nodes, derr := engine.DecodeNodes(resp)
+		if derr != nil {
+			return nil, fmt.Errorf("topology/wire: decode nodes-by-type: %w", derr)
+		}
+		return nodes, nil
+	}, engine.BrowsePageSize)
 }
 
 // FetchAllNodes returns every node in the scoped (graphType, name) graph in ONE
@@ -195,6 +214,49 @@ func FetchEdges(ctx context.Context, caller GraphCaller, graphType kgtypes.Graph
 	edges, err := engine.DecodeEdges(resp)
 	if err != nil {
 		return nil, fmt.Errorf("topology/wire: decode bulk edges: %w", err)
+	}
+	return edges, nil
+}
+
+// FetchAllEdges returns EVERY edge of the scoped (graphType, name) graph in ONE
+// Execute, optionally filtered to edgeTypes: a RETURN_MODE_EDGES query carrying
+// NO pivot discriminant, which the engine reads as "all edges of the graph".
+//
+// This is the match-all counterpart of FetchEdges, for the callers whose node set
+// IS the whole graph. Those callers used to hand every node id to FetchEdges as
+// the pivot set, which made the backend evaluate a per-endpoint id-membership
+// predicate over a set that selects the entire edge table — measured ~1.29s
+// against ~23ms for the equivalent unfiltered read at ~157k edges. A caller that
+// only needed the ids to fill that pivot set can now drop the id enumeration too.
+//
+// Use FetchEdges, not this, whenever the node set is a genuine SUBSET: the pivot
+// forms are index-bound and linear in pivot count, and asking for every edge
+// would pull edges the caller is about to discard.
+func FetchAllEdges(ctx context.Context, caller GraphCaller, graphType kgtypes.GraphType, name string, edgeTypes []kgtypes.EdgeType) ([]knowledgev1.Edge, error) {
+	if caller == nil {
+		return nil, nil
+	}
+	plan := &knowledgev1.QueryPlan{
+		ReturnMode:        knowledgev1.ReturnMode_RETURN_MODE_EDGES,
+		IncludeTombstones: true,
+	}
+	if len(edgeTypes) > 0 {
+		ets := make([]string, len(edgeTypes))
+		for i := range edgeTypes {
+			ets[i] = string(edgeTypes[i])
+		}
+		plan.Selection = &knowledgev1.Selection{EdgeTypes: ets}
+	}
+	resp, err := caller.Execute(ctx, &knowledgev1.ExecuteRequest{
+		Plan:   &knowledgev1.ExecuteRequest_Query{Query: plan},
+		Target: graphTarget(graphType, name),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("topology/wire: execute all edges: %w", err)
+	}
+	edges, err := engine.DecodeEdges(resp)
+	if err != nil {
+		return nil, fmt.Errorf("topology/wire: decode all edges: %w", err)
 	}
 	return edges, nil
 }

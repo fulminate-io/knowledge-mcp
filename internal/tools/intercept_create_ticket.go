@@ -46,7 +46,7 @@ type createTicketArgs struct {
 //   - Linear CreateTicket fails → hard error, no local node.
 //   - Linear succeeds, server forward fails → error naming the Linear
 //     ticket identifier so operator can reconcile.
-func InterceptCreateTicket(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
+func InterceptCreateTicket(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	if params.Name != "create_ticket" {
 		return false, kgtools.ToolResult{}
 	}
@@ -67,8 +67,6 @@ func InterceptCreateTicket(deps ClientDeps, params kgtools.CallToolParams) (bool
 		return true, errorResult(serr.Error())
 	}
 	a.Summary = clamped
-
-	ctx := context.Background()
 
 	// Validate + resolve patterns over the wire BEFORE any backend side-effect:
 	// a tristate violation must reject before the remote Linear CreateTicket

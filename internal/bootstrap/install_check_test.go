@@ -13,6 +13,24 @@ import (
 	"time"
 )
 
+// checkStubProbeTimeout bounds the two HAPPY-PATH --check tests below. It is
+// deliberately generous, because neither test is asserting timeout behavior:
+// their stub server is a one-line `#!/bin/sh echo <version>`, which cannot hang,
+// and the ctx-deadline contract has its own dedicated test further down (the one
+// that probes a real `sleep 60` against a 2s ctx and asserts runCheck returns
+// early). The bound here exists only so a genuinely wedged fork/exec fails the
+// test rather than the whole package.
+//
+// It was 5s, which flaked. runCheck forks a process AND makes an HTTP round trip
+// inside this one budget, and `make test` runs packages at -p 4 on top of
+// whatever else the machine is doing — so under load the probe was reaped mid-run
+// and reported `installed (version unknown: signal: killed)`. That failure looked
+// like a product bug and was purely scheduling. It also cost more than the two
+// tests: `make test` runs four module passes as sequential recipe lines, so a red
+// here stopped the run before the server suite or the cloud integration suite
+// executed at all.
+const checkStubProbeTimeout = 60 * time.Second
+
 func TestInstall_Check_UpToDate(t *testing.T) {
 	dir := t.TempDir()
 	withStubInstalledServer(t, dir, "v1.2.3")
@@ -26,7 +44,7 @@ func TestInstall_Check_UpToDate(t *testing.T) {
 	withVersion(t, "v1.2.3")
 
 	out := captureStdout(t, func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), checkStubProbeTimeout)
 		defer cancel()
 		if err := runCheck(ctx); err != nil {
 			t.Fatalf("runCheck: %v", err)
@@ -63,7 +81,7 @@ func TestInstall_Check_UpdateAvailable(t *testing.T) {
 	withVersion(t, "v1.2.3")
 
 	out := captureStdout(t, func() {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		ctx, cancel := context.WithTimeout(context.Background(), checkStubProbeTimeout)
 		defer cancel()
 		if err := runCheck(ctx); err != nil {
 			t.Fatalf("runCheck: %v", err)

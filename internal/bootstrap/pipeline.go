@@ -59,6 +59,20 @@ func (a routedWireClient) PipelineGenPoll(
 	return gc.PipelineGenPoll(ctx, req)
 }
 
+// CorpusDelta re-picks the backend (cloud-when-logged-in / local otherwise) then
+// forwards the delta request — the resident thought-corpus cache's per-tick drain
+// rides this, routed identically to PipelineScan.
+func (a routedWireClient) CorpusDelta(
+	ctx context.Context,
+	req *knowledgev1.CorpusDeltaRequest,
+) (*knowledgev1.CorpusDeltaResponse, error) {
+	gc, err := a.router.Backend(ctx)
+	if err != nil {
+		return nil, err
+	}
+	return gc.CorpusDelta(ctx, req)
+}
+
 func (a routedWireClient) Execute(
 	ctx context.Context,
 	req *knowledgev1.ExecuteRequest,

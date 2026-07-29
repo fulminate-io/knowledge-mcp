@@ -25,10 +25,17 @@ import (
 // returns a loud error; a coalesce (started=false — a pass already in flight)
 // returns the "already running" message plus the SAME fetch/estimate contract and
 // creates NO event (onStarted only fires on the real acquire).
-func handleSimilarityPass(_ context.Context, deps ClientDeps, a propagateArgs) kgtools.ToolResult {
+func handleSimilarityPass(ctx context.Context, deps ClientDeps, a propagateArgs) kgtools.ToolResult {
 	forcer := deps.SimilarityForcer()
 	if forcer == nil {
 		return errorResult("propagate similarity: reflection loop not running in this process — cannot run the topic-similarity lever")
+	}
+	// Pre-flight cancellation gate: a caller who already gave up must not start a
+	// pass or leave an orphan running event behind. An ALREADY-STARTED pass is not
+	// abortable this way — it runs on the PropagationLoop's daemon-lifetime context
+	// by design — so this gate is the whole of what caller cancellation controls.
+	if err := ctx.Err(); err != nil {
+		return errorResult("propagate similarity: call cancelled before the pass started — no pass was triggered")
 	}
 	// Zero passed through to the lever → the HIGH package-const defaults.
 	var link, merge float64
@@ -51,10 +58,6 @@ func handleSimilarityPass(_ context.Context, deps ClientDeps, a propagateArgs) k
 		densify.EdgeBudget = int(*a.DensifyEdgeBudget)
 	}
 
-	// daemonCtx is context.Background() — the event create/persist outlive the
-	// request ctx (which dies when this handler returns). NEVER use the request ctx.
-	daemonCtx := context.Background()
-
 	// id + startedAt flow Begin → handler closures → Finish. onStarted runs
 	// SYNCHRONOUSLY inside StartSimilarityPass on the uncontended-acquire path,
 	// before the goroutine launches and before StartSimilarityPass returns, so these
@@ -63,7 +66,9 @@ func handleSimilarityPass(_ context.Context, deps ClientDeps, a propagateArgs) k
 	var eventStartedAt time.Time
 
 	onStarted := func() {
-		id, st, err := forcer.BeginSimilarityEvent(daemonCtx, link, merge)
+		// Runs SYNCHRONOUSLY inside StartSimilarityPass, before the goroutine is
+		// launched and before the call returns, so the caller's ctx is still live.
+		id, st, err := forcer.BeginSimilarityEvent(ctx, link, merge)
 		if err != nil {
 			// Swallow: the pass still runs. The report just won't be fetchable until
 			// completion writes it. Never aborts the pass or changes the response.
@@ -74,7 +79,12 @@ func handleSimilarityPass(_ context.Context, deps ClientDeps, a propagateArgs) k
 		eventStartedAt = st
 	}
 
-	onComplete := func(rep clientthought.SimilarityReport, err error) {
+	// passCtx is supplied by the PropagationLoop that OWNS the pass goroutine — it
+	// is that loop's daemon-lifetime context, the same one the pass itself runs on.
+	// This write happens minutes after the handler returned, so it cannot ride the
+	// caller's ctx: doing so would fail with context canceled on every pass and the
+	// report would never be persisted for the similarity_report fetch op.
+	onComplete := func(passCtx context.Context, rep clientthought.SimilarityReport, err error) {
 		status := "completed"
 		if err != nil {
 			status = "failed"
@@ -83,7 +93,7 @@ func handleSimilarityPass(_ context.Context, deps ClientDeps, a propagateArgs) k
 		if eventID != "" {
 			// eventStartedAt is non-zero here (Begin succeeded → eventID set).
 			durationMs := time.Since(eventStartedAt).Milliseconds()
-			if ferr := forcer.FinishSimilarityEvent(daemonCtx, eventID, eventStartedAt, link, merge, status, durationMs, rendered, headlineCounts(rep)); ferr != nil {
+			if ferr := forcer.FinishSimilarityEvent(passCtx, eventID, eventStartedAt, link, merge, status, durationMs, rendered, headlineCounts(rep)); ferr != nil {
 				// Degrade loudly: the pass completed; the report just wasn't persisted.
 				slog.Error("similarity: FinishSimilarityEvent failed — pass completed, report not persisted", "err", ferr)
 			}
@@ -96,8 +106,8 @@ func handleSimilarityPass(_ context.Context, deps ClientDeps, a propagateArgs) k
 	if !forcer.StartSimilarityPass(link, merge, densify, onStarted, onComplete) {
 		// Coalesce: a pass is already running. Same fetch/estimate contract, no event.
 		return textResult("Topic similarity pass: a pass is already running — your trigger coalesced onto it (no second pass started).\n\n" +
-			similarityFetchContract(similarityEstimate(forcer, daemonCtx)))
+			similarityFetchContract(similarityEstimate(forcer, ctx)))
 	}
 	return textResult("Topic similarity pass STARTED in the background.\n\n" +
-		similarityFetchContract(similarityEstimate(forcer, daemonCtx)))
+		similarityFetchContract(similarityEstimate(forcer, ctx)))
 }

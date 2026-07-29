@@ -29,7 +29,7 @@ import (
 // optional.
 
 // InterceptQueryMetadataStats claims query(mode:metadata_stats).
-func InterceptQueryMetadataStats(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
+func InterceptQueryMetadataStats(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	if params.Name != "query" {
 		return false, kgtools.ToolResult{}
 	}
@@ -48,7 +48,6 @@ func InterceptQueryMetadataStats(deps ClientDeps, params kgtools.CallToolParams)
 	if !ok {
 		return true, errorResult("metadata_stats: stats seam unavailable")
 	}
-	ctx := context.Background()
 
 	resp, err := mc.MetadataStats(ctx, &knowledgev1.MetadataStatsRequest{Target: domainTarget(a)})
 	if err != nil {

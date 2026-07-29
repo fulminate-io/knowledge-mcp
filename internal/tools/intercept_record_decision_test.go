@@ -49,13 +49,13 @@ func TestBuildDecisionNode_LongRationale_BoundedSummary(t *testing.T) {
 
 func TestInterceptRecordDecision_WrongTool_FallsThrough(t *testing.T) {
 	deps := interceptTestDeps{gc: &fakeGraphCaller{}}
-	handled, _ := InterceptRecordDecision(deps, kgtools.CallToolParams{Name: "query"})
+	handled, _ := InterceptRecordDecision(opCtx(), deps, kgtools.CallToolParams{Name: "query"})
 	assert.False(t, handled)
 }
 
 func TestInterceptRecordDecision_EmptyChoice_Errors(t *testing.T) {
 	deps := interceptTestDeps{gc: &fakeGraphCaller{}}
-	handled, res := InterceptRecordDecision(deps, kgtools.CallToolParams{
+	handled, res := InterceptRecordDecision(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "record_decision",
 		Arguments: json.RawMessage(`{"name":"d","choice":"","rationale":"r"}`),
 	})
@@ -71,7 +71,7 @@ func TestInterceptRecordDecision_EmptyRationale_Errors(t *testing.T) {
 
 	// Empty rationale (valid choice) is rejected.
 	deps := interceptTestDeps{gc: &fakeGraphCaller{}}
-	handled, res := InterceptRecordDecision(deps, kgtools.CallToolParams{
+	handled, res := InterceptRecordDecision(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "record_decision",
 		Arguments: json.RawMessage(`{"name":"d","choice":"do X","rationale":""}`),
 	})
@@ -80,7 +80,7 @@ func TestInterceptRecordDecision_EmptyRationale_Errors(t *testing.T) {
 	assert.Equal(t, wantErr, toolResultText(res))
 
 	// Rationale key entirely absent is rejected the same way.
-	handled, res = InterceptRecordDecision(deps, kgtools.CallToolParams{
+	handled, res = InterceptRecordDecision(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "record_decision",
 		Arguments: json.RawMessage(`{"name":"d","choice":"do X"}`),
 	})
@@ -96,7 +96,7 @@ func TestInterceptRecordDecision_HappyPath_TextFormat(t *testing.T) {
 		},
 	}
 	deps := interceptTestDeps{gc: fc}
-	handled, res := InterceptRecordDecision(deps, kgtools.CallToolParams{
+	handled, res := InterceptRecordDecision(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "record_decision",
 		Arguments: json.RawMessage(`{"name":"fixture-decision","choice":"do X","rationale":"because"}`),
 	})
@@ -114,7 +114,7 @@ func TestInterceptRecordDecision_JSONFormat(t *testing.T) {
 		},
 	}
 	deps := interceptTestDeps{gc: fc}
-	handled, res := InterceptRecordDecision(deps, kgtools.CallToolParams{
+	handled, res := InterceptRecordDecision(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "record_decision",
 		Arguments: json.RawMessage(`{"name":"fixture-decision","choice":"do X","rationale":"because","format":"json"}`),
 	})

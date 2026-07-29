@@ -42,7 +42,7 @@ type createTestPlanCriterion struct {
 }
 
 // InterceptCreateTestPlan handles the create_test_plan MCP call.
-func InterceptCreateTestPlan(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
+func InterceptCreateTestPlan(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	if params.Name != "create_test_plan" {
 		return false, kgtools.ToolResult{}
 	}
@@ -83,7 +83,6 @@ func InterceptCreateTestPlan(deps ClientDeps, params kgtools.CallToolParams) (bo
 		planArgs.Steps = append(planArgs.Steps, stepArgs)
 	}
 
-	ctx := context.Background()
 	nodes, edges := projects.BuildTestPlanGraph(planArgs)
 	bundleID := newBundleID()
 	ids, perr := PersistBatch(ctx, gc, nodes, edges, bundleID)

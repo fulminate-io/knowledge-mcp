@@ -27,9 +27,11 @@ type similarityReportArgs struct {
 // may-take-longer; completed → the FULL rendered report verbatim (from the event
 // body); failed → the failure loudly; no pass ever → a clear empty-state message.
 //
-// ctx is the dispatcher's context.Background() (interceptThoughtsOp builds it) — a
-// daemon-lifetime ctx, NOT a request ctx. That is fine here: the single-event read
-// is a bounded synchronous one-shot, unlike the async PASS in the trigger handler.
+// ctx is the propagated CALLER context, threaded from the tool dispatch through
+// interceptThoughtsOp. That is the right context here: the single-event read is a
+// bounded synchronous one-shot that finishes inside the call, so canceling the
+// call correctly abandons it — unlike the async PASS in the trigger handler, whose
+// completion write belongs to the loop that owns its goroutine.
 func handleSimilarityReportClient(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) kgtools.ToolResult {
 	// Readiness gate (bind-first startup): during the bind-first wiring window the propagation
 	// loop is not yet wired and SimilarityForcer() returns nil — which would emit

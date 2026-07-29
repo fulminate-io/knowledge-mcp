@@ -37,7 +37,7 @@ func TestInterceptSearch_CloudCICDClientServed(t *testing.T) {
 			mgr := &fakeSegmentSearcher{hits: []searchengine.Hit{}}
 			deps := &interceptDeps{gc: gc, segMgr: mgr}
 
-			handled, out := InterceptSearch(deps, searchParams(t, tc.args))
+			handled, out := InterceptSearch(opCtx(), deps, searchParams(t, tc.args))
 			require.True(t, handled, "%s search must be claimed client-side", tc.name)
 			require.False(t, out.IsError, "%s: %v", tc.name, engine.FirstTextContent(out))
 
@@ -67,7 +67,7 @@ func TestInterceptSearch_PracticeClientServedViaFanOut(t *testing.T) {
 	})
 	deps := &interceptDeps{gc: gc, segMgr: mgr}
 
-	handled, out := InterceptSearch(deps, searchParams(t, map[string]any{"graph": "practice", "query": "x"}))
+	handled, out := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{"graph": "practice", "query": "x"}))
 	require.True(t, handled, "practice search must be claimed client-side")
 	require.False(t, out.IsError, "%v", engine.FirstTextContent(out))
 
@@ -89,7 +89,7 @@ func TestInterceptQueryKnowledgeSearch_RecentClientServed(t *testing.T) {
 	mgr := &fakeSegmentSearcher{hits: []searchengine.Hit{{ID: "n1", Score: 0.9}}}
 	deps := &interceptDeps{gc: gc, segMgr: mgr}
 
-	handled, out := InterceptQueryKnowledgeSearch(deps, queryParams(t, map[string]any{
+	handled, out := InterceptQueryKnowledgeSearch(opCtx(), deps, queryParams(t, map[string]any{
 		"graph": "knowledge", "mode": "recent", "text": "fresh changes",
 	}))
 	require.True(t, handled, "mode=recent is claimed client-side")
@@ -120,7 +120,7 @@ func TestInterceptQueryKnowledgeSearch_TextAndDefaultTextClientServed(t *testing
 			mgr := &fakeSegmentSearcher{hits: []searchengine.Hit{}}
 			deps := &interceptDeps{gc: gc, segMgr: mgr}
 
-			handled, out := InterceptQueryKnowledgeSearch(deps, queryParams(t, tc.args))
+			handled, out := InterceptQueryKnowledgeSearch(opCtx(), deps, queryParams(t, tc.args))
 			require.True(t, handled, "%s claimed client-side", tc.name)
 			require.False(t, out.IsError, "%s empty knowledge → graceful empty: %v", tc.name, engine.FirstTextContent(out))
 
@@ -167,7 +167,7 @@ func TestInterceptQueryKnowledgeSearch_GateMisses(t *testing.T) {
 		{"graph": "knowledge", "id": "n1"},                                    // default-mode getNode (not text)
 		{"graph": "knowledge", "type": "finding"},                             // default-mode type-browse (not text)
 	} {
-		handled, _ := InterceptQueryKnowledgeSearch(deps, queryParams(t, args))
+		handled, _ := InterceptQueryKnowledgeSearch(opCtx(), deps, queryParams(t, args))
 		assert.False(t, handled, "args %v must fall through", args)
 	}
 }
@@ -183,7 +183,7 @@ func TestInterceptSearch_LinkageWebPDFRetired(t *testing.T) {
 			mgr := &fakeSegmentSearcher{}
 			deps := &interceptDeps{gc: gc, segMgr: mgr}
 
-			handled, out := InterceptSearch(deps, searchParams(t, map[string]any{"graph": graph, "query": "x"}))
+			handled, out := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{"graph": graph, "query": "x"}))
 			require.True(t, handled, "%s search is claimed (and retired)", graph)
 			require.False(t, out.IsError)
 

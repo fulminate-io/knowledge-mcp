@@ -125,8 +125,10 @@ func (d ctxPackDeps) SegmentShipper() SegmentShipper               { return nil 
 func (d ctxPackDeps) SegmentPruner() SegmentPruner                 { return nil }
 func (d ctxPackDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
 func (d ctxPackDeps) PipelineScanner() PipelineScanner             { return nil }
-func (d ctxPackDeps) ReflectionForcer() ReflectionForcer           { return nil }
-func (d ctxPackDeps) SimilarityForcer() SimilarityForcer           { return nil }
+
+func (d ctxPackDeps) ClearHealLatch(kgtypes.GraphType, string) {}
+func (d ctxPackDeps) ReflectionForcer() ReflectionForcer       { return nil }
+func (d ctxPackDeps) SimilarityForcer() SimilarityForcer       { return nil }
 
 func (d ctxPackDeps) BlindSpotProvider() BlindSpotProvider { return nil }
 func (d ctxPackDeps) ClusterProvider() ClusterProvider     { return nil }

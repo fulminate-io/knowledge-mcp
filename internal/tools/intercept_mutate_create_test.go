@@ -21,7 +21,7 @@ func TestInterceptMutate_CreateFinding_HappyPath(t *testing.T) {
 		},
 	}
 	deps := interceptTestDeps{gc: fc}
-	handled, res := InterceptMutate(deps, kgtools.CallToolParams{
+	handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "mutate",
 		Arguments: json.RawMessage(`{"operation":"create","type":"finding","name":"fixture-finding","summary":"summary","description":"desc"}`),
 	})
@@ -47,7 +47,7 @@ func TestInterceptMutate_CreateFinding_SummaryClampsAndWarns(t *testing.T) {
 	}
 	deps := interceptTestDeps{gc: fc}
 	over := strings.Repeat("a", 600)
-	handled, res := InterceptMutate(deps, kgtools.CallToolParams{
+	handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "mutate",
 		Arguments: json.RawMessage(`{"operation":"create","type":"finding","name":"fixture-finding","summary":"` + over + `","description":"desc"}`),
 	})
@@ -71,7 +71,7 @@ func TestInterceptMutate_CreateResearch_HappyPath(t *testing.T) {
 		},
 	}
 	deps := interceptTestDeps{gc: fc}
-	handled, res := InterceptMutate(deps, kgtools.CallToolParams{
+	handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "mutate",
 		Arguments: json.RawMessage(`{"operation":"create","type":"research","name":"fixture-question?","summary":"summary","content":"context"}`),
 	})
@@ -89,7 +89,7 @@ func TestInterceptMutate_CreateRule_HappyPath(t *testing.T) {
 		},
 	}
 	deps := interceptTestDeps{gc: fc}
-	handled, res := InterceptMutate(deps, kgtools.CallToolParams{
+	handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "mutate",
 		Arguments: json.RawMessage(`{"operation":"create","type":"rule","name":"fixture-rule","summary":"summary","description":"desc","scope":"*.go"}`),
 	})
@@ -122,7 +122,7 @@ func TestInterceptMutate_Answer_HappyPath(t *testing.T) {
 		Content: []kgtools.ContentBlock{{Type: "text", Text: string(rawNode)}},
 	}
 	deps := interceptTestDeps{gc: fc}
-	handled, res := InterceptMutate(deps, kgtools.CallToolParams{
+	handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "mutate",
 		Arguments: json.RawMessage(`{"operation":"answer","id":"q-1","conclusion":"the answer"}`),
 	})
@@ -136,7 +136,7 @@ func TestInterceptMutate_Answer_HappyPath(t *testing.T) {
 func TestInterceptMutate_Answer_MissingNode_Errors(t *testing.T) {
 	fc := &fakeGraphCaller{} // queries return not-found
 	deps := interceptTestDeps{gc: fc}
-	handled, res := InterceptMutate(deps, kgtools.CallToolParams{
+	handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "mutate",
 		Arguments: json.RawMessage(`{"operation":"answer","id":"missing","conclusion":"x"}`),
 	})

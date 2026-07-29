@@ -133,7 +133,7 @@ type syncArgs struct {
 // actionable login guidance. Push AND pull of a NON-builtin (custom) graph are
 // gated on its GraphTypeDef syncable flag (syncableGateRejection) before any RPC
 // fires; builtins skip that gate (SyncEligible is their only gate, unchanged).
-func InterceptSync(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
+func InterceptSync(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	if params.Name != "sync" {
 		return false, kgtools.ToolResult{}
 	}
@@ -146,7 +146,7 @@ func InterceptSync(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtool
 	// + cloud GraphCaller + the cloudStatusInfo login gate), unlike pushGraph
 	// which only needs the Exporter — so the arm passes deps through.
 	if a.Operation == "list" {
-		return true, handleSyncList(deps)
+		return true, handleSyncList(ctx, deps)
 	}
 
 	graph := a.Graph
@@ -163,7 +163,7 @@ func InterceptSync(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtool
 	// graph must carry a registered GraphTypeDef whose behavior declares
 	// syncable=true; an unregistered type, or one with syncable false/unset, is
 	// rejected BEFORE any ExportGraph/OverwriteGraph RPC fires.
-	if msg := syncableGateRejection(context.Background(), deps, graph); msg != "" {
+	if msg := syncableGateRejection(ctx, deps, graph); msg != "" {
 		return true, errorResult(msg)
 	}
 
@@ -171,7 +171,7 @@ func InterceptSync(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtool
 	// graph with it. Cloud fetch routes through the login-aware GraphCaller; the
 	// apply lands on the LOCAL graph via the Overwriter seam.
 	if a.Operation == "pull" {
-		return true, handlePull(deps, graph, name)
+		return true, handlePull(ctx, deps, graph, name)
 	}
 
 	// promote was removed; only push/pull/list are supported.
@@ -190,7 +190,7 @@ func InterceptSync(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtool
 		return true, errorResult("sync: " + err.Error())
 	}
 
-	return true, pushGraph(context.Background(), exp, transport, graph, name)
+	return true, pushGraph(ctx, exp, transport, graph, name)
 }
 
 // handlePull wires the two seams the pull arm needs — the control-plane
@@ -202,7 +202,7 @@ func InterceptSync(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtool
 // fails at the pull control call inside pullGraph; a missing local server fails
 // at overwriterSeam (pull requires a local server because its destination is the
 // local .bin).
-func handlePull(deps ClientDeps, graph, name string) kgtools.ToolResult {
+func handlePull(ctx context.Context, deps ClientDeps, graph, name string) kgtools.ToolResult {
 	ov, err := overwriterSeam(deps)
 	if err != nil {
 		return errorResult("sync pull: " + err.Error())
@@ -211,7 +211,7 @@ func handlePull(deps ClientDeps, graph, name string) kgtools.ToolResult {
 	if err != nil {
 		return errorResult("sync pull: " + err.Error())
 	}
-	return pullGraph(context.Background(), ov, transport, graph, name)
+	return pullGraph(ctx, ov, transport, graph, name)
 }
 
 // pullGraph fetches the authoritative (graph, name) bytes from Fulminate Cloud

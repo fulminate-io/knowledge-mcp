@@ -31,7 +31,7 @@ func TestInterceptCreateTicket_LocalOnlyParent_ClaimsLocally(t *testing.T) {
 		byName:  map[string]backends.Backend{"linear": &fakeBackend{}},
 		gc:      fc,
 	}
-	handled, res := InterceptCreateTicket(deps, kgtools.CallToolParams{
+	handled, res := InterceptCreateTicket(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "create_ticket",
 		Arguments: json.RawMessage(`{"name":"t","project_id":"proj-local","description":"d","summary":"s","no_patterns_reason":"trivial"}`),
 	})
@@ -53,7 +53,7 @@ func TestInterceptCreateTicket_BackendNotConfigured_Errors(t *testing.T) {
 		byName: map[string]backends.Backend{}, // linear NOT registered
 		gc:     fc,
 	}
-	handled, res := InterceptCreateTicket(deps, kgtools.CallToolParams{
+	handled, res := InterceptCreateTicket(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "create_ticket",
 		Arguments: json.RawMessage(`{"name":"t","project_id":"proj-back","description":"d","summary":"s","no_patterns_reason":"trivial"}`),
 	})
@@ -79,7 +79,7 @@ func TestInterceptCreateTicket_LinearError_Surfaced(t *testing.T) {
 		byName: map[string]backends.Backend{"linear": fb},
 		gc:     fc,
 	}
-	handled, res := InterceptCreateTicket(deps, kgtools.CallToolParams{
+	handled, res := InterceptCreateTicket(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "create_ticket",
 		Arguments: json.RawMessage(`{"name":"t","project_id":"proj-back","description":"d","summary":"s","no_patterns_reason":"trivial"}`),
 	})
@@ -116,7 +116,7 @@ func TestInterceptCreateTicket_Success_StampsBackendMetadata(t *testing.T) {
 		byName: map[string]backends.Backend{"linear": fb},
 		gc:     fc,
 	}
-	handled, res := InterceptCreateTicket(deps, kgtools.CallToolParams{
+	handled, res := InterceptCreateTicket(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "create_ticket",
 		Arguments: json.RawMessage(`{"name":"t","project_id":"proj-back","description":"d","summary":"s","no_patterns_reason":"trivial"}`),
 	})

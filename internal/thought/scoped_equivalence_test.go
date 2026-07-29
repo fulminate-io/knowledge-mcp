@@ -161,7 +161,7 @@ func TestScopedEqualsFull_PerComponentInvariance(t *testing.T) {
 	// FULL reference pass (nil seed): records propagated_* for every node, applied
 	// back into the fake's state.
 	full := newEquivalenceFake(ids, edges)
-	_, err := RunPropagationScoped(ctx, full, nil, full.nodeByIDFrom(), nil)
+	_, err := RunPropagationScoped(ctx, full, nil, full.nodeByIDFrom(), nil, nil)
 	require.NoError(t, err)
 	reference := full.propagatedSnapshot()
 	require.Len(t, reference, len(ids))
@@ -178,7 +178,7 @@ func TestScopedEqualsFull_PerComponentInvariance(t *testing.T) {
 	scoped.mu.Unlock()
 
 	seed := map[string]bool{"a1": true} // touches component A only.
-	_, err = RunPropagationScoped(ctx, scoped, nil, scoped.nodeByIDFrom(), seed)
+	_, err = RunPropagationScoped(ctx, scoped, nil, scoped.nodeByIDFrom(), seed, nil)
 	require.NoError(t, err)
 	got := scoped.propagatedSnapshot()
 
@@ -233,7 +233,7 @@ func TestScopedEqualsFull_BridgingJoin(t *testing.T) {
 
 	// FULL pass over the bridged corpus (reference).
 	full := newEquivalenceFake(ids, bridged)
-	_, err := RunPropagationScoped(ctx, full, nil, full.nodeByIDFrom(), nil)
+	_, err := RunPropagationScoped(ctx, full, nil, full.nodeByIDFrom(), nil, nil)
 	require.NoError(t, err)
 	reference := full.propagatedSnapshot()
 
@@ -242,7 +242,7 @@ func TestScopedEqualsFull_BridgingJoin(t *testing.T) {
 	// component containing both endpoints, so the closure spans the whole corpus.
 	scoped := newEquivalenceFake(ids, bridged)
 	seed := map[string]bool{"a1": true, "b1": true} // bridge endpoints.
-	_, err = RunPropagationScoped(ctx, scoped, nil, scoped.nodeByIDFrom(), seed)
+	_, err = RunPropagationScoped(ctx, scoped, nil, scoped.nodeByIDFrom(), seed, nil)
 	require.NoError(t, err)
 	got := scoped.propagatedSnapshot()
 

@@ -8,6 +8,7 @@
 package tools
 
 import (
+	"context"
 	"encoding/json"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
@@ -67,7 +68,7 @@ func handleHelpClient(args json.RawMessage) kgtools.ToolResult {
 // when params.Name == "help"; (false, _) otherwise so the intercept chain
 // falls through. ClientDeps is unused — help is pure static lookup — but
 // the signature mirrors the rest of the intercept family.
-func InterceptHelp(_ ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
+func InterceptHelp(_ context.Context, _ ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	if params.Name != "help" {
 		return false, kgtools.ToolResult{}
 	}

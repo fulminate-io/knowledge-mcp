@@ -77,6 +77,12 @@ func (m *Manager) hnswManagerFor(
 	}
 	engine := searchengine.New[[]byte, struct{}](fmtVariant, opts)
 	dm = newDistManager(engine, source, cache, target, fmtVariant.Name())
+	// Suppression hook: when this engine's publish coverage gate becomes
+	// unsatisfiable, record the graph so the periodic reconcile consumer looks
+	// sooner. Same after-construction assignment safety as OnMerge above — the hook
+	// cannot fire before this function returns. Because BOTH HNSW maps route through
+	// here, this one wiring covers the embed and the deterministic engine alike.
+	dm.onCoverageSuppressed = func() { m.flagReconcileNudge(gt, name) }
 	dst[k] = dm
 	return dm
 }
@@ -111,6 +117,10 @@ func (m *Manager) bm25ManagerFor(gt kgtypes.GraphType, name string) *distManager
 		OnMerge: func(res searchengine.MergeResult) { dm.reclaimMerged(res) },
 	})
 	dm = newDistManager(engine, source, cache, target, bm25.New().Name())
+	// Suppression hook, mirroring hnswManagerFor: the BM25 engine keeps its OWN skip
+	// streak, so it can cross its suppression transition independently of the HNSW
+	// engines for the same graph. The nudge set is keyed by graph, so those collapse.
+	dm.onCoverageSuppressed = func() { m.flagReconcileNudge(gt, name) }
 	m.bm25Managers[k] = dm
 	return dm
 }

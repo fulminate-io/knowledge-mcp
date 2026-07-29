@@ -24,7 +24,7 @@ func TestInterceptCreateResearch_DerivedQuestionOverflow(t *testing.T) {
 	deps := interceptTestDeps{gc: &fakeGraphCaller{}}
 	// "Question: " (10 runes) + 495-char question = 505 runes > 500.
 	longQ := strings.Repeat("q", 495)
-	handled, res := InterceptCreateResearch(deps, kgtools.CallToolParams{
+	handled, res := InterceptCreateResearch(opCtx(), deps, kgtools.CallToolParams{
 		Name: "create_research",
 		Arguments: json.RawMessage(`{
 			"name":"r","goal":"g","summary":"s",
@@ -50,7 +50,7 @@ func TestInterceptCreateResearch_AuthorSummaryClampsAndWarns(t *testing.T) {
 	fc := &fakeGraphCaller{mutateIDs: []string{"research-1", "question-1"}}
 	deps := interceptTestDeps{gc: fc}
 	longSummary := strings.Repeat("a", 501)
-	handled, res := InterceptCreateResearch(deps, kgtools.CallToolParams{
+	handled, res := InterceptCreateResearch(opCtx(), deps, kgtools.CallToolParams{
 		Name: "create_research",
 		Arguments: json.RawMessage(`{
 			"name":"r","goal":"g","summary":"s","format":"json",
@@ -71,7 +71,7 @@ func TestInterceptCreateResearch_AuthorSummaryClampsAndWarns(t *testing.T) {
 func TestInterceptCreateResearch_ValidAuthorSummaryCreates(t *testing.T) {
 	fc := &fakeGraphCaller{mutateIDs: []string{"research-1", "question-1"}}
 	deps := interceptTestDeps{gc: fc}
-	handled, res := InterceptCreateResearch(deps, kgtools.CallToolParams{
+	handled, res := InterceptCreateResearch(opCtx(), deps, kgtools.CallToolParams{
 		Name: "create_research",
 		Arguments: json.RawMessage(`{
 			"name":"r","goal":"g","summary":"s","format":"json",
@@ -88,7 +88,7 @@ func TestInterceptCreateResearch_ValidAuthorSummaryCreates(t *testing.T) {
 func TestInterceptCreateResearch_ValidDerivedQuestionCreates(t *testing.T) {
 	fc := &fakeGraphCaller{mutateIDs: []string{"research-1", "question-1"}}
 	deps := interceptTestDeps{gc: fc}
-	handled, res := InterceptCreateResearch(deps, kgtools.CallToolParams{
+	handled, res := InterceptCreateResearch(opCtx(), deps, kgtools.CallToolParams{
 		Name: "create_research",
 		Arguments: json.RawMessage(`{
 			"name":"r","goal":"g","summary":"s","format":"json",

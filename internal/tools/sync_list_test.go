@@ -64,8 +64,10 @@ func (d *fakeSyncListDeps) SegmentShipper() SegmentShipper               { retur
 func (d *fakeSyncListDeps) SegmentPruner() SegmentPruner                 { return nil }
 func (d *fakeSyncListDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
 func (d *fakeSyncListDeps) PipelineScanner() PipelineScanner             { return nil }
-func (d *fakeSyncListDeps) ReflectionForcer() ReflectionForcer           { return nil }
-func (d *fakeSyncListDeps) SimilarityForcer() SimilarityForcer           { return nil }
+
+func (d *fakeSyncListDeps) ClearHealLatch(kgtypes.GraphType, string) {}
+func (d *fakeSyncListDeps) ReflectionForcer() ReflectionForcer       { return nil }
+func (d *fakeSyncListDeps) SimilarityForcer() SimilarityForcer       { return nil }
 
 func (d *fakeSyncListDeps) BlindSpotProvider() BlindSpotProvider { return nil }
 func (d *fakeSyncListDeps) ClusterProvider() ClusterProvider     { return nil }
@@ -94,7 +96,7 @@ func TestHandleSyncList_LoggedOut(t *testing.T) {
 	cloud := &recordingGraphNamesCaller{byType: map[string][]*knowledgev1.GraphInfo{}}
 	deps := &fakeSyncListDeps{local: local, cloud: cloud, loggedIn: false}
 
-	res := handleSyncList(deps)
+	res := handleSyncList(opCtx(), deps)
 	if res.IsError {
 		t.Fatalf("handleSyncList returned error: %v", res.Content)
 	}

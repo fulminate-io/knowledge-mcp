@@ -77,6 +77,12 @@ func (s *stubEngine) PipelineGenPoll(
 	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("stubEngine: PipelineGenPoll not scripted"))
 }
 
+func (s *stubEngine) CorpusDelta(
+	context.Context, *connect.Request[knowledgev1.CorpusDeltaRequest],
+) (*connect.Response[knowledgev1.CorpusDeltaResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, fmt.Errorf("stubEngine: CorpusDelta not scripted"))
+}
+
 func (s *stubEngine) ExportGraph(
 	context.Context, *connect.Request[knowledgev1.ExportGraphRequest],
 ) (*connect.Response[knowledgev1.ExportGraphResponse], error) {
@@ -128,7 +134,7 @@ func TestGraphClientExecute_ReturnsResponse(t *testing.T) {
 		},
 	}
 
-	resp, err := gc.Execute(context.Background(), req)
+	resp, err := gc.Execute(opCtx(), req)
 	require.NoError(t, err)
 	require.NotNil(t, resp)
 	assert.Equal(t, []string{"node-a", "node-b"}, resp.GetIds())
@@ -152,7 +158,7 @@ func TestGraphClientExecute_SurfacesTransportError(t *testing.T) {
 			Query: &knowledgev1.QueryPlan{ById: "x"},
 		},
 	}
-	resp, err := gc.Execute(context.Background(), req)
+	resp, err := gc.Execute(opCtx(), req)
 	require.Error(t, err)
 	assert.Nil(t, resp, "transport error returns nil response")
 	assert.Equal(t, connect.CodeInvalidArgument, connect.CodeOf(err))

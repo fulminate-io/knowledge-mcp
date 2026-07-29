@@ -119,8 +119,16 @@ func (m *Manager) Search(
 //
 // The (ok=false, err=nil) tuple distinguishes loaded-fine-but-no-such-id (the node
 // is not embedded / not in any shipped segment yet) from a load failure (err!=nil).
-// The caller turns ok=false into a LOUD error with rebuild guidance — never a
-// silent empty success. Only the HNSW engine is consulted (BM25 has no vectors).
+// How ok=false is handled BELONGS TO THE CALLER, and the two callers read it
+// oppositely and correctly:
+//   - the mode:"similar" search claim turns ok=false into a LOUD error with rebuild
+//     guidance — never a silent empty success, because a search that silently
+//     returns nothing looks like "no similar nodes" rather than "no query vector";
+//   - the propagation loop's leaf attachment treats ok=false as the ordinary
+//     VECTORLESS case: the node is recorded for retry on a later pass, once its
+//     vector has been embedded and shipped, and attachment proceeds for the rest.
+//
+// Only the HNSW engine is consulted (BM25 has no vectors).
 func (m *Manager) VectorByID(
 	ctx context.Context,
 	gt kgtypes.GraphType,

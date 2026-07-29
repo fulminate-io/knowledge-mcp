@@ -4,6 +4,7 @@ package thought
 
 import (
 	"context"
+	"log/slog"
 	"sort"
 	"time"
 
@@ -105,14 +106,15 @@ func lessPairDesc(a, b ClusterPairScalar) bool {
 // vector (the influence-keyed facet then sees zero influence everywhere, leaving
 // the other facets intact) rather than failing the whole surface. Called by the
 // propagation loop's computeBlindSpots so the facet classifier gets the influence
-// signal for free off the loop's tick.
-func BlindSpotInfluenceVector(ctx context.Context, gc Caller, thoughtIDs []string) map[string]float64 {
+// signal for free off the loop's tick — the loop passes itself as src, so the
+// matrix build reads the resident corpus instead of re-draining.
+func BlindSpotInfluenceVector(ctx context.Context, gc Caller, thoughtIDs []string, src CorpusSource) map[string]float64 {
 	if len(thoughtIDs) == 0 {
 		return nil
 	}
 	// One now for this pass: the recency-weighted SelfTrust diagonal.
 	now := time.Now()
-	matrix, err := BuildTrustMatrix(ctx, gc, thoughtIDs, now)
+	matrix, err := BuildTrustMatrix(ctx, gc, thoughtIDs, now, src)
 	if err != nil {
 		return nil
 	}
@@ -120,15 +122,24 @@ func BlindSpotInfluenceVector(ctx context.Context, gc Caller, thoughtIDs []strin
 }
 
 // ReflectSummary returns a high-level overview of the thought store.
-// Issues a small number of bulk wire calls — list-by-type for the
-// three node-type counters, ONE bulk fetchChargesFor, ONE bulk
-// fetchNodesByIDs for recent thought hydration.
-func ReflectSummary(ctx context.Context, gc Caller, clusters []ThoughtCluster) ThoughtGraphSummary {
+// The thought set is served O(1) from the resident corpus cache when src is warm
+// and otherwise drained (fetchAllThoughtNodes); the full Node payloads are
+// in hand from that single read, so the recent-thoughts render slices them directly
+// (no second fetchNodesByIDs hydrate). Charge/session counters keep their own
+// type-browse (countByType) — those classes are counted, not reflected over, and the
+// resident cache is the thought set. ONE bulk fetchChargesFor for the aggregates.
+func ReflectSummary(ctx context.Context, gc Caller, clusters []ThoughtCluster, src CorpusSource) ThoughtGraphSummary {
 	var summary ThoughtGraphSummary
 	summary.ClusterCount = len(clusters)
 
-	// Count thoughts/charges/sessions via list-by-type via query tool.
-	thoughtIDs, _ := listAllThoughtIDs(ctx, gc)
+	thoughts, err := fetchAllThoughtNodes(ctx, gc, src)
+	if err != nil {
+		slog.Warn("thought: ReflectSummary: thought read failed", "err", err)
+	}
+	thoughtIDs := make([]string, 0, len(thoughts))
+	for _, n := range thoughts {
+		thoughtIDs = append(thoughtIDs, n.Id)
+	}
 	summary.TotalThoughts = len(thoughtIDs)
 	summary.TotalCharges = countByType(ctx, gc, "charge")
 	summary.TotalSessions = countByType(ctx, gc, "thought_session")
@@ -145,13 +156,8 @@ func ReflectSummary(ctx context.Context, gc Caller, clusters []ThoughtCluster) T
 		summary.AvgValence = totalV / float64(summary.TotalThoughts)
 		summary.AvgMagnitude = totalM / float64(summary.TotalThoughts)
 
-		// Recent thoughts — pull all and sort by CreatedAt; ONE bulk
-		// hydrate for the full set so we can sort and slice client-side.
-		nodes := fetchNodesByIDs(ctx, gc, thoughtIDs)
-		all := make([]*knowledgev1.Node, 0, len(nodes))
-		for _, n := range nodes {
-			all = append(all, n)
-		}
+		// Recent thoughts — sort the in-hand full payloads by CreatedAt and slice.
+		all := append([]*knowledgev1.Node(nil), thoughts...)
 		sort.Slice(all, func(i, j int) bool {
 			return all[i].CreatedAt > all[j].CreatedAt
 		})
@@ -216,9 +222,22 @@ func browseNodeIDs(ctx context.Context, gc Caller, nodeType string) ([]string, e
 
 // queryArgs is the typed payload for the type-browse query call. Kept as a
 // struct so json.Marshal stays errchkjson-safe (map[string]any triggers
-// the unsafe-type lint). Offset carries the paging cursor for drainThoughtBrowse.
+// the unsafe-type lint). AfterID carries the paging cursor for drainThoughtBrowse;
+// Offset is left unset by that drain (the two are mutually exclusive server-side).
+// This struct is marshaled to JSON and re-parsed by engine.Compile, so every tag
+// here must match the engine-side queryArgs exactly.
 type queryArgs struct {
 	Type   string `json:"type"`
 	Limit  int    `json:"limit"`
 	Offset int    `json:"offset"`
+	// SkipTotal drops the per-page paginating COUNT: the drain discards Total, so
+	// the single-layer executor returns Total==offset+pageRows instead of running
+	// a COUNT for every page. Set by drainThoughtBrowse.
+	SkipTotal bool `json:"skip_total"`
+	// AfterID selects the id-keyset browse and carries its cursor. A POINTER so
+	// PRESENCE survives this JSON hop: page 1 of the drain sets it to the EMPTY
+	// string, and a plain string would marshal that identically to "no keyset
+	// browse", which puts page 1 back on the backend's default order and makes the
+	// cursor derived from it skip every lower id.
+	AfterID *string `json:"after_id"`
 }

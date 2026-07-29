@@ -65,9 +65,9 @@ func TestGCSCloudPathE2E(t *testing.T) {
 	require.Positive(t, backend.fetchBatchCalls, "the consumer fetched blobs via fetch-batch")
 
 	// The coverage read over the consumer returns the manifest doc counts.
-	snap, err := consumer.ShippedManifestSnapshot(ctx, gt, name)
+	snap, err := consumer.ShippedManifestSnapshot(ctx, gt, name, "hnsw")
 	require.NoError(t, err)
-	covered, anyUnknown := consumer.ShippedDocCountFromSnapshot(snap)
+	covered, anyUnknown := consumer.ShippedDocCountFromSnapshot(snap, "hnsw")
 	require.Equal(t, searchCorpusN, covered, "ShippedManifestSnapshot returns the manifest HNSW doc count")
 	require.False(t, anyUnknown)
 

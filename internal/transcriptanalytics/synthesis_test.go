@@ -19,7 +19,7 @@ func TestSynthesize_WithFakeClient(t *testing.T) {
 	fake := llm.NewFakeClient(&llm.Response{
 		Content: `{"recommendations":[
 			{"title":"Stop rerunning the same Bash command","category":"duplicate_work","impact":"high","rationale":"Bash/h1 ran twice wasting 2000ms"},
-			{"title":"Reduce Read latency","category":"tool_latency","impact":"medium","rationale":"Read p90 is 3000ms"}
+			{"title":"Reduce Read latency","category":"tool_latency","impact":"medium","rationale":"Read p90 is 4095ms"}
 		]}`,
 	})
 	s := &Synthesizer{client: fake, model: "test-model"}

@@ -22,9 +22,10 @@ type fakeGraphCaller struct {
 	nodes []*knowledgev1.Node
 	edges []*knowledgev1.Edge
 
-	calls       int
-	mutations   []*knowledgev1.MutationPlan
-	mutationErr error
+	calls        int
+	lastEdgePlan *knowledgev1.QueryPlan
+	mutations    []*knowledgev1.MutationPlan
+	mutationErr  error
 }
 
 func (f *fakeGraphCaller) Execute(_ context.Context, req *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error) {
@@ -36,6 +37,7 @@ func (f *fakeGraphCaller) Execute(_ context.Context, req *knowledgev1.ExecuteReq
 	q := req.GetQuery()
 	resp := &knowledgev1.ExecuteResponse{}
 	if q.GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_EDGES {
+		f.lastEdgePlan = q
 		resp.Edges = f.edges
 		return resp, nil
 	}
@@ -67,8 +69,15 @@ func TestLoadSourceView_TwoExecuteRPCs_PopulatesIndexes(t *testing.T) {
 	sv, err := loadSourceView(context.Background(), f, kgtypes.GraphWebRaw, "src")
 	require.NoError(t, err)
 
-	// N+1 avoidance: exactly two Execute RPCs (FetchAllNodes + FetchEdges).
+	// N+1 avoidance: exactly two Execute RPCs (FetchAllNodes + FetchAllEdges).
 	assert.Equal(t, 2, f.calls, "loadSourceView must issue exactly 2 Execute RPCs")
+
+	// The edge read is the MATCH-ALL form: this view indexes every node, so it
+	// asks for the graph's edges rather than listing every id as a pivot.
+	require.NotNil(t, f.lastEdgePlan, "an edges plan must have been issued")
+	assert.Empty(t, f.lastEdgePlan.GetIds(), "match-all plan carries no ids[] pivot")
+	assert.Empty(t, f.lastEdgePlan.GetById(), "match-all plan carries no by_id pivot")
+	assert.Empty(t, f.lastEdgePlan.GetSelection().GetFromId(), "match-all plan carries no from_id pivot")
 
 	// byID indexes every node.
 	assert.Len(t, sv.byID, 3)
@@ -90,8 +99,8 @@ func TestLoadSourceView_EmptyGraph_OneRPC(t *testing.T) {
 	f := &fakeGraphCaller{} // no nodes
 	sv, err := loadSourceView(context.Background(), f, kgtypes.GraphWebRaw, "src")
 	require.NoError(t, err)
-	// With zero node IDs there is nothing to fetch edges for; the edges RPC is
-	// skipped (mirrors foundation.materializeEdges' len(ids)==0 short-circuit).
+	// With no nodes indexed there is nothing to attach edges to; the edges RPC is
+	// skipped (mirrors foundation.materializeEdges' empty-node-set short-circuit).
 	assert.Equal(t, 1, f.calls)
 	assert.Empty(t, sv.byID)
 }

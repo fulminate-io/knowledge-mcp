@@ -69,7 +69,7 @@ func TestDetectPersistedClusters(t *testing.T) {
 			thoughtWithCluster("t5", "cB"),
 			thoughtWithCluster("t6", "cC"),
 		}}
-		clusters, err := DetectPersistedClusters(ctx, fc)
+		clusters, err := DetectPersistedClusters(ctx, fc, nil)
 		require.NoError(t, err)
 		require.Len(t, clusters, 3)
 		// Sorted by size desc: cA(3) > cB(2) > cC(1).
@@ -94,7 +94,7 @@ func TestDetectPersistedClusters(t *testing.T) {
 			thoughtWithCluster("t1", ""),
 			thoughtWithCluster("t2", ""),
 		}}
-		clusters, err := DetectPersistedClusters(ctx, fc)
+		clusters, err := DetectPersistedClusters(ctx, fc, nil)
 		assert.Nil(t, clusters)
 		require.Error(t, err)
 		assert.ErrorIs(t, err, ErrClustersNotComputed,
@@ -104,7 +104,7 @@ func TestDetectPersistedClusters(t *testing.T) {
 	// (3) Zero nodes → ordinary empty case (nil, nil), distinct from the cold case.
 	t.Run("empty_graph_returns_clean", func(t *testing.T) {
 		fc := &persistedClustersFakeCaller{thoughtNodes: nil}
-		clusters, err := DetectPersistedClusters(ctx, fc)
+		clusters, err := DetectPersistedClusters(ctx, fc, nil)
 		require.NoError(t, err)
 		assert.Empty(t, clusters)
 		assert.NotErrorIs(t, err, ErrClustersNotComputed)

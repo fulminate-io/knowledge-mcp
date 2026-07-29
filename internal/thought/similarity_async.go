@@ -3,6 +3,7 @@
 package thought
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 )
@@ -21,7 +22,12 @@ import (
 // inside the async goroutine after RunSimilarityPass returns (or panics — see
 // StartSimilarityPass). It is the no-import-cycle seam: tools imports thought, so
 // the renderer/persister cannot live here; the tools-side closure does that work.
-type SimilarityComplete func(report SimilarityReport, err error)
+//
+// ctx is supplied by the PropagationLoop that owns the goroutine — its
+// daemon-lifetime context, the same one the pass runs on. The callback fires long
+// after the triggering tool call returned, so the caller's request context would
+// already be dead; the completion write belongs to the goroutine's OWNER.
+type SimilarityComplete func(ctx context.Context, report SimilarityReport, err error)
 
 // StartSimilarityPass is the async entry point behind the manual similarity lever.
 // It acquires the reflection single-flight guard SYNCHRONOUSLY in the caller's
@@ -104,7 +110,10 @@ func (p *PropagationLoop) StartSimilarityPass(
 		}()
 
 		if onComplete != nil {
-			onComplete(rep, err)
+			// Same p.baseContext() the pass itself ran on above — the loop owns
+			// both, so the completion write outlives the triggering call exactly
+			// as far as the pass does, and no further.
+			onComplete(p.baseContext(), rep, err)
 		}
 	})
 	return true

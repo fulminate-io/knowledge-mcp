@@ -64,7 +64,7 @@ func TestRouter_LocalOnly_NoAuth(t *testing.T) {
 	as := auth.NewAuthState(store, time.Hour)
 	r := NewRouter(localGC, "http://cloud.invalid", staticTokenSource{}, as)
 
-	_, err := r.Execute(context.Background(), &knowledgev1.ExecuteRequest{})
+	_, err := r.Execute(opCtx(), &knowledgev1.ExecuteRequest{})
 	require.NoError(t, err)
 	assert.Equal(t, int32(1), localEng.execute.Load(), "local should have received the Execute")
 }
@@ -77,11 +77,11 @@ func TestRouter_Auth_RoutesCloud(t *testing.T) {
 	localGC := NewGraphClientForURL(localURL)
 
 	store := newFakeAuthStore()
-	require.NoError(t, store.Set(context.Background(), auth.KeyRefreshToken, "frt-stub"))
+	require.NoError(t, store.Set(opCtx(), auth.KeyRefreshToken, "frt-stub"))
 	as := auth.NewAuthState(store, time.Hour) // long TTL — single fresh check
 	r := NewRouter(localGC, cloudURL, staticTokenSource{tok: "tok-cloud"}, as)
 
-	_, err := r.Execute(context.Background(), &knowledgev1.ExecuteRequest{})
+	_, err := r.Execute(opCtx(), &knowledgev1.ExecuteRequest{})
 	require.NoError(t, err)
 	assert.Equal(t, int32(0), localEng.execute.Load(), "local should not have been called")
 	assert.Equal(t, int32(1), cloudEng.execute.Load(), "cloud should have serviced the call")
@@ -95,7 +95,7 @@ func TestRouter_NoLocalNoAuth_ReturnsErrNoBackend(t *testing.T) {
 	as := auth.NewAuthState(store, time.Hour)
 	r := NewRouter(nil, "http://cloud.invalid", staticTokenSource{}, as)
 
-	_, err := r.Execute(context.Background(), &knowledgev1.ExecuteRequest{})
+	_, err := r.Execute(opCtx(), &knowledgev1.ExecuteRequest{})
 	require.Error(t, err)
 	require.ErrorIs(t, err, ErrNoBackend, "must wrap ErrNoBackend")
 	msg := err.Error()
@@ -108,11 +108,11 @@ func TestRouter_NoLocalNoAuth_ReturnsErrNoBackend(t *testing.T) {
 func TestRouter_NoLocal_Auth_RoutesCloud(t *testing.T) {
 	cloudURL, cloudEng := startCountingEngine(t)
 	store := newFakeAuthStore()
-	require.NoError(t, store.Set(context.Background(), auth.KeyRefreshToken, "frt-stub"))
+	require.NoError(t, store.Set(opCtx(), auth.KeyRefreshToken, "frt-stub"))
 	as := auth.NewAuthState(store, time.Hour)
 	r := NewRouter(nil, cloudURL, staticTokenSource{tok: "tok-cloud"}, as)
 
-	_, err := r.Execute(context.Background(), &knowledgev1.ExecuteRequest{})
+	_, err := r.Execute(opCtx(), &knowledgev1.ExecuteRequest{})
 	require.NoError(t, err)
 	assert.Equal(t, int32(1), cloudEng.execute.Load())
 }
@@ -124,19 +124,19 @@ func TestRouter_DownLocal_Auth_RoutesCloud(t *testing.T) {
 	cloudURL, cloudEng := startCountingEngine(t)
 	localGC := newUnhealthyLocalClient(t)
 	store := newFakeAuthStore()
-	require.NoError(t, store.Set(context.Background(), auth.KeyRefreshToken, "frt-stub"))
+	require.NoError(t, store.Set(opCtx(), auth.KeyRefreshToken, "frt-stub"))
 	as := auth.NewAuthState(store, time.Hour)
 	r := NewRouter(localGC, cloudURL, staticTokenSource{tok: "tok-cloud"}, as)
 
-	_, err := r.Execute(context.Background(), &knowledgev1.ExecuteRequest{})
+	_, err := r.Execute(opCtx(), &knowledgev1.ExecuteRequest{})
 	require.NoError(t, err)
 	assert.Equal(t, int32(1), cloudEng.execute.Load(), "cloud serviced Execute despite the down local")
 
 	// The collect path picks the same routed target (not the down local).
-	picked, perr := r.Backend(context.Background())
+	picked, perr := r.Backend(opCtx())
 	require.NoError(t, perr)
 	assert.NotSame(t, localGC, picked, "collect routing must not select the down local")
-	ingest, ierr := r.IngestClient(context.Background())
+	ingest, ierr := r.IngestClient(opCtx())
 	require.NoError(t, ierr)
 	assert.NotNil(t, ingest, "IngestClient resolves a routed target with no healthy local")
 }
@@ -155,7 +155,7 @@ func TestRouter_DownLocal_Auth_RoutesCloud(t *testing.T) {
 func TestRouter_CloudBuiltLazilyOnce(t *testing.T) {
 	cloudURL, cloudEng := startCountingEngine(t)
 	store := newFakeAuthStore()
-	require.NoError(t, store.Set(context.Background(), auth.KeyRefreshToken, "frt-stub"))
+	require.NoError(t, store.Set(opCtx(), auth.KeyRefreshToken, "frt-stub"))
 	as := auth.NewAuthState(store, time.Hour)
 	r := NewRouter(nil, cloudURL, staticTokenSource{tok: "tok"}, as)
 
@@ -166,7 +166,7 @@ func TestRouter_CloudBuiltLazilyOnce(t *testing.T) {
 
 	const N = 100
 	for range N {
-		_, err := r.Execute(context.Background(), &knowledgev1.ExecuteRequest{})
+		_, err := r.Execute(opCtx(), &knowledgev1.ExecuteRequest{})
 		require.NoError(t, err)
 	}
 	assert.Equal(t, int32(N), cloudEng.execute.Load())
@@ -179,7 +179,7 @@ func TestRouter_CloudBuiltLazilyOnce(t *testing.T) {
 	require.NotNil(t, first, "cloud should be cached after first call")
 
 	for range 10 {
-		_, err := r.Execute(context.Background(), &knowledgev1.ExecuteRequest{})
+		_, err := r.Execute(opCtx(), &knowledgev1.ExecuteRequest{})
 		require.NoError(t, err)
 		r.mu.Lock()
 		assert.Same(t, first, r.cloud, "cloud pointer must remain stable across calls (constructor fired once)")
@@ -213,17 +213,17 @@ func TestRouter_MidSessionLoginSwap(t *testing.T) {
 	r := NewRouter(localGC, cloudURL, staticTokenSource{tok: "tok"}, as)
 
 	// First call: not logged in → local.
-	_, err := r.Execute(context.Background(), &knowledgev1.ExecuteRequest{})
+	_, err := r.Execute(opCtx(), &knowledgev1.ExecuteRequest{})
 	require.NoError(t, err)
 	assert.Equal(t, int32(1), localEng.execute.Load())
 	assert.Equal(t, int32(0), cloudEng.execute.Load())
 
 	// User runs `knowledge login` → keychain populated.
-	require.NoError(t, store.Set(context.Background(), auth.KeyRefreshToken, "frt-fresh"))
+	require.NoError(t, store.Set(opCtx(), auth.KeyRefreshToken, "frt-fresh"))
 	time.Sleep(50 * time.Millisecond) // > ttl
 
 	// Next call: logged in → cloud.
-	_, err = r.Execute(context.Background(), &knowledgev1.ExecuteRequest{})
+	_, err = r.Execute(opCtx(), &knowledgev1.ExecuteRequest{})
 	require.NoError(t, err)
 	assert.Equal(t, int32(1), localEng.execute.Load(), "local count must not advance")
 	assert.Equal(t, int32(1), cloudEng.execute.Load(), "cloud must have serviced the second call")
@@ -241,7 +241,7 @@ func TestRouter_IngestClient_RoutesByLogin(t *testing.T) {
 	as := auth.NewAuthState(store, time.Millisecond)
 	r := NewRouter(localGC, cloudURL, staticTokenSource{tok: "tok"}, as)
 
-	ctx := context.Background()
+	ctx := opCtx()
 
 	// Not logged in → IngestClient resolves the local backend's ingest client.
 	ic, err := r.IngestClient(ctx)
@@ -275,7 +275,7 @@ func TestRouter_Backend_RoutesByLogin(t *testing.T) {
 	as := auth.NewAuthState(store, time.Millisecond)
 	r := NewRouter(localGC, cloudURL, staticTokenSource{tok: "tok"}, as)
 
-	ctx := context.Background()
+	ctx := opCtx()
 
 	// Not logged in → Backend resolves the local *GraphClient.
 	be, err := r.Backend(ctx)
@@ -304,7 +304,7 @@ func TestRouter_Backend_NoBackend(t *testing.T) {
 	as := auth.NewAuthState(store, time.Hour)
 	r := NewRouter(nil, "http://cloud.invalid", staticTokenSource{}, as)
 
-	_, err := r.Backend(context.Background())
+	_, err := r.Backend(opCtx())
 	require.ErrorIs(t, err, ErrNoBackend)
 }
 
@@ -323,7 +323,7 @@ func TestRouter_Forwarders_RouteAtCallTime(t *testing.T) {
 	as := auth.NewAuthState(store, time.Millisecond)
 	r := NewRouter(localGC, cloudURL, staticTokenSource{tok: "tok"}, as)
 
-	ctx := context.Background()
+	ctx := opCtx()
 
 	// Per-forwarder (name → invoke → readers).
 	type forwarder struct {
@@ -420,11 +420,11 @@ func TestRouter_MachineAuth_RoutesCloudWithoutLogin(t *testing.T) {
 	as := auth.NewAuthState(store, time.Hour)
 	r := NewRouterWithMachineAuth(localGC, cloudURL, staticTokenSource{tok: "machine-tok"}, as, true)
 
-	_, err := r.Execute(context.Background(), &knowledgev1.ExecuteRequest{})
+	_, err := r.Execute(opCtx(), &knowledgev1.ExecuteRequest{})
 	require.NoError(t, err)
 	assert.Equal(t, int32(0), localEng.execute.Load(), "machine-auth must not route to local")
 	assert.Equal(t, int32(1), cloudEng.execute.Load(), "machine-auth routes cloud without keychain login")
-	assert.True(t, r.LoggedIn(context.Background()), "machine-auth must report LoggedIn==true (cloud-only, no local)")
+	assert.True(t, r.LoggedIn(opCtx()), "machine-auth must report LoggedIn==true (cloud-only, no local)")
 }
 
 // TestRouter_MachineAuthFalse_UnchangedSelection is the regression guard that
@@ -438,9 +438,9 @@ func TestRouter_MachineAuthFalse_UnchangedSelection(t *testing.T) {
 	as := auth.NewAuthState(store, time.Hour)
 	r := NewRouterWithMachineAuth(localGC, cloudURL, staticTokenSource{}, as, false)
 
-	_, err := r.Execute(context.Background(), &knowledgev1.ExecuteRequest{})
+	_, err := r.Execute(opCtx(), &knowledgev1.ExecuteRequest{})
 	require.NoError(t, err)
 	assert.Equal(t, int32(1), localEng.execute.Load(), "machineAuth=false + empty store still routes local")
 	assert.Equal(t, int32(0), cloudEng.execute.Load(), "cloud must not be hit without auth")
-	assert.False(t, r.LoggedIn(context.Background()), "machineAuth=false + empty store reports LoggedIn==false")
+	assert.False(t, r.LoggedIn(opCtx()), "machineAuth=false + empty store reports LoggedIn==false")
 }

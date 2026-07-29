@@ -81,6 +81,13 @@ type collector struct {
 	// (test fakes) → the armed embed-drain heal-check no-ops.
 	healIfSegmentless func(ctx context.Context) error
 
+	// healDisarmed latches true when healIfSegmentless returns ErrHealDisarmed (the
+	// per-graph heal breaker tripped). Once set, the embed-wake arm site stops re-arming
+	// the per-wake heal check, so a disarmed graph stops invoking the closure every wake
+	// — breaking the self-sustaining ~70s heal re-fire. Never cleared in-process (the
+	// breaker re-arms only on a manual rebuild_segments or a restart).
+	healDisarmed atomic.Bool
+
 	// baseTick is this collector's BUSY poll interval, chosen at registration
 	// from the bound backend's login state (Config.Tick for local,
 	// Config.CloudTick for remote). Zero falls back to Config.TickOrDefault.
@@ -365,8 +372,15 @@ func (c *collector) runLoop(ctx context.Context, ax loopAxis) {
 			return
 		}
 		// A collect-wake on the embed axis arms the auto-heal check; the next embed
-		// drain edge consumes it (Phase 4: maybeHealCheck above).
-		if byWake && ax.axis == "embed" {
+		// drain edge consumes it (maybeHealCheck above). A breaker-disarmed graph
+		// (healDisarmed latched) stops re-arming so the closure is no longer invoked
+		// per wake — ending the self-sustaining heal re-fire.
+		if byWake && ax.axis == "embed" && !c.healDisarmed.Load() {
+			// Re-fire observability (kept): every embed-wake re-arm is one turn of the
+			// auto-heal cadence. Logging it makes the re-fire source (organic gen-advance
+			// wake vs the heal/flush's own writes waking the loop) visible per cycle.
+			slog.Debug("pipeline.collector: embed-wake re-armed auto-heal latch",
+				"graph_type", c.gt, "name", c.name)
 			healArmed = true
 		}
 	}

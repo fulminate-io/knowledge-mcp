@@ -93,6 +93,13 @@ func (e *countingEngine) PipelineGenPoll(
 	return connect.NewResponse(&knowledgev1.PipelineGenPollResponse{}), nil
 }
 
+func (e *countingEngine) CorpusDelta(
+	_ context.Context,
+	_ *connect.Request[knowledgev1.CorpusDeltaRequest],
+) (*connect.Response[knowledgev1.CorpusDeltaResponse], error) {
+	return connect.NewResponse(&knowledgev1.CorpusDeltaResponse{}), nil
+}
+
 func (e *countingEngine) ExportGraph(_ context.Context, _ *connect.Request[knowledgev1.ExportGraphRequest]) (*connect.Response[knowledgev1.ExportGraphResponse], error) {
 	e.exportGraph.Add(1)
 	return connect.NewResponse(&knowledgev1.ExportGraphResponse{}), nil

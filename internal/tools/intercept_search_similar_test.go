@@ -63,7 +63,7 @@ func TestInterceptSearch_SimilarMode(t *testing.T) {
 	deps := &interceptDeps{gc: gc, segMgr: mgr, segRes: res}
 
 	k := 2
-	handled, out := InterceptSearch(deps, searchParams(t, map[string]any{
+	handled, out := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{
 		"graph": "knowledge", "mode": "similar", "node_id": "n_self", "limit": k,
 	}))
 	require.True(t, handled)
@@ -98,7 +98,7 @@ func TestInterceptSearch_SimilarMode_RequiresNodeID(t *testing.T) {
 	mgr := &fakeSegmentSearcher{}
 	deps := &interceptDeps{gc: newInterceptHarness(t, new(atomic.Int64), cannedNodesResp()), segMgr: mgr, segRes: res}
 
-	handled, out := InterceptSearch(deps, searchParams(t, map[string]any{
+	handled, out := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{
 		"graph": "knowledge", "mode": "similar", "node_id": "",
 	}))
 	require.True(t, handled, "empty node_id must be CLAIMED (loud-error), not fall through")
@@ -115,7 +115,7 @@ func TestInterceptSearch_SimilarMode_RequiresStoredVector(t *testing.T) {
 	mgr := &fakeSegmentSearcher{}
 	deps := &interceptDeps{gc: newInterceptHarness(t, new(atomic.Int64), cannedNodesResp()), segMgr: mgr, segRes: res}
 
-	handled, out := InterceptSearch(deps, searchParams(t, map[string]any{
+	handled, out := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{
 		"graph": "knowledge", "mode": "similar", "node_id": "ghost",
 	}))
 	require.True(t, handled)
@@ -146,7 +146,7 @@ func TestInterceptSearch_SimilarMode_RequiresDeps(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			handled, out := InterceptSearch(tc.deps, searchParams(t, map[string]any{
+			handled, out := InterceptSearch(opCtx(), tc.deps, searchParams(t, map[string]any{
 				"graph": "knowledge", "mode": "similar", "node_id": "n1",
 			}))
 			require.True(t, handled, "nil deps must be CLAIMED (loud-error), not fall through to server search")
@@ -165,7 +165,7 @@ func TestInterceptSearch_SimilarMode_NonKnowledgeGraphNotClaimed(t *testing.T) {
 
 	// graph=cloud + mode=similar: the similar claim's isKnowledgeDefaultGraph gate is
 	// false, so the resolver is NEVER queried (the reducible-graph arm handles cloud).
-	handled, _ := InterceptSearch(deps, searchParams(t, map[string]any{
+	handled, _ := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{
 		"graph": "cloud", "mode": "similar", "node_id": "n1", "account": "acct",
 	}))
 	require.True(t, handled, "graph=cloud is claimed by the reducible-graph arm")

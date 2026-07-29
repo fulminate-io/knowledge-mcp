@@ -3,7 +3,6 @@
 package bootstrap
 
 import (
-	"context"
 	"encoding/json"
 	"testing"
 
@@ -41,7 +40,7 @@ func TestServeBindFirst_EngineOpWorks_RuntimeOpsGated(t *testing.T) {
 	// flags default false (zero value) — the bind-first wiring window.
 	c := buildE2EClient(local, "http://cloud.invalid", newFakeAuthStore(), 0)
 
-	ctx := context.Background()
+	ctx := opCtx()
 
 	call := func(name string, args map[string]any) (kgtools.ToolResult, bool) {
 		raw, err := json.Marshal(args)

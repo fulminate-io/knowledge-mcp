@@ -66,7 +66,7 @@ var (
 
 // InterceptQueryCloudCICD claims query(graph in {cloud,cicd}). Returns (false,_)
 // for any other tool/graph so the next chain step takes over.
-func InterceptQueryCloudCICD(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
+func InterceptQueryCloudCICD(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	if params.Name != "query" {
 		return false, kgtools.ToolResult{}
 	}
@@ -87,7 +87,6 @@ func InterceptQueryCloudCICD(deps ClientDeps, params kgtools.CallToolParams) (bo
 	if gc == nil {
 		return true, errorResult(a.Graph + ": graph client unavailable")
 	}
-	ctx := context.Background()
 
 	// (1) list-graphs: no account, no id/text, mode != stats.
 	if a.Account == "" && a.ID == "" && a.Text == "" && a.Mode != "stats" {
@@ -247,6 +246,7 @@ func resourceBrowse(ctx context.Context, exec engine.ExecuteFn, kind resourceGra
 			Selection: sel,
 			Limit:     int32(limit),
 			Offset:    int32(offset),
+			SkipTotal: true, // the renderer reads only the decoded nodes, never Total
 		}},
 		Target: resourceTarget(kind.graph, a.Account),
 	})
@@ -339,6 +339,7 @@ func fetchTypeSamples(ctx context.Context, exec engine.ExecuteFn, graph, account
 			Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
 				Selection: &knowledgev1.Selection{NodeType: nt},
 				Limit:     2,
+				SkipTotal: true,
 			}},
 			Target: resourceTarget(graph, account),
 		})

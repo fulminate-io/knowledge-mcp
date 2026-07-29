@@ -38,9 +38,7 @@ type syncListRow struct {
 // (graphType, name) to show sync status + last-synced time. Local enumeration
 // always runs; cloud enumeration is gated on the cloudStatusInfo login check.
 // The authoritative "last synced" source is the CLOUD GraphInfo.SyncTime.
-func handleSyncList(deps ClientDeps) kgtools.ToolResult {
-	ctx := context.Background()
-
+func handleSyncList(ctx context.Context, deps ClientDeps) kgtools.ToolResult {
 	local := deps.LocalGraphCaller()
 	if local == nil {
 		return errorResult("sync list: local graph caller unavailable — no local server is wired (cloud-first user without `knowledge install`)")

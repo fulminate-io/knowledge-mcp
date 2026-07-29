@@ -7,6 +7,8 @@ import (
 	"log/slog"
 	"time"
 
+	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
+
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
@@ -112,6 +114,9 @@ func (p *Pipeline) genPollOnce(ctx context.Context) (time.Duration, bool) {
 	}
 
 	// (2) ONE bulk RPC — no locks held while it is in flight.
+	// The cheap once-per-tick bulk poll. Distinct from the gap scans it gates so
+	// the metrics can show the poll staying cheap while scans stay rare.
+	ctx = graphclient.WithOperation(ctx, graphclient.OpPipelineGenPoll)
 	resp, err := p.client.PipelineGenPoll(ctx, &knowledgev1.PipelineGenPollRequest{Graphs: reqGraphs})
 	if err != nil {
 		if hint, isRL := rateLimitHint(err); isRL {

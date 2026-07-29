@@ -29,7 +29,7 @@ func TestRegisteredGraphSearch_SearchToolRoutesToClientEngine(t *testing.T) {
 	mgr := &fakeSegmentSearcher{hits: []searchengine.Hit{{ID: "h1", Score: 0.9}}}
 	deps := &interceptDeps{gc: gc, emb: stubEmbedder{calls: &embedCalls}, segMgr: mgr}
 
-	handled, out := InterceptSearch(deps, searchParams(t, map[string]any{
+	handled, out := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{
 		"graph": "hellograph",
 		"name":  "demo",
 		"query": "world",
@@ -61,7 +61,7 @@ func TestRegisteredGraphSearch_EmptyNameGracefulEmpty(t *testing.T) {
 	mgr := &fakeSegmentSearcher{hits: []searchengine.Hit{}}
 	deps := &interceptDeps{gc: gc, emb: stubEmbedder{calls: &embedCalls}, segMgr: mgr}
 
-	handled, out := InterceptSearch(deps, searchParams(t, map[string]any{
+	handled, out := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{
 		"graph": "hellograph",
 		"query": "world", // no name → empty instance key
 	}))
@@ -90,7 +90,7 @@ func TestRegisteredGraphSearch_BuiltinGraphNotClaimed(t *testing.T) {
 	// may not call Search at all, leaving lastGT zero). Either way, the custom branch
 	// must NOT be what claimed it — so lastGT is never the raw custom-keyed
 	// GraphType("practice").
-	handled, _ := InterceptSearch(deps, searchParams(t, map[string]any{
+	handled, _ := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{
 		"graph": "practice",
 		"query": "x",
 	}))
@@ -113,7 +113,7 @@ func TestInterceptQueryRegisteredGraphSearch(t *testing.T) {
 		deps := &interceptDeps{gc: gc, emb: stubEmbedder{calls: &embedCalls}, segMgr: mgr}
 
 		// mode default (hybrid) carrying ONLY a text query is a claimed text-search shape.
-		handled, out := InterceptQueryRegisteredGraphSearch(deps, queryParams(t, map[string]any{
+		handled, out := InterceptQueryRegisteredGraphSearch(opCtx(), deps, queryParams(t, map[string]any{
 			"graph": "hellograph",
 			"name":  "demo",
 			"mode":  "hybrid",
@@ -136,7 +136,7 @@ func TestInterceptQueryRegisteredGraphSearch(t *testing.T) {
 		mgr := &fakeSegmentSearcher{hits: []searchengine.Hit{}}
 		deps := &interceptDeps{gc: gc, emb: stubEmbedder{calls: &embedCalls}, segMgr: mgr}
 
-		handled, _ := InterceptQueryRegisteredGraphSearch(deps, queryParams(t, map[string]any{
+		handled, _ := InterceptQueryRegisteredGraphSearch(opCtx(), deps, queryParams(t, map[string]any{
 			"graph": "hellograph", "name": "demo", "mode": "text", "text": "world",
 		}))
 		require.True(t, handled, "mode=text custom query is claimed")
@@ -150,7 +150,7 @@ func TestInterceptQueryRegisteredGraphSearch(t *testing.T) {
 		deps := &interceptDeps{gc: gc, emb: stubEmbedder{calls: &embedCalls}, segMgr: mgr}
 
 		// knowledge is a builtin → owned by InterceptQueryKnowledgeSearch, not here.
-		handled, _ := InterceptQueryRegisteredGraphSearch(deps, queryParams(t, map[string]any{
+		handled, _ := InterceptQueryRegisteredGraphSearch(opCtx(), deps, queryParams(t, map[string]any{
 			"graph": "knowledge", "mode": "hybrid", "text": "world",
 		}))
 		require.False(t, handled, "a builtin graph is not claimed by the custom arm")
@@ -165,7 +165,7 @@ func TestInterceptQueryRegisteredGraphSearch(t *testing.T) {
 
 		// An id getNode is a browse/getNode shape, not a text search → fall through,
 		// even when a text field is also present (the id signal wins). Default mode.
-		handled, _ := InterceptQueryRegisteredGraphSearch(deps, queryParams(t, map[string]any{
+		handled, _ := InterceptQueryRegisteredGraphSearch(opCtx(), deps, queryParams(t, map[string]any{
 			"graph": "hellograph", "name": "demo", "id": "h1", "text": "world",
 		}))
 		require.False(t, handled, "an id-shape query is not a text search")
@@ -178,7 +178,7 @@ func TestInterceptQueryRegisteredGraphSearch(t *testing.T) {
 		mgr := &fakeSegmentSearcher{hits: []searchengine.Hit{}}
 		deps := &interceptDeps{gc: gc, emb: stubEmbedder{calls: &embedCalls}, segMgr: mgr}
 
-		handled, _ := InterceptQueryRegisteredGraphSearch(deps, queryParams(t, map[string]any{
+		handled, _ := InterceptQueryRegisteredGraphSearch(opCtx(), deps, queryParams(t, map[string]any{
 			"graph": "hellograph", "name": "demo", "mode": "text",
 		}))
 		require.False(t, handled, "empty text → precheck/deny owns the message")

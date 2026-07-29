@@ -20,6 +20,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/transcriptsync"
 )
 
@@ -60,8 +61,10 @@ func (d *cloudStatusDeps) SegmentShipper() SegmentShipper               { return
 func (d *cloudStatusDeps) SegmentPruner() SegmentPruner                 { return nil }
 func (d *cloudStatusDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
 func (d *cloudStatusDeps) PipelineScanner() PipelineScanner             { return nil }
-func (d *cloudStatusDeps) ReflectionForcer() ReflectionForcer           { return nil }
-func (d *cloudStatusDeps) SimilarityForcer() SimilarityForcer           { return nil }
+
+func (d *cloudStatusDeps) ClearHealLatch(kgtypes.GraphType, string) {}
+func (d *cloudStatusDeps) ReflectionForcer() ReflectionForcer       { return nil }
+func (d *cloudStatusDeps) SimilarityForcer() SimilarityForcer       { return nil }
 
 func (d *cloudStatusDeps) BlindSpotProvider() BlindSpotProvider { return nil }
 func (d *cloudStatusDeps) ClusterProvider() ClusterProvider     { return nil }
@@ -112,7 +115,7 @@ func TestHandleServerStatus_LoggedIn(t *testing.T) {
 	}
 
 	t.Run("text", func(t *testing.T) {
-		res := handleServerStatus(deps, "")
+		res := handleServerStatus(opCtx(), deps, "")
 		require.False(t, res.IsError, textBodyTools(res))
 		body := textBodyTools(res)
 		assert.Contains(t, body, "Backend: cloud (https://dev.fulminate.io)")
@@ -126,7 +129,7 @@ func TestHandleServerStatus_LoggedIn(t *testing.T) {
 	})
 
 	t.Run("json", func(t *testing.T) {
-		res := handleServerStatus(deps, "json")
+		res := handleServerStatus(opCtx(), deps, "json")
 		require.False(t, res.IsError, textBodyTools(res))
 		var got map[string]any
 		require.NoError(t, json.Unmarshal([]byte(textBodyTools(res)), &got))
@@ -162,7 +165,7 @@ func TestHandleServerStatus_LoggedOut_SelectsLocalBranch(t *testing.T) {
 		host:     "https://dev.fulminate.io",
 	}
 
-	res := handleServerStatus(deps, "")
+	res := handleServerStatus(opCtx(), deps, "")
 	// Local path with a closed server reports NOT RUNNING — it does not panic
 	// and it does not route to cloud.
 	assert.Contains(t, textBodyTools(res), "NOT RUNNING")
@@ -239,13 +242,13 @@ func TestHandleServerStatus_TranscriptHealth_LocalPath(t *testing.T) {
 			healthOK: true,
 		}
 
-		body := textBodyTools(handleServerStatus(deps, ""))
+		body := textBodyTools(handleServerStatus(opCtx(), deps, ""))
 		assert.Contains(t, body, "Graph server: RUNNING")
 		assert.Contains(t, body, "Transcript upload:")
 		assert.Contains(t, body, "Last transport OK:")
 
 		var got map[string]any
-		require.NoError(t, json.Unmarshal([]byte(textBodyTools(handleServerStatus(deps, "json"))), &got))
+		require.NoError(t, json.Unmarshal([]byte(textBodyTools(handleServerStatus(opCtx(), deps, "json"))), &got))
 		assert.Contains(t, got, "transcript_last_transport_ok")
 		assert.Contains(t, got, "transcript_files_shipped_lifetime")
 	})
@@ -253,12 +256,12 @@ func TestHandleServerStatus_TranscriptHealth_LocalPath(t *testing.T) {
 	t.Run("degrades when not implemented", func(t *testing.T) {
 		deps := &localNoHealthDeps{cloudStatusDeps: &cloudStatusDeps{loggedIn: false}, live: live}
 
-		body := textBodyTools(handleServerStatus(deps, ""))
+		body := textBodyTools(handleServerStatus(opCtx(), deps, ""))
 		assert.Contains(t, body, "Graph server: RUNNING")
 		assert.NotContains(t, body, "Transcript upload:")
 
 		var got map[string]any
-		require.NoError(t, json.Unmarshal([]byte(textBodyTools(handleServerStatus(deps, "json"))), &got))
+		require.NoError(t, json.Unmarshal([]byte(textBodyTools(handleServerStatus(opCtx(), deps, "json"))), &got))
 		assert.NotContains(t, got, "transcript_last_transport_ok")
 	})
 }
@@ -279,12 +282,12 @@ func TestHandleServerStatus_TranscriptHealth_CloudPath(t *testing.T) {
 			healthOK:        true,
 		}
 
-		body := textBodyTools(handleServerStatus(deps, ""))
+		body := textBodyTools(handleServerStatus(opCtx(), deps, ""))
 		assert.Contains(t, body, "Backend: cloud (https://dev.fulminate.io)", "routed to the cloud status path")
 		assert.Contains(t, body, "Transcript upload:", "the real (logged-in) audience sees the health block")
 
 		var got map[string]any
-		require.NoError(t, json.Unmarshal([]byte(textBodyTools(handleServerStatus(deps, "json"))), &got))
+		require.NoError(t, json.Unmarshal([]byte(textBodyTools(handleServerStatus(opCtx(), deps, "json"))), &got))
 		assert.Equal(t, "cloud", got["backend"])
 		assert.Contains(t, got, "transcript_last_transport_ok")
 	})
@@ -292,12 +295,12 @@ func TestHandleServerStatus_TranscriptHealth_CloudPath(t *testing.T) {
 	t.Run("degrades on the cloud path when not implemented", func(t *testing.T) {
 		deps := &cloudStatusDeps{gc: &modFake{stats: stats}, loggedIn: true, host: "https://dev.fulminate.io"}
 
-		body := textBodyTools(handleServerStatus(deps, ""))
+		body := textBodyTools(handleServerStatus(opCtx(), deps, ""))
 		assert.Contains(t, body, "Backend: cloud")
 		assert.NotContains(t, body, "Transcript upload:")
 
 		var got map[string]any
-		require.NoError(t, json.Unmarshal([]byte(textBodyTools(handleServerStatus(deps, "json"))), &got))
+		require.NoError(t, json.Unmarshal([]byte(textBodyTools(handleServerStatus(opCtx(), deps, "json"))), &got))
 		assert.NotContains(t, got, "transcript_last_transport_ok")
 	})
 }

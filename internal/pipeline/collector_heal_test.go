@@ -100,3 +100,42 @@ func TestMaybeHealCheck_ErrorIsBestEffort(t *testing.T) {
 	require.False(t, armed, "latch disarms even on a heal error (best-effort, per-collect arm)")
 	require.Equal(t, 1, *calls, "the heal was attempted")
 }
+
+// TestMaybeHealCheck_DisarmsOnBreakerSentinel is the collector half of the v5 4.2
+// heal-disarm test: a heal closure returning ErrHealDisarmed (the per-graph heal
+// breaker latched) makes maybeHealCheck set the collector's healDisarmed flag, and the
+// embed-wake arm site (gated on !healDisarmed) then stops re-arming — so the heal never
+// fires again. RED against pre-fix code: maybeHealCheck ignores the sentinel, so
+// healDisarmed stays false and every wake re-arms → the heal re-fires unbounded.
+func TestMaybeHealCheck_DisarmsOnBreakerSentinel(t *testing.T) {
+	ctx := context.Background()
+	c, calls := healCollector(kgtypes.GraphCode, "repo", ErrHealDisarmed)
+
+	// Model runLoop's per-wake cycle: a collect-wake re-arms the latch ONLY while the
+	// collector is not disarmed (the arm-site gate `!c.healDisarmed.Load()` at
+	// collector.go), then the drain edge consumes the latch via maybeHealCheck.
+	armed := false
+	wake := func() {
+		if !c.healDisarmed.Load() {
+			armed = true
+		}
+	}
+	drain := func() { armed = c.maybeHealCheck(ctx, embedAxis, 0, 0, armed) }
+
+	// Wake 1 → drain: the heal fires, returns ErrHealDisarmed, maybeHealCheck latches
+	// healDisarmed and disarms.
+	wake()
+	require.True(t, armed, "the first wake armed the latch")
+	drain()
+	require.Equal(t, 1, *calls, "the heal fired once on the armed drain edge")
+	require.True(t, c.healDisarmed.Load(), "the breaker sentinel latched the collector's healDisarmed flag")
+	require.False(t, armed, "the drain disarmed the latch")
+
+	// Subsequent wakes: the arm-site gate keeps the latch clear, so the heal never fires
+	// again — the self-sustaining per-wake re-fire is broken.
+	for range 5 {
+		wake()
+		drain()
+	}
+	require.Equal(t, 1, *calls, "no re-fire after the breaker disarmed the collector (RED: unbounded pre-fix)")
+}

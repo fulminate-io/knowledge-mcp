@@ -142,11 +142,11 @@ func TestInterceptQueryCodeSearch(t *testing.T) {
 	})
 
 	t.Run("gate: id → not claimed (analyze)", func(t *testing.T) {
-		handled, _ := InterceptQueryCodeSearch(nil, kgtools.CallToolParams{Name: "query", Arguments: json.RawMessage(`{"graph":"code","id":"x"}`)})
+		handled, _ := InterceptQueryCodeSearch(opCtx(), nil, kgtools.CallToolParams{Name: "query", Arguments: json.RawMessage(`{"graph":"code","id":"x"}`)})
 		assert.False(t, handled)
 	})
 	t.Run("gate: no query → not claimed", func(t *testing.T) {
-		handled, _ := InterceptQueryCodeSearch(nil, kgtools.CallToolParams{Name: "query", Arguments: json.RawMessage(`{"graph":"code"}`)})
+		handled, _ := InterceptQueryCodeSearch(opCtx(), nil, kgtools.CallToolParams{Name: "query", Arguments: json.RawMessage(`{"graph":"code"}`)})
 		assert.False(t, handled)
 	})
 }

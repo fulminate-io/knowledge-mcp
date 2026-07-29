@@ -65,9 +65,9 @@ func (d *etFakeDeps) GraphCaller() GraphCaller { return d.f }
 // explain single-node + pair forms and the timeline one-fetch ascending sort.
 func TestInterceptQueryExplainTimeline(t *testing.T) {
 	t.Run("gate: claims explain+timeline, falls through otherwise", func(t *testing.T) {
-		handled, _ := InterceptQueryExplainTimeline(nil, kgtools.CallToolParams{Name: "query", Arguments: json.RawMessage(`{"mode":"stats"}`)})
+		handled, _ := InterceptQueryExplainTimeline(opCtx(), nil, kgtools.CallToolParams{Name: "query", Arguments: json.RawMessage(`{"mode":"stats"}`)})
 		assert.False(t, handled, "non explain/timeline mode not claimed")
-		handled, _ = InterceptQueryExplainTimeline(nil, kgtools.CallToolParams{Name: "query", Arguments: json.RawMessage(`{"graph":"logs","mode":"explain"}`)})
+		handled, _ = InterceptQueryExplainTimeline(opCtx(), nil, kgtools.CallToolParams{Name: "query", Arguments: json.RawMessage(`{"graph":"logs","mode":"explain"}`)})
 		assert.False(t, handled, "logs explain owned by InterceptLogsQuery")
 	})
 

@@ -172,7 +172,7 @@ func (p *PropagationLoop) runTopicPipeline(
 		rawDocs = nil
 	}
 	existingDocs := filterTopicDocs(rawDocs)
-	communityOf, perr := partitionFromPersisted(ctx, p.gc)
+	communityOf, perr := partitionFromPersisted(ctx, p.gc, p) // resident cache when warm; else drain.
 	if perr != nil {
 		rep.addStageError("partition read failed", perr)
 		communityOf = map[string]string{}

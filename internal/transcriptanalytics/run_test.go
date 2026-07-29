@@ -14,7 +14,7 @@ import (
 // section + waste over the shared fixture cache (resolved via the cache glob, not an
 // explicit path), matching the per-family assertions.
 func TestRunDetectors_FullReport(t *testing.T) {
-	svc, _ := newDetectorFixture(t)
+	svc := newDetectorFixture(t)
 
 	rep, err := svc.RunDetectors(context.Background())
 	require.NoError(t, err)
@@ -33,9 +33,9 @@ func TestRunDetectors_FullReport(t *testing.T) {
 	assert.Equal(t, int64(1), rep.Waste.InterruptedCount)
 }
 
-// TestRunDetectors_EmptyCache proves the zero-path short-circuit: an empty cache
-// returns a zero-value report and a nil error WITHOUT opening DuckDB (no read_parquet
-// over an empty set, no throw).
+// TestRunDetectors_EmptyCache proves the zero-path short-circuit: an empty cache returns a
+// zero-value report and a nil error WITHOUT decoding (loadCorpus over a zero-match glob
+// yields an empty corpus, and every fold returns empty over empty accumulators).
 func TestRunDetectors_EmptyCache(t *testing.T) {
 	svc, err := NewService(t.TempDir())
 	require.NoError(t, err)
@@ -45,8 +45,8 @@ func TestRunDetectors_EmptyCache(t *testing.T) {
 	require.NoError(t, err)
 	require.NotNil(t, rep)
 	assert.Empty(t, rep.DuplicateCommands)
+	assert.Empty(t, rep.ToolLatency)
 	assert.Empty(t, rep.SubagentWallTime)
 	assert.Equal(t, int64(0), rep.AvgTokensPerSession.SessionCount)
 	assert.Equal(t, int64(0), rep.Waste.MaxTokensTruncationCount)
-	assert.Nil(t, svc.db, "the empty-cache short-circuit never opened DuckDB")
 }

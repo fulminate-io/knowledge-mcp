@@ -35,16 +35,16 @@ func TestWorkerRuntimeList_LoggedInRoutesCloud(t *testing.T) {
 	// Logged-in keychain: a refresh token present → AuthState.IsLoggedIn=true →
 	// Router.pick routes cloud (mirrors router_keychain_test.go).
 	store := newFakeAuthStore()
-	require.NoError(t, store.Set(context.Background(), auth.KeyRefreshToken, "frt-fresh"))
+	require.NoError(t, store.Set(opCtx(), auth.KeyRefreshToken, "frt-fresh"))
 	as := auth.NewAuthState(store, time.Millisecond)
 	router := graphclient.NewRouter(localGC, cloudURL, staticTokenSource{tok: "tok-cloud"}, as)
-	require.True(t, router.LoggedIn(context.Background()), "precondition: router reports logged-in")
+	require.True(t, router.LoggedIn(opCtx()), "precondition: router reports logged-in")
 
 	// The SAME registry buildRuntime wires: a dream.Registry backed by the
 	// workercrud client over the login-aware router. Registry.All is the worker-list
 	// path the runtime drives.
 	reg := dream.NewRegistry(workercrud.New(router))
-	_, err := reg.All(context.Background())
+	_, err := reg.All(opCtx())
 	require.NoError(t, err)
 
 	assert.Equal(t, int32(1), cloudEng.execute.Load(),

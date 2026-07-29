@@ -4,6 +4,7 @@ package segmentdist
 
 import (
 	"context"
+	"log/slog"
 	"sync"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
@@ -59,6 +60,7 @@ type Manager struct {
 	// tests inject a fake segment source without threading it through the production
 	// login/transport gate. nil in every production Manager.
 	testSource segmentSource
+	nudges     nudgeState // publish-suppression record + coalescing wake — manager_nudge.go.
 }
 
 // targetBindable is the seam newSegmentSource uses to re-bind an INJECTED test
@@ -250,7 +252,12 @@ func (m *Manager) Flush(ctx context.Context, gt kgtypes.GraphType, name string) 
 	// ship/publish is gated AFTER the force-seal: a genuinely-sealed tail still
 	// ships, but a no-progress re-Flush (empty tail, nothing unshipped, no pending
 	// retry) is skipped.
-	if hnsw.hasUnshippedExport() || hnsw.publishRetryPending() {
+	if unshipped, pending := hnsw.hasUnshippedExport(), hnsw.publishRetryPending(); unshipped || pending {
+		// Re-fire observability (kept): a Flush that runs ship/publish ONLY because the
+		// retry bit is pending (nothing genuinely unshipped) is the self-sustaining
+		// publish-retry re-arm — logging the cause per Flush makes that cycle visible.
+		slog.Debug("segmentdist: Flush ship/publish gate open",
+			"graph_type", gt, "name", name, "format", "hnsw", "unshipped", unshipped, "publish_retry_pending", pending)
 		if _, err := hnsw.shipAndPublish(ctx, m.detResidentHNSWIDs(gt, name), hnsw.locallyShipped); err != nil {
 			return err
 		}
@@ -260,7 +267,9 @@ func (m *Manager) Flush(ctx context.Context, gt kgtypes.GraphType, name string) 
 		return err
 	}
 	// Same gate for the BM25 leg, after its own force-seal.
-	if bm.hasUnshippedExport() || bm.publishRetryPending() {
+	if unshipped, pending := bm.hasUnshippedExport(), bm.publishRetryPending(); unshipped || pending {
+		slog.Debug("segmentdist: Flush ship/publish gate open",
+			"graph_type", gt, "name", name, "format", "bm25", "unshipped", unshipped, "publish_retry_pending", pending)
 		if _, err := bm.shipAndPublish(ctx, nil, bm.locallyShipped); err != nil {
 			return err
 		}
@@ -384,9 +393,11 @@ func (m *Manager) InvalidateLocal(gt kgtypes.GraphType, name string, ids []searc
 //
 // Standalone wrapper for callers that probe presence ALONE (no co-located doc-count
 // probe to share a snapshot with). The shared-snapshot heal path uses
-// ShippedManifestSnapshot + HasShippedFromSnapshot to collapse its reads.
+// ShippedManifestSnapshot + HasShippedFromSnapshot to collapse its reads. It probes
+// the HNSW format; taking no format of its own is deliberate, so this wrapper's
+// callers are unaffected by the snapshot API being format-parameterized.
 func (m *Manager) HasShippedSegments(ctx context.Context, gt kgtypes.GraphType, name string) (bool, error) {
-	snapshot, err := m.ShippedManifestSnapshot(ctx, gt, name)
+	snapshot, err := m.ShippedManifestSnapshot(ctx, gt, name, hnsw.New().Name())
 	if err != nil {
 		return false, err
 	}
@@ -442,11 +453,12 @@ func (m *Manager) ShippedSegmentDocCount(
 		}
 		return resident, false, nil
 	}
-	snapshot, err := m.ShippedManifestSnapshot(ctx, gt, name)
+	hnswFormat := hnsw.New().Name()
+	snapshot, err := m.ShippedManifestSnapshot(ctx, gt, name, hnswFormat)
 	if err != nil {
 		return 0, false, err
 	}
-	covered, anyUnknown = m.ShippedDocCountFromSnapshot(snapshot)
+	covered, anyUnknown = m.ShippedDocCountFromSnapshot(snapshot, hnswFormat)
 	return covered, anyUnknown, nil
 }
 

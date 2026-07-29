@@ -8,6 +8,8 @@ import (
 	"log/slog"
 	"strconv"
 
+	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
+
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
@@ -58,6 +60,8 @@ func probeReflectGen(ctx context.Context, probe reflectProbe) (uint64, bool) {
 	if probe == nil {
 		return 0, false
 	}
+	// Background quiet-tick probe with no originating tool call.
+	ctx = graphclient.WithOperation(ctx, graphclient.OpPropagationReflect)
 	resp, err := probe.PipelineScan(ctx, &knowledgev1.PipelineScanRequest{
 		GraphType:   "knowledge",
 		GraphName:   "default",

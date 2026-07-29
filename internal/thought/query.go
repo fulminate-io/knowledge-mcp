@@ -76,6 +76,13 @@ type RecallOptions struct {
 	// afterward, mirroring search's widen->rerank->trim shape. 0 (the default, and
 	// the bare Query=="" path) keeps the existing trim-to-Limit behavior verbatim.
 	WidePool int
+
+	// Source is the optional resident thought-corpus cache: the bare-recall
+	// full-iteration fallback (iterateRecallCandidates) reads its NodeThought set from
+	// a warm Source instead of re-draining. nil (a degraded harness, the reflection
+	// loop not running in-process, or a test) drains — behavior-equivalent to the
+	// pre-cache path. The recall intercept sets it from ClientDeps.CorpusProvider().
+	Source CorpusSource
 }
 
 // ThoughtResult is a thought with its computed properties and search score.
@@ -145,7 +152,7 @@ func gatherRecallCandidates(ctx context.Context, gc Caller, opts RecallOptions) 
 			return candidates
 		}
 	}
-	return iterateRecallCandidates(ctx, gc)
+	return iterateRecallCandidates(ctx, gc, opts.Source)
 }
 
 // searchRecallCandidates returns thought candidates from a semantic search
@@ -217,12 +224,12 @@ func filterThoughtCandidates(results []ThoughtResult) []ThoughtResult {
 	return candidates
 }
 
-// iterateRecallCandidates returns all thought nodes via two round-trips: one
-// type=thought ID-only query plus one bulk fetchNodesByIDs hydration. Avoids
-// the N+1 per-node round-trip that the original pkg/thought/query.go was
-// safe to do against the in-process singleton.
-func iterateRecallCandidates(ctx context.Context, gc Caller) []ThoughtResult {
-	nodes, err := fetchAllThoughtNodes(ctx, gc)
+// iterateRecallCandidates returns all thought nodes: served O(1) from a warm
+// resident corpus cache (src) or drained via the paged type=thought browse
+// (fetchAllThoughtNodes) when src is nil/cold. The bare-recall (empty-query)
+// fallback candidate set.
+func iterateRecallCandidates(ctx context.Context, gc Caller, src CorpusSource) []ThoughtResult {
+	nodes, err := fetchAllThoughtNodes(ctx, gc, src)
 	if err != nil {
 		slog.Warn("thought: iterateRecallCandidates: fetchAllThoughtNodes failed", "err", err)
 		return nil

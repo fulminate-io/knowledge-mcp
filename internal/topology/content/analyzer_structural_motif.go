@@ -73,11 +73,12 @@ func (a StructuralMotifAnalyzer) Run(ctx context.Context, req foundation.Request
 		return nil, fmt.Errorf("topology/structural-motif: fetch nodes %s/%s: %w", req.Graph, req.Name, err)
 	}
 	idx := buildNodeIndex(nodes)
-	ids := make([]string, 0, len(idx))
-	for id := range idx {
-		ids = append(ids, id)
-	}
-	edges, err := foundation.FetchEdges(ctx, req.Caller, req.Graph, req.Name, ids, []kgtypes.EdgeType{kgtypes.EdgeContains})
+	// Match-all: idx holds EVERY node of the graph (req.Subset narrows which roots
+	// participate later, in collectMotifGroups — never which edges are read), so
+	// the contains-edge read wants the whole type-filtered edge set rather than a
+	// pivot set that lists every id. buildContainsIndex already ignores an edge
+	// whose source is not in idx, so the two reads build the same adjacency.
+	edges, err := foundation.FetchAllEdges(ctx, req.Caller, req.Graph, req.Name, []kgtypes.EdgeType{kgtypes.EdgeContains})
 	if err != nil {
 		return nil, fmt.Errorf("topology/structural-motif: fetch edges %s/%s: %w", req.Graph, req.Name, err)
 	}

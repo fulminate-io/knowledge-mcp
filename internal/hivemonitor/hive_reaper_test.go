@@ -113,6 +113,74 @@ func TestHiveReaper_RoleGatePositiveSweep(t *testing.T) {
 	}
 }
 
+// selections returns the Selection of every browse plan the fake hive has
+// served, in call order. Lives here because the reaper's plan-shape assertion is
+// its only consumer.
+func (f *fakeHive) selections() []*knowledgev1.Selection {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	out := make([]*knowledgev1.Selection, 0, len(f.execReqs))
+	for _, req := range f.execReqs {
+		out = append(out, req.GetQuery().GetSelection())
+	}
+	return out
+}
+
+// TestHiveReaper_RoleGateBrowseIsSessionScoped pins the role gate's READ PLAN:
+// every member browse a sweep issues must be narrowed by a metadata predicate,
+// and the role gate's own browse must carry a session OP_EQ for THIS daemon's
+// harness session — one browse per live local session, never a bare whole-type
+// hive_member read. The hive_member set grows monotonically (eviction is an
+// UPDATE, never a delete), so an unnarrowed browse reads every member ever
+// registered in the account every 60s. No behavioral assertion can catch this:
+// the role gate filters by session client-side either way, so the eviction
+// tests stay green with or without the predicate.
+func TestHiveReaper_RoleGateBrowseIsSessionScoped(t *testing.T) {
+	myHarness, snap := claudeBindingHarness(t, claudeAssistantToolUse("toolu_inflight", "Bash"))
+	now := time.Now()
+
+	hive := &fakeHive{execResp: &knowledgev1.ExecuteResponse{Nodes: []*knowledgev1.Node{
+		memberNode(myHarness, "worker,reaper", "active", now),
+		memberNode("harness-dead", "worker", "active", now.Add(-30*time.Minute)),
+	}}}
+	r := NewHiveReaper(func() []SessionSnapshot { return []SessionSnapshot{snap} },
+		hive, DefaultReaperConfig())
+
+	r.sweep(context.Background(), now)
+
+	sels := hive.selections()
+	if len(sels) == 0 {
+		t.Fatal("sweep issued no member browse at all")
+	}
+	for i, sel := range sels {
+		if len(sel.GetMetadataPredicates()) == 0 {
+			t.Errorf("browse %d is an UNBOUNDED whole-type read: NodeTypes=%v with no metadata predicate",
+				i, sel.GetNodeTypes())
+		}
+	}
+
+	// The first browse is the role gate: one per live local session, narrowed to
+	// that session's members.
+	gate := sels[0]
+	if got := gate.GetNodeTypes(); len(got) != 1 || got[0] != "hive_member" {
+		t.Fatalf("role-gate browse NodeTypes = %v, want [hive_member]", got)
+	}
+	preds := gate.GetMetadataPredicates()
+	if len(preds) != 1 {
+		t.Fatalf("role-gate browse carries %d metadata predicates, want exactly 1 (session)", len(preds))
+	}
+	if preds[0].GetKey() != "session" {
+		t.Errorf("role-gate predicate key = %q, want %q", preds[0].GetKey(), "session")
+	}
+	if preds[0].GetOp() != knowledgev1.MetadataPredicate_OP_EQ {
+		t.Errorf("role-gate predicate op = %v, want OP_EQ", preds[0].GetOp())
+	}
+	if preds[0].GetValue() != myHarness {
+		t.Errorf("role-gate predicate value = %q, want THIS daemon's harness session %q",
+			preds[0].GetValue(), myHarness)
+	}
+}
+
 // TestHiveReaper_FreshMemberNotReaped verifies a member whose last_seen is within
 // the machine-down threshold is NOT evicted (the machine is up).
 func TestHiveReaper_FreshMemberNotReaped(t *testing.T) {

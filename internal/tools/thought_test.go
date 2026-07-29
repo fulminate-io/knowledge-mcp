@@ -21,6 +21,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
 	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 
 	"github.com/stretchr/testify/assert"
 
@@ -55,6 +56,7 @@ func (thoughtTestDeps) SegmentShipper() SegmentShipper               { return ni
 func (thoughtTestDeps) SegmentPruner() SegmentPruner                 { return nil }
 func (thoughtTestDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
 func (thoughtTestDeps) PipelineScanner() PipelineScanner             { return nil }
+func (thoughtTestDeps) ClearHealLatch(kgtypes.GraphType, string)     {}
 func (thoughtTestDeps) ReflectionForcer() ReflectionForcer           { return nil }
 func (thoughtTestDeps) SimilarityForcer() SimilarityForcer           { return nil }
 
@@ -70,7 +72,7 @@ func TestInterceptThoughts_NameFiltering(t *testing.T) {
 	deps := thoughtTestDeps{}
 	for _, name := range []string{"worker", "ast", "collect", "manage", "search", ""} {
 		params := kgtools.CallToolParams{Name: name, Arguments: json.RawMessage(`{}`)}
-		handled, res := InterceptThoughts(deps, params)
+		handled, res := InterceptThoughts(opCtx(), deps, params)
 		assert.False(t, handled, "tool %q must not be handled by InterceptThoughts", name)
 		assert.Empty(t, res.Content, "non-thoughts/query call must return zero ToolResult")
 	}
@@ -90,7 +92,7 @@ func TestInterceptThoughts_ThoughtsFallthroughUnknownOp(t *testing.T) {
 	}
 	for _, args := range cases {
 		params := kgtools.CallToolParams{Name: "thoughts", Arguments: json.RawMessage(args)}
-		handled, _ := InterceptThoughts(deps, params)
+		handled, _ := InterceptThoughts(opCtx(), deps, params)
 		assert.False(t, handled, "thoughts op %q must fall through to server", args)
 	}
 }
@@ -107,7 +109,7 @@ func TestInterceptThoughts_ThoughtsRecognizedOpsHandled(t *testing.T) {
 	}
 	for _, args := range cases {
 		params := kgtools.CallToolParams{Name: "thoughts", Arguments: json.RawMessage(args)}
-		handled, res := InterceptThoughts(deps, params)
+		handled, res := InterceptThoughts(opCtx(), deps, params)
 		assert.True(t, handled, "thoughts op %q must be handled client-side", args)
 		// nil GraphClient surfaces an "unavailable" error result — proves
 		// dispatch reached the per-op handler.
@@ -132,7 +134,7 @@ func TestInterceptThoughts_QueryFallthroughUnknownMode(t *testing.T) {
 	}
 	for _, args := range cases {
 		params := kgtools.CallToolParams{Name: "query", Arguments: json.RawMessage(args)}
-		handled, _ := InterceptThoughts(deps, params)
+		handled, _ := InterceptThoughts(opCtx(), deps, params)
 		assert.False(t, handled, "query call %q must fall through to server", args)
 	}
 }
@@ -165,7 +167,7 @@ func TestInterceptThoughts_QueryReflectiveModesHandled(t *testing.T) {
 	for mode, wantErr := range requiresGC {
 		args := `{"mode":"` + mode + `","cluster_a":"A","cluster_b":"B"}`
 		params := kgtools.CallToolParams{Name: "query", Arguments: json.RawMessage(args)}
-		handled, res := InterceptThoughts(deps, params)
+		handled, res := InterceptThoughts(opCtx(), deps, params)
 		assert.True(t, handled, "query mode %q must be handled client-side", mode)
 		if wantErr {
 			assert.True(t, res.IsError, "nil graph client must surface error for %q", mode)
@@ -183,7 +185,7 @@ func TestInterceptThoughts_BlindSpotsCacheServed(t *testing.T) {
 	t.Parallel()
 	deps := thoughtTestDeps{} // BlindSpotProvider() returns nil.
 	params := kgtools.CallToolParams{Name: "query", Arguments: json.RawMessage(`{"mode":"blind_spots"}`)}
-	handled, res := InterceptThoughts(deps, params)
+	handled, res := InterceptThoughts(opCtx(), deps, params)
 	assert.True(t, handled, "blind_spots is handled client-side")
 	assert.False(t, res.IsError, "nil provider returns a non-error cold/loop-not-running message, not an error")
 	assert.Contains(t, res.Content[0].Text, "reflection loop is not running",
@@ -198,7 +200,7 @@ func TestInterceptThoughts_MalformedArgsFallthrough(t *testing.T) {
 	deps := thoughtTestDeps{}
 	for _, name := range []string{"thoughts", "query"} {
 		params := kgtools.CallToolParams{Name: name, Arguments: json.RawMessage(`{not json`)}
-		handled, _ := InterceptThoughts(deps, params)
+		handled, _ := InterceptThoughts(opCtx(), deps, params)
 		assert.False(t, handled, "malformed %q args must fall through to server", name)
 	}
 }
@@ -212,7 +214,7 @@ func TestInterceptThoughts_EvolutionRequiresClusters(t *testing.T) {
 		Name:      "query",
 		Arguments: json.RawMessage(`{"mode":"evolution"}`),
 	}
-	handled, res := InterceptThoughts(deps, params)
+	handled, res := InterceptThoughts(opCtx(), deps, params)
 	assert.True(t, handled, "evolution mode is claimed even when validation fails")
 	assert.True(t, res.IsError)
 	assert.Contains(t, res.Content[0].Text, "cluster_a")

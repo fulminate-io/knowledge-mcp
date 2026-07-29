@@ -89,6 +89,19 @@ If planner finds itself making architectural calls, ticket was inadequate — ro
     )
   </invocation>
 
+  <brief-addendum id="census-scale-work" when="the ticket involves a sweep/migration/audit over a large or pattern-defined surface">
+    Add to the planner's prompt: "This ticket's work includes a census-scale
+    surface. Per your programmatic-census constraint: enumerate it with
+    ast/grep/script runs DURING planning — no hand counts anywhere in the plan;
+    steps consume census output by kind with per-file lists labeled as floors;
+    every sweep completion gate re-runs the census and asserts remainder = 0;
+    for multi-kind migrations prescribe a checked-in census script emitting a
+    machine-readable manifest [{file, line, kind, currentForm, targetForm}]."
+    Hand-enumerated sweep surfaces are the leading cause of plan-revise churn:
+    each review round finds the members the previous hand count missed, and the
+    loop does not converge.
+  </brief-addendum>
+
 </spawn>
 
 <constraint id="warnings-gate" severity="hard" phase="after-spawn">

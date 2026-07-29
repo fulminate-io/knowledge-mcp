@@ -80,7 +80,7 @@ func composeRegisteredGraphSearch(ctx context.Context, deps ClientDeps, mgr Segm
 // query(graph=<custom>, mode∈{text,recent,default-text}, text:<non-empty>) where
 // the shape is not a recall/reflect thought query and not an id/ids/type/meta
 // browse. A builtin graph, an empty text, or a non-search shape returns (false,_).
-func InterceptQueryRegisteredGraphSearch(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
+func InterceptQueryRegisteredGraphSearch(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	if params.Name != "query" {
 		return false, kgtools.ToolResult{}
 	}
@@ -109,7 +109,7 @@ func InterceptQueryRegisteredGraphSearch(deps ClientDeps, params kgtools.CallToo
 	if !registeredGraphSearchShape(a) {
 		return false, kgtools.ToolResult{}
 	}
-	return true, composeRegisteredGraphSearch(context.Background(), deps, deps.SegmentManager(),
+	return true, composeRegisteredGraphSearch(ctx, deps, deps.SegmentManager(),
 		kgtypes.GraphType(a.Graph), a.Name, a.Text, a.Format)
 }
 

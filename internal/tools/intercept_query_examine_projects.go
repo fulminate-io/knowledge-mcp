@@ -50,7 +50,7 @@ var projectDomainTypes = map[kgtypes.NodeType]struct{}{
 
 // InterceptQueryExamineProjects claims query(mode:"examine") for
 // project-domain types on the knowledge graph.
-func InterceptQueryExamineProjects(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
+func InterceptQueryExamineProjects(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	if params.Name != "query" {
 		return false, kgtools.ToolResult{}
 	}
@@ -76,7 +76,6 @@ func InterceptQueryExamineProjects(deps ClientDeps, params kgtools.CallToolParam
 		return false, kgtools.ToolResult{}
 	}
 
-	ctx := context.Background()
 	node, err := render.FetchNode(ctx, gc, a.ID)
 	if err != nil || node == nil {
 		// Let the server emit its canonical not-found error.

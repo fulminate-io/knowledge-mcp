@@ -52,7 +52,7 @@ func TestComposeResourceSearch_JSONAndText(t *testing.T) {
 				return &interceptDeps{gc: gc, emb: stubEmbedder{calls: &embedCalls}, segMgr: mgr}
 			}
 
-			handled, jsonOut := InterceptQueryCloudCICD(seed(), queryParams(t, map[string]any{
+			handled, jsonOut := InterceptQueryCloudCICD(opCtx(), seed(), queryParams(t, map[string]any{
 				"graph":   tc.graph,
 				"account": "acct",
 				"text":    "bucket",
@@ -67,7 +67,7 @@ func TestComposeResourceSearch_JSONAndText(t *testing.T) {
 			assert.Equal(t, "res-1", env.Results[0].ID)
 			assert.Equal(t, "s3:bucket", env.Results[0].Metadata["resource_type"], "resource_type rides through metadata")
 
-			_, textOut := InterceptQueryCloudCICD(seed(), queryParams(t, map[string]any{
+			_, textOut := InterceptQueryCloudCICD(opCtx(), seed(), queryParams(t, map[string]any{
 				"graph":   tc.graph,
 				"account": "acct",
 				"text":    "bucket",
@@ -101,7 +101,7 @@ func TestInterceptQueryCloudCICDSearch_EmptyAccountZeroResults(t *testing.T) {
 			mgr := &fakeSegmentSearcher{hits: []searchengine.Hit{}}
 			deps := &interceptDeps{gc: gc, emb: stubEmbedder{calls: &embedCalls}, segMgr: mgr}
 
-			handled, out := InterceptQueryCloudCICD(deps, queryParams(t, map[string]any{
+			handled, out := InterceptQueryCloudCICD(opCtx(), deps, queryParams(t, map[string]any{
 				"graph":   tc.graph,
 				"account": "empty-account",
 				"text":    "anything",

@@ -168,11 +168,13 @@ func (d *detachFullDeps) SegmentShipper() SegmentShipper               { return 
 func (d *detachFullDeps) SegmentPruner() SegmentPruner                 { return nil }
 func (d *detachFullDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
 func (d *detachFullDeps) PipelineScanner() PipelineScanner             { return nil }
-func (d *detachFullDeps) ReflectionForcer() ReflectionForcer           { return nil }
-func (d *detachFullDeps) SimilarityForcer() SimilarityForcer           { return nil }
-func (d *detachFullDeps) BlindSpotProvider() BlindSpotProvider         { return nil }
-func (d *detachFullDeps) ClusterProvider() ClusterProvider             { return nil }
-func (d *detachFullDeps) TensionsProvider() TensionsProvider           { return nil }
+
+func (d *detachFullDeps) ClearHealLatch(kgtypes.GraphType, string) {}
+func (d *detachFullDeps) ReflectionForcer() ReflectionForcer       { return nil }
+func (d *detachFullDeps) SimilarityForcer() SimilarityForcer       { return nil }
+func (d *detachFullDeps) BlindSpotProvider() BlindSpotProvider     { return nil }
+func (d *detachFullDeps) ClusterProvider() ClusterProvider         { return nil }
+func (d *detachFullDeps) TensionsProvider() TensionsProvider       { return nil }
 
 // TestInterceptCollect_DetachedCompletionRunsTail drives the FULL InterceptCollect
 // detached path: a blocking stub collector makes the run exceed the injected detach
@@ -226,7 +228,7 @@ func TestInterceptCollect_DetachedCompletionRunsTail(t *testing.T) {
 	args := json.RawMessage(`{"type":"` + detachFullPathType + `","id":"detach-id","force":true}`)
 	resCh := make(chan kgtools.ToolResult, 1)
 	go func() {
-		_, res := InterceptCollect(deps, kgtools.CallToolParams{Name: "collect", Arguments: args})
+		_, res := InterceptCollect(opCtx(), deps, kgtools.CallToolParams{Name: "collect", Arguments: args})
 		resCh <- res
 	}()
 

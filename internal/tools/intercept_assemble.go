@@ -34,7 +34,7 @@ import (
 //     through render.Handle and surface as kgtools.ErrorResult; the
 //     intercept still returns handled=true so the chain doesn't
 //     double-dispatch to the (already-stubbed in Phase 5) server.
-func InterceptAssemble(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
+func InterceptAssemble(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	if params.Name != "assemble" {
 		return false, kgtools.ToolResult{}
 	}
@@ -42,5 +42,5 @@ func InterceptAssemble(deps ClientDeps, params kgtools.CallToolParams) (bool, kg
 	if gc == nil {
 		return true, kgtools.ErrorResult("assemble: graph client unavailable")
 	}
-	return true, render.Handle(context.Background(), gc, params.Arguments)
+	return true, render.Handle(ctx, gc, params.Arguments)
 }

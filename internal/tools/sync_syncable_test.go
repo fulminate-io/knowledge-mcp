@@ -77,8 +77,10 @@ func (d listDeps) SegmentShipper() SegmentShipper               { return nil }
 func (d listDeps) SegmentPruner() SegmentPruner                 { return nil }
 func (d listDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
 func (d listDeps) PipelineScanner() PipelineScanner             { return nil }
-func (d listDeps) ReflectionForcer() ReflectionForcer           { return nil }
-func (d listDeps) SimilarityForcer() SimilarityForcer           { return nil }
+
+func (d listDeps) ClearHealLatch(kgtypes.GraphType, string) {}
+func (d listDeps) ReflectionForcer() ReflectionForcer       { return nil }
+func (d listDeps) SimilarityForcer() SimilarityForcer       { return nil }
 
 func (d listDeps) BlindSpotProvider() BlindSpotProvider { return nil }
 func (d listDeps) ClusterProvider() ClusterProvider     { return nil }
@@ -90,7 +92,7 @@ func (d listDeps) TensionsProvider() TensionsProvider   { return nil }
 // Reverting the syncableCustomTypes widening makes the syncgraph assertion FAIL.
 func TestSyncList_SyncableCustomTypes(t *testing.T) {
 	enum := &listEnumCaller{}
-	res := handleSyncList(listDeps{local: enum, crud: syncableCRUD()})
+	res := handleSyncList(opCtx(), listDeps{local: enum, crud: syncableCRUD()})
 	require.False(t, res.IsError, "list must not error: %v", res.Content)
 	text := res.Content[0].Text
 
@@ -122,8 +124,7 @@ func TestInterceptSync_Push_SyncableGate(t *testing.T) {
 		backend := newFakeSyncBackend(t)
 		okTransport(t, backend)
 		exp := &fakeExporter{bytesOut: []byte("KGV4xx")}
-		_, out := InterceptSync(interceptTestDeps{gc: exp, crud: syncableCRUD()},
-			syncParams(t, map[string]any{"operation": "push", "graph": "syncgraph", "name": "demo"}))
+		_, out := InterceptSync(opCtx(), interceptTestDeps{gc: exp, crud: syncableCRUD()}, syncParams(t, map[string]any{"operation": "push", "graph": "syncgraph", "name": "demo"}))
 		assert.False(t, out.IsError, "syncable:true custom push must proceed: %q", textOf(out))
 		assert.Equal(t, 1, exp.exportCalls, "ExportGraph fired for the syncable custom type")
 		assert.Equal(t, 1, backend.confirmCalls, "the push completed through confirm")
@@ -137,8 +138,7 @@ func TestInterceptSync_Push_SyncableGate(t *testing.T) {
 			return nil, nil
 		})
 		exp := &fakeExporter{bytesOut: []byte{1, 2}}
-		_, out := InterceptSync(interceptTestDeps{gc: exp, crud: syncableCRUD()},
-			syncParams(t, map[string]any{"operation": "push", "graph": "nosyncgraph", "name": "demo"}))
+		_, out := InterceptSync(opCtx(), interceptTestDeps{gc: exp, crud: syncableCRUD()}, syncParams(t, map[string]any{"operation": "push", "graph": "nosyncgraph", "name": "demo"}))
 		assert.True(t, out.IsError, "syncable:false custom push must be rejected")
 		assert.Equal(t, 0, exp.exportCalls, "no ExportGraph call for a non-syncable type")
 	})
@@ -149,8 +149,7 @@ func TestInterceptSync_Push_SyncableGate(t *testing.T) {
 			return nil, nil
 		})
 		exp := &fakeExporter{bytesOut: []byte{1, 2}}
-		_, out := InterceptSync(interceptTestDeps{gc: exp, crud: syncableCRUD()},
-			syncParams(t, map[string]any{"operation": "push", "graph": "ghostgraph", "name": "demo"}))
+		_, out := InterceptSync(opCtx(), interceptTestDeps{gc: exp, crud: syncableCRUD()}, syncParams(t, map[string]any{"operation": "push", "graph": "ghostgraph", "name": "demo"}))
 		assert.True(t, out.IsError, "unregistered custom push must be rejected")
 		assert.Equal(t, 0, exp.exportCalls, "no ExportGraph call for an unregistered type")
 	})
@@ -171,8 +170,7 @@ func TestInterceptSync_Pull_SyncableGate(t *testing.T) {
 			return auth.NewSyncTransport(backend.srv.URL, src), nil
 		})
 		local := &fakeOverwriter{nodes: 1}
-		_, out := InterceptSync(pullDeps{local: local, crud: syncableCRUD()},
-			syncParams(t, map[string]any{"operation": "pull", "graph": "syncgraph", "name": "demo"}))
+		_, out := InterceptSync(opCtx(), pullDeps{local: local, crud: syncableCRUD()}, syncParams(t, map[string]any{"operation": "pull", "graph": "syncgraph", "name": "demo"}))
 		assert.False(t, out.IsError, "syncable:true custom pull must proceed: %q", textOf(out))
 		assert.Equal(t, 1, backend.pullCalls, "pull control endpoint fired")
 		assert.Equal(t, 1, local.overwriteCalls, "local OverwriteGraph applied")
@@ -184,8 +182,7 @@ func TestInterceptSync_Pull_SyncableGate(t *testing.T) {
 			return nil, nil
 		})
 		local := &fakeOverwriter{}
-		_, out := InterceptSync(pullDeps{local: local, crud: syncableCRUD()},
-			syncParams(t, map[string]any{"operation": "pull", "graph": "nosyncgraph", "name": "demo"}))
+		_, out := InterceptSync(opCtx(), pullDeps{local: local, crud: syncableCRUD()}, syncParams(t, map[string]any{"operation": "pull", "graph": "nosyncgraph", "name": "demo"}))
 		assert.True(t, out.IsError, "syncable:false custom pull must be rejected")
 		assert.Equal(t, 0, local.overwriteCalls, "no local OverwriteGraph for a non-syncable type")
 	})

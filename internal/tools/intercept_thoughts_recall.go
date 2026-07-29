@@ -133,6 +133,7 @@ func handleRecallClient(ctx context.Context, deps ClientDeps, params kgtools.Cal
 		opts.TimeEnd = t
 	}
 
+	opts.Source = corpusSourceFromDeps(deps) // bare-recall fallback reads the resident cache when warm.
 	results, err := clientthought.RecallThoughts(ctx, gc, opts)
 	if err != nil {
 		return errorResult("recall failed: " + err.Error())

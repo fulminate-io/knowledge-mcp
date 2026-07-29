@@ -48,7 +48,7 @@ func TestMutateComposers_CrossGraphLink_IntraPractice(t *testing.T) {
 		listGraphsResult: listGraphsResultFor(t, [2]string{"practice", "design-patterns"}),
 	}
 	deps := interceptTestDeps{gc: fc}
-	handled, res := InterceptMutate(deps, kgtools.CallToolParams{
+	handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "mutate",
 		Arguments: json.RawMessage(`{"operation":"link","graph":"practice","language":"design-patterns","from":"pat-1","to":"uc-1","relationship":"Contains"}`),
 	})
@@ -86,7 +86,7 @@ func TestMutateComposers_CrossGraphLink_ProxyFallsThrough(t *testing.T) {
 		},
 	}
 	deps := interceptTestDeps{gc: fc}
-	handled, _ := InterceptMutate(deps, kgtools.CallToolParams{
+	handled, _ := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "mutate",
 		Arguments: json.RawMessage(`{"operation":"link","graph":"practice","language":"design-patterns","from":"pat-1","to":"missing-node","relationship":"relates-to"}`),
 	})
@@ -103,7 +103,7 @@ func TestMutateComposers_CrossGraphLink_ProxyFallsThrough(t *testing.T) {
 func TestMutateComposers_CrossGraphLink_LinkageHandledClientSide(t *testing.T) {
 	fc := &fakeGraphCaller{}
 	deps := interceptTestDeps{gc: fc}
-	handled, res := InterceptMutate(deps, kgtools.CallToolParams{
+	handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "mutate",
 		Arguments: json.RawMessage(`{"operation":"link","link_graph":"linkage","from":"a","to":"b","relationship":"relates-to","method":"linker:test","confidence":0.7}`),
 	})
@@ -147,7 +147,7 @@ func TestMutateComposers_CrossGraphLink_LinkageHandledClientSide(t *testing.T) {
 func TestMutateComposers_CreateValidationGateFires(t *testing.T) {
 	fc := &fakeGraphCaller{}
 	deps := interceptTestDeps{gc: fc}
-	handled, res := InterceptMutate(deps, kgtools.CallToolParams{
+	handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "mutate",
 		Arguments: json.RawMessage(`{"operation":"create","type":"finding","name":"f","description":"d"}`),
 	})
@@ -185,7 +185,7 @@ func TestMutateComposers_CreateStampsLLMClaudeSource(t *testing.T) {
 	// End-to-end: the default survives onto the CREATE NodeBody crossing the wire.
 	fc := &fakeGraphCaller{mutateIDs: []string{"finding-1"}}
 	deps := interceptTestDeps{gc: fc}
-	handled, res := InterceptMutate(deps, kgtools.CallToolParams{
+	handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "mutate",
 		Arguments: json.RawMessage(`{"operation":"create","type":"finding","name":"f","summary":"s"}`),
 	})
@@ -210,7 +210,7 @@ func TestMutateComposers_CreateStampsLLMClaudeSource(t *testing.T) {
 func TestMutateComposers_PracticeCreate_TargetRouted(t *testing.T) {
 	fc := &fakeGraphCaller{mutateIDs: []string{"new-pat"}}
 	deps := interceptTestDeps{gc: fc}
-	handled, res := InterceptMutate(deps, kgtools.CallToolParams{
+	handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "mutate",
 		Arguments: json.RawMessage(`{"operation":"create","graph":"practice","language":"go","type":"finding","name":"P","summary":"s"}`),
 	})
@@ -231,7 +231,7 @@ func TestMutateComposers_PracticeCreate_TargetRouted(t *testing.T) {
 func TestMutateComposers_TransformersCreate_TargetRouted(t *testing.T) {
 	fc := &fakeGraphCaller{mutateIDs: []string{"r1"}}
 	deps := interceptTestDeps{gc: fc}
-	handled, res := InterceptMutate(deps, kgtools.CallToolParams{
+	handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "mutate",
 		Arguments: json.RawMessage(`{"operation":"create","graph":"transformers","type":"recipe","name":"r","summary":"s"}`),
 	})
@@ -246,7 +246,7 @@ func TestMutateComposers_TransformersCreate_TargetRouted(t *testing.T) {
 func TestMutateComposers_PracticeUpdate_TargetRouted(t *testing.T) {
 	fc := &fakeGraphCaller{mutateAffected: 1}
 	deps := interceptTestDeps{gc: fc}
-	handled, res := InterceptMutate(deps, kgtools.CallToolParams{
+	handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "mutate",
 		Arguments: json.RawMessage(`{"operation":"update","graph":"practice","language":"go","id":"pat-1","status":"active"}`),
 	})
@@ -262,7 +262,7 @@ func TestMutateComposers_PracticeUpdate_TargetRouted(t *testing.T) {
 func TestMutateComposers_PracticeDelete_TargetRouted(t *testing.T) {
 	fc := &fakeGraphCaller{mutateAffected: 2}
 	deps := interceptTestDeps{gc: fc}
-	handled, res := InterceptMutate(deps, kgtools.CallToolParams{
+	handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "mutate",
 		Arguments: json.RawMessage(`{"operation":"delete","graph":"practice","language":"go","ids":["a","b"]}`),
 	})

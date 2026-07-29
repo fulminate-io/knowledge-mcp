@@ -49,12 +49,17 @@ func NewCloudGraphClient(baseURL string, ts auth.TokenSource) *GraphClient {
 		// No global timeout — long-running tool calls (large Execute payloads,
 		// cloud-side computation) honor caller context.WithTimeout.
 	}
+	// The cloud path is exactly where the operation label matters — it is the
+	// deployment that reads the per-tag metrics — so the stamper is installed
+	// here as well as on the local client. The health client gets it too and is
+	// unaffected: its request messages carry no client_context field.
+	stamp := connect.WithInterceptors(newOperationInterceptor())
 	return &GraphClient{
 		baseURL:    baseURL,
 		httpClient: httpClient,
-		health:     knowledgev1connect.NewHealthServiceClient(httpClient, baseURL, connect.WithInterceptors()),
-		ingest:     knowledgev1connect.NewIngestServiceClient(httpClient, baseURL, connect.WithInterceptors()),
-		engine:     knowledgev1connect.NewEngineServiceClient(httpClient, baseURL, connect.WithInterceptors()),
+		health:     knowledgev1connect.NewHealthServiceClient(httpClient, baseURL, stamp),
+		ingest:     knowledgev1connect.NewIngestServiceClient(httpClient, baseURL, stamp),
+		engine:     knowledgev1connect.NewEngineServiceClient(httpClient, baseURL, stamp),
 	}
 }
 

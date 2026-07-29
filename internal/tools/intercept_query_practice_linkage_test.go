@@ -99,7 +99,7 @@ func (f *plFake) Stats(_ context.Context, _ *knowledgev1.StatsRequest) (*knowled
 func TestPracticeRoute_StatsAndSearch(t *testing.T) {
 	t.Run("stats", func(t *testing.T) {
 		f := &plFake{stats: &knowledgev1.GraphStats{NodeCount: 9, EdgeCount: 1, NodesByType: map[string]int64{"pattern": 9}}}
-		res := routePracticeClient(context.Background(), nil, f, queryArgs{Graph: "practice", Language: "go", Mode: "stats"})
+		res := routePracticeClient(opCtx(), nil, f, queryArgs{Graph: "practice", Language: "go", Mode: "stats"})
 		body := textBodyTools(res)
 		assert.Contains(t, body, "## Practice Graph: go")
 		assert.Contains(t, body, "Nodes: 9")
@@ -118,7 +118,7 @@ func TestPracticeRoute_StatsAndSearch(t *testing.T) {
 		mgr := &fakeSegmentSearcher{hits: []searchengine.Hit{{ID: "p1", Score: 0.88}}}
 		deps := &interceptDeps{gc: gc, segMgr: mgr}
 
-		res := routePracticeClient(context.Background(), deps, gc, queryArgs{Graph: "practice", Language: "go", Text: "errgroup"})
+		res := routePracticeClient(opCtx(), deps, gc, queryArgs{Graph: "practice", Language: "go", Text: "errgroup"})
 		body := textBodyTools(res)
 		assert.Equal(t, int64(1), mgr.calls.Load(), "practice search drove the CLIENT engine")
 		assert.Equal(t, kgtypes.GraphPractice, mgr.lastGT)
@@ -141,7 +141,7 @@ func TestLinkageRoute_AllShapes(t *testing.T) {
 				{Id: "x2", Type: string(kgtypes.NodeProxy), Metadata: map[string]string{"foreign_graph": "cloud"}},
 			},
 		}
-		res := routeLinkageClient(context.Background(), f, queryArgs{Graph: "linkage", Mode: "stats"})
+		res := routeLinkageClient(opCtx(), f, queryArgs{Graph: "linkage", Mode: "stats"})
 		body := textBodyTools(res)
 		assert.Contains(t, body, "## Linkage Graph")
 		assert.Contains(t, body, "### Proxy Breakdown")
@@ -152,7 +152,7 @@ func TestLinkageRoute_AllShapes(t *testing.T) {
 	t.Run("id getNode", func(t *testing.T) {
 		n := knowledgev1.Node{Id: "proxy:code:foo", SymbolName: "Foo", Type: string(kgtypes.NodeProxy)}
 		f := &plFake{byIDNode: &n}
-		res := routeLinkageClient(context.Background(), f, queryArgs{Graph: "linkage", ID: "proxy:code:foo"})
+		res := routeLinkageClient(opCtx(), f, queryArgs{Graph: "linkage", ID: "proxy:code:foo"})
 		assert.Contains(t, textBodyTools(res), "## linkage node")
 	})
 
@@ -160,7 +160,7 @@ func TestLinkageRoute_AllShapes(t *testing.T) {
 		// a text-only linkage query returns the ranked-search-retired
 		// result and dispatches NO server search (the index-free ops still work).
 		f := &plFake{}
-		res := routeLinkageClient(context.Background(), f, queryArgs{Graph: "linkage", Text: "bar"})
+		res := routeLinkageClient(opCtx(), f, queryArgs{Graph: "linkage", Text: "bar"})
 		body := textBodyTools(res)
 		assert.Contains(t, body, "retired", "linkage ranked search is retired")
 		assert.Contains(t, body, "linkage", "the retired message names the graph")
@@ -178,7 +178,7 @@ func TestPracticeStats_JSON(t *testing.T) {
 		NodesByType: map[string]int64{"pattern": 9},
 		EdgesByType: map[string]int64{"relates-to": 1},
 	}}
-	res := routePracticeClient(context.Background(), nil, f, queryArgs{Graph: "practice", Language: "go", Mode: "stats", Format: "json"})
+	res := routePracticeClient(opCtx(), nil, f, queryArgs{Graph: "practice", Language: "go", Mode: "stats", Format: "json"})
 	require.False(t, res.IsError, textBodyTools(res))
 
 	var payload map[string]any
@@ -214,7 +214,7 @@ func TestLinkageStats_JSON(t *testing.T) {
 			{Id: "x2", Type: string(kgtypes.NodeProxy), Metadata: map[string]string{"foreign_graph": "cloud"}},
 		},
 	}
-	res := routeLinkageClient(context.Background(), f, queryArgs{Graph: "linkage", Mode: "stats", Format: "json"})
+	res := routeLinkageClient(opCtx(), f, queryArgs{Graph: "linkage", Mode: "stats", Format: "json"})
 	require.False(t, res.IsError, textBodyTools(res))
 
 	body := textBodyTools(res)
@@ -273,13 +273,13 @@ func TestRouteWebPDF_RetiresRankedTextPassesIndexFreeOps(t *testing.T) {
 // routes web/pdf ranked text through routeWebPDFClient (claimed) and lets their
 // index-free ops fall through (handled=false).
 func TestInterceptQueryPracticeLinkage_WebPDFClaim(t *testing.T) {
-	handled, res := InterceptQueryPracticeLinkage(nil, kgtools.CallToolParams{
+	handled, res := InterceptQueryPracticeLinkage(opCtx(), nil, kgtools.CallToolParams{
 		Name: "query", Arguments: json.RawMessage(`{"graph":"web","text":"x"}`),
 	})
 	require.True(t, handled, "web ranked text is claimed + retired")
 	assert.Contains(t, textBodyTools(res), "retired")
 
-	handled, _ = InterceptQueryPracticeLinkage(nil, kgtools.CallToolParams{
+	handled, _ = InterceptQueryPracticeLinkage(opCtx(), nil, kgtools.CallToolParams{
 		Name: "query", Arguments: json.RawMessage(`{"graph":"pdf","id":"n1"}`),
 	})
 	assert.False(t, handled, "pdf by-id getNode falls through to engineDispatch")
@@ -288,6 +288,6 @@ func TestInterceptQueryPracticeLinkage_WebPDFClaim(t *testing.T) {
 // TestInterceptQueryPracticeLinkage_Gate asserts the intercept claims only
 // practice/linkage and falls through (false) for other graphs/tools.
 func TestInterceptQueryPracticeLinkage_Gate(t *testing.T) {
-	handled, _ := InterceptQueryPracticeLinkage(nil, kgtools.CallToolParams{Name: "search", Arguments: json.RawMessage(`{}`)})
+	handled, _ := InterceptQueryPracticeLinkage(opCtx(), nil, kgtools.CallToolParams{Name: "search", Arguments: json.RawMessage(`{}`)})
 	assert.False(t, handled, "non-query tool not claimed")
 }

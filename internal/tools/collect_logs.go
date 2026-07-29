@@ -25,8 +25,7 @@ import (
 	logwire "github.com/fulminate-io/knowledge-mcp/internal/logwire"
 )
 
-func runLogsCollect(deps ClientDeps, a collectArgs) kgtools.ToolResult {
-	ctx := context.Background()
+func runLogsCollect(ctx context.Context, deps ClientDeps, a collectArgs) kgtools.ToolResult {
 	cfg, err := resolveLogsProviderConfig(ctx, deps, a)
 	if err != nil {
 		return errorResult("collect logs: " + err.Error())

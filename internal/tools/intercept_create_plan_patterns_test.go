@@ -32,7 +32,7 @@ const minimalPlanPhases = `"phases":[{"name":"ph","overview":"o","summary":"s","
 func runCreatePlan(t *testing.T, fc *fakeGraphCaller, argsJSON string) kgtools.ToolResult {
 	t.Helper()
 	deps := interceptTestDeps{gc: fc}
-	handled, res := InterceptCreatePlan(deps, kgtools.CallToolParams{
+	handled, res := InterceptCreatePlan(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "create_plan",
 		Arguments: json.RawMessage(argsJSON),
 	})

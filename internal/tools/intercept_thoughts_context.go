@@ -222,6 +222,7 @@ func composeOpenTickets(ctx context.Context, gc GraphCaller) []engine.SearchResu
 	plan := &knowledgev1.QueryPlan{
 		Selection: &knowledgev1.Selection{NodeTypes: []string{string(kgtypes.NodeTicket)}},
 		Limit:     contextTicketBrowseCap,
+		SkipTotal: true, // the filter reads only the decoded nodes, never Total
 	}
 	resp, err := gc.Execute(ctx, &knowledgev1.ExecuteRequest{
 		Plan: &knowledgev1.ExecuteRequest_Query{Query: plan},

@@ -17,6 +17,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
 // fakeExporter implements GraphCaller + Exporter (the production graphClientCaller
@@ -77,7 +78,7 @@ func TestInterceptSync_Push_PresignSealPutConfirm(t *testing.T) {
 	})
 
 	exp := &fakeExporter{bytesOut: want}
-	handled, out := InterceptSync(interceptTestDeps{gc: exp}, syncParams(t, map[string]any{"operation": "push"}))
+	handled, out := InterceptSync(opCtx(), interceptTestDeps{gc: exp}, syncParams(t, map[string]any{"operation": "push"}))
 
 	require.True(t, handled)
 	assert.False(t, out.IsError, "push success must not be an error result: %q", textOf(out))
@@ -158,8 +159,10 @@ func (d pullDeps) SegmentShipper() SegmentShipper               { return nil }
 func (d pullDeps) SegmentPruner() SegmentPruner                 { return nil }
 func (d pullDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
 func (d pullDeps) PipelineScanner() PipelineScanner             { return nil }
-func (d pullDeps) ReflectionForcer() ReflectionForcer           { return nil }
-func (d pullDeps) SimilarityForcer() SimilarityForcer           { return nil }
+
+func (d pullDeps) ClearHealLatch(kgtypes.GraphType, string) {}
+func (d pullDeps) ReflectionForcer() ReflectionForcer       { return nil }
+func (d pullDeps) SimilarityForcer() SimilarityForcer       { return nil }
 
 func (d pullDeps) BlindSpotProvider() BlindSpotProvider { return nil }
 func (d pullDeps) ClusterProvider() ClusterProvider     { return nil }
@@ -182,8 +185,7 @@ func TestInterceptSync_Pull_FetchesCloudAppliesLocal(t *testing.T) {
 	})
 	local := &fakeOverwriter{nodes: 7, edges: 3}
 
-	handled, out := InterceptSync(pullDeps{local: local},
-		syncParams(t, map[string]any{"operation": "pull"}))
+	handled, out := InterceptSync(opCtx(), pullDeps{local: local}, syncParams(t, map[string]any{"operation": "pull"}))
 
 	require.True(t, handled)
 	assert.False(t, out.IsError, "pull success must not be an error result: %q", textOf(out))
@@ -213,8 +215,7 @@ func TestInterceptSync_Pull_NotLoggedIn(t *testing.T) {
 		return auth.NewSyncTransport("http://unused.invalid", errTokenSource{}), nil
 	})
 
-	handled, out := InterceptSync(pullDeps{local: local},
-		syncParams(t, map[string]any{"operation": "pull"}))
+	handled, out := InterceptSync(opCtx(), pullDeps{local: local}, syncParams(t, map[string]any{"operation": "pull"}))
 
 	require.True(t, handled)
 	assert.True(t, out.IsError, "not-logged-in pull must be an error result")
@@ -232,8 +233,7 @@ func TestInterceptSync_Pull_NoLocalServer_FailsLoud(t *testing.T) {
 		return nil, nil
 	})
 	// local caller nil → overwriterSeam fails before any transport build.
-	handled, out := InterceptSync(pullDeps{local: nil},
-		syncParams(t, map[string]any{"operation": "pull"}))
+	handled, out := InterceptSync(opCtx(), pullDeps{local: nil}, syncParams(t, map[string]any{"operation": "pull"}))
 
 	require.True(t, handled)
 	assert.True(t, out.IsError, "pull with no local server must be an error result")
@@ -249,7 +249,7 @@ func TestInterceptSync_Promote_Rejected(t *testing.T) {
 		return nil, nil
 	})
 	exp := &fakeExporter{bytesOut: []byte{1}}
-	handled, out := InterceptSync(interceptTestDeps{gc: exp}, syncParams(t, map[string]any{"operation": "promote"}))
+	handled, out := InterceptSync(opCtx(), interceptTestDeps{gc: exp}, syncParams(t, map[string]any{"operation": "promote"}))
 	require.True(t, handled)
 	assert.True(t, out.IsError, "promote must be an error result")
 	assert.Equal(t, 0, exp.exportCalls, "promote must not fetch bytes")
@@ -289,7 +289,7 @@ func TestInterceptSync_NotLoggedIn_ActionableMessage(t *testing.T) {
 		return auth.NewSyncTransport("http://unused.invalid", errTokenSource{}), nil
 	})
 	exp := &fakeExporter{bytesOut: []byte{1}}
-	handled, out := InterceptSync(interceptTestDeps{gc: exp}, syncParams(t, map[string]any{"operation": "push"}))
+	handled, out := InterceptSync(opCtx(), interceptTestDeps{gc: exp}, syncParams(t, map[string]any{"operation": "push"}))
 	require.True(t, handled)
 	assert.True(t, out.IsError)
 	assert.Contains(t, textOf(out), "knowledge login")
@@ -308,7 +308,7 @@ func TestInterceptSync_Push_NoLocalServer_FailsLoud(t *testing.T) {
 		return nil, nil
 	})
 	// gc nil → both GraphCaller() and LocalGraphCaller() return nil.
-	handled, out := InterceptSync(interceptTestDeps{gc: nil}, syncParams(t, map[string]any{"operation": "push"}))
+	handled, out := InterceptSync(opCtx(), interceptTestDeps{gc: nil}, syncParams(t, map[string]any{"operation": "push"}))
 	require.True(t, handled)
 	assert.True(t, out.IsError, "push with no local server must be an error result")
 	assert.Contains(t, textOf(out), "no local server is wired",
@@ -342,14 +342,14 @@ func TestSetSyncTransportBuilder_PushPullResolveThroughIt(t *testing.T) {
 
 	// Push arm resolves the installed builder.
 	exp := &fakeExporter{bytesOut: []byte("KGV4 local bytes")}
-	handledPush, outPush := InterceptSync(interceptTestDeps{gc: exp}, syncParams(t, map[string]any{"operation": "push"}))
+	handledPush, outPush := InterceptSync(opCtx(), interceptTestDeps{gc: exp}, syncParams(t, map[string]any{"operation": "push"}))
 	require.True(t, handledPush)
 	assert.False(t, outPush.IsError, "push must succeed through the installed builder: %q", textOf(outPush))
 	assert.Equal(t, 1, builderCalls, "push resolved its transport through the SetSyncTransportBuilder-installed builder")
 
 	// Pull arm resolves the SAME installed builder.
 	local := &fakeOverwriter{nodes: 1, edges: 0}
-	handledPull, outPull := InterceptSync(pullDeps{local: local}, syncParams(t, map[string]any{"operation": "pull"}))
+	handledPull, outPull := InterceptSync(opCtx(), pullDeps{local: local}, syncParams(t, map[string]any{"operation": "pull"}))
 	require.True(t, handledPull)
 	assert.False(t, outPull.IsError, "pull must succeed through the installed builder: %q", textOf(outPull))
 	assert.Equal(t, 2, builderCalls, "pull also resolved its transport through the installed builder")

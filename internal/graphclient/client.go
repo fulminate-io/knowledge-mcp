@@ -86,7 +86,11 @@ func NewGraphClientForURL(baseURL string) *GraphClient {
 		// No global timeout — reindex operations on large repos can take
 		// hours. Per-request timeouts are handled via context.
 	}
-	retry := connect.WithInterceptors(newReconnectInterceptor())
+	// The operation stamper runs BEFORE the reconnect retry loop so a retried
+	// attempt re-sends the already-stamped message rather than re-deriving the
+	// label per attempt. The health client gets it too and is unaffected: its
+	// request messages carry no client_context field, so the stamper no-ops.
+	retry := connect.WithInterceptors(newOperationInterceptor(), newReconnectInterceptor())
 	return &GraphClient{
 		baseURL:    baseURL,
 		httpClient: httpClient,
@@ -182,6 +186,20 @@ func (c *GraphClient) PipelineScan(
 	req *knowledgev1.PipelineScanRequest,
 ) (*knowledgev1.PipelineScanResponse, error) {
 	resp, err := c.engine.PipelineScan(ctx, connect.NewRequest(req))
+	if err != nil {
+		return nil, err
+	}
+	return resp.Msg, nil
+}
+
+// CorpusDelta issues one EngineService.CorpusDelta RPC and returns the typed
+// response. Thin connect-client passthrough mirroring PipelineScan — the daemon's
+// resident thought-corpus cache rides this on dirty ticks.
+func (c *GraphClient) CorpusDelta(
+	ctx context.Context,
+	req *knowledgev1.CorpusDeltaRequest,
+) (*knowledgev1.CorpusDeltaResponse, error) {
+	resp, err := c.engine.CorpusDelta(ctx, connect.NewRequest(req))
 	if err != nil {
 		return nil, err
 	}

@@ -32,7 +32,7 @@ import (
 // constructor never touches the real keychain or dials loopback. Over-the-wire-
 // free: the routing subtest points LocalDialer at an httptest counting engine.
 func TestConstructClient_NoAuth_ForcesLocalOnly(t *testing.T) {
-	ctx := context.Background()
+	ctx := opCtx()
 
 	// withConstructClientSeams overrides the keychain store + keepalive package
 	// vars so constructClient never touches the real keychain or dials loopback,

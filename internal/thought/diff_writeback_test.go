@@ -4,6 +4,7 @@ package thought
 
 import (
 	"context"
+	"fmt"
 	"sort"
 	"sync"
 	"testing"
@@ -131,7 +132,7 @@ func TestDiffWriteback_PropagatedOnlyChangedNodes(t *testing.T) {
 	// Reference full pass (applying fake) to learn the converged propagated_* per
 	// node by reading post-write state.
 	refState := newDiffWritebackFakeApplying(ids, edges)
-	_, err := RunPropagationScoped(ctx, refState, nil, refState.nodeByIDFrom(), nil)
+	_, err := RunPropagationScoped(ctx, refState, nil, refState.nodeByIDFrom(), nil, nil)
 	require.NoError(t, err)
 	converged := map[string][2]string{}
 	for id, n := range refState.thoughts {
@@ -153,11 +154,56 @@ func TestDiffWriteback_PropagatedOnlyChangedNodes(t *testing.T) {
 	// Scoped pass touching the (single) component; recompute equals persisted for
 	// a1/a2 → dropped; a3 differs (was unset) → the ONLY row written.
 	seed := map[string]bool{"a1": true}
-	_, err = RunPropagationScoped(ctx, scoped, nil, scoped.nodeByIDFrom(), seed)
+	_, err = RunPropagationScoped(ctx, scoped, nil, scoped.nodeByIDFrom(), seed, nil)
 	require.NoError(t, err)
 
 	assert.Equal(t, []string{"a3"}, scoped.capturedIDs("propagated_valence"),
 		"only the node whose propagated_* changed (a3) is written — not the whole closure")
+}
+
+// TestDeadband_ConvergedCorpusZeroWriteback (FAILS-WHEN-ABSENT for the persistence
+// deadband) proves that a full pass over a corpus whose persisted propagated_*
+// values are already within the deadband of the recomputed values writes ZERO
+// rows. A reference full pass learns the converged propagated_* per node; those
+// values PERTURBED by +5e-5 (50x the %.6f quantum, so the exact-string comparison
+// always sees a difference, yet 5e-5 sits below the 1e-4 deadband) are persisted
+// for the whole corpus. A second full pass recomputes the same converged values —
+// every row is within the deadband, so the writeback carries NOTHING. Under
+// exact-string diffing (no deadband) every row's string differs → the whole corpus
+// is re-written and this test fails.
+func TestDeadband_ConvergedCorpusZeroWriteback(t *testing.T) {
+	ctx := context.Background()
+
+	ids := []string{"a1", "a2", "a3"}
+	edges := [][2]string{{"a1", "a2"}, {"a2", "a3"}, {"a1", "a3"}}
+
+	// Reference full pass (applying fake) to learn the converged propagated_* per node.
+	refState := newDiffWritebackFakeApplying(ids, edges)
+	_, err := RunPropagationScoped(ctx, refState, nil, refState.nodeByIDFrom(), nil, nil)
+	require.NoError(t, err)
+
+	// Persist the converged values PERTURBED by +5e-5 for the WHOLE corpus. 5e-5 is
+	// 50x the %.6f quantum (exact-string diff always sees a change) but below the
+	// 1e-4 deadband (the deadband gate must drop every row).
+	scoped := newDiffWritebackFake(ids, edges)
+	scoped.mu.Lock()
+	for id, n := range refState.thoughts {
+		for _, key := range []string{"propagated_valence", "propagated_magnitude"} {
+			perturbed := parseFloat(kgtypes.Value(n, key)) + 5e-5
+			kgtypes.SetValue(scoped.thoughts[id], key, fmt.Sprintf("%.6f", perturbed))
+		}
+	}
+	scoped.mu.Unlock()
+
+	// Full pass (nil seed) over the same graph: recompute equals persisted within the
+	// deadband for every node → zero rows written.
+	_, err = RunPropagationScoped(ctx, scoped, nil, scoped.nodeByIDFrom(), nil, nil)
+	require.NoError(t, err)
+
+	assert.Empty(t, scoped.capturedIDs("propagated_valence"),
+		"no propagated_valence row is written when every recomputed value is within the deadband of persisted")
+	assert.Empty(t, scoped.capturedIDs("propagated_magnitude"),
+		"no propagated_magnitude row is written when every recomputed value is within the deadband of persisted")
 }
 
 // TestDiffWriteback_ClusterIDOnlyChangedNodes (FAILS-WHEN-ABSENT) proves the

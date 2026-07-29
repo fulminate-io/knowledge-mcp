@@ -24,7 +24,7 @@ func TestInterceptCreateTestPlan_TopLevelSummaryClampsAndWarns(t *testing.T) {
 	fc := &fakeGraphCaller{mutateIDs: []string{"tp-1", "step-1"}}
 	deps := interceptTestDeps{gc: fc}
 	longSummary := strings.Repeat("a", 600)
-	handled, res := InterceptCreateTestPlan(deps, kgtools.CallToolParams{
+	handled, res := InterceptCreateTestPlan(opCtx(), deps, kgtools.CallToolParams{
 		Name: "create_test_plan",
 		Arguments: json.RawMessage(`{
 			"name":"tp","goal":"g","summary":"` + longSummary + `","format":"json",
@@ -49,7 +49,7 @@ func TestInterceptCreateTestPlan_StepSummaryClampsAndWarns(t *testing.T) {
 	fc := &fakeGraphCaller{mutateIDs: []string{"tp-1", "step-1"}}
 	deps := interceptTestDeps{gc: fc}
 	longStepSummary := strings.Repeat("b", 600)
-	handled, res := InterceptCreateTestPlan(deps, kgtools.CallToolParams{
+	handled, res := InterceptCreateTestPlan(opCtx(), deps, kgtools.CallToolParams{
 		Name: "create_test_plan",
 		Arguments: json.RawMessage(`{
 			"name":"tp","goal":"g","summary":"s","format":"json",

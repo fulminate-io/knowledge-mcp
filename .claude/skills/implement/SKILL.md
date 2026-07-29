@@ -113,6 +113,14 @@ Decisions surfacing during implementation = upstream artifacts inadequate; route
     ```
     EXECUTION DIRECTIVE — read first, enforce throughout:
 
+    BEFORE YOUR FIRST WRITE, verify this brief's picture of the environment. Whatever
+    it tells you about the working tree and about which steps remain was true when it
+    was written and may not be true now. One call each: the tree against what the brief
+    says is there, the step statuses against what it says is left. If they disagree,
+    STOP and report — do not write, and never revert, stash, or clean uncommitted work
+    that is not yours to reach the base the brief promised. A tree already carrying your
+    task's changes means another worker is live on it.
+
     Execute every step of every phase in the order the plan specifies. Do not skip
     steps. Do not cherry-pick phases. Do not estimate scope. Do not pause to ask
     for sequencing direction. Do not freelance a "better" approach.

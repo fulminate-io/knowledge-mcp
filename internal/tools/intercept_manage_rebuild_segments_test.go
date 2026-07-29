@@ -477,8 +477,10 @@ func (d rebuildClientDeps) SegmentShipper() SegmentShipper             { return 
 func (rebuildClientDeps) SegmentPruner() SegmentPruner                 { return nil }
 func (rebuildClientDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
 func (d rebuildClientDeps) PipelineScanner() PipelineScanner           { return d.scanner }
-func (d rebuildClientDeps) ReflectionForcer() ReflectionForcer         { return nil }
-func (d rebuildClientDeps) SimilarityForcer() SimilarityForcer         { return nil }
+
+func (d rebuildClientDeps) ClearHealLatch(kgtypes.GraphType, string) {}
+func (d rebuildClientDeps) ReflectionForcer() ReflectionForcer       { return nil }
+func (d rebuildClientDeps) SimilarityForcer() SimilarityForcer       { return nil }
 
 func (d rebuildClientDeps) BlindSpotProvider() BlindSpotProvider { return nil }
 func (d rebuildClientDeps) ClusterProvider() ClusterProvider     { return nil }

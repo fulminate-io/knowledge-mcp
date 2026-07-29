@@ -44,7 +44,7 @@ func TestInterceptMutate_LocalOnlyUpdate_FallsThrough(t *testing.T) {
 		"local-1": nodeResultJSON(t, "local-1", "ticket", map[string]string{}),
 	}}
 	deps := interceptTestDeps{byName: map[string]backends.Backend{"linear": &fakeBackend{}}, gc: fc}
-	handled, _ := InterceptMutate(deps, kgtools.CallToolParams{
+	handled, _ := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "mutate",
 		Arguments: json.RawMessage(`{"operation":"update","id":"local-1","name":"new name"}`),
 	})
@@ -64,7 +64,7 @@ func TestInterceptMutate_BackendBackedUpdate_CallsLinearThenForwards(t *testing.
 		mutateResult: kgtools.ToolResult{Content: []kgtools.ContentBlock{{Type: "text", Text: "ok"}}},
 	}
 	deps := interceptTestDeps{byName: map[string]backends.Backend{"linear": fb}, gc: fc}
-	handled, res := InterceptMutate(deps, kgtools.CallToolParams{
+	handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "mutate",
 		Arguments: json.RawMessage(`{"operation":"update","id":"back-1","name":"renamed"}`),
 	})
@@ -86,7 +86,7 @@ func TestInterceptMutate_MixedBatch_GuardRejects(t *testing.T) {
 		"backend-1": nodeResultJSON(t, "backend-1", "ticket", map[string]string{"backend": "linear"}),
 	}}
 	deps := interceptTestDeps{byName: map[string]backends.Backend{"linear": &fakeBackend{}}, gc: fc}
-	handled, res := InterceptMutate(deps, kgtools.CallToolParams{
+	handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "mutate",
 		Arguments: json.RawMessage(`{"operation":"update","ids":["local-1","backend-1"],"status":"done"}`),
 	})
@@ -109,7 +109,7 @@ func TestInterceptMutate_BatchWithBackendID_RejectsLoudly(t *testing.T) {
 			"back-2": nodeResultJSON(t, "back-2", "ticket", map[string]string{"backend": "linear"}),
 		}}
 		deps := interceptTestDeps{byName: map[string]backends.Backend{"linear": fb}, gc: fc}
-		handled, res := InterceptMutate(deps, kgtools.CallToolParams{
+		handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 			Name:      "mutate",
 			Arguments: json.RawMessage(`{"operation":"update","ids":["back-1","back-2"],"status":"completed"}`),
 		})
@@ -129,7 +129,7 @@ func TestInterceptMutate_BatchWithBackendID_RejectsLoudly(t *testing.T) {
 			"back-1":  nodeResultJSON(t, "back-1", "ticket", map[string]string{"backend": "linear"}),
 		}}
 		deps := interceptTestDeps{byName: map[string]backends.Backend{"linear": fb}, gc: fc}
-		handled, res := InterceptMutate(deps, kgtools.CallToolParams{
+		handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 			Name:      "mutate",
 			Arguments: json.RawMessage(`{"operation":"update","ids":["local-1","back-1"],"status":"completed"}`),
 		})
@@ -153,7 +153,7 @@ func TestInterceptMutate_BatchWithPerTypeParam_RejectsLoudly(t *testing.T) {
 		"crit-2": nodeResultJSON(t, "crit-2", "criterion", map[string]string{}),
 	}}
 	deps := interceptTestDeps{byName: map[string]backends.Backend{"linear": &fakeBackend{}}, gc: fc}
-	handled, res := InterceptMutate(deps, kgtools.CallToolParams{
+	handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "mutate",
 		Arguments: json.RawMessage(`{"operation":"update","ids":["crit-1","crit-2"],"command":"go test"}`),
 	})
@@ -173,7 +173,7 @@ func TestInterceptMutate_BatchWithSource_RejectsLoudly(t *testing.T) {
 		"finding-2": nodeResultJSON(t, "finding-2", "finding", map[string]string{}),
 	}}
 	deps := interceptTestDeps{byName: map[string]backends.Backend{"linear": &fakeBackend{}}, gc: fc}
-	handled, res := InterceptMutate(deps, kgtools.CallToolParams{
+	handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "mutate",
 		Arguments: json.RawMessage(`{"operation":"update","ids":["finding-1","finding-2"],"source":"manual"}`),
 	})
@@ -195,7 +195,7 @@ func TestInterceptMutate_BatchContainerStatus_RejectsLoudly(t *testing.T) {
 		"plan-2": nodeResultJSON(t, "plan-2", "plan", map[string]string{}),
 	}}
 	deps := interceptTestDeps{byName: map[string]backends.Backend{"linear": &fakeBackend{}}, gc: fc}
-	handled, res := InterceptMutate(deps, kgtools.CallToolParams{
+	handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "mutate",
 		Arguments: json.RawMessage(`{"operation":"update","ids":["plan-1","plan-2"],"status":"completed"}`),
 	})
@@ -219,7 +219,7 @@ func TestInterceptMutate_BatchPlainLocalStatus_Routes(t *testing.T) {
 	deps := interceptTestDeps{byName: map[string]backends.Backend{"linear": &fakeBackend{}}, gc: fc}
 	// Gate passes → intercept returns (false,_); production then routes the batch
 	// through the SAME engine.Compile dispatch this test asserts on.
-	handled, _ := InterceptMutate(deps, kgtools.CallToolParams{
+	handled, _ := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "mutate",
 		Arguments: json.RawMessage(`{"operation":"update","ids":["t-1","t-2"],"status":"closed"}`),
 	})
@@ -247,7 +247,7 @@ func TestInterceptMutate_BackendBackedDelete_CallsLinearArchive(t *testing.T) {
 		mutateResult: kgtools.ToolResult{Content: []kgtools.ContentBlock{{Type: "text", Text: "ok"}}},
 	}
 	deps := interceptTestDeps{byName: map[string]backends.Backend{"linear": fb}, gc: fc}
-	handled, res := InterceptMutate(deps, kgtools.CallToolParams{
+	handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "mutate",
 		Arguments: json.RawMessage(`{"operation":"delete","id":"back-d"}`),
 	})
@@ -271,7 +271,7 @@ func TestInterceptMutate_UpdateLinearSucceedsForwardFails(t *testing.T) {
 	deps := interceptTestDeps{byName: map[string]backends.Backend{"linear": fb}, gc: fc}
 	originalArgs := []byte(`{"operation":"update","id":"back-1","name":"renamed"}`)
 	originalCopy := append([]byte(nil), originalArgs...)
-	handled, res := InterceptMutate(deps, kgtools.CallToolParams{
+	handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "mutate",
 		Arguments: originalArgs,
 	})
@@ -303,7 +303,7 @@ func TestInterceptMutate_DeleteAllLinearSucceedForwardFails(t *testing.T) {
 	deps := interceptTestDeps{byName: map[string]backends.Backend{"linear": fb}, gc: fc}
 	originalArgs := []byte(`{"operation":"delete","ids":["id-a","id-b","id-c"]}`)
 	originalCopy := append([]byte(nil), originalArgs...)
-	handled, res := InterceptMutate(deps, kgtools.CallToolParams{
+	handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "mutate",
 		Arguments: originalArgs,
 	})
@@ -341,7 +341,7 @@ func TestInterceptMutate_DeleteLinearSucceedsForBackendResolutionFails(t *testin
 		},
 	}
 	deps := interceptTestDeps{byName: map[string]backends.Backend{"linear": fb}, gc: fc}
-	handled, res := InterceptMutate(deps, kgtools.CallToolParams{
+	handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "mutate",
 		Arguments: json.RawMessage(`{"operation":"delete","ids":["id-a","id-b","id-fail"]}`),
 	})

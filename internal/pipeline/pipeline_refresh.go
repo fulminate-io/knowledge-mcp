@@ -6,6 +6,8 @@ import (
 	"context"
 	"log/slog"
 	"time"
+
+	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 )
 
 // pipeline_refresh.go holds the client-side graph-CATALOG discovery poll on
@@ -40,7 +42,16 @@ import (
 // no separate single-flight guard is needed.
 //
 // Exits on ctx.Done.
+//
+// Query-origin: the ctx handed in is the daemon wire ctx, which has no
+// originating tool call to inherit an operation from, so the loop stamps its own
+// ONCE HERE rather than per RPC — every catalog read the loop issues derives
+// from this ctx, so the stamp covers the whole loop body including anything
+// added to it later. Unstamped, this is the single largest source of
+// client.unstamped traffic: the poll fires one graph-names read per eligible
+// graph type every tick, forever, whether or not there is work to drain.
 func (p *Pipeline) RefreshLoadedGraphs(ctx context.Context) {
+	ctx = graphclient.WithOperation(ctx, graphclient.OpPipelineGraphDiscovery)
 	gate := newErrBackoff(p.cfg.ErrBackoffBaseOrDefault(), p.cfg.ErrBackoffMaxOrDefault())
 	for {
 		hint, throttled := p.refreshOnce(ctx)
@@ -76,8 +87,13 @@ func (p *Pipeline) discoveryTick(ctx context.Context) time.Duration {
 // Exported so the caller (cmd/knowledge.wirePipelineRuntime) can seed
 // the collector set BEFORE the background refresh goroutine starts so
 // the very first tick has a populated state to diff against.
+//
+// Stamps the same query-origin operation as the loop: this runs the identical
+// catalog read, and its caller passes a fresh bootstrap ctx that does not
+// descend from the loop's, so it needs its own stamp to keep the boot burst out
+// of the client.unstamped bucket.
 func (p *Pipeline) RefreshOnceForBoot(ctx context.Context) {
-	p.refreshOnce(ctx)
+	p.refreshOnce(graphclient.WithOperation(ctx, graphclient.OpPipelineGraphDiscovery))
 }
 
 // refreshOnce performs one diff-and-dispatch pass. Extracted from

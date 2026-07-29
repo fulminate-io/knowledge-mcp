@@ -49,41 +49,41 @@ func TestSegmentSearchArms_NotReadyGate(t *testing.T) {
 	}
 
 	t.Run("search-knowledge", func(t *testing.T) {
-		h, res := InterceptSearch(deps, searchParams(t, map[string]any{"query": "x", "graph": "knowledge"}))
+		h, res := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{"query": "x", "graph": "knowledge"}))
 		expectNotReady(t, h, res)
 	})
 	t.Run("query-knowledge", func(t *testing.T) {
 		raw, _ := json.Marshal(map[string]any{"text": "x", "mode": "text"})
-		h, res := InterceptQueryKnowledgeSearch(deps, kgtools.CallToolParams{Name: "query", Arguments: raw})
+		h, res := InterceptQueryKnowledgeSearch(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: raw})
 		expectNotReady(t, h, res)
 	})
 	t.Run("search-code", func(t *testing.T) {
-		h, res := InterceptSearch(deps, searchParams(t, map[string]any{"query": "x", "graph": "code", "repo": "knowledge"}))
+		h, res := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{"query": "x", "graph": "code", "repo": "knowledge"}))
 		expectNotReady(t, h, res)
 	})
 	t.Run("query-code", func(t *testing.T) {
 		raw, _ := json.Marshal(map[string]any{"text": "x", "graph": "code", "repo": "knowledge"})
-		h, res := InterceptQueryCodeSearch(deps, kgtools.CallToolParams{Name: "query", Arguments: raw})
+		h, res := InterceptQueryCodeSearch(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: raw})
 		expectNotReady(t, h, res)
 	})
 	t.Run("query-practice-language", func(t *testing.T) {
 		raw, _ := json.Marshal(map[string]any{"graph": "practice", "language": "go", "text": "x"})
-		h, res := InterceptQueryPracticeLinkage(deps, kgtools.CallToolParams{Name: "query", Arguments: raw})
+		h, res := InterceptQueryPracticeLinkage(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: raw})
 		expectNotReady(t, h, res)
 	})
 	t.Run("query-practice-fanout", func(t *testing.T) {
 		raw, _ := json.Marshal(map[string]any{"graph": "practice", "language": "all", "text": "x"})
-		h, res := InterceptQueryPracticeLinkage(deps, kgtools.CallToolParams{Name: "query", Arguments: raw})
+		h, res := InterceptQueryPracticeLinkage(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: raw})
 		expectNotReady(t, h, res)
 	})
 	t.Run("query-cloud", func(t *testing.T) {
 		raw, _ := json.Marshal(map[string]any{"graph": "cloud", "account": "acct", "text": "x"})
-		h, res := InterceptQueryCloudCICD(deps, kgtools.CallToolParams{Name: "query", Arguments: raw})
+		h, res := InterceptQueryCloudCICD(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: raw})
 		expectNotReady(t, h, res)
 	})
 	t.Run("query-registered", func(t *testing.T) {
 		raw, _ := json.Marshal(map[string]any{"graph": "myCustomGraph", "text": "x"})
-		h, res := InterceptQueryRegisteredGraphSearch(deps, kgtools.CallToolParams{Name: "query", Arguments: raw})
+		h, res := InterceptQueryRegisteredGraphSearch(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: raw})
 		expectNotReady(t, h, res)
 	})
 }
@@ -112,22 +112,22 @@ func TestSegmentSearchArms_DegradedNilManager(t *testing.T) {
 	}
 
 	t.Run("search-knowledge", func(t *testing.T) {
-		h, res := InterceptSearch(deps, searchParams(t, map[string]any{"query": "x", "graph": "knowledge"}))
+		h, res := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{"query": "x", "graph": "knowledge"}))
 		expectDegraded(t, h, res)
 	})
 	t.Run("query-code", func(t *testing.T) {
 		raw, _ := json.Marshal(map[string]any{"text": "x", "graph": "code", "repo": "knowledge"})
-		h, res := InterceptQueryCodeSearch(deps, kgtools.CallToolParams{Name: "query", Arguments: raw})
+		h, res := InterceptQueryCodeSearch(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: raw})
 		expectDegraded(t, h, res)
 	})
 	t.Run("query-practice-language", func(t *testing.T) {
 		raw, _ := json.Marshal(map[string]any{"graph": "practice", "language": "go", "text": "x"})
-		h, res := InterceptQueryPracticeLinkage(deps, kgtools.CallToolParams{Name: "query", Arguments: raw})
+		h, res := InterceptQueryPracticeLinkage(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: raw})
 		expectDegraded(t, h, res)
 	})
 	t.Run("query-practice-fanout", func(t *testing.T) {
 		raw, _ := json.Marshal(map[string]any{"graph": "practice", "language": "all", "text": "x"})
-		h, res := InterceptQueryPracticeLinkage(deps, kgtools.CallToolParams{Name: "query", Arguments: raw})
+		h, res := InterceptQueryPracticeLinkage(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: raw})
 		expectDegraded(t, h, res)
 	})
 }
@@ -140,7 +140,7 @@ func TestSearchSimilar_NotReadyGate(t *testing.T) {
 	var execHits atomic.Int64
 	gc := newInterceptHarness(t, &execHits, cannedSearchResp(t))
 	deps := &interceptDeps{gc: gc, pipelineNotReady: true}
-	handled, res := InterceptSearch(deps, searchParams(t, map[string]any{
+	handled, res := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{
 		"graph": "knowledge", "mode": "similar", "node_id": "n1",
 	}))
 	require.True(t, handled, "mode:similar is claimed unconditionally")
@@ -158,7 +158,7 @@ func TestSearchBM25_UngatedDuringWindow(t *testing.T) {
 	var execHits, embedCalls atomic.Int64
 	gc := newInterceptHarness(t, &execHits, cannedSearchResp(t))
 	deps := &interceptDeps{gc: gc, emb: stubEmbedder{calls: &embedCalls}, pipelineNotReady: true}
-	handled, res := InterceptSearch(deps, searchParams(t, map[string]any{"graph": "logs", "name": "q1", "text": "err"}))
+	handled, res := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{"graph": "logs", "name": "q1", "text": "err"}))
 	require.True(t, handled, "logs search is handled client-side")
 	if res.IsError {
 		assert.NotContains(t, res.Content[0].Text, "daemon still starting",

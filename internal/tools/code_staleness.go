@@ -124,6 +124,26 @@ func codeStalenessFooter(ctx context.Context, exec engine.ExecuteFn, cwd, repo, 
 		return fmt.Sprintf("code index: last collected %s (commits-behind unavailable: %v)", when, err)
 	}
 	if behind == 0 {
+		// COMMITS ARE NOT THE COLLECTION UNIT. Collection indexes the
+		// WORKING TREE — DiscoverFiles enumerates via `git ls-files --cached --others
+		// --exclude-standard`, which includes untracked files — while this footer
+		// measures freshness in COMMITS. The two disagree about what "the tree" is, so
+		// uncommitted and untracked edits never move `behind` and the footer reported
+		// "up to date" beside searches that could not see 289-line files sitting on
+		// disk. A freshness signal that cannot go stale removes the operator's only cue
+		// to re-collect, which is worse than one that admits it does not know.
+		//
+		// The honest downgrade is UNCERTAINTY, not staleness: a dirty tree does not
+		// prove the index is behind, because the collect may well have run after those
+		// edits. UncommittedCount only counts TRACKED modifications (`git diff
+		// --name-only`), so it under-reports relative to what collection actually
+		// walks — it is a floor, and a non-zero floor is enough to withdraw the claim.
+		// A read error is not itself evidence of anything, so it falls through.
+		if dirty, derr := coderun.UncommittedCount(ctx, gitDir); derr == nil && dirty > 0 {
+			return fmt.Sprintf(
+				"code index: last collected %s at this commit; %d uncommitted file(s) — freshness not confirmable from the commit count alone",
+				when, dirty)
+		}
 		return fmt.Sprintf("code index: up to date — last collected %s", when)
 	}
 	return fmt.Sprintf("code index: %s behind HEAD — last collected %s", pluralCommits(behind), when)

@@ -24,7 +24,7 @@ import (
 // InterceptQueryPlanTree claims query(mode:"plan_tree") and renders
 // the tree client-side. Returns (handled, result). When the call is
 // not a plan_tree query, returns (false, _) so the chain continues.
-func InterceptQueryPlanTree(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
+func InterceptQueryPlanTree(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	if params.Name != "query" {
 		return false, kgtools.ToolResult{}
 	}
@@ -67,7 +67,6 @@ func InterceptQueryPlanTree(deps ClientDeps, params kgtools.CallToolParams) (boo
 		}
 	}
 
-	ctx := context.Background()
 	node, err := render.FetchNode(ctx, gc, a.ID)
 	if err != nil {
 		return true, errorResult("plan_tree: " + err.Error())

@@ -72,7 +72,7 @@ func TestRecordDecision_TicketContains(t *testing.T) {
 		mutateIDs: []string{"decision-1"},
 	}
 	deps := interceptTestDeps{gc: fc}
-	handled, res := InterceptRecordDecision(deps, kgtools.CallToolParams{
+	handled, res := InterceptRecordDecision(opCtx(), deps, kgtools.CallToolParams{
 		Name: "record_decision",
 		Arguments: json.RawMessage(`{
 			"name": "use X over Y",

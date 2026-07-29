@@ -155,25 +155,32 @@ func (f *fakeLogGraphCaller) execQuery(q *knowledgev1.QueryPlan, target *knowled
 	return resp, nil
 }
 
-// execEdgesUnion mirrors the deleted bridge's execEdgesUnion: the union over the
+// execEdgesUnion mirrors the engine's RETURN_MODE_EDGES arm: the union over the
 // selection.ids of each node's OUTGOING edges whose type is in the requested
 // set, deduped on (type, from, to). Edges from sibling nodes and edges of other
-// types are excluded.
+// types are excluded. A plan carrying NO pivot ids is the MATCH-ALL form — every
+// edge of the graph, type filter still applied (engine_edges.go
+// collectEdgesForReturnMode).
 func (f *fakeLogGraphCaller) execEdgesUnion(q *knowledgev1.QueryPlan, target *knowledgev1.GraphSelector) *knowledgev1.ExecuteResponse {
 	g := f.graphFor(target)
 	wantTypes := make(map[kgtypes.EdgeType]bool, len(q.GetSelection().GetEdgeTypes()))
 	for _, t := range q.GetSelection().GetEdgeTypes() {
 		wantTypes[kgtypes.EdgeType(t)] = true
 	}
-	wantFrom := make(map[string]bool, len(q.GetSelection().GetIds()))
-	for _, id := range q.GetSelection().GetIds() {
+	pivots := q.GetSelection().GetIds()
+	if len(pivots) == 0 {
+		pivots = q.GetIds()
+	}
+	matchAll := len(pivots) == 0
+	wantFrom := make(map[string]bool, len(pivots))
+	for _, id := range pivots {
 		wantFrom[id] = true
 	}
 	seen := make(map[string]bool)
 	var matched []int
 	for i := range g.edges {
 		e := g.edges[i]
-		if !wantFrom[e.FromId] {
+		if !matchAll && !wantFrom[e.FromId] {
 			continue
 		}
 		if len(wantTypes) > 0 && !wantTypes[kgtypes.EdgeType(e.Type)] {

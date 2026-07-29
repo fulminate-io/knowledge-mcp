@@ -16,87 +16,62 @@ import (
 // even after both) IS caught, leaving the expensive RebuildSegments path to the
 // caller.
 //
-// It runs TWO complementary heal steps before the degeneracy read, because each
-// covers a case the other misses:
-//   - load() (cache-first): the L2-FIRST primary path imports the warm L2 resident
-//     set SERVER-INDEPENDENTLY, so a warm-but-not-yet-loaded graph is made resident
-//     even when the server is slow/down — never collapsed to empty on a List
-//     timeout. But load() short-circuits on the l2Loaded once-guard, so it heals
-//     NOTHING for a graph a prior Search/load already (partially) loaded.
-//   - recoverIfDegenerate (server re-import): resets the load floor
-//     (importedGen.Store(0)) and re-imports from the SERVER (loadFromServer),
-//     bypassing the l2Loaded guard — the fix for a PARTIAL-L2 graph (resident below
-//     floor while the server holds the full corpus) that load() can no longer
-//     touch. It is a no-op (ZERO RPC) when load() already cleared the floor.
+// It is the ANY-ARM wrapper over ReconcileResidentDegenerateByFormat
+// (manager_reconcile_arms.go), which evaluates EVERY format arm of the graph
+// INDEPENDENTLY, each against its OWN format's shipped denominator. This method ORs
+// the per-arm verdicts: true iff ANY arm is degenerate. One format's read pool can
+// collapse while the other is intact — they have separate engines, separate segment
+// sources and separate L2 cache roots — so a single-arm probe would report a healthy
+// graph while half its search surface was empty.
 //
-// A bare load() was insufficient (a partial-L2 graph stayed flagged degenerate
-// forever); a bare recoverIfDegenerate was ALSO insufficient (it skips the L2-first
-// warm-disk import, collapsing a warm-but-unloaded graph to empty on a List
-// timeout). Both, in order, cover both cases.
+// Its (ctx, gt, name) (bool, error) signature is unchanged: every caller that wants
+// the plain "does this graph need attention" answer keeps working untouched. A
+// caller that needs to know WHICH arm collapsed calls the per-format probe directly.
 //
-// Flow:
-//  1. load() cache-first (L2-first warm import; no-op if already loaded).
-//  2. recoverIfDegenerate: no-op when resident >= floor; else single-flighted
-//     importedGen.Store(0) + loadFromServer re-import of the server corpus.
-//  3. read the live resident doc count; resident >= residentBackstopFloor → healthy
-//     (a heal step restored coverage), return false.
-//  4. below the floor: read the shipped denominator via the SHARED
-//     shippedDocCountForRatio (same disarm rules as the read-side backstop — a
-//     pre-doc_count blob or a sub-floor corpus disarms).
-//  5. degenerate iff resident < residentBackstopRatio * shipped.
+// ERROR ISOLATION: an arm that could not be measured contributes Degenerate false,
+// never an error, so a partially-failed probe degrades to "the arms I could read
+// look healthy" rather than a spurious rebuild. An error surfaces here only when
+// EVERY arm failed. Each arm's own error is preserved in its ArmVerdict.Err.
 //
-// ACCEPTED TRADE — TWO List(0)s on the below-floor heal path: recoverIfDegenerate
-// runs its own shippedDocCountForRatio List(0) (manager_backstop.go) when below
-// floor, and this method then re-reads the shipped denominator with a SECOND List(0)
-// at step 4. This is deliberate, not a regression: a HEALTHY graph short-circuits in
-// BOTH recoverIfDegenerate's floor gate AND step 3 here, paying ZERO List — the
-// extra List is confined to the rare actually-degenerate case. ReconcileResidentDegenerate
-// is OFF the bind path (fired only by the ~30s boot-delay one-shot and the periodic
-// reconcile loop), so a second List on a cold heal never touches first-search
-// readiness. Threading recoverIfDegenerate's already-computed shipped count back to
-// the caller to save the second List was rejected: its early-exit paths never
-// compute one, so plumbing a sentinel through that hot read-side net to shave one
-// List off a non-bind-path heal is not worth the coupling.
+// PER-ARM FLOW (see armCoverageVerdict for the authoritative sequence): cache-first
+// load, entry floor gate, one shipped-count read, cheap server re-import, then the
+// verdict with the floor RE-APPLIED before the ratio. Each arm emits one slog.Debug
+// carrying its format, so the whole reconcile decision stays inspectable in the
+// daemon log without re-deriving it.
 //
-// Best-effort: a load(), recoverIfDegenerate, or List error is returned to the
-// caller, which logs and continues (never blocks boot).
+// TWO List(0)s ON THE BELOW-FLOOR PATH: NO LONGER ACCEPTED. This method previously
+// documented the two-List cost as deliberate — recoverIfDegenerate ran its own
+// shipped-count List and the verdict then re-read the denominator with a second one
+// — on two premises: that the extra List was confined to the rare actually-degenerate
+// case, and that threading the count back would push a sentinel through a hot
+// read-side net. BOTH have expired:
+//
+//   - An arm whose shipped manifest is absent or below the floor stays below the
+//     floor permanently, so its probe is not rare — it is the recurring per-tick
+//     state for every graph that has never shipped that format.
+//   - The read-side net is gone: recoverIfDegenerate has ONE production caller (this
+//     probe's arm sequence) plus its restart-backstop tests; Search no longer calls
+//     it.
+//
+// So the arm sequence reads the denominator ONCE and passes it into
+// recoverIfDegenerateWithShipped. Reusing one snapshot for both the recovery
+// decision and the verdict REMOVES a staleness window rather than adding one: the
+// probe only reads the shipped corpus, and the second List it replaces could observe
+// a different corpus than the recovery decision used.
+//
+// Best-effort: the returned error is logged by the caller, which continues (never
+// blocks boot).
 func (m *Manager) ReconcileResidentDegenerate(
 	ctx context.Context, gt kgtypes.GraphType, name string,
 ) (degenerate bool, err error) {
-	dm := m.managerFor(gt, name)
-
-	// Cache-first load FIRST: the L2-first primary path imports the warm L2 resident
-	// set SERVER-INDEPENDENTLY (loadResidentFromL2), so a warm-but-not-yet-loaded
-	// graph is made resident even when the server List times out — never collapsed
-	// to empty. A graph whose lazy load would heal is thus not flagged.
-	if err := dm.load(ctx); err != nil {
-		return false, err
-	}
-	// THEN the cheap server re-import: heal a partial-L2 graph whose prior load
-	// already latched l2Loaded (so the load() above short-circuits and re-imports
-	// nothing) — recoverIfDegenerate resets the load floor and re-imports from the
-	// server, bypassing the once-guard. It is a no-op (zero RPC) when the load above
-	// already cleared the floor, so a warm/healthy graph pays nothing extra here.
-	if err := dm.recoverIfDegenerate(ctx); err != nil {
-		return false, err
-	}
-
-	resident := dm.engine.ResidentDocCount()
-	if resident >= residentBackstopFloor {
-		// Healthy after the re-import — the resident pool clears the floor.
-		return false, nil
-	}
-
-	shipped, disarm, err := dm.shippedDocCountForRatio(ctx)
+	verdicts, err := m.ReconcileResidentDegenerateByFormat(ctx, gt, name)
 	if err != nil {
 		return false, err
 	}
-	if disarm {
-		// Pre-doc_count blob (unknown denominator) or a sub-floor corpus — never
-		// flag, mirroring the read-side backstop's disarms so the reconcile never
-		// storms a migrating fleet or churns a tiny graph.
-		return false, nil
+	for _, v := range verdicts {
+		if v.Degenerate {
+			return true, nil
+		}
 	}
-
-	return float64(resident) < residentBackstopRatio*float64(shipped), nil
+	return false, nil
 }

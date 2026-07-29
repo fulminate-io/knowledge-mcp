@@ -56,7 +56,7 @@ func TestCodeSearchReroutesToClientEngine(t *testing.T) {
 	})
 	deps := &interceptDeps{gc: gc, emb: stubEmbedder{calls: &embedCalls}, segMgr: mgr}
 
-	handled, out := InterceptQueryCodeSearch(deps, kgtools.CallToolParams{
+	handled, out := InterceptQueryCodeSearch(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "query",
 		Arguments: mustMarshal(t, map[string]any{"graph": "code", "repo": "knowledge", "text": "foo"}),
 	})
@@ -82,7 +82,7 @@ func TestPracticeSearchReroutesToClientEngine(t *testing.T) {
 	})
 	deps := &interceptDeps{gc: gc, emb: stubEmbedder{calls: &embedCalls}, segMgr: mgr}
 
-	handled, out := InterceptQueryPracticeLinkage(deps, kgtools.CallToolParams{
+	handled, out := InterceptQueryPracticeLinkage(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "query",
 		Arguments: mustMarshal(t, map[string]any{"graph": "practice", "language": "go", "text": "error handling"}),
 	})

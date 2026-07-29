@@ -231,7 +231,7 @@ func TestInterceptNegationGate_Dispatch(t *testing.T) {
 	}
 
 	t.Run("contradicts-link no quote → handled+IsError", func(t *testing.T) {
-		handled, res := InterceptNegationGate(mkDeps(), negationParams(t, "mutate", map[string]any{
+		handled, res := InterceptNegationGate(opCtx(), mkDeps(), negationParams(t, "mutate", map[string]any{
 			"operation": "link", "relationship": "contradicts", "to": nodeID,
 		}))
 		assert.True(t, handled, "missing-quote negation is claimed by the gate")
@@ -239,7 +239,7 @@ func TestInterceptNegationGate_Dispatch(t *testing.T) {
 	})
 
 	t.Run("contradicts-link matching quote → falls through", func(t *testing.T) {
-		handled, _ := InterceptNegationGate(mkDeps(), negationParams(t, "mutate", map[string]any{
+		handled, _ := InterceptNegationGate(opCtx(), mkDeps(), negationParams(t, "mutate", map[string]any{
 			"operation": "link", "relationship": "contradicts", "to": nodeID,
 			"verified_quote": "live reasoning body",
 		}))
@@ -247,14 +247,14 @@ func TestInterceptNegationGate_Dispatch(t *testing.T) {
 	})
 
 	t.Run("non-negation mutate(update status:validated) → falls through", func(t *testing.T) {
-		handled, _ := InterceptNegationGate(mkDeps(), negationParams(t, "mutate", map[string]any{
+		handled, _ := InterceptNegationGate(opCtx(), mkDeps(), negationParams(t, "mutate", map[string]any{
 			"operation": "update", "id": nodeID, "status": "validated",
 		}))
 		assert.False(t, handled, "a non-negation update is never claimed by the gate")
 	})
 
 	t.Run("unquoted think branches_from supersession → handled+IsError", func(t *testing.T) {
-		handled, res := InterceptNegationGate(mkDeps(), negationParams(t, "thoughts", map[string]any{
+		handled, res := InterceptNegationGate(opCtx(), mkDeps(), negationParams(t, "thoughts", map[string]any{
 			"operation": "think", "content": "new", "summary": "new", "branches_from": nodeID,
 		}))
 		assert.True(t, handled, "unquoted supersession is claimed by the gate")
@@ -262,14 +262,14 @@ func TestInterceptNegationGate_Dispatch(t *testing.T) {
 	})
 
 	t.Run("nil gc → fail-open fall-through", func(t *testing.T) {
-		handled, _ := InterceptNegationGate(interceptTestDeps{gc: nil}, negationParams(t, "mutate", map[string]any{
+		handled, _ := InterceptNegationGate(opCtx(), interceptTestDeps{gc: nil}, negationParams(t, "mutate", map[string]any{
 			"operation": "link", "relationship": "contradicts", "to": nodeID,
 		}))
 		assert.False(t, handled, "no graph access → fail-open to the existing handler")
 	})
 
 	t.Run("unrelated tool → falls through", func(t *testing.T) {
-		handled, _ := InterceptNegationGate(mkDeps(), negationParams(t, "search", map[string]any{"query": "x"}))
+		handled, _ := InterceptNegationGate(opCtx(), mkDeps(), negationParams(t, "search", map[string]any{"query": "x"}))
 		assert.False(t, handled)
 	})
 }

@@ -66,7 +66,7 @@ func TestHandleServerStatus_AlwaysEmitsLocalDaemonFields(t *testing.T) {
 	t.Run("logged in — cloud path still carries local-daemon fields", func(t *testing.T) {
 		deps := newFullDaemonDeps(true)
 		var got map[string]any
-		require.NoError(t, json.Unmarshal([]byte(textBodyTools(handleServerStatus(deps, "json"))), &got))
+		require.NoError(t, json.Unmarshal([]byte(textBodyTools(handleServerStatus(opCtx(), deps, "json"))), &got))
 
 		// Cloud identity + CLOUD graph totals layered on top.
 		assert.Equal(t, "cloud", got["backend"])
@@ -79,7 +79,7 @@ func TestHandleServerStatus_AlwaysEmitsLocalDaemonFields(t *testing.T) {
 	t.Run("logged out — local path carries the same fields", func(t *testing.T) {
 		deps := newFullDaemonDeps(false)
 		var got map[string]any
-		require.NoError(t, json.Unmarshal([]byte(textBodyTools(handleServerStatus(deps, "json"))), &got))
+		require.NoError(t, json.Unmarshal([]byte(textBodyTools(handleServerStatus(opCtx(), deps, "json"))), &got))
 
 		assert.Equal(t, "running", got["status"])
 		assert.NotContains(t, got, "backend", "logged-out local path omits the backend routing key")

@@ -17,6 +17,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/enginetest"
 	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
 // fakeAssembleDeps is a minimal ClientDeps that exposes a controllable
@@ -48,8 +49,10 @@ func (d *fakeAssembleDeps) SegmentShipper() SegmentShipper               { retur
 func (d *fakeAssembleDeps) SegmentPruner() SegmentPruner                 { return nil }
 func (d *fakeAssembleDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
 func (d *fakeAssembleDeps) PipelineScanner() PipelineScanner             { return nil }
-func (d *fakeAssembleDeps) ReflectionForcer() ReflectionForcer           { return nil }
-func (d *fakeAssembleDeps) SimilarityForcer() SimilarityForcer           { return nil }
+
+func (d *fakeAssembleDeps) ClearHealLatch(kgtypes.GraphType, string) {}
+func (d *fakeAssembleDeps) ReflectionForcer() ReflectionForcer       { return nil }
+func (d *fakeAssembleDeps) SimilarityForcer() SimilarityForcer       { return nil }
 
 func (d *fakeAssembleDeps) BlindSpotProvider() BlindSpotProvider { return nil }
 func (d *fakeAssembleDeps) ClusterProvider() ClusterProvider     { return nil }
@@ -116,7 +119,7 @@ func (s *scriptGcAssemble) Execute(_ context.Context, req *knowledgev1.ExecuteRe
 // (false, _) so the chain continues to the next intercept.
 func TestInterceptAssemble_NonAssembleCallFallsThrough(t *testing.T) {
 	deps := &fakeAssembleDeps{gc: &scriptGcAssemble{}}
-	handled, _ := InterceptAssemble(deps, kgtools.CallToolParams{
+	handled, _ := InterceptAssemble(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "query",
 		Arguments: json.RawMessage(`{}`),
 	})
@@ -129,7 +132,7 @@ func TestInterceptAssemble_NonAssembleCallFallsThrough(t *testing.T) {
 // surface a structured error instead of panicking.
 func TestInterceptAssemble_NilGraphCallerErrorsCleanly(t *testing.T) {
 	deps := &fakeAssembleDeps{gc: nil}
-	handled, res := InterceptAssemble(deps, kgtools.CallToolParams{
+	handled, res := InterceptAssemble(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "assemble",
 		Arguments: json.RawMessage(`{"id":"x"}`),
 	})
@@ -142,7 +145,7 @@ func TestInterceptAssemble_NilGraphCallerErrorsCleanly(t *testing.T) {
 // branch removal: Handle errors when id+type+name are all empty.
 func TestInterceptAssemble_NoArgsErrors(t *testing.T) {
 	deps := &fakeAssembleDeps{gc: &scriptGcAssemble{nodes: map[string]string{}}}
-	handled, res := InterceptAssemble(deps, kgtools.CallToolParams{
+	handled, res := InterceptAssemble(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "assemble",
 		Arguments: json.RawMessage(`{}`),
 	})
@@ -166,7 +169,7 @@ func TestInterceptAssemble_RenderRoundTrip(t *testing.T) {
 		"status": "active"
 	}`
 	deps := &fakeAssembleDeps{gc: &scriptGcAssemble{nodes: map[string]string{id: nodeJSON}}}
-	handled, res := InterceptAssemble(deps, kgtools.CallToolParams{
+	handled, res := InterceptAssemble(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "assemble",
 		Arguments: json.RawMessage(`{"id":"r1"}`),
 	})

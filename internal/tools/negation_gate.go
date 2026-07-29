@@ -187,7 +187,7 @@ func pathBeforeLastColon(s string) string {
 //
 // It must be wired into runInterceptChainInner BEFORE both InterceptThoughts
 // (claims thoughts(think)) and InterceptMutate (claims mutate(update/link)).
-func InterceptNegationGate(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
+func InterceptNegationGate(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	if params.Name != "mutate" && params.Name != "thoughts" {
 		return false, kgtools.ToolResult{}
 	}
@@ -221,7 +221,7 @@ func InterceptNegationGate(deps ClientDeps, params kgtools.CallToolParams) (bool
 		return false, kgtools.ToolResult{}
 	}
 
-	if err := validateNegationQuote(context.Background(), gc, op); err != nil {
+	if err := validateNegationQuote(ctx, gc, op); err != nil {
 		return true, errorResult(err.Error()) // REJECT — never reaches the write handler.
 	}
 	return false, kgtools.ToolResult{} // PASS — fall through to the real negation write.

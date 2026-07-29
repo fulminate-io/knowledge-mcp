@@ -42,7 +42,7 @@ type createProjectArgs struct {
 //     local mirror failed — retry" error and can re-run safely (idempotent
 //     under retry only if Linear's Create is idempotent on this payload,
 //     which it is not; operator must reconcile manually).
-func InterceptCreateProject(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
+func InterceptCreateProject(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	if params.Name != "create_project" {
 		return false, kgtools.ToolResult{}
 	}
@@ -67,7 +67,6 @@ func InterceptCreateProject(deps ClientDeps, params kgtools.CallToolParams) (boo
 	}
 	a.Summary = clamped
 
-	ctx := context.Background()
 	backend := deps.BackendResolver().Default()
 	if backend == nil {
 		// No backend configured — compose the local-only project node

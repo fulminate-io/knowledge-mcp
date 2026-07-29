@@ -20,6 +20,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
 	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
 // repoTestDeps satisfies ClientDeps for the InjectRepoIfCodeGraph tests.
@@ -60,8 +61,10 @@ func (d *repoTestDeps) SegmentShipper() SegmentShipper               { return ni
 func (d *repoTestDeps) SegmentPruner() SegmentPruner                 { return nil }
 func (d *repoTestDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
 func (d *repoTestDeps) PipelineScanner() PipelineScanner             { return nil }
-func (d *repoTestDeps) ReflectionForcer() ReflectionForcer           { return nil }
-func (d *repoTestDeps) SimilarityForcer() SimilarityForcer           { return nil }
+
+func (d *repoTestDeps) ClearHealLatch(kgtypes.GraphType, string) {}
+func (d *repoTestDeps) ReflectionForcer() ReflectionForcer       { return nil }
+func (d *repoTestDeps) SimilarityForcer() SimilarityForcer       { return nil }
 
 func (d *repoTestDeps) BlindSpotProvider() BlindSpotProvider { return nil }
 func (d *repoTestDeps) ClusterProvider() ClusterProvider     { return nil }

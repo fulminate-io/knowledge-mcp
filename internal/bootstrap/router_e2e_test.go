@@ -130,6 +130,12 @@ func (e *countingEngine) PipelineGenPoll(
 	return connect.NewResponse(&knowledgev1.PipelineGenPollResponse{}), nil
 }
 
+func (e *countingEngine) CorpusDelta(
+	context.Context, *connect.Request[knowledgev1.CorpusDeltaRequest],
+) (*connect.Response[knowledgev1.CorpusDeltaResponse], error) {
+	return connect.NewResponse(&knowledgev1.CorpusDeltaResponse{}), nil
+}
+
 func (e *countingEngine) ExportGraph(
 	context.Context, *connect.Request[knowledgev1.ExportGraphRequest],
 ) (*connect.Response[knowledgev1.ExportGraphResponse], error) {
@@ -210,7 +216,7 @@ func buildE2EClientMachineAuth(local *graphclient.GraphClient, cloudURL string, 
 //     "local server unreachable" message (the renderEngineError Branch 2
 //     transport-unreachable path), not a raw "connect:" / "dial tcp" leak.
 func TestRouterE2E_FourStates_PlusSwapAndSyncAndUnreachable(t *testing.T) {
-	ctx := context.Background()
+	ctx := opCtx()
 	searchArgs := json.RawMessage(`{"query":"x","graph":"knowledge"}`)
 
 	t.Run("NoLocal_NoAuth_RendersInstallOrLogin", func(t *testing.T) {
@@ -347,7 +353,7 @@ func TestRouterE2E_FourStates_PlusSwapAndSyncAndUnreachable(t *testing.T) {
 // no override to vary; the cloud-reaching subtest injects a stub cloudURL only
 // through the test seam, with the production wiring shape preserved.
 func TestConstructClient_Coexistence(t *testing.T) {
-	ctx := context.Background()
+	ctx := opCtx()
 
 	// withConstructClientSeams overrides the keychain store + keepalive package
 	// vars so constructClient never touches the real keychain or dials loopback,

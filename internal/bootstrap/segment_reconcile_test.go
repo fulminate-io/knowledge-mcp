@@ -50,6 +50,19 @@ type reconcileEngine struct {
 	mu        sync.Mutex
 	scanItems map[string][]*knowledgev1.PipelineScanItem // keyed by graph name
 	scanCalls map[string]int                             // PipelineScan calls per graph name
+	// scanErr, when set, makes every PipelineScan return it — the lever a test needs
+	// to model a rebuild that does NOT complete (RebuildSegments surfaces the scan
+	// error as ran=false). Zero-valued by default, so no existing fixture is affected.
+	scanErr error
+}
+
+// setScanErr arms (or clears) the injected PipelineScan failure under the same mutex
+// the handler reads it through, so a test goroutine flipping it never races the
+// in-flight handler goroutine.
+func (e *reconcileEngine) setScanErr(err error) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.scanErr = err
 }
 
 func (e *reconcileEngine) Execute(
@@ -81,6 +94,11 @@ func (e *reconcileEngine) PipelineScan(
 	name := req.Msg.GetGraphName()
 	e.mu.Lock()
 	e.scanCalls[name]++
+	// Capture the injected failure AFTER the increment, so an erroring scan still
+	// counts as an invocation — the counter's contract is "PipelineScan calls", and
+	// keeping it means an erroring and a succeeding fixture are compared on the same
+	// observable.
+	scanErr := e.scanErr
 	// Serve the page ONCE per graph (afterId empty), then an empty page so the
 	// id-cursor scan terminates.
 	var items []*knowledgev1.PipelineScanItem
@@ -88,6 +106,9 @@ func (e *reconcileEngine) PipelineScan(
 		items = e.scanItems[name]
 	}
 	e.mu.Unlock()
+	if scanErr != nil {
+		return nil, scanErr
+	}
 	return connect.NewResponse(&knowledgev1.PipelineScanResponse{Items: items}), nil
 }
 
@@ -219,42 +240,49 @@ func TestReconcileSegmentCoverage_HealthyNoRebuild(t *testing.T) {
 		"a healthy (disarmed) graph triggers NO RebuildSegments — PipelineScan never paged")
 }
 
-// TestReconcileSegmentCoverage_DegenerateRebuilds proves a degenerate graph (server
-// corpus >= floor but live resident empty after load — the empty-Fetch collapse)
-// triggers exactly one RebuildSegments: PipelineScan is paged for it.
+// TestReconcileSegmentCoverage_DegenerateRebuilds proves a graph whose SHIPPED corpus
+// is GENUINELY INCOMPLETE vs its embedded node count — and whose read engine cannot
+// restore it — triggers a RebuildSegments: PipelineScan is paged for it. Post shipped-completeness gate
+// the reconcile rebuilds only past the healNeedsRebuild shipped-completeness gate, so
+// embedded=300 arms segmentPoolDegenerate (covered 128 < 0.5*300) — a REAL regen, not
+// a merely lazily-loaded read engine (which the gate now correctly skips; see
+// TestReconcileSegmentCoverage_ShippedCompleteNoRebuild).
 func TestReconcileSegmentCoverage_DegenerateRebuilds(t *testing.T) {
-	c, eng, backend := buildReconcileClientWithSeg(t, 0, "degenRepo")
+	c, eng, backend := buildReconcileClientWithSeg(t, 300, "degenRepo")
 	ctx := context.Background()
 
-	// Full shipped corpus (128 >> floor) but the heal segment service's empty Fetch
-	// means load imports nothing → live resident stays 0 → degenerate.
+	// Shipped corpus 128 (>= floor so ReconcileResidentDegenerate arms) but genuinely
+	// incomplete vs the 300 embedded nodes, and the empty Fetch means load imports
+	// nothing → live resident stays 0 → degenerate AND healNeedsRebuild==true.
 	shipHNSW(t, backend, "degenRepo", 64, 64)
 	eng.scanItems["degenRepo"] = makeReconcileScanPage("degenRepo", 10)
 
 	c.reconcileSegmentCoverage(ctx)
 
 	require.GreaterOrEqual(t, eng.scanCallCount("degenRepo"), 1,
-		"a degenerate graph triggers RebuildSegments — PipelineScan is paged")
+		"a genuinely-incomplete shipped corpus triggers RebuildSegments — PipelineScan is paged")
 }
 
 // TestReconcileSegmentCoverage_DegenerateNonCodeRebuilds proves the reconcile now
 // enumerates + heals NON-code embeddable builtins: a cloud graph (keyed by account,
 // enumerated via the per-type ListGraphNamesOfType the HasRebuildableSegments loop
-// now calls for cloud) in the post-restart degenerate state (full shipped corpus >=
-// floor, live resident empty after the empty Fetch) triggers exactly one
+// now calls for cloud) whose shipped corpus is genuinely incomplete vs its embedded
+// count (>= floor so the probe arms, live resident empty after the empty Fetch, and
+// past the healNeedsRebuild gate via embedded=300) triggers exactly one
 // RebuildSegments — PipelineScan is paged for it. Under a code-only enumeration the
 // cloud graph would never be discovered, so no rebuild would fire.
 func TestReconcileSegmentCoverage_DegenerateNonCodeRebuilds(t *testing.T) {
-	c, eng, backend := buildReconcileClientWithSeg(t, 0) // no code repos — exercise the non-code path alone.
+	c, eng, backend := buildReconcileClientWithSeg(t, 300) // no code repos — exercise the non-code path alone; embedded=300 arms the shipped-completeness gate.
 	ctx := context.Background()
 
 	// Register a cloud account instance so the reconcile's per-type enumeration
 	// (ListGraphNamesOfType for "cloud") discovers it.
 	eng.namesByType[string(kgtypes.GraphCloud)] = []string{"acct"}
 
-	// Full shipped corpus (128 >> floor) under the cloud account selector, but the
-	// heal segment service's empty Fetch means load imports nothing → live resident
-	// stays 0 → degenerate. PipelineScan is keyed by the instance name (account).
+	// Shipped corpus 128 (>= floor) under the cloud account selector but genuinely
+	// incomplete vs the 300 embedded nodes (covered 128 < 0.5*300 → healNeedsRebuild
+	// gate confirms a real regen), and the empty Fetch means load imports nothing →
+	// live resident stays 0 → degenerate. PipelineScan is keyed by the instance name.
 	shipHNSWFor(t, backend, kgtypes.GraphCloud, "acct", 64, 64)
 	eng.scanItems["acct"] = makeReconcileScanPage("acct", 10)
 
@@ -372,11 +400,13 @@ func TestReconcileSegmentCoverage_NilManagerNoPanic(t *testing.T) {
 }
 
 // TestRunSegmentReconcileLoop_TicksAndCancels proves the periodic loop fires the
-// reconcile (a degenerate graph gets rebuilt within a few ticks) and returns
-// promptly on ctx cancel (no goroutine leak).
+// reconcile (a graph needing a real rebuild gets rebuilt within a few ticks) and
+// returns promptly on ctx cancel (no goroutine leak). embedded=300 arms the shipped-completeness
+// healNeedsRebuild gate so the genuinely-incomplete shipped corpus (128 < 0.5*300)
+// still rebuilds.
 func TestRunSegmentReconcileLoop_TicksAndCancels(t *testing.T) {
-	c, eng, backend := buildReconcileClientWithSeg(t, 0, "loopRepo")
-	shipHNSW(t, backend, "loopRepo", 64, 64) // degenerate
+	c, eng, backend := buildReconcileClientWithSeg(t, 300, "loopRepo")
+	shipHNSW(t, backend, "loopRepo", 64, 64) // genuinely incomplete vs 300 embedded → rebuild
 	eng.scanItems["loopRepo"] = makeReconcileScanPage("loopRepo", 10)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -400,19 +430,21 @@ func TestRunSegmentReconcileLoop_TicksAndCancels(t *testing.T) {
 }
 
 // TestReconcileSegmentCoverage_EndToEndHealsWithoutSearchOrCollect is the
-// load-bearing failing-first proof (Phase 4): a graph in the post-restart degenerate
-// state (server holds the full shipped corpus, embedded > 0 via the scan, live
-// resident empty, NO pending embed-drain and NO collect) is healed by
+// load-bearing failing-first proof (Phase 4): a graph whose shipped corpus is
+// genuinely incomplete vs its embedded node count (embedded=1024 via Stats, shipped
+// covered 128 << 0.5*1024 so the healNeedsRebuild gate confirms a real
+// regen), live resident empty, NO pending embed-drain and NO collect, is healed by
 // reconcileSegmentCoverage — RebuildSegments scans the embedded nodes and re-ships a
 // searchable corpus — WITHOUT any Manager.Search and WITHOUT a collect. It must fail
 // on a tree without the Phase 1-2 reconcile (no rebuild fires) and pass with it.
 func TestReconcileSegmentCoverage_EndToEndHealsWithoutSearchOrCollect(t *testing.T) {
-	c, eng, backend := buildReconcileClientWithSeg(t, 0, "e2eRepo")
+	c, eng, backend := buildReconcileClientWithSeg(t, searchengine.DefaultMinSegmentDocs, "e2eRepo")
 	ctx := context.Background()
 
 	// PRE-state: a real embedded corpus exists (the scan returns >= MinSegmentDocs
 	// items so the rebuild seals a full searchable segment), the server holds shipped
-	// HNSW metas (>= floor) but the live engine resident is empty (empty Fetch).
+	// HNSW metas (>= floor) that are genuinely incomplete vs the embedded count but the
+	// live engine resident is empty (empty Fetch).
 	shipHNSW(t, backend, "e2eRepo", 64, 64)
 	eng.scanItems["e2eRepo"] = makeReconcileScanPage("e2eRepo", searchengine.DefaultMinSegmentDocs)
 

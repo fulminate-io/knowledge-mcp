@@ -4,12 +4,22 @@ package pipeline
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 )
 
 // collector_heal.go holds the auto-heal embed-drain edge-latch. It lives in its
 // own file to keep collector.go under the 500-line context cap, and mirrors the
 // maybeQuiescenceFlush shape in collector.go.
+
+// ErrHealDisarmed is the sentinel the bootstrap-supplied heal closure returns when
+// the per-graph heal breaker has latched this graph disarmed. It lives HERE (not in
+// bootstrap) because maybeHealCheck consumes it and the import direction is
+// bootstrap→pipeline — pipeline cannot import bootstrap. maybeHealCheck errors.Is-
+// matches it to set the collector's healDisarmed flag and stop re-arming the per-wake
+// heal check, WITHOUT WARNing: a breaker disarm is a deliberate terminal state, not a
+// heal failure.
+var ErrHealDisarmed = errors.New("pipeline: auto-heal disarmed for this graph (heal breaker latched)")
 
 // maybeHealCheck implements the auto-heal embed-drain edge-latch. It is
 // the consumption half of the runLoop-local healArmed latch (armed on a
@@ -44,6 +54,16 @@ func (c *collector) maybeHealCheck(ctx context.Context, ax loopAxis, items, inFl
 	slog.Info("pipeline.collector: embed gap drained while heal-armed — auto-heal check (cheap zero-segments + coverage-ratio probe; rebuild on zero OR degraded coverage)",
 		"graph_type", c.gt, "name", c.name)
 	if err := c.healIfSegmentless(ctx); err != nil {
+		if errors.Is(err, ErrHealDisarmed) {
+			// The heal breaker latched this graph disarmed after repeated no-progress
+			// rebuilds. Latch the collector's own flag so the embed-wake arm site stops
+			// re-arming this closure per wake — the loop is broken until a manual
+			// rebuild_segments or a restart. This is NOT a failure, so do NOT WARN.
+			c.healDisarmed.Store(true)
+			slog.Info("pipeline.collector: auto-heal disarmed by heal breaker — stopping per-wake heal re-arm until a manual rebuild_segments or restart",
+				"graph_type", c.gt, "name", c.name)
+			return false
+		}
 		slog.Warn("pipeline.collector: auto-heal check failed (best-effort; next collect-armed drain retries)",
 			"graph_type", c.gt, "name", c.name, "error", err)
 	}

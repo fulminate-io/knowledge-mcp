@@ -43,7 +43,7 @@ type analyzeUsageRecommendation struct {
 // InterceptAnalyzeUsage handles the analyze_usage tool entirely client-side. Returns
 // (true, result) when the call was handled; (false, zero) when it is not this tool.
 // A nil analyzer or an empty cache both render the cold-cache --seed hint.
-func InterceptAnalyzeUsage(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
+func InterceptAnalyzeUsage(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	if params.Name != "analyze_usage" {
 		return false, kgtools.ToolResult{}
 	}
@@ -55,7 +55,6 @@ func InterceptAnalyzeUsage(deps ClientDeps, params kgtools.CallToolParams) (bool
 	if analyzer == nil {
 		return true, textResult(coldCacheHint)
 	}
-	ctx := context.Background()
 
 	switch a.Operation {
 	case "run-detectors", "":

@@ -6,6 +6,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -13,6 +16,58 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
+
+// capturingSlogHandler is a minimal slog.Handler that records every emitted record's
+// level + message + attributes. The publish-bound / heal-disarm terminal-WARN
+// assertions install it via slog.SetDefault so they can prove the loud terminal log
+// fired (message + graph identity) rather than inferring it from state alone.
+type capturingSlogHandler struct {
+	mu      sync.Mutex
+	records []slog.Record
+}
+
+func (h *capturingSlogHandler) Enabled(context.Context, slog.Level) bool { return true }
+func (h *capturingSlogHandler) WithAttrs([]slog.Attr) slog.Handler       { return h }
+func (h *capturingSlogHandler) WithGroup(string) slog.Handler            { return h }
+func (h *capturingSlogHandler) Handle(_ context.Context, r slog.Record) error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.records = append(h.records, r.Clone())
+	return nil
+}
+
+// warnsContaining returns the recorded WARN messages (rendered with their attrs)
+// whose message text contains substr, so a test can assert a specific terminal WARN
+// fired with its identifying attributes present.
+func (h *capturingSlogHandler) warnsContaining(substr string) []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var out []string
+	for _, r := range h.records {
+		if r.Level != slog.LevelWarn || !strings.Contains(r.Message, substr) {
+			continue
+		}
+		var b strings.Builder
+		b.WriteString(r.Message)
+		r.Attrs(func(a slog.Attr) bool {
+			b.WriteString(" " + a.Key + "=" + a.Value.String())
+			return true
+		})
+		out = append(out, b.String())
+	}
+	return out
+}
+
+// installCapturingSlog swaps the default slog logger for a capturing handler for the
+// duration of the test, restoring the prior default on cleanup.
+func installCapturingSlog(t *testing.T) *capturingSlogHandler {
+	t.Helper()
+	h := &capturingSlogHandler{}
+	prior := slog.Default()
+	slog.SetDefault(slog.New(h))
+	t.Cleanup(func() { slog.SetDefault(prior) })
+	return h
+}
 
 // TestManagerSkipsPublishUntilABatchSeals is the lifecycle-gate regression: a run
 // of sub-threshold AddAndShip/AddAndShipFields calls (each far below MinSegmentDocs)
@@ -200,5 +255,156 @@ func TestPublishPendingRetry(t *testing.T) {
 		// coverage passes, PublishManifest succeeds, the retry bit clears.
 		require.NoError(t, aRestart.AddAndShip(ctx, gt, name, prefixIDs(hnswVecDocs(16), "cg-heal-")))
 		require.False(t, aDM.publishRetryPending(), "the successful publish cleared the retry bit")
+	})
+}
+
+// TestPublishRetryBoundedOnPersistentCoverageSkip models the NON-recovering case
+// observed live: a restarted writer whose read-engine resident is
+// permanently sub-ratio (List(0) stays large-shipped, resident never rises, and
+// ReconcileResidentDegenerate is NOT called). Pre-fix, publishResident re-armed
+// publishPending on every coverage skip, so every drain's Flush re-fired the coverage
+// read (a steady per-drain page-read floor) FOREVER. Post-fix (markCoverageSkip bound), the
+// re-arm stops after coverageSkipMaxStreak skips at a non-rising resident with a
+// terminal WARN, and a genuine resident rise re-arms and lands once above ratio.
+//
+// RED-first: against pre-fix code the retry bit stays set and the coverage-read List
+// climbs unbounded across the flush loop; this test fails there and passes only once
+// the bound lands. Runs under -race (Flush + engine reads exercise the helper's
+// resident-before-lock ordering).
+func TestPublishRetryBoundedOnPersistentCoverageSkip(t *testing.T) {
+	warns := installCapturingSlog(t)
+	ctx := context.Background()
+	mgrs, svc := newMultiWriterFleet(t, 2)
+	b := mgrs[1]
+	gt, name := kgtypes.GraphCode, "covBoundRepo"
+
+	// Writer B ships a multi-segment prior corpus so the coverage ratio is ARMED
+	// (>= residentBackstopFloor of shipped docs across DISTINCT segments).
+	const corpusSegs = 4
+	for s := range corpusSegs {
+		batch := prefixIDs(hnswVecDocs(searchCorpusN), fmt.Sprintf("cb-b%d-", s))
+		require.NoError(t, b.AddAndShip(ctx, gt, name, batch))
+	}
+
+	// Writer A restarts (same writer_id, fresh L2) and force-seals a SUB-FLOOR tail
+	// WITHOUT loading the prior corpus — its resident stays far below the coverage
+	// ratio. The first Flush ships the tail and coverage-skips the publish (skip #1).
+	aRestart := restartFleetMember(t, svc, 0, t.TempDir())
+	tail := prefixIDs(hnswVecDocs(10), "cb-tail-")
+	require.NoError(t, aRestart.AddAndShip(ctx, gt, name, tail)) // sub-threshold: just buffers
+	require.NoError(t, aRestart.Flush(ctx, gt, name))            // force-seal → ship → coverage skip #1
+	aDM := aRestart.managerFor(gt, name)
+	require.True(t, aDM.publishRetryPending(), "the first coverage skip armed the retry bit")
+
+	// Baseline the coverage-read List counter AFTER the force-seal skip, then re-Flush
+	// repeatedly WITHOUT healing the resident. Each re-fired Flush (driven only by the
+	// pending bit — nothing new is sealed) pays a coverage-read List. Pre-fix that
+	// climbs on every Flush; post-fix the bound suppresses the re-arm after
+	// coverageSkipMaxStreak skips so the reads stop.
+	baseList := aRestart.view.listCalls.Load()
+	const extraFlushes = 8
+	for range extraFlushes {
+		require.NoError(t, aRestart.Flush(ctx, gt, name))
+	}
+	afterList := aRestart.view.listCalls.Load()
+
+	// The retry bit is now CLEARED — the bound stopped re-arming (RED pre-fix: the bit
+	// stays set forever because every skip re-arms it).
+	require.False(t, aDM.publishRetryPending(),
+		"after coverageSkipMaxStreak coverage skips at a non-rising resident, the bound stops re-arming the retry bit")
+
+	// The coverage-read List does not climb AT ALL across the loop — and this arm no
+	// longer discriminates, because TWO mechanisms now stack on it: the suppression
+	// bound stops re-firing the publish after coverageSkipMaxStreak skips, AND the
+	// publish-path denominator memo serves every re-fire inside coveragePublishMemoTTL
+	// from cache (a retry-only re-Flush seals nothing, so shipNew early-returns without
+	// invalidating). Do NOT read a zero here as the bound alone working; the bound's
+	// real red-green content is the publishRetryPending assertion above. This one is
+	// now a cost floor: the retry-only loop pays no denominator round-trip.
+	require.Equal(t, int64(0), afterList-baseList,
+		"a retry-only re-Flush loop pays ZERO coverage-read Lists (suppressed re-arms plus memo hits inside the TTL)")
+
+	// The terminal suppression WARN fired with graph identity.
+	suppressWarns := warns.warnsContaining("suspending coverage-skip republish")
+	require.NotEmpty(t, suppressWarns, "the bound emits a terminal suppression WARN")
+	require.Contains(t, suppressWarns[0], name, "the suppression WARN carries the graph identity")
+
+	// A genuine resident rise re-arms the retry and it lands once above ratio: heal the
+	// resident above the floor, then a NEW sealed segment re-fires the publish, which
+	// now passes coverage and clears the bit.
+	degenerate, err := aRestart.ReconcileResidentDegenerate(ctx, gt, name)
+	require.NoError(t, err)
+	require.False(t, degenerate, "the server re-import restored coverage")
+	require.GreaterOrEqual(t, aRestart.ResidentDocCount(gt, name), residentBackstopFloor,
+		"resident climbed above the floor after the re-import")
+
+	require.NoError(t, aRestart.AddAndShip(ctx, gt, name, prefixIDs(hnswVecDocs(searchCorpusN), "cb-heal-")))
+	require.False(t, aDM.publishRetryPending(),
+		"a resident rise + genuine new export re-armed the publish and it landed once above ratio")
+}
+
+// TestPublishSkipWarnsCarryGraphIdentity pins the target identity on BOTH
+// publish-SKIP WARNs in publishResident — the degenerate/incomplete-live-set skip and
+// the 409 missing-blob skip. A skip WARN without the manager's target cannot be
+// attributed to a graph, so a skip storm across many graphs is unreadable.
+//
+// The two subtests deliberately run at DIFFERENT graph types. graphsel routes a code
+// graph's instance name into GraphSelector.Repo and every other family's into .Name,
+// so a code-only fixture can never fail when `name` is omitted (Name is legitimately
+// empty there) and a knowledge-only fixture can never fail when `repo` is omitted.
+// One subtest per side covers both halves of the mapping.
+//
+// RED-first: against the unmodified publishResident both WARNs render message +
+// format/live/reason (or format/missing) only, so both `graph=` assertions fail.
+func TestPublishSkipWarnsCarryGraphIdentity(t *testing.T) {
+	// The CODE-GRAPH side: repo carries the instance name, name is empty.
+	t.Run("degenerate_live_set_skip_warn", func(t *testing.T) {
+		warns := installCapturingSlog(t)
+		ctx := context.Background()
+		mgrs, svc := newMultiWriterFleet(t, 2)
+		b := mgrs[1]
+		gt, name := kgtypes.GraphCode, "covWarnRepo"
+
+		// Writer B ships a multi-segment prior corpus so the coverage ratio is ARMED.
+		const corpusSegs = 4
+		for s := range corpusSegs {
+			batch := prefixIDs(hnswVecDocs(searchCorpusN), fmt.Sprintf("cw-b%d-", s))
+			require.NoError(t, b.AddAndShip(ctx, gt, name, batch))
+		}
+
+		// Writer A restarts with a FRESH L2 (so its resident is degenerate) and
+		// force-seals a sub-floor tail: ship lands, publish is coverage-gate skipped.
+		aRestart := restartFleetMember(t, svc, 0, t.TempDir())
+		tail := prefixIDs(hnswVecDocs(10), "cw-tail-")
+		require.NoError(t, aRestart.AddAndShip(ctx, gt, name, tail)) // sub-threshold: just buffers
+		require.NoError(t, aRestart.Flush(ctx, gt, name))            // force-seal → ship → coverage skip
+
+		skips := warns.warnsContaining("degenerate/incomplete live set")
+		require.NotEmpty(t, skips, "the coverage-gate skip emits its WARN")
+		require.Contains(t, skips[0], "graph=code", "the skip WARN carries the graph type")
+		require.Contains(t, skips[0], "repo="+name, "the skip WARN carries the code graph's instance name in repo")
+	})
+
+	// The KNOWLEDGE-GRAPH side: name carries the instance name, repo is empty. This is
+	// the subtest that guards the `name` attr — without it, omitting `name` from either
+	// WARN would pass every gate.
+	t.Run("missing_blob_409_skip_warn", func(t *testing.T) {
+		warns := installCapturingSlog(t)
+		ctx := context.Background()
+		_, gc := newSegmentHarness(t)
+		mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+
+		gc.publishErr = &manifestIncompleteError{Missing: []string{"seg-x"}}
+		require.NoError(t, mgr.AddAndShip(ctx, kgtypes.GraphKnowledge, "kgWarnGraph", hnswVecDocs(1024)),
+			"a 409 incomplete manifest is a logged skip, not an error")
+
+		skips := warns.warnsContaining("agent reported missing blob(s)")
+		require.NotEmpty(t, skips, "the 409 skip emits its WARN")
+		// One Contains pins all three identity attrs at once: the graph type, a
+		// present AND non-empty `name`, and a present but EMPTY `repo` (the inverted
+		// half of the mapping). It leans on the attr ORDER — identity trio first, then
+		// detail — which every skip WARN in this package shares.
+		require.Contains(t, skips[0], "graph=knowledge name=kgWarnGraph repo= format=",
+			"the 409 skip WARN carries the graph identity trio ahead of the detail attrs")
 	})
 }

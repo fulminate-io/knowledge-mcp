@@ -126,7 +126,7 @@ func manageDeps(ix *fakeIndexer) ClientDeps { return interceptTestDeps{gc: ix} }
 
 func manageCall(t *testing.T, ix *fakeIndexer, args string) (bool, kgtools.ToolResult) {
 	t.Helper()
-	return InterceptManage(manageDeps(ix), kgtools.CallToolParams{Name: "manage", Arguments: json.RawMessage(args)})
+	return InterceptManage(opCtx(), manageDeps(ix), kgtools.CallToolParams{Name: "manage", Arguments: json.RawMessage(args)})
 }
 
 // ---------------------------------------------------------------------------

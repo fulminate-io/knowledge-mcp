@@ -21,7 +21,7 @@ import (
 // falls through when the tool name is not create_plan.
 func TestInterceptCreatePlan_WrongTool_FallsThrough(t *testing.T) {
 	deps := interceptTestDeps{gc: &fakeGraphCaller{}}
-	handled, _ := InterceptCreatePlan(deps, kgtools.CallToolParams{Name: "query"})
+	handled, _ := InterceptCreatePlan(opCtx(), deps, kgtools.CallToolParams{Name: "query"})
 	assert.False(t, handled)
 }
 
@@ -39,7 +39,7 @@ func TestInterceptCreatePlan_HappyPath_TextFormat(t *testing.T) {
 		},
 	}
 	deps := interceptTestDeps{gc: fc}
-	handled, res := InterceptCreatePlan(deps, kgtools.CallToolParams{
+	handled, res := InterceptCreatePlan(opCtx(), deps, kgtools.CallToolParams{
 		Name: "create_plan",
 		Arguments: json.RawMessage(`{
 			"name":"fixture-plan",
@@ -64,7 +64,7 @@ func TestInterceptCreatePlan_JSONFormat(t *testing.T) {
 		},
 	}
 	deps := interceptTestDeps{gc: fc}
-	handled, res := InterceptCreatePlan(deps, kgtools.CallToolParams{
+	handled, res := InterceptCreatePlan(opCtx(), deps, kgtools.CallToolParams{
 		Name: "create_plan",
 		Arguments: json.RawMessage(`{
 			"name":"fixture-plan",
@@ -100,7 +100,7 @@ func TestInterceptCreatePlan_CreateRidesMutationExecute(t *testing.T) {
 		},
 	}
 	deps := interceptTestDeps{gc: fc}
-	_, _ = InterceptCreatePlan(deps, kgtools.CallToolParams{
+	_, _ = InterceptCreatePlan(opCtx(), deps, kgtools.CallToolParams{
 		Name: "create_plan",
 		Arguments: json.RawMessage(`{
 			"name":"p","goal":"g","summary":"s","no_patterns_reason":"x",
@@ -118,7 +118,7 @@ func TestInterceptCreatePlan_CreateRidesMutationExecute(t *testing.T) {
 // validateName call).
 func TestInterceptCreatePlan_ValidateName_Empty(t *testing.T) {
 	deps := interceptTestDeps{gc: &fakeGraphCaller{}}
-	handled, res := InterceptCreatePlan(deps, kgtools.CallToolParams{
+	handled, res := InterceptCreatePlan(opCtx(), deps, kgtools.CallToolParams{
 		Name: "create_plan",
 		Arguments: json.RawMessage(`{
 			"name":"",
@@ -141,7 +141,7 @@ func TestInterceptCreatePlan_DerivedCriterionOverflow(t *testing.T) {
 	deps := interceptTestDeps{gc: &fakeGraphCaller{}}
 	// "manual criterion: " (18 runes) + 490-char description = 508 runes > 500.
 	longDesc := strings.Repeat("d", 490)
-	handled, res := InterceptCreatePlan(deps, kgtools.CallToolParams{
+	handled, res := InterceptCreatePlan(opCtx(), deps, kgtools.CallToolParams{
 		Name: "create_plan",
 		Arguments: json.RawMessage(`{
 			"name":"p","goal":"g","summary":"s","no_patterns_reason":"x",
@@ -164,7 +164,7 @@ func TestInterceptCreatePlan_DerivedQuestionOverflow(t *testing.T) {
 	deps := interceptTestDeps{gc: &fakeGraphCaller{}}
 	// "Question: " (10 runes) + 495-char question = 505 runes > 500.
 	longQ := strings.Repeat("q", 495)
-	handled, res := InterceptCreatePlan(deps, kgtools.CallToolParams{
+	handled, res := InterceptCreatePlan(opCtx(), deps, kgtools.CallToolParams{
 		Name: "create_plan",
 		Arguments: json.RawMessage(`{
 			"name":"p","goal":"g","summary":"s","no_patterns_reason":"x",
@@ -191,7 +191,7 @@ func TestInterceptCreatePlan_UnderCapDerivedSummariesPass(t *testing.T) {
 		},
 	}
 	deps := interceptTestDeps{gc: fc}
-	handled, res := InterceptCreatePlan(deps, kgtools.CallToolParams{
+	handled, res := InterceptCreatePlan(opCtx(), deps, kgtools.CallToolParams{
 		Name: "create_plan",
 		Arguments: json.RawMessage(`{
 			"name":"p","goal":"g","summary":"s","no_patterns_reason":"x",
@@ -224,7 +224,7 @@ func TestInterceptCreatePlan_AuthorSummariesClampAndWarn(t *testing.T) {
 		"phases":[{"name":"ph","overview":"o","summary":"` + over + `","steps":[{"name":"st","description":"step 1 description body","summary":"` + over + `"}]}],
 		"format":"json"
 	}`
-	handled, res := InterceptCreatePlan(deps, kgtools.CallToolParams{
+	handled, res := InterceptCreatePlan(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "create_plan",
 		Arguments: json.RawMessage(args),
 	})

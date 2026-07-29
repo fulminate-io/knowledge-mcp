@@ -152,3 +152,52 @@ func TestDiffMetadataUpdates(t *testing.T) {
 		require.Len(t, got, 1, "a row with ANY differing key is kept")
 	})
 }
+
+// TestPropagatedValueChanged_Deadband (FAILS-WHEN-ABSENT for the deadband gate)
+// pins the boundary behavior of the propagated_* persistence deadband: a change of
+// less than writebackDeadband (1e-4) does not warrant a re-persist, a change of at
+// least the deadband does, and an unset persisted value always writes. The
+// exactly-1e-4 case is constructed from a ZERO base ("0.000000" vs "0.000100") so
+// float64 subtraction yields precisely the writebackDeadband representation and the
+// >= boundary holds deterministically (a non-zero base like 1.5→1.5001 yields
+// 9.999e-5 and would flakily skip).
+func TestPropagatedValueChanged_Deadband(t *testing.T) {
+	cases := []struct {
+		name string
+		cur  string
+		want string
+		exp  bool
+	}{
+		{"sub_deadband_delta_skips", "0.500000", "0.500050", false},         // 5e-5 < 1e-4
+		{"supra_deadband_delta_writes", "0.500000", "0.500200", true},       // 2e-4 >= 1e-4
+		{"exactly_deadband_from_zero_writes", "0.000000", "0.000100", true}, // exactly 1e-4, >= holds
+		{"unset_current_always_writes", "", "0.000000", true},               // first-persist guard
+		{"oscillation_down_skips", "0.500000", "0.499950", false},           // 5e-5 below, persisted unchanged
+		{"oscillation_up_skips", "0.500000", "0.500040", false},             // 4e-5 vs same persisted → skip
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.exp, propagatedValueChanged(tc.cur, tc.want),
+				"propagatedValueChanged(%q, %q)", tc.cur, tc.want)
+		})
+	}
+
+	// diffMetadataUpdatesFunc-level any-key case: a row whose valence drifted only
+	// sub-deadband but whose magnitude exceeds the deadband is KEPT (any-key
+	// semantics — one supra-deadband key is enough to re-persist the whole row).
+	t.Run("any_key_supra_deadband_keeps_row", func(t *testing.T) {
+		persisted := map[string]map[string]string{
+			"t1": {"propagated_valence": "0.500000", "propagated_magnitude": "1.000000"},
+		}
+		current := func(id, key string) string { return persisted[id][key] }
+		desired := []map[string]any{{
+			"id": "t1",
+			"metadata": map[string]string{
+				"propagated_valence":   "0.500050", // 5e-5 sub-deadband alone → would skip
+				"propagated_magnitude": "1.000200", // 2e-4 supra-deadband → keeps the row
+			},
+		}}
+		got := diffMetadataUpdatesFunc(desired, current, func(_, _, cur, want string) bool { return propagatedValueChanged(cur, want) })
+		require.Len(t, got, 1, "a row is kept when ANY key exceeds the deadband (magnitude here)")
+	})
+}

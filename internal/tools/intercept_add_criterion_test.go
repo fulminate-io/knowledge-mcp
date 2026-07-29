@@ -164,7 +164,7 @@ func TestInterceptAddCriterion_Success(t *testing.T) {
 		"step_id":     testStepID,
 		"description": "Test that the thing works",
 	})
-	handled, res := InterceptAddCriterion(deps, kgtools.CallToolParams{Name: "mutate", Arguments: args})
+	handled, res := InterceptAddCriterion(opCtx(), deps, kgtools.CallToolParams{Name: "mutate", Arguments: args})
 	require.True(t, handled)
 	require.False(t, res.IsError, "intercept error: %v", res.Content)
 
@@ -207,7 +207,7 @@ func TestInterceptAddCriterion_EmptyStepID(t *testing.T) {
 		"type":        "criterion",
 		"description": "anything",
 	})
-	handled, res := InterceptAddCriterion(deps, kgtools.CallToolParams{Name: "mutate", Arguments: args})
+	handled, res := InterceptAddCriterion(opCtx(), deps, kgtools.CallToolParams{Name: "mutate", Arguments: args})
 	require.True(t, handled)
 	require.True(t, res.IsError)
 	assert.Contains(t, extractText(res), "step_id is required")
@@ -226,7 +226,7 @@ func TestInterceptAddCriterion_StepNotFound(t *testing.T) {
 		"step_id":     "missing-step-id",
 		"description": "anything",
 	})
-	handled, res := InterceptAddCriterion(deps, kgtools.CallToolParams{Name: "mutate", Arguments: args})
+	handled, res := InterceptAddCriterion(opCtx(), deps, kgtools.CallToolParams{Name: "mutate", Arguments: args})
 	require.True(t, handled)
 	require.True(t, res.IsError)
 	assert.Contains(t, extractText(res), "step missing-step-id not found")
@@ -245,7 +245,7 @@ func TestInterceptAddCriterion_BothMissing_StepIDFirst(t *testing.T) {
 		"operation": "create",
 		"type":      "criterion",
 	})
-	handled, res := InterceptAddCriterion(deps, kgtools.CallToolParams{Name: "mutate", Arguments: args})
+	handled, res := InterceptAddCriterion(opCtx(), deps, kgtools.CallToolParams{Name: "mutate", Arguments: args})
 	require.True(t, handled)
 	require.True(t, res.IsError)
 	assert.Contains(t, extractText(res), "step_id is required")
@@ -263,7 +263,7 @@ func TestInterceptAddCriterion_EmptyDescription_AfterStepCheck(t *testing.T) {
 		"step_id":     testStepID,
 		"description": "   ",
 	})
-	handled, res := InterceptAddCriterion(deps, kgtools.CallToolParams{Name: "mutate", Arguments: args})
+	handled, res := InterceptAddCriterion(opCtx(), deps, kgtools.CallToolParams{Name: "mutate", Arguments: args})
 	require.True(t, handled)
 	require.True(t, res.IsError)
 	assert.Contains(t, extractText(res), "description is required")
@@ -289,7 +289,7 @@ func TestInterceptAddCriterion_DerivedSummaryOverflow(t *testing.T) {
 		"step_id":     testStepID,
 		"description": longDesc,
 	})
-	handled, res := InterceptAddCriterion(deps, kgtools.CallToolParams{Name: "mutate", Arguments: args})
+	handled, res := InterceptAddCriterion(opCtx(), deps, kgtools.CallToolParams{Name: "mutate", Arguments: args})
 	require.True(t, handled)
 	require.True(t, res.IsError)
 	msg := extractText(res)
@@ -316,7 +316,7 @@ func TestInterceptAddCriterion_UpsertFailure(t *testing.T) {
 		"step_id":     testStepID,
 		"description": "desc",
 	})
-	handled, res := InterceptAddCriterion(deps, kgtools.CallToolParams{Name: "mutate", Arguments: args})
+	handled, res := InterceptAddCriterion(opCtx(), deps, kgtools.CallToolParams{Name: "mutate", Arguments: args})
 	require.True(t, handled)
 	require.True(t, res.IsError)
 	assert.Contains(t, extractText(res), "create criterion: wire timeout")
@@ -337,7 +337,7 @@ func TestInterceptAddCriterion_LinkFailure_StillSucceeds(t *testing.T) {
 		"step_id":     testStepID,
 		"description": "desc",
 	})
-	handled, res := InterceptAddCriterion(deps, kgtools.CallToolParams{Name: "mutate", Arguments: args})
+	handled, res := InterceptAddCriterion(opCtx(), deps, kgtools.CallToolParams{Name: "mutate", Arguments: args})
 	require.True(t, handled)
 	require.False(t, res.IsError, "link failure must not turn into an error result")
 	assert.Contains(t, extractText(res), "Criterion added: desc → ID:")
@@ -349,7 +349,7 @@ func TestInterceptAddCriterion_WrongTool_FallsThrough(t *testing.T) {
 	gc := seededStepGc()
 	deps := &logE2EDeps{gc: gc}
 	args := mustMarshal(t, map[string]any{"operation": "create", "type": "criterion"})
-	handled, _ := InterceptAddCriterion(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
+	handled, _ := InterceptAddCriterion(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
 	assert.False(t, handled)
 }
 
@@ -358,7 +358,7 @@ func TestInterceptAddCriterion_WrongType_FallsThrough(t *testing.T) {
 	gc := seededStepGc()
 	deps := &logE2EDeps{gc: gc}
 	args := mustMarshal(t, map[string]any{"operation": "create", "type": "finding"})
-	handled, _ := InterceptAddCriterion(deps, kgtools.CallToolParams{Name: "mutate", Arguments: args})
+	handled, _ := InterceptAddCriterion(opCtx(), deps, kgtools.CallToolParams{Name: "mutate", Arguments: args})
 	assert.False(t, handled)
 }
 
@@ -367,6 +367,6 @@ func TestInterceptAddCriterion_WrongOperation_FallsThrough(t *testing.T) {
 	gc := seededStepGc()
 	deps := &logE2EDeps{gc: gc}
 	args := mustMarshal(t, map[string]any{"operation": "update", "type": "criterion"})
-	handled, _ := InterceptAddCriterion(deps, kgtools.CallToolParams{Name: "mutate", Arguments: args})
+	handled, _ := InterceptAddCriterion(opCtx(), deps, kgtools.CallToolParams{Name: "mutate", Arguments: args})
 	assert.False(t, handled)
 }

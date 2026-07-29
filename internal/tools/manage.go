@@ -78,7 +78,7 @@ type cloudStatusInfo interface {
 // pipeline drains naturally. Code collect runs via the dedicated `collect` MCP
 // tool (or `make collect`) which calls codegraph.Sync / SyncBranch against
 // RemoteUploadSink.
-func InterceptManage(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
+func InterceptManage(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	if params.Name != "manage" {
 		return false, kgtools.ToolResult{}
 	}
@@ -88,17 +88,17 @@ func InterceptManage(deps ClientDeps, params kgtools.CallToolParams) (bool, kgto
 	}
 	switch a.Operation {
 	case "status":
-		return true, handleServerStatus(deps, a.Format)
+		return true, handleServerStatus(ctx, deps, a.Format)
 	case "pprof_start":
 		return true, handlePprofStart()
 	case "pprof_stop":
 		return true, handlePprofStop()
 	case "link":
-		return true, handleClientLinker(deps, a)
+		return true, handleClientLinker(ctx, deps, a)
 	case "promote_metadata":
-		return true, handleManagePromoteMetadata(context.Background(), deps, a, params.Arguments)
+		return true, handleManagePromoteMetadata(ctx, deps, a, params.Arguments)
 	case "clear_llm_failures":
-		return true, handleClientClearLLMFailures(context.Background(), deps, a)
+		return true, handleClientClearLLMFailures(ctx, deps, a)
 	case "pause_pipeline":
 		return true, handlePausePipeline(deps, a)
 	case "resume_pipeline":
@@ -106,21 +106,21 @@ func InterceptManage(deps ClientDeps, params kgtools.CallToolParams) (bool, kgto
 	case "pipeline_status":
 		return true, handlePipelineStatus(deps, a.Format)
 	case "set_metadata_overrides":
-		return true, handleClientSetMetadataOverrides(context.Background(), deps, a)
+		return true, handleClientSetMetadataOverrides(ctx, deps, a)
 	case "delete_branch":
-		return true, handleClientDeleteBranch(context.Background(), deps, a)
+		return true, handleClientDeleteBranch(ctx, deps, a)
 	case "list_branches":
-		return true, handleClientListBranches(context.Background(), deps, a)
+		return true, handleClientListBranches(ctx, deps, a)
 	case "prune":
-		return true, handleClientPrune(context.Background(), deps, a)
+		return true, handleClientPrune(ctx, deps, a)
 	case "rebuild_cache":
-		return true, handleClientRebuildCache(context.Background(), deps, a)
+		return true, handleClientRebuildCache(ctx, deps, a)
 	case "rebuild_segments":
-		return true, handleClientRebuildSegments(context.Background(), deps, a)
+		return true, handleClientRebuildSegments(ctx, deps, a)
 	case "prune-cache":
-		return true, handleClientPruneCache(context.Background(), deps, a)
+		return true, handleClientPruneCache(ctx, deps, a)
 	case "drop_graph":
-		return true, handleClientDropGraph(context.Background(), deps, a)
+		return true, handleClientDropGraph(ctx, deps, a)
 	case "register_repo":
 		return true, handleRegisterRepo(a)
 	}
@@ -132,12 +132,12 @@ func InterceptManage(deps ClientDeps, params kgtools.CallToolParams) (bool, kgto
 // handleLinker is now stubbed to a client-intercept-required sentinel — the
 // linker body lives client-side because it walks the graphs via gc.Call
 // and emits derived edges through mutate(link, link_graph:"linkage").
-func handleClientLinker(deps ClientDeps, a manageArgs) kgtools.ToolResult {
+func handleClientLinker(ctx context.Context, deps ClientDeps, a manageArgs) kgtools.ToolResult {
 	gc := deps.GraphCaller()
 	if gc == nil {
 		return errorResult("manage(link): GraphCaller is unavailable — the client is running in degraded mode")
 	}
-	res, err := clientlinker.RunAll(context.Background(), gc, clientlinker.LinkOptions{})
+	res, err := clientlinker.RunAll(ctx, gc, clientlinker.LinkOptions{})
 	if err != nil {
 		return errorResult("manage(link): " + err.Error())
 	}
@@ -244,7 +244,7 @@ type manageArgs struct {
 // embedder configured), the counters render as "(pipeline disabled)"
 // instead of zeros so the operator can tell the difference between
 // "queue empty" and "pipeline never wired."
-func handleServerStatus(deps ClientDeps, format string) kgtools.ToolResult {
+func handleServerStatus(ctx context.Context, deps ClientDeps, format string) kgtools.ToolResult {
 	// Logged-in users target the CLOUD graph for the node/edge/vector totals via
 	// the already-routed Stats RPC. The cloud branch's JSON body ALSO carries the
 	// local-daemon fields (pid, graph_path, pipeline counters, coverage[],
@@ -255,7 +255,7 @@ func handleServerStatus(deps ClientDeps, format string) kgtools.ToolResult {
 	// misses, so the logged-out behavior is unchanged.
 	if csi, ok := deps.(cloudStatusInfo); ok {
 		if loggedIn, host := csi.CloudStatusInfo(); loggedIn {
-			return handleCloudStatus(deps, host, format)
+			return handleCloudStatus(ctx, deps, host, format)
 		}
 	}
 	gc := deps.LocalLiveness()
@@ -277,7 +277,7 @@ func handleServerStatus(deps ClientDeps, format string) kgtools.ToolResult {
 		// coverage[] + doctor[] + transcript + collect_runs) go through the shared
 		// addLocalDaemonJSON helper so the local AND cloud JSON paths stay in sync.
 		m := map[string]any{}
-		addLocalDaemonJSON(context.Background(), deps, m)
+		addLocalDaemonJSON(ctx, deps, m)
 		m["status"] = "running"
 		addVersionJSON(m, clientVer, daemonVer, daemonKnown)
 		return jsonResult(m)
@@ -306,13 +306,13 @@ func handleServerStatus(deps ClientDeps, format string) kgtools.ToolResult {
 		transcriptBlock = renderTranscriptHealthText(th)
 	}
 	doctorBlock := ""
-	if checks, ok := doctorChecks(context.Background(), deps); ok {
+	if checks, ok := doctorChecks(ctx, deps); ok {
 		doctorBlock = renderDoctorText(checks)
 	}
 	return textResult(fmt.Sprintf(
 		"Graph server: RUNNING\n  PID: %.0f\n  Nodes: %.0f\n  Edges: %.0f\n  Vectors: %.0f\n  BM25 docs: %.0f\n  Path: %s\n%s%s%s%s%s%s",
 		status["pid"], status["nodes"], status["edges"], status["binary_vectors"], status["bm25_docs"], status["graph_path"],
-		pipelineLine, renderLLMCoverage(context.Background(), deps), transcriptBlock, collectRunSection(deps), doctorBlock,
+		pipelineLine, renderLLMCoverage(ctx, deps), transcriptBlock, collectRunSection(deps), doctorBlock,
 		renderVersionLines(clientVer, daemonVer, daemonKnown)))
 }
 
@@ -327,7 +327,7 @@ func handleServerStatus(deps ClientDeps, format string) kgtools.ToolResult {
 // web page shows every card even when logged in (CEO: always show local-daemon
 // fields). The empty GraphSelector targets the default knowledge graph, identical
 // to intercept_query_stats.go.
-func handleCloudStatus(deps ClientDeps, host, format string) kgtools.ToolResult {
+func handleCloudStatus(ctx context.Context, deps ClientDeps, host, format string) kgtools.ToolResult {
 	gc := deps.GraphCaller()
 	if gc == nil {
 		return errorResult("manage(status): graph client unavailable")
@@ -336,7 +336,7 @@ func handleCloudStatus(deps ClientDeps, host, format string) kgtools.ToolResult 
 	if !ok {
 		return errorResult("manage(status): stats seam unavailable")
 	}
-	resp, err := sc.Stats(context.Background(), &knowledgev1.StatsRequest{
+	resp, err := sc.Stats(ctx, &knowledgev1.StatsRequest{
 		Target: &knowledgev1.GraphSelector{Graph: ""},
 	})
 	if err != nil {
@@ -348,7 +348,7 @@ func handleCloudStatus(deps ClientDeps, host, format string) kgtools.ToolResult 
 		// Local-daemon facts first (pid/graph_path/pipeline/coverage[]/doctor[]/
 		// transcript/collect_runs + any local node/edge counts) …
 		m := map[string]any{}
-		addLocalDaemonJSON(context.Background(), deps, m)
+		addLocalDaemonJSON(ctx, deps, m)
 		// … then the cloud identity + CLOUD graph totals layered ON TOP,
 		// overwriting any local node/edge/vector counts with the cloud figures.
 		m["status"] = "running"
@@ -366,7 +366,7 @@ func handleCloudStatus(deps ClientDeps, host, format string) kgtools.ToolResult 
 	}
 	return textResult(fmt.Sprintf(
 		"## Graph server: cloud\n  Backend: cloud (%s)\n\n%s%s%s%s%s",
-		host, engine.RenderStatsBreakdown(stats), renderLLMCoverage(context.Background(), deps), transcriptBlock, collectRunSection(deps),
+		host, engine.RenderStatsBreakdown(stats), renderLLMCoverage(ctx, deps), transcriptBlock, collectRunSection(deps),
 		renderVersionLines(clientVer, daemonVer, daemonKnown)))
 }
 

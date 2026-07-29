@@ -83,7 +83,7 @@ type createPlanProposedPat struct {
 
 // InterceptCreatePlan handles the create_plan MCP call. Returns
 // (false, _) for any other tool name so the chain falls through.
-func InterceptCreatePlan(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
+func InterceptCreatePlan(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	if params.Name != "create_plan" {
 		return false, kgtools.ToolResult{}
 	}
@@ -106,8 +106,6 @@ func InterceptCreatePlan(deps ClientDeps, params kgtools.CallToolParams) (bool, 
 	}
 
 	planArgs := buildPlanArgsFromWire(a)
-
-	ctx := context.Background()
 
 	// Validate the exactly-one-of-three pattern contract AND run the soft
 	// cross-graph lookup + proxy resolution over the wire (gc is the Execute

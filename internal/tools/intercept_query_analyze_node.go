@@ -42,7 +42,7 @@ type analyzeNodeArgs struct {
 
 // InterceptQueryAnalyzeNode claims query(graph:code) with id set and mode not
 // stats (the server routeCodeTarget fast-path shape). Returns (false,_) otherwise.
-func InterceptQueryAnalyzeNode(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
+func InterceptQueryAnalyzeNode(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	if params.Name != "query" {
 		return false, kgtools.ToolResult{}
 	}
@@ -57,7 +57,7 @@ func InterceptQueryAnalyzeNode(deps ClientDeps, params kgtools.CallToolParams) (
 	if gc == nil {
 		return true, errorResult("analyze: graph client unavailable")
 	}
-	return true, composeAnalyzeNode(context.Background(), gc.Execute, a)
+	return true, composeAnalyzeNode(ctx, gc.Execute, a)
 }
 
 // composeAnalyzeNode runs the ByID + two CALLS traversals and renders.

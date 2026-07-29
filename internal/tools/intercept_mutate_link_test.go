@@ -46,7 +46,7 @@ func TestCrossGraphLink_KnowledgeFromPracticeTo_MaterializesProxy(t *testing.T) 
 	}
 	deps := interceptTestDeps{gc: fc}
 
-	handled, res := InterceptMutate(deps, kgtools.CallToolParams{
+	handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "mutate",
 		Arguments: json.RawMessage(`{"operation":"link","graph":"practice","language":"go","from":"dec-1","to":"pat-1","relationship":"Uses"}`),
 	})
@@ -75,7 +75,7 @@ func TestCrossGraphLink_KnowledgeFromPracticeTo_MaterializesProxy(t *testing.T) 
 	assert.Equal(t, "knowledge", lastTarget.GetGraph())
 
 	// Idempotent: a second identical call reuses the same deterministic proxy id.
-	handled2, res2 := InterceptMutate(deps, kgtools.CallToolParams{
+	handled2, res2 := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "mutate",
 		Arguments: json.RawMessage(`{"operation":"link","graph":"practice","language":"go","from":"dec-1","to":"pat-1","relationship":"Uses"}`),
 	})
@@ -107,7 +107,7 @@ func TestCrossGraphLink_ProxySlugParity(t *testing.T) {
 	}
 	deps := interceptTestDeps{gc: fc}
 
-	handled, res := InterceptMutate(deps, kgtools.CallToolParams{
+	handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "mutate",
 		Arguments: json.RawMessage(`{"operation":"link","graph":"practice","language":"C++","from":"dec-1","to":"pat-1","relationship":"uses"}`),
 	})
@@ -182,7 +182,7 @@ func TestCrossGraphLink_CodeFromKnowledgeTo(t *testing.T) {
 	}
 	deps := interceptTestDeps{gc: fc}
 
-	handled, res := InterceptMutate(deps, kgtools.CallToolParams{
+	handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "mutate",
 		Arguments: json.RawMessage(`{"operation":"link","from":"path/to/file.go:Symbol","to":"dec-1","relationship":"uses"}`),
 	})
@@ -216,7 +216,7 @@ func TestCrossGraphLink_CloudFromKnowledgeTo(t *testing.T) {
 	}
 	deps := interceptTestDeps{gc: fc}
 
-	handled, res := InterceptMutate(deps, kgtools.CallToolParams{
+	handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "mutate",
 		Arguments: json.RawMessage(`{"operation":"link","from":"ec2:i-abc","to":"dec-1","relationship":"relates-to"}`),
 	})
@@ -245,7 +245,7 @@ func TestCrossGraphLink_KnowledgeFromCloudTo(t *testing.T) {
 	}
 	deps := interceptTestDeps{gc: fc}
 
-	handled, res := InterceptMutate(deps, kgtools.CallToolParams{
+	handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "mutate",
 		Arguments: json.RawMessage(`{"operation":"link","from":"dec-1","to":"ec2:i-xyz","relationship":"relates-to"}`),
 	})
@@ -274,7 +274,7 @@ func TestCrossGraphLink_KnowledgeFromCICDTo(t *testing.T) {
 	}
 	deps := interceptTestDeps{gc: fc}
 
-	handled, res := InterceptMutate(deps, kgtools.CallToolParams{
+	handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "mutate",
 		Arguments: json.RawMessage(`{"operation":"link","from":"dec-1","to":"workflow:build","relationship":"relates-to"}`),
 	})
@@ -304,7 +304,7 @@ func TestCrossGraphLink_KnowledgeToKnowledge_Skips(t *testing.T) {
 	}
 	deps := interceptTestDeps{gc: fc}
 
-	handled, _ := InterceptMutate(deps, kgtools.CallToolParams{
+	handled, _ := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "mutate",
 		Arguments: json.RawMessage(`{"operation":"link","from":"dec-1","to":"dec-2","relationship":"relates-to"}`),
 	})
@@ -331,7 +331,7 @@ func TestCrossGraphLink_PracticeFromKnowledgeTo(t *testing.T) {
 	}
 	deps := interceptTestDeps{gc: fc}
 
-	handled, res := InterceptMutate(deps, kgtools.CallToolParams{
+	handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "mutate",
 		Arguments: json.RawMessage(`{"operation":"link","from":"pat-1","to":"dec-1","relationship":"relates-to"}`),
 	})
@@ -361,8 +361,8 @@ func TestCrossGraphLink_ForeignFromIdempotent(t *testing.T) {
 	deps := interceptTestDeps{gc: fc}
 	args := json.RawMessage(`{"operation":"link","from":"file.go:Fn","to":"dec-1","relationship":"uses"}`)
 
-	h1, _ := InterceptMutate(deps, kgtools.CallToolParams{Name: "mutate", Arguments: args})
-	h2, _ := InterceptMutate(deps, kgtools.CallToolParams{Name: "mutate", Arguments: args})
+	h1, _ := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{Name: "mutate", Arguments: args})
+	h2, _ := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{Name: "mutate", Arguments: args})
 	require.True(t, h1)
 	require.True(t, h2)
 	require.Len(t, fc.execMutations, 4, "two calls → two UPSERT+LINK pairs")
@@ -387,7 +387,7 @@ func TestCrossGraphLink_UnresolvableFromFallsThrough(t *testing.T) {
 	}
 	deps := interceptTestDeps{gc: fc}
 
-	handled, _ := InterceptMutate(deps, kgtools.CallToolParams{
+	handled, _ := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
 		Name:      "mutate",
 		Arguments: json.RawMessage(`{"operation":"link","from":"ghost","to":"dec-1","relationship":"uses"}`),
 	})

@@ -37,6 +37,8 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
+
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
@@ -221,6 +223,13 @@ func handleClientRebuildSegments(ctx context.Context, deps ClientDeps, a manageA
 		return textResult(fmt.Sprintf("rebuild_segments: %s/%s has no embedded nodes to rebuild segments from — nothing to do", a.Graph, a.Name))
 	}
 
+	// Manual-op success (scanned>0): re-arm the auto-heal breaker for this graph. An
+	// operator asking for a rebuild that actually scanned nodes clears any latched
+	// disarm so the automatic embed-drain / reconcile heal resumes — the deliberate
+	// manual→clear→auto-refire re-arm (keyed on scanned>0, NOT built>0: built is
+	// routinely 0 on a legit sub-1024 heal).
+	deps.ClearHealLatch(kgtypes.GraphType(a.Graph), a.Name)
+
 	return textResult(fmt.Sprintf(
 		"rebuild_segments complete for %s/%s: %d embedded nodes scanned, %d full deterministic chunks built + shipped, %s, %d superseded segments pruned (local cache invalidated). Re-running is a content-hash no-op.",
 		a.Graph, a.Name, scanned, built, renderPartialTail(partial), len(pruned)))
@@ -252,6 +261,10 @@ type rebuildSegItem struct {
 // stable (a shipped segment never clears a node's vector) so a full final page is
 // normal, and only a zero-item page signals exhaustion.
 func scanRebuildSegments(ctx context.Context, scanner PipelineScanner, gt kgtypes.GraphType, name string) ([]rebuildSegItem, error) {
+	// Re-stamp over the tool-level manage term: the segment-rebuild scan pages
+	// the whole vectored corpus, which is worth separating from every other
+	// manage op in the metrics.
+	ctx = graphclient.WithOperation(ctx, graphclient.OpRebuildSegments)
 	var out []rebuildSegItem
 	afterID := ""
 	for {

@@ -70,7 +70,7 @@ const recentTemporalHalfLifeDays = 30.0
 // modes — so the chain proceeds. The query tool carries the search text in `text`
 // (not `query`); this claim maps it onto the knowledgeSearchArgs `query` field
 // composeKnowledgeSearch reads.
-func InterceptQueryKnowledgeSearch(deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
+func InterceptQueryKnowledgeSearch(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	if params.Name != "query" {
 		return false, kgtools.ToolResult{}
 	}
@@ -92,7 +92,7 @@ func InterceptQueryKnowledgeSearch(deps ClientDeps, params kgtools.CallToolParam
 		return false, kgtools.ToolResult{}
 	}
 	gc := deps.GraphCaller()
-	ctx := context.Background()
+
 	if a.Text == "" {
 		// Empty-text recent is a pure temporal BROWSE (no search query): fetch the
 		// most-recently-updated nodes via GraphCaller and rerank by UpdatedAt. Every

@@ -21,7 +21,7 @@ import (
 func dropGraphCall(t *testing.T, fc *fakeGraphCaller, args string) (bool, kgtools.ToolResult) {
 	t.Helper()
 	deps := interceptTestDeps{gc: fc}
-	return InterceptManage(deps, kgtools.CallToolParams{Name: "manage", Arguments: json.RawMessage(args)})
+	return InterceptManage(opCtx(), deps, kgtools.CallToolParams{Name: "manage", Arguments: json.RawMessage(args)})
 }
 
 // TestInterceptManage_DropGraph_CustomGraph asserts a drop of a registered

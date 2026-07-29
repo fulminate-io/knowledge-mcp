@@ -59,7 +59,7 @@ func handleAdjacencyClient(ctx context.Context, deps ClientDeps, params kgtools.
 		return errorResult("adjacency: graph client unavailable")
 	}
 
-	nodeIDs, adj, err := clientthought.FetchAdjacency(ctx, gc, a.Scope, a.ThoughtIDs)
+	nodeIDs, adj, err := clientthought.FetchAdjacency(ctx, gc, a.Scope, a.ThoughtIDs, corpusSourceFromDeps(deps))
 	if err != nil {
 		return errorResult(err.Error())
 	}

@@ -109,12 +109,24 @@ func TestCodeStalenessFooter(t *testing.T) {
 	m := withTestManifest(t)
 	require.NoError(t, m.Record(repoName, root))
 
-	t.Run("recorded collect_commit at HEAD → up to date footer with last-collected", func(t *testing.T) {
+	// These two subtests use a PURPOSE-BUILT fixture repo rather than this
+	// checkout. The clean-tree case previously pinned the real repo root and so
+	// asserted "up to date" only while whoever ran it happened to have a clean
+	// working tree — it passed by luck of the environment. Since the footer now
+	// consults the tree's dirtiness, that latent coupling became a real
+	// failure, and a fixture is the only way to test BOTH directions deterministically.
+	t.Run("collect_commit at HEAD on a CLEAN tree → up to date", func(t *testing.T) {
+		fixture := gitRepoFixture(t)
+		fixHead, err := coderun.HeadCommit(ctx, fixture)
+		require.NoError(t, err)
+		fixName := filepath.Base(fixture)
+		require.NoError(t, m.Record(fixName, fixture))
+
 		exec := graphNamesFake([]*knowledgev1.GraphInfo{
-			{Name: repoName, CollectedCommit: head, CollectedTime: time.Now().Add(-2 * time.Hour).UnixNano()},
+			{Name: fixName, CollectedCommit: fixHead, CollectedTime: time.Now().Add(-2 * time.Hour).UnixNano()},
 		})
 		// cwd is an UNRELATED dir to prove git runs in the manifest-recorded dir.
-		footer := codeStalenessFooter(ctx, exec, t.TempDir(), repoName, "")
+		footer := codeStalenessFooter(ctx, exec, t.TempDir(), fixName, "")
 		if footer == "" {
 			t.Fatal("expected a footer when sync_commit is recorded")
 		}
@@ -124,9 +136,38 @@ func TestCodeStalenessFooter(t *testing.T) {
 		if !strings.Contains(footer, "2 hours ago") {
 			t.Fatalf("footer missing last-collected age: %q", footer)
 		}
-		// HEAD..HEAD is 0 commits behind → up to date.
+		// HEAD..HEAD is 0 commits behind AND the tree is clean → up to date.
 		if !strings.Contains(footer, "up to date") {
-			t.Fatalf("footer should report up to date for HEAD sync_commit: %q", footer)
+			t.Fatalf("footer should report up to date for HEAD sync_commit on a clean tree: %q", footer)
+		}
+	})
+
+	t.Run("collect_commit at HEAD but DIRTY tree → withholds the up-to-date claim", func(t *testing.T) {
+		fixture := gitRepoFixture(t)
+		fixHead, err := coderun.HeadCommit(ctx, fixture)
+		require.NoError(t, err)
+		fixName := filepath.Base(fixture)
+		require.NoError(t, m.Record(fixName, fixture))
+
+		// Modify a TRACKED file: collection walks the working tree, so this content
+		// is indexable while `behind` stays 0 forever. This is the exact shape that
+		// let the footer claim "up to date" beside searches that could not see files
+		// sitting on disk.
+		require.NoError(t, os.WriteFile(filepath.Join(fixture, "a.txt"), []byte("modified"), 0o600))
+
+		exec := graphNamesFake([]*knowledgev1.GraphInfo{
+			{Name: fixName, CollectedCommit: fixHead, CollectedTime: time.Now().Add(-2 * time.Hour).UnixNano()},
+		})
+		footer := codeStalenessFooter(ctx, exec, t.TempDir(), fixName, "")
+		if strings.Contains(footer, "up to date") {
+			t.Fatalf("footer must NOT claim up to date when the working tree is dirty: %q", footer)
+		}
+		if !strings.Contains(footer, "uncommitted") {
+			t.Fatalf("footer should name the uncommitted files: %q", footer)
+		}
+		// Still reports WHEN it collected — the claim withheld is freshness, not history.
+		if !strings.Contains(footer, "2 hours ago") {
+			t.Fatalf("footer should still carry the last-collected age: %q", footer)
 		}
 	})
 

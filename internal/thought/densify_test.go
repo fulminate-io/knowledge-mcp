@@ -123,7 +123,7 @@ func TestDensifyEdgeIsNotTensionEligible(t *testing.T) {
 	}
 	f := newTensionFake([]*knowledgev1.Edge{densifyEdge})
 
-	tensions, err := ReflectTensions(context.Background(), f)
+	tensions, err := ReflectTensions(context.Background(), f, nil)
 	require.NoError(t, err)
 	assert.Empty(t, tensions,
 		"a densify (machine) relates-to edge must NOT surface a tension — it is clustering signal, not disagreement")

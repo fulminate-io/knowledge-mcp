@@ -93,7 +93,7 @@ func TestInterceptQueryListProjects_TextFormat_Plan(t *testing.T) {
 	deps := &listProjectsDeps{gc: gc}
 
 	args := mustMarshal(t, map[string]any{"type": "plan"})
-	handled, res := InterceptQueryListProjects(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
+	handled, res := InterceptQueryListProjects(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
 	require.True(t, handled)
 	require.False(t, res.IsError, "intercept error: %v", res.Content)
 
@@ -107,7 +107,7 @@ func TestInterceptQueryListProjects_TextFormat_Project(t *testing.T) {
 	deps := &listProjectsDeps{gc: gc}
 
 	args := mustMarshal(t, map[string]any{"type": "project"})
-	handled, res := InterceptQueryListProjects(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
+	handled, res := InterceptQueryListProjects(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
 	require.True(t, handled)
 	require.False(t, res.IsError)
 
@@ -121,7 +121,7 @@ func TestInterceptQueryListProjects_TextFormat_Ticket(t *testing.T) {
 	deps := &listProjectsDeps{gc: gc}
 
 	args := mustMarshal(t, map[string]any{"type": "ticket"})
-	handled, res := InterceptQueryListProjects(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
+	handled, res := InterceptQueryListProjects(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
 	require.True(t, handled)
 	require.False(t, res.IsError)
 
@@ -135,7 +135,7 @@ func TestInterceptQueryListProjects_JSONFormat_Plan(t *testing.T) {
 	deps := &listProjectsDeps{gc: gc}
 
 	args := mustMarshal(t, map[string]any{"type": "plan", "format": "json"})
-	handled, res := InterceptQueryListProjects(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
+	handled, res := InterceptQueryListProjects(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
 	require.True(t, handled)
 	require.False(t, res.IsError)
 
@@ -149,7 +149,7 @@ func TestInterceptQueryListProjects_JSONFormat_Project(t *testing.T) {
 	deps := &listProjectsDeps{gc: gc}
 
 	args := mustMarshal(t, map[string]any{"type": "project", "format": "json"})
-	handled, res := InterceptQueryListProjects(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
+	handled, res := InterceptQueryListProjects(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
 	require.True(t, handled)
 	require.False(t, res.IsError)
 
@@ -163,7 +163,7 @@ func TestInterceptQueryListProjects_JSONFormat_Ticket(t *testing.T) {
 	deps := &listProjectsDeps{gc: gc}
 
 	args := mustMarshal(t, map[string]any{"type": "ticket", "format": "json"})
-	handled, res := InterceptQueryListProjects(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
+	handled, res := InterceptQueryListProjects(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
 	require.True(t, handled)
 	require.False(t, res.IsError)
 
@@ -184,7 +184,7 @@ func TestInterceptQueryListProjects_JSONFormat_FieldsProjection(t *testing.T) {
 
 	t.Run("projected omits heavy fields", func(t *testing.T) {
 		args := mustMarshal(t, map[string]any{"type": "ticket", "format": "json", "fields": []string{"id", "name", "status"}})
-		handled, res := InterceptQueryListProjects(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
+		handled, res := InterceptQueryListProjects(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
 		require.True(t, handled)
 		require.False(t, res.IsError)
 		var payload struct {
@@ -204,7 +204,7 @@ func TestInterceptQueryListProjects_JSONFormat_FieldsProjection(t *testing.T) {
 
 	t.Run("empty fields returns full nodes (no regression)", func(t *testing.T) {
 		args := mustMarshal(t, map[string]any{"type": "ticket", "format": "json"})
-		handled, res := InterceptQueryListProjects(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
+		handled, res := InterceptQueryListProjects(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
 		require.True(t, handled)
 		require.False(t, res.IsError)
 		var payload struct {
@@ -218,7 +218,7 @@ func TestInterceptQueryListProjects_JSONFormat_FieldsProjection(t *testing.T) {
 
 	t.Run("metadata.<key> projection returns just that key", func(t *testing.T) {
 		args := mustMarshal(t, map[string]any{"type": "ticket", "format": "json", "fields": []string{"id", "metadata.no_patterns_reason"}})
-		handled, res := InterceptQueryListProjects(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
+		handled, res := InterceptQueryListProjects(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
 		require.True(t, handled)
 		require.False(t, res.IsError)
 		var payload struct {
@@ -235,7 +235,7 @@ func TestInterceptQueryListProjects_WrongTool_FallsThrough(t *testing.T) {
 	gc := seedListProjectsFixture()
 	deps := &listProjectsDeps{gc: gc}
 	args := mustMarshal(t, map[string]any{"type": "plan"})
-	handled, _ := InterceptQueryListProjects(deps, kgtools.CallToolParams{Name: "search", Arguments: args})
+	handled, _ := InterceptQueryListProjects(opCtx(), deps, kgtools.CallToolParams{Name: "search", Arguments: args})
 	assert.False(t, handled)
 }
 
@@ -243,7 +243,7 @@ func TestInterceptQueryListProjects_NonContainerType_FallsThrough(t *testing.T) 
 	gc := seedListProjectsFixture()
 	deps := &listProjectsDeps{gc: gc}
 	args := mustMarshal(t, map[string]any{"type": "finding"})
-	handled, _ := InterceptQueryListProjects(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
+	handled, _ := InterceptQueryListProjects(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
 	assert.False(t, handled, "non-container type must fall through to handleBrowse")
 }
 
@@ -251,6 +251,6 @@ func TestInterceptQueryListProjects_TextSearch_FallsThrough(t *testing.T) {
 	gc := seedListProjectsFixture()
 	deps := &listProjectsDeps{gc: gc}
 	args := mustMarshal(t, map[string]any{"type": "plan", "text": "search term"})
-	handled, _ := InterceptQueryListProjects(deps, kgtools.CallToolParams{Name: "query", Arguments: args})
+	handled, _ := InterceptQueryListProjects(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: args})
 	assert.False(t, handled, "text search must fall through to InterceptSearch")
 }

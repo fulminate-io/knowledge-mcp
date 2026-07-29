@@ -12,6 +12,8 @@ import (
 	"context"
 	"log/slog"
 
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
 	"github.com/fulminate-io/knowledge-mcp/internal/llmproviders"
@@ -29,6 +31,15 @@ import (
 // shutdown-budget comment on that const and the Makefile daemon-stop drain loop.
 func (c *client) startHiveLoops(cfg Config, hs *graphclient.HTTPServer) func() {
 	var monitorStop, reaperStop func()
+
+	// BOTH hive loops are background daemons with no originating tool call, so
+	// both take the SAME stamping caller — declared once here rather than
+	// per-loop, because the two constructions drifting apart is exactly how the
+	// reaper ended up issuing its sweeps as client.unstamped while the monitor's
+	// were attributed. It is wrapped at CONSTRUCTION rather than inside
+	// hivemonitor because graphclient imports hivemonitor — the reverse import
+	// would be a cycle.
+	hiveCaller := hiveCallerStampingOperation{inner: c.router}
 
 	if !cfg.NoHiveMonitor {
 		// Build the Tier-2 hive supervisor once. nil when config is unloaded or the
@@ -61,7 +72,7 @@ func (c *client) startHiveLoops(cfg Config, hs *graphclient.HTTPServer) func() {
 		monitor = hivemonitor.NewMonitor(
 			c.claimRegistry,
 			hs.SessionSnapshots,
-			c.router,
+			hiveCaller,
 			c.banSet, // HarnessResolver: records mcp→harness for the ban gate.
 			escalate,
 			hivemonitor.DefaultMonitorConfig(),
@@ -78,11 +89,12 @@ func (c *client) startHiveLoops(cfg Config, hs *graphclient.HTTPServer) func() {
 	}
 
 	if !cfg.NoHiveReaper {
-		// The reaper shares c.router (EVICT routes cloud when logged in, fails loud
-		// locally otherwise) and hs.SessionSnapshots. No supervisor / escalate closure
-		// — it is a stale-last_seen timestamp comparison, role-gated by cloud member
-		// roles. Same start-error-tolerant + bounded-Stop pattern as the Monitor.
-		reaper := hivemonitor.NewHiveReaper(hs.SessionSnapshots, c.router, hivemonitor.DefaultReaperConfig())
+		// The reaper shares the same stamping caller over c.router (EVICT routes
+		// cloud when logged in, fails loud locally otherwise) and hs.SessionSnapshots.
+		// No supervisor / escalate closure — it is a stale-last_seen timestamp
+		// comparison, role-gated by cloud member roles. Same start-error-tolerant +
+		// bounded-Stop pattern as the Monitor.
+		reaper := hivemonitor.NewHiveReaper(hs.SessionSnapshots, hiveCaller, hivemonitor.DefaultReaperConfig())
 		if err := reaper.Start(context.Background()); err != nil {
 			slog.Warn("hive reaper: failed to start; peer machine-down sweep disabled this session", "error", err)
 		} else {
@@ -103,4 +115,31 @@ func (c *client) startHiveLoops(cfg Config, hs *graphclient.HTTPServer) func() {
 			monitorStop()
 		}
 	}
+}
+
+// hiveCallerStampingOperation wraps the injected HiveCaller so BOTH hive
+// daemons — the monitor's lease heartbeats and the reaper's machine-down sweeps
+// and evictions — carry a query-origin operation.
+// The wrapper lives HERE rather than in hivemonitor because graphclient imports
+// hivemonitor (http_session.go), so hivemonitor importing graphclient would
+// close an import cycle. Bootstrap imports both, which makes it the natural
+// place to compose them.
+type hiveCallerStampingOperation struct {
+	inner hivemonitor.HiveCaller
+}
+
+func (h hiveCallerStampingOperation) Hive(
+	ctx context.Context, req *knowledgev1.HiveRequest,
+) (*knowledgev1.HiveResponse, error) {
+	return h.inner.Hive(graphclient.WithOperation(ctx, graphclient.OpHiveMonitor), req)
+}
+
+// Execute stamps the same operation on the per-tick hive_member reads (the
+// Monitor's liveness pass and the reaper's role-gate + stale-member scan).
+// Both halves of HiveCaller must be wrapped: stamping only the renew RPC would
+// leave the graph read arriving unstamped from the same background loop.
+func (h hiveCallerStampingOperation) Execute(
+	ctx context.Context, req *knowledgev1.ExecuteRequest,
+) (*knowledgev1.ExecuteResponse, error) {
+	return h.inner.Execute(graphclient.WithOperation(ctx, graphclient.OpHiveMonitor), req)
 }

@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
+
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 
@@ -79,6 +81,10 @@ type BackendResolver interface {
 // server's current gen, the server short-circuits and returns empty
 // items without iterating the node map.
 func scanGaps(ctx context.Context, c WireClient, gt kgtypes.GraphType, name, axis string, limit int, lastSeenGen uint64) ([]*knowledgev1.PipelineScanItem, uint64, error) {
+	// Background loop with no originating tool call — it stamps its own
+	// query-origin operation so its share of the load is attributable rather
+	// than arriving unlabeled.
+	ctx = graphclient.WithOperation(ctx, graphclient.OpPipelineGapScan)
 	resp, err := c.PipelineScan(ctx, &knowledgev1.PipelineScanRequest{
 		GraphType:   string(gt),
 		GraphName:   name,
@@ -326,6 +332,9 @@ func writeBatchUpdates(ctx context.Context, c WireClient, gt kgtypes.GraphType, 
 	if len(items) == 0 {
 		return nil
 	}
+	// The summary/embed writeback is the pipeline's WRITE half and a materially
+	// different load shape from its gap scans, so it carries its own term.
+	ctx = graphclient.WithOperation(ctx, graphclient.OpPipelineEmbedWriteback)
 	// Split the overlay-qualified graphName ("repo@branch") into its base and
 	// branch. strings.Cut returns the whole string + "" branch when there is no
 	// "@" (the base/default-branch case). This is the canonical established split

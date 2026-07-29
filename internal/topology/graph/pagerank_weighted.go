@@ -7,8 +7,6 @@ import (
 	"fmt"
 	"sort"
 
-	"gonum.org/v1/gonum/graph/network"
-
 	"github.com/fulminate-io/knowledge-mcp/internal/topology/foundation"
 )
 
@@ -27,13 +25,17 @@ import (
 // non-Go languages whose chunkers don't emit call counts, hand-built
 // knowledge edges).
 //
-// Weighted PageRank intuition: gonum's network.PageRankSparse auto-
-// detects a graph.WeightedDirected and switches into edge-weighted mode,
-// where the random-walker follows an outgoing edge with probability
-// proportional to its weight (normalized over the source node's outgoing
-// weight sum). A heavily-called helper therefore receives more random-
-// walker mass than a function called once, which is exactly the "hot
-// helper" signal weighted PageRank is meant to surface.
+// Weighted PageRank intuition: the random walker follows an outgoing
+// edge with probability proportional to its weight (normalized over the
+// source node's outgoing weight sum). A heavily-called helper therefore
+// receives more random-walker mass than a function called once, which is
+// exactly the "hot helper" signal weighted PageRank is meant to surface.
+//
+// The iteration runs on the in-house bounded kernel
+// (runWeightedPowerIteration, pagerank_weighted_iteration.go) rather than
+// gonum's network.PageRankSparse: the library loop is unbounded and takes
+// no context, so an input that fails to converge cannot be interrupted.
+// The kernel reproduces the library's math and is pinned to it by test.
 //
 // Damping and tolerance are read from Request.Extra exactly the same way
 // the unweighted analyzer reads them — see pagerank.go for the contract.
@@ -55,10 +57,11 @@ type WeightedPageRankAnalyzer struct{}
 // Name returns the analyzer's stable identifier.
 func (WeightedPageRankAnalyzer) Name() string { return "pagerank_weighted" }
 
-// Run materializes the request graph (weight-aware), runs gonum's
-// PageRankSparse over the embedded simple.WeightedDirectedGraph (which
-// auto-switches into edge-weighted mode), and emits the top-K nodes as
-// Finding values.
+// Run materializes the request graph (weight-aware), runs the bounded
+// weighted power iteration over the embedded simple.WeightedDirectedGraph,
+// and emits the top-K nodes as Finding values. A run that cannot converge
+// within the iteration cap returns a convergence-failure error rather than
+// an unsettled score vector.
 func (a WeightedPageRankAnalyzer) Run(ctx context.Context, req foundation.Request) ([]foundation.Finding, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, fmt.Errorf("topology/pagerank_weighted: %w", err)
@@ -73,8 +76,7 @@ func (a WeightedPageRankAnalyzer) Run(ctx context.Context, req foundation.Reques
 		return nil, fmt.Errorf("topology/pagerank_weighted: %w", err)
 	}
 
-	// Empty graph: gonum's PageRankSparse panics on a zero-length node
-	// set ("mat: zero length in matrix dimension"). Guard before calling.
+	// No nodes means no scores; nothing below has anything to rank.
 	if g.Nodes().Len() == 0 {
 		return nil, nil
 	}
@@ -82,7 +84,10 @@ func (a WeightedPageRankAnalyzer) Run(ctx context.Context, req foundation.Reques
 	damping := foundation.ExtraFloat(req, "damping", 0.85, func(v float64) bool { return v > 0 && v < 1 })
 	tolerance := foundation.ExtraFloat(req, "tolerance", 1e-6, func(v float64) bool { return v > 0 && v < 1 })
 
-	scores := network.PageRankSparse(g.WeightedDirectedGraph, damping, tolerance)
+	scores, err := runWeightedPowerIteration(ctx, g.WeightedDirectedGraph, damping, tolerance, dfprMaxIterations)
+	if err != nil {
+		return nil, err
+	}
 	if len(scores) == 0 {
 		return nil, nil
 	}

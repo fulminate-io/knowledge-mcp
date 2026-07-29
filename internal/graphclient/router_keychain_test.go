@@ -31,7 +31,7 @@ func TestRouter_LoggedIn_KeychainOnly(t *testing.T) {
 	// to read it, so it must not influence routing. Routing flips only on the
 	// keychain refresh token, never on a context value.
 	type unrelatedKey struct{}
-	ctx := context.WithValue(context.Background(), unrelatedKey{}, "ignored-by-routing")
+	ctx := context.WithValue(opCtx(), unrelatedKey{}, "ignored-by-routing")
 
 	// Empty keychain → LoggedIn false → routes local, even with the ctx value.
 	assert.False(t, r.LoggedIn(ctx), "LoggedIn must be false with an empty keychain regardless of ctx")
