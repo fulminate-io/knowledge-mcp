@@ -68,6 +68,19 @@ auto-detects an LLM provider: it prefers a logged-in Claude or Codex
 CLI on `$PATH`, then falls back to `ANTHROPIC_API_KEY`,
 `OPENAI_API_KEY`, or `GEMINI_API_KEY` from the environment.
 
+> [!WARNING]
+> **First-time indexing of a large repo can quickly use up a Claude or
+> Codex subscription's session quota.** The initial pass summarizes
+> every node — for a big repo that is thousands of LLM calls — and when
+> the auto-detected provider is your logged-in `claude` or `codex` CLI,
+> every one of them draws on your subscription. Take caution on a large
+> first index, or point the summarizer at an API provider for it: add a
+> `[summarizer]` section to `~/.knowledge/config` with `provider =
+> "anthropic"`, `"openai"`, or `"gemini"` and the matching API key,
+> restart the daemon, then collect. See
+> [Configuration](./docs/guides/config.md). Subsequent indexes are
+> incremental and cheap either way.
+
 Full walkthroughs: **[Set up with Claude Code](./docs/guides/setup-claude.md)**
 · **[Set up with Codex](./docs/guides/setup-codex.md)**. `knowledge doctor`
 diagnoses install and daemon/server health. Connecting another MCP
