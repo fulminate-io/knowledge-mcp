@@ -10,6 +10,42 @@ hypotheses charged with evidence, and runs tickets and plans against
 state that survives every context boundary — across sessions, machines,
 and teammates.
 
+## What it solves
+
+Knowledge exists because the same problems keep recurring in serious
+LLM-driven development:
+
+- **Finding code, and reusing it accurately.** Hybrid BM25 + semantic
+  search over an indexed call graph, plus tree-sitter AST search for
+  structural shapes — "is there code that *does* this" gets a real
+  answer instead of a grep guess, so agents extend what exists instead
+  of re-implementing it.
+- **A development flow that scales past one agent.** The orchestrator
+  pattern for subagents: one coordinator dispatching researchers,
+  planners, reviewers, and implementers against shared graph state,
+  instead of a single context trying to hold everything.
+- **Plan tracking that survives execution.** Projects, tickets, and
+  plans live in the graph — searchable, statused, and linked to the
+  code they touch — so implementation follows a tracked plan with
+  verifiable success criteria rather than a vibe.
+- **Longer, uncapped sessions.** Active work is retraceable through the
+  graph, so a compaction or restart is a non-event. Multi-week sessions
+  are not a problem.
+- **Better standards, less naive code.** Practice graphs collected from
+  books, references, and websites put best-practice patterns next to
+  your code, so agents reach for the established idiom instead of the
+  first thing that compiles.
+- **Auditable reasoning.** Thoughts and decisions are graph nodes with
+  evidence attached — searchable long after the fact, so "why did we
+  do it this way" has an answer months later.
+- **Cold starts that aren't cold.** New sessions recall past thoughts
+  and decisions before starting work, so every session begins where the
+  last one actually left off.
+- **Full-stack tracing.** Cloud, CI/CD, and log collectors link
+  infrastructure and runtime state to code in one graph — an incident
+  traces from log line to deploy to commit to the design decision
+  behind it.
+
 ## Install
 
 One line, macOS (Apple Silicon) or Linux (x86_64 / arm64):
