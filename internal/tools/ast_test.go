@@ -58,8 +58,11 @@ func (d astTestDeps) SegmentManager() SegmentSearcher              { return nil 
 func (d astTestDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
 func (d astTestDeps) SegmentShipper() SegmentShipper               { return nil }
 func (d astTestDeps) SegmentPruner() SegmentPruner                 { return nil }
-func (d astTestDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
-func (d astTestDeps) PipelineScanner() PipelineScanner             { return nil }
+
+func (d astTestDeps) SegmentCacheDropper() SegmentCacheDropper { return nil }
+func (d astTestDeps) SegmentDeleter() SegmentDeleter           { return nil }
+func (d astTestDeps) SegmentCoverage() SegmentCoverageReader   { return nil }
+func (d astTestDeps) PipelineScanner() PipelineScanner         { return nil }
 
 func (d astTestDeps) ClearHealLatch(kgtypes.GraphType, string) {}
 func (d astTestDeps) ReflectionForcer() ReflectionForcer       { return nil }

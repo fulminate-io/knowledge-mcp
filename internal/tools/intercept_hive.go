@@ -78,6 +78,11 @@ func InterceptHive(ctx context.Context, deps ClientDeps, params kgtools.CallTool
 	if params.Name != "hive" {
 		return false, kgtools.ToolResult{}
 	}
+	// Above the GraphCaller type-assert: a caller's typo must be reported as a
+	// typo even on a degraded client that cannot serve the call.
+	if err := rejectUndeclaredParams("hive", "", HiveToolDef().InputSchema.Properties, params.Arguments); err != nil {
+		return true, errorResult(err.Error())
+	}
 	gc := deps.GraphCaller()
 	if gc == nil {
 		return true, kgtools.ErrorResult("hive: graph client unavailable")
@@ -96,8 +101,8 @@ func InterceptHive(ctx context.Context, deps ClientDeps, params kgtools.CallTool
 
 	op, known := agentHiveOps[args.Op]
 	if !known {
-		return true, kgtools.ErrorResult(fmt.Sprintf(
-			"hive: unknown op %q — must be one of register, send, claim, ack, fail", args.Op))
+		return true, unknownOperationResult("hive", args.Op,
+			[]string{"register", "send", "claim", "ack", "fail"})
 	}
 
 	// Defense-in-depth `to` validation for send: v1 work routing accepts ONLY

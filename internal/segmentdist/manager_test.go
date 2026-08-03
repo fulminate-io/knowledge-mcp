@@ -27,10 +27,40 @@ func buildManager(
 	return newDistManager(engine, src, cache, target, ""), src
 }
 
+// evictAllResidentForTest drops every resident segment out of the engine and the
+// resident-tracking map, returning the ids it dropped. It lets a test construct the
+// "gone from the engine, still live on the server and on disk" state that the prune,
+// force-load and reload-from-L2 paths have to survive. Note the resident map is
+// populated by load()/reload() (recordResident), NOT by Add/ship, so a test must load
+// before it can evict.
+//
+// TEST SCAFFOLDING ONLY — production has no eviction path at all. The unprotected
+// unloadUnderPressure this replaces was retired on 2026-08-02: it CAS-removed
+// member-bearing segments without asking whether their members had another searchable
+// home, so wiring it to a real memory-pressure path would have silently dropped live
+// documents out of the serving corpus. If pressure-eviction is ever genuinely needed
+// it gets built with the LiveMembersOutside coverage gate the drain path in
+// manager_bucket_backlog.go uses — retaining any tail whose members are not proven
+// covered elsewhere — rather than by promoting this helper into production.
+func (m *distManager[Q, S]) evictAllResidentForTest() []searchengine.SegmentID {
+	m.resMu.Lock()
+	defer m.resMu.Unlock()
+
+	ids := make([]searchengine.SegmentID, 0, len(m.resident))
+	for id := range m.resident {
+		ids = append(ids, id)
+	}
+	m.engine.Unload(ids)
+	clear(m.resident)
+	return ids
+}
+
 // TestManagerShipDiffIdempotent verifies that after an initial ship() of N
 // segments, a second ship() with no intervening Add sends ZERO blobs (empty
 // diff), the server stamps ZERO new generations, and ZERO new RPCs fire.
 func TestManagerShipDiffIdempotent(t *testing.T) {
+	t.Parallel()
+
 	svc, gc := newSegmentHarness(t)
 	target := &knowledgev1.GraphSelector{Graph: "code", Repo: "shipdiff"}
 	ctx := context.Background()
@@ -69,6 +99,8 @@ func TestManagerShipDiffIdempotent(t *testing.T) {
 // TestManagerShipWarmsCacheAndGen verifies ship() warms the L2 cache with each
 // shipped blob and advances last-seen generation to the max stamped generation.
 func TestManagerShipWarmsCacheAndGen(t *testing.T) {
+	t.Parallel()
+
 	_, gc := newSegmentHarness(t)
 	target := &knowledgev1.GraphSelector{Graph: "code", Repo: "warmcache"}
 	ctx := context.Background()
@@ -101,6 +133,8 @@ func TestManagerShipWarmsCacheAndGen(t *testing.T) {
 // contract; the L2-first wrapper (load()) is covered by
 // TestLoadL2FirstPrimaryPathIssuesZeroList.
 func TestManagerLoadDeltaCacheAndImport(t *testing.T) {
+	t.Parallel()
+
 	svc, gc := newSegmentHarness(t)
 	target := &knowledgev1.GraphSelector{Graph: "code", Repo: "loaddelta"}
 	ctx := context.Background()
@@ -158,11 +192,12 @@ func TestManagerLoadDeltaCacheAndImport(t *testing.T) {
 	require.Equal(t, int64(1), partialCC.fetchCalls.Load(), "partial load issues ONE Fetch for the single miss")
 }
 
-// TestManagerUnloadReloadFromL2 verifies: load N segments; unloadUnderPressure
-// drops resident bytes below target via engine.Unload and search drops the
-// unloaded hits; reload(unloadedIds) restores from L2 (ZERO Source.Fetch) and
-// search hits return.
+// TestManagerUnloadReloadFromL2 verifies: load N segments; evicting them via
+// engine.Unload drops the unloaded hits out of search; reload(unloadedIds) restores
+// them from L2 (ZERO Source.Fetch) and search hits return.
 func TestManagerUnloadReloadFromL2(t *testing.T) {
+	t.Parallel()
+
 	_, gc := newSegmentHarness(t)
 	target := &knowledgev1.GraphSelector{Graph: "code", Repo: "unloadreload"}
 	ctx := context.Background()
@@ -182,9 +217,9 @@ func TestManagerUnloadReloadFromL2(t *testing.T) {
 
 	fetchAfterLoad := loadCC.fetchCalls.Load()
 
-	// Unload under pressure: target 0 bytes evicts everything.
-	unloaded := loadMgr.unloadUnderPressure(0)
-	require.NotEmpty(t, unloaded, "must unload at least one segment under target 0")
+	// Evict the whole resident set.
+	unloaded := loadMgr.evictAllResidentForTest()
+	require.NotEmpty(t, unloaded, "must unload at least one segment")
 	require.Less(t, len(loadEng.Search(mockQuery{term: "alpha"}, 10)), 3,
 		"search must drop the unloaded hits")
 

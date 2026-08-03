@@ -51,35 +51,38 @@ func (s *recordingSource) verifiesCompletenessServerSide() bool { return s.verif
 
 // TestPublishResidentThreadsDocCount proves publishResident calls
 // source.PublishManifest with segmentDigests whose DocCount equals each resident
-// segment's Export DocCount, AND that the det-union extraReferenced digests carry
-// their own (non-zero) DocCounts. A tiny corpus (summed doc count < residentBackstopFloor)
+// segment's Export DocCount — non-zero, and per blob. (A second leg used to cover
+// sibling-engine digests carried alongside them; the manifest is this engine's resident
+// set alone now.) A tiny corpus (summed doc count < residentBackstopFloor)
 // disarms the coverage ratio; the recording source's List returns the live ids so
 // the subset gate passes — isolating the doc_count-threading behavior under test.
 func TestPublishResidentThreadsDocCount(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	target := &knowledgev1.GraphSelector{Graph: "code", Repo: "doccount"}
 
-	// Resident segments (from Export) carry known doc counts; the det-union sibling
-	// digest carries its own doc count.
+	// Resident segments (from Export) carry known doc counts. A third digest used to
+	// ride alongside them as a sibling-engine reference; there is one engine per format
+	// now, so the manifest is the resident set alone and the threading under test is
+	// per-resident-blob.
 	all := []searchengine.SegmentBlob{
 		{ID: "seg-a", Format: "hnsw", DocCount: 7},
 		{ID: "seg-b", Format: "hnsw", DocCount: 9},
 	}
-	extra := []segmentDigest{{ID: "det-c", DocCount: 5}}
 
 	rec := &recordingSource{
 		// List returns the full live id-set so liveSetSubsetOfList0 passes; the summed
-		// doc count (7+9+5=21) is under residentBackstopFloor=64, disarming the ratio.
+		// doc count (7+9=16) is under residentBackstopFloor=64, disarming the ratio.
 		listMetas: []searchengine.SegmentMeta{
 			{ID: "seg-a", Format: "hnsw", DocCount: 7},
 			{ID: "seg-b", Format: "hnsw", DocCount: 9},
-			{ID: "det-c", Format: "hnsw", DocCount: 5},
 		},
 	}
 	cache := newDiskSegmentCache(t.TempDir(), 0)
 	dm := newDistManager[mockQuery, mockStats](newMockEngine(), rec, cache, target, "hnsw")
 
-	dropped, err := dm.publishResident(ctx, all, extra, dm.locallyShipped)
+	dropped, err := dm.publishResident(ctx, all, dm.locallyShipped)
 	require.NoError(t, err)
 	require.Nil(t, dropped, "no reconcileAgainst ids drop out on a first publish")
 
@@ -88,8 +91,8 @@ func TestPublishResidentThreadsDocCount(t *testing.T) {
 	for _, d := range rec.published {
 		got[d.ID] = d.DocCount
 	}
-	require.Equal(t, map[searchengine.SegmentID]int{"seg-a": 7, "seg-b": 9, "det-c": 5}, got,
-		"each published digest carries the resident/det Export DocCount — not 0")
+	require.Equal(t, map[searchengine.SegmentID]int{"seg-a": 7, "seg-b": 9}, got,
+		"each published digest carries the resident Export DocCount — not 0")
 }
 
 // TestVerifiesCompletenessServerSide pins the capability flag on the surviving
@@ -97,6 +100,8 @@ func TestPublishResidentThreadsDocCount(t *testing.T) {
 // three-implementer discipline — a missed impl is caught here, not left to the
 // compile gate). The deleted rpc source's →false leg is gone with the RPC path.
 func TestVerifiesCompletenessServerSide(t *testing.T) {
+	t.Parallel()
+
 	cache := newDiskSegmentCache(t.TempDir(), 0)
 
 	gcs := newGCSSegmentSource(&fakeSegmentBackend{}, "code", "repo", "hnsw")
@@ -115,6 +120,8 @@ func TestVerifiesCompletenessServerSide(t *testing.T) {
 // subset of List(0): the rpc-like source SKIPS the publish (deadlock the plan warns
 // of), while the GCS-like source publishes it.
 func TestPublishGateSourceAware(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	target := &knowledgev1.GraphSelector{Graph: "code", Repo: "gate"}
 	all := []searchengine.SegmentBlob{{ID: "seg-a", Format: "hnsw", DocCount: 3}}
@@ -122,7 +129,7 @@ func TestPublishGateSourceAware(t *testing.T) {
 	// rpc-like: verifiesServerSide=false, empty List → live NOT subset → SKIP (no publish).
 	rpcLike := &recordingSource{verifiesServerSide: false} // listMetas nil == empty List(0)
 	rpcDM := newDistManager[mockQuery, mockStats](newMockEngine(), rpcLike, newDiskSegmentCache(t.TempDir(), 0), target, "hnsw")
-	dropped, err := rpcDM.publishResident(ctx, all, nil, rpcDM.locallyShipped)
+	dropped, err := rpcDM.publishResident(ctx, all, rpcDM.locallyShipped)
 	require.NoError(t, err)
 	require.Nil(t, dropped)
 	require.Equal(t, 0, rpcLike.publishCalls, "rpc-like source SKIPS the publish (live set not a subset of the empty List(0))")
@@ -130,7 +137,7 @@ func TestPublishGateSourceAware(t *testing.T) {
 	// gcs-like: verifiesServerSide=true → subset check skipped → FIRST publish writes.
 	gcsLike := &recordingSource{verifiesServerSide: true}
 	gcsDM := newDistManager[mockQuery, mockStats](newMockEngine(), gcsLike, newDiskSegmentCache(t.TempDir(), 0), target, "hnsw")
-	_, err = gcsDM.publishResident(ctx, all, nil, gcsDM.locallyShipped)
+	_, err = gcsDM.publishResident(ctx, all, gcsDM.locallyShipped)
 	require.NoError(t, err)
 	require.Equal(t, 1, gcsLike.publishCalls, "gcs-like source publishes the first (empty-prior) manifest — not skipped")
 	require.Len(t, gcsLike.published, 1)
@@ -138,7 +145,7 @@ func TestPublishGateSourceAware(t *testing.T) {
 
 	// SECOND publish adds a new segment → included in the manifest.
 	all2 := append(all, searchengine.SegmentBlob{ID: "seg-b", Format: "hnsw", DocCount: 4})
-	_, err = gcsDM.publishResident(ctx, all2, nil, gcsDM.locallyShipped)
+	_, err = gcsDM.publishResident(ctx, all2, gcsDM.locallyShipped)
 	require.NoError(t, err)
 	require.Equal(t, 2, gcsLike.publishCalls)
 	got := map[searchengine.SegmentID]int{}
@@ -153,6 +160,8 @@ func TestPublishGateSourceAware(t *testing.T) {
 // returns (nil, nil) — no error, no bookkeeping reconcile — leaving the prior manifest
 // intact.
 func TestPublishResidentSkipsOnIncomplete(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	target := &knowledgev1.GraphSelector{Graph: "code", Repo: "incomplete"}
 	all := []searchengine.SegmentBlob{{ID: "seg-a", Format: "hnsw", DocCount: 3}}
@@ -162,7 +171,7 @@ func TestPublishResidentSkipsOnIncomplete(t *testing.T) {
 		publishErr:         &manifestIncompleteError{Missing: []string{"seg-a"}},
 	}
 	dm := newDistManager[mockQuery, mockStats](newMockEngine(), src, newDiskSegmentCache(t.TempDir(), 0), target, "hnsw")
-	dropped, err := dm.publishResident(ctx, all, nil, dm.locallyShipped)
+	dropped, err := dm.publishResident(ctx, all, dm.locallyShipped)
 	require.NoError(t, err, "an incomplete-publish 409 is a logged SKIP, not a hard error")
 	require.Nil(t, dropped, "a skipped publish reconciles nothing")
 	require.Equal(t, 1, src.publishCalls, "the publish was attempted (and skipped on the 409)")

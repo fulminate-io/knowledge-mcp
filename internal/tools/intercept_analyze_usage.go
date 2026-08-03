@@ -47,6 +47,9 @@ func InterceptAnalyzeUsage(ctx context.Context, deps ClientDeps, params kgtools.
 	if params.Name != "analyze_usage" {
 		return false, kgtools.ToolResult{}
 	}
+	if err := rejectUndeclaredParams("analyze_usage", "", AnalyzeUsageToolDef().InputSchema.Properties, params.Arguments); err != nil {
+		return true, errorResult(err.Error())
+	}
 	var a analyzeUsageArgs
 	if err := json.Unmarshal(params.Arguments, &a); err != nil {
 		return true, errorResult("analyze_usage: invalid arguments: " + err.Error())
@@ -76,7 +79,8 @@ func InterceptAnalyzeUsage(ctx context.Context, deps ClientDeps, params kgtools.
 		}
 		return true, jsonResult(analyzeUsageRecommendation{Detectors: report, Recommendations: recs.Recommendations})
 	default:
-		return true, errorResult("analyze_usage: unknown operation " + a.Operation + " — valid operations: run-detectors, recommend")
+		return true, unknownOperationResult("analyze_usage", a.Operation,
+			[]string{"run-detectors", "recommend"})
 	}
 }
 

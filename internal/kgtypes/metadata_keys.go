@@ -31,6 +31,13 @@ const (
 	// having failed terminal-error embedding. Same operator-clear contract
 	// as MetaKeySummaryFailureReason.
 	MetaKeyEmbedFailureReason = "embed_failure_reason"
+
+	// MetaKeySegmentShipFailureReason records that a node's binary vector was
+	// written but its client segment ship was DROPPED. It is deliberately a
+	// SEPARATE key from MetaKeyEmbedFailureReason: both rebuild scans exclude
+	// embed-failure-marked nodes, so reusing that key would make a ship-dropped
+	// node permanently invisible to the very repair that exists to re-ship it.
+	MetaKeySegmentShipFailureReason = "segment_ship_failure_reason"
 )
 
 // Code-graph metadata keys read once by the client-side collector and shipped

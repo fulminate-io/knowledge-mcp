@@ -16,6 +16,8 @@ import (
 // and issues ZERO server RPC (the localSegmentSource makes no network call by
 // construction); over a WARM L2 the same load imports the resident set from disk.
 func TestLoadL2Only_OSSPath(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 
 	t.Run("empty L2: load returns nil, imports nothing, local source (no server Fetch)", func(t *testing.T) {
@@ -30,10 +32,10 @@ func TestLoadL2Only_OSSPath(t *testing.T) {
 
 	t.Run("warm L2: load imports the resident set from disk with zero network", func(t *testing.T) {
 		dir := t.TempDir()
-		// Warm the shared L2 dir via an OSS producer Manager: AddAndShip+Flush seals a
-		// real HNSW segment and warms the L2 cache (shipNew cache.Put) with zero network.
+		// Warm the shared L2 dir via an OSS producer Manager: the write + tick seal a
+		// real HNSW segment and warm the L2 cache (shipNew cache.Put) with zero network.
 		prod := NewManager(loginStateStub{loggedIn: false}, dir, 0)
-		require.NoError(t, prod.AddAndShip(ctx, kgtypes.GraphCode, "warm", hnswVecDocs(96)))
+		seedShipped(t, ctx, prod, kgtypes.GraphCode, "warm", hnswVecDocs(96))
 		require.NoError(t, prod.Flush(ctx, kgtypes.GraphCode, "warm"))
 
 		// A FRESH consumer Manager at the SAME dir loads from L2 alone.
@@ -50,6 +52,8 @@ func TestLoadL2Only_OSSPath(t *testing.T) {
 // accessors the bootstrap heal path composes: IsL2Authoritative reports the source
 // mode per graph, and LoadResidentDocCount loads L2 then returns the resident count.
 func TestManagerAccessors_L2AuthoritativeAndLoadResidentDocCount(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 
 	// IsL2Authoritative: true for a not-logged-in caller, false for a logged-in
@@ -65,7 +69,7 @@ func TestManagerAccessors_L2AuthoritativeAndLoadResidentDocCount(t *testing.T) {
 	// count, matching ResidentDocCount after the load.
 	dir := t.TempDir()
 	prod := NewManager(loginStateStub{loggedIn: false}, dir, 0)
-	require.NoError(t, prod.AddAndShip(ctx, kgtypes.GraphCode, "warm", hnswVecDocs(80)))
+	seedShipped(t, ctx, prod, kgtypes.GraphCode, "warm", hnswVecDocs(80))
 	require.NoError(t, prod.Flush(ctx, kgtypes.GraphCode, "warm"))
 
 	cons := NewManager(loginStateStub{loggedIn: false}, dir, 0)

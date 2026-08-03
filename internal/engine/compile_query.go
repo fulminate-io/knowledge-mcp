@@ -128,8 +128,16 @@ var reducibleQueryModes = map[string]struct{}{
 // Deliberately EXCLUDED: "" (default mode dispatches on id/ids/type/meta — text is
 // only one of several recognized shapes, so empty text is not an error there) and
 // "modules" (catalog enumeration takes NO text — the GraphType is the only input).
+//
+// NOTE this set is NOT a subset of reducibleQueryModes any more. "hybrid" is a
+// member here but deliberately absent there: a TEXT-BEARING hybrid is claimed by
+// the client knowledge search arm and never reaches Compile, so the only hybrid
+// that gets this far is the empty-text one, which is a validation failure rather
+// than a plan. Admitting hybrid to reducibleQueryModes instead would compile it
+// into the retired server search path and re-create the zero-rows drop.
 var reducibleTextRequiredModes = map[string]struct{}{
-	"text": {},
+	"text":   {},
+	"hybrid": {},
 }
 
 // precheckQuery runs the empty-text validation for the text-required query modes
@@ -148,6 +156,11 @@ func precheckQuery(args json.RawMessage) error {
 	var a queryArgs
 	if err := json.Unmarshal(args, &a); err != nil {
 		return nil //nolint:nilerr // malformed JSON is not a validation failure — let Compile (which re-parses) return ok=false so the deny path surfaces the parse error
+	}
+	// A filter or search term alongside an id-selector is refused for EVERY mode,
+	// so this runs ahead of the text-required check below.
+	if verr := refuseFiltersAlongsideIDSelector(a); verr != nil {
+		return verr
 	}
 	if _, required := reducibleTextRequiredModes[a.Mode]; !required {
 		return nil // not a text-required mode → no precheck.
@@ -267,11 +280,12 @@ func buildDefaultModePlan(a queryArgs) (*knowledgev1.QueryPlan, bool) {
 		// Generic cross-graph text search.
 		return textSearchPlan(a), true
 	case len(a.Types) > 0:
-		// Plural-types browse → Match("") all-types enumeration + engine
-		// Selection.NodeTypes post-filter (postFilterBrowseNodeTypes). DISTINCT
-		// from the singular a.Type Match-index arm below: the plural set has no
-		// single index browse, so it enumerates then trims to the type set. status
-		// + meta predicates ride as on the singular arm.
+		// Plural-types browse → Match("") plus Selection.NodeTypes, which the
+		// engine lowers into the store's type selection. DISTINCT from the
+		// singular a.Type Match-index arm below: the plural set has no single
+		// pre-sorted index bucket, so the store iterates the union of the set's
+		// buckets and takes its top-K through the heap. status + meta predicates
+		// ride as on the singular arm.
 		p := &knowledgev1.QueryPlan{Selection: browsePluralSelection(a.Types, a.Status, a.Meta, a.FieldPredicates)}
 		applyBrowseLimitOffset(p, a.Limit, a.Offset)
 		applyTombstones(p, a.IncludeTombstones)
@@ -318,9 +332,9 @@ func browseSelection(nodeType, status string, meta map[string]string, fields []f
 }
 
 // browsePluralSelection builds the Selection for a plural-types browse: NodeType
-// stays EMPTY (Match("") all-types enumeration) and NodeTypes carries the set the
-// engine post-filters against (postFilterBrowseNodeTypes). status + metadata
-// predicates ride exactly as browseSelection sets them. DISTINCT from
+// stays EMPTY and NodeTypes carries the set, which the engine lowers into the
+// store's type selection so rows AND Total are filtered in one pass. status +
+// metadata predicates ride exactly as browseSelection sets them. DISTINCT from
 // browseSelection's singular NodeType (a single index browse).
 func browsePluralSelection(nodeTypes []string, status string, meta map[string]string, fields []fieldPredicateArg) *knowledgev1.Selection {
 	sel := &knowledgev1.Selection{NodeTypes: nodeTypes}

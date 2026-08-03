@@ -54,6 +54,12 @@ func InterceptCreateTestPlan(ctx context.Context, deps ClientDeps, params kgtool
 	if err := json.Unmarshal(params.Arguments, &a); err != nil {
 		return true, errorResult("invalid arguments: " + err.Error())
 	}
+	// Ahead of every validation and every write: the decode above discards any
+	// top-level key createTestPlanArgs has no field for, so an undeclared param
+	// would otherwise vanish into a successful create.
+	if err := rejectUndeclaredParams("create_test_plan", "", CreateTestPlanToolDef().InputSchema.Properties, params.Arguments); err != nil {
+		return true, errorResult(err.Error())
+	}
 	if len(a.Steps) == 0 {
 		return true, errorResult("at least one step is required")
 	}
@@ -67,13 +73,20 @@ func InterceptCreateTestPlan(ctx context.Context, deps ClientDeps, params kgtool
 		Goal:    a.Goal,
 		Summary: a.Summary,
 	}
-	for _, st := range a.Steps {
+	for i, st := range a.Steps {
 		stepArgs := projects.TestStepArgs{
 			Name:        st.Name,
 			Description: st.Description,
 			Summary:     st.Summary,
 		}
-		for _, c := range st.Criteria {
+		for k, c := range st.Criteria {
+			// These criteria reach the graph through the test-plan builder, which
+			// runs no criterion validation of its own, so the command's shape is
+			// checked here — under the indexed path that locates the offender.
+			if gerr := validate.RunSelectorGuard("create_test_plan",
+				fmt.Sprintf("steps[%d].criteria[%d].command", i, k), c.Command); gerr != nil {
+				return true, errorResult(gerr.Error())
+			}
 			stepArgs.Criteria = append(stepArgs.Criteria, projects.CriterionArgs{
 				Description: c.Description,
 				Command:     c.Command,

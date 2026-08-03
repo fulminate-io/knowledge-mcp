@@ -17,15 +17,24 @@
 // DESTRUCTIVE OP: drop_graph mirrors the delete tool's dry_run idiom — the
 // default EXECUTES the drop; dry_run:true issues ZERO mutations and renders a
 // "would drop" preview so an operator can confirm the target before committing.
+//
+// The drop is TWO-SIDED: once the server-side mutation succeeds, the handler also
+// tears down the graph's LOCAL L2 segment cache (every per-format directory plus
+// the rebuild-state record) through the SegmentCacheDropper seam, and the ack
+// reports what was actually removed. Leaving those artifacts behind stranded disk
+// the operator had no way to reclaim, since prune-cache only reaches graphs that
+// still exist.
 
 package tools
 
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
 // dropGraphFamilies names the graph families the server dropGraphTarget arm
@@ -36,8 +45,10 @@ const dropGraphFamilies = "knowledge, code, cloud, cicd, practice, web, pdf, tra
 // handleClientDropGraph tears down a whole non-logs graph. It requires a
 // non-empty graph, rejects graph=="logs" (manage(discard_logs) owns that
 // path), and — unless dry_run is set — issues ONE MUTATION_KIND_DROP_GRAPH
-// Execute whose Target is the manageGraphSelector envelope. dry_run:true
-// renders a read-only "would drop" preview and issues no mutation.
+// Execute whose Target is the manageGraphSelector envelope, then hands off to
+// dropGraphAck for the local cache teardown and the result message. dry_run:true
+// renders a read-only "would drop" preview, issues no mutation and removes
+// nothing locally.
 func handleClientDropGraph(ctx context.Context, deps ClientDeps, a manageArgs) kgtools.ToolResult {
 	gc := deps.GraphCaller()
 	if gc == nil {
@@ -53,8 +64,13 @@ func handleClientDropGraph(ctx context.Context, deps ClientDeps, a manageArgs) k
 	}
 
 	if a.DryRun {
+		// Nothing below this branch runs: no mutation is issued AND the local cache
+		// is never touched or even inspected. The preview must also not contain the
+		// substring "Dropped graph" — a reader (and the dry-run test) treats that
+		// phrase as the claim a drop COMPLETED.
 		return textResult(fmt.Sprintf(
-			"DRY RUN — would drop graph %s (nothing was dropped). Re-run without dry_run to drop.",
+			"DRY RUN — would drop graph %s server-side and remove its local segment cache "+
+				"(nothing was dropped). Re-run without dry_run to drop.",
 			dropGraphLabel(a)))
 	}
 
@@ -62,7 +78,7 @@ func handleClientDropGraph(ctx context.Context, deps ClientDeps, a manageArgs) k
 	if err != nil {
 		return errorResult("manage(drop_graph): " + err.Error())
 	}
-	resp, eerr := ex.Execute(ctx, &knowledgev1.ExecuteRequest{
+	_, eerr := ex.Execute(ctx, &knowledgev1.ExecuteRequest{
 		Plan: &knowledgev1.ExecuteRequest_Mutation{
 			Mutation: &knowledgev1.MutationPlan{
 				Kind: knowledgev1.MutationPlan_MUTATION_KIND_DROP_GRAPH,
@@ -73,8 +89,66 @@ func handleClientDropGraph(ctx context.Context, deps ClientDeps, a manageArgs) k
 	if eerr != nil {
 		return errorResult("manage(drop_graph): " + eerr.Error())
 	}
-	return textResult(fmt.Sprintf(
-		"Dropped graph %s (%d node(s) removed).", dropGraphLabel(a), resp.GetAffectedCount()))
+	return textResult(dropGraphAck(deps, a))
+}
+
+// dropGraphAck tears down the dropped graph's LOCAL L2 segment cache and renders
+// what actually happened. It runs only after the server-side Execute succeeded,
+// which is the whole contract: local removal FOLLOWS a confirmed server-side drop.
+//
+// The ack reports the removal, never a count from the Execute response — the
+// server returns ONE handle for the dropped graph, so rendering it as a node count
+// told an operator who dropped a 40k-node graph that one node went away.
+//
+// Every variant here keeps the "Dropped graph <label>" prefix: the graph really is
+// gone server-side in all four, and none of them is an error result. In particular
+// a local cleanup failure stays a text result — reporting an error for work that
+// succeeded would send an operator hunting a drop that already happened.
+//
+// There is deliberately no PipelineReady() gate (unlike manage(prune-cache), which
+// errors during the bind-first startup window): a nil dropper degrades to an honest
+// "not inspected" line rather than failing a completed drop.
+func dropGraphAck(deps ClientDeps, a manageArgs) string {
+	label := dropGraphLabel(a)
+	dropper := deps.SegmentCacheDropper()
+	if dropper == nil {
+		return fmt.Sprintf(
+			"Dropped graph %s — server-side graph removed; "+
+				"local segment cache not inspected (segment engine not wired).", label)
+	}
+
+	gt, cacheName := dropGraphCacheTarget(a)
+	report, derr := dropper.DropGraphCache(gt, cacheName)
+	if derr != nil {
+		return fmt.Sprintf(
+			"Dropped graph %s — server-side graph removed; local segment cache cleanup "+
+				"INCOMPLETE: %v (removed %d file(s), %d bytes).",
+			label, derr, report.Files, report.Bytes)
+	}
+	if len(report.Formats) == 0 {
+		return fmt.Sprintf(
+			"Dropped graph %s — server-side graph removed; no local segment cache artifacts found.", label)
+	}
+	return fmt.Sprintf(
+		"Dropped graph %s — server-side graph removed; local segment cache: %d file(s), %d bytes across %s.",
+		label, report.Files, report.Bytes, strings.Join(report.Formats, ", "))
+}
+
+// dropGraphCacheTarget resolves the (graphType, name) pair the local segment cache
+// is keyed by. Only the knowledge graph needs normalizing: its cache lives at
+// <root>/<format>/knowledge/default, so a bare or self-named knowledge target maps
+// to "default" — the SAME rule manageGraphSelector applies (intercept_manage_index.go)
+// and handleClientRebuildSegments defaults to.
+//
+// No per-family switch is needed and none should be added: every other family
+// (code→repo, cloud/cicd→account, practice→language, custom→name) already carries
+// its instance in a.Name, and the cache path keys on that same string.
+func dropGraphCacheTarget(a manageArgs) (kgtypes.GraphType, string) {
+	name := a.Name
+	if a.Graph == string(kgtypes.GraphKnowledge) && (name == "" || name == string(kgtypes.GraphKnowledge)) {
+		name = "default"
+	}
+	return kgtypes.GraphType(a.Graph), name
 }
 
 // dropGraphLabel renders the (graph, name) target for the ack / preview line.

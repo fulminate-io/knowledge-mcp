@@ -5,20 +5,14 @@ package bootstrap
 import (
 	"context"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
 	"sync"
 	"testing"
 	"time"
 
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/require"
-	"golang.org/x/net/http2"
-	"golang.org/x/net/http2/h2c"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
-	"github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1/knowledgev1connect"
-	"github.com/fulminate-io/knowledge-mcp/internal/auth"
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
@@ -49,11 +43,34 @@ type reconcileEngine struct {
 
 	mu        sync.Mutex
 	scanItems map[string][]*knowledgev1.PipelineScanItem // keyed by graph name
-	scanCalls map[string]int                             // PipelineScan calls per graph name
+	// scanCalls counts REBUILD-shaped PipelineScan calls per graph name, and the
+	// operation split is load-bearing rather than bookkeeping. Two callers page this
+	// axis: the rebuild driver and the reconcile pass's bounded tombstone-delta read.
+	// Every "no rebuild fired" assertion in this package operationalizes itself as
+	// "the scanner was never paged", so counting BOTH would make each of those
+	// assertions fire on a delta read — and, worse, would make the mirror-image
+	// "a rebuild DID fire" assertions pass without one.
+	scanCalls map[string]int
+	// deltaScanCalls counts the tombstone-delta reads per graph name.
+	deltaScanCalls map[string]int
 	// scanErr, when set, makes every PipelineScan return it — the lever a test needs
 	// to model a rebuild that does NOT complete (RebuildSegments surfaces the scan
 	// error as ran=false). Zero-valued by default, so no existing fixture is affected.
 	scanErr error
+	// servedHorizon is echoed on every page as the server's safe horizon. Zero by
+	// default, which is exactly what an unset fixture means: this scan was served no
+	// horizon, so no caller may persist one from it.
+	servedHorizon int64
+	// deltaSince records the afterStampedAtNanos ARGUMENT of every delta-merge scan,
+	// per graph, in order. It is the instrument for "the next window starts from the
+	// horizon the last one was served", which no response-side assertion can see —
+	// seeding from a local clock instead would look identical on every other counter.
+	deltaSince map[string][]int64
+	// horizonSeedCalls counts the declined-graph seed's SINGLE-ROW horizon probe per
+	// graph. It is the instrument for "at most once per graph per process", which
+	// without a counter degrades to "a horizon was eventually written" — a claim a
+	// probe re-issued on every rotation forever satisfies just as well.
+	horizonSeedCalls map[string]int
 }
 
 // setScanErr arms (or clears) the injected PipelineScan failure under the same mutex
@@ -93,12 +110,33 @@ func (e *reconcileEngine) PipelineScan(
 ) (*connect.Response[knowledgev1.PipelineScanResponse], error) {
 	name := req.Msg.GetGraphName()
 	e.mu.Lock()
-	e.scanCalls[name]++
+	// THE THREE BUCKETS ARE THE THREE LOAD SHAPES over this one axis, and keeping them
+	// apart is exactly why each carries its own operation term: scanCalls counts
+	// full-corpus reads (rebuild and repair), deltaScanCalls counts bounded delta
+	// windows, and horizonSeedCalls counts the single-row horizon probe. Folding the
+	// probe into scanCalls would make every landed full-scan count assertion read one
+	// higher for a read that pages one row.
+	switch req.Msg.GetClientContext().GetOperation() {
+	case string(graphclient.OpSegmentDeltaMerge):
+		e.deltaScanCalls[name]++
+		if e.deltaSince == nil {
+			e.deltaSince = map[string][]int64{}
+		}
+		e.deltaSince[name] = append(e.deltaSince[name], req.Msg.GetAfterStampedAtNanos())
+	case string(graphclient.OpSegmentHorizonSeed):
+		if e.horizonSeedCalls == nil {
+			e.horizonSeedCalls = map[string]int{}
+		}
+		e.horizonSeedCalls[name]++
+	default:
+		e.scanCalls[name]++
+	}
 	// Capture the injected failure AFTER the increment, so an erroring scan still
 	// counts as an invocation — the counter's contract is "PipelineScan calls", and
 	// keeping it means an erroring and a succeeding fixture are compared on the same
 	// observable.
 	scanErr := e.scanErr
+	horizon := e.servedHorizon
 	// Serve the page ONCE per graph (afterId empty), then an empty page so the
 	// id-cursor scan terminates.
 	var items []*knowledgev1.PipelineScanItem
@@ -109,7 +147,32 @@ func (e *reconcileEngine) PipelineScan(
 	if scanErr != nil {
 		return nil, scanErr
 	}
-	return connect.NewResponse(&knowledgev1.PipelineScanResponse{Items: items}), nil
+	// The horizon rides EVERY page, including the empty terminating one, which is what
+	// makes "the last page observed bounds the drain" true.
+	return connect.NewResponse(&knowledgev1.PipelineScanResponse{
+		Items: items, ServedHorizonNanos: horizon,
+	}), nil
+}
+
+// deltaSinceArgs reports the afterStampedAtNanos each delta-merge scan asked for.
+func (e *reconcileEngine) deltaSinceArgs(name string) []int64 {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return append([]int64(nil), e.deltaSince[name]...)
+}
+
+// horizonSeedCallCount reports how many single-row horizon probes the graph paid.
+func (e *reconcileEngine) horizonSeedCallCount(name string) int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.horizonSeedCalls[name]
+}
+
+// setServedHorizon arms the horizon every page echoes, under the handler's mutex.
+func (e *reconcileEngine) setServedHorizon(h int64) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.servedHorizon = h
 }
 
 func (e *reconcileEngine) scanCallCount(name string) int {
@@ -118,89 +181,11 @@ func (e *reconcileEngine) scanCallCount(name string) int {
 	return e.scanCalls[name]
 }
 
-// buildReconcileClient wires a *client over an EngineService h2c server + a
-// fakeSegBackend (GCS-agent control plane). The consumer Manager runs on the cloud
-// GCS segment source (logged-in + WithSegmentTransport). The returned engine handle
-// lets a test seed scan pages + read the per-graph PipelineScan count. Presence /
-// coverage metas are seeded onto the backend via shipHNSW (manifest seed); a
-// manifest with NO backing GCS objects loads to an empty resident pool (the
-// post-restart collapse the degenerate-rebuild tests model — the GCS analog of the
-// old empty-Fetch service).
-func buildReconcileClient(t *testing.T, codeRepos ...string) (*client, *reconcileEngine) {
-	t.Helper()
-	return buildReconcileClientWith(t, 0, codeRepos...)
-}
-
-// buildReconcileClientWith exposes the embedded knob (BinaryVectorCount Stats
-// serves) so segmentPoolDegenerate — which gates the heal closure's
-// load-first/rebuild decision — can be ARMED (nonzero). A test seeds a real
-// decodable corpus by shipping through a producer Manager wired to the SAME backend
-// (see shipRealCorpus); a manifest-only seed (shipHNSW) models the empty-load
-// collapse.
-func buildReconcileClientWith(
-	t *testing.T, embedded int32, codeRepos ...string,
-) (*client, *reconcileEngine) {
-	t.Helper()
-	c, eng, _ := buildReconcileClientWithSeg(t, embedded, codeRepos...)
-	return c, eng
-}
-
-// buildReconcileClientWithSeg is buildReconcileClientWith that ALSO returns the
-// *fakeSegBackend, so a test can flip its failReadAfterN knob to model a server that
-// answers the cheap presence probe but then times out on the heal probe's load() —
-// driving healNeedsRebuild into the ReconcileResidentDegenerate probe-error arm.
-func buildReconcileClientWithSeg(
-	t *testing.T, embedded int32, codeRepos ...string,
-) (*client, *reconcileEngine, *fakeSegBackend) {
-	t.Helper()
-	c, eng, seg, _ := buildReconcileClientWithSegDir(t, embedded, codeRepos...)
-	return c, eng, seg
-}
-
-// buildReconcileClientWithSegDir is buildReconcileClientWithSeg that ALSO returns
-// the client's L2 cache base dir, so a test can warm the on-disk L2 cache through a
-// SEPARATE producer Manager rooted at the SAME dir (the daemon-restart shape: a
-// prior run warmed the disk, then a fresh consumer Manager imports from it L2-first
-// while the server is down).
-func buildReconcileClientWithSegDir(
-	t *testing.T, embedded int32, codeRepos ...string,
-) (*client, *reconcileEngine, *fakeSegBackend, string) {
-	t.Helper()
-	backend := newFakeSegBackend(t)
-	eng := &reconcileEngine{
-		countingEngine: &countingEngine{},
-		namesByType:    map[string][]string{string(kgtypes.GraphCode): codeRepos},
-		embedded:       embedded,
-		scanItems:      map[string][]*knowledgev1.PipelineScanItem{},
-		scanCalls:      map[string]int{},
-	}
-
-	mux := http.NewServeMux()
-	engPath, engHdlr := knowledgev1connect.NewEngineServiceHandler(eng)
-	mux.Handle(engPath, engHdlr)
-	srv := httptest.NewServer(h2c.NewHandler(mux, &http2.Server{}))
-	t.Cleanup(srv.Close)
-
-	local := graphclient.NewGraphClientForURL(srv.URL)
-	// Logged IN by design: the login gate selects the OSS-local L2-only segment
-	// source for a not-logged-in caller. The reconcile fixtures exercise the
-	// SERVER/cloud reconcile path (ReconcileResidentDegenerate over a shipped corpus)
-	// — the logged-in regime — so the fixture seeds a keychain refresh token AND a
-	// segment transport to keep the manager on the GCS source. The OSS-local heal path
-	// is exercised by buildOSSHealClient.
-	store := newFakeAuthStore()
-	require.NoError(t, store.Set(context.Background(), auth.KeyRefreshToken, "frt-stub"))
-	authState := auth.NewAuthState(store, time.Minute)
-	router := graphclient.NewRouter(local, srv.URL, staticTokenSource{tok: "tok"}, authState)
-
-	dir := t.TempDir()
-	c := &client{
-		local:      local,
-		router:     router,
-		authState:  authState,
-		segmentMgr: segmentdist.NewManager(router, dir, 0, segmentdist.WithSegmentTransport(backend.transportBuilder())),
-	}
-	return c, eng, backend, dir
+// deltaScanCallCount reports how many BOUNDED tombstone-delta reads the graph paid.
+func (e *reconcileEngine) deltaScanCallCount(name string) int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.deltaScanCalls[name]
 }
 
 // makeReconcileScanPage builds n segment_rebuild scan items with 32-byte vectors —
@@ -350,8 +335,8 @@ func TestReconcileSegmentCoverage_TimeoutKeepsResidentNoRebuild(t *testing.T) {
 
 	// Ship a REAL decodable HNSW corpus through the router the consumer loads from.
 	producer := segmentdist.NewManager(c.router, t.TempDir(), 0, segmentdist.WithSegmentTransport(backend.transportBuilder()))
-	require.NoError(t, producer.AddAndShip(ctx, kgtypes.GraphCode, repo, fastloadVecDocs(repo, corpusN)))
-	require.NoError(t, producer.Flush(ctx, kgtypes.GraphCode, repo))
+	require.NoError(t, producer.AddAndMarkDirty(ctx, kgtypes.GraphCode, repo, fastloadVecDocs(repo, corpusN)))
+	require.NoError(t, producer.ReEmitDirtyBuckets(ctx, kgtypes.GraphCode, repo))
 
 	// WARM the shared on-disk L2 cache via a SEPARATE Manager rooted at the SAME dir:
 	// its cache-first load Lists + Fetches the real corpus and writes the .seg blobs

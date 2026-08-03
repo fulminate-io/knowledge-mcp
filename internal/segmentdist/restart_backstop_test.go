@@ -85,6 +85,8 @@ func degenerateManager(
 // far below the floor, a server corpus far above it, importedGen poisoned. The
 // backstop resets the floor and re-imports the corpus exactly once.
 func TestBackstopRecoversDegenerateEngine(t *testing.T) {
+	t.Parallel()
+
 	svc, gc := newSegmentHarness(t)
 	target := &knowledgev1.GraphSelector{Graph: "code", Repo: "backstopDegen"}
 	ctx := context.Background()
@@ -111,6 +113,8 @@ func TestBackstopRecoversDegenerateEngine(t *testing.T) {
 // TestBackstopHealthyEngineNoReload is the CASE healthy: resident >= floor → the
 // backstop returns immediately with ZERO List/Fetch (the floor gate).
 func TestBackstopHealthyEngineNoReload(t *testing.T) {
+	t.Parallel()
+
 	svc, gc := newSegmentHarness(t)
 	target := &knowledgev1.GraphSelector{Graph: "code", Repo: "backstopHealthy"}
 	ctx := context.Background()
@@ -136,6 +140,8 @@ func TestBackstopHealthyEngineNoReload(t *testing.T) {
 // engine is below the floor but so is the SERVER corpus (a legitimately tiny
 // graph) → no forced reload (shipped < floor disarms the ratio).
 func TestBackstopBelowFloorServerNoReload(t *testing.T) {
+	t.Parallel()
+
 	svc, gc := newSegmentHarness(t)
 	target := &knowledgev1.GraphSelector{Graph: "code", Repo: "backstopTiny"}
 	ctx := context.Background()
@@ -159,6 +165,8 @@ func TestBackstopBelowFloorServerNoReload(t *testing.T) {
 // corpus EXACTLY ONCE — the recovery does NOT issue K full re-imports. The
 // recovering atomic.Bool CAS elects one winner; the rest skip. Run under -race.
 func TestBackstopConcurrentSingleFlight(t *testing.T) {
+	t.Parallel()
+
 	svc, gc := newSegmentHarness(t)
 	target := &knowledgev1.GraphSelector{Graph: "code", Repo: "backstopConcurrent"}
 	ctx := context.Background()

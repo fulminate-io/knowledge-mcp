@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -78,6 +79,20 @@ func (f *coverageFake) Stats(_ context.Context, req *knowledgev1.StatsRequest) (
 type coverageSegReader struct {
 	coveredByKey  map[string]int
 	residentByKey map[string]int
+	// liveByKey is the DISTINCT live-searchable count, programmable independently
+	// of residentByKey so a test can make the summed and live readings differ —
+	// which is the only way to prove which one the column renders.
+	liveByKey map[string]int
+	// probed records every (graphType, name) key the renderer asked about, so a
+	// test can assert WHICH instance key the probe used — not just what it got
+	// back. Appended without a lock because segCoveredFor runs on
+	// collectCoverageRows' serial assembly loop (it is a local read, not one of
+	// the concurrently fanned-out Stats RPCs).
+	probed []string
+	// verificationByKey is the per-graph backstop record the coverage column's
+	// verified formula reads. An absent key reports ok=false — this process never
+	// loaded that graph's record — which the column renders as cache-aged.
+	verificationByKey map[string]RepairVerification
 }
 
 func (r *coverageSegReader) segKey(gt kgtypes.GraphType, name string) string {
@@ -88,14 +103,36 @@ func (r *coverageSegReader) segKey(gt kgtypes.GraphType, name string) string {
 	return key
 }
 
+func (r *coverageSegReader) RepairVerification(
+	gt kgtypes.GraphType, name string,
+) (RepairVerification, bool) {
+	st, ok := r.verificationByKey[r.segKey(gt, name)]
+	return st, ok
+}
+
 func (r *coverageSegReader) ShippedSegmentDocCount(
 	_ context.Context, gt kgtypes.GraphType, name string,
 ) (int, bool, error) {
-	return r.coveredByKey[r.segKey(gt, name)], false, nil
+	key := r.segKey(gt, name)
+	r.probed = append(r.probed, key)
+	return r.coveredByKey[key], false, nil
 }
 
 func (r *coverageSegReader) ResidentDocCount(gt kgtypes.GraphType, name string) int {
-	return r.residentByKey[r.segKey(gt, name)]
+	key := r.segKey(gt, name)
+	r.probed = append(r.probed, key)
+	return r.residentByKey[key]
+}
+
+func (r *coverageSegReader) LiveResidentDocCount(gt kgtypes.GraphType, name string) int {
+	key := r.segKey(gt, name)
+	r.probed = append(r.probed, key)
+	// Fall back to the summed map when a fixture programs only that one, so the
+	// pre-existing tests keep their meaning.
+	if v, ok := r.liveByKey[key]; ok {
+		return v
+	}
+	return r.residentByKey[key]
 }
 
 // coverageDeps is the minimal ClientDeps whose GraphCaller is the coverageFake and
@@ -126,8 +163,11 @@ func (d *coverageDeps) SegmentManager() SegmentSearcher              { return ni
 func (d *coverageDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
 func (d *coverageDeps) SegmentShipper() SegmentShipper               { return nil }
 func (d *coverageDeps) SegmentPruner() SegmentPruner                 { return nil }
-func (d *coverageDeps) SegmentCoverage() SegmentCoverageReader       { return d.segCov }
-func (d *coverageDeps) PipelineScanner() PipelineScanner             { return nil }
+
+func (d *coverageDeps) SegmentCacheDropper() SegmentCacheDropper { return nil }
+func (d *coverageDeps) SegmentDeleter() SegmentDeleter           { return nil }
+func (d *coverageDeps) SegmentCoverage() SegmentCoverageReader   { return d.segCov }
+func (d *coverageDeps) PipelineScanner() PipelineScanner         { return nil }
 
 func (d *coverageDeps) ClearHealLatch(kgtypes.GraphType, string) {}
 func (d *coverageDeps) ReflectionForcer() ReflectionForcer       { return nil }
@@ -137,185 +177,201 @@ func (d *coverageDeps) BlindSpotProvider() BlindSpotProvider { return nil }
 func (d *coverageDeps) ClusterProvider() ClusterProvider     { return nil }
 func (d *coverageDeps) TensionsProvider() TensionsProvider   { return nil }
 
-// TestCollectCoverageRows_JSONShape is the step criterion for the coverage[] JSON
-// block: rows serialize with the PINNED snake_case keys the web types against, the
-// graph-label field serializes as `graph` (not `label`), a segment graph whose
-// live resident is below its covered count surfaces live_resident < seg_covered
-// (the web's live-0 WARN lever), and a graph with no segment pool carries
-// has_segments=false so the web renders '—' instead of '0 of 0 (live 0)'.
-func TestCollectCoverageRows_JSONShape(t *testing.T) {
-	fake := &coverageFake{statsByKey: map[string]*knowledgev1.GraphStats{
-		"knowledge":   {NonProxyNodeCount: 10, SummarizedCount: 4, BinaryVectorCount: 4, SummaryFailureCount: 1, EmbedFailureCount: 2},
-		"code/myrepo": {NonProxyNodeCount: 8, SummarizedCount: 8, BinaryVectorCount: 8},
-		"practice/go": {NonProxyNodeCount: 20, SummarizedCount: 20, BinaryVectorCount: 12},
-	}}
-	// code/myrepo: segments cover 6 of 8 embedded but the LIVE engine is resident
-	// with only 2 — a collapse the web WARNs on (live_resident < seg_covered).
-	seg := &coverageSegReader{
-		coveredByKey:  map[string]int{"knowledge": 0, "code/myrepo": 6, "practice/go": 0},
-		residentByKey: map[string]int{"knowledge": 0, "code/myrepo": 2, "practice/go": 0},
+// TestSegCoverageDisposition pins every arm of the coverage-band classifier in
+// branch order, plus the two boundary cases that close the band and the catcher
+// proving it reads the LIVE count rather than the shipped one.
+//
+// The branch order is the design: arm 2 (residue) must precede arm 6
+// (gap-repairing), because when live exceeds embedded the ratio test in arm 6 is
+// also true and a band-first classifier would mislabel the residue class.
+func TestSegCoverageDisposition(t *testing.T) {
+	// row builds a VERIFIED row. The default matters: only the last arm consults the
+	// backstop, so leaving these unverified would relabel the band cases and each
+	// landed subtest would stop measuring the arm it names. The unverified shapes are
+	// driven explicitly below.
+	row := func(embedded, segCovered, liveResident int, hasSeg bool) CoverageRow {
+		return CoverageRow{
+			Embedded: embedded, SegCovered: segCovered,
+			LiveResident: liveResident, HasSegments: hasSeg,
+			RepairVerified: true,
+		}
 	}
-	rows := collectCoverageRows(context.Background(), &coverageDeps{gc: fake, segCov: seg})
-	require.NotEmpty(t, rows)
+	unverified := func(r CoverageRow) CoverageRow {
+		r.RepairVerified = false
+		return r
+	}
 
-	raw, err := json.Marshal(rows)
+	t.Run("no_segments", func(t *testing.T) {
+		assert.Equal(t, DispositionNoSegments, segCoverageDisposition(row(100, 0, 0, false)))
+	})
+
+	t.Run("residue", func(t *testing.T) {
+		// Live exceeds embedded — the hard-delete residue class. Note the ratio
+		// test in the gap-repairing arm is ALSO true here, so this passing proves
+		// the residue arm runs first.
+		assert.Equal(t, DispositionResidue, segCoverageDisposition(row(100, 100, 130, true)))
+	})
+
+	t.Run("converged", func(t *testing.T) {
+		assert.Equal(t, DispositionConverged, segCoverageDisposition(row(100, 100, 100, true)))
+	})
+
+	t.Run("below_floor", func(t *testing.T) {
+		// Under the floor the ratio arm is disarmed entirely, even though 10 is
+		// far below half of 63.
+		assert.Equal(t, DispositionBelowFloor, segCoverageDisposition(row(63, 10, 10, true)))
+	})
+
+	t.Run("self_healing", func(t *testing.T) {
+		assert.Equal(t, DispositionSelfHealing, segCoverageDisposition(row(100, 20, 20, true)))
+	})
+
+	t.Run("gap_repairing", func(t *testing.T) {
+		// In the band: at or above half, below converged. This is the state the
+		// repair arm services.
+		assert.Equal(t, DispositionGapRepairing, segCoverageDisposition(row(100, 99, 99, true)))
+	})
+
+	t.Run("floor_boundary_exact", func(t *testing.T) {
+		// Embedded EXACTLY at the floor must clear it (the arm tests <, not <=), so
+		// the ratio arms below are reached rather than short-circuited.
+		assert.Equal(t, DispositionSelfHealing,
+			segCoverageDisposition(row(SegmentCoverageFloor, 1, 1, true)))
+	})
+
+	t.Run("ratio_boundary_exact", func(t *testing.T) {
+		// Live EXACTLY at the threshold is NOT below it, so the row lands in the
+		// band rather than in self-healing.
+		const embedded = 100
+		exactlyHalf := int(CoverageRatioThreshold * float64(embedded))
+		assert.Equal(t, DispositionGapRepairing,
+			segCoverageDisposition(row(embedded, exactlyHalf, exactlyHalf, true)))
+	})
+
+	t.Run("cache_aged_unverified", func(t *testing.T) {
+		// The same numbers as gap_repairing, with the backstop's verification withheld.
+		assert.Equal(t, DispositionCacheAged,
+			segCoverageDisposition(unverified(row(100, 99, 99, true))))
+	})
+
+	t.Run("verified_gap_repairing", func(t *testing.T) {
+		// The PAIR for the case above: identical numbers, verified. Without it the new
+		// arm is satisfiable by returning cache-aged unconditionally, which would erase
+		// the distinction the column exists for.
+		assert.Equal(t, DispositionGapRepairing, segCoverageDisposition(row(100, 99, 99, true)))
+	})
+
+	t.Run("seeded_not_scanned", func(t *testing.T) {
+		// THE SEED-TO-COLUMN CATCHER, and it drives the FORMULA rather than the boolean
+		// — that is the whole point of it being a separate case. A record that is
+		// converged and fresh but NOT scanned is exactly what the backstop's
+		// declined-graph seed writes, and a formula reading only Converged and freshness
+		// passes both subtests above while failing only this one.
+		now := time.Now().UnixNano()
+		seeded := RepairVerification{Converged: true, Scanned: false, VerifiedAtNanos: now}
+		assert.False(t, repairVerifiedFrom(seeded, true, now),
+			"a seeded record records a DECLINE, not an examination")
+
+		r := row(100, 99, 99, true)
+		r.RepairVerified = repairVerifiedFrom(seeded, true, now)
+		assert.Equal(t, DispositionCacheAged, segCoverageDisposition(r),
+			"so the row reads cache-aged rather than claiming a verification nothing performed")
+
+		// KNOWN POSITIVE on the same formula: the calibration's record, which IS scanned,
+		// verifies — otherwise this subtest would pass against a formula stuck at false.
+		scanned := RepairVerification{Converged: true, Scanned: true, VerifiedAtNanos: now}
+		assert.True(t, repairVerifiedFrom(scanned, true, now))
+	})
+
+	t.Run("unverified_upper_arms", func(t *testing.T) {
+		// The catcher for a verified check hoisted ABOVE the band arms, which would
+		// relabel every cold row on every boot and make the column useless exactly when
+		// an operator looks at it. Each of these is computed from live readings taken
+		// this call — nothing about them is cache-aged.
+		assert.Equal(t, DispositionResidue, segCoverageDisposition(unverified(row(100, 100, 130, true))))
+		assert.Equal(t, DispositionConverged, segCoverageDisposition(unverified(row(100, 100, 100, true))))
+		assert.Equal(t, DispositionBelowFloor, segCoverageDisposition(unverified(row(63, 10, 10, true))))
+		assert.Equal(t, DispositionNoSegments, segCoverageDisposition(unverified(row(100, 0, 0, false))))
+		assert.Equal(t, DispositionSelfHealing, segCoverageDisposition(unverified(row(100, 20, 20, true))))
+	})
+
+	t.Run("stale_verification_expires", func(t *testing.T) {
+		// The third clause: a verification older than the interval it was good for stops
+		// being trusted, which is what keeps a record from vouching for a graph forever.
+		now := time.Now().UnixNano()
+		stale := RepairVerification{
+			Converged: true, Scanned: true,
+			VerifiedAtNanos: now - int64(SegmentRepairBackstopInterval) - 1,
+		}
+		assert.False(t, repairVerifiedFrom(stale, true, now))
+		assert.False(t, repairVerifiedFrom(RepairVerification{}, false, now),
+			"and a graph this process never loaded is unverified rather than assumed good")
+	})
+
+	t.Run("classifies_on_live_not_shipped", func(t *testing.T) {
+		// SegCovered and LiveResident disagree ACROSS a band boundary: the shipped
+		// figure says converged, the live figure says the graph is only half
+		// searchable. The disposition must follow the live figure — a
+		// shipped-classifying helper returns converged here.
+		assert.Equal(t, DispositionSelfHealing, segCoverageDisposition(row(100, 100, 40, true)))
+	})
+}
+
+// TestCoverageRowLiveResidentUsesLiveCount proves the column renders the DISTINCT
+// LIVE-SEARCHABLE count rather than the summed per-segment residency figure.
+//
+// The fake is programmed with DIFFERENT concrete values for the two readings —
+// summed 200, live 100 — so neither reading alone can satisfy the assertion. A
+// fixture deriving both from one field would collapse the distinction under test
+// and pass against either implementation.
+func TestCoverageRowLiveResidentUsesLiveCount(t *testing.T) {
+	// The stub keys on gt/name, which is the key segCoveredFor probes with.
+	const key = "knowledge/default"
+	seg := &coverageSegReader{
+		coveredByKey:  map[string]int{key: 150},
+		residentByKey: map[string]int{key: 200},
+		liveByKey:     map[string]int{key: 100},
+	}
+	deps := &coverageDeps{gc: &coverageFake{}, segCov: seg}
+
+	_, live, hasSeg := segCoveredFor(context.Background(), deps, kgtypes.GraphKnowledge, "default")
+	require.True(t, hasSeg)
+	require.Equal(t, 100, live,
+		"the column must render the DISTINCT live-searchable count (100), not the summed residency figure (200)")
+	require.NotEqual(t, 200, live, "reading the summed count is the defect this pins")
+}
+
+// TestCoverageRowJSONKeysUnchanged pins the WIRE CONTRACT the Daemon Status web
+// Coverage card types against: exactly ten snake_case keys, no eleventh.
+//
+// It asserts SET EQUALITY rather than a count, deliberately — a count of ten is
+// satisfied by dropping one key and adding another, which is precisely the shape a
+// careless rename produces. The row is populated with non-zero values throughout so
+// no key can be omitted by an accidental omitempty.
+func TestCoverageRowJSONKeysUnchanged(t *testing.T) {
+	row := CoverageRow{
+		Graph: "code/knowledge", Total: 10, Summarized: 9, Embedded: 8,
+		SegCovered: 7, LiveResident: 6, HasSegments: true,
+		SummaryFail: 1, EmbedFail: 2, SegDisposition: DispositionCacheAged,
+		// The new field must contribute NO key — it exists to feed the disposition,
+		// and a json tag on it would ship an eleventh key to a ten-key consumer.
+		RepairVerified: true,
+	}
+
+	raw, err := json.Marshal(row)
 	require.NoError(t, err)
-	var decoded []map[string]any
+
+	var decoded map[string]any
 	require.NoError(t, json.Unmarshal(raw, &decoded))
 
-	// Every row carries EXACTLY the pinned snake_case keys — `graph` (not `label`).
-	wantKeys := []string{"graph", "total", "summarized", "embedded", "seg_covered", "live_resident", "has_segments", "summary_fail", "embed_fail"}
-	for i, row := range decoded {
-		for _, k := range wantKeys {
-			_, present := row[k]
-			assert.True(t, present, "row %d missing key %q", i, k)
-		}
-		_, hasLabel := row["label"]
-		assert.False(t, hasLabel, "row %d must serialize the graph-label field as `graph`, not `label`", i)
+	got := make([]string, 0, len(decoded))
+	for k := range decoded {
+		got = append(got, k)
 	}
-
-	byGraph := map[string]map[string]any{}
-	for _, row := range decoded {
-		byGraph[row["graph"].(string)] = row
-	}
-
-	// knowledge row carries the failure counts under snake_case keys.
-	k := byGraph["knowledge"]
-	require.NotNil(t, k)
-	assert.EqualValues(t, 1, k["summary_fail"])
-	assert.EqualValues(t, 2, k["embed_fail"])
-
-	// code/myrepo: segment-bearing, live resident collapsed below covered.
-	code := byGraph["code/myrepo"]
-	require.NotNil(t, code)
-	assert.Equal(t, true, code["has_segments"])
-	assert.EqualValues(t, 6, code["seg_covered"])
-	assert.EqualValues(t, 2, code["live_resident"])
-	assert.Less(t, code["live_resident"].(float64), code["seg_covered"].(float64),
-		"a collapsed live pool must surface live_resident < seg_covered for the web WARN")
-
-	// A graph with no rebuildable segments carries has_segments=false so the web
-	// renders '—' rather than '0 of 0 (live 0)'.
-	nonSeg := newCoverageRow("linkage", &knowledgev1.GraphStats{NonProxyNodeCount: 3}, 0, 0, false)
-	nsRaw, err := json.Marshal(nonSeg)
-	require.NoError(t, err)
-	var ns map[string]any
-	require.NoError(t, json.Unmarshal(nsRaw, &ns))
-	assert.Equal(t, false, ns["has_segments"], "a non-segment graph serializes has_segments=false")
-}
-
-// TestRenderLLMCoverage_Table pins the per-graph coverage rendering:
-//   - the knowledge row is present even though its enumerated name is empty (T3-2)
-//   - a fully-covered code graph renders distinctly from a 0-of-N knowledge graph
-//   - the auto-summary caption is present (T3-1)
-//   - every StatsRequest the renderer issued carried IncludeCoverage==true (T2)
-func TestRenderLLMCoverage_Table(t *testing.T) {
-	fake := &coverageFake{statsByKey: map[string]*knowledgev1.GraphStats{
-		// knowledge: 10 nodes, 0 summarized → "0 of 10" (never-ran-on-code shape)
-		"knowledge": {NonProxyNodeCount: 10, SummarizedCount: 0, BinaryVectorCount: 0},
-		// code/myrepo: fully covered 8 of 8 + 8 embedded, no failures
-		"code/myrepo": {NonProxyNodeCount: 8, SummarizedCount: 8, BinaryVectorCount: 8},
-		// practice/go: a NON-code embeddable builtin — 20 nodes, 12 embedded. Its
-		// segment coverage now surfaces as a real cell instead of "—".
-		"practice/go": {NonProxyNodeCount: 20, SummarizedCount: 20, BinaryVectorCount: 12},
-	}}
-	// Segment-coverage stub: code/myrepo's segments cover 6 of its 8 embedded docs
-	// (a degenerate-looking pool, the lever-3 operator signal) and the live engine is
-	// resident with all 6 (a healthy live≈covered row); knowledge has 0 embedded so
-	// its segment cell is "0 of 0 (live 0)". practice/go has 0 segment coverage of its
-	// 12 embedded docs (a never-shipped non-code graph) — zero shown as a real number,
-	// "0 of 12 (live 0)", not "—".
-	seg := &coverageSegReader{
-		coveredByKey:  map[string]int{"knowledge": 0, "code/myrepo": 6, "practice/go": 0},
-		residentByKey: map[string]int{"knowledge": 0, "code/myrepo": 6, "practice/go": 0},
-	}
-	deps := &coverageDeps{gc: fake, segCov: seg}
-
-	out := renderLLMCoverage(context.Background(), deps)
-
-	// Header + caption (T3-1).
-	assert.Contains(t, out, "LLM coverage")
-	assert.Contains(t, out, "deterministic auto-summaries",
-		"the summarized-semantics caption must be present")
-	// Segment-coverage column header (lever 3).
-	assert.Contains(t, out, "segment coverage", "the segment-coverage column header must be present")
-
-	// Knowledge row present despite empty enumerated name (T3-2).
-	assert.Contains(t, out, "| knowledge |", "knowledge row must render via the explicit empty-name selector")
-	// Code row present via enumeration.
-	assert.Contains(t, out, "| code/myrepo |")
-
-	// 0-of-N distinct from N-of-N: knowledge is "0 of 10", code is "8 of 8".
-	assert.Contains(t, out, "0 of 10", "never-summarized knowledge graph renders 0 of N")
-	assert.Contains(t, out, "8 of 8", "fully-covered code graph renders N of N")
-
-	// Segment coverage renders real covered-of-embedded WITH the live resident suffix
-	// for the code graph (6 of 8 (live 6), the same BinaryVectorCount denominator
-	// lever 2 uses); a healthy row shows live≈covered.
-	assert.Contains(t, out, "6 of 8 (live 6)", "code graph renders segment-covered of embedded with live resident")
-
-	// lever-3 surface: a NON-code embeddable builtin (practice/go) renders a
-	// REAL segment-coverage cell — zero coverage shown as "0 of 12 (live 0)", not "—"
-	// or an omitted row. segCoveredFor now gates on HasRebuildableSegments, so
-	// practice/cloud/cicd report coverage.
-	assert.Contains(t, out, "| practice/go |", "a non-code embeddable graph renders its own row")
-	assert.Contains(t, out, "0 of 12 (live 0)",
-		"practice graph renders zero segment coverage as a real number, not the — placeholder")
-
-	// T2: every issued StatsRequest set IncludeCoverage.
-	require.NotEmpty(t, fake.reqs, "renderer must issue at least one Stats RPC")
-	for i, r := range fake.reqs {
-		assert.True(t, r.GetIncludeCoverage(), "StatsRequest %d must set IncludeCoverage (the coverage trigger)", i)
-	}
-}
-
-// TestRenderLLMCoverage_LiveResidentCollapse is the masking-fix criterion: a graph
-// whose server-shipped corpus is intact (covered=N) but whose LIVE engine resident
-// has collapsed to 0 renders a cell surfacing both — "N of N (live 0)" — so the
-// post-restart collapse is visible instead of masked behind the intact shipped
-// figure. Dropping the live-resident suffix makes the "live 0" assertion fail.
-func TestRenderLLMCoverage_LiveResidentCollapse(t *testing.T) {
-	fake := &coverageFake{statsByKey: map[string]*knowledgev1.GraphStats{
-		"knowledge":   {NonProxyNodeCount: 10, SummarizedCount: 10, BinaryVectorCount: 10},
-		"code/myrepo": {NonProxyNodeCount: 80, SummarizedCount: 80, BinaryVectorCount: 80},
-	}}
-	// code/myrepo: server holds the full corpus (covered=80) but the live searchable
-	// pool has collapsed (resident=0) — the masked post-restart incident.
-	seg := &coverageSegReader{
-		coveredByKey:  map[string]int{"knowledge": 0, "code/myrepo": 80},
-		residentByKey: map[string]int{"knowledge": 0, "code/myrepo": 0},
-	}
-	out := renderLLMCoverage(context.Background(), &coverageDeps{gc: fake, segCov: seg})
-
-	assert.Contains(t, out, "80 of 80 (live 0)",
-		"a collapsed live pool surfaces live 0 against the intact shipped corpus — the masking fix")
-}
-
-// TestRenderLLMCoverage_EmptyGraph pins the (empty graph) rendering for a
-// zero-denominator graph — visibly distinct from a covered graph — and that the
-// empty row keeps the 7-column alignment after the segment-coverage column was
-// added (a trailing empty cell, not a short row).
-func TestRenderLLMCoverage_EmptyGraph(t *testing.T) {
-	fake := &coverageFake{statsByKey: map[string]*knowledgev1.GraphStats{
-		"knowledge": {NonProxyNodeCount: 0},
-	}}
-	out := renderLLMCoverage(context.Background(), &coverageDeps{gc: fake})
-	assert.Contains(t, out, "(empty graph)", "a zero-denominator graph renders (empty graph)")
-	// 7-column alignment: label + (empty graph) + 5 empty cells = 8 pipes.
-	assert.Contains(t, out, "| knowledge | (empty graph) | | | | | |",
-		"the empty-graph row keeps the segment-coverage column's alignment")
-}
-
-// TestRenderLLMCoverage_SegmentPlaceholder pins the "—" placeholder: when the
-// SegmentCoverage seam is unwired (degraded headless mode), a segment-bearing
-// graph's segment-coverage cell renders the placeholder rather than a number or a
-// crash.
-func TestRenderLLMCoverage_SegmentPlaceholder(t *testing.T) {
-	fake := &coverageFake{statsByKey: map[string]*knowledgev1.GraphStats{
-		"knowledge":   {NonProxyNodeCount: 10, SummarizedCount: 3, BinaryVectorCount: 4},
-		"code/myrepo": {NonProxyNodeCount: 8, SummarizedCount: 8, BinaryVectorCount: 8},
-	}}
-	// segCov nil — the degraded/headless path.
-	out := renderLLMCoverage(context.Background(), &coverageDeps{gc: fake})
-	assert.Contains(t, out, "—", "an unwired segment seam renders the placeholder, not a number")
+	require.ElementsMatch(t, []string{
+		"graph", "total", "summarized", "embedded", "seg_covered",
+		"live_resident", "has_segments", "summary_fail", "embed_fail", "seg_disposition",
+	}, got, "the ten pinned keys, and no eleventh")
+	require.NotContains(t, decoded, "repair_verified",
+		"the verified input is json:\"-\" — it must never reach the wire")
 }

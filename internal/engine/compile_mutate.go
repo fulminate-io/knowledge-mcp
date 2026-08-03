@@ -14,16 +14,20 @@ import (
 // (tools_mutate.go:90) for the fields the reducible path consumes, plus the
 // create_batch nodes[]/edges[] and update_batch items[] sub-shapes.
 type mutateArgs struct {
-	Operation    string            `json:"operation"`
-	Type         string            `json:"type"`
-	ID           string            `json:"id"`
-	IDs          []string          `json:"ids"`
-	Source       string            `json:"source"`
-	Name         string            `json:"name"`
-	Description  string            `json:"description"`
-	Summary      string            `json:"summary"`
-	Content      string            `json:"content"`
-	Status       string            `json:"status"`
+	Operation   string   `json:"operation"`
+	Type        string   `json:"type"`
+	ID          string   `json:"id"`
+	IDs         []string `json:"ids"`
+	Source      string   `json:"source"`
+	Name        string   `json:"name"`
+	Description string   `json:"description"`
+	Summary     string   `json:"summary"`
+	Content     string   `json:"content"`
+	// Status is a POINTER so an explicit status:"" (clear to blank) is
+	// distinguishable from an absent status (leave untouched) — the same reason
+	// batchItem.Status below is one. A plain string collapses the two and makes
+	// a clear-to-blank request a silent no-op.
+	Status       *string           `json:"status"`
 	Keywords     string            `json:"keywords"`
 	Metadata     map[string]string `json:"metadata"`
 	From         string            `json:"from"`
@@ -285,8 +289,12 @@ func compileMutateByIDUpdate(a mutateArgs) (*knowledgev1.ExecuteRequest, bool) {
 // were previously declared in the schema but dropped on update; both now route.
 func updateSetFields(a mutateArgs) map[string]string {
 	set := map[string]string{}
-	if a.Status != "" {
-		set["status"] = a.Status
+	// Status keys on PRESENCE, not non-emptiness: an explicit status:"" clears
+	// the node to blank, which is a write, while an absent status leaves it
+	// untouched. Every other field below is a plain string and cannot tell the
+	// two apart, so they stay on the non-empty gate.
+	if a.Status != nil {
+		set["status"] = *a.Status
 	}
 	if a.Name != "" {
 		set["name"] = a.Name
@@ -345,6 +353,16 @@ func compileMutateCreate(a mutateArgs) (*knowledgev1.ExecuteRequest, bool) {
 // This arm is reached by (a) the LLM-facing mutate(operation:upsert) tool
 // dispatch and (b) the client proxy branch, which calls executeMutate →
 // engine.Compile → here.
+// derefStatus reads a presence-bearing status for the CREATE-shaped paths,
+// which carry a plain string: there is no node to leave untouched on a create,
+// so an absent status and an explicit blank one mean the same thing.
+func derefStatus(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
+}
+
 func compileMutateUpsert(a mutateArgs) (*knowledgev1.ExecuteRequest, bool) {
 	if a.ID == "" || a.Type == "" {
 		return nil, false // missing upsert key or type → deny.
@@ -357,7 +375,7 @@ func compileMutateUpsert(a mutateArgs) (*knowledgev1.ExecuteRequest, bool) {
 			Description: a.Description,
 			Summary:     a.Summary,
 			Content:     a.Content,
-			Status:      a.Status,
+			Status:      derefStatus(a.Status),
 			Metadata:    a.Metadata,
 			ID:          a.ID,
 			Source:      a.Source,
@@ -398,34 +416,78 @@ const transformersBucketName = "recipes"
 // graph via buildTarget (the guard now denies only the cross-graph link_graph
 // case upstream, so practice/transformers ops reach here Target-routed).
 //
-// Repo/Account/Name are threaded onto the Target so a named-graph write routes
-// to the right per-graph backing: the server resolves graph=code by Target.Repo,
-// graph=cloud/cicd by Target.Account, and the rest by Target.Name (ResolveGraphDB,
-// tools_graph_routing.go). Without these a mutate(create_batch, graph:"cloud",
-// account:"aws-123") would land Account-less and the server would reject it with
-// "graph=cloud requires account" — the postpopulate wire writes depend on
-// this. Mirrors the read side (compileQuery's buildTarget threads the same fields).
+// Repo/Account are threaded onto the Target so a named-graph write routes to the
+// right per-graph backing: the server resolves graph=code by Target.Repo and
+// graph=cloud/cicd by Target.Account (ResolveGraphDB, tools_graph_routing.go).
+// Without these a mutate(create_batch, graph:"cloud", account:"aws-123") would
+// land Account-less and the server would reject it with "graph=cloud requires
+// account" — the postpopulate wire writes depend on this.
 //
-// graph=="transformers" is the ONE exception: a.Name is the recipe NAME, not a
-// graph instance. The server resolves transformers by Target.Name, so threading
-// a.Name would scatter each recipe into its own per-name transformers instance
-// instead of the canonical "recipes" bucket — and RunRecipe's loader (which
-// reads only "recipes") would never find it. The instance name is therefore
-// pinned to transformersBucketName for the mutations that route through this
-// chokepoint: create/upsert, by-id update, and link/unlink. delete is pinned
-// the same way in deleteRequest (compile_delete.go), and the two inline batch
-// arms (update_batch/bulk_metadata, compile_mutate_batch.go) apply the identical
-// a.Graph=="transformers" pin where they build their Target — so every
-// transformers mutation arm lands in the one "recipes" bucket. By-id
-// update/delete already passed a.Name="" → the server defaulted to "recipes";
-// the explicit pin makes that path unambiguously correct too.
+// The `name` param is threaded PER FAMILY (mutateTargetName) rather than
+// verbatim, because on the mutate surface one JSON key carries two meanings. For
+// an LLM caller `name` is the NODE name ("Node name or title", mutate_schema.go);
+// for the pipeline write-back it is the graph INSTANCE key that
+// graphsel.ApplyInstanceKey assigned. Copying it verbatim served the second
+// meaning and, for every family that does not address an instance by name, asked
+// the server for a graph named after the node being written.
+//
+// The server used to discard sel.Name on the knowledge family, so the mis-mapping
+// was invisible for as long as it existed; once validateGraphSelector began
+// rejecting an unconsumed selector field, every knowledge-family mutate carrying
+// a node name — a typed create, a criterion description update (whose name is
+// DERIVED from the description), a log-backend upsert — failed with
+// "graph=knowledge holds ONE graph: name= is a label, not a selector".
+//
+// transformersBucketName is the one Target name that is a LITERAL rather than
+// caller input: the server resolves transformers by Target.Name, and every recipe
+// belongs in the single canonical "recipes" bucket RunRecipe's loader reads. The
+// recipe's own name rides the node body (createPayload maps a.Name →
+// nodeBody.Name), never the selector.
 func mutationRequest(plan *knowledgev1.MutationPlan, a mutateArgs) *knowledgev1.ExecuteRequest {
-	name := a.Name
-	if a.Graph == "transformers" {
-		name = transformersBucketName
-	}
 	return &knowledgev1.ExecuteRequest{
 		Plan:   &knowledgev1.ExecuteRequest_Mutation{Mutation: plan},
-		Target: buildTarget(a.Graph, a.Repo, a.Account, name, a.Language, ""),
+		Target: buildTarget(a.Graph, a.Repo, a.Account, mutateTargetName(a.Graph, a.Name), a.Language, ""),
 	}
+}
+
+// nameBlindGraphFamilies are the families whose server-side resolution arm does
+// not read GraphSelector.Name, so a name on one of them is a field the resolver
+// cannot honor. The two SINGLETONS (knowledge — which the empty string also
+// means — and linkage) hold exactly one graph and have no instance to pick; code,
+// cloud, cicd and practice carry their instance on Repo, Account and Language.
+//
+// This mirrors the server's own declared-vs-consumed partition
+// (selectorFieldPolicies, cmd/knowledge-server/internal/tools/
+// tools_graph_routing_selector.go). The client cannot import that table — no
+// shared hand-written packages outside gen/ proto — so the set is duplicated
+// here, the same way transformersBucketName duplicates the server's bucket
+// literal. Keep the two in step: a family that stops consuming Name server-side
+// belongs in this set.
+var nameBlindGraphFamilies = map[string]bool{
+	"": true, "knowledge": true, "linkage": true,
+	"code": true, "cloud": true, "cicd": true, "practice": true,
+}
+
+// mutateTargetName returns the graph-INSTANCE name a mutation's Target may carry.
+// For a name-blind family it is empty — dropping a value that family's resolver
+// would reject, whichever of the param's two meanings the caller intended. For
+// transformers it is the pinned bucket literal. For every remaining
+// name-addressed family (logs, web, pdf, and registered custom types) the
+// caller's name rides through, which is what keeps the pipeline write-back's
+// cross-graph routing working.
+//
+// ONE RULE, EVERY ARM. All four Target-building sites route through this helper
+// rather than re-deriving it: mutationRequest (create/upsert/by-id update/link/
+// unlink), compileMutateUpdateBatch and compileMutateBulkMetadata
+// (compile_mutate_batch.go), and deleteRequest (compile_delete.go). A family
+// added to the rule therefore cannot land on some arms and miss others — which
+// is exactly how the node-name mis-mapping survived a transformers-only fix.
+func mutateTargetName(graph, name string) string {
+	if graph == "transformers" {
+		return transformersBucketName
+	}
+	if nameBlindGraphFamilies[graph] {
+		return ""
+	}
+	return name
 }

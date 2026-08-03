@@ -16,6 +16,7 @@ package validate
 
 import (
 	"fmt"
+	"regexp"
 	"strings"
 	"unicode/utf8"
 )
@@ -125,6 +126,84 @@ func DerivedSummary(toolName, fieldPath, derivedFrom, derived string) error {
 	if n > SummaryMaxLen {
 		return fmt.Errorf("%s: %s is an auto-derived summary (derived from %s) that exceeds %d characters (got %d, over by %d). Shorten the source fields. Derived prefix: %q",
 			toolName, fieldPath, derivedFrom, SummaryMaxLen, n, n-SummaryMaxLen, runePrefix(trimmed, 80))
+	}
+	return nil
+}
+
+// goTestRunFlag / goTestListFlag / numericCompare detect the two `go test`
+// selector flags and the numeric comparison that makes a -list command
+// falsifiable. Matching is by FLAG TOKEN, never bare substring, so a command
+// merely containing the letters "run" or "list" is untouched. Compiled once at
+// package level: a create_plan payload runs the guard once per criterion.
+var (
+	goTestRunFlag  = regexp.MustCompile(`(^|\s)-run(\s|=)`)
+	goTestListFlag = regexp.MustCompile(`(^|\s)-list(\s|=)`)
+	numericCompare = regexp.MustCompile(`(^|\s)-(eq|ne|ge|gt|le|lt)(\s|$)`)
+)
+
+// commandQuoteLen bounds how much of an offending command the error quotes.
+// Longer than the summary guards' 80 because a command's tail is usually where
+// the missing assertion would go, and a clipped tail hides exactly that.
+const commandQuoteLen = 200
+
+// RunSelectorGuard rejects a criterion command that selects tests by name but
+// asserts nothing about whether the selector matched anything. Both `go test`
+// selector flags exit 0 on a selector that matches NOTHING — -run prints
+// "ok <pkg> [no tests to run]", -list prints an empty list — so a criterion whose
+// pass condition is the exit status cannot tell "verified" from "verified
+// nothing".
+//
+// The rule, and its ORDER IS LOAD-BEARING:
+//
+//	(0) no `go test` in the command            → nil
+//	(1) a -list flag  → require a NUMERIC COMPARISON, else reject
+//	(2) else a -run flag → require a NAMED RUNNER LINE (--- PASS / --- FAIL /
+//	    === RUN), else reject
+//	(3) else                                   → nil
+//
+// -list takes precedence because when BOTH flags appear `go test` lists and never
+// runs, so applying the -run arm to a both-flags command would demand a PASS line
+// the runner can never emit. And -list emits no marker of its own at all, which
+// is why its arm asserts a COUNT: a bare `grep -c` prints its count and exits 0
+// regardless, so the count must feed a comparison to be falsifiable.
+//
+// The -run arm asserts POSITIVELY rather than rejecting "[no tests to run]": that
+// marker legitimately appears on a multi-package run for the packages the
+// selector does not match, so its absence proves nothing.
+//
+// WHAT THIS DOES NOT CLAIM. It asserts command SHAPE, never semantics, so three
+// vacuity shapes survive it: a swallowed exit status (a trailing `|| true`, or a
+// final pipeline stage that always succeeds); a multi-package -run whose
+// unanchored assertion is satisfied by one package while the rest match nothing;
+// and an always-true comparison such as `-ge 0`. Those remain the author's
+// responsibility.
+func RunSelectorGuard(toolName, fieldPath, command string) error {
+	if !strings.Contains(command, "go test") {
+		return nil
+	}
+	quoted := runePrefix(strings.TrimSpace(command), commandQuoteLen)
+	switch {
+	case goTestListFlag.MatchString(command):
+		if numericCompare.MatchString(command) {
+			return nil
+		}
+		return fmt.Errorf("%s: %s lists matching test names but asserts nothing about HOW MANY matched. "+
+			"`go test -list <selector>` exits 0 whether or not the selector matched, and prints no marker, "+
+			"so only the count can tell a real match from none — and a bare `grep -c` prints its count and "+
+			"exits 0 too. Compare the count numerically: "+
+			"N=$(go test ... -list '^TestName$' | grep -c '^Test'); test -n \"$N\" && test \"$N\" -eq 1. Command: %q",
+			toolName, fieldPath, quoted)
+	case goTestRunFlag.MatchString(command):
+		for _, marker := range []string{"--- PASS", "--- FAIL", "=== RUN"} {
+			if strings.Contains(command, marker) {
+				return nil
+			}
+		}
+		return fmt.Errorf("%s: %s selects tests by name but asserts nothing about WHETHER THE SELECTOR MATCHED. "+
+			"`go test -run <selector>` exits 0 printing \"ok <pkg> [no tests to run]\" when the selector matches "+
+			"nothing, so this command cannot tell a passing test from an absent one. Assert a named runner line: "+
+			"... -v > /tmp/x.log 2>&1; grep -q '^--- PASS: TestName ' /tmp/x.log. Command: %q",
+			toolName, fieldPath, quoted)
 	}
 	return nil
 }

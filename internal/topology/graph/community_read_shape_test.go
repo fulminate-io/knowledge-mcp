@@ -46,13 +46,14 @@ func triangleFixture() *graphFixture {
 }
 
 func TestBuildAdjacency_EdgeReadShape(t *testing.T) {
-	t.Run("no NodeFilter sends the match-all plan", func(t *testing.T) {
+	t.Run("no NodeFilter pivots on every node id under an explicit limit", func(t *testing.T) {
 		rc := &adjRecordingCaller{graphFixture: triangleFixture()}
 		ids, adj, err := BuildAdjacency(context.Background(), rc, kgtypes.GraphCode, "repo", BuildAdjacencyOpts{})
 		require.NoError(t, err)
-		require.Len(t, rc.edgePlans, 1, "one bulk edge read")
-		assert.Empty(t, rc.edgePlans[0].GetIds(), "no-filter build must send no pivot ids")
-		assert.Empty(t, rc.edgePlans[0].GetById())
+		require.Len(t, rc.edgePlans, 1, "the fixture fits a single page")
+		assert.ElementsMatch(t, []string{"a", "b", "c", "d"}, rc.edgePlans[0].GetIds(),
+			"a whole-graph build pivots on every node id rather than sending no pivot at all")
+		assert.Positive(t, rc.edgePlans[0].GetLimit(), "every page must carry an explicit positive limit")
 		assert.ElementsMatch(t, []string{"a", "b", "c", "d"}, ids)
 		assert.ElementsMatch(t, []string{"b", "c"}, adj["a"], "undirected neighbors of a")
 		assert.Empty(t, adj["d"], "the isolated node has no neighbors")

@@ -29,6 +29,12 @@ import (
 // the coverage ratio is armed, writer A restarts with a fresh L2 and force-seals a
 // sub-floor tail WITHOUT loading that corpus, so its resident sits far below the
 // ratio and every re-fired publish skips.
+//
+// DELIBERATELY NOT PARALLEL. Shared resource: the process-global default slog
+// logger, which this test swaps for a capturing handler to assert over the
+// records the path emits. Concurrent peers would both install and restore that
+// one global, so the handler this test reads could be a peer's, and a peer's
+// unrelated records would land in this test's capture.
 func TestCoverageSkipNudgesOnce(t *testing.T) {
 	ctx := context.Background()
 	mgrs, svc := newMultiWriterFleet(t, 2)
@@ -40,7 +46,7 @@ func TestCoverageSkipNudgesOnce(t *testing.T) {
 	// what the ratio needs is a shipped total at or above the floor, not a large one.
 	for s := range 2 {
 		batch := prefixIDs(hnswVecDocs(200), fmt.Sprintf("nu-b%d-", s))
-		require.NoError(t, b.AddAndShip(ctx, gt, name, batch))
+		require.NoError(t, b.AddAndMarkDirty(ctx, gt, name, batch))
 		require.NoError(t, b.Flush(ctx, gt, name))
 	}
 
@@ -49,8 +55,8 @@ func TestCoverageSkipNudgesOnce(t *testing.T) {
 	// publish is coverage-skipped and stays skipped however often it re-fires.
 	aRestart := restartFleetMember(t, svc, 0, t.TempDir())
 	tail := prefixIDs(hnswVecDocs(10), "nu-tail-")
-	require.NoError(t, aRestart.AddAndShip(ctx, gt, name, tail)) // sub-threshold: buffers
-	require.NoError(t, aRestart.Flush(ctx, gt, name))            // force-seal → ship → skip #1
+	require.NoError(t, aRestart.AddAndMarkDirty(ctx, gt, name, tail)) // force-seals, ships nothing
+	require.NoError(t, aRestart.Flush(ctx, gt, name))                 // ship → skip #1
 	aDM := aRestart.managerFor(gt, name)
 	require.True(t, aDM.publishRetryPending(), "the first coverage skip armed the retry bit")
 
@@ -83,7 +89,7 @@ func TestCoverageSkipNudgesOnce(t *testing.T) {
 	require.False(t, degenerate, "the re-import restored coverage")
 	require.GreaterOrEqual(t, aRestart.ResidentDocCount(gt, name), residentBackstopFloor,
 		"resident climbed above the floor after the re-import")
-	require.NoError(t, aRestart.AddAndShip(ctx, gt, name, prefixIDs(hnswVecDocs(200), "nu-heal-")))
+	require.NoError(t, aRestart.AddAndMarkDirty(ctx, gt, name, prefixIDs(hnswVecDocs(200), "nu-heal-")))
 	require.NoError(t, aRestart.Flush(ctx, gt, name))
 	require.False(t, aDM.publishRetryPending(),
 		"the healed publish landed, ending the episode")
@@ -92,9 +98,9 @@ func TestCoverageSkipNudgesOnce(t *testing.T) {
 
 	// B now ships far more than A holds resident, so A's next publish is back below
 	// the ratio and a SECOND episode begins.
-	require.NoError(t, b.AddAndShip(ctx, gt, name, prefixIDs(hnswVecDocs(2000), "nu-b2-")))
+	require.NoError(t, b.AddAndMarkDirty(ctx, gt, name, prefixIDs(hnswVecDocs(2000), "nu-b2-")))
 	require.NoError(t, b.Flush(ctx, gt, name))
-	require.NoError(t, aRestart.AddAndShip(ctx, gt, name, prefixIDs(hnswVecDocs(100), "nu-tail2-")))
+	require.NoError(t, aRestart.AddAndMarkDirty(ctx, gt, name, prefixIDs(hnswVecDocs(100), "nu-tail2-")))
 	for range 1 + extraFlushes {
 		require.NoError(t, aRestart.Flush(ctx, gt, name))
 	}
@@ -166,16 +172,16 @@ func TestCoverageSkipNudgesOnce(t *testing.T) {
 
 		// B ships a prior corpus in BOTH formats so BOTH coverage ratios are armed.
 		for s := range 2 {
-			require.NoError(t, b.AddAndShip(ctx, gt, name, prefixIDs(hnswVecDocs(200), fmt.Sprintf("te-h%d-", s))))
-			require.NoError(t, b.AddAndShipFields(ctx, gt, name, prefixIDs(bm25FieldDocs(200), fmt.Sprintf("te-f%d-", s))))
+			require.NoError(t, b.AddAndMarkDirty(ctx, gt, name, prefixIDs(hnswVecDocs(200), fmt.Sprintf("te-h%d-", s))))
+			require.NoError(t, b.AddAndMarkDirtyFields(ctx, gt, name, prefixIDs(bm25FieldDocs(200), fmt.Sprintf("te-f%d-", s))))
 			require.NoError(t, b.Flush(ctx, gt, name))
 		}
 
 		// A restarts with a fresh L2 and force-seals a sub-floor tail in BOTH formats,
 		// so BOTH engines skip their publish and both climb their own streaks.
 		aRestart := restartFleetMember(t, svc, 0, t.TempDir())
-		require.NoError(t, aRestart.AddAndShip(ctx, gt, name, prefixIDs(hnswVecDocs(10), "te-htail-")))
-		require.NoError(t, aRestart.AddAndShipFields(ctx, gt, name, prefixIDs(bm25FieldDocs(10), "te-ftail-")))
+		require.NoError(t, aRestart.AddAndMarkDirty(ctx, gt, name, prefixIDs(hnswVecDocs(10), "te-htail-")))
+		require.NoError(t, aRestart.AddAndMarkDirtyFields(ctx, gt, name, prefixIDs(bm25FieldDocs(10), "te-ftail-")))
 		for range 1 + extraFlushes {
 			require.NoError(t, aRestart.Flush(ctx, gt, name))
 		}

@@ -38,6 +38,12 @@ func InterceptAssemble(ctx context.Context, deps ClientDeps, params kgtools.Call
 	if params.Name != "assemble" {
 		return false, kgtools.ToolResult{}
 	}
+	// Above the GraphCaller lookup deliberately: assemble never decodes its
+	// payload here, so the name gate is the only anchor, and accounting must
+	// stay reachable when the graph client is unavailable.
+	if err := rejectUndeclaredParams("assemble", "", AssembleToolDef().InputSchema.Properties, params.Arguments); err != nil {
+		return true, errorResult(err.Error())
+	}
 	gc := deps.GraphCaller()
 	if gc == nil {
 		return true, kgtools.ErrorResult("assemble: graph client unavailable")

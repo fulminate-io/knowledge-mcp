@@ -197,9 +197,10 @@ func TestTruncate(t *testing.T) {
 // name into the selector field the server's resolver actually keys on — practice
 // via Language, code via REPO (the code resolver rejects name-keyed selectors
 // before any lookup, so routing code through Name silently fails every
-// cross-graph code fetch and drops every born-link referent), everything else
-// via Name. Fails-when-absent: reverting code to the Name branch turns the Repo
-// assertion red.
+// cross-graph code fetch and drops every born-link referent), cloud and cicd via
+// ACCOUNT (same rejection shape — resolveAccountGraph errors with "graph=cloud
+// requires account"), everything else via Name. Fails-when-absent: reverting any
+// family to the Name branch turns that family's assertion red.
 func TestGraphTarget_PerFamilySelectorField(t *testing.T) {
 	assert.Nil(t, graphTarget("", "ignored"), "empty graph type targets knowledge/default")
 
@@ -213,7 +214,21 @@ func TestGraphTarget_PerFamilySelectorField(t *testing.T) {
 	assert.Empty(t, code.GetName(), "a name-keyed code selector fails server-side validation")
 	assert.Empty(t, code.GetLanguage())
 
+	cloud := graphTarget("cloud", "prod")
+	assert.Equal(t, "prod", cloud.GetAccount(), "cloud graphs are Account-keyed on the server")
+	assert.Empty(t, cloud.GetName(), "a name-keyed cloud selector fails server-side validation")
+
+	cicd := graphTarget("cicd", "github")
+	assert.Equal(t, "github", cicd.GetAccount(), "cicd graphs are Account-keyed on the server")
+	assert.Empty(t, cicd.GetName(), "a name-keyed cicd selector fails server-side validation")
+
 	logs := graphTarget("logs", "query-123")
 	assert.Equal(t, "query-123", logs.GetName())
 	assert.Empty(t, logs.GetRepo())
+	assert.Empty(t, logs.GetAccount())
+
+	// omitDefaultName=false: an explicit "default" name is still carried, so a
+	// name-keyed family addressed as "default" is not silently blanked.
+	def := graphTarget("logs", "default")
+	assert.Equal(t, "default", def.GetName())
 }

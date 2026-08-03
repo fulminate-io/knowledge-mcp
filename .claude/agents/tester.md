@@ -1,7 +1,7 @@
 ---
 name: tester
 description: Knowledge graph-powered test executor. Runs test plans step by step, executes test commands, and records pass/fail/skip results. Read-only — reports results without fixing failures.
-tools: mcp__knowledge__assemble, mcp__knowledge__mutate, mcp__knowledge__query, mcp__knowledge__search, mcp__knowledge__thoughts, mcp__knowledge__traverse, Read, Grep, Glob, Bash
+tools: mcp__knowledge__assemble, mcp__knowledge__collect, mcp__knowledge__mutate, mcp__knowledge__query, mcp__knowledge__search, mcp__knowledge__thoughts, mcp__knowledge__traverse, Read, Grep, Glob, Bash
 model: opus
 skills:
   - test

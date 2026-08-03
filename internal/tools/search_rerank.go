@@ -65,5 +65,9 @@ func applyClientRerank(ctx context.Context, resp kgtools.ToolResult, saved saved
 	// the footer label is unconditionally "vector+rerank". The four degrade
 	// branches above early-return the untouched server response (no footer) —
 	// a deliberately-deferred visibility gap, not retrofitted here.
+	//
+	// The declared-maximum disclosure is NOT emitted here. It lives in the
+	// search-tool boundary, which sees every serving path — including all four
+	// degrade branches above — rather than this success path alone.
 	return engine.RenderForCaller(saved.originalQuery, reranked, saved.originalFormat, saved.originalFields, "vector+rerank")
 }

@@ -22,7 +22,7 @@ import (
 // per-writer identity now lives in the injected view, not on the wire).
 
 // fleetMember is one writer in the fleet: an embedded production *Manager (so every
-// member.AddAndShip / .managerFor / .ResidentDocCount / .cacheDir call site is
+// member.AddAndMarkDirty / .managerFor / .ResidentDocCount / .cacheDir call site is
 // unchanged), plus its distinct writer_id and its bound source view.
 type fleetMember struct {
 	*Manager
@@ -115,6 +115,8 @@ func serverHasBlob(svc *sharedServerFake, target *knowledgev1.GraphSelector, id 
 // writer_ids, one shared server, every writer's id observed after a ship, and the
 // manifest-window helpers reading a real refcount-2 on a shared id.
 func TestMultiWriterFleetSmoke(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	const k = 3
 	members, svc := newMultiWriterFleet(t, k)
@@ -137,9 +139,14 @@ func TestMultiWriterFleetSmoke(t *testing.T) {
 	// Two writers build the SAME deterministic corpus (hnswVecDocs is fixed-seed),
 	// so both mint the SAME content-hash blob id X. Each publishes it as its own
 	// manifest → blobRefCount(X) == 2 across two DISTINCT writer manifests.
-	docs := hnswVecDocs(searchCorpusN)
-	require.NoError(t, members[0].AddAndShip(ctx, gt, name, docs))
-	require.NoError(t, members[1].AddAndShip(ctx, gt, name, docs))
+	// Half a threshold keeps the corpus inside a SINGLE partition through the tick
+	// (the tick counts the incoming window alongside the resident set), so the shared
+	// corpus still mints exactly one blob id for both writers to reference.
+	docs := hnswVecDocs(searchCorpusN / 2)
+	require.NoError(t, members[0].AddAndMarkDirty(ctx, gt, name, docs))
+	require.NoError(t, members[0].ReEmitDirtyBuckets(ctx, gt, name))
+	require.NoError(t, members[1].AddAndMarkDirty(ctx, gt, name, docs))
+	require.NoError(t, members[1].ReEmitDirtyBuckets(ctx, gt, name))
 
 	// Both writers' ids reached the server (the last-connection liveness wiring).
 	svc.mu.Lock()
@@ -150,7 +157,7 @@ func TestMultiWriterFleetSmoke(t *testing.T) {
 	// The two writers minted the SAME blob id (content-hash idempotency on the
 	// shared corpus), and the manifest window shows it referenced by BOTH.
 	export := members[0].managerFor(gt, name).engine.Export()
-	require.Len(t, export, 1, "the deterministic corpus seals exactly one segment")
+	require.Len(t, export, 1, "the deterministic corpus re-emits as exactly one partition")
 	sharedID := export[0].ID
 	require.Equal(t, 2, blobRefCount(svc, target, sharedID),
 		"a shared content-hash id published by two writers has refcount 2 — a real two-writer reference, not ship-idempotency")

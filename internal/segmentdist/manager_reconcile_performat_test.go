@@ -78,7 +78,7 @@ func newCollapsedBM25Fixture(t *testing.T, repo string) *Manager {
 	// Ship a real HNSW corpus (1024 docs == one sealed segment) via a producer
 	// Manager pointed at the same server, so the HNSW arm has something to load.
 	producer := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
-	require.NoError(t, producer.AddAndShip(ctx, kgtypes.GraphCode, repo, hnswVecDocs(1024)))
+	seedShipped(t, ctx, producer, kgtypes.GraphCode, repo, hnswVecDocs(1024))
 
 	// Ship the BM25 manifest AFTER the producer's publish — a publish refcount-GCs
 	// blobs no manifest references — then drop its single blob from every Fetch so
@@ -94,6 +94,8 @@ func newCollapsedBM25Fixture(t *testing.T, repo string) *Manager {
 // A single-format probe reports this graph healthy while half its search surface is
 // empty.
 func TestPerFormatVerdict_BM25ArmFlagged(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	consumer := newCollapsedBM25Fixture(t, "perFormatRepo")
 
@@ -128,6 +130,8 @@ func TestPerFormatVerdict_BM25ArmFlagged(t *testing.T) {
 // mirroring the read-side backstop's disarms, and that a disarmed arm never flips the
 // overall verdict.
 func TestPerFormatVerdict_ArmDisarms(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	hnswName, bm25Name := hnsw.New().Name(), bm25.New().Name()
 
@@ -188,13 +192,15 @@ func TestPerFormatVerdict_ArmDisarms(t *testing.T) {
 // warm; propagating the cold arm's error would take out the warm arm's documented
 // server-independent L2-first verdict.
 func TestPerFormatVerdict_ArmErrorIsolated(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	hnswName, bm25Name := hnsw.New().Name(), bm25.New().Name()
 
 	t.Run("one arm errors, the other stays usable", func(t *testing.T) {
 		_, gc := newSegmentHarness(t)
 		producer := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
-		require.NoError(t, producer.AddAndShip(ctx, kgtypes.GraphCode, "isolatedRepo", hnswVecDocs(1024)))
+		seedShipped(t, ctx, producer, kgtypes.GraphCode, "isolatedRepo", hnswVecDocs(1024))
 
 		// Warm the HNSW arm FIRST so its resident set is already imported. Only then
 		// break the List, so the HNSW arm still answers server-independently while the
@@ -268,6 +274,12 @@ func recordAttrs(r slog.Record) map[string]slog.Value {
 // merely its line count: the probe emits one record per arm, each tagged with its own
 // format and carrying that arm's inputs and verdict, so a collapsed arm is
 // identifiable in the log without re-deriving the decision.
+//
+// DELIBERATELY NOT PARALLEL. Shared resource: the process-global default slog
+// logger, which this test swaps for a capturing handler to assert over the
+// records the path emits. Concurrent peers would both install and restore that
+// one global, so the handler this test reads could be a peer's, and a peer's
+// unrelated records would land in this test's capture.
 func TestPerFormatVerdict_DebugFieldsPerFormat(t *testing.T) {
 	ctx := context.Background()
 	// The same collapsed-BM25/healthy-HNSW shape: the setDrop construction is what
@@ -319,6 +331,8 @@ func TestPerFormatVerdict_DebugFieldsPerFormat(t *testing.T) {
 // such a partial re-import as degenerate and drive a rebuild that cannot raise the
 // read pool it is measured against.
 func TestPerFormatVerdict_RecoveredAboveFloorBelowRatio(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	svc, gc := newSegmentHarness(t)
 	target := &knowledgev1.GraphSelector{Graph: "code", Repo: "bandRepo"}

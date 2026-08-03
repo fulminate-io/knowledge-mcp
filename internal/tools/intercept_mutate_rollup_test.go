@@ -5,6 +5,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -142,6 +143,252 @@ func TestInterceptMutate_StatusRollup_ExpandTrue_StillCascades(t *testing.T) {
 	ids := fc.lastUpdate.GetSelection().GetIds()
 	assert.Contains(t, ids, "plan-1")
 	assert.Contains(t, ids, "phase-1")
+}
+
+// rollupPlanCloseFake seeds a plan whose contains tree carries both sub-task
+// descendants (which the cascade moves) and evidence-bearing ones (which it must
+// leave alone): a pending criterion, an already-completed criterion, and an open
+// question. isTerminalForClientRollup treats "open" as non-terminal, so an
+// unfiltered cascade writes completed onto the question exactly as it does onto
+// the criterion.
+func rollupPlanCloseFake() *fakeRollupGraphCaller {
+	return &fakeRollupGraphCaller{
+		rootNode: knowledgev1.Node{Id: "plan-1", Type: string(kgtypes.NodePlan)},
+		descendants: []knowledgev1.Node{
+			{Id: "phase-1", Type: string(kgtypes.NodePhase), Status: "pending"},
+			{Id: "step-1", Type: string(kgtypes.NodeStep), Status: "pending"},
+			{Id: "crit-1", Type: string(kgtypes.NodeCriterion), Status: "pending"},
+			{Id: "crit-done", Type: string(kgtypes.NodeCriterion), Status: "completed"},
+			{Id: "q-1", Type: string(kgtypes.NodeQuestion), Status: "open"},
+		},
+	}
+}
+
+// TestInterceptMutate_StatusRollup_StepClose_LeavesCriteriaUntouched pins the
+// reported defect at its original level: closing a step must not write status to
+// any criterion beneath it. A criterion records whether its check was RUN, so a
+// container closing above it is not evidence the check happened — a cascaded
+// "completed" makes a criterion nobody executed read green.
+//
+// The blank-status criterion is deliberate: create_plan writes criteria with no
+// status at all, and isTerminalForClientRollup("") is false, so blank is the
+// common live cascade target rather than an edge case.
+func TestInterceptMutate_StatusRollup_StepClose_LeavesCriteriaUntouched(t *testing.T) {
+	fc := &fakeRollupGraphCaller{
+		rootNode: knowledgev1.Node{Id: "step-1", Type: string(kgtypes.NodeStep)},
+		descendants: []knowledgev1.Node{
+			{Id: "crit-pending", Type: string(kgtypes.NodeCriterion), Status: "pending"},
+			{Id: "crit-blank", Type: string(kgtypes.NodeCriterion), Status: ""},
+			{Id: "crit-done", Type: string(kgtypes.NodeCriterion), Status: "completed"},
+		},
+	}
+	handled, res := InterceptMutate(opCtx(), interceptTestDeps{gc: fc}, kgtools.CallToolParams{
+		Name:      "mutate",
+		Arguments: json.RawMessage(`{"operation":"update","id":"step-1","status":"completed"}`),
+	})
+	require.True(t, handled)
+	require.False(t, res.IsError, "rollup should succeed: %s", toolResultText(res))
+	require.NotNil(t, fc.lastUpdate, "an UPDATE Mutation must have fired")
+	// Equal on the whole slice, never Contains: a Contains-only assertion stays
+	// green while the criteria still ride along in the same Selection.
+	assert.Equal(t, []string{"step-1"}, fc.lastUpdate.GetSelection().GetIds(),
+		"a step close writes status to the step alone — no criterion rides the Selection")
+}
+
+// TestInterceptMutate_StatusRollup_PlanClose_LeavesCriteriaUntouched covers the
+// ancestor level the incident report did not: the same defect fires from a plan
+// close, because the exclusion belongs at the descendant-collection point rather
+// than at any one container type.
+func TestInterceptMutate_StatusRollup_PlanClose_LeavesCriteriaUntouched(t *testing.T) {
+	fc := rollupPlanCloseFake()
+	handled, res := InterceptMutate(opCtx(), interceptTestDeps{gc: fc}, kgtools.CallToolParams{
+		Name:      "mutate",
+		Arguments: json.RawMessage(`{"operation":"update","id":"plan-1","status":"completed"}`),
+	})
+	require.True(t, handled)
+	require.False(t, res.IsError, "rollup should succeed: %s", toolResultText(res))
+	require.NotNil(t, fc.lastUpdate, "an UPDATE Mutation must have fired")
+	ids := fc.lastUpdate.GetSelection().GetIds()
+	assert.ElementsMatch(t, []string{"plan-1", "phase-1", "step-1"}, ids,
+		"the cascade carries the root and its sub-task descendants only")
+	assert.NotContains(t, ids, "crit-1", "a criterion's status is never written by a cascade")
+	assert.NotContains(t, ids, "q-1", "an open question records a decision not yet made")
+}
+
+// TestInterceptMutate_StatusRollup_ResponseEnumeratesCascadedIDs asserts the
+// success line names every id whose status the write moved. A bare count tells
+// the caller something else changed without telling them what, which is how an
+// unnoticed cascade survives.
+func TestInterceptMutate_StatusRollup_ResponseEnumeratesCascadedIDs(t *testing.T) {
+	fc := rollupPlanCloseFake()
+	_, res := InterceptMutate(opCtx(), interceptTestDeps{gc: fc}, kgtools.CallToolParams{
+		Name:      "mutate",
+		Arguments: json.RawMessage(`{"operation":"update","id":"plan-1","status":"completed"}`),
+	})
+	require.False(t, res.IsError, "rollup should succeed: %s", toolResultText(res))
+	body := toolResultText(res)
+	assert.Contains(t, body, "plan-1", "the named node must appear in the success line")
+	assert.Contains(t, body, "phase-1", "every cascaded id must be named")
+	assert.Contains(t, body, "step-1", "every cascaded id must be named")
+}
+
+// TestInterceptMutate_StatusRollup_ResponseNamesHeldCriteria asserts the success
+// line also names what the cascade deliberately left unmarked, so the caller
+// knows those nodes still need attention. An already-terminal criterion is not
+// news and must not be listed.
+func TestInterceptMutate_StatusRollup_ResponseNamesHeldCriteria(t *testing.T) {
+	fc := rollupPlanCloseFake()
+	_, res := InterceptMutate(opCtx(), interceptTestDeps{gc: fc}, kgtools.CallToolParams{
+		Name:      "mutate",
+		Arguments: json.RawMessage(`{"operation":"update","id":"plan-1","status":"completed"}`),
+	})
+	require.False(t, res.IsError, "rollup should succeed: %s", toolResultText(res))
+	body := toolResultText(res)
+	assert.Contains(t, body, "criteria left unmarked")
+	assert.Contains(t, body, "crit-1")
+	assert.Contains(t, body, "questions left open")
+	assert.Contains(t, body, "q-1")
+	assert.NotContains(t, body, "crit-done",
+		"an already-terminal criterion was not held back by the cascade, so it is not news")
+}
+
+// rollupCombinedFake seeds the container node plus one non-terminal descendant —
+// the shape every combined-rollup case below drives.
+func rollupCombinedFake(t *testing.T) *fakeGraphCaller {
+	t.Helper()
+	return &fakeGraphCaller{
+		queryResponses: map[string]kgtools.ToolResult{
+			"plan-1": nodeResultJSON(t, "plan-1", string(kgtypes.NodePlan), map[string]string{}),
+		},
+		traversalByRoot: map[string][]*knowledgev1.Node{
+			"plan-1": {{Id: "step-1", Type: string(kgtypes.NodeStep), Status: "pending"}},
+		},
+	}
+}
+
+// rollupCombinedArgs carries EVERY body field the rollup arm declares consumed,
+// not a representative pair. Each one is a distinct routing decision in
+// rollupNamedNodeFields, so a fixture covering only two would leave the other
+// five asserted nowhere outside the (flip-tautological) parity harness.
+const rollupCombinedArgs = `{"operation":"update","id":"plan-1","status":"completed",` +
+	`"metadata":{"owner":"me"},"description":"a new description","name":"a new name",` +
+	`"summary":"a new summary","content":"new content","keywords":"alpha beta",` +
+	`"source":"llm:claude"}`
+
+// TestInterceptMutate_RollupCombinedShape_AppliesFieldsToNamedNode pins the
+// combined shape: a completed-status container update carrying body fields now
+// applies BOTH halves rather than dropping the fields or rejecting the call.
+//
+// This SUPERSEDES the earlier assertion that the same shape rejected pre-write.
+// That reject was the deliberately-temporary first step — it converted a silent
+// drop into a loud error; this step converts the loud error into the write the
+// caller asked for. On a container update carrying status plus body fields the
+// intent is unambiguous, so the combined shape is legal and must land.
+//
+// The two halves are distinct writes on purpose: status cascades down the
+// contains tree, the body fields apply to the NAMED node only.
+func TestInterceptMutate_RollupCombinedShape_AppliesFieldsToNamedNode(t *testing.T) {
+	fc := rollupCombinedFake(t)
+	handled, res := InterceptMutate(opCtx(), interceptTestDeps{gc: fc}, kgtools.CallToolParams{
+		Name: "mutate", Arguments: json.RawMessage(rollupCombinedArgs),
+	})
+	require.True(t, handled, "the rollup arm claims a completed-status container update")
+	require.False(t, res.IsError, "the combined shape must apply, not reject: %s", toolResultText(res))
+
+	require.Len(t, fc.execMutations, 2, "both halves must be written: the field update and the status rollup")
+
+	// First write: the named node's fields, carrying NO status (the rollup owns it).
+	fieldWrite := fc.execMutations[0]
+	assert.Equal(t, knowledgev1.MutationPlan_MUTATION_KIND_UPDATE, fieldWrite.GetKind())
+	assert.Equal(t, []string{"plan-1"}, fieldWrite.GetSelection().GetIds(),
+		"body fields apply to the NAMED node only, never the descendants")
+	// Every consumed body field must land, each asserted by name: this is the
+	// ticket's In-Scope item 2 set, and a partial fixture would let any single
+	// one of them regress to a silent drop unnoticed.
+	for field, want := range map[string]string{
+		"description": "a new description",
+		"name":        "a new name",
+		"summary":     "a new summary",
+		"content":     "new content",
+		"keywords":    "alpha beta",
+		"source":      "llm:claude",
+	} {
+		assert.Equalf(t, want, fieldWrite.GetSetFields()[field],
+			"%q must reach the named node's field write", field)
+	}
+	assert.Equal(t, "me", fieldWrite.GetSetMetadata()["owner"])
+	assert.NotContains(t, fieldWrite.GetSetFields(), "status",
+		"status must not ride the field write — it would double-write through two plans")
+
+	// Second write: the status rollup over root + non-terminal descendants.
+	statusWrite := fc.execMutations[1]
+	assert.Equal(t, "completed", statusWrite.GetSetFields()["status"])
+	assert.ElementsMatch(t, []string{"plan-1", "step-1"}, statusWrite.GetSelection().GetIds())
+
+	// Success must name the second write; silent success about it is the same
+	// defect in miniature.
+	body := toolResultText(res)
+	assert.Contains(t, body, "description")
+	assert.Contains(t, body, "metadata")
+}
+
+// TestInterceptMutate_RollupCombinedShape_PartialFailureNamesWhatPersisted
+// covers all THREE failure paths. The field write runs first precisely so its
+// own failure is a clean zero-write reject; once it has landed, neither
+// remaining failure may report a bare "traverse failed" — that would itself be
+// a silent-partial report about a node the caller cannot see was already
+// changed.
+func TestInterceptMutate_RollupCombinedShape_PartialFailureNamesWhatPersisted(t *testing.T) {
+	t.Run("field write fails: zero writes, no partial language", func(t *testing.T) {
+		fc := rollupCombinedFake(t)
+		fc.mutateErrOnNth = map[int]error{1: errors.New("field write down")}
+		_, res := InterceptMutate(opCtx(), interceptTestDeps{gc: fc}, kgtools.CallToolParams{
+			Name: "mutate", Arguments: json.RawMessage(rollupCombinedArgs),
+		})
+		require.True(t, res.IsError)
+		body := toolResultText(res)
+		assert.Contains(t, body, "field write down", "the underlying cause must surface")
+		assert.NotContains(t, body, "applied to plan-1",
+			"nothing persisted, so the message must carry no partial-failure language")
+		// The fake records a mutation before applying the ordinal error, so the
+		// attempted-and-failed field write is the ONLY plan; a second entry would
+		// mean the status rollup ran after the field write failed.
+		assert.Len(t, fc.execMutations, 1, "the status rollup must not run after a failed field write")
+	})
+
+	t.Run("traverse fails after the fields landed: names what persisted", func(t *testing.T) {
+		fc := rollupCombinedFake(t)
+		fc.traversalErr = errors.New("traverse down")
+		_, res := InterceptMutate(opCtx(), interceptTestDeps{gc: fc}, kgtools.CallToolParams{
+			Name: "mutate", Arguments: json.RawMessage(rollupCombinedArgs),
+		})
+		require.True(t, res.IsError)
+		body := toolResultText(res)
+		assert.Contains(t, body, "plan-1", "the message must name the id")
+		assert.Contains(t, body, "description", "the message must name the fields that persisted")
+		assert.Contains(t, body, "metadata")
+		assert.Contains(t, body, "traverse down", "the underlying cause must surface")
+		assert.Contains(t, body, "descendants",
+			"the message must say status reached neither the node nor its descendants")
+	})
+
+	t.Run("status batch fails after the fields landed: names what persisted", func(t *testing.T) {
+		fc := rollupCombinedFake(t)
+		// Both writes are MUTATION_KIND_UPDATE against the same Target, so only an
+		// ordinal knob can fail the second while letting the first land.
+		fc.mutateErrOnNth = map[int]error{2: errors.New("status batch down")}
+		_, res := InterceptMutate(opCtx(), interceptTestDeps{gc: fc}, kgtools.CallToolParams{
+			Name: "mutate", Arguments: json.RawMessage(rollupCombinedArgs),
+		})
+		require.True(t, res.IsError)
+		body := toolResultText(res)
+		assert.Contains(t, body, "plan-1", "the message must name the id")
+		assert.Contains(t, body, "description", "the message must name the fields that persisted")
+		assert.Contains(t, body, "metadata")
+		assert.Contains(t, body, "status batch down", "the underlying cause must surface")
+		assert.Contains(t, body, "descendants",
+			"the message must say status reached neither the node nor its descendants")
+	})
 }
 
 // fakeRollupGraphCaller answers the carrier sequence the rollup drives: a ByID

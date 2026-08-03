@@ -188,3 +188,46 @@ func TestApplyClientRerank(t *testing.T) {
 		}
 	})
 }
+
+// TestApplyClientRerank_TrimsToOriginalLimit covers this function's remaining
+// duty in the limit contract: trim the reranked set to the caller-facing limit
+// that savedState carries. The DISCLOSURE is deliberately not asserted here —
+// it moved to the search-tool boundary, which sees the degrade branches this
+// function early-returns through, and asserting it here would pin it to the one
+// path that never needed it most.
+func TestApplyClientRerank_TrimsToOriginalLimit(t *testing.T) {
+	results := make([]engine.SearchJSONResult, 200)
+	for i := range results {
+		results[i] = engine.SearchJSONResult{
+			ID:    string(rune('a'+i%26)) + string(rune('a'+i/26)),
+			Name:  "N",
+			Type:  "finding",
+			Score: float64(200-i) / 200,
+		}
+	}
+	body, err := json.Marshal(engine.SearchJSONResponse{Query: "q", Total: len(results), Results: results})
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	noop := newStubReranker(func(_ context.Context, _ string, in []engine.SearchResult) ([]engine.SearchResult, error) {
+		return in, nil
+	})
+	saved := savedState{
+		originalLimit:    50,
+		originalFormat:   "json",
+		originalQuery:    "q",
+		clientSideActive: true,
+	}
+
+	out := applyClientRerank(context.Background(), kgtools.TextResult(string(body)), saved, noop)
+
+	var probe struct {
+		Results []json.RawMessage `json:"results"`
+	}
+	if uerr := json.Unmarshal([]byte(engine.FirstTextContent(out)), &probe); uerr != nil {
+		t.Fatalf("decode response: %v", uerr)
+	}
+	if len(probe.Results) != 50 {
+		t.Errorf("want exactly 50 results after the trim, got %d", len(probe.Results))
+	}
+}

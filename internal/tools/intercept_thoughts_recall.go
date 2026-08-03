@@ -95,6 +95,12 @@ func handleRecallClient(ctx context.Context, deps ClientDeps, params kgtools.Cal
 		return errorResult("recall: graph client unavailable")
 	}
 
+	// ONE clamp at the shared site, BEFORE the query/bare branch below. The
+	// declared maximum is unconditional, so its enforcement must be too: a clamp
+	// wired only into the query path's rerank trim would leave bare recall passing
+	// the caller's limit straight through to RecallThoughts.
+	effLimit, limitClamped := clampCallerLimit(a.Limit)
+
 	opts := clientthought.RecallOptions{
 		Query:          a.Query,
 		ValenceMin:     a.ValenceMin,
@@ -104,7 +110,7 @@ func handleRecallClient(ctx context.Context, deps ClientDeps, params kgtools.Cal
 		Status:         a.Status,
 		Session:        a.Session,
 		ConnectedTo:    a.ConnectedTo,
-		Limit:          a.Limit,
+		Limit:          effLimit,
 	}
 	// Construct the rerank seam at the call site (search.go:94-108,167 precedent):
 	// an empty Voyage key gates the reranker to nil, which rerankRecallResults
@@ -145,18 +151,43 @@ func handleRecallClient(ctx context.Context, deps ClientDeps, params kgtools.Cal
 	// rerank-then-trim (search_rerank.go:52,62).
 	didRerank := false
 	if a.Query != "" {
-		results, didRerank = rerankAndTrimRecall(ctx, a.Query, results, reranker, a.Limit)
+		results, didRerank = rerankAndTrimRecall(ctx, a.Query, results, reranker, effLimit)
 	}
 
+	return renderRecallResults(a, results, didRerank, limitClamped)
+}
+
+// renderRecallResults renders the recall result set in the caller's requested
+// format. Both formats disclose an engaged limit clamp — the json branch through
+// a limit_clamped key alongside total, the text branch through an appended
+// notice — because a declaration the caller can read must not be enforced
+// silently in either render.
+func renderRecallResults(
+	a recallClientArgs, results []clientthought.ThoughtResult, didRerank, limitClamped bool,
+) kgtools.ToolResult {
 	if a.Format == "json" {
-		return jsonResult(map[string]any{"total": len(results), "thoughts": results})
+		payload := map[string]any{"total": len(results), "thoughts": results}
+		if limitClamped {
+			payload["limit_clamped"] = true
+		}
+		return jsonResult(payload)
 	}
 	mode := a.Mode
 	if mode == "" {
 		mode = "search"
 	}
-	return textResult(clientthought.FormatRecallResults(results, mode, didRerank))
+	rendered := clientthought.FormatRecallResults(results, mode, didRerank)
+	if limitClamped {
+		rendered += "\n\n" + recallLimitClampNotice
+	}
+	return textResult(rendered)
 }
+
+// recallLimitClampNotice is the caller-facing disclosure that the declared
+// `limit` maximum engaged. Its twin on the search arm (searchLimitClampNotice,
+// search_rerank.go) carries the same copy: the text is duplicated rather than
+// shared so each arm's disclosure is greppable at its own site.
+const recallLimitClampNotice = "Showing 50 results — the declared `limit` maximum of 50 engaged, so this result may be incomplete."
 
 // configureRecallQueryPath wires the query-path gather options: route through
 // the CLIENT knowledge segment engines (Manager.Search) — there is no

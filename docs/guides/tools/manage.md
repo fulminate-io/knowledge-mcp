@@ -68,7 +68,6 @@ A full error round auto-pauses the pipeline and it does not self-heal —
 | `before` | string |  |  | For prune: cutoff for which tombstoned nodes to hard-delete. A relative window ('24h', '2d') or an absolute RFC3339 timestamp; only tombstones tombstoned before it are pruned. Omit to prune ALL tombstoned nodes. |
 | `branch` | string |  |  | Branch name (for delete_branch, list_branches) |
 | `credential` | string |  |  | Credential value for configure_log_backend — stored encrypted at rest. Accepts the raw value (e.g., a bearer token, API key, or service account JSON) or a $ENV_VAR reference resolved at query time. Optional when auth_type=kubeconfig. |
-| `default_branch` | string |  |  | Override default branch detection for reindex — treats this branch name as the default so the current branch gets a full reindex instead of branch overlay |
 | `dry_run` | boolean |  |  | For promote_metadata: when true, run the decision pass and report intended actions without mutating the graph. For drop_graph: when true, render a 'would drop' preview and issue ZERO mutations. Default false (executes). |
 | `execute` | boolean |  |  | For prune-cache: when true, DELETE the orphaned segments; default false renders a would-remove preview only. |
 | `force` | boolean |  |  | For promote_metadata: when true, bypass the hysteresis bands and use the simple distinct<1000 rule. Operator one-shot path only. |
@@ -78,12 +77,13 @@ A full error round auto-pauses the pipeline and it does not self-heal —
 | `force_scalar[]` | string |  |  |  |
 | `format` | string |  |  | Output format: 'text' (default) or 'json' (structured) |
 | `graph` | string |  |  | Target graph type for clear_llm_failures (knowledge, code, practice, cloud, cicd) |
+| `keys` | string |  |  | For promote_metadata: comma-separated metadata key filter. Only the named keys are considered for promotion/demotion; empty means every key the stats snapshot observed. |
 | `kube_context` | string |  |  | Kubeconfig context name from ~/.kube/config. Required when provider=k8s and auth_type=kubeconfig. Auth is resolved via client-go using the operator's environment (gcloud/aws-iam-authenticator/service-account tokens). |
 | `name` | string |  |  | Repository name (the repo name to record for register_repo; or log_backend name for configure_log_backend; or query_id for discard_logs) |
 | `operation` | string | yes | status, pprof_start, pprof_stop, delete_branch, list_branches, link, configure_log_backend, list_log_backends, list_logs, discard_logs, set_metadata_overrides, promote_metadata, clear_llm_failures, pause_pipeline, resume_pipeline, pipeline_status, prune, prune-cache, rebuild_cache, rebuild_segments, drop_graph, register_repo | Operation to perform |
-| `precise_calls` | boolean |  |  | Enable precise Go call graph via RTA (slower but more accurate CALLS edges) |
 | `provider` | string |  |  | Log backend provider for configure_log_backend (cloudwatch, loki, elasticsearch, stackdriver, k8s, ...) |
 | `reason` | string |  |  | For pause_pipeline: optional operator reason surfaced by pipeline_status. Defaults to a generic 'manually paused by operator' string when omitted. |
+| `reset` | boolean |  |  | For rebuild_segments: when true, ignore the stored watermark and rebuild the WHOLE corpus. Default false scans only what changed since the last rebuild that landed. |
 | `root` | string |  |  | Absolute checkout directory for register_repo |
 | `url` | string |  |  | Log backend base URL for configure_log_backend |
 <!-- END GENERATED: params -->

@@ -123,8 +123,11 @@ func (d ctxPackDeps) SegmentManager() SegmentSearcher              { return d.se
 func (d ctxPackDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
 func (d ctxPackDeps) SegmentShipper() SegmentShipper               { return nil }
 func (d ctxPackDeps) SegmentPruner() SegmentPruner                 { return nil }
-func (d ctxPackDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
-func (d ctxPackDeps) PipelineScanner() PipelineScanner             { return nil }
+
+func (d ctxPackDeps) SegmentCacheDropper() SegmentCacheDropper { return nil }
+func (d ctxPackDeps) SegmentDeleter() SegmentDeleter           { return nil }
+func (d ctxPackDeps) SegmentCoverage() SegmentCoverageReader   { return nil }
+func (d ctxPackDeps) PipelineScanner() PipelineScanner         { return nil }
 
 func (d ctxPackDeps) ClearHealLatch(kgtypes.GraphType, string) {}
 func (d ctxPackDeps) ReflectionForcer() ReflectionForcer       { return nil }

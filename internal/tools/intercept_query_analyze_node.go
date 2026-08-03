@@ -53,6 +53,9 @@ func InterceptQueryAnalyzeNode(ctx context.Context, deps ClientDeps, params kgto
 	if a.Graph != "code" || a.ID == "" || a.Mode == "stats" {
 		return false, kgtools.ToolResult{}
 	}
+	if err := accountQueryParams(armAnalyzeNode, params.Arguments); err != nil {
+		return true, errorResult(err.Error())
+	}
 	gc := deps.GraphCaller()
 	if gc == nil {
 		return true, errorResult("analyze: graph client unavailable")

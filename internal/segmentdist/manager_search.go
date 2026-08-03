@@ -50,6 +50,12 @@ func (m *Manager) Search(
 		return nil, nil
 	}
 
+	// A user just searched this graph, so ask the reconcile loop to pull its delta
+	// now rather than at its next tick. It sits AFTER the k<=0 guard because such a
+	// call is not a user search, and BEFORE the loads below because a search against a
+	// cold or broken engine is precisely a moment when a pull is worth asking for.
+	m.nudgeMerge(gt, name)
+
 	dm := m.managerFor(gt, name)
 	bm := m.bm25ManagerFor(gt, name)
 

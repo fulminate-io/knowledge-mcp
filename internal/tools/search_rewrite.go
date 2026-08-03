@@ -12,16 +12,98 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/rerank"
 )
 
-// widePoolSize is the wide-pool window for client-side rerank — matches
-// cmd/knowledge/internal/rerank/voyage.go's voyageRerankerInputCap (1000)
-// so the server's wide-fetch pool maps 1:1 to the Voyage rerank input.
-const widePoolSize = 1000
+// widePoolSize is the OPERATING candidate count for client-side rerank —
+// how many documents the server's wide fetch gathers and the reranker
+// scores. It sits deliberately far below the Voyage API's hard document
+// ceiling (voyageRerankerInputCap in cmd/knowledge/internal/rerank/voyage.go):
+// that ceiling states what the API will accept, this constant states what
+// we choose to send. Rerank cost is billed and rate-limited per token and
+// latency rises with payload, so the pool is sized to the work actually
+// needed rather than to the maximum permitted.
+const widePoolSize = 100
 
 // widePoolTopK is the top_k value sent in the Voyage rerank request body.
-// Mirrors the OSS-side default (500). The reranker returns this
-// many scored docs; the InterceptSearch trim further truncates to
+// Equal to the pool: above the document count top_k is dead weight in the
+// request body, and below it the reranker would discard docs it already
+// scored. The InterceptSearch trim further truncates to
 // savedState.originalLimit before re-render.
-const widePoolTopK = 500
+const widePoolTopK = 100
+
+// rerankCallerLimitCeiling is the declared maximum for the caller-facing
+// `limit`, mirroring the tool schema. Enforced so contract and behavior agree.
+const rerankCallerLimitCeiling = 50
+
+// clampCallerLimit bounds a caller-supplied limit to the declared maximum,
+// reporting whether the clamp engaged so the caller can be told. It serves the
+// whole search-tool boundary and the recall arm — not one retrieval strategy —
+// which is why its name is not rerank-specific.
+//
+// A non-positive requested value passes through UNTOUCHED rather than being
+// substituted with the ceiling. Callers invoke this unconditionally, so it sees
+// absent limits; substituting 50 there would silently WIDEN every default
+// request (search defaults to 10, recall to 20) instead of narrowing an
+// over-large one. Only the over-ceiling case clamps.
+func clampCallerLimit(requested int) (limit int, clamped bool) {
+	if requested > rerankCallerLimitCeiling {
+		return rerankCallerLimitCeiling, true
+	}
+	return requested, false
+}
+
+// searchLimitClampNotice is the caller-facing disclosure that the declared
+// `limit` maximum engaged, emitted by the search-tool boundary. Its twin on the
+// recall arm (recallLimitClampNotice, intercept_thoughts_recall.go) carries the
+// same copy: the text is duplicated rather than shared so each arm's disclosure
+// is greppable at its own site.
+const searchLimitClampNotice = "Showing 50 results — the declared `limit` maximum of 50 engaged, so this result may be incomplete."
+
+// clampSearchCallerLimit bounds the `limit` inside a raw search payload to the
+// declared maximum, returning the (possibly rewritten) args and whether the
+// clamp engaged. Absent, non-positive and malformed payloads pass through
+// unchanged with clamped=false — the same fail-open pass-through rewriteSearchArgs
+// documents, so a payload this cannot parse still reaches the handler that can
+// produce a good error for it.
+//
+// THE ORDER MATTERS AND IT IS NOT NEGOTIABLE. On a keyed, non-BM25-only search
+// the `limit` key is written by two different concerns meaning two different
+// things: this clamp writes what the CALLER may receive, and the rerank rewrite
+// later overwrites it with how many candidates the RERANKER should score.
+// Between them captureSavedState reads the clamped value into originalLimit,
+// which is what the post-rerank trim cuts to. So the sequence must be
+// clamp, then capture, then widen.
+//
+// Clamping after the widening — or folding the two into one "effective limit" —
+// writes 50 over the candidate pool and silently guts the rerank input, while
+// leaving every pure-function unit test green. That is why the clamp lives in
+// the thin outer, strictly before the arms run.
+func clampSearchCallerLimit(rawArgs []byte) (json.RawMessage, bool) {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal(rawArgs, &obj); err != nil {
+		return rawArgs, false
+	}
+	raw, ok := obj["limit"]
+	if !ok {
+		return rawArgs, false
+	}
+	var lim int
+	if err := json.Unmarshal(raw, &lim); err != nil || lim <= 0 {
+		return rawArgs, false
+	}
+	clampedLim, clamped := clampCallerLimit(lim)
+	if !clamped {
+		return rawArgs, false
+	}
+	enc, err := json.Marshal(clampedLim)
+	if err != nil {
+		return rawArgs, false
+	}
+	obj["limit"] = enc
+	out, err := json.Marshal(obj)
+	if err != nil {
+		return rawArgs, false
+	}
+	return out, true
+}
 
 // savedState is the slice of original args the post-rerank pipeline needs
 // to re-render the response for the caller. Populated by rewriteSearchArgs
@@ -95,6 +177,11 @@ func captureSavedState(argMap map[string]json.RawMessage, hasReranker bool) save
 	saved := savedState{originalLimit: 10, originalFormat: "text", clientSideActive: hasReranker}
 	if raw, ok := argMap["limit"]; ok {
 		var lim int
+		// Recorded VERBATIM: the args arrive already clamped by the search-tool
+		// boundary, so re-clamping here would be a second authority over the same
+		// value. The lim > 0 guard stays — an explicit "limit": 0 must leave the
+		// struct default standing, because applyClientRerank's trim is gated on
+		// originalLimit > 0 and a zero would skip the trim entirely.
 		if err := json.Unmarshal(raw, &lim); err == nil && lim > 0 {
 			saved.originalLimit = lim
 		}

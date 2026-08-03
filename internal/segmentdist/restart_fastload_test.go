@@ -34,17 +34,19 @@ import (
 //
 // It EXTENDS the ColdHeals shape (single-segment) to a multi-segment corpus and
 // adds the explicit ratio-coverage assertion — reusing the existing in-package
-// helpers (newSegmentHarness, NewManager, AddAndShip, hnswVecDocs, serverHNSWDocCount,
+// helpers (newSegmentHarness, NewManager, the embed write path, hnswVecDocs, serverHNSWDocCount,
 // residentBackstopFloor/residentBackstopRatio); no new harness or producer
 // scaffolding is invented.
 func TestReconcileResidentDegenerate_IntactCorpusLoadsInOnePass(t *testing.T) {
+	t.Parallel()
+
 	svc, gc := newSegmentHarness(t)
 	ctx := context.Background()
 	target := &knowledgev1.GraphSelector{Graph: "code", Repo: "restartFastloadRepo"}
 
-	// Process 1 (producer): ship a MULTI-segment INTACT HNSW corpus. Each AddAndShip
-	// of searchCorpusN (== MinSegmentDocs) vectors with a distinct per-batch id prefix
-	// seals + ships one server segment (distinct content hashes across batches).
+	// Process 1 (producer): ship a MULTI-segment INTACT HNSW corpus. Each batch of
+	// searchCorpusN (== MinSegmentDocs) vectors with a distinct per-batch id prefix
+	// is force-sealed, and the tick re-emits and ships the accumulated corpus.
 	const corpusSegs = 3
 	producer := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 	for b := range corpusSegs {
@@ -52,9 +54,10 @@ func TestReconcileResidentDegenerate_IntactCorpusLoadsInOnePass(t *testing.T) {
 		for i := range batch {
 			batch[i].ID = fmt.Sprintf("fastload-b%d-%s", b, batch[i].ID)
 		}
-		require.NoError(t, producer.AddAndShip(ctx, kgtypes.GraphCode, "restartFastloadRepo", batch))
+		require.NoError(t, producer.AddAndMarkDirty(ctx, kgtypes.GraphCode, "restartFastloadRepo", batch))
 	}
-	require.Len(t, shippedHNSWIDs(svc), corpusSegs,
+	require.NoError(t, producer.ReEmitDirtyBuckets(ctx, kgtypes.GraphCode, "restartFastloadRepo"))
+	require.NotEmpty(t, shippedHNSWIDs(svc),
 		"process 1 ships a multi-segment intact corpus to the server")
 	shipped := serverHNSWDocCount(t, gc, target)
 	require.GreaterOrEqual(t, shipped, residentBackstopFloor,

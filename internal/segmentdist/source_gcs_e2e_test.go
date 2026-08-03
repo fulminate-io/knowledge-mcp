@@ -20,6 +20,8 @@ import (
 // confirm attempt would error the round-trip); and a synthetic missing-blob publish
 // is rejected 409.
 func TestGCSCloudPathE2E(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	backend := newFakeSegmentBackend(t)
 	transport := WithSegmentTransport(func() (SegmentControlTransport, error) { return backend, nil })
@@ -32,9 +34,9 @@ func TestGCSCloudPathE2E(t *testing.T) {
 
 	// --- Producer: ship both formats as full GCS objects + publish manifests. ---
 	producer := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, transport)
-	require.NoError(t, producer.AddAndShip(ctx, gt, name, docs))       // HNSW
-	require.NoError(t, producer.AddAndShipFields(ctx, gt, name, docs)) // BM25
-	require.NoError(t, producer.Flush(ctx, gt, name))                  // seal any sub-threshold tail
+	require.NoError(t, producer.AddAndMarkDirty(ctx, gt, name, docs))       // HNSW
+	require.NoError(t, producer.AddAndMarkDirtyFields(ctx, gt, name, docs)) // BM25
+	require.NoError(t, producer.Flush(ctx, gt, name))                       // seal any sub-threshold tail
 
 	// Full objects landed in fake GCS (one object per content hash), a presign-batch
 	// was issued, and NO confirm call was made (the fake would have errored on it).

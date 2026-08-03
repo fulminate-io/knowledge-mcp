@@ -146,14 +146,14 @@ func computeDegreeRows(ctx context.Context, req foundation.Request) ([]degreeRow
 		return nil, nil
 	}
 
-	// With no subset predicate the id set IS every node of the graph, so ask for
-	// the graph's edges directly instead of sending all those ids back as a pivot
-	// set. A subset build keeps the pivot read so it pulls only usable edges.
-	// Either way the tally below ignores an edge whose source is not a
-	// materialized row, so the two reads produce identical rows.
+	// With no subset predicate the id set IS every node of the graph, so the read
+	// takes the paged whole-graph form; a subset build keeps the single pivot
+	// read. Both drive off the same ids, and either way the tally below ignores
+	// an edge whose source is not a materialized row, so the two reads produce
+	// identical rows.
 	var edges []knowledgev1.Edge
 	if req.Subset == nil {
-		edges, err = foundation.FetchAllEdges(ctx, req.Caller, req.Graph, req.Name, nil)
+		edges, err = foundation.FetchAllEdges(ctx, req.Caller, req.Graph, req.Name, ids, nil)
 	} else {
 		edges, err = foundation.FetchEdges(ctx, req.Caller, req.Graph, req.Name, ids, nil)
 	}

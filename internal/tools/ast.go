@@ -43,6 +43,9 @@ func InterceptAst(ctx context.Context, deps ClientDeps, params kgtools.CallToolP
 	if params.Name != "ast" {
 		return false, kgtools.ToolResult{}
 	}
+	if err := rejectUndeclaredParams("ast", "", AstToolDef().InputSchema.Properties, params.Arguments); err != nil {
+		return true, errorResult(err.Error())
+	}
 	var a astArgs
 	if err := json.Unmarshal(params.Arguments, &a); err != nil {
 		return true, errorResult("invalid arguments: " + err.Error())
@@ -59,7 +62,8 @@ func InterceptAst(ctx context.Context, deps ClientDeps, params kgtools.CallToolP
 	case "list_node_kinds":
 		return true, handleAstListNodeKinds(a)
 	default:
-		return true, errorResult("unknown operation: " + a.Operation + " — use match, count, replace, explain, or list_node_kinds")
+		return true, unknownOperationResult("ast", a.Operation,
+			[]string{"match", "count", "replace", "explain", "list_node_kinds"})
 	}
 }
 

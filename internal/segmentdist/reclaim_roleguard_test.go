@@ -5,7 +5,6 @@ package segmentdist
 import (
 	"context"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -14,12 +13,14 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine/formats/hnsw"
 )
 
-// TestReclaimRoleRegressionGuards asserts the new merge-reclaim hook does not
-// perturb the two pre-existing prune roles, and that the three reclamation sources
-// — ROLE-A (deterministic rebuild → FlushDeterministic → InvalidateLocal), ROLE-B
-// (embed AddAndShip reconcile-prune against locallyShipped), and the new live-cache
-// merge-reclaim hook — operate on DISJOINT id sets.
+// TestReclaimRoleRegressionGuards asserts the merge-reclaim hook does not perturb the
+// two pre-existing prune roles, and that the reclamation sources — ROLE-A (the reset
+// rebuild's server-side prune, whose local eviction the swap's reclaim hook performs and
+// InvalidateLocal backstops), ROLE-B (embed tick reconcile-prune against
+// locallyShipped), and the live-cache merge-reclaim hook — operate on DISJOINT id sets.
 func TestReclaimRoleRegressionGuards(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	gt := kgtypes.GraphCode
 
@@ -30,44 +31,53 @@ func TestReclaimRoleRegressionGuards(t *testing.T) {
 		// Ship an old degenerate corpus via the embed path, then deterministically
 		// rebuild it with a different corpus → ROLE-A prunes the old ids.
 		oldDocs := hnswVecDocs(searchCorpusN)
-		require.NoError(t, mgr.AddAndShip(ctx, gt, "roleA", oldDocs))
+		require.NoError(t, mgr.AddAndMarkDirty(ctx, gt, "roleA", oldDocs))
+		require.NoError(t, mgr.ReEmitDirtyBuckets(ctx, gt, "roleA"))
 		oldIDs := shippedHNSWIDs(svc)
 		require.NotEmpty(t, oldIDs)
 
-		rebuildDocs := hnswVecDocs(searchCorpusN + 32)
-		require.NoError(t, mgr.AddDeterministic(ctx, gt, "roleA", rebuildDocs))
-		pruned, err := mgr.FlushDeterministic(ctx, gt, "roleA")
-		require.NoError(t, err)
-		require.NotEmpty(t, pruned, "ROLE-A deterministic rebuild prunes the old corpus")
-
-		// InvalidateLocal removes the replaced ids from the DET L2 cache.
+		// The old layer's blobs are on local disk BEFORE the rebuild. This is the
+		// known-positive that keeps the eviction assertions below non-vacuous — an
+		// absence asserted over a directory that never held the file proves nothing.
 		detDir := graphCacheDirFor(mgr.cacheDir, gt, "roleA", hnsw.New().Name())
 		before := segFilesAtDir(t, detDir)
 		for id := range oldIDs {
-			require.Contains(t, before, id, "old id present in det cache before InvalidateLocal")
+			require.Contains(t, before, id, "the old layer's blob is on local disk before the rebuild")
 		}
+
+		rebuildDocs := hnswVecDocs(searchCorpusN + 32)
+		require.NoError(t, mgr.StageRebuildPartition(ctx, gt, "roleA", rebuildDocs, nil))
+		res, err := mgr.FinalizeRebuild(ctx, gt, "roleA")
+		require.NoError(t, err)
+		pruned := res.HNSWSuperseded
+		require.NotEmpty(t, pruned, "ROLE-A deterministic rebuild prunes the old corpus")
+
+		// THE SWAP ITSELF NOW RECLAIMS THE LOCAL BLOB, and that is a consequence of the
+		// reset finalizing at the SERVING engine. ReplaceLayer fires the merge hook with
+		// the retired set (searchengine/layer_swap.go:195), and this engine's hook is
+		// reclaimMerged, which cache.Removes every retired constituent. Under the
+		// two-engine shape the reset wrote an engine carrying NO hook, so the eviction
+		// had to wait for InvalidateLocal; here it has already happened by the time the
+		// finalize returns.
+		atSwap := segFilesAtDir(t, detDir)
+		for _, id := range pruned {
+			require.NotContains(t, atSwap, id,
+				"the swap's reclaim hook must already have evicted retired blob %s from the L2 cache", id)
+		}
+
+		// InvalidateLocal is therefore a BACKSTOP on this path rather than the mechanism,
+		// and it must stay idempotent over a set already reclaimed.
 		mgr.InvalidateLocal(gt, "roleA", pruned)
 		after := segFilesAtDir(t, detDir)
 		for _, id := range pruned {
-			require.NotContains(t, after, id, "InvalidateLocal removes the pruned id from the det L2 cache")
+			require.NotContains(t, after, id, "InvalidateLocal leaves the pruned id evicted from the L2 cache")
 		}
 
-		// The det engine's OnMerge is nil: a merge on it never auto-reclaims. Drive a
-		// merge on the det engine and confirm no live-cache hook fired (the det cache
-		// is mutated ONLY by InvalidateLocal, not by a reclaim hook).
-		detDM := mgr.hnswManagerFor(mgr.detManagers, hnsw.NewDeterministic(), gt, "roleA", false)
-		// Seed a fresh single-doc segment and delete it to make it merge-eligible
-		// alongside the rebuilt corpus, forcing a det merge.
-		extra := vecContentDocsSeed(1, 777000)
-		require.NoError(t, detDM.engine.Add(extra))
-		detDM.engine.Delete(extra[0].ID)
-		// Even if a det merge fires, no reclaim hook runs: the det cache state is
-		// unchanged by the (nil) OnMerge across a quiescence window.
-		stable := segFilesAtDir(t, detDir)
-		waitMergeQuiesce(detDM.engine.MergeCount)
-		time.Sleep(60 * time.Millisecond)
-		require.Equal(t, stable, segFilesAtDir(t, detDir),
-			"det engine's live-cache reclaim hook never fires (nil OnMerge): det L2 unchanged by any merge")
+		// A LAST LEG USED TO ASSERT the rebuild engine's OnMerge was nil, so a merge on it
+		// could never auto-reclaim and its L2 was mutated by InvalidateLocal alone. There
+		// is no separate rebuild engine to hold that property, and the ROLE separation it
+		// guarded is now the ordering asserted above: the swap reclaims, InvalidateLocal
+		// backstops, and ROLE B (below) stays disjoint from both.
 	})
 
 	t.Run("roleB_embed_prunes_only_this_process_and_disjoint", func(t *testing.T) {
@@ -91,7 +101,7 @@ func TestReclaimRoleRegressionGuards(t *testing.T) {
 		// Trigger a merge that supersedes some of those this-process-shipped segments.
 		dm.engine.Delete(docs[0].ID)
 		dm.engine.Delete(docs[1].ID)
-		require.GreaterOrEqual(t, waitMergeCount(dm.engine.MergeCount, 1), uint64(1))
+		waitForMerge(t, dm.engine.MergeCount, "roleB dead-ratio merge must fire")
 		waitMergeQuiesce(dm.engine.MergeCount)
 		warmExported(dm)
 

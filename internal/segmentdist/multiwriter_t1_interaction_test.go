@@ -24,6 +24,8 @@ import (
 // TestMultiWriterT1ConcurrentColdLoads runs K concurrent cold-loads, each driving
 // fetchMisses through a byte-ceiling caller that rejects over-threshold chunks.
 func TestMultiWriterT1ConcurrentColdLoads(t *testing.T) {
+	t.Parallel()
+
 	const (
 		k         = 4
 		threshold = 64                        // byte-ceiling stand-in: > threshold ids ⇒ ResourceExhausted

@@ -46,6 +46,9 @@ func InterceptCollect(ctx context.Context, deps ClientDeps, params kgtools.CallT
 	if params.Name != "collect" {
 		return false, kgtools.ToolResult{}
 	}
+	if err := rejectUndeclaredParams("collect", "", CollectToolDef().InputSchema.Properties, params.Arguments); err != nil {
+		return true, errorResult(err.Error())
+	}
 
 	var a collectArgs
 	if err := json.Unmarshal(params.Arguments, &a); err != nil {

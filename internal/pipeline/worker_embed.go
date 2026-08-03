@@ -12,6 +12,7 @@ import (
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/llm"
+	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
 
 // runEmbedWorker pulls embed batches and processes them with panic recovery.
@@ -277,31 +278,62 @@ func writeEmbedResults(ctx context.Context, p *Pipeline, be WireClient, key grap
 	// search is retired, so these client segments ARE the search index, but a
 	// dropped ship only leaves those nodes briefly unsearchable until the next ship
 	// — writeback liveness wins. WARN only.
-	shipEmbedSegments(ctx, p, key, vectors, ids, work)
+	shipEmbedSegments(ctx, p, be, key, vectors, ids, work)
 }
 
 // shipEmbedSegments feeds the just-written binary vectors into the per-graph HNSW
 // engine and the server-composed per-field BM25 text into the per-graph BM25 engine,
 // shipping any newly-sealed segments of BOTH formats through the ONE dual-format
 // Manager. No-op when no segment manager is wired (test fakes). Best-effort: any
-// error is logged at WARN and swallowed.
-func shipEmbedSegments(ctx context.Context, p *Pipeline, key graphKey, vectors map[string][]byte, ids []string, work []EmbedWork) {
+// error is logged at WARN and swallowed — but the ids it dropped are STAMPED with
+// a durable marker so the drop is attributable afterwards instead of surviving
+// only as a log line.
+func shipEmbedSegments(ctx context.Context, p *Pipeline, be WireClient, key graphKey, vectors map[string][]byte, ids []string, work []EmbedWork) {
 	if p.segmentMgr == nil {
 		return
 	}
-	shipEmbedHNSW(ctx, p, key, vectors, ids)
-	shipEmbedBM25(ctx, p, key, vectors, work)
+	shipEmbedHNSW(ctx, p, be, key, vectors, ids)
+	shipEmbedBM25(ctx, p, be, key, vectors, work)
+}
+
+// stampShipFailure records, on every id a swallowed ship dropped, WHY it was
+// dropped. Without it the node is embedded, absent from the searchable corpus, and
+// indistinguishable from a healthy one — the state that makes a coverage hole
+// untraceable.
+//
+// The stamp is itself best-effort: it can fail, and its failure is logged rather
+// than propagated, for the same reason the ship it records is swallowed — embed
+// writeback liveness wins. The marker key is deliberately NOT the embed-failure
+// key, which both rebuild scans exclude; a ship-dropped node must stay scan-eligible
+// for the repair that re-ships it.
+func stampShipFailure(ctx context.Context, be WireClient, key graphKey, docs []searchengine.Document, reason string) {
+	items := make([]updateBatchItem, 0, len(docs))
+	for _, d := range docs {
+		items = append(items, updateBatchItem{
+			ID: d.ID,
+			Metadata: map[string]string{
+				kgtypes.MetaKeySegmentShipFailureReason: reason,
+			},
+		})
+	}
+	if werr := writeBatchUpdates(ctx, be, key.GraphType, key.GraphName, items); werr != nil {
+		slog.Warn("pipeline.embed: write segment-ship failure markers failed",
+			"items", len(items), "error", werr, "graph_type", key.GraphType, "graph_name", key.GraphName)
+	}
 }
 
 // shipEmbedHNSW builds + ships the HNSW segment from the binary vectors.
-func shipEmbedHNSW(ctx context.Context, p *Pipeline, key graphKey, vectors map[string][]byte, ids []string) {
+func shipEmbedHNSW(ctx context.Context, p *Pipeline, be WireClient, key graphKey, vectors map[string][]byte, ids []string) {
 	docs := BuildHNSWDocuments(vectors, ids)
 	if len(docs) == 0 {
 		return
 	}
-	if err := p.segmentMgr.AddAndShip(ctx, key.GraphType, key.GraphName, docs); err != nil {
+	if err := p.segmentMgr.AddAndMarkDirty(ctx, key.GraphType, key.GraphName, docs); err != nil {
 		slog.Warn("pipeline.embed: client HNSW build+ship failed (additive/best-effort; server vector path authoritative)",
 			"error", err, "docs", len(docs), "graph_type", key.GraphType, "graph_name", key.GraphName)
+		// The reason names the FORMAT as well as the error, so the two ship sites
+		// are distinguishable from the marker alone.
+		stampShipFailure(ctx, be, key, docs, fmt.Sprintf("hnsw ship dropped: %v", err))
 	}
 }
 
@@ -312,7 +344,7 @@ func shipEmbedHNSW(ctx context.Context, p *Pipeline, key graphKey, vectors map[s
 // (possibly summary-less) Bm25Fields — that is ACCEPTABLE: it self-heals when
 // re-summarization bumps the embed dirty-gen and re-ships, so a transient thin
 // segment only under-indexes that one node for the brief window until it re-ships.
-func shipEmbedBM25(ctx context.Context, p *Pipeline, key graphKey, vectors map[string][]byte, work []EmbedWork) {
+func shipEmbedBM25(ctx context.Context, p *Pipeline, be WireClient, key graphKey, vectors map[string][]byte, work []EmbedWork) {
 	// Map []EmbedWork → []SegmentDoc, preserving the "only index nodes that
 	// actually embedded this tick" vector-presence gate before delegating the
 	// doc assembly to the shared builder.
@@ -327,9 +359,10 @@ func shipEmbedBM25(ctx context.Context, p *Pipeline, key graphKey, vectors map[s
 	if len(docs) == 0 {
 		return
 	}
-	if err := p.segmentMgr.AddAndShipFields(ctx, key.GraphType, key.GraphName, docs); err != nil {
+	if err := p.segmentMgr.AddAndMarkDirtyFields(ctx, key.GraphType, key.GraphName, docs); err != nil {
 		slog.Warn("pipeline.embed: client BM25 build+ship failed (additive/best-effort; server BM25 path authoritative)",
 			"error", err, "docs", len(docs), "graph_type", key.GraphType, "graph_name", key.GraphName)
+		stampShipFailure(ctx, be, key, docs, fmt.Sprintf("bm25 ship dropped: %v", err))
 	}
 }
 

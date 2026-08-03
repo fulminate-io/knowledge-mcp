@@ -20,6 +20,8 @@ import (
 // live segments untouched. The OSS path runs on *localSegmentSource, so there is no
 // network leg to record — zero server RPC is structural.
 func TestPruneCache_OSSLocalLiveSet(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	base := t.TempDir()
 	mgr := NewManager(loginStateStub{loggedIn: false}, base, 0)
@@ -27,7 +29,7 @@ func TestPruneCache_OSSLocalLiveSet(t *testing.T) {
 		"the OSS prune runs on the local source (no network leg exists)")
 
 	// Warm a live HNSW segment into L2 (zero server RPC — local ship).
-	require.NoError(t, mgr.AddAndShip(ctx, kgtypes.GraphCode, "pruneRepo", hnswVecDocs(40)))
+	require.NoError(t, mgr.AddAndMarkDirty(ctx, kgtypes.GraphCode, "pruneRepo", hnswVecDocs(40)))
 	require.NoError(t, mgr.Flush(ctx, kgtypes.GraphCode, "pruneRepo"))
 
 	hnswDir := graphCacheDirFor(base, kgtypes.GraphCode, "pruneRepo", hnsw.New().Name())

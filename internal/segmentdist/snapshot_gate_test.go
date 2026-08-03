@@ -17,6 +17,8 @@ import (
 // derived HasShippedFromSnapshot / ShippedDocCountFromSnapshot report presence + the
 // summed HNSW doc count correctly.
 func TestShippedManifestSnapshot_CloudArmReadsGCSManifest(t *testing.T) {
+	t.Parallel()
+
 	backend := newFakeSegmentBackend(t)
 	backend.seedManifest(string(kgtypes.GraphCode), "repo", "hnsw", map[string]int{"h1": 12, "h2": 30})
 
@@ -53,11 +55,13 @@ func TestShippedManifestSnapshot_CloudArmReadsGCSManifest(t *testing.T) {
 // from the DocCount=0 snapshot — so the OSS coverage column reports the real L2 count
 // with ZERO server round-trip.
 func TestShippedManifestSnapshot_OSSArmIsL2Sourced(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 
 	// A NOT-logged-in producer/consumer: its engines run on the L2-local source.
 	mgr := NewManager(loginStateStub{loggedIn: false}, t.TempDir(), 0)
-	require.NoError(t, mgr.AddAndShip(ctx, kgtypes.GraphCode, "repo", hnswVecDocs(searchCorpusN)))
+	require.NoError(t, mgr.AddAndMarkDirty(ctx, kgtypes.GraphCode, "repo", hnswVecDocs(searchCorpusN)))
 	require.NoError(t, mgr.Flush(ctx, kgtypes.GraphCode, "repo"))
 
 	// The snapshot resolves to the L2-local set (presence true, DocCounts stamped 0).

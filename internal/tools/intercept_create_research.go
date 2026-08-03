@@ -51,6 +51,12 @@ func InterceptCreateResearch(ctx context.Context, deps ClientDeps, params kgtool
 	if err := json.Unmarshal(params.Arguments, &a); err != nil {
 		return true, errorResult("invalid arguments: " + err.Error())
 	}
+	// Ahead of every validation and every write: the decode above discards any
+	// top-level key createResearchArgs has no field for, so an undeclared param
+	// would otherwise vanish into a successful create.
+	if err := rejectUndeclaredParams("create_research", "", CreateResearchToolDef().InputSchema.Properties, params.Arguments); err != nil {
+		return true, errorResult(err.Error())
+	}
 	if len(a.Questions) == 0 {
 		return true, errorResult("at least one question is required")
 	}

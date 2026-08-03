@@ -82,30 +82,27 @@ type survivorKey struct{ file, fn, kind string }
 // drain. Anything else is the gate being talked out of its job.
 var censusSurvivors = map[survivorKey]string{
 	// --- unbounded_match_all ---
-	{"engine/dispatch_graphwide.go", "dispatchGraphWideJSON", kindUnboundedMatchAll}:      "the JSON arm's node enumeration: renderGraphWideJSON emits id/name/type/status/description per node and no wire projection carries that shape (the TEXT arm was taken to an ids drain)",
-	{"tools/intercept_query_correlations_pivot.go", "nodeSetPlan", kindUnboundedMatchAll}: "deliberately match-every-node: the correlations pivot node-set fetch has no narrower discriminant",
-	{"topology/foundation/wire.go", "FetchAllNodes", kindUnboundedMatchAll}:               "deliberately whole-graph by contract (the gonum builder materializes every node); out of this ticket's scope",
+	// (none: both former entries — the graph-wide JSON node enumeration and the
+	// topology whole-graph node fetch — are keyset drains now.)
 
 	// --- unbounded_type_browse ---
 	// Each "predicate-bounded" reason below was read in current source, not
 	// inherited from the ticket's prose. All four hivemonitor sites now hold up:
 	// reaperHives was the one genuinely unbounded read and was narrowed to a
 	// per-session predicate.
-	{"engine/dispatch_byid.go", "findLinkageProxies", kindUnboundedTypeBrowse}:                        "narrowed by a foreign_id OP_EQ metadata predicate on the requested node id — bounded in practice",
-	{"tools/cross_graph_migrate.go", "scanSlugLessPracticeProxies", kindUnboundedTypeBrowse}:          "narrowed by a foreign_graph=practice OP_EQ metadata predicate — bounded in practice",
-	{"tools/intercept_query_correlations_pivot.go", "pivotFetchNodesClient", kindUnboundedTypeBrowse}: "pivot fetch for an EXPLICITLY requested type — the caller named the type",
-	{"tools/tools_logs_wire_fetch.go", "fetchLogNodesByType", kindUnboundedTypeBrowse}:                "logs graphs are explicitly out of this ticket's scope (ephemeral, per-query, small)",
-	{"hivemonitor/monitor.go", "banEvictedMembers", kindUnboundedTypeBrowse}:                          "narrowed by a hive OP_EQ metadata predicate plus a status filter — bounded in practice",
-	{"hivemonitor/monitor_heartbeat.go", "memberHivesFor", kindUnboundedTypeBrowse}:                   "narrowed by a session OP_EQ metadata predicate — bounded in practice",
-	{"hivemonitor/hive_reaper.go", "sweepHive", kindUnboundedTypeBrowse}:                              "narrowed by a hive OP_EQ metadata predicate — bounded in practice",
+	{"engine/dispatch_byid.go", "findLinkageProxies", kindUnboundedTypeBrowse}:               "narrowed by a foreign_id OP_EQ metadata predicate on the requested node id — bounded in practice",
+	{"tools/cross_graph_migrate.go", "scanSlugLessPracticeProxies", kindUnboundedTypeBrowse}: "narrowed by a foreign_graph=practice OP_EQ metadata predicate — bounded in practice",
+	{"hivemonitor/monitor.go", "banEvictedMembers", kindUnboundedTypeBrowse}:                 "narrowed by a hive OP_EQ metadata predicate plus a status filter — bounded in practice",
+	{"hivemonitor/monitor_heartbeat.go", "memberHivesFor", kindUnboundedTypeBrowse}:          "narrowed by a session OP_EQ metadata predicate — bounded in practice",
+	{"hivemonitor/hive_reaper.go", "sweepHive", kindUnboundedTypeBrowse}:                     "narrowed by a hive OP_EQ metadata predicate — bounded in practice",
 	// The entry stays even though the read is now narrowed: classify() cannot see
 	// MetadataPredicates, so a predicate-bounded browse still lands here as
 	// unbounded_type_browse. Deleting the entry turns the gate red.
-	{"hivemonitor/hive_reaper.go", "reaperHives", kindUnboundedTypeBrowse}:                  "narrowed by a session OP_EQ metadata predicate — one browse per live local session, memberHivesFor's shape — bounded in practice",
-	{"tools/intercept_search_knowledge.go", "composeRecentBrowse", kindUnboundedTypeBrowse}: "explicitly excluded by the ticket: recent-browse's consider-everything semantics are deliberate and a real fix needs ORDER BY push-down",
+	{"hivemonitor/hive_reaper.go", "reaperHives", kindUnboundedTypeBrowse}: "narrowed by a session OP_EQ metadata predicate — one browse per live local session, memberHivesFor's shape — bounded in practice",
 
 	// --- ambiguous_selection ---
-	{"tools/intercept_search_knowledge.go", "composeRecentBrowse", kindAmbiguousSelection}: "assigns selection twice (empty, then NodeTypes when types are supplied); same ticket exclusion as above",
+	// (none: the recent-browse arm's double Selection assignment was collapsed to
+	// a single literal plus a field set when it became a keyset drain.)
 
 	// --- unresolved_selection ---
 	// All three Compile browse arms live in one function, so one entry covers them.

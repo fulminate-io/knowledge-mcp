@@ -37,9 +37,16 @@ func buildBinaryHNSWSerialDeterministic(items []binaryBuildItem, vecBytes, m, ef
 
 	// Insert in a STABLE sorted-by-id order so the serial insertion sequence is
 	// reproducible across runs (a local copy + sort, leaving items untouched).
+	//
+	// SliceStable, not Slice: sort.Slice is an unstable quicksort, so two items sharing
+	// an id could come out in either order depending on the input permutation. Callers
+	// deduplicate by id before building, so equal keys should not arrive here at all —
+	// but the tie-break is what decides the survivor if one ever does, and a
+	// nondeterministic tie-break would silently reintroduce run-to-run variation into a
+	// builder whose whole contract is byte reproducibility.
 	sorted := make([]binaryBuildItem, len(items))
 	copy(sorted, items)
-	sort.Slice(sorted, func(i, j int) bool { return sorted[i].id < sorted[j].id })
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].id < sorted[j].id })
 
 	for _, it := range sorted {
 		g.Insert(it.id, it.vec)

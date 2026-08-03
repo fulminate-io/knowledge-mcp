@@ -93,8 +93,8 @@ const (
 // value meaning "not classified / not test code".
 //
 // Producer-side type only: `type TestKind string` lives in this package; the
-// persisted node's TestKind field is plain `string` (rule 42dba7de — store
-// does not import domain packages). The cast happens at chunk-to-node time.
+// persisted node's TestKind field is plain `string` (the store does not
+// import domain packages). The cast happens at chunk-to-node time.
 // Mirrors how `type Language string` is producer-typed and stored as `string`.
 type TestKind string
 

@@ -26,6 +26,7 @@ func DeleteToolDef() kgtools.MCPTool {
 				"hard":       {Type: "boolean", Description: "PERMANENT removal. Deletes are SOFT by default (tombstoned: hidden from reads, recoverable). hard:true removes the rows irrecoverably — reserve for deliberate permanent cleanup. A malformed value denies the delete."},
 				"graph":      {Type: "string", Description: "Target graph: 'knowledge' (default), 'practice', or 'transformers'. Practice graph requires 'language'."},
 				"language":   {Type: "string", Description: "Language for practice graph operations (e.g. 'Go', 'JavaScript/TypeScript')"},
+				"format":     {Type: "string", Description: "Output format: 'text' (default) or 'json' (structured). Honored on BOTH render paths — the dry-run preview and the completed delete."},
 			},
 		},
 	}

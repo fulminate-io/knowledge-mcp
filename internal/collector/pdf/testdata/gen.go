@@ -81,10 +81,9 @@ func main() {
 	writeT6Fixtures(base)
 }
 
-// writeT3Fixtures emits the 7 T3 fixtures listed in plan
-// d76acb28dca7ab9a788f70f3143b4ec1 step 8309c27a. Each single-page
-// fixture exercises one rung of the resolver's strategy ladder; the
-// multi-page fixture exercises the document-scoped cache.
+// writeT3Fixtures emits the 7 T3 fixtures. Each single-page fixture
+// exercises one rung of the resolver's strategy ladder; the multi-page
+// fixture exercises the document-scoped cache.
 func writeT3Fixtures(base string) {
 	t3 := []struct {
 		dest  string
@@ -155,10 +154,9 @@ func writeT3Fixtures(base string) {
 	reportSize(mpDst)
 }
 
-// writeT6Fixtures emits the 6 tagged-PDF fixtures listed in plan
-// 3851990955bcb27310eaf0b91f97aa0e step 4f1d9ca855e44d0fd90f671c8e3e5c40.
-// Each fixture exercises one shape of the /StructTreeRoot walker;
-// see collector/pdf/structtree/walk_test.go for the assertions.
+// writeT6Fixtures emits the 6 tagged-PDF fixtures. Each fixture exercises
+// one shape of the /StructTreeRoot walker; see
+// collector/pdf/structtree/walk_test.go for the assertions.
 func writeT6Fixtures(base string) {
 	helvF1 := fixturelib.SimpleFontSpecMap(map[string]string{"F1": "Helvetica"})
 

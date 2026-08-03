@@ -46,8 +46,11 @@ individual subsystem off for offline or low-noise development.
 | `--log-file` |  | Log file path (logs to both stderr and file when set) |
 | `--log-level` | `info` | Log level: debug, info, warn, error |
 | `--no-auth` | `false` | Force the client local-only: suppress BOTH cloud-selection triggers at the Router.pick chokepoint (machineAuth forced false WITHOUT consulting --auth-token/KNOWLEDGE_AUTH_TOKEN, and the keychain replaced with a no-op store so a live `knowledge login` refresh token reports IsLoggedIn==false). Fail-closed: no routed op can reach a fulminate.io host regardless of credentials present. Capability reduction only — the cloud endpoint is never overridden. Use for offline/OSS mode and as the safety floor for the bug-hunt harness. |
+| `--no-hive-monitor` | `false` | Skip the background hive monitor loop. Individually addressable form of one of the three gates --headless implies — for daemons that need the LLM pipeline (which --headless disables) but must not run coordination loops (e.g. the bench harness's corpus-pull daemon). |
+| `--no-hive-reaper` | `false` | Skip the background hive reaper loop. See --no-hive-monitor for when to use the individual gates instead of --headless. |
 | `--no-llm-pipeline` | `false` | Skip client-side LLM pipeline (summarize + embed) wiring. The MCP daemon and other tools continue to work; only background summarization/embedding stops. |
 | `--no-propagation-runtime` | `false` | Skip client-side PropagationLoop wiring. The MCP daemon continues to serve and reflective tools still run on demand, but the hourly background cluster detection + valence propagation stops. Use for offline development or to silence background log noise. |
+| `--no-transcript-upload` | `false` | Skip the background transcript-upload loops, including their HOME-side transcript cache writes. See --no-hive-monitor for when to use the individual gates instead of --headless. |
 | `--no-worker-runtime` | `false` | Skip dream Runner wiring. Run knowledge purely to serve/exercise the graph (e.g. the bench harness) without starting its own background worker runtime. |
 | `--pipeline-tick` | `250ms` | Client-side LLM pipeline: per-graph collector poll interval |
 | `--port` | `15022` | TCP port the graph server listens on |
@@ -86,8 +89,11 @@ outlives any single session.
 | `--log-file` |  | Log file path (logs to both stderr and file when set) |
 | `--log-level` | `info` | Log level: debug, info, warn, error |
 | `--no-auth` | `false` | Force the client local-only: suppress BOTH cloud-selection triggers at the Router.pick chokepoint (machineAuth forced false WITHOUT consulting --auth-token/KNOWLEDGE_AUTH_TOKEN, and the keychain replaced with a no-op store so a live `knowledge login` refresh token reports IsLoggedIn==false). Fail-closed: no routed op can reach a fulminate.io host regardless of credentials present. Capability reduction only — the cloud endpoint is never overridden. Use for offline/OSS mode and as the safety floor for the bug-hunt harness. |
+| `--no-hive-monitor` | `false` | Skip the background hive monitor loop. Individually addressable form of one of the three gates --headless implies — for daemons that need the LLM pipeline (which --headless disables) but must not run coordination loops (e.g. the bench harness's corpus-pull daemon). |
+| `--no-hive-reaper` | `false` | Skip the background hive reaper loop. See --no-hive-monitor for when to use the individual gates instead of --headless. |
 | `--no-llm-pipeline` | `false` | Skip client-side LLM pipeline (summarize + embed) wiring. The MCP daemon and other tools continue to work; only background summarization/embedding stops. |
 | `--no-propagation-runtime` | `false` | Skip client-side PropagationLoop wiring. The MCP daemon continues to serve and reflective tools still run on demand, but the hourly background cluster detection + valence propagation stops. Use for offline development or to silence background log noise. |
+| `--no-transcript-upload` | `false` | Skip the background transcript-upload loops, including their HOME-side transcript cache writes. See --no-hive-monitor for when to use the individual gates instead of --headless. |
 | `--no-worker-runtime` | `false` | Skip dream Runner wiring. Run knowledge purely to serve/exercise the graph (e.g. the bench harness) without starting its own background worker runtime. |
 | `--pipeline-tick` | `250ms` | Client-side LLM pipeline: per-graph collector poll interval |
 | `--port` | `15022` | TCP port the graph server listens on |

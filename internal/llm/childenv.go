@@ -43,6 +43,6 @@ func ChildEnv(dropKeys []string, adds ...string) []string {
 // RunWorkerSubcommand and wireWorkerRuntime (see bootstrap.ParseFlags /
 // daemon wiring). It exists so a knowledge process can be run purely to
 // serve/exercise the graph without spinning its own background worker
-// runtime — e.g. the bench harness (cmd/client-bench) sets it on the
+// runtime — e.g. the validation harness (cmd/server-bench) sets it on the
 // knowledge process it launches.
 const NoWorkerRuntimeFlag = "--no-worker-runtime"

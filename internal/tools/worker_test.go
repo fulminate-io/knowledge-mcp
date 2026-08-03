@@ -154,8 +154,11 @@ func (d workerTestDeps) SegmentManager() SegmentSearcher              { return n
 func (d workerTestDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
 func (d workerTestDeps) SegmentShipper() SegmentShipper               { return nil }
 func (d workerTestDeps) SegmentPruner() SegmentPruner                 { return nil }
-func (d workerTestDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
-func (d workerTestDeps) PipelineScanner() PipelineScanner             { return nil }
+
+func (d workerTestDeps) SegmentCacheDropper() SegmentCacheDropper { return nil }
+func (d workerTestDeps) SegmentDeleter() SegmentDeleter           { return nil }
+func (d workerTestDeps) SegmentCoverage() SegmentCoverageReader   { return nil }
+func (d workerTestDeps) PipelineScanner() PipelineScanner         { return nil }
 
 func (d workerTestDeps) ClearHealLatch(kgtypes.GraphType, string) {}
 func (d workerTestDeps) ReflectionForcer() ReflectionForcer       { return nil }
@@ -427,7 +430,12 @@ func TestInterceptWorker_MalformedArgs(t *testing.T) {
 	require.True(t, handled, "malformed args must be handled, not fall through")
 	require.True(t, res.IsError)
 	require.NotEmpty(t, res.Content)
-	assert.Contains(t, res.Content[0].Text, "invalid arguments")
+	// The message now comes from the param-accounting gate, which runs ahead of
+	// the decode: a payload it cannot parse is one whose supplied keys it cannot
+	// read, and it says so rather than passing an unaccountable call through.
+	// The property under test is unchanged — malformed args are answered here,
+	// loudly, naming the tool.
+	assert.Contains(t, res.Content[0].Text, "worker: param accounting could not read the supplied params")
 }
 
 // assertableError is a tiny error type for runtime-error tests — keeps

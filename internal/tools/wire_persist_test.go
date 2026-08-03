@@ -187,6 +187,7 @@ func (f *fakeGraphCallerWithTraverse) Execute(_ context.Context, _ *knowledgev1.
 type fakeTraverseEdgesCaller struct {
 	results   []engine.TraversalResult
 	edges     []knowledgev1.Edge
+	truncated bool
 	execCalls int
 	lastPlan  *knowledgev1.QueryPlan
 }
@@ -201,6 +202,7 @@ func (f *fakeTraverseEdgesCaller) Execute(_ context.Context, req *knowledgev1.Ex
 	return &knowledgev1.ExecuteResponse{
 		TraversalResults: traversalResultsToProtoForTest(f.results),
 		TraversalEdges:   edgePtrsForTest(f.edges),
+		Truncated:        f.truncated,
 	}, nil
 }
 
@@ -219,7 +221,10 @@ func edgePtrsForTest(edges []knowledgev1.Edge) []*knowledgev1.Edge {
 // RETURN_MODE_TRAVERSAL Execute carrying Forward=&true, IncludeEdgeMetadata=true,
 // MaxHops==depth, the contains edge-type selection, and NO IncludeTombstones; and
 // that it returns the root-filtered descendant nodes plus the seeded contains
-// edges.
+// edges. The truncated return is asserted false here against an untruncated
+// response — TestTraverseDescendantsWithEdges_TruncatedPropagates below is its
+// known-positive, without which "false" could equally mean the flag is never
+// read at all.
 func TestTraverseDescendantsWithEdges(t *testing.T) {
 	const depth = 16
 	fc := &fakeTraverseEdgesCaller{
@@ -234,8 +239,9 @@ func TestTraverseDescendantsWithEdges(t *testing.T) {
 		},
 	}
 
-	nodes, edges, err := TraverseDescendantsWithEdges(context.Background(), fc, "root", kgtypes.EdgeKGContains, depth)
+	nodes, edges, truncated, err := TraverseDescendantsWithEdges(context.Background(), fc, "root", kgtypes.EdgeKGContains, depth)
 	require.NoError(t, err)
+	assert.False(t, truncated, "an untruncated response must not report truncation")
 
 	assert.Equal(t, 1, fc.execCalls, "exactly one traversal Execute")
 
@@ -257,4 +263,30 @@ func TestTraverseDescendantsWithEdges(t *testing.T) {
 	require.Len(t, edges, 2, "the seeded contains edges come back via traversal_edges")
 	assert.Equal(t, "child-1", edges[0].ToId)
 	assert.Equal(t, "child-2", edges[1].ToId)
+}
+
+// TestTraverseDescendantsWithEdges_TruncatedPropagates is the known-positive for
+// the truncated return: a response carrying Truncated=true must surface as true
+// to the caller, alongside the partial node/edge set it clamped. Without this,
+// the assert.False above would hold just as well against a helper that never
+// reads resp.Truncated at all.
+func TestTraverseDescendantsWithEdges_TruncatedPropagates(t *testing.T) {
+	fc := &fakeTraverseEdgesCaller{
+		truncated: true,
+		results: []engine.TraversalResult{
+			{Distance: 0, Node: &knowledgev1.Node{Id: "root", Type: string(kgtypes.NodePlan)}},
+			{Distance: 1, Node: &knowledgev1.Node{Id: "child-1", Type: string(kgtypes.NodePhase)}},
+		},
+		edges: []knowledgev1.Edge{
+			{FromId: "root", ToId: "child-1", Type: string(kgtypes.EdgeKGContains)},
+		},
+	}
+
+	nodes, edges, truncated, err := TraverseDescendantsWithEdges(context.Background(), fc, "root", kgtypes.EdgeKGContains, 16)
+	require.NoError(t, err)
+	assert.True(t, truncated, "resp.Truncated must reach the caller, not be dropped on the floor")
+	// The clamped result still comes back — truncation reports partiality, it
+	// does not suppress the rows already walked.
+	require.Len(t, nodes, 1)
+	require.Len(t, edges, 1)
 }

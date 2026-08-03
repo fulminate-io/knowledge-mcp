@@ -32,6 +32,8 @@ import (
 // not COMPILE — the two methods took one argument fewer. Its failure mode there is a
 // build failure, not an observed behavioral red.
 func TestSnapshotPerFormat(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	hnswFormat := hnsw.New().Name()
 	bm25Format := bm25.New().Name()

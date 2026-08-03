@@ -66,6 +66,7 @@ to see the vocabulary. For the full operation reference, run `help("mutate")`.
 | `branches_from` | string |  |  | Thought ID this branches from (mutate(create, type=thought) only). Adds an edge from the new thought to its parent for trace lineage. |
 | `charge_evidence` | array of string |  |  | Evidence node IDs backing the charge (mutate(create, type=charge) only). Renamed from `evidence` on the wire to avoid collision with the finding evidence field. |
 | `charge_evidence[]` | string |  |  |  |
+| `cited_range` | string |  |  | Optional locality hint accompanying verified_quote on a negation-class call, as "path/file.go:start-end". When set, the verbatim substring must resolve to the cited path; when empty the gate checks existence and currency only. TOP-LEVEL param, consumed by the gate before any write and never persisted. |
 | `command` | string |  |  | Verification command for criterion |
 | `concludes` | boolean |  |  | If true and question_id is set, marks the question as answered |
 | `conclusion` | string |  |  | Conclusion for answer operation |
@@ -83,7 +84,7 @@ to see the vocabulary. For the full operation reference, run `help("mutate")`.
 | `edges[].type` | string |  |  | Relationship type (required) |
 | `enforcement` | string |  |  | Rule enforcement mechanism |
 | `evidence` | string |  |  | Supporting evidence (for findings) |
-| `expand_to_descendants` | boolean |  |  | When updating status to 'completed' on a project/ticket/plan/phase, also walk the contains tree and write completed to every non-terminal descendant. Default true. Set false to update only the named node. This is a SINGLE-ID container path — a batch of container ids carrying a status (ids:[...]) is rejected, so issue container status updates per-id. Has no effect for non-completed statuses or non-container types. |
+| `expand_to_descendants` | boolean |  |  | When updating status to 'completed' on a project/ticket/plan/phase/step, also walk the contains tree and write completed to every non-terminal descendant whose own type is one of those five container types. Every other descendant — criterion, question, finding, research, decision, thought, and any other type — is left unchanged: those nodes record evidence rather than task progress, so a container closing above them is evidence of none of it. The response names every id it wrote and every node it left alone. Default true. Set false to update only the named node. This is a SINGLE-ID container path — a batch of container ids carrying a status (ids:[...]) is rejected, so issue container status updates per-id. Has no effect for non-completed statuses or non-container types. |
 | `findings` | string |  |  | Comma-separated finding node IDs for answer operation |
 | `format` | string |  |  | Output format: 'text' (default) or 'json' (structured per operation: create→{id, type, name, warnings}; link→{from, to, relationship}; answer→{id, name, conclusion}; update→{ids, fields}; delete→{deleted, total, ids}). |
 | `from` | string |  |  | Source node ID for link operation |
@@ -102,7 +103,7 @@ to see the vocabulary. For the full operation reference, run `help("mutate")`.
 | `language` | string |  |  | Language for practice graph operations (e.g. 'go', 'python') |
 | `last_validated` | string |  |  | Edge metadata (operation=link only). RFC3339 timestamp the linker stamps when (re-)asserting an edge. Routed into store.Edge.LastValidated. |
 | `link_graph` | string |  |  | Optional graph selector for operation=link (e.g. 'linkage' for the cross-graph linkage view). When set, the link is dispatched via store.LinkBatch against the named graph rather than the default knowledge graph. |
-| `links` | array of string |  |  | Node IDs to relate the new node to (finding/research/rule create, and thought create). Knowledge-graph IDs ride the atomic create as a node--relates-to-->target edge; code/cloud IDs are linked post-create via the cross-graph linkage. An unresolvable ID is dropped with a warning, never blocking the write. |
+| `links` | array of string |  |  | Node IDs to relate the new node to (finding/research/rule create, and thought create). Knowledge-graph IDs ride the atomic create as a node--relates-to-->target edge; code/cloud IDs are linked post-create via the cross-graph linkage. An unresolvable ID is dropped with a warning, never blocking the write. create_batch rejects it pre-write naming the field — context-linking is a capability that path does not have, not a param it drops. |
 | `links[]` | string |  |  |  |
 | `metadata` | object |  |  | Arbitrary key-value metadata pairs (string→string). On create: sets the node's initial metadata map. On update: merged per-key into existing metadata — keys in the payload overwrite, absent keys are preserved. Retrievable via Node.Value(key). |
 | `method` | string |  |  | Edge metadata (operation=link only). Short tag describing how the edge was derived (e.g. 'image-target', 'dockerfile-copy', 'manual'). Routed into store.Edge.Method. |
@@ -128,18 +129,20 @@ to see the vocabulary. For the full operation reference, run `help("mutate")`.
 | `references[].url` | string |  |  | URL of the cited source |
 | `relationship` | string |  |  | Relationship type for link (e.g., depends-on, contains, informed-by, relates-to) |
 | `scope` | string |  |  | Rule scope (e.g., '*.go', 'pkg/', 'commits') |
-| `session` | string |  |  | Session name to group the created node under via session--contains-->node (finding/research/rule create, and thought create). Creates the session if new. |
+| `session` | string |  |  | Session name to group the created node under via session--contains-->node (finding/research/rule create, and thought create). Creates the session if new. create_batch rejects it pre-write naming the field — context-linking is a capability that path does not have, not a param it drops. |
 | `source` | string |  |  | Source of the knowledge |
-| `status` | string |  |  | Status to set (for update operation) |
+| `status` | string |  |  | Status to set (for update operation). An explicit empty string CLEARS the status to blank on a local node — the one param whose empty value is a write rather than an omission. Rejected on tracker-backed nodes, whose tracker has no blank state. |
 | `step_id` | string |  |  | Step node ID to attach a criterion to |
 | `summary` | string |  |  | Required search-optimized one-line summary, max 500 chars, when create-ing an embed-only-knowledge node type (NodeType.Summarizable()=false). Handler-side enforcement returns an error when missing/empty/whitespace or > 500 chars. (max length: 500) |
+| `supports` | string |  |  | Node ID this finding supports — draws a finding--supports-->node edge as the finding is created. Read ONLY by mutate(create, type=finding); every other operation rejects it. |
 | `thought_parent` | string |  |  | Parent thought ID the charge attaches to (mutate(create, type=charge) only). |
-| `ticket_id` | string |  |  | Active ticket/project ID — born-linked as ticket--contains-->node so a finding/research/rule/decision is grouped under the work item that produced it (finding/research/rule create). An unresolvable ticket_id is dropped with a warning, never blocking the write. |
+| `ticket_id` | string |  |  | Active ticket/project ID — born-linked as ticket--contains-->node so a finding/research/rule/decision is grouped under the work item that produced it (finding/research/rule create). An unresolvable ticket_id is dropped with a warning, never blocking the write. create_batch rejects it pre-write naming the field — born-linking a batch is a capability that path does not have, not a param it drops. |
 | `to` | string |  |  | Target node ID for link operation |
-| `type` | string |  |  | Node type for create (finding, research, rule, criterion, resource, event, observation, memory, document) |
+| `type` | string |  |  | Node type for create (finding, research, rule, criterion, resource, event, observation, memory, document). criterion is knowledge-graph-only: criteria attach to the plan/step verifies structure, which no other graph family carries, so a criterion create naming any graph — including an explicit graph:"knowledge" — is rejected pre-write rather than routed. |
 | `updates` | array of object |  |  | For operation=bulk_update_metadata: per-item array; each entry carries {id (required), metadata (required, non-empty)}. Single store.Txn wraps every item — all-or-nothing. Backend-tagged metadata rejects the whole batch. Used by client-side cluster persistence + propagation writeback so per-batch RPC count stays at 1 regardless of node count. |
 | `updates[]` | object |  |  | Per-item shape: {id (required), metadata (required, non-empty map)} |
 | `updates[].id` | string |  |  | Target node ID (required) |
 | `updates[].metadata` | object |  |  | Key-value metadata pairs (required, non-empty) |
+| `verified_quote` | string |  |  | Negation-gate proof of work — a TOP-LEVEL param on the call, NOT a metadata key and NOT edge_evidence. REQUIRED for negation-class calls: mutate(link, relationship:"contradicts") and mutate(update, status:"invalidated"). Must be a verbatim substring of the TARGET node's CURRENT source (whitespace-normalized before matching). Consumed by the gate before any write and never persisted; supplying it on a non-negation call is rejected. |
 | `weight` | number |  |  | Charge weight 1-10 (mutate(create, type=charge) only). Significance of the evidence. |
 <!-- END GENERATED: params -->

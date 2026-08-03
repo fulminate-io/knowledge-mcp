@@ -152,6 +152,119 @@ func TestPivotSeedSearch_ClientServed(t *testing.T) {
 		"pivot seed must NOT dispatch a server search")
 }
 
+// TestInterceptQueryKnowledgeSearch_FilteredTextSearchClaimed is both the
+// reproduction and the permanent regression for the filtered text search: a
+// filter supplied alongside text must be CLAIMED by the client search arm and
+// actually APPLIED to the result set.
+//
+// The rows are red today for THREE different reasons, and the distinction
+// matters — seeing one row go green does not mean the others followed:
+//   - type / meta rows: the claim gate DECLINES, so the call falls through and
+//     compiles to a bare text-search plan with no Selection. The filter is
+//     dropped, not applied, and the knowledge server search path is retired, so
+//     the caller observes zero rows.
+//   - types-filter: the arm CLAIMS the call and returns UNFILTERED rows, because
+//     the query→search arg mapping reads only the singular type. Its failing
+//     assertion is the DroppedHit one, not the handled one.
+//   - recent-types-text: same unfiltered symptom on a path the schema already
+//     promises works. The bare (empty-text) recent browse honors types; a
+//     TEXT-bearing recent routes through the search arg mapping instead and
+//     drops them.
+//
+// The fixture is deliberately two-sided: one node satisfies every filter and one
+// fails each of them, with different concrete values so the two cannot collapse.
+// The empty-string metadata value on the dropped node is what makes meta-exists
+// non-vacuous — the '*' sentinel means present AND non-empty.
+func TestInterceptQueryKnowledgeSearch_FilteredTextSearchClaimed(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args map[string]any
+	}{
+		{"type-filter", map[string]any{"graph": "knowledge", "text": "auth", "type": "finding"}},
+		{"types-filter", map[string]any{"graph": "knowledge", "text": "auth", "types": []string{"finding"}}},
+		{"meta-equality", map[string]any{"graph": "knowledge", "text": "auth", "meta": map[string]any{"probe_key": "probe_value"}}},
+		{"meta-exists", map[string]any{"graph": "knowledge", "text": "auth", "meta": map[string]any{"probe_key": "*"}}},
+		{"type-and-meta", map[string]any{
+			"graph": "knowledge", "text": "auth", "type": "finding",
+			"meta": map[string]any{"probe_key": "probe_value"},
+		}},
+		{"recent-types-text", map[string]any{
+			"graph": "knowledge", "mode": "recent", "text": "auth", "types": []string{"finding"},
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var execHits atomic.Int64
+			gc, handler := newInterceptHarnessWithHandler(t, &execHits, cannedNodesResp(
+				&knowledgev1.Node{
+					Id: "keep", Type: "finding", SymbolName: "KeptHit", UpdatedAt: 2,
+					Metadata: map[string]string{"probe_key": "probe_value"},
+				},
+				&knowledgev1.Node{
+					Id: "drop", Type: "decision", SymbolName: "DroppedHit", UpdatedAt: 1,
+					Metadata: map[string]string{"probe_key": ""},
+				},
+			))
+			mgr := &fakeSegmentSearcher{hits: []searchengine.Hit{
+				{ID: "keep", Score: 0.9}, {ID: "drop", Score: 0.8},
+			}}
+			deps := &interceptDeps{gc: gc, segMgr: mgr}
+
+			handled, out := InterceptQueryKnowledgeSearch(opCtx(), deps, queryParams(t, tc.args))
+			require.True(t, handled, "%s must be claimed client-side", tc.name)
+			require.False(t, out.IsError, "%s: %v", tc.name, engine.FirstTextContent(out))
+
+			// A recent row proves it took the TEXT-bearing recent arm rather than the
+			// bare temporal browse, which drives no Manager.Search at all.
+			require.Equal(t, int64(1), mgr.calls.Load(), "%s drove the CLIENT engine", tc.name)
+			require.False(t, dispatchedAServerSearch(handler.recordedReqs()),
+				"%s must NOT dispatch a server search", tc.name)
+
+			body := engine.FirstTextContent(out)
+			assert.Contains(t, body, "KeptHit", "%s: the matching node must survive the filter", tc.name)
+			assert.NotContains(t, body, "DroppedHit",
+				"%s: the non-matching node must be FILTERED OUT, not merely tolerated", tc.name)
+		})
+	}
+}
+
+// TestInterceptQueryKnowledgeSearch_HybridModeClaimed pins the hybrid claim.
+// hybrid is the FIRST value in the published mode enum, and until this landed it
+// was claimed by nobody on the knowledge graph: the arm dropped it and the call
+// died at the generic engine deny.
+//
+// The custom-graph counterpart already claimed hybrid, so this is a mirror of an
+// in-tree twin rather than a new decision. Hybrid is claimed because it is the
+// DECLARED DEFAULT and names the fused arm — the one that runs BM25 and the
+// vector index together. It is a different arm from 'text', which runs BM25
+// alone; the two were once collapsed onto one value, and a caller asking for
+// text got the fused behavior anyway.
+func TestInterceptQueryKnowledgeSearch_HybridModeClaimed(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		args map[string]any
+	}{
+		{"hybrid-text", map[string]any{"graph": "knowledge", "mode": "hybrid", "text": "auth"}},
+		{"hybrid-text-type", map[string]any{
+			"graph": "knowledge", "mode": "hybrid", "text": "auth", "type": "finding",
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var execHits atomic.Int64
+			gc, handler := newInterceptHarnessWithHandler(t, &execHits, &knowledgev1.ExecuteResponse{})
+			mgr := &fakeSegmentSearcher{hits: []searchengine.Hit{}}
+			deps := &interceptDeps{gc: gc, segMgr: mgr}
+
+			handled, out := InterceptQueryKnowledgeSearch(opCtx(), deps, queryParams(t, tc.args))
+			require.True(t, handled, "%s must be claimed client-side", tc.name)
+			require.False(t, out.IsError, "%s: %v", tc.name, engine.FirstTextContent(out))
+
+			require.Equal(t, int64(1), mgr.calls.Load(), "%s drove the CLIENT engine", tc.name)
+			require.False(t, dispatchedAServerSearch(handler.recordedReqs()),
+				"%s must NOT dispatch a server search", tc.name)
+		})
+	}
+}
+
 // TestInterceptQueryKnowledgeSearch_GateMisses asserts the claim falls through
 // (handled=false) for non-recent modes and non-knowledge graphs so the rest of
 // the chain owns them. NOTE: bare empty-text recent is NO LONGER a gate-miss — it
@@ -166,6 +279,14 @@ func TestInterceptQueryKnowledgeSearch_GateMisses(t *testing.T) {
 		{"graph": "knowledge", "mode": "stats"},                               // non-search mode
 		{"graph": "knowledge", "id": "n1"},                                    // default-mode getNode (not text)
 		{"graph": "knowledge", "type": "finding"},                             // default-mode type-browse (not text)
+		// CHARACTERIZATION, not red-first: these two are green before AND after the
+		// filtered-search fix. A by-id read stays a lookup even when text rides
+		// along, mirroring the compiler's ids → id → text precedence. They also
+		// stay green once the id-selector refusal lands, because that refusal sits
+		// at the engine precheck DOWNSTREAM of this intercept — the intercept still
+		// declines here, exactly as asserted.
+		{"graph": "knowledge", "id": "n1", "text": "auth"},            // by-id lookup wins over text
+		{"graph": "knowledge", "ids": []string{"n1"}, "text": "auth"}, // bulk by-id wins over text
 	} {
 		handled, _ := InterceptQueryKnowledgeSearch(opCtx(), deps, queryParams(t, args))
 		assert.False(t, handled, "args %v must fall through", args)

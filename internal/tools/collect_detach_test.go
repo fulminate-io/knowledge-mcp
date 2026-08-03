@@ -166,8 +166,11 @@ func (d *detachFullDeps) SegmentManager() SegmentSearcher              { return 
 func (d *detachFullDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
 func (d *detachFullDeps) SegmentShipper() SegmentShipper               { return nil }
 func (d *detachFullDeps) SegmentPruner() SegmentPruner                 { return nil }
-func (d *detachFullDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
-func (d *detachFullDeps) PipelineScanner() PipelineScanner             { return nil }
+
+func (d *detachFullDeps) SegmentCacheDropper() SegmentCacheDropper { return nil }
+func (d *detachFullDeps) SegmentDeleter() SegmentDeleter           { return nil }
+func (d *detachFullDeps) SegmentCoverage() SegmentCoverageReader   { return nil }
+func (d *detachFullDeps) PipelineScanner() PipelineScanner         { return nil }
 
 func (d *detachFullDeps) ClearHealLatch(kgtypes.GraphType, string) {}
 func (d *detachFullDeps) ReflectionForcer() ReflectionForcer       { return nil }

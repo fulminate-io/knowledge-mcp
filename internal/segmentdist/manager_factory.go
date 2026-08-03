@@ -21,40 +21,30 @@ import (
 // selected by the login gate (GCS when logged in, L2-local otherwise) for the
 // graph's selector, and a content-addressed L2 cache rooted per-graph so distinct
 // graphs never collide on the content-hash filename space.
-func (m *Manager) managerFor(gt kgtypes.GraphType, name string) *distManager[[]byte, struct{}] {
-	// Embed engine: hnsw.New() is the deterministic builder (the only HNSW builder),
-	// so the live ship path is byte-reproducible — two writers building the same
-	// nodes mint the same content-hash blob, the content-addressed store dedups to
-	// one copy at refcount-N, and exact-match recall is recovered. Auto-reclaim
-	// superseded constituents from the LIVE L2 cache on every background merge.
-	return m.hnswManagerFor(m.managers, hnsw.New(), gt, name, true)
-}
-
-// hnswManagerFor is the shared HNSW distManager factory both the embed path
-// (managerFor → m.managers) and the segment_rebuild path
-// (AddDeterministic/FlushDeterministic → m.detManagers) route through. dst selects
-// WHICH per-graph map the memoized instance is keyed in; fmtVariant is the HNSW
-// Format (always the deterministic builder now). The two maps are distinct so the
-// embed and rebuild engines for the SAME graph never share a coalescing buffer or a
-// shippedIDs seed — but they share one content-addressed cache root (Name() is the
-// constant "hnsw"), which is SAFE because content-hash filenames key on the bytes:
-// both engines build the same nodes byte-identically and so correctly share one
-// cache entry, while non-overlapping content lands under a distinct hash — no
-// collision either way.
+// hnsw.New() is the deterministic builder (the only HNSW builder), so the live ship
+// path is byte-reproducible — two writers building the same nodes mint the same
+// content-hash blob, the content-addressed store dedups to one copy at refcount-N, and
+// exact-match recall is recovered.
 //
-// autoReclaim gates the merge-completion hook: the EMBED engine (managerFor) wires
-// Options.OnMerge so a background merge reclaims the superseded constituents from
-// its live L2 cache; the DETERMINISTIC rebuild engine passes false (nil OnMerge),
-// because its superseded segments are reclaimed through the ROLE-A
-// FlushDeterministic→InvalidateLocal path, NOT the live embed cache — auto-
-// reclaiming there would Remove against the wrong cache lifecycle.
-func (m *Manager) hnswManagerFor(
-	dst map[graphKey]*distManager[[]byte, struct{}], fmtVariant hnsw.Format, gt kgtypes.GraphType, name string, autoReclaim bool,
-) *distManager[[]byte, struct{}] {
+// IT IS THE ONE HNSW FACTORY. It used to be a shared body behind this wrapper, serving a
+// second DETERMINISTIC rebuild engine keyed in its own per-graph map, and taking the
+// destination map, the HNSW Format and an auto-reclaim flag as parameters so one body
+// could build either. The rebuild finalizes at THIS engine now, so all three parameters
+// had exactly one possible value — a parameter with one possible value advertises a
+// flexibility that does not exist — and the second map is gone with the topology that
+// needed it.
+//
+// The engine is built with the background merge triggers disarmed, because this
+// package manages the segment layout itself and an automatic consolidation would
+// merge across the boundaries it maintains. format.Merge is untouched — only the
+// automatic trigger is off — and OnMerge stays wired, so a merge this package
+// drives still reclaims the superseded constituents from the L2 cache.
+func (m *Manager) managerFor(gt kgtypes.GraphType, name string) *distManager[[]byte, struct{}] {
+	hnswFormat := hnsw.New()
 	k := graphKey{graphType: gt, graphName: name}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	if dm, ok := dst[k]; ok {
+	if dm, ok := m.managers[k]; ok {
 		return dm
 	}
 
@@ -62,8 +52,8 @@ func (m *Manager) hnswManagerFor(
 	// Build the cache FIRST so the login gate can hand the OSS-local source its L2
 	// backing (the localSegmentSource is L2-only). newSegmentSource picks
 	// gcs-vs-local by the caller's live login state.
-	cache := newDiskSegmentCache(graphCacheDirFor(m.cacheDir, gt, name, fmtVariant.Name()), m.maxBytes)
-	source := m.newSegmentSource(cache, gt, name, target, fmtVariant.Name())
+	cache := newDiskSegmentCache(graphCacheDirFor(m.cacheDir, gt, name, hnswFormat.Name()), m.maxBytes)
+	source := m.newSegmentSource(cache, gt, name, target, hnswFormat.Name())
 
 	// var-before-assign: the OnMerge closure back-references the distManager that is
 	// constructed AFTER the engine. Safe because OnMerge cannot fire before the
@@ -71,19 +61,37 @@ func (m *Manager) hnswManagerFor(
 	// engine holds no documents at construction and the first merge tick is 50ms
 	// out against an empty set).
 	var dm *distManager[[]byte, struct{}]
-	opts := searchengine.Options{}
-	if autoReclaim {
-		opts.OnMerge = func(res searchengine.MergeResult) { dm.reclaimMerged(res) }
+	// Background merge triggers off: this owner manages the segment layout itself,
+	// so an automatic consolidation would merge across the boundaries it maintains.
+	// Both HNSW engines route through here, so this one literal covers them.
+	opts := searchengine.Options{
+		SegmentCountTarget: searchengine.MergeDisabledCountTarget,
+		DeletesPctAllowed:  searchengine.MergeDisabledDeadRatio,
 	}
-	engine := searchengine.New[[]byte, struct{}](fmtVariant, opts)
-	dm = newDistManager(engine, source, cache, target, fmtVariant.Name())
+	opts.OnMerge = func(res searchengine.MergeResult) { dm.reclaimMerged(res) }
+	engine := searchengine.New[[]byte, struct{}](hnswFormat, opts)
+	dm = newDistManager(engine, source, cache, target, hnswFormat.Name())
 	// Suppression hook: when this engine's publish coverage gate becomes
 	// unsatisfiable, record the graph so the periodic reconcile consumer looks
 	// sooner. Same after-construction assignment safety as OnMerge above — the hook
 	// cannot fire before this function returns. Because BOTH HNSW maps route through
 	// here, this one wiring covers the embed and the deterministic engine alike.
 	dm.onCoverageSuppressed = func() { m.flagReconcileNudge(gt, name) }
-	dst[k] = dm
+	// Record every LANDED manifest swap's fingerprint so the off-hot-path
+	// completeness reconcile can gate its source read on a local comparison. BOTH
+	// HNSW maps route through here, so the embed and the deterministic engine both
+	// record — correctly, since they publish the SAME (graph, "hnsw") manifest and
+	// whichever swapped last is the current one.
+	dm.onManifestPublished = func(ids []searchengine.SegmentID) {
+		if err := m.saveManifestFingerprint(gt, name, hnswFormat.Name(), fingerprintOf(ids)); err != nil {
+			slog.Warn("segmentdist: could not record the published manifest fingerprint",
+				"graph_type", gt, "name", name, "format", hnswFormat.Name(), "err", err)
+		}
+	}
+	// Seed every import from the owner's live tombstone set, read at import time
+	// rather than captured, so ids learned after this engine was built still apply.
+	dm.tombstoneSeed = func() []searchengine.ExternalID { return m.graphTombstones(gt, name) }
+	m.managers[k] = dm
 	return dm
 }
 
@@ -110,17 +118,33 @@ func (m *Manager) bm25ManagerFor(gt kgtypes.GraphType, name string) *distManager
 
 	// var-before-assign OnMerge: the BM25 engine is embed-only (no deterministic
 	// variant), so it always auto-reclaims superseded constituents from its live L2
-	// cache on a background merge. Same back-reference-after-construction safety as
-	// hnswManagerFor (OnMerge cannot fire before this returns).
+	// cache on a completed merge. Same back-reference-after-construction safety as
+	// hnswManagerFor (OnMerge cannot fire before this returns). The background merge
+	// triggers are disarmed here for the same reason as the HNSW engines.
 	var dm *distManager[bm25.Query, *bm25.CorpusStats]
 	engine := searchengine.New[bm25.Query, *bm25.CorpusStats](bm25.New(), searchengine.Options{
-		OnMerge: func(res searchengine.MergeResult) { dm.reclaimMerged(res) },
+		SegmentCountTarget: searchengine.MergeDisabledCountTarget,
+		DeletesPctAllowed:  searchengine.MergeDisabledDeadRatio,
+		OnMerge:            func(res searchengine.MergeResult) { dm.reclaimMerged(res) },
 	})
 	dm = newDistManager(engine, source, cache, target, bm25.New().Name())
 	// Suppression hook, mirroring hnswManagerFor: the BM25 engine keeps its OWN skip
 	// streak, so it can cross its suppression transition independently of the HNSW
 	// engines for the same graph. The nudge set is keyed by graph, so those collapse.
 	dm.onCoverageSuppressed = func() { m.flagReconcileNudge(gt, name) }
+	// Same publish-time fingerprint record as the HNSW engines, under this format's
+	// own key: the two formats carry SEPARATE manifests over the same nodes, so a
+	// shortfall in one says nothing about the other and each needs its own number.
+	dm.onManifestPublished = func(ids []searchengine.SegmentID) {
+		if err := m.saveManifestFingerprint(gt, name, bm25.New().Name(), fingerprintOf(ids)); err != nil {
+			slog.Warn("segmentdist: could not record the published manifest fingerprint",
+				"graph_type", gt, "name", name, "format", bm25.New().Name(), "err", err)
+		}
+	}
+	// Same import-time tombstone seed as the HNSW engines: the field corpus indexes
+	// the same nodes and carries its own manifest, so a pre-delete BM25 blob
+	// resurrects a removed node exactly as a vector blob would.
+	dm.tombstoneSeed = func() []searchengine.ExternalID { return m.graphTombstones(gt, name) }
 	m.bm25Managers[k] = dm
 	return dm
 }

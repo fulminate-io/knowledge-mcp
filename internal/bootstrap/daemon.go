@@ -27,31 +27,34 @@ import (
 )
 
 // the bind-first startup change UNIFIED SHUTDOWN BUDGET (keep these in sync with the Makefile
-// daemon-stop drain loop count): on SIGTERM, runServe drains SEVEN Stops
+// daemon-stop drain loop count): on SIGTERM, runServe drains EIGHT bounded stages
 // SEQUENTIALLY in LIFO defer order — reaper.Stop + monitor.Stop (both marshaled by
 // the startHiveLoops stop closure deferred in runServe, reaper first), then
-// drainOnShutdown's wireJoinDeadline wait + pipeline.Stop + runtime.Stop +
-// propLoop.Stop + collectRuntime.Stop. The budget inequality is:
+// drainOnShutdown's wireJoinDeadline wait + the segment backlog drain +
+// pipeline.Stop + runtime.Stop + propLoop.Stop + collectRuntime.Stop. The budget
+// inequality is:
 //
-//	reaper.Stop + monitor.Stop + wireJoinDeadline + pipeline.Stop + runtime.Stop +
-//	propLoop.Stop + collectRuntime.Stop  <=  Makefile daemon-stop drain window.
+//	reaper.Stop + monitor.Stop + wireJoinDeadline + segment backlog drain +
+//	pipeline.Stop + runtime.Stop + propLoop.Stop + collectRuntime.Stop
+//	  <=  Makefile daemon-stop drain window.
 //
-// Every Stop is cooperative (the monitor + reaper cancel their ctx before their
+// Every stage is cooperative (the monitor + reaper cancel their ctx before their
 // bounded wg.Wait; PropagationLoop.Stop and CollectRuntime.Stop cancel baseCtx
-// before their inFlight drain; the pipeline drains its bounded worker pool), so a
-// clean drain finishes in a few seconds — the per-Stop deadlines below are
-// abandon-backstops, not expected durations. Pinned to 3s each → 7 * 3s = 21s
-// worst-case, under the Makefile's 24s drain window. If you change one of these,
-// re-check the Makefile loop count (and the reaper/monitor Stop deadlines in
-// startHiveLoops) so the inequality still holds.
+// before their inFlight drain; the pipeline drains its bounded worker pool; the
+// segment drain skips any graph whose ship outlives the window), so a clean drain
+// finishes in a few seconds — the per-stage deadlines below are abandon-backstops,
+// not expected durations. Pinned to 3s each → 8 * 3s = 24s worst-case, under the
+// Makefile's 27s drain window. If you change one of these, re-check the Makefile
+// loop count (and the reaper/monitor Stop deadlines in startHiveLoops) so the
+// inequality still holds.
 const (
 	// wireJoinDeadline bounds how long drainOnShutdown waits for the background
 	// wiring goroutine (wireRuntimesBackground) to finish before it gives up and
 	// drains only the already-ready subsystems.
 	wireJoinDeadline = 3 * time.Second
-	// daemonStopDeadline is the per-Stop drain bound for the pipeline, dream
-	// Runner, PropagationLoop, collect runtime, hive monitor, and hive reaper. See
-	// the budget note above.
+	// daemonStopDeadline is the per-stage drain bound for the segment backlog
+	// drain, pipeline, dream Runner, PropagationLoop, collect runtime, hive
+	// monitor, and hive reaper. See the budget note above.
 	daemonStopDeadline = 3 * time.Second
 )
 
@@ -158,7 +161,17 @@ func (c *client) drainOnShutdown() {
 			slog.Warn("wiring did not finish before shutdown; draining only ready subsystems")
 		}
 	}
-	// Flag-gated drain in the fixed order (pipeline, dream Runner,
+	// The segment backlog drains FIRST, ahead of pipeline.Stop, because the segment
+	// manager is reached through the pipeline: once that Stop returns there is no
+	// producer left to ship what is queued, and the in-memory backlog is discarded
+	// silently. Gated on the same pipeline readiness flag — a daemon that never
+	// finished wiring the pipeline has no segment manager to drain.
+	if c.PipelineReady() && c.segmentMgr != nil {
+		drainCtx, drainCancel := context.WithTimeout(context.Background(), daemonStopDeadline)
+		c.drainSegmentBacklog(drainCtx)
+		drainCancel()
+	}
+	// Flag-gated drain in the fixed order (segment backlog, pipeline, dream Runner,
 	// PropagationLoop, then the always-constructed collect runtime). The readiness
 	// flag guarantees the handle was published before we read it; the nil-check is
 	// belt-and-suspenders. Each Stop is bounded to daemonStopDeadline (3s) — see

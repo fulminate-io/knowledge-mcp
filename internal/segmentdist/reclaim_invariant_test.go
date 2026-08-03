@@ -103,6 +103,8 @@ func sortedKeys[V any](m map[searchengine.ExternalID]V) []searchengine.ExternalI
 // clause fail. This confirms the assertion detects the false-prune condition it
 // guards and that it type-checks for both [Q,S] shapes.
 func TestAssertLiveSetBackedByL2SelfTest(t *testing.T) {
+	t.Parallel()
+
 	// --- HNSW instantiation ([]byte, struct{}) via a real embed engine. ---
 	t.Run("hnsw_clean_passes_and_orphan_fails", func(t *testing.T) {
 		_, gc := newSegmentHarness(t)

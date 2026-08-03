@@ -40,6 +40,8 @@ const shipPartitionSanityBound = 90 << 20 // 94371840 bytes — well under Cloud
 // byte sizes are controlled precisely without materializing 64 MiB of mock docs;
 // the manager + sharedServerFake harness is the real ship round-trip.
 func TestShipNewPartitionsOversizedDiff(t *testing.T) {
+	t.Parallel()
+
 	svc, gc := newSegmentHarness(t)
 	target := &knowledgev1.GraphSelector{Graph: "code", Repo: "shipsplit"}
 	ctx := context.Background()

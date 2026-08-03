@@ -27,12 +27,6 @@ type Format struct{}
 // writers' segments dedup to one copy and exact-match recall is recovered.
 func New() Format { return Format{} }
 
-// NewDeterministic is retained as an alias for New() — the HNSW builder is
-// deterministic unconditionally now, so there is no separate variant. Kept so the
-// segment_rebuild wiring that named the deterministic builder explicitly still
-// reads clearly at its call sites.
-func NewDeterministic() Format { return Format{} }
-
 // Compile-time contract assertions.
 var (
 	_ searchengine.SegmentFormat[[]byte, struct{}] = Format{}
@@ -88,15 +82,22 @@ func (Format) Decode(blob []byte) (searchengine.Segment[[]byte, struct{}], error
 // iterates each segment's (externalID, vector) pairs, keeps only members for which
 // accept[i](id) is true, and re-INSERTS the survivors into a fresh graph. An HNSW
 // graph cannot be spliced (neighbor links are internal-id-relative), so re-add is
-// the only correct merge — this is exactly how Lucene merges HNSW. The result is a
-// single all-live consolidated segment; the engine drops the inputs' liveDocs.
+// the only correct merge — this is exactly how Lucene merges HNSW.
 //
-// Serial re-insertion is correct here: Merge runs on the engine's single
-// background merge goroutine (at most one merge in flight) and Insert is not
-// internally parallel-safe across a single growing graph.
+// Construction goes through the SAME byte-reproducible serial builder Build uses,
+// which buys two properties the caller depends on. The merge CONVERGES: repeating
+// it over the same survivors yields the same bytes and therefore the same content
+// hash, so one writer re-running its work republishes an identical segment instead
+// of a fresh generation. And it is ORDER-INDEPENDENT: the builder sorts by id, so
+// the result does not depend on which order the inputs were visited in, which is
+// what makes a repeated consolidation idempotent even when the survivor set is
+// assembled differently.
+//
+// Collecting the survivors first and building once is what enables both. Inserting
+// into a graph as each input is walked would make the result depend on input order
+// and on a per-call random seed.
 func (Format) Merge(segs []searchengine.Segment[[]byte, struct{}], accept []func(searchengine.ExternalID) bool) (searchengine.Segment[[]byte, struct{}], error) {
-	merged := newBinaryGraph(defaultVecBytes, defaultM, defaultEfConstruction)
-	merged.setEfSearch(defaultEfSearch)
+	var items []binaryBuildItem
 	for i, s := range segs {
 		hs, ok := s.(*hnswSegment)
 		if !ok {
@@ -110,10 +111,52 @@ func (Format) Merge(segs []searchengine.Segment[[]byte, struct{}], accept []func
 			if keep != nil && !keep(externalID) {
 				return
 			}
-			merged.Insert(externalID, vec)
+			items = append(items, binaryBuildItem{id: externalID, vec: vec})
 		})
 	}
+	merged := buildBinaryHNSWSerialDeterministic(dedupeItemsByID(items), defaultVecBytes, defaultM, defaultEfConstruction)
+	merged.setEfSearch(defaultEfSearch)
 	return &hnswSegment{graph: merged}, nil
+}
+
+// dedupeItemsByID collapses the collected merge items to ONE per external id,
+// keeping the LAST occurrence and preserving the surviving order.
+//
+// WITHOUT THIS THE MERGE IS THE DEFECT. Constituents that share an id both pass the
+// accept predicate — same id, both live, same partition — so both copies reach the
+// builder and the graph ends up holding two nodes for one id, while the engine's
+// route map records a single ordinal. Every membership check still passes and
+// retrieval collapses: measured at recall 0.417 even when the query vector is exactly
+// what the engine stored for that id.
+//
+// WHY LAST rather than first, and what it does and does not promise. The caller hands
+// segments in a deliberate order — resident constituents sorted by segment id, then
+// the freshly built segment appended LAST — so keeping the last copy yields exactly
+// two guarantees:
+//   - Where a FRESH WRITE exists for an id, it wins. That is semantic newest-wins,
+//     and it is the case the transient write window produces.
+//   - Between two RESIDENT layers with no supersession between them, the winner is
+//     whichever sorted later by segment id: ARBITRARY, but STABLE across runs and
+//     across shuffled input order.
+//
+// It is NOT newest-wins overall, and describing it that way would be wrong for the
+// second case — which is precisely the case that produced this defect, where two
+// imported layers arrived all-live with no supersession ever having run between them.
+func dedupeItemsByID(items []binaryBuildItem) []binaryBuildItem {
+	lastAt := make(map[string]int, len(items))
+	for i, it := range items {
+		lastAt[it.id] = i
+	}
+	if len(lastAt) == len(items) {
+		return items // no id repeated across the constituents — the ordinary merge.
+	}
+	out := make([]binaryBuildItem, 0, len(lastAt))
+	for i, it := range items {
+		if lastAt[it.id] == i {
+			out = append(out, it)
+		}
+	}
+	return out
 }
 
 // AggregateStats is a no-op for HNSW — binary search needs no corpus-wide stats.

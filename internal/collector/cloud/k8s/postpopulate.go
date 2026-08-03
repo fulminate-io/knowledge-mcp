@@ -64,8 +64,7 @@ func postPopulate(ctx context.Context, gc postpopulate.GraphCaller, graphName st
 		return err
 	}
 
-	// Service → cloud LB cross-graph linkage (Phase 3 of plan
-	// 7c08b7524dbb...). Emits EXPOSED_BY edges from LoadBalancer Services
+	// Service → cloud LB cross-graph linkage. Emits EXPOSED_BY edges from LoadBalancer Services
 	// whose Status.LoadBalancer.Ingress resolves to a GCP forwardingRule
 	// (by IP) or AWS ELB (by Hostname). Silent no-op when no cloud graphs
 	// are loaded. Runs before workload/external resolvers to match the

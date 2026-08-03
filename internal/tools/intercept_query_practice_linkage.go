@@ -56,16 +56,16 @@ func InterceptQueryPracticeLinkage(ctx context.Context, deps ClientDeps, params 
 		if !ok {
 			return true, res
 		}
-		return true, routePracticeClient(ctx, deps, sc, a)
+		return true, routePracticeClient(ctx, deps, sc, a, params.Arguments)
 	case "linkage":
 		sc, res, ok := statsSeamFor(deps, "linkage")
 		if !ok {
 			return true, res
 		}
-		return true, routeLinkageClient(ctx, sc, a)
+		return true, routeLinkageClient(ctx, sc, a, params.Arguments)
 	case "web", "pdf":
 		// web/pdf ranked text is retired without touching the wire — no gc needed.
-		return routeWebPDFClient(a)
+		return routeWebPDFClient(a, params.Arguments)
 	default:
 		return false, kgtools.ToolResult{}
 	}
@@ -94,50 +94,36 @@ func statsSeamFor(deps ClientDeps, graph string) (statsRPC, kgtools.ToolResult, 
 // everything else (by-id getNode, type-browse, mode=stats, mode=modules) returns
 // (false,_) so the engineDispatch path serves it (compileQuery lowers those to
 // ById/Match/GRAPH_NAMES — never RETURN_MODE_SEARCH).
-func routeWebPDFClient(a queryArgs) (bool, kgtools.ToolResult) {
+func routeWebPDFClient(a queryArgs, raw json.RawMessage) (bool, kgtools.ToolResult) {
 	isRankedText := (a.Text != "" || len(a.Queries) > 0) &&
 		a.ID == "" &&
 		(a.Mode == "" || a.Mode == "text")
 	if isRankedText {
+		if err := accountQueryParams(armWebPDFSearchRetired, raw); err != nil {
+			return true, errorResult(err.Error())
+		}
 		return true, rankedSearchRetiredResult(a.Graph)
 	}
 	return false, kgtools.ToolResult{} // index-free op → engineDispatch serves it.
 }
 
-// routePracticeClient dispatches the three practice shapes.
-func routePracticeClient(ctx context.Context, deps ClientDeps, gc statsRPC, a queryArgs) kgtools.ToolResult {
+// routePracticeClient dispatches the three practice shapes. raw is the caller's
+// verbatim payload, threaded explicitly (rather than stashed on queryArgs) so
+// the per-arm accounting gate cannot be forgotten at a claim point.
+func routePracticeClient(ctx context.Context, deps ClientDeps, gc statsRPC, a queryArgs, raw json.RawMessage) kgtools.ToolResult {
 	// (1) No language → list practice graphs.
 	if a.Language == "" {
+		if err := accountQueryParams(armPracticeListGraphs, raw); err != nil {
+			return errorResult(err.Error())
+		}
 		return listPracticeGraphs(ctx, deps)
 	}
 	// (2) mode=stats.
 	if a.Mode == "stats" {
-		resp, err := gc.Stats(ctx, &knowledgev1.StatsRequest{Target: &knowledgev1.GraphSelector{Graph: "practice", Language: a.Language}})
-		if err != nil {
-			return errorResult(fmt.Sprintf("practice %q graph stats failed: %s", a.Language, err.Error()))
+		if err := accountQueryParams(armPracticeStats, raw); err != nil {
+			return errorResult(err.Error())
 		}
-		stats := resp.GetGraphStats()
-		if a.Format == "json" {
-			return jsonResult(map[string]any{
-				"graph":               "practice",
-				"language":            a.Language,
-				"node_count":          stats.GetNodeCount(),
-				"edge_count":          stats.GetEdgeCount(),
-				"binary_vector_count": stats.GetBinaryVectorCount(),
-				"nodes_by_type":       stats.GetNodesByType(),
-				"edges_by_type":       stats.GetEdgesByType(),
-			})
-		}
-		var sb strings.Builder
-		fmt.Fprintf(&sb, "## Practice Graph: %s\n\n", a.Language)
-		sb.WriteString(engine.RenderStatsBreakdown(stats))
-		if a.Samples {
-			samples := fetchPracticeSamples(ctx, gc.Execute, a.Language, stats)
-			var sampleSB strings.Builder
-			engine.RenderSampleNames(&sampleSB, stats, samples)
-			sb.WriteString(sampleSB.String())
-		}
-		return textResult(sb.String())
+		return practiceStatsResult(ctx, gc, a)
 	}
 	// (3) search/browse with language.
 	query := practiceQueryText(a)
@@ -146,6 +132,9 @@ func routePracticeClient(ctx context.Context, deps ClientDeps, gc statsRPC, a qu
 	// graph (kills the silent-0). The empty-language list-graphs BROWSE above is
 	// preserved; only the explicit "all" sentinel fans out.
 	if a.Language == "all" {
+		if err := accountQueryParams(armPracticeSearchFanOut, raw); err != nil {
+			return errorResult(err.Error())
+		}
 		return composePracticeSearchFanOut(ctx, deps, deps.SegmentManager(), query, a.Format)
 	}
 
@@ -157,7 +146,47 @@ func routePracticeClient(ctx context.Context, deps ClientDeps, gc statsRPC, a qu
 	// stats/sample shapes (arm 2) are unchanged — only the ranked search arm
 	// reroutes. An un-collected practice graph (no segments) renders zero results
 	// cleanly.
+	if err := accountQueryParams(armPracticeSearch, raw); err != nil {
+		return errorResult(err.Error())
+	}
 	return composePracticeSearchClient(ctx, deps, deps.SegmentManager(), a.Language, query, a.Format)
+}
+
+// practiceStatsResult renders the practice stats body: Stats RPC →
+// RenderStatsBreakdown under the per-language header, or the json envelope, plus
+// the bounded sample names when samples=true. Split out of routePracticeClient
+// so that router stays a flat gate-and-delegate sequence — the accounting gate
+// added a nested block to each arm, and the stats arm was the one that carried
+// enough body to tip the router over the nesting budget.
+func practiceStatsResult(ctx context.Context, gc statsRPC, a queryArgs) kgtools.ToolResult {
+	resp, err := gc.Stats(ctx, &knowledgev1.StatsRequest{
+		Target: &knowledgev1.GraphSelector{Graph: "practice", Language: a.Language},
+	})
+	if err != nil {
+		return errorResult(fmt.Sprintf("practice %q graph stats failed: %s", a.Language, err.Error()))
+	}
+	stats := resp.GetGraphStats()
+	if a.Format == "json" {
+		return jsonResult(map[string]any{
+			"graph":               "practice",
+			"language":            a.Language,
+			"node_count":          stats.GetNodeCount(),
+			"edge_count":          stats.GetEdgeCount(),
+			"binary_vector_count": stats.GetBinaryVectorCount(),
+			"nodes_by_type":       stats.GetNodesByType(),
+			"edges_by_type":       stats.GetEdgesByType(),
+		})
+	}
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "## Practice Graph: %s\n\n", a.Language)
+	sb.WriteString(engine.RenderStatsBreakdown(stats))
+	if a.Samples {
+		samples := fetchPracticeSamples(ctx, gc.Execute, a.Language, stats)
+		var sampleSB strings.Builder
+		engine.RenderSampleNames(&sampleSB, stats, samples)
+		sb.WriteString(sampleSB.String())
+	}
+	return textResult(sb.String())
 }
 
 // composePracticeSearchClient runs the practice ranked-search arm against the

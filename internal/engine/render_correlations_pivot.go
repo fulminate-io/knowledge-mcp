@@ -22,6 +22,21 @@ import (
 // but this composer drives only the non-logs path (logs is owned by
 // InterceptLogsQuery earlier in the chain).
 
+// The correlations bounds. CorrelationsEdgeScanCap bounds the WORK (edges the
+// composer asks the server for); the row caps bound the OUTPUT (rows rendered).
+// They are distinct knobs and must not be conflated.
+const (
+	// CorrelationsRowCapDefault is the rendered row count when the caller passes
+	// no limit; 100 rows measured at 14,437 bytes.
+	CorrelationsRowCapDefault = 100
+	// CorrelationsRowCapMax is the ceiling on a caller-supplied limit.
+	CorrelationsRowCapMax = 1000
+	// CorrelationsEdgeScanCap is the number of edges the composer will ask the
+	// server for — ~5 MB at the measured ~99 bytes/edge, against 20.4 MB for all
+	// 216,109 edges of the production knowledge graph.
+	CorrelationsEdgeScanCap = 50000
+)
+
 // CorrelationEdgeRow pairs an edge with its resolved from/to names + types — the
 // row shape RenderCorrelations consumes. The composer builds these from the
 // bulk RETURN_MODE_EDGES decode + the node-set name map.
@@ -35,12 +50,18 @@ type CorrelationEdgeRow struct {
 
 // RenderCorrelations ports the server formatGenericCorrelations: the
 // "## Correlations — <label>" header + the from/edge/to/confidence/method table.
-// The composer sorts the rows by confidence desc (fromID,toID tiebreak) before
-// calling this (matching handleGenericCorrelations).
-func RenderCorrelations(label string, rows []CorrelationEdgeRow) string {
+// The composer sorts the rows by confidence desc (fromID,toID tiebreak) and caps
+// them before calling this (matching handleGenericCorrelations).
+//
+// rows is the already-sorted, already-capped slice; total is the count BEFORE
+// capping, so the header never under-reports what was seen; scanCapped says the
+// server truncated the scan. The two notices are independent — a small graph
+// hits neither, a filtered call may hit only the truncation notice, an
+// unfiltered whole-graph call hits both.
+func RenderCorrelations(label string, rows []CorrelationEdgeRow, total int, scanCapped bool) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "## Correlations — %s\n\n", label)
-	fmt.Fprintf(&sb, "%d edge(s), sorted by confidence desc.\n\n", len(rows))
+	fmt.Fprintf(&sb, "%d edge(s), sorted by confidence desc.\n\n", total)
 	sb.WriteString("| from | edge | to | confidence | method |\n")
 	sb.WriteString("|---|---|---|---|---|\n")
 	for i := range rows {
@@ -49,6 +70,20 @@ func RenderCorrelations(label string, rows []CorrelationEdgeRow) string {
 		toLabel := fmt.Sprintf("`%s` [%s]", r.ToName, typeOrDash(r.ToType))
 		fmt.Fprintf(&sb, "| %s | %s | %s | %.2f | %s |\n",
 			fromLabel, r.Edge.Type, toLabel, r.Edge.Confidence, methodOrDash(r.Edge.Method))
+	}
+	if total > len(rows) {
+		fmt.Fprintf(&sb, "\n…and %d more edge(s) below the top %d by confidence.\n", total-len(rows), len(rows))
+	}
+	if scanCapped {
+		// SAMPLE, not "the first N": the server's match-all edge walk ranges an
+		// *xsync.Map whose Range order is unspecified, so a truncated scan yields
+		// an arbitrary, non-reproducible subset. Presenting a top-N over that as
+		// the graph's true top-N would be a false claim, and the caller has a real
+		// remedy — edge_type is pushed server-side, so a filtered call is usually
+		// exact.
+		fmt.Fprintf(&sb,
+			"\n_Scan capped at %d edge(s) of an UNORDERED walk — this ranking is a SAMPLE, not the graph's true top %d. Narrow with edge_type for an exact ranking._\n",
+			total, len(rows))
 	}
 	return sb.String()
 }
@@ -97,34 +132,57 @@ type PivotMatrix struct {
 	StreamsSkipped int
 }
 
-// BuildPivotMatrix walks the nodes, extracts (row,col) via ExtractNodeField, and
-// accumulates counts. Rows/cols sorted by descending total (alphabetic tiebreak).
-// Port of the server buildPivotMatrix.
-func BuildPivotMatrix(nodes []*knowledgev1.Node, rowField, colField string) PivotMatrix {
-	m := PivotMatrix{
+// PivotAccumulator folds nodes into a PivotMatrix one PAGE at a time, so a pivot
+// over a whole graph never materializes the node set — the counts are all the
+// matrix needs, and they are O(distinct row×col keys) rather than O(corpus).
+type PivotAccumulator struct {
+	m PivotMatrix
+}
+
+// NewPivotAccumulator starts an empty accumulation keyed on the two pivot fields.
+func NewPivotAccumulator(rowField, colField string) *PivotAccumulator {
+	return &PivotAccumulator{m: PivotMatrix{
 		RowKey:    rowField,
 		ColKey:    colField,
 		Cells:     make(map[string]map[string]int),
 		RowTotals: make(map[string]int),
 		ColTotals: make(map[string]int),
-	}
+	}}
+}
+
+// Add folds one page of nodes in, skipping any node missing either pivot key.
+func (a *PivotAccumulator) Add(nodes []*knowledgev1.Node) {
 	for i := range nodes {
-		rv, okR := ExtractNodeField(nodes[i], rowField)
-		cv, okC := ExtractNodeField(nodes[i], colField)
+		rv, okR := ExtractNodeField(nodes[i], a.m.RowKey)
+		cv, okC := ExtractNodeField(nodes[i], a.m.ColKey)
 		if !okR || !okC {
 			continue
 		}
-		if m.Cells[rv] == nil {
-			m.Cells[rv] = make(map[string]int)
+		if a.m.Cells[rv] == nil {
+			a.m.Cells[rv] = make(map[string]int)
 		}
-		m.Cells[rv][cv]++
-		m.RowTotals[rv]++
-		m.ColTotals[cv]++
-		m.Grand++
+		a.m.Cells[rv][cv]++
+		a.m.RowTotals[rv]++
+		a.m.ColTotals[cv]++
+		a.m.Grand++
 	}
-	m.Rows = pivotSortedByTotalDesc(m.RowTotals)
-	m.Cols = pivotSortedByTotalDesc(m.ColTotals)
-	return m
+}
+
+// Finish sorts rows and cols by descending total (alphabetic tiebreak) and
+// returns the completed matrix.
+func (a *PivotAccumulator) Finish() PivotMatrix {
+	a.m.Rows = pivotSortedByTotalDesc(a.m.RowTotals)
+	a.m.Cols = pivotSortedByTotalDesc(a.m.ColTotals)
+	return a.m
+}
+
+// BuildPivotMatrix is the whole-slice shape of the accumulator, kept for callers
+// that already hold every node (the bounded text-seed arm, the renderer golden).
+// Port of the server buildPivotMatrix.
+func BuildPivotMatrix(nodes []*knowledgev1.Node, rowField, colField string) PivotMatrix {
+	acc := NewPivotAccumulator(rowField, colField)
+	acc.Add(nodes)
+	return acc.Finish()
 }
 
 func pivotSortedByTotalDesc(totals map[string]int) []string {

@@ -18,8 +18,10 @@ import (
 // proxyUpsertArgs is the mutate(upsert) wire shape for a cross-graph proxy. It
 // carries the deterministic id + provenance source + display fields + the proxy's
 // foreign_graph/foreign_id/language metadata, lowering through compileMutateUpsert
-// → the type-blind engine MUTATION_KIND_UPSERT arm (the legacy handleMutateUpsert
-// would block type=proxy).
+// → the engine MUTATION_KIND_UPSERT arm. `proxy` is on that arm's type allowlist,
+// which is what keeps this path working: the create-time system-managed-type
+// guard rejects type=proxy outright, so an allowlist that dropped proxy would
+// hard-fail every cross-graph link.
 type proxyUpsertArgs struct {
 	Operation   string            `json:"operation"`
 	Type        string            `json:"type"`

@@ -165,6 +165,13 @@ func (e *SegmentedIndex[Q, S]) MergeCount() uint64 {
 	return e.mergeCnt.Load()
 }
 
+// HasMergeHook reports whether a merge-completion callback is installed on this
+// engine. It is pure observability over construction-time Options, in the same
+// vein as MergeCount and Metrics: an owner that installs a hook conditionally
+// can confirm which variant it built, and a policy change that disarms the
+// automatic trigger can be distinguished from one that drops the callback.
+func (e *SegmentedIndex[Q, S]) HasMergeHook() bool { return e.opts.OnMerge != nil }
+
 // Metrics returns a point-in-time health snapshot. DeadRatio is the
 // corpus-wide dead/total fraction.
 func (e *SegmentedIndex[Q, S]) Metrics() Metrics {

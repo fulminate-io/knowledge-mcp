@@ -15,8 +15,8 @@ package exposure
 //   - Backward compat: old EvaluateAction still permissive w.r.t. conditions
 //   - Nil receiver safety
 //
-// Split from iam_parser_test.go under the 500-line hard cap (rule
-// 710d9f91). The shared test helpers (require/assert, ParseIAMPolicy) live
+// Split from iam_parser_test.go under the repo's 500-line hard cap.
+// The shared test helpers (require/assert, ParseIAMPolicy) live
 // in iam_parser.go / iam_parser_conditions.go respectively.
 
 import (

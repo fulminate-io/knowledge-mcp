@@ -94,6 +94,8 @@ func segIDs(n int) []searchengine.SegmentID {
 // each requesting at most maxFetchSegmentIDs ids, and the concatenated result
 // holds every blob in input order with no loss or reordering.
 func TestFetchMissesSubBatchesByCount(t *testing.T) {
+	t.Parallel()
+
 	caller := &recordingFetchSource{}
 	mgr := newFetchMissesManager(t, caller)
 
@@ -125,6 +127,8 @@ func TestFetchMissesSubBatchesByCount(t *testing.T) {
 // sub-chunk fits, returning every blob with no loss; the recorded id counts shrink
 // across the retried calls as the chunk is halved.
 func TestFetchMissesHalvesOnResourceExhausted(t *testing.T) {
+	t.Parallel()
+
 	// Reject any chunk with more than `threshold` ids (a stand-in for the byte
 	// ceiling: too many ids = too many bytes). With cap=256 and threshold=64, the
 	// first 256-id chunk is rejected and must halve down to <=64-id sub-chunks.
@@ -165,6 +169,8 @@ func TestFetchMissesHalvesOnResourceExhausted(t *testing.T) {
 // error (CodeInternal) propagates immediately from fetchMisses with NO retry — only
 // the byte-ceiling code triggers halving.
 func TestFetchMissesPropagatesNonResourceExhausted(t *testing.T) {
+	t.Parallel()
+
 	caller := &recordingFetchSource{reject: func(_ []string) error {
 		return connect.NewError(connect.CodeInternal, fmt.Errorf("boom"))
 	}}
@@ -183,6 +189,8 @@ func TestFetchMissesPropagatesNonResourceExhausted(t *testing.T) {
 // fetchMisses returns a hard error (no infinite loop) rather than silently
 // dropping the id.
 func TestFetchMissesSingleBlobOverCeilingHardErrors(t *testing.T) {
+	t.Parallel()
+
 	caller := &recordingFetchSource{reject: func(_ []string) error {
 		// Reject EVERY chunk, including a 1-id chunk — simulates a single blob
 		// whose bytes alone exceed the server ceiling.

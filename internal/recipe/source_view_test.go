@@ -72,12 +72,13 @@ func TestLoadSourceView_TwoExecuteRPCs_PopulatesIndexes(t *testing.T) {
 	// N+1 avoidance: exactly two Execute RPCs (FetchAllNodes + FetchAllEdges).
 	assert.Equal(t, 2, f.calls, "loadSourceView must issue exactly 2 Execute RPCs")
 
-	// The edge read is the MATCH-ALL form: this view indexes every node, so it
-	// asks for the graph's edges rather than listing every id as a pivot.
+	// The edge read is the BOUNDED PIVOT form: this view indexes every node, so
+	// every indexed id goes back as the pivot set, paged, under an explicit
+	// positive limit. The unbounded match-all plan it used to send is retired.
 	require.NotNil(t, f.lastEdgePlan, "an edges plan must have been issued")
-	assert.Empty(t, f.lastEdgePlan.GetIds(), "match-all plan carries no ids[] pivot")
-	assert.Empty(t, f.lastEdgePlan.GetById(), "match-all plan carries no by_id pivot")
-	assert.Empty(t, f.lastEdgePlan.GetSelection().GetFromId(), "match-all plan carries no from_id pivot")
+	assert.ElementsMatch(t, []string{"s1", "s2", "p1"}, f.lastEdgePlan.GetIds(),
+		"the edge page pivots on every indexed id")
+	assert.Positive(t, f.lastEdgePlan.GetLimit(), "the edge page carries an explicit positive limit")
 
 	// byID indexes every node.
 	assert.Len(t, sv.byID, 3)

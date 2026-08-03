@@ -60,6 +60,13 @@ func (h *capturingSlogHandler) warnsContaining(substr string) []string {
 
 // installCapturingSlog swaps the default slog logger for a capturing handler for the
 // duration of the test, restoring the prior default on cleanup.
+//
+// A TEST THAT CALLS THIS MUST NOT CALL t.Parallel(). The default logger is
+// PROCESS-GLOBAL: two tests holding it at once means one's handler replaces the
+// other's, so the records a test asserts over are whichever peer happened to
+// install last — and peers' unrelated records land in this test's capture. Serial
+// tests all complete before any parallel test body runs, which is what keeps the
+// swap contained. Every caller below is deliberately serial for this reason.
 func installCapturingSlog(t *testing.T) *capturingSlogHandler {
 	t.Helper()
 	h := &capturingSlogHandler{}
@@ -69,45 +76,22 @@ func installCapturingSlog(t *testing.T) *capturingSlogHandler {
 	return h
 }
 
-// TestManagerSkipsPublishUntilABatchSeals is the lifecycle-gate regression: a run
-// of sub-threshold AddAndShip/AddAndShipFields calls (each far below MinSegmentDocs)
-// seals nothing, so the gate returns before ensureShippedSeeded — ZERO List, ZERO
-// Ship, ZERO PublishManifest. Only the quiescence Flush force-seals the two tails,
-// and then exactly two ships + two publishes fire (one per format).
-func TestManagerSkipsPublishUntilABatchSeals(t *testing.T) {
-	_, gc := newSegmentHarness(t)
-	ctx := context.Background()
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
-
-	// Four sub-threshold batches per format (16 docs each, 64 total per format, all
-	// << MinSegmentDocs=1024). Prefix every id per batch so the batches carry DISTINCT
-	// ids and the coalescing buffer accumulates a 64-doc tail per format.
-	for b := range 4 {
-		vecs := hnswVecDocs(16)
-		fields := bm25FieldDocs(16)
-		for i := range vecs {
-			vecs[i].ID = fmt.Sprintf("g-b%d-%s", b, vecs[i].ID)
-		}
-		for i := range fields {
-			fields[i].ID = fmt.Sprintf("g-b%d-%s", b, fields[i].ID)
-		}
-		require.NoError(t, mgr.AddAndShip(ctx, kgtypes.GraphCode, "gateRepo", vecs))
-		require.NoError(t, mgr.AddAndShipFields(ctx, kgtypes.GraphCode, "gateRepo", fields))
-	}
-
-	// No-progress invariant: the gate returned before ensureShippedSeeded on every
-	// sub-threshold add — the unsealed tails have an empty Export, so
-	// hasUnshippedExport is false and publishPending is false.
-	require.Equal(t, int64(0), gc.listCalls.Load(), "sub-threshold adds never seed/List")
-	require.Equal(t, int64(0), gc.shipCalls.Load(), "sub-threshold adds never Ship")
-	require.Equal(t, int64(0), gc.publishCalls.Load(), "sub-threshold adds never PublishManifest")
-
-	// Flush force-seals BOTH tails into one HNSW + one BM25 segment, then ships +
-	// publishes each sealed format exactly once.
-	require.NoError(t, mgr.Flush(ctx, kgtypes.GraphCode, "gateRepo"))
-	require.Equal(t, int64(2), gc.shipCalls.Load(), "Flush ships the two sealed tails (HNSW + BM25)")
-	require.Equal(t, int64(2), gc.publishCalls.Load(), "Flush publishes each sealed format once")
-}
+// RETIRED — DO NOT RESTORE: TestManagerSkipsPublishUntilABatchSeals.
+//
+// It asserted that a run of sub-threshold write calls seals nothing, so no List,
+// Ship or PublishManifest fires until a quiescence Flush force-seals the tails.
+//
+// THE REASON IT IS GONE IS THAT ITS PREMISE IS UNCONSTRUCTIBLE, not that any gate
+// it watched was removed. The test needs a sub-threshold batch to stay BUFFERED AND
+// UNSEALED across a Manager call, and the write path now force-seals every batch it
+// is handed. That state cannot be reached through the Manager surface at all, so
+// there is no rewrite of this test on the Manager — restoring it would mean
+// asserting over a condition the surface can no longer produce, and it would pass
+// vacuously rather than fail honestly.
+//
+// Anyone who wants the unsealed-tail precondition must build it directly on the
+// engine via dm.engine.Add, which is what TestManagerFlushSealsSubThresholdTail
+// (manager_owner_test.go) does — that is where the surviving Flush coverage lives.
 
 // prefixIDs returns a copy of docs with every id prefixed — the established
 // per-batch distinct-id technique so successive batches seal DISTINCT segments.
@@ -122,54 +106,67 @@ func prefixIDs(docs []searchengine.Document, prefix string) []searchengine.Docum
 // transport error (:367), 409 manifestIncompleteError skip (:362), coverage-read
 // List error (:346), and coverage-ratio gate skip (:349) — plus the CLEAR on a later
 // successful publish. Each set point must leave publishRetryPending()==true so a
-// subsequent SUB-THRESHOLD add (hasUnshippedExport()==false — driven only by the
-// pending bit) re-attempts the publish, and the successful re-attempt clears it.
+// subsequent reconcile tick re-attempts the publish, and the successful re-attempt
+// clears it.
+//
+// THE VEHICLE FOR "ONLY THE PENDING BIT DRIVES THIS" IS A BARE TICK, not a
+// sub-threshold write. A write that seals nothing is no longer constructible
+// through the Manager — every batch is force-sealed — so the retry-only condition
+// is now built by ticking with nothing genuinely unshipped, which is the same
+// branch the reconcile loop takes on a quiet graph.
 func TestPublishPendingRetry(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 
 	// (1) Transport error (publishResident :367): a non-409 PublishManifest error
-	// sets the retry bit; a sub-threshold add retries and clears it; a further add
-	// with the bit clear and nothing unshipped skips entirely.
+	// sets the retry bit; a later tick retries and clears it; a further tick with
+	// the bit clear and nothing dirty skips entirely.
 	t.Run("transport_error_retries_and_clears", func(t *testing.T) {
 		_, gc := newSegmentHarness(t)
 		mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 		dm := mgr.managerFor(kgtypes.GraphCode, "retryRepo")
 
 		gc.publishErr = errors.New("boom")
-		require.Error(t, mgr.AddAndShip(ctx, kgtypes.GraphCode, "retryRepo", hnswVecDocs(1024)),
-			"a transport PublishManifest error surfaces as an AddAndShip error")
+		require.NoError(t, mgr.AddAndMarkDirty(ctx, kgtypes.GraphCode, "retryRepo", hnswVecDocs(1024)))
+		require.Error(t, mgr.ReEmitDirtyBuckets(ctx, kgtypes.GraphCode, "retryRepo"),
+			"a transport PublishManifest error surfaces from the tick that performs the publish")
 		require.Equal(t, int64(1), gc.shipCalls.Load(), "the sealed segment shipped once")
 		require.Equal(t, int64(1), gc.publishCalls.Load(), "PublishManifest was attempted once")
 		require.True(t, dm.publishRetryPending(), "the transport error set the retry bit")
 
-		// Sub-threshold add: hasUnshippedExport is false (the sealed segment is already
-		// shipped), so ONLY the pending bit drives the retry — the publish succeeds now.
+		// The failed tick kept its backlog, so this one re-emits the SAME documents to
+		// the same bytes: the ship diff is empty and only the publish is genuinely
+		// retried. That is the retry-bit path — nothing here is unshipped.
 		gc.publishErr = nil
-		require.NoError(t, mgr.AddAndShip(ctx, kgtypes.GraphCode, "retryRepo", hnswVecDocs(16)))
-		require.Equal(t, int64(1), gc.shipCalls.Load(), "no new ship on the sub-threshold retry")
+		require.NoError(t, mgr.ReEmitDirtyBuckets(ctx, kgtypes.GraphCode, "retryRepo"))
+		require.Equal(t, int64(1), gc.shipCalls.Load(), "the re-emit ships an empty diff — no new Ship RPC")
 		require.Equal(t, int64(2), gc.publishCalls.Load(), "the retry re-attempted the publish")
 		require.False(t, dm.publishRetryPending(), "the successful publish cleared the retry bit")
 
-		// Bit clear + nothing unshipped: the gate skips entirely — no new publish.
-		require.NoError(t, mgr.AddAndShip(ctx, kgtypes.GraphCode, "retryRepo", hnswVecDocs(16)))
-		require.Equal(t, int64(2), gc.publishCalls.Load(), "no publish when nothing sealed and no retry pending")
+		// Backlog drained + bit clear: the tick returns before any ship or publish.
+		require.NoError(t, mgr.ReEmitDirtyBuckets(ctx, kgtypes.GraphCode, "retryRepo"))
+		require.Equal(t, int64(2), gc.publishCalls.Load(), "no publish when nothing is dirty and no retry is pending")
 	})
 
 	// (2) 409 incomplete skip (publishResident :362): a manifestIncompleteError is a
-	// logged SKIP (AddAndShip returns nil) that still sets the retry bit.
+	// logged SKIP (the tick returns nil) that still sets the retry bit.
 	t.Run("incomplete_409_skip_retries", func(t *testing.T) {
 		_, gc := newSegmentHarness(t)
 		mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 		dm := mgr.managerFor(kgtypes.GraphCode, "i409Repo")
 
 		gc.publishErr = &manifestIncompleteError{Missing: []string{"seg-x"}}
-		require.NoError(t, mgr.AddAndShip(ctx, kgtypes.GraphCode, "i409Repo", hnswVecDocs(1024)),
+		require.NoError(t, mgr.AddAndMarkDirty(ctx, kgtypes.GraphCode, "i409Repo", hnswVecDocs(1024)))
+		require.NoError(t, mgr.ReEmitDirtyBuckets(ctx, kgtypes.GraphCode, "i409Repo"),
 			"a 409 incomplete manifest is a logged skip, not an error")
 		require.Equal(t, int64(1), gc.publishCalls.Load(), "PublishManifest was attempted once")
 		require.True(t, dm.publishRetryPending(), "the 409 skip set the retry bit")
 
+		// The skip is not an error, so that tick drained its backlog. This one has
+		// nothing to re-emit and runs PURELY off the pending bit.
 		gc.publishErr = nil
-		require.NoError(t, mgr.AddAndShip(ctx, kgtypes.GraphCode, "i409Repo", hnswVecDocs(16)))
+		require.NoError(t, mgr.ReEmitDirtyBuckets(ctx, kgtypes.GraphCode, "i409Repo"))
 		require.Equal(t, int64(2), gc.publishCalls.Load(), "the retry re-attempted the publish")
 		require.False(t, dm.publishRetryPending(), "the successful publish cleared the retry bit")
 	})
@@ -184,24 +181,31 @@ func TestPublishPendingRetry(t *testing.T) {
 		dm := mgr.managerFor(kgtypes.GraphCode, "covRepo")
 
 		// First batch seeds + ships + publishes cleanly (seeded latches).
-		require.NoError(t, mgr.AddAndShip(ctx, kgtypes.GraphCode, "covRepo", hnswVecDocs(1024)))
+		require.NoError(t, mgr.AddAndMarkDirty(ctx, kgtypes.GraphCode, "covRepo", hnswVecDocs(1024)))
+		require.NoError(t, mgr.ReEmitDirtyBuckets(ctx, kgtypes.GraphCode, "covRepo"))
 		require.Equal(t, int64(1), gc.shipCalls.Load())
 		require.Equal(t, int64(1), gc.publishCalls.Load())
 
 		// Second sealed batch (DISTINCT ids). The ship succeeds (listErr does not
 		// affect Ship), but publishCoverageOK's coverage-read List then fails →
 		// publishResident returns the error at :346 and sets the retry bit.
-		batch2 := prefixIDs(hnswVecDocs(1024), "cr-")
+		//
+		// The batch is deliberately SMALL so the corpus stays clear of a power-of-two
+		// partition-count straddle. Crossing one makes the next re-emit a full corpus
+		// rebuild, which is expected behavior but changes segment membership wholesale
+		// and would make this test's subject — the retry bit — hard to read.
+		batch2 := prefixIDs(hnswVecDocs(16), "cr-")
 		gc.listErr = errors.New("coverage read boom")
-		require.Error(t, mgr.AddAndShip(ctx, kgtypes.GraphCode, "covRepo", batch2),
-			"the coverage-read List failure surfaces as an AddAndShip error")
-		require.Equal(t, int64(2), gc.shipCalls.Load(), "the second segment shipped")
+		require.NoError(t, mgr.AddAndMarkDirty(ctx, kgtypes.GraphCode, "covRepo", batch2))
+		require.Error(t, mgr.ReEmitDirtyBuckets(ctx, kgtypes.GraphCode, "covRepo"),
+			"the coverage-read List failure surfaces from the tick")
+		require.Equal(t, int64(2), gc.shipCalls.Load(), "the second batch shipped")
 		require.Equal(t, int64(1), gc.publishCalls.Load(), "PublishManifest was never reached (coverage-read failed first)")
 		require.True(t, dm.publishRetryPending(), "the coverage-read error set the retry bit (RED if :346 omits setPublishPending)")
 
-		// Heal the coverage read; a sub-threshold add retries the publish and clears.
+		// Heal the coverage read; the next tick retries the publish and clears the bit.
 		gc.listErr = nil
-		require.NoError(t, mgr.AddAndShip(ctx, kgtypes.GraphCode, "covRepo", hnswVecDocs(16)))
+		require.NoError(t, mgr.ReEmitDirtyBuckets(ctx, kgtypes.GraphCode, "covRepo"))
 		require.Equal(t, int64(2), gc.publishCalls.Load(), "the retry re-attempted the publish")
 		require.False(t, dm.publishRetryPending(), "the successful publish cleared the retry bit")
 	})
@@ -221,10 +225,15 @@ func TestPublishPendingRetry(t *testing.T) {
 		const corpusSegs = 4
 		for s := range corpusSegs {
 			batch := prefixIDs(hnswVecDocs(searchCorpusN), fmt.Sprintf("cg-b%d-", s))
-			require.NoError(t, b.AddAndShip(ctx, gt, name, batch))
+			require.NoError(t, b.AddAndMarkDirty(ctx, gt, name, batch))
 		}
+		// One tick discharges the whole seeded window: this is fixture construction and
+		// only the END STATE matters. What lands is PARTITION-shaped rather than one
+		// segment per batch, so assert that a prior corpus exists rather than counting
+		// the batches that built it.
+		require.NoError(t, b.ReEmitDirtyBuckets(ctx, gt, name))
 		priorCorpus := shippedHNSWIDs(svc)
-		require.Len(t, priorCorpus, corpusSegs, "B ships the full prior corpus")
+		require.NotEmpty(t, priorCorpus, "B ships the full prior corpus")
 
 		// Writer A restarts (same writer_id, fresh L2) and force-seals a SUB-FLOOR tail
 		// (< residentBackstopFloor=64 docs) via Flush WITHOUT loading the prior corpus.
@@ -232,8 +241,8 @@ func TestPublishPendingRetry(t *testing.T) {
 		// AND resident stays below the floor so the server re-import heal can later fire.
 		aRestart := restartFleetMember(t, svc, 0, t.TempDir())
 		tail := prefixIDs(hnswVecDocs(10), "cg-tail-")
-		require.NoError(t, aRestart.AddAndShip(ctx, gt, name, tail)) // sub-threshold: just buffers
-		require.NoError(t, aRestart.Flush(ctx, gt, name))            // force-seal → ship → coverage skip
+		require.NoError(t, aRestart.AddAndMarkDirty(ctx, gt, name, tail)) // force-seals the tail, ships nothing
+		require.NoError(t, aRestart.Flush(ctx, gt, name))                 // ship → coverage skip
 		aDM := aRestart.managerFor(gt, name)
 		require.True(t, aDM.publishRetryPending(),
 			"the coverage-ratio gate skip set the retry bit (RED if :349 omits setPublishPending)")
@@ -251,9 +260,10 @@ func TestPublishPendingRetry(t *testing.T) {
 		require.GreaterOrEqual(t, aRestart.ResidentDocCount(gt, name), residentBackstopFloor,
 			"resident climbed above the floor after the re-import")
 
-		// A sub-threshold add now retries the publish against the healed resident set —
-		// coverage passes, PublishManifest succeeds, the retry bit clears.
-		require.NoError(t, aRestart.AddAndShip(ctx, gt, name, prefixIDs(hnswVecDocs(16), "cg-heal-")))
+		// A further write plus its tick now retries the publish against the healed
+		// resident set — coverage passes, PublishManifest succeeds, the retry bit clears.
+		require.NoError(t, aRestart.AddAndMarkDirty(ctx, gt, name, prefixIDs(hnswVecDocs(16), "cg-heal-")))
+		require.NoError(t, aRestart.ReEmitDirtyBuckets(ctx, gt, name))
 		require.False(t, aDM.publishRetryPending(), "the successful publish cleared the retry bit")
 	})
 }
@@ -271,6 +281,12 @@ func TestPublishPendingRetry(t *testing.T) {
 // climbs unbounded across the flush loop; this test fails there and passes only once
 // the bound lands. Runs under -race (Flush + engine reads exercise the helper's
 // resident-before-lock ordering).
+//
+// DELIBERATELY NOT PARALLEL. Shared resource: the process-global default slog
+// logger, which this test swaps for a capturing handler to assert over the
+// records the path emits. Concurrent peers would both install and restore that
+// one global, so the handler this test reads could be a peer's, and a peer's
+// unrelated records would land in this test's capture.
 func TestPublishRetryBoundedOnPersistentCoverageSkip(t *testing.T) {
 	warns := installCapturingSlog(t)
 	ctx := context.Background()
@@ -283,16 +299,19 @@ func TestPublishRetryBoundedOnPersistentCoverageSkip(t *testing.T) {
 	const corpusSegs = 4
 	for s := range corpusSegs {
 		batch := prefixIDs(hnswVecDocs(searchCorpusN), fmt.Sprintf("cb-b%d-", s))
-		require.NoError(t, b.AddAndShip(ctx, gt, name, batch))
+		require.NoError(t, b.AddAndMarkDirty(ctx, gt, name, batch))
 	}
+	// One tick discharges the seeded window — this is fixture construction, so only
+	// the shipped end state matters.
+	require.NoError(t, b.ReEmitDirtyBuckets(ctx, gt, name))
 
 	// Writer A restarts (same writer_id, fresh L2) and force-seals a SUB-FLOOR tail
 	// WITHOUT loading the prior corpus — its resident stays far below the coverage
 	// ratio. The first Flush ships the tail and coverage-skips the publish (skip #1).
 	aRestart := restartFleetMember(t, svc, 0, t.TempDir())
 	tail := prefixIDs(hnswVecDocs(10), "cb-tail-")
-	require.NoError(t, aRestart.AddAndShip(ctx, gt, name, tail)) // sub-threshold: just buffers
-	require.NoError(t, aRestart.Flush(ctx, gt, name))            // force-seal → ship → coverage skip #1
+	require.NoError(t, aRestart.AddAndMarkDirty(ctx, gt, name, tail)) // force-seals the tail, ships nothing
+	require.NoError(t, aRestart.Flush(ctx, gt, name))                 // ship → coverage skip #1
 	aDM := aRestart.managerFor(gt, name)
 	require.True(t, aDM.publishRetryPending(), "the first coverage skip armed the retry bit")
 
@@ -338,7 +357,8 @@ func TestPublishRetryBoundedOnPersistentCoverageSkip(t *testing.T) {
 	require.GreaterOrEqual(t, aRestart.ResidentDocCount(gt, name), residentBackstopFloor,
 		"resident climbed above the floor after the re-import")
 
-	require.NoError(t, aRestart.AddAndShip(ctx, gt, name, prefixIDs(hnswVecDocs(searchCorpusN), "cb-heal-")))
+	require.NoError(t, aRestart.AddAndMarkDirty(ctx, gt, name, prefixIDs(hnswVecDocs(searchCorpusN), "cb-heal-")))
+	require.NoError(t, aRestart.ReEmitDirtyBuckets(ctx, gt, name))
 	require.False(t, aDM.publishRetryPending(),
 		"a resident rise + genuine new export re-armed the publish and it landed once above ratio")
 }
@@ -356,6 +376,12 @@ func TestPublishRetryBoundedOnPersistentCoverageSkip(t *testing.T) {
 //
 // RED-first: against the unmodified publishResident both WARNs render message +
 // format/live/reason (or format/missing) only, so both `graph=` assertions fail.
+//
+// DELIBERATELY NOT PARALLEL. Shared resource: the process-global default slog
+// logger, which this test swaps for a capturing handler to assert over the
+// records the path emits. Concurrent peers would both install and restore that
+// one global, so the handler this test reads could be a peer's, and a peer's
+// unrelated records would land in this test's capture.
 func TestPublishSkipWarnsCarryGraphIdentity(t *testing.T) {
 	// The CODE-GRAPH side: repo carries the instance name, name is empty.
 	t.Run("degenerate_live_set_skip_warn", func(t *testing.T) {
@@ -369,15 +395,17 @@ func TestPublishSkipWarnsCarryGraphIdentity(t *testing.T) {
 		const corpusSegs = 4
 		for s := range corpusSegs {
 			batch := prefixIDs(hnswVecDocs(searchCorpusN), fmt.Sprintf("cw-b%d-", s))
-			require.NoError(t, b.AddAndShip(ctx, gt, name, batch))
+			require.NoError(t, b.AddAndMarkDirty(ctx, gt, name, batch))
 		}
+		// One tick discharges the seeded window — fixture construction, end state only.
+		require.NoError(t, b.ReEmitDirtyBuckets(ctx, gt, name))
 
 		// Writer A restarts with a FRESH L2 (so its resident is degenerate) and
 		// force-seals a sub-floor tail: ship lands, publish is coverage-gate skipped.
 		aRestart := restartFleetMember(t, svc, 0, t.TempDir())
 		tail := prefixIDs(hnswVecDocs(10), "cw-tail-")
-		require.NoError(t, aRestart.AddAndShip(ctx, gt, name, tail)) // sub-threshold: just buffers
-		require.NoError(t, aRestart.Flush(ctx, gt, name))            // force-seal → ship → coverage skip
+		require.NoError(t, aRestart.AddAndMarkDirty(ctx, gt, name, tail)) // force-seals the tail, ships nothing
+		require.NoError(t, aRestart.Flush(ctx, gt, name))                 // ship → coverage skip
 
 		skips := warns.warnsContaining("degenerate/incomplete live set")
 		require.NotEmpty(t, skips, "the coverage-gate skip emits its WARN")
@@ -395,7 +423,8 @@ func TestPublishSkipWarnsCarryGraphIdentity(t *testing.T) {
 		mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 
 		gc.publishErr = &manifestIncompleteError{Missing: []string{"seg-x"}}
-		require.NoError(t, mgr.AddAndShip(ctx, kgtypes.GraphKnowledge, "kgWarnGraph", hnswVecDocs(1024)),
+		require.NoError(t, mgr.AddAndMarkDirty(ctx, kgtypes.GraphKnowledge, "kgWarnGraph", hnswVecDocs(1024)))
+		require.NoError(t, mgr.ReEmitDirtyBuckets(ctx, kgtypes.GraphKnowledge, "kgWarnGraph"),
 			"a 409 incomplete manifest is a logged skip, not an error")
 
 		skips := warns.warnsContaining("agent reported missing blob(s)")

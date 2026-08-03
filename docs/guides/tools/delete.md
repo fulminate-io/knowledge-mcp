@@ -35,6 +35,7 @@ deletes require the `language` param. For the full reference, run
 | Parameter | Type | Required | Enum | Description |
 | --- | --- | --- | --- | --- |
 | `dry_run` | boolean |  |  | Preview only: report the nodes that WOULD be deleted (count + ids/names) without deleting anything. Works for BOTH shapes — ids deletion and older_than pruning. Re-run without dry_run to actually delete. |
+| `format` | string |  |  | Output format: 'text' (default) or 'json' (structured). Honored on BOTH render paths — the dry-run preview and the completed delete. |
 | `graph` | string |  |  | Target graph: 'knowledge' (default), 'practice', or 'transformers'. Practice graph requires 'language'. |
 | `hard` | boolean |  |  | PERMANENT removal. Deletes are SOFT by default (tombstoned: hidden from reads, recoverable). hard:true removes the rows irrecoverably — reserve for deliberate permanent cleanup. A malformed value denies the delete. |
 | `ids` | array of string |  |  | Node IDs to delete |

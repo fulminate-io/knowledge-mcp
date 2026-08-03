@@ -17,7 +17,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 )
 
-// TestMetadataStats_OverrideThreaded is the load-bearing criterion (7f29424e):
+// TestMetadataStats_OverrideThreaded is the load-bearing case of this file:
 // an operator-pinned key surfaces FORCE_SCALAR/FORCE_EDGE, proving the
 // OverrideConfig carrier is decoded and threaded into RecommendAction (a zero
 // OverrideConfig would mis-recommend). Exercised at the decode→build seam — the

@@ -110,10 +110,10 @@ func TestNewGonumGraphSubsetFiltersNodesAndEdges(t *testing.T) {
 	}
 }
 
-// TestNewGonumGraphEdgeReadShape pins WHICH edge read each build issues. With no
-// subset the materialized node set IS the graph, so the build sends the match-all
-// plan (no pivot) rather than handing every node id back as a pivot set; with a
-// subset it keeps the id-pivoted read so it pulls only the edges it can map.
+// TestNewGonumGraphEdgeReadShape pins WHICH edge read each build issues. Both
+// builds now pivot on the ids they materialized — the whole-graph build reads
+// them in bounded pages, the subset build in one — because the unbounded
+// match-all plan the no-subset leg used to send is retired.
 func TestNewGonumGraphEdgeReadShape(t *testing.T) {
 	seed := func() *fakeCaller {
 		return &fakeCaller{
@@ -126,8 +126,11 @@ func TestNewGonumGraphEdgeReadShape(t *testing.T) {
 	if _, err := NewGonumGraph(context.Background(), all, kgtypes.GraphCode, "repo", nil); err != nil {
 		t.Fatalf("NewGonumGraph: %v", err)
 	}
-	if got := all.lastPlan.GetIds(); len(got) != 0 {
-		t.Fatalf("no-subset build must send the match-all edge plan (no pivot ids), got %v", got)
+	if got := all.lastPlan.GetIds(); len(got) != 3 {
+		t.Fatalf("no-subset build must pivot on every materialized id, got %v", got)
+	}
+	if got := all.lastPlan.GetLimit(); got <= 0 {
+		t.Fatalf("every edge page must carry an explicit positive limit, got %d", got)
 	}
 
 	sub := seed()

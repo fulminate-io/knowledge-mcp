@@ -365,7 +365,7 @@ func TestLiveDocs(t *testing.T) {
 
 func TestLiveDocsFromTombstones(t *testing.T) {
 	members := idSet{"a": 0, "b": 1, "c": 2}
-	ld := newLiveDocsFromTombstones([]ExternalID{"b", "missing"}, members)
+	ld := newLiveDocsFromTombstones(len(members), []ExternalID{"b", "missing"}, members)
 	if ld.Live(1) {
 		t.Fatal("tombstoned member b should be dead")
 	}

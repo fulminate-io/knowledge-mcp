@@ -72,8 +72,11 @@ func (d *ppTriggerDeps) SegmentManager() SegmentSearcher              { return n
 func (d *ppTriggerDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
 func (d *ppTriggerDeps) SegmentShipper() SegmentShipper               { return nil }
 func (d *ppTriggerDeps) SegmentPruner() SegmentPruner                 { return nil }
-func (d *ppTriggerDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
-func (d *ppTriggerDeps) PipelineScanner() PipelineScanner             { return nil }
+
+func (d *ppTriggerDeps) SegmentCacheDropper() SegmentCacheDropper { return nil }
+func (d *ppTriggerDeps) SegmentDeleter() SegmentDeleter           { return nil }
+func (d *ppTriggerDeps) SegmentCoverage() SegmentCoverageReader   { return nil }
+func (d *ppTriggerDeps) PipelineScanner() PipelineScanner         { return nil }
 
 func (d *ppTriggerDeps) ClearHealLatch(kgtypes.GraphType, string) {}
 func (d *ppTriggerDeps) ReflectionForcer() ReflectionForcer       { return nil }

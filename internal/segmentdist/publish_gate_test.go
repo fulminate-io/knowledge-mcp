@@ -5,14 +5,84 @@ package segmentdist
 import (
 	"context"
 	"fmt"
+	"os"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/require"
 
+	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
+
+// sharedCorpusBlobs seals the publish-gate corpus ONCE for the whole package and
+// hands every fixture the same in-memory blobs to import.
+//
+// The corpus is the expensive part by a wide margin — the vector index build and
+// its re-emit, paid nine times over when each subtest sealed its own. The document
+// slices are cheap and are NOT what is shared here; the sealed segments are.
+//
+// Only the artifact is shared. Every subtest still gets its own server, its own
+// managers and its own counters, because the alternative — one live harness across
+// subtests — makes them order-dependent: one ships an extra segment and moves the
+// coverage denominator for everyone after it, another drives a refcount GC on the
+// shared server, and a third flips a verify flag that would leak forward. Order
+// dependence is exactly the class of defect this package's ticket is about.
+//
+// The builder outlives every test, so nothing else will clean up after it; it owns
+// its cache directory and removes it on the way out. That is safe because Export
+// returns in-memory blobs and the on-disk files are never read again.
+var sharedCorpusBlobs = sync.OnceValue(func() []searchengine.SegmentBlob {
+	ctx := context.Background()
+	dir, err := os.MkdirTemp("", "segmentdist-sharedcorpus-")
+	if err != nil {
+		panic(err)
+	}
+	defer os.RemoveAll(dir)
+
+	svc := newSharedServerFake()
+	gc := svc.viewFor(&knowledgev1.GraphSelector{}, "")
+	owner := NewManager(loginStateStub{loggedIn: true}, dir, 0, withSegmentSource(gc))
+	const corpusSegs = 4
+	for b := range corpusSegs {
+		batch := prefixIDs(hnswVecDocs(searchCorpusN), fmt.Sprintf("shared-b%d-", b))
+		if err := owner.AddAndMarkDirty(ctx, kgtypes.GraphCode, "sharedCorpus", batch); err != nil {
+			panic(err)
+		}
+	}
+	if err := owner.ReEmitDirtyBuckets(ctx, kgtypes.GraphCode, "sharedCorpus"); err != nil {
+		panic(err)
+	}
+	blobs := owner.managerFor(kgtypes.GraphCode, "sharedCorpus").engine.Export()
+	if len(blobs) != 4 {
+		panic(fmt.Sprintf("shared corpus must seal into 4 partitions, got %d", len(blobs)))
+	}
+	return blobs
+})
+
+// seedSharedCorpus gives one fixture a corpus-owning manager whose resident set IS
+// the full shipped corpus, by importing the prebuilt blobs and shipping them. It
+// returns that manager, its engine and the set of ids now on the caller's server.
+//
+// Each caller passes its OWN server and source, so the shared bytes are the only
+// thing crossing subtest boundaries.
+func seedSharedCorpus(t *testing.T, svc *sharedServerFake, gc *fakeSegmentSource, name string,
+) (*Manager, *distManager[[]byte, struct{}], map[searchengine.SegmentID]struct{}) {
+	t.Helper()
+	ctx := context.Background()
+	owner := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	dm := owner.managerFor(kgtypes.GraphCode, name)
+	require.NoError(t, dm.engine.Import(sharedCorpusBlobs(), nil))
+	warmExported(dm)
+	_, err := dm.shipAndPublish(ctx, dm.locallyShipped)
+	require.NoError(t, err)
+	prior := shippedHNSWIDs(svc)
+	require.NotEmpty(t, prior)
+	return owner, dm, prior
+}
 
 // TestPublishSubsetGate proves the publish-path safety gate — the
 // corpus-wipe-recurrence guard: a degenerate or incomplete live
@@ -25,28 +95,21 @@ import (
 //	    skipped before it can wipe the corpus.
 //	(c) BELOW-RATIO: a non-empty live set far below the coverage ratio of the
 //	    shipped corpus (a partial load) → publish skipped.
+//
+// Each case seeds from the package-wide prebuilt corpus into its own harness, so
+// the sealed segments are shared but the server, managers and counters are not.
 func TestPublishSubsetGate(t *testing.T) {
+	t.Parallel()
+
 	t.Run("non_subset_skips_publish", func(t *testing.T) {
 		svc, gc := newSegmentHarness(t)
 		ctx := context.Background()
 
-		// Ship a real corpus so the coverage denominator is armed.
-		const corpusSegs = 3
-		mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
-		for b := range corpusSegs {
-			batch := hnswVecDocs(searchCorpusN)
-			for i := range batch {
-				batch[i].ID = fmt.Sprintf("ns-b%d-%s", b, batch[i].ID)
-			}
-			require.NoError(t, mgr.AddAndShip(ctx, kgtypes.GraphCode, "nsRepo", batch))
-		}
-		prior := shippedHNSWIDs(svc)
-		require.Len(t, prior, corpusSegs)
+		_, dm, prior := seedSharedCorpus(t, svc, gc, "nsRepo")
 
-		dm := mgr.managerFor(kgtypes.GraphCode, "nsRepo")
 		// A live set holding an id the SERVER DOES NOT have → not a subset of List(0).
 		liveSet := map[searchengine.SegmentID]struct{}{"not-on-server-id": {}}
-		ok, reason, err := dm.publishCoverageOK(ctx, liveSet)
+		ok, reason, err := dm.publishCoverageOK(ctx, liveSet, dm.engine.ResidentDocCount())
 		require.NoError(t, err)
 		require.False(t, ok, "a non-subset live set must NOT be publishable")
 		require.Contains(t, reason, "subset")
@@ -59,29 +122,18 @@ func TestPublishSubsetGate(t *testing.T) {
 		svc, gc := newSegmentHarness(t)
 		ctx := context.Background()
 
-		const corpusSegs = 3
-		mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
-		for b := range corpusSegs {
-			batch := hnswVecDocs(searchCorpusN)
-			for i := range batch {
-				batch[i].ID = fmt.Sprintf("mt-b%d-%s", b, batch[i].ID)
-			}
-			require.NoError(t, mgr.AddAndShip(ctx, kgtypes.GraphCode, "emptyRepo", batch))
-		}
-		prior := shippedHNSWIDs(svc)
-		require.Len(t, prior, corpusSegs)
+		_, dm, prior := seedSharedCorpus(t, svc, gc, "emptyRepo")
 
-		dm := mgr.managerFor(kgtypes.GraphCode, "emptyRepo")
 		// publishResident over an EMPTY resident set must SKIP (return no error, no
 		// dropped ids) and leave every blob intact — the vacuous-subset wipe guard.
-		dropped, err := dm.publishResident(ctx, nil, nil, dm.locallyShipped)
+		dropped, err := dm.publishResident(ctx, nil, dm.locallyShipped)
 		require.NoError(t, err)
 		require.Empty(t, dropped, "an empty publish drops nothing (it is skipped, not a wipe)")
 		require.Equal(t, prior, shippedHNSWIDs(svc),
 			"an empty live set must NEVER drive a refcount-GC — the corpus survives")
 
 		// The gate itself reports the empty reason.
-		ok, reason, err := dm.publishCoverageOK(ctx, map[searchengine.SegmentID]struct{}{})
+		ok, reason, err := dm.publishCoverageOK(ctx, map[searchengine.SegmentID]struct{}{}, dm.engine.ResidentDocCount())
 		require.NoError(t, err)
 		require.False(t, ok)
 		require.Contains(t, reason, "empty")
@@ -91,18 +143,7 @@ func TestPublishSubsetGate(t *testing.T) {
 		svc, gc := newSegmentHarness(t)
 		ctx := context.Background()
 
-		// Ship a large corpus (>= the coverage floor) so the ratio is meaningful.
-		const corpusSegs = 4
-		mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
-		for b := range corpusSegs {
-			batch := hnswVecDocs(searchCorpusN)
-			for i := range batch {
-				batch[i].ID = fmt.Sprintf("br-b%d-%s", b, batch[i].ID)
-			}
-			require.NoError(t, mgr.AddAndShip(ctx, kgtypes.GraphCode, "ratioRepo", batch))
-		}
-		prior := shippedHNSWIDs(svc)
-		require.Len(t, prior, corpusSegs)
+		_, _, prior := seedSharedCorpus(t, svc, gc, "ratioRepo")
 
 		// A FRESH manager that has NOT loaded the corpus: its resident set is tiny
 		// (zero / one tail) relative to the shipped corpus → below the coverage ratio.
@@ -115,7 +156,7 @@ func TestPublishSubsetGate(t *testing.T) {
 			break
 		}
 		liveSet := map[searchengine.SegmentID]struct{}{anyID: {}}
-		ok, reason, err := fdm.publishCoverageOK(ctx, liveSet)
+		ok, reason, err := fdm.publishCoverageOK(ctx, liveSet, fdm.engine.ResidentDocCount())
 		require.NoError(t, err)
 		require.False(t, ok, "a resident set far below the shipped corpus must be gated")
 		require.Contains(t, reason, "coverage ratio")
@@ -129,7 +170,8 @@ func TestPublishSubsetGate(t *testing.T) {
 // shipped corpus, so coverage PASSES) plus a FRESH manager that has never loaded
 // (resident 0, so coverage SKIPS), and a one-id live set drawn from the shipped
 // corpus. Each subtest takes its own fixture under its own graph name so the shared
-// server state and the fake source's counters never leak between subtests.
+// server state and the fake source's counters never leak between subtests — only
+// the sealed corpus bytes are common, and they are read-only.
 type memoFixture struct {
 	svc     *sharedServerFake
 	gc      *fakeSegmentSource
@@ -142,18 +184,11 @@ type memoFixture struct {
 
 func newMemoFixture(t *testing.T, name string) memoFixture {
 	t.Helper()
-	ctx := context.Background()
 	svc, gc := newSegmentHarness(t)
 
-	// Ship a large corpus (>= the coverage floor) so the ratio is armed.
-	const corpusSegs = 4
-	owner := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
-	for b := range corpusSegs {
-		batch := prefixIDs(hnswVecDocs(searchCorpusN), fmt.Sprintf("%s-b%d-", name, b))
-		require.NoError(t, owner.AddAndShip(ctx, kgtypes.GraphCode, name, batch))
-	}
-	prior := shippedHNSWIDs(svc)
-	require.Len(t, prior, corpusSegs)
+	// The corpus (>= the coverage floor, so the ratio is armed) is imported from
+	// the package-wide prebuilt blobs rather than sealed again here.
+	owner, dm, prior := seedSharedCorpus(t, svc, gc, name)
 
 	// A FRESH manager that has NOT loaded the corpus: its resident set is 0, far
 	// below the coverage ratio, so its publishCoverageOK always returns the skip.
@@ -167,7 +202,7 @@ func newMemoFixture(t *testing.T, name string) memoFixture {
 		svc:     svc,
 		gc:      gc,
 		owner:   owner,
-		dm:      owner.managerFor(kgtypes.GraphCode, name),
+		dm:      dm,
 		fresh:   fresh,
 		fdm:     fresh.managerFor(kgtypes.GraphCode, name),
 		liveSet: map[searchengine.SegmentID]struct{}{anyID: {}},
@@ -191,6 +226,8 @@ func newMemoFixture(t *testing.T, name string) memoFixture {
 // coverageMemo field and the coverageDenominator type, which do not exist on an
 // unmemoized tree, so they could never have been observed failing there.
 func TestPublishCoverageDenominatorMemo(t *testing.T) {
+	t.Parallel()
+
 	t.Run("repeated_skips_pay_one_list", func(t *testing.T) {
 		ctx := context.Background()
 		f := newMemoFixture(t, "memoRepo")
@@ -199,7 +236,7 @@ func TestPublishCoverageDenominatorMemo(t *testing.T) {
 		// exactly the one shippedDocCountForRatio List.
 		base := f.gc.listCalls.Load()
 		for range 5 {
-			ok, reason, err := f.fdm.publishCoverageOK(ctx, f.liveSet)
+			ok, reason, err := f.fdm.publishCoverageOK(ctx, f.liveSet, f.fdm.engine.ResidentDocCount())
 			require.NoError(t, err)
 			require.False(t, ok, "a resident set far below the shipped corpus must be gated")
 			require.Contains(t, reason, "coverage ratio")
@@ -212,18 +249,18 @@ func TestPublishCoverageDenominatorMemo(t *testing.T) {
 		ctx := context.Background()
 		f := newMemoFixture(t, "memoVerdictRepo")
 
-		okFirst, reasonFirst, err := f.fdm.publishCoverageOK(ctx, f.liveSet)
+		okFirst, reasonFirst, err := f.fdm.publishCoverageOK(ctx, f.liveSet, f.fdm.engine.ResidentDocCount())
 		require.NoError(t, err)
-		okSecond, reasonSecond, err := f.fdm.publishCoverageOK(ctx, f.liveSet)
+		okSecond, reasonSecond, err := f.fdm.publishCoverageOK(ctx, f.liveSet, f.fdm.engine.ResidentDocCount())
 		require.NoError(t, err)
 		require.Equal(t, okFirst, okSecond, "the memo does not change the verdict")
 		require.Equal(t, reasonFirst, reasonSecond, "the memo does not change the skip reason")
 	})
 
-	// Asserts POINTER IDENTITY, not nil. AddAndShip does not stop at the ship: it runs
+	// Asserts POINTER IDENTITY, not nil. The tick does not stop at the ship: it runs
 	// shipAndPublish → shipNew (which invalidates) → publishResident →
 	// publishCoverageOK, and that coverage read is now a MISS, so it Lists and
-	// RE-STORES a fresh entry before AddAndShip returns. The memo is therefore non-nil
+	// RE-STORES a fresh entry before the tick returns. The memo is therefore non-nil
 	// at the end of a correct run, and `== nil` would fail a correct implementation.
 	// The trailing publish cannot clear it either: after the ship the server holds
 	// 4+1 segments, so the denominator is 5×searchCorpusN while this fresh manager's
@@ -238,14 +275,15 @@ func TestPublishCoverageDenominatorMemo(t *testing.T) {
 		ctx := context.Background()
 		f := newMemoFixture(t, "memoShipRepo")
 
-		_, _, err := f.fdm.publishCoverageOK(ctx, f.liveSet)
+		_, _, err := f.fdm.publishCoverageOK(ctx, f.liveSet, f.fdm.engine.ResidentDocCount())
 		require.NoError(t, err)
 		before := f.fdm.coverageMemo.Load()
 		require.NotNil(t, before, "the cold read warmed the memo")
 
-		// THIS manager ships: a full batch seals a segment, so shipNew uploads it.
-		require.NoError(t, f.fresh.AddAndShip(ctx, kgtypes.GraphCode, "memoShipRepo",
+		// THIS manager ships: the write seals a segment and the tick uploads it.
+		require.NoError(t, f.fresh.AddAndMarkDirty(ctx, kgtypes.GraphCode, "memoShipRepo",
 			prefixIDs(hnswVecDocs(searchCorpusN), "memo-ship-")))
+		require.NoError(t, f.fresh.ReEmitDirtyBuckets(ctx, kgtypes.GraphCode, "memoShipRepo"))
 
 		after := f.fdm.coverageMemo.Load()
 		require.NotNil(t, after, "the publish leg's cold read re-stored an entry")
@@ -261,12 +299,12 @@ func TestPublishCoverageDenominatorMemo(t *testing.T) {
 
 		// The corpus-owning manager has the whole corpus resident, so its coverage
 		// passes and the publish below actually LANDS.
-		_, _, err := f.dm.publishCoverageOK(ctx, f.liveSet)
+		_, _, err := f.dm.publishCoverageOK(ctx, f.liveSet, f.dm.engine.ResidentDocCount())
 		require.NoError(t, err)
 		require.NotNil(t, f.dm.coverageMemo.Load(), "the cold read warmed the memo")
 
 		pubBefore := f.gc.publishCalls.Load()
-		_, err = f.dm.publishResident(ctx, f.dm.engine.Export(), nil, f.dm.locallyShipped)
+		_, err = f.dm.publishResident(ctx, f.dm.engine.Export(), f.dm.locallyShipped)
 		require.NoError(t, err)
 		require.Equal(t, pubBefore+1, f.gc.publishCalls.Load(),
 			"the publish reached PublishManifest — it landed rather than being gate-skipped")
@@ -288,12 +326,12 @@ func TestPublishCoverageDenominatorMemo(t *testing.T) {
 		f := newMemoFixture(t, "memoReverifyRepo")
 		f.gc.verifies = true
 
-		ok, _, err := f.dm.publishCoverageOK(ctx, f.liveSet)
+		ok, _, err := f.dm.publishCoverageOK(ctx, f.liveSet, f.dm.engine.ResidentDocCount())
 		require.NoError(t, err)
 		require.True(t, ok, "the corpus-owning manager's coverage passes")
 
 		base := f.gc.listCalls.Load()
-		ok, _, err = f.dm.publishCoverageOK(ctx, f.liveSet)
+		ok, _, err = f.dm.publishCoverageOK(ctx, f.liveSet, f.dm.engine.ResidentDocCount())
 		require.NoError(t, err)
 		require.True(t, ok, "the verdict is still a pass after the re-verify")
 		require.Equal(t, int64(1), f.gc.listCalls.Load()-base,
@@ -309,7 +347,7 @@ func TestPublishCoverageDenominatorMemo(t *testing.T) {
 		ctx := context.Background()
 		f := newMemoFixture(t, "memoExpiryRepo")
 
-		_, _, err := f.fdm.publishCoverageOK(ctx, f.liveSet)
+		_, _, err := f.fdm.publishCoverageOK(ctx, f.liveSet, f.fdm.engine.ResidentDocCount())
 		require.NoError(t, err)
 		warm := f.fdm.coverageMemo.Load()
 		require.NotNil(t, warm, "the cold read warmed the memo")
@@ -322,7 +360,7 @@ func TestPublishCoverageDenominatorMemo(t *testing.T) {
 		})
 
 		base := f.gc.listCalls.Load()
-		ok, _, err := f.fdm.publishCoverageOK(ctx, f.liveSet)
+		ok, _, err := f.fdm.publishCoverageOK(ctx, f.liveSet, f.fdm.engine.ResidentDocCount())
 		require.NoError(t, err)
 		require.False(t, ok, "the fresh manager is still below the coverage ratio")
 		require.Equal(t, int64(1), f.gc.listCalls.Load()-base,

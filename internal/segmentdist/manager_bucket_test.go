@@ -1,0 +1,424 @@
+// SPDX-License-Identifier: Apache-2.0
+
+package segmentdist
+
+import (
+	"context"
+	"testing"
+
+	"github.com/stretchr/testify/require"
+
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
+)
+
+// TestStageRebuildPartitionStagesWithoutShipping is THE CATCHER for the staging entry
+// point that replaced the Add-only and seal-only quartet: a partition handed to a reset
+// must reach NEITHER serving engine, must ship and publish nothing, and must stay
+// separate from the partitions around it.
+//
+// EVERY HALF IS A DEFECT THIS ARC CLOSED. A partition that reached a serving engine
+// polluted the corpus being replaced one bucket at a time, and the finalize then
+// published the union of every layer that engine had held — measured live as three bm25
+// blobs where one was correct. A partition that shipped would reintroduce the per-group
+// ship this design removed. And partitions that merged into one staged entry would mix
+// two buckets' membership into a single segment, which is the mixing the retired seal
+// existed to prevent and which staging must go on preventing.
+func TestStageRebuildPartitionStagesWithoutShipping(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	const n = 500 // far below DefaultMinSegmentDocs (1024)
+	require.Less(t, n, searchengine.DefaultMinSegmentDocs, "the fixture must be sub-threshold")
+
+	t.Run("neither serving engine is touched, and nothing ships", func(t *testing.T) {
+		_, cc := newSegmentHarness(t)
+		mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(cc))
+		gt, name := kgtypes.GraphCode, "staging-untouched"
+
+		require.NoError(t, mgr.StageRebuildPartition(ctx, gt, name, hnswVecDocs(n), vecContentDocs(n)))
+
+		require.Empty(t, mgr.managerFor(gt, name).engine.Export(),
+			"a staged partition must NOT reach the serving HNSW engine — that is the pollution staging exists to stop")
+		require.Empty(t, mgr.bm25ManagerFor(gt, name).engine.Export(),
+			"nor the serving BM25 engine, which is where the field corpus accumulated its extra layers")
+		require.Equal(t, int64(0), cc.shipCalls.Load(), "staging must not ship")
+		require.Equal(t, int64(0), cc.publishCalls.Load(), "staging must not publish a manifest")
+	})
+
+	t.Run("one call carries both formats' share", func(t *testing.T) {
+		_, cc := newSegmentHarness(t)
+		mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(cc))
+		gt, name := kgtypes.GraphCode, "staging-both-formats"
+
+		require.NoError(t, mgr.StageRebuildPartition(ctx, gt, name, hnswVecDocs(n), vecContentDocs(n)))
+
+		// THE SINGLE CALL IS THE CORRECTNESS DEVICE: a caller cannot stage the vector
+		// share and forget the field share, which is how the field corpus came to lag.
+		staged := mgr.takeRebuildWork(gt, name)
+		require.Len(t, staged.hnsw, 1, "one entry per staging call, per format")
+		require.Len(t, staged.bm25, 1, "and the field share of the same call is staged alongside it")
+		require.Len(t, staged.hnsw[0].Docs, n, "carrying every vector document it was given")
+		require.Len(t, staged.bm25[0].Docs, n, "and every field document")
+	})
+
+	t.Run("successive partitions stay separate", func(t *testing.T) {
+		_, cc := newSegmentHarness(t)
+		mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(cc))
+		gt, name := kgtypes.GraphCode, "staging-successive"
+
+		// Two sub-threshold groups staged in turn: two staged partitions, which the
+		// finalize builds into two segments. Coalescing them here would mix two buckets'
+		// membership into one segment — the failure the retired per-group seal guarded.
+		require.NoError(t, mgr.StageRebuildPartition(ctx, gt, name, vecContentDocsSeed(10, 0), nil))
+		require.NoError(t, mgr.StageRebuildPartition(ctx, gt, name, vecContentDocsSeed(10, 1000), nil))
+
+		staged := mgr.takeRebuildWork(gt, name)
+		require.Len(t, staged.hnsw, 2, "each staged group is its own partition")
+		require.NotEqual(t, staged.hnsw[0].Bucket, staged.hnsw[1].Bucket,
+			"and they carry distinct partition indices, or the finalize would build them as one")
+		require.Equal(t, int64(0), cc.shipCalls.Load(), "still no ship from staging alone")
+	})
+}
+
+// bucketFixtureDocs builds n docs and returns them plus the bucket count they
+// derive, failing the test if that count is not the expected one — a fixture that
+// drifts onto a power-of-two boundary would re-emit every bucket and quietly
+// invalidate the delta assertions below.
+func bucketFixtureDocs(t *testing.T, n, wantBuckets int) []searchengine.Document {
+	t.Helper()
+	docs := vecContentDocs(n)
+	got := searchengine.BucketCountFor(n)
+	require.Equal(t, wantBuckets, got, "fixture of %d docs derives %d buckets, want %d", n, got, wantBuckets)
+	return docs
+}
+
+// docsInDistinctBuckets picks want docs that each land in a different bucket, so a
+// call can touch exactly that many partitions.
+func docsInDistinctBuckets(t *testing.T, docs []searchengine.Document, bucketCount, want int) []searchengine.Document {
+	t.Helper()
+	seen := make(map[int]struct{}, want)
+	out := make([]searchengine.Document, 0, want)
+	for _, d := range docs {
+		b := searchengine.BucketOf(d.ID, bucketCount)
+		if _, dup := seen[b]; dup {
+			continue
+		}
+		seen[b] = struct{}{}
+		out = append(out, d)
+		if len(out) == want {
+			return out
+		}
+	}
+	t.Fatalf("could not find %d docs in distinct buckets", want)
+	return nil
+}
+
+// TestManagerReplaceBucketPublishesCompleteManifest proves a partial re-emit
+// publishes the WHOLE resident corpus, not just the partitions it rewrote.
+//
+// This is the property that keeps a delta re-emit safe: the manifest is derived
+// from the resident set, so the partitions nobody touched remain referenced and
+// the server cannot reference-count them away. If a re-emit published only what it
+// rebuilt, the six untouched partitions would be reaped and the corpus would
+// silently shrink to the two that were rewritten.
+func TestManagerReplaceBucketPublishesCompleteManifest(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	const corpus = 6144 // derives 8 buckets, clear of a doubling boundary
+	const buckets = 8
+
+	svc, gc := newSegmentHarness(t)
+	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	gt, name := kgtypes.GraphCode, "complete-manifest"
+	target := graphSelector(gt, name)
+
+	docs := bucketFixtureDocs(t, corpus, buckets)
+	require.NoError(t, mgr.ReplaceBucket(ctx, gt, name, nil, docs))
+
+	dm := mgr.managerFor(gt, name)
+	require.Len(t, dm.engine.Export(), buckets, "the seed lands one segment per bucket")
+	require.Len(t, writerManifest(svc, target, "", "hnsw"), buckets, "the seed publishes all 8")
+
+	// Re-emit just TWO partitions, with fresh content for those docs.
+	touched := docsInDistinctBuckets(t, docs, buckets, 2)
+	beforePublishes := gc.publishCalls.Load()
+	require.NoError(t, mgr.ReplaceBucket(ctx, gt, name, docIDs(touched), touched))
+
+	require.Equal(t, int64(1), gc.publishCalls.Load()-beforePublishes,
+		"a re-emit publishes exactly ONCE, not once per partition — and a zero here would mean the coverage gate skipped the publish entirely")
+	require.Len(t, dm.engine.Export(), buckets, "the corpus still holds all 8 partitions after a 2-partition re-emit")
+	require.Len(t, writerManifest(svc, target, "", "hnsw"), buckets,
+		"the manifest still names all 8 — the untouched partitions stayed referenced")
+}
+
+// TestManagerReplaceBucketShipsOncePerCall is the network guard: however many
+// partitions a call rewrites, it issues exactly one Ship and one publish. Shipping
+// per partition would multiply the round trips by the number of partitions touched,
+// which for a hash-distributed batch is most of the corpus.
+func TestManagerReplaceBucketShipsOncePerCall(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	const corpus = 3072 // derives 4 buckets, clear of a doubling boundary
+	const buckets = 4
+
+	_, gc := newSegmentHarness(t)
+	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	gt, name := kgtypes.GraphCode, "ships-once"
+
+	docs := bucketFixtureDocs(t, corpus, buckets)
+	require.NoError(t, mgr.ReplaceBucket(ctx, gt, name, nil, docs))
+
+	// The re-emitted documents must carry CHANGED content. A rebuild is convergent —
+	// identical documents encode to identical bytes under the same id — so re-emitting
+	// unchanged content correctly ships nothing, and the guard below would then be
+	// asserting against an empty diff rather than against per-partition shipping.
+	touched := rewritten(docsInDistinctBuckets(t, docs, buckets, buckets))
+	require.Len(t, touched, buckets, "the call must touch every partition")
+
+	beforeShips, beforePublishes := gc.shipCalls.Load(), gc.publishCalls.Load()
+	require.NoError(t, mgr.ReplaceBucket(ctx, gt, name, docIDs(touched), touched))
+
+	require.Equal(t, int64(1), gc.shipCalls.Load()-beforeShips,
+		"a call touching %d partitions issues exactly ONE Ship", buckets)
+	require.Equal(t, int64(1), gc.publishCalls.Load()-beforePublishes,
+		"a call touching %d partitions issues exactly ONE PublishManifest", buckets)
+}
+
+// rewritten returns copies of docs that keep their ids but carry DIFFERENT content,
+// which is what a re-embed produces: the node is the same, its vector is new.
+//
+// The distinction matters to any test that counts ships. A rebuild is convergent,
+// so re-emitting byte-identical documents republishes the same segment ids and the
+// ship diff is empty — correct behavior, and indistinguishable from a broken ship
+// path if a fixture re-writes documents unchanged and then asserts a ship happened.
+func rewritten(docs []searchengine.Document) []searchengine.Document {
+	out := make([]searchengine.Document, len(docs))
+	for i, d := range docs {
+		vec := make([]byte, len(d.Vector))
+		copy(vec, d.Vector)
+		if len(vec) > 0 {
+			vec[0] ^= 0xFF
+		}
+		out[i] = searchengine.Document{ID: d.ID, Vector: vec, Fields: d.Fields}
+	}
+	return out
+}
+
+// residentIDs is the set of segment ids currently resident on an engine.
+func residentIDs[Q, S any](dm *distManager[Q, S]) map[searchengine.SegmentID]struct{} {
+	out := make(map[searchengine.SegmentID]struct{})
+	for _, b := range dm.engine.Export() {
+		out[b.ID] = struct{}{}
+	}
+	return out
+}
+
+// replacedCount reports how many segments present before are gone after — the
+// observable signature of a re-emit, since rebuilding a partition retires the
+// segment that held it.
+func replacedCount(before, after map[searchengine.SegmentID]struct{}) int {
+	n := 0
+	for id := range before {
+		if _, survived := after[id]; !survived {
+			n++
+		}
+	}
+	return n
+}
+
+// TestEmbedDrainCoalescesMergesOntoReconcileTick is THE CATCHER for the coalescing
+// premise: a write batch must not rebuild anything, and the deferred tick must
+// rebuild at most once per partition the batch touched.
+//
+// If the write path re-emitted inline it would rebuild a partition per batch, and
+// because ids are hash distributed a single batch touches most partitions of a
+// corpus — which is the cost this whole design exists to avoid. Leg 1 fails
+// immediately if that regression is reintroduced.
+//
+// TWO LEGS OVER ONE SEEDED CORPUS, because the two halves need opposite inputs.
+// Leg 1 keeps the realistic write window (a full embed batch), which is what makes
+// its no-rebuild assertion meaningful. That same window is useless for the tick
+// BOUND: a batch that wide dirties every partition, so the bound equals the
+// resident count and is satisfied by any behavior at all. Leg 2 therefore drives a
+// deliberately NARROW batch pinned to three partitions, which is the only shape
+// where "at most one rebuild per dirty partition" can fail.
+func TestEmbedDrainCoalescesMergesOntoReconcileTick(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	const corpus = 6144 // derives 8 buckets, clear of a doubling boundary
+	const buckets = 8
+	const drain = 100 // EmbedBatchSizeOrDefault
+	require.Equal(t, buckets, searchengine.BucketCountFor(corpus), "layout count")
+
+	_, gc := newSegmentHarness(t)
+	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	gt, name := kgtypes.GraphCode, "coalesce-tick"
+
+	docs := bucketFixtureDocs(t, corpus, buckets)
+	require.NoError(t, mgr.ReplaceBucket(ctx, gt, name, nil, docs))
+	dm := mgr.managerFor(gt, name)
+
+	beforeDrain := residentIDs(dm)
+	require.Len(t, beforeDrain, buckets, "the seed lands one segment per partition")
+	shipsBefore := gc.shipCalls.Load()
+
+	// LEG 1 — REALISTIC WRITE. A drain re-writes the first `drain` documents with
+	// NEW content — the shape a re-embed carries, where a node keeps its id and gets
+	// a fresh vector. Re-writing them unchanged would encode to the same bytes and
+	// ship nothing, because the rebuild is convergent.
+	batch := rewritten(docs[:drain])
+	require.NoError(t, mgr.AddAndMarkDirty(ctx, gt, name, batch))
+
+	// Nothing rebuilt, nothing shipped. Every seed segment survives and the only
+	// addition is the sealed tail.
+	afterDrain := residentIDs(dm)
+	require.Zero(t, replacedCount(beforeDrain, afterDrain),
+		"a drain must not rebuild any partition — it only seals a tail")
+	require.Len(t, afterDrain, buckets+1, "the drain adds exactly one tail segment")
+	require.Equal(t, shipsBefore, gc.shipCalls.Load(), "a drain must not ship")
+
+	// Clear leg 1's dirty window so leg 2 starts from one segment per partition.
+	require.NoError(t, mgr.ReEmitDirtyBuckets(ctx, gt, name))
+	require.Len(t, residentIDs(dm), buckets, "leg 1's tick retires the tail")
+	require.Equal(t, shipsBefore+1, gc.shipCalls.Load(), "leg 1's tick ships exactly once")
+
+	// LEG 2 — BOUNDED TICK. Drawn from BEYOND leg 1's window: those documents still
+	// hold their seed content, so rewriting them genuinely changes their partitions.
+	// Drawing from docs[:drain] instead would re-apply leg 1's edit, the rebuild
+	// would be convergent, and the tick would replace only the tail.
+	subset := rewritten(docsInDistinctBuckets(t, docs[drain:], buckets, 3))
+	dirtyBuckets := make(map[int]struct{}, len(subset))
+	for _, d := range subset {
+		dirtyBuckets[searchengine.BucketOf(d.ID, buckets)] = struct{}{}
+	}
+	require.Len(t, dirtyBuckets, 3, "the subset is pinned to exactly three partitions")
+
+	require.NoError(t, mgr.AddAndMarkDirty(ctx, gt, name, subset))
+	beforeTick := residentIDs(dm)
+	require.Len(t, beforeTick, buckets+1, "the narrow drain adds exactly one tail segment")
+
+	require.NoError(t, mgr.ReEmitDirtyBuckets(ctx, gt, name))
+	afterTick := residentIDs(dm)
+	rebuilt := replacedCount(beforeTick, afterTick)
+	t.Logf("LEG2 dirtyBuckets=%d bound=%d rebuilt=%d ceiling=%d",
+		len(dirtyBuckets), len(dirtyBuckets)+1, rebuilt, len(beforeTick))
+	require.LessOrEqual(t, rebuilt, len(dirtyBuckets)+1,
+		"the tick rebuilds at most one segment per dirty partition (plus retiring the tail)")
+	require.Positive(t, rebuilt, "the tick must actually re-emit the dirty partitions")
+	require.Len(t, afterTick, buckets, "the tail segment is retired by the tick")
+	require.Equal(t, shipsBefore+2, gc.shipCalls.Load(), "leg 2's tick ships exactly once more")
+}
+
+// seedShipped drives documents to a DURABLE, published state the way a fixture
+// needs: mark them for re-emit, then run the re-emit that ships and publishes.
+//
+// It is the setup replacement for the retired Add-then-ship entry point. Tests
+// whose SUBJECT is when a write ships must not use it — they need to drive the
+// write and the re-emit separately so they can observe what happens between.
+//
+// It takes testing.TB so benchmarks can seed the same way tests do.
+func seedShipped(
+	t testing.TB, ctx context.Context, mgr *Manager,
+	gt kgtypes.GraphType, name string, docs []searchengine.Document,
+) {
+	t.Helper()
+	require.NoError(t, mgr.AddAndMarkDirty(ctx, gt, name, docs))
+	require.NoError(t, mgr.ReEmitDirtyBuckets(ctx, gt, name))
+}
+
+// seedShippedFields is the field-engine counterpart of seedShipped.
+func seedShippedFields(
+	t testing.TB, ctx context.Context, mgr *Manager,
+	gt kgtypes.GraphType, name string, docs []searchengine.Document,
+) {
+	t.Helper()
+	require.NoError(t, mgr.AddAndMarkDirtyFields(ctx, gt, name, docs))
+	require.NoError(t, mgr.ReEmitDirtyBuckets(ctx, gt, name))
+}
+
+// TestReEmitRetriesSkippedPublish covers the durability hole a SKIPPED publish
+// would otherwise open.
+//
+// A skip is not an error: the blobs are already on the server, but the manifest
+// still names the segments the re-emit retired, so the new content is unreferenced
+// and reference-count-collectable. If the tick cleared its backlog anyway, nothing
+// would ever republish — the graph has already been re-emitted in memory and the
+// tails are gone, so no later write would notice. The backlog must therefore
+// survive a skip, and a subsequent tick must re-attempt the publish even with no
+// new documents to contribute.
+func TestReEmitRetriesSkippedPublish(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	_, gc := newSegmentHarness(t)
+	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	gt, name := kgtypes.GraphCode, "skip-retry"
+
+	// FIXTURE CONSTANTS. Every expectation below is stated from these rather than
+	// read back off the engine: a defect that loses or duplicates documents would
+	// otherwise define its own expectation and the assertions would hold vacuously.
+	const (
+		seedDocs  = 2048
+		batchDocs = 50
+		liveDocs  = seedDocs + batchDocs
+	)
+
+	// Seed a published corpus so the coverage gate is satisfied throughout.
+	seedShipped(t, ctx, mgr, gt, name, vecContentDocs(seedDocs))
+	dm := mgr.managerFor(gt, name)
+	require.False(t, dm.publishRetryPending(), "the seed published cleanly")
+
+	// A drain, then a tick whose publish is SKIPPED by the agent's missing-blob
+	// report — no error, but no manifest swap either.
+	gc.publishErr = &manifestIncompleteError{Missing: []string{"seg-missing"}}
+	batch := vecContentDocsSeed(batchDocs, 900000)
+	require.NoError(t, mgr.AddAndMarkDirty(ctx, gt, name, batch))
+
+	publishesBefore := gc.publishCalls.Load()
+	require.NoError(t, mgr.ReEmitDirtyBuckets(ctx, gt, name), "a skipped publish is not an error")
+	require.Equal(t, int64(1), gc.publishCalls.Load()-publishesBefore, "the tick attempted the publish")
+	require.True(t, dm.publishRetryPending(), "the skip latched the retry bit")
+
+	// LEG 2 — the re-emit obligation is DISCHARGED. The buckets were rebuilt and
+	// shipped, so the backlog goes even though the manifest swap did not land. The
+	// outstanding swap is carried by the retry bit alone, which is sound because the
+	// manifest is a full snapshot of the live set rather than a delta: a later
+	// publish republishes whatever is resident and needs no record of which
+	// documents happened to arrive in this window. An empty backlog is also what
+	// makes a SECOND re-emit impossible, which is the property this leg exists for.
+	hnswSnap, _ := mgr.snapshotDirty(gt, name)
+	require.Empty(t, hnswSnap.pending, "the re-emit obligation is discharged once the buckets ship")
+	require.Empty(t, hnswSnap.tails, "the sealed tails are accounted for too")
+
+	// LEG 3 — the retry tick republishes WITHOUT re-emitting. The discriminator is
+	// the resident segment set: a tick that rebuilt again would land different
+	// segments. The NON-EMPTY assertions are the control — an engine that had lost
+	// its corpus would satisfy "unchanged" vacuously, empty to empty.
+	residentBefore := residentIDs(dm)
+	require.NotEmpty(t, residentBefore, "the corpus is resident before the retry tick")
+	require.Equal(t, liveDocs, dm.engine.ResidentDocCount(),
+		"every seeded and drained document is resident exactly once before the retry")
+
+	gc.publishErr = nil
+	publishesBefore = gc.publishCalls.Load()
+	require.NoError(t, mgr.ReEmitDirtyBuckets(ctx, gt, name))
+	require.Equal(t, int64(1), gc.publishCalls.Load()-publishesBefore,
+		"a tick with no new documents still republishes while a publish is outstanding")
+	require.False(t, dm.publishRetryPending(), "the successful swap cleared the retry bit")
+
+	residentAfter := residentIDs(dm)
+	require.NotEmpty(t, residentAfter, "the corpus is still resident after the retry tick")
+	require.Equal(t, residentBefore, residentAfter,
+		"the retry tick republished the SAME segments — it must not re-emit a second time")
+	require.Equal(t, liveDocs, dm.engine.ResidentDocCount(),
+		"the retry tick neither lost nor duplicated documents")
+
+	// And a genuinely quiet tick with nothing outstanding does nothing at all.
+	publishesBefore = gc.publishCalls.Load()
+	require.NoError(t, mgr.ReEmitDirtyBuckets(ctx, gt, name))
+	require.Equal(t, publishesBefore, gc.publishCalls.Load(), "an idle tick publishes nothing")
+}

@@ -268,12 +268,93 @@ func (s *UploadSink) WriteResult(ctx context.Context, collectorName string, resu
 	finStart := time.Now()
 	// Finalize does the epoch GC and promotion work, a different load shape from
 	// the chunk uploads above, so it carries its own term.
-	if _, err := client.Finalize(graphclient.WithOperation(ctx, graphclient.OpCollectFinalize), finReq); err != nil {
+	finResp, err := client.Finalize(graphclient.WithOperation(ctx, graphclient.OpCollectFinalize), finReq)
+	if err != nil {
 		return fmt.Errorf("remote sink: Finalize: %w", err)
 	}
-	slog.Debug("remote sink: finalize done", "graph", result.GraphName, "branch", result.CurrentBranch,
+	slog.Debug("remote sink: finalize accepted", "graph", result.GraphName, "branch", result.CurrentBranch,
 		"epoch", epoch, "dur", time.Since(finStart).Round(time.Millisecond))
-	return nil
+	return awaitFinalizeTail(ctx, client, finResp.Msg.GetFinalizeId(), result.GraphName, finStart)
+}
+
+// finalizeTailPoll is the interval between FinalizeStatus polls, and
+// finalizeTailWait the total budget before the collect stops waiting.
+//
+// The budget is deliberately LONGER than the edge timeout the detached tail
+// exists to escape: the point of moving the tail off the response path was never
+// to make the work faster, only to stop a slow tail from failing the REQUEST. A
+// budget shorter than the tail's realistic duration would reintroduce exactly the
+// impatience that was moved out of the transport.
+const (
+	finalizeTailPoll = 2 * time.Second
+	finalizeTailWait = 10 * time.Minute
+)
+
+// awaitFinalizeTail polls FinalizeStatus until the server's detached finalize
+// tail settles, so a collect reports what actually happened rather than assuming
+// the acknowledgement was the whole story.
+//
+// NOTHING HERE FAILS THE COLLECT. By the time Finalize returned, the durable half
+// — the epoch-tombstone sweep recording this collection's deletions — was already
+// committed; the tail is follow-up over that committed state. A failed or
+// unfinished tail means some staleness marking or tombstone pruning is owed, which
+// the next collect redoes, so turning it into a collect failure would report a
+// loss that did not happen. The outcome is logged at a severity matching what it
+// means and the collect succeeds.
+func awaitFinalizeTail(
+	ctx context.Context, client knowledgev1connect.IngestServiceClient,
+	finalizeID, graphName string, finStart time.Time,
+) error {
+	if finalizeID == "" {
+		// A server too old to return an id. Nothing to poll; the acknowledgement is
+		// all the completion signal that exists against it.
+		slog.Debug("remote sink: finalize done (server returned no finalize id)", "graph", graphName)
+		return nil
+	}
+	deadline := time.Now().Add(finalizeTailWait)
+	for {
+		resp, err := client.FinalizeStatus(graphclient.WithOperation(ctx, graphclient.OpCollectFinalize),
+			connect.NewRequest(&knowledgev1.FinalizeStatusRequest{FinalizeId: finalizeID}))
+		if err != nil {
+			slog.Warn("remote sink: finalize status poll failed — collect stands, tail completion unconfirmed",
+				"graph", graphName, "finalize_id", finalizeID, "error", err)
+			return nil
+		}
+		switch resp.Msg.GetState() {
+		case knowledgev1.FinalizeState_FINALIZE_STATE_DONE:
+			slog.Debug("remote sink: finalize done", "graph", graphName,
+				"dur", time.Since(finStart).Round(time.Millisecond))
+			return nil
+		case knowledgev1.FinalizeState_FINALIZE_STATE_FAILED:
+			slog.Error("remote sink: finalize tail FAILED — the collection landed, but its follow-up "+
+				"(container staleness marks, tombstone prune) did not complete",
+				"graph", graphName, "finalize_id", finalizeID, "error", resp.Msg.GetError())
+			return nil
+		case knowledgev1.FinalizeState_FINALIZE_STATE_UNKNOWN:
+			// Finalize ids are process-local, so a poll routed to a different replica
+			// than served the Finalize legitimately lands here. Not an error, and not
+			// worth retrying — the replica that knows will never be asked again.
+			slog.Debug("remote sink: finalize tail status unknown to the serving replica — "+
+				"completion unconfirmed", "graph", graphName, "finalize_id", finalizeID)
+			return nil
+		case knowledgev1.FinalizeState_FINALIZE_STATE_RUNNING,
+			knowledgev1.FinalizeState_FINALIZE_STATE_UNSPECIFIED:
+			// Keep waiting.
+		}
+		if time.Now().After(deadline) {
+			slog.Warn("remote sink: finalize tail still running after the wait budget — collect stands, "+
+				"tail completion unconfirmed",
+				"graph", graphName, "finalize_id", finalizeID, "waited", finalizeTailWait)
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			slog.Debug("remote sink: finalize tail wait cancelled — collect stands, completion unconfirmed",
+				"graph", graphName, "finalize_id", finalizeID)
+			return nil
+		case <-time.After(finalizeTailPoll):
+		}
+	}
 }
 
 // collectChunkWithRetry sends one CollectChunk, retrying on a retryable

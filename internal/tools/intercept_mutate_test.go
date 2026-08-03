@@ -80,6 +80,69 @@ func TestInterceptMutate_BackendBackedUpdate_CallsLinearThenForwards(t *testing.
 	assert.Equal(t, "renamed", m.GetSetFields()["name"])
 }
 
+// TestInterceptMutate_BackendUpdate_RoutesKeywordsAndSource pins both halves of
+// the backend-backed update arm's accounting. keywords and source now ride the
+// local forward as top-level set_fields — the same route updateSetFields gives
+// every other update arm — so a tracker-backed node no longer silently loses
+// them. The per-type params stay rejected: a work item owns no criterion/rule/
+// finding key, and rejecting BEFORE the tracker write is what keeps a bad call
+// from leaving Linear and the local graph disagreeing.
+func TestInterceptMutate_BackendUpdate_RoutesKeywordsAndSource(t *testing.T) {
+	backendNode := func() map[string]kgtools.ToolResult {
+		return map[string]kgtools.ToolResult{
+			"back-1": nodeResultJSON(t, "back-1", "ticket", map[string]string{
+				"backend": "linear", "linear_id": "uuid-back-1",
+			}),
+		}
+	}
+
+	// name rides along deliberately: it guarantees the forwarded payload compiles
+	// to a MutationPlan whether or not keywords/source are carried, so the two
+	// set_fields assertions below are what fails when the routing is absent —
+	// not a blanket not-reducible error from an empty payload.
+	t.Run("keywords and source forward in set_fields", func(t *testing.T) {
+		fb := &fakeBackend{}
+		fc := &fakeGraphCaller{
+			queryResponses: backendNode(),
+			mutateResult:   kgtools.ToolResult{Content: []kgtools.ContentBlock{{Type: "text", Text: "ok"}}},
+		}
+		deps := interceptTestDeps{byName: map[string]backends.Backend{"linear": fb}, gc: fc}
+		handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
+			Name: "mutate",
+			Arguments: json.RawMessage(
+				`{"operation":"update","id":"back-1","name":"renamed",` +
+					`"keywords":"alpha beta","source":"llm:claude"}`),
+		})
+		require.True(t, handled)
+		require.False(t, res.IsError, "success expected: %s", toolResultText(res))
+		require.GreaterOrEqual(t, len(fc.execMutations), 1)
+		m := fc.execMutations[len(fc.execMutations)-1]
+		assert.Equal(t, "renamed", m.GetSetFields()["name"], "the pre-existing route must still work")
+		assert.Equal(t, "alpha beta", m.GetSetFields()["keywords"])
+		assert.Equal(t, "llm:claude", m.GetSetFields()["source"])
+	})
+
+	// One per-type param per owning node type, to prove the rejection is the
+	// arm's whole per-type class rather than a single hardcoded key.
+	for _, param := range []string{"scope", "command", "criterion_type", "enforcement", "evidence"} {
+		t.Run(param+" rejects with zero writes", func(t *testing.T) {
+			fb := &fakeBackend{}
+			fc := &fakeGraphCaller{queryResponses: backendNode()}
+			deps := interceptTestDeps{byName: map[string]backends.Backend{"linear": fb}, gc: fc}
+			handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
+				Name: "mutate",
+				Arguments: json.RawMessage(
+					`{"operation":"update","id":"back-1","` + param + `":"x"}`),
+			})
+			require.True(t, handled, "a rejected param must be claimed, not fall through")
+			require.True(t, res.IsError)
+			assert.Contains(t, toolResultText(res), param, "the rejection must name the offending param")
+			assert.Equal(t, 0, fb.updateTicketCalls, "the tracker write must not fire on a rejected param")
+			assert.Empty(t, fc.execMutations, "no local write either — reject precedes both halves")
+		})
+	}
+}
+
 func TestInterceptMutate_MixedBatch_GuardRejects(t *testing.T) {
 	fc := &fakeGraphCaller{queryResponses: map[string]kgtools.ToolResult{
 		"local-1":   nodeResultJSON(t, "local-1", "ticket", map[string]string{}),

@@ -73,6 +73,19 @@ func (Format) Merge(segs []searchengine.Segment[Query, *CorpusStats], accept []f
 	var members []searchengine.ExternalID
 	docFreq := make(map[string]int64)
 
+	// ONE SLOT PER ID, decided before anything is spliced. mergeSegment appends a
+	// member slot per surviving copy, so constituents that share an id would otherwise
+	// yield two slots for it — the index carrying two docs for one id while the
+	// engine's route map records one, which is the retrieval defect in its BM25 form.
+	// Resolving the winner up front keeps mergeSegment a straight per-doc copy and
+	// makes the choice LAST-WINS across the whole input, matching the hnsw leg and the
+	// route map's own last-append-wins semantics. See dedupeItemsByID (hnsw/format.go)
+	// for what last-wins does and does not guarantee.
+	winner, err := resolveMergeWinners(segs, accept)
+	if err != nil {
+		return nil, err
+	}
+
 	for i, s := range segs {
 		bs, ok := s.(*bm25Segment)
 		if !ok {
@@ -82,10 +95,56 @@ func (Format) Merge(segs []searchengine.Segment[Query, *CorpusStats], accept []f
 		if i < len(accept) {
 			keep = accept[i]
 		}
-		mergeSegment(bs, keep, out, byName, &members, docFreq)
+		mergeSegment(bs, i, keep, winner, out, byName, &members, docFreq)
 	}
 
 	return &bm25Segment{fields: out, fieldByName: byName, members: members, docFreq: docFreq}, nil
+}
+
+// mergeSlot identifies the ONE copy of an external id that a merge keeps: which
+// input segment it came from and its doc id within that segment. Both halves are
+// needed — an id can repeat inside a single constituent as well as across two.
+type mergeSlot struct {
+	seg   int
+	docID int
+}
+
+// resolveMergeWinners walks the inputs' members exactly as mergeSegment will and
+// records, per surviving external id, the LAST slot that would have contributed it.
+// mergeSegment then splices only those slots, so the consolidated segment holds one
+// member per id no matter how many constituents carried it.
+func resolveMergeWinners(
+	segs []searchengine.Segment[Query, *CorpusStats], accept []func(searchengine.ExternalID) bool,
+) (map[searchengine.ExternalID]mergeSlot, error) {
+	winner := make(map[searchengine.ExternalID]mergeSlot)
+	for i, s := range segs {
+		bs, ok := s.(*bm25Segment)
+		if !ok {
+			return nil, fmt.Errorf("bm25 merge: input %d is %T, not *bm25Segment", i, s)
+		}
+		var keep func(searchengine.ExternalID) bool
+		if i < len(accept) {
+			keep = accept[i]
+		}
+		for oldID, extID := range bs.members {
+			if keep != nil && !keep(extID) {
+				continue
+			}
+			winner[extID] = mergeSlot{seg: i, docID: oldID}
+		}
+	}
+	return winner, nil
+}
+
+// winsSlot reports whether (segIdx, docID) is the ONE slot resolveMergeWinners chose
+// to carry extID into the merged segment. An id with no recorded winner is passed
+// through unchanged, so the predicate is inert on inputs that share nothing.
+func winsSlot(winner map[searchengine.ExternalID]mergeSlot, extID searchengine.ExternalID, segIdx, docID int) bool {
+	w, ok := winner[extID]
+	if !ok {
+		return true
+	}
+	return w.seg == segIdx && w.docID == docID
 }
 
 // mergeSegment splices one input segment's LIVE members into the merge output,
@@ -93,8 +152,14 @@ func (Format) Merge(segs []searchengine.Segment[Query, *CorpusStats], accept []f
 // input's members in stable order, assigns each surviving member a new contiguous
 // docID, copies that doc's per-field postings + doc lengths under the new id, and
 // rolls up document frequency from the live, deduped terms.
+//
+// segIdx is this input's position in the merge, and winner names the single slot
+// kept per external id (resolveMergeWinners). A member whose winning slot is not
+// THIS one is skipped, so an id carried by several constituents contributes exactly
+// one member to the output.
 func mergeSegment(
-	bs *bm25Segment, keep func(searchengine.ExternalID) bool,
+	bs *bm25Segment, segIdx int, keep func(searchengine.ExternalID) bool,
+	winner map[searchengine.ExternalID]mergeSlot,
 	out []*fieldData, byName map[string]*fieldData,
 	members *[]searchengine.ExternalID, docFreq map[string]int64,
 ) {
@@ -118,6 +183,11 @@ func mergeSegment(
 
 	for oldID, extID := range bs.members {
 		if keep != nil && !keep(extID) {
+			continue
+		}
+		// Not the winning copy of this id — another slot (a later constituent, or a
+		// later doc in this one) carries it into the output.
+		if !winsSlot(winner, extID, segIdx, oldID) {
 			continue
 		}
 		newID := uint32(len(*members))

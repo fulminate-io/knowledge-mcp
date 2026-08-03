@@ -32,6 +32,9 @@ func InterceptLogsManage(ctx context.Context, deps ClientDeps, params kgtools.Ca
 	if params.Name != "manage" {
 		return false, kgtools.ToolResult{}
 	}
+	if err := rejectUndeclaredParams("manage", "", ManageToolDef().InputSchema.Properties, params.Arguments); err != nil {
+		return true, errorResult(err.Error())
+	}
 	var a manageArgs
 	if err := json.Unmarshal(params.Arguments, &a); err != nil {
 		return false, kgtools.ToolResult{}

@@ -22,11 +22,9 @@ import (
 //
 // Self-loop policy (OQ-F, fixed default): single-node SCCs are ALWAYS
 // excluded, even when the lone node has a self-loop edge. This drops noisy
-// "function calls itself" recursion findings on CALLS graphs and matches
-// the ticket's requested default. The decision to keep this as a fixed
-// default (no per-request knob) was recorded against open question
-// b7745d9e7935895b736a05c134ceb4da. A future ticket may add a Request.Extra
-// field to expose include_self_loops as an opt-in.
+// "function calls itself" recursion findings on CALLS graphs. It is a fixed
+// default with no per-request knob; exposing include_self_loops as an opt-in
+// would need a Request.Extra field and has not been justified by a caller.
 //
 // Severity is derived from the SCC size:
 //

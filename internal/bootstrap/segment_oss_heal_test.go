@@ -87,10 +87,10 @@ func TestHealNeedsRebuildLocal_OSSZeroRPC(t *testing.T) {
 	t.Run("b: warm L2 covering >=ratio*embedded, embedded>=floor -> no rebuild, zero legs", func(t *testing.T) {
 		const repo = "ossWarmRepo"
 		c, _ := buildOSSHealClient(t, 100, repo)
-		// Warm the OSS L2 to resident 60 (>= 0.5*100) via a local AddAndShip+Flush
+		// Warm the OSS L2 to resident 60 (>= 0.5*100) via a local write plus its re-emit
 		// (zero SegmentService legs — the localSegmentSource ships to L2 alone).
-		require.NoError(t, c.segmentMgr.AddAndShip(ctx, kgtypes.GraphCode, repo, fastloadVecDocs(repo, 60)))
-		require.NoError(t, c.segmentMgr.Flush(ctx, kgtypes.GraphCode, repo))
+		require.NoError(t, c.segmentMgr.AddAndMarkDirty(ctx, kgtypes.GraphCode, repo, fastloadVecDocs(repo, 60)))
+		require.NoError(t, c.segmentMgr.ReEmitDirtyBuckets(ctx, kgtypes.GraphCode, repo))
 
 		needs, err := c.healNeedsRebuild(ctx, kgtypes.GraphCode, repo)
 		require.NoError(t, err)
@@ -101,8 +101,8 @@ func TestHealNeedsRebuildLocal_OSSZeroRPC(t *testing.T) {
 		const repo = "ossTinyHealthyRepo"
 		c, _ := buildOSSHealClient(t, 30, repo) // embedded 30 < floor 64
 		// Warm the OSS L2 to resident 30 (>0 clears the one-shot trigger).
-		require.NoError(t, c.segmentMgr.AddAndShip(ctx, kgtypes.GraphCode, repo, fastloadVecDocs(repo, 30)))
-		require.NoError(t, c.segmentMgr.Flush(ctx, kgtypes.GraphCode, repo))
+		require.NoError(t, c.segmentMgr.AddAndMarkDirty(ctx, kgtypes.GraphCode, repo, fastloadVecDocs(repo, 30)))
+		require.NoError(t, c.segmentMgr.ReEmitDirtyBuckets(ctx, kgtypes.GraphCode, repo))
 
 		needs, err := c.healNeedsRebuild(ctx, kgtypes.GraphCode, repo)
 		require.NoError(t, err)
@@ -126,7 +126,7 @@ func TestHealNeedsRebuildLocal_OSSZeroRPC(t *testing.T) {
 // rebuild populates the deterministic engine + L2, NOT the l2Loaded-guarded embed
 // manager LoadResidentDocCount reads, so resident stays 0 right after a rebuild). It
 // self-clears when a LATER event raises the embed resident set — here a normal
-// embed-drain AddAndShip+Flush (zero SegmentService legs) between the two heal
+// embed-drain write plus its re-emit (zero SegmentService legs) between the two heal
 // invocations. The second invocation then returns false.
 func TestHealNeedsRebuildLocal_NonFlapping(t *testing.T) {
 	ctx := opCtx()
@@ -138,11 +138,11 @@ func TestHealNeedsRebuildLocal_NonFlapping(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, needs, "first probe: empty L2 fires the one-shot rebuild trigger")
 
-	// BETWEEN: a normal embed-drain AddAndShip+Flush raises the embed engine's resident
-	// set (models the self-clear — NOT the rebuild, which leaves the embed manager at
-	// resident 0). Zero SegmentService legs (local ship).
-	require.NoError(t, c.segmentMgr.AddAndShip(ctx, kgtypes.GraphCode, repo, fastloadVecDocs(repo, 30)))
-	require.NoError(t, c.segmentMgr.Flush(ctx, kgtypes.GraphCode, repo))
+	// BETWEEN: a normal embed-drain write plus its re-emit raises the embed engine's
+	// resident set (models the self-clear — NOT the rebuild, which leaves the embed
+	// manager at resident 0). Zero SegmentService legs (local ship).
+	require.NoError(t, c.segmentMgr.AddAndMarkDirty(ctx, kgtypes.GraphCode, repo, fastloadVecDocs(repo, 30)))
+	require.NoError(t, c.segmentMgr.ReEmitDirtyBuckets(ctx, kgtypes.GraphCode, repo))
 
 	// SECOND probe: resident>0 now clears the one-shot, and the sub-floor ratio is
 	// disarmed -> no rebuild. The trigger did NOT flap.

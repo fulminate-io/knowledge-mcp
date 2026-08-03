@@ -290,6 +290,18 @@ architectural question, file path, name, and ordering decision has been made.
     edits, and the damage is silent.
   </verify-the-brief-before-the-first-write>
 
+  <deferral-is-not-yours-to-grant>
+    You do not resolve work by deferring it. "Worth its own ticket", "follow-up",
+    "out of my scope, someone should…", a suppression directive, or a weakened
+    threshold used to get green — each of these is a DEFERRAL PROPOSAL, and the
+    only valid disposition is to SURFACE it explicitly in your report as a
+    decision the user must make, clearly labeled, with the cost of doing it now
+    stated honestly. Most deferral impulses are work avoidance: before proposing
+    one, ask whether you are avoiding the work — if the item is in scope and
+    mechanical, DO IT instead. Never absorb a deferral into your report as
+    settled, and never cite a past deferral as if it were a decision.
+  </deferral-is-not-yours-to-grant>
+
 </constraint>
 
 ---
@@ -329,7 +341,10 @@ symbols. For each language_pattern, fetch `metadata.dsl_pattern` /
    (assemble(step_id) for linked decisions/research; query(mode:"examine") if status looks wrong)
 5. Read every linked file                            → current state before changing (never skip)
 6. thoughts(think: expected approach)
-7. IMPLEMENT  →  8. VERIFY (run every criterion, read the output)
+7. IMPLEMENT  →  8. VERIFY (run every criterion, read the output, then
+   mutate(update, id:<criterion_id>, status:"completed") for EACH criterion you
+   ran green — individually, before closing the step; a step close is not
+   evidence a criterion was run, and never marks one)
 9. thoughts(charge) when evidence is load-bearing (see below)
 10. mutate(update, step_id, status:"completed")
 11. CLOSURE: check phase → plan → ticket → project (below)
@@ -403,3 +418,53 @@ successful commit, ask about reindexing the repo (30s-2min; don't auto-run).
 **DELIVER: your final action is sending the report via SendMessage to "main"**
 when that tool is available; otherwise make the report your entire final
 message — a report that exists only in your transcript is a silent no-op.
+
+<constraint id="verification-evidence-discipline" severity="hard">
+  <same-probe-red-and-green>
+    Red-first means the EXACT command and selector that will later report green
+    was run against the unfixed tree and observed to FAIL — not a different
+    invocation, not an inspection. Paste both raw outputs. Treat as RED-NEVER
+    rather than red: a runner reporting it ran no tests, a skipped harness, a
+    build no-op'd by a missing tag, a selector matching nothing — each exits
+    successfully and is textually one line from a genuine pass.
+  </same-probe-red-and-green>
+
+  <zero-needs-a-known-positive>
+    Any test whose pass condition is a zero, an emptiness, or a set equality
+    must contain, in the same run, a case driving the same measurement
+    non-zero or unequal. Without it, a counter never wired, a probe pointed at
+    nothing, and a genuinely-clean result are indistinguishable. Sharpest case:
+    two sets that lost the SAME members are still equal — never assert one
+    set's length against the other set's length; compare against a
+    fixture-derived constant.
+  </zero-needs-a-known-positive>
+
+  <moves-and-deletions-falsify-prose>
+    Relocating text byte-identically, or deleting an implementation, changes
+    what surrounding prose asserts — both are in scope for the
+    comments-are-part-of-the-change obligation. After any move or deletion,
+    re-read every sentence describing the moved or deleted thing at BOTH the
+    source and destination. A declared-but-inert lever discovered along the way
+    is wired or removed, never left as a documented no-op — a documented lever
+    is a signpost, and readers follow signposts.
+  </moves-and-deletions-falsify-prose>
+
+  <fixtures-survive-global-operations>
+    Before adding a case to a test with staged phases, confirm the fixture
+    rows survive every later sweep, finalize, reset, or global operation in
+    that test. Rows created through a direct API often carry defaults a later
+    global operation treats as stale — silently emptying earlier cases out of
+    BOTH sides of an equality while it stays green. Assert before the global
+    operation, capture the intermediate set, or add a cardinality guard against
+    a fixture-derived constant.
+  </fixtures-survive-global-operations>
+
+  <live-claims-need-live-probes>
+    Store-level verification never licenses a serving-level claim. If the
+    requirement is about what a caller observes, observe it as a caller — run
+    the inline smoke protocol from the implement skill. When the store level
+    verifies and the serving level does not, report AMBER: neither green nor a
+    declared failure; its only valid disposition is handing the observed
+    asymmetry back for investigation.
+  </live-claims-need-live-probes>
+</constraint>

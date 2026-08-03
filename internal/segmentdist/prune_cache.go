@@ -16,11 +16,11 @@
 //     so Export() is the COMPLETE current generation — NOT the resident-only set
 //     a bare Export() returns (an unloaded-but-live segment would otherwise look
 //     orphaned).
-//  2. completeHNSWLiveSet UNIONs the embed (m.managers) AND deterministic
-//     (m.detManagers) engines' Export ids — both share the one "hnsw" cache root
-//     (graphCacheDirFor keys by format name, and hnsw.New().Name() ==
-//     hnsw.NewDeterministic().Name() == "hnsw"), so a live deterministic blob
-//     absent from the embed Export is STILL live on disk; missing it = data loss.
+//  2. completeHNSWLiveSet reads the ONE HNSW engine's Export ids. It used to UNION a
+//     second, deterministic engine's set, because the rebuild's blobs landed under this
+//     same cache root yet never appeared in the embed Export — and missing them meant
+//     deleting live data. The reset finalizes at this engine now, so its blobs are in
+//     this Export by construction and there is no second set to union.
 //  3. liveSetSubsetOfList0 cross-checks the computed live set against the server's
 //     List(0) — if the live set is NOT a subset (a load returned an incomplete
 //     view), the pool is HARD-SKIPPED (Aborted) and prunes NOTHING rather than
@@ -90,10 +90,10 @@ type PruneCacheReport struct {
 // returns. It then returns those exported ids.
 //
 // WHY the reset+load: Export() (distribution.go) serializes only the segments
-// CURRENTLY RESIDENT in the engine; a segment dropped by unloadUnderPressure
-// (engine.Unload CAS-removes it) is still LIVE on the server and on disk but absent
-// from a bare Export(). Diffing the on-disk ids against a resident-only Export
-// would mark that unloaded-but-live segment an orphan and DELETE it — data loss.
+// CURRENTLY RESIDENT in the engine; a segment that engine.Unload CAS-removed is
+// still LIVE on the server and on disk but absent from a bare Export(). Diffing the
+// on-disk ids against a resident-only Export would mark that unloaded-but-live
+// segment an orphan and DELETE it — data loss.
 // importedGen.Store(0) + loadFromServer(ctx) (the manager_backstop.go
 // recoverIfDegenerate idiom) re-Lists(0) the full corpus and re-Imports it, making
 // Export() complete. It calls loadFromServer directly, NOT the L2-first load():
@@ -141,55 +141,30 @@ func (m *distManager[Q, S]) forceCompleteLiveSet(ctx context.Context) ([]searche
 	return ids, nil
 }
 
-// completeHNSWLiveSet is the COMPLETE live set for a graph's shared "hnsw" L2
-// cache root: the UNION of the embed engine's (m.managers) and the deterministic
-// engine's (m.detManagers) force-loaded Export ids. The union is load-bearing for
-// data safety: both engines root their L2 cache under the SAME directory
-// (graphCacheDirFor keys by format NAME, and hnsw.New().Name() ==
-// hnsw.NewDeterministic().Name() == "hnsw"; content-hash filenames keep their
-// blobs disjoint on disk), so a segment built by the DETERMINISTIC rebuild lives
-// under that one root yet never appears in the EMBED engine's Export. Diffing the
-// on-disk ids against the embed set alone would mark every live deterministic blob
-// an orphan and delete it — data loss. Forcing BOTH engines' live sets re-imports
-// each engine's corpus, which is safe-by-idempotence on a daemon-served live engine
-// (load() dedups by segment id — see forceCompleteLiveSet) — no gate.
+// completeHNSWLiveSet is the COMPLETE live set for a graph's "hnsw" L2 cache root: the
+// one HNSW engine's force-loaded Export ids.
+//
+// IT USED TO BE A UNION, and the union is gone because the second engine is. The rebuild
+// wrote a DETERMINISTIC engine whose blobs landed under this same root (graphCacheDirFor
+// keys by format NAME, which was "hnsw" for both) yet never appeared in the embed
+// engine's Export — so diffing the on-disk ids against the embed set alone would have
+// marked every live rebuilt blob an orphan and deleted it. That hazard cannot arise now:
+// the reset finalizes at THIS engine, so a rebuilt blob is resident here by construction
+// and the force-load below covers it. The OSS-path guard that kept this from
+// constructing a fresh staging engine just to prune-scan the disk goes with it — there
+// is no second engine to construct.
+//
+// The force-load re-imports the engine's corpus, which is safe-by-idempotence on a
+// daemon-served live engine (load() dedups by segment id — see forceCompleteLiveSet).
 func (m *Manager) completeHNSWLiveSet(ctx context.Context, gt kgtypes.GraphType, name string) (map[searchengine.SegmentID]struct{}, error) {
 	live := make(map[searchengine.SegmentID]struct{})
 
-	// Embed engine (m.managers, hnsw.New()) — same accessor managerFor uses.
-	embedDM := m.managerFor(gt, name)
-	embedIDs, err := embedDM.forceCompleteLiveSet(ctx)
+	ids, err := m.managerFor(gt, name).forceCompleteLiveSet(ctx)
 	if err != nil {
 		return nil, err
 	}
-	for _, id := range embedIDs {
+	for _, id := range ids {
 		live[id] = struct{}{}
-	}
-
-	// Deterministic engine (m.detManagers, hnsw.NewDeterministic()) — the rebuild
-	// path's engine, sharing the one "hnsw" root. autoReclaim=false mirrors the
-	// rebuild path's construction (manager_owner.go); a force-load never merges, so
-	// the flag is immaterial here, but it must match so the memoized instance is the
-	// SAME one the rebuild path uses.
-	//
-	// OSS-PATH GUARD (l2Authoritative): on the cloud path the det force-load Lists the
-	// SERVER (loadFromServer), so a freshly-constructed det engine is harmless — its
-	// live set is the server's authoritative manifest, orphans on disk excluded. On the
-	// OSS path forceCompleteLiveSet imports cache.Keys() from the L2 disk, and a det
-	// engine constructed FRESH here (after orphans accumulated on disk) would scan those
-	// orphans into its cache index → pulling them into the live set (or failing to
-	// decode a junk one). So on OSS only union a det engine that ALREADY EXISTS (a real
-	// prior rebuild, whose memoized cache tracks its own content); never construct one
-	// just to prune-scan the disk. Skipping a non-existent det engine is SAFE — there
-	// are no deterministic-built segments to protect from the prune.
-	if !embedDM.l2Authoritative || m.hasDetManager(gt, name) {
-		detIDs, err := m.hnswManagerFor(m.detManagers, hnsw.NewDeterministic(), gt, name, false).forceCompleteLiveSet(ctx)
-		if err != nil {
-			return nil, err
-		}
-		for _, id := range detIDs {
-			live[id] = struct{}{}
-		}
 	}
 
 	return live, nil

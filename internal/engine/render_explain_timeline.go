@@ -100,6 +100,67 @@ func SortTimelineEntries(entries []TimelineEntry) {
 	sort.Slice(entries, func(i, j int) bool { return entries[i].At.Before(entries[j].At) })
 }
 
+// The timeline row bounds.
+const (
+	// TimelineRowCapDefault is the rendered entry count when the caller passes no
+	// limit.
+	TimelineRowCapDefault = 500
+	// TimelineRowCapMax is the ceiling on a caller-supplied limit.
+	TimelineRowCapMax = 5000
+)
+
+// TimelineTopK retains only the cap EARLIEST entries seen across all pages, so a
+// timeline over a whole graph costs O(cap) retention rather than O(corpus) —
+// which matters doubly here because a TimelineEntry pins its *knowledgev1.Node.
+//
+// Sort-then-truncate per page is semantically identical to sorting everything
+// and taking the first cap: the retained set always holds the cap earliest
+// entries seen so far, so T0 is preserved no matter which page it arrived on.
+// This is why the cap is applied to RETENTION rather than to the fetch —
+// truncating the fetch would bias which entries were ever considered.
+type TimelineTopK struct {
+	field   string
+	rowCap  int
+	total   int
+	entries []TimelineEntry
+}
+
+// NewTimelineTopK starts an accumulation over the given time field, retaining at
+// most rowCap entries. A non-positive rowCap falls back to TimelineRowCapDefault
+// rather than silently retaining nothing.
+func NewTimelineTopK(field string, rowCap int) *TimelineTopK {
+	if rowCap <= 0 {
+		rowCap = TimelineRowCapDefault
+	}
+	return &TimelineTopK{
+		field:   field,
+		rowCap:  rowCap,
+		entries: make([]TimelineEntry, 0, rowCap+BrowsePageSize),
+	}
+}
+
+// Add folds one page in, delegating timestamp extraction to
+// CollectTimelineEntries and ordering to SortTimelineEntries.
+func (k *TimelineTopK) Add(nodes []*knowledgev1.Node) {
+	page := CollectTimelineEntries(nodes, k.field)
+	if len(page) == 0 {
+		return
+	}
+	k.total += len(page)
+	k.entries = append(k.entries, page...)
+	SortTimelineEntries(k.entries)
+	if len(k.entries) > k.rowCap {
+		k.entries = k.entries[:k.rowCap]
+	}
+}
+
+// Entries returns the retained entries, ascending by timestamp.
+func (k *TimelineTopK) Entries() []TimelineEntry { return k.entries }
+
+// Total counts every entry that carried a parseable timestamp, BEFORE truncation
+// — what the render reports so the header never under-reports what was seen.
+func (k *TimelineTopK) Total() int { return k.total }
+
 // ExtractNodeTime resolves a time-field reference (port of extractNodeTime):
 // CreatedAt/UpdatedAt struct fields, else a metadata key parsed RFC3339Nano →
 // RFC3339 → Unix seconds.
@@ -142,14 +203,17 @@ func RenderTimelineEmpty(label, field string) string {
 }
 
 // RenderTimelineFlat ports formatGenericTimelineFlat: the Timeline header with
-// field/T0/span + the offset/node/type/status table.
-func RenderTimelineFlat(label, field string, entries []TimelineEntry) string {
+// field/T0/span + the offset/node/type/status table. entries is the already
+// sorted and already capped slice; total is the count BEFORE capping, so the
+// header reports everything seen and the truncation notice names what was
+// dropped.
+func RenderTimelineFlat(label, field string, entries []TimelineEntry, total int) string {
 	var sb strings.Builder
 	t0 := entries[0].At
 	tEnd := entries[len(entries)-1].At
 	fmt.Fprintf(&sb, "## Timeline — %s\n\n", label)
 	fmt.Fprintf(&sb, "**field:** `%s` · **T0:** %s · **span:** %s · **%d node(s)**\n\n",
-		field, t0.Format(time.RFC3339), tEnd.Sub(t0).Truncate(time.Second), len(entries))
+		field, t0.Format(time.RFC3339), tEnd.Sub(t0).Truncate(time.Second), total)
 	sb.WriteString("| offset | node | type | status |\n")
 	sb.WriteString("|---|---|---|---|\n")
 	for _, e := range entries {
@@ -157,14 +221,23 @@ func RenderTimelineFlat(label, field string, entries []TimelineEntry) string {
 			renderTimelineOffset(e.At.Sub(t0)), timelineNodeDisplay(e.Node),
 			typeOrDash(kgtypes.NodeType(e.Node.Type)), statusOrDash(e.Node.Status))
 	}
+	writeTimelineTruncationNotice(&sb, len(entries), total)
 	return sb.String()
+}
+
+// writeTimelineTruncationNotice appends the shared truncation line when the
+// retained entries are fewer than the total seen.
+func writeTimelineTruncationNotice(sb *strings.Builder, shown, total int) {
+	if total > shown {
+		fmt.Fprintf(sb, "\n…and %d more node(s) below the earliest %d by time.\n", total-shown, shown)
+	}
 }
 
 // RenderTimelineBucketed ports renderGenericTimelineBucketed +
 // formatGenericTimelineBucketed: validates the bucket duration then renders the
 // window/count/nodes table. Returns (body, "") on success or ("", errMsg) on a
 // bad bucket.
-func RenderTimelineBucketed(label, field string, entries []TimelineEntry, bucket string) (string, string) {
+func RenderTimelineBucketed(label, field string, entries []TimelineEntry, bucket string, total int) (string, string) {
 	dur, err := time.ParseDuration(bucket)
 	if err != nil {
 		return "", fmt.Sprintf("timeline %s: invalid bucket %q: %s (expected Go duration like '10s' or '1m')", label, bucket, err.Error())
@@ -176,7 +249,7 @@ func RenderTimelineBucketed(label, field string, entries []TimelineEntry, bucket
 	t0 := entries[0].At
 	fmt.Fprintf(&sb, "## Timeline (bucketed) — %s\n\n", label)
 	fmt.Fprintf(&sb, "**field:** `%s` · **T0:** %s · **bucket:** %s · **%d node(s)**\n\n",
-		field, t0.Format(time.RFC3339), dur.Truncate(time.Second), len(entries))
+		field, t0.Format(time.RFC3339), dur.Truncate(time.Second), total)
 	groups := groupTimelineEntries(entries, t0, dur)
 	sb.WriteString("| window | count | nodes |\n")
 	sb.WriteString("|---|---|---|\n")
@@ -185,6 +258,7 @@ func RenderTimelineBucketed(label, field string, entries []TimelineEntry, bucket
 			renderTimelineOffset(g.offset), renderTimelineOffset(g.offset+dur),
 			len(g.entries), renderTimelineBucketNodes(g.entries))
 	}
+	writeTimelineTruncationNotice(&sb, len(entries), total)
 	return sb.String(), ""
 }
 

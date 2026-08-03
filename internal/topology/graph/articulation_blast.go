@@ -7,9 +7,9 @@ package graph
 // would disconnect the graph, this file scores how *bad* that
 // disconnection would be using the per-AP component sizes already
 // captured during the iterative DFS, then applies the LARGEST-STRANDING
-// heuristic from open question f4391a3832efde6a466ebbbc32817ea7.
+// heuristic.
 //
-// LARGEST-STRANDING (OQ-G, option a):
+// LARGEST-STRANDING:
 //
 //	downstream_affected = total_reachable - largest_split_component_size
 //

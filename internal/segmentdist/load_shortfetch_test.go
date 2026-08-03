@@ -44,6 +44,8 @@ func buildHNSWSegment(t *testing.T, docs []searchengine.Document) []*knowledgev1
 // process lifetime. POST-FIX (GREEN): importedGen is clamped below the omitted
 // kept-format segment's generation, so the second load re-lists and imports it.
 func TestLoadFromServer_ShortFetchDoesNotLoseSegment(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	target := &knowledgev1.GraphSelector{Graph: "code", Repo: "shortfetchRepo"}
 	svc := newSharedServerFake()

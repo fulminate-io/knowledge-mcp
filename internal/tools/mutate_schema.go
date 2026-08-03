@@ -4,6 +4,7 @@ package tools
 
 import (
 	"maps"
+	"slices"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 )
@@ -19,7 +20,7 @@ func MutateToolDef() kgtools.MCPTool {
 			"operation=create: create a finding, research question, rule, criterion, or generic node. " +
 			"operation=create_batch: create N nodes + M edges in one atomic store.Txn. Args: {nodes:[{type,name,description,summary,content,status,metadata}], edges:[{from_idx,to_idx,from_id,to_id,type}]}. Returns {ids:[...]} of length N. Knowledge-graph only. " +
 			"operation=update: edit node fields or update status of one or more nodes. " +
-			"operation=upsert: create-or-update a node by caller-supplied id, bypassing create-time validation guards (summary/name/duplicate-name) — intended for tool-owned config records (workers, log backends) where the caller already validated. Restricted to an explicit allowlist of types; not a general-purpose escape hatch. " +
+			"operation=upsert: create-or-update a node by caller-supplied id. Five types — proxy, worker, graph_type_def, log-backend, criterion — bypass create-time validation, because they are tool-owned config records whose producers already validated them. Every OTHER type runs the full create-time validation (summary/name and the system-managed-type guard), so upsert is not a general-purpose escape hatch around create. " +
 			"operation=link: create a relationship between two nodes. " +
 			"operation=unlink: remove a single directed edge keyed by from/to/relationship. Idempotent — returns success even if the edge did not exist. Use to retract a misattached pattern, fix a wrong informed-by, etc. " +
 			"operation=answer: mark a research question as answered. " +
@@ -42,18 +43,19 @@ func MutateToolDef() kgtools.MCPTool {
 func mutateProperties() map[string]kgtools.Property {
 	props := map[string]kgtools.Property{
 		"operation":             {Type: "string", Description: "What to do", Enum: []string{"create", "create_batch", "update", "update_batch", "bulk_update_metadata", "upsert", "link", "unlink", "answer", "delete"}},
-		"type":                  {Type: "string", Description: "Node type for create (finding, research, rule, criterion, resource, event, observation, memory, document)"},
+		"type":                  {Type: "string", Description: "Node type for create (finding, research, rule, criterion, resource, event, observation, memory, document). criterion is knowledge-graph-only: criteria attach to the plan/step verifies structure, which no other graph family carries, so a criterion create naming any graph — including an explicit graph:\"knowledge\" — is rejected pre-write rather than routed."},
 		"id":                    {Type: "string", Description: "Target node ID for update or answer (operation=answer also accepts question_id as an alias)"},
 		"ids":                   {Type: "array", Description: "List of node IDs for a batch update over PLAIN LOCAL NON-CONTAINER nodes — the same universal-scalar set_fields (e.g. status) are applied uniformly to every id. Tracker-backed nodes, container nodes (project/ticket/plan/phase/step — for status updates of ANY value), per-type params (command/scope/...), and source must be updated per-id; those batch shapes are rejected. For heterogeneous per-id bodies use update_batch.", Items: &kgtools.Property{Type: "string"}},
 		"name":                  {Type: "string", Description: "Node name or title"},
 		"description":           {Type: "string", Description: "Node description"},
 		"summary":               {Type: "string", MaxLength: 500, Description: "Required search-optimized one-line summary, max 500 chars, when create-ing an embed-only-knowledge node type (NodeType.Summarizable()=false). Handler-side enforcement returns an error when missing/empty/whitespace or > 500 chars."},
 		"content":               {Type: "string", Description: "Full content. For research create: context/background."},
-		"status":                {Type: "string", Description: "Status to set (for update operation)"},
-		"expand_to_descendants": {Type: "boolean", Description: "When updating status to 'completed' on a project/ticket/plan/phase, also walk the contains tree and write completed to every non-terminal descendant. Default true. Set false to update only the named node. This is a SINGLE-ID container path — a batch of container ids carrying a status (ids:[...]) is rejected, so issue container status updates per-id. Has no effect for non-completed statuses or non-container types."},
+		"status":                {Type: "string", Description: "Status to set (for update operation). An explicit empty string CLEARS the status to blank on a local node — the one param whose empty value is a write rather than an omission. Rejected on tracker-backed nodes, whose tracker has no blank state."},
+		"expand_to_descendants": {Type: "boolean", Description: "When updating status to 'completed' on a project/ticket/plan/phase/step, also walk the contains tree and write completed to every non-terminal descendant whose own type is one of those five container types. Every other descendant — criterion, question, finding, research, decision, thought, and any other type — is left unchanged: those nodes record evidence rather than task progress, so a container closing above them is evidence of none of it. The response names every id it wrote and every node it left alone. Default true. Set false to update only the named node. This is a SINGLE-ID container path — a batch of container ids carrying a status (ids:[...]) is rejected, so issue container status updates per-id. Has no effect for non-completed statuses or non-container types."},
 		"source":                {Type: "string", Description: "Source of the knowledge"},
 		"evidence":              {Type: "string", Description: "Supporting evidence (for findings)"},
 		"question_id":           {Type: "string", Description: "Research question node ID this finding answers"},
+		"supports":              {Type: "string", Description: "Node ID this finding supports — draws a finding--supports-->node edge as the finding is created. Read ONLY by mutate(create, type=finding); every other operation rejects it."},
 		"concludes":             {Type: "boolean", Description: "If true and question_id is set, marks the question as answered"},
 		"scope":                 {Type: "string", Description: "Rule scope (e.g., '*.go', 'pkg/', 'commits')"},
 		"enforcement":           {Type: "string", Description: "Rule enforcement mechanism"},
@@ -81,17 +83,41 @@ func mutateProperties() map[string]kgtools.Property {
 		// thoughts(operation:think|charge) into mutate(create,
 		// type:thought|charge).
 		"branches_from":   {Type: "string", Description: "Thought ID this branches from (mutate(create, type=thought) only). Adds an edge from the new thought to its parent for trace lineage."},
-		"links":           {Type: "array", Description: "Node IDs to relate the new node to (finding/research/rule create, and thought create). Knowledge-graph IDs ride the atomic create as a node--relates-to-->target edge; code/cloud IDs are linked post-create via the cross-graph linkage. An unresolvable ID is dropped with a warning, never blocking the write.", Items: &kgtools.Property{Type: "string"}},
-		"session":         {Type: "string", Description: "Session name to group the created node under via session--contains-->node (finding/research/rule create, and thought create). Creates the session if new."},
-		"ticket_id":       {Type: "string", Description: "Active ticket/project ID — born-linked as ticket--contains-->node so a finding/research/rule/decision is grouped under the work item that produced it (finding/research/rule create). An unresolvable ticket_id is dropped with a warning, never blocking the write."},
+		"links":           {Type: "array", Description: "Node IDs to relate the new node to (finding/research/rule create, and thought create). Knowledge-graph IDs ride the atomic create as a node--relates-to-->target edge; code/cloud IDs are linked post-create via the cross-graph linkage. An unresolvable ID is dropped with a warning, never blocking the write. create_batch rejects it pre-write naming the field — context-linking is a capability that path does not have, not a param it drops.", Items: &kgtools.Property{Type: "string"}},
+		"session":         {Type: "string", Description: "Session name to group the created node under via session--contains-->node (finding/research/rule create, and thought create). Creates the session if new. create_batch rejects it pre-write naming the field — context-linking is a capability that path does not have, not a param it drops."},
+		"ticket_id":       {Type: "string", Description: "Active ticket/project ID — born-linked as ticket--contains-->node so a finding/research/rule/decision is grouped under the work item that produced it (finding/research/rule create). An unresolvable ticket_id is dropped with a warning, never blocking the write. create_batch rejects it pre-write naming the field — born-linking a batch is a capability that path does not have, not a param it drops."},
 		"polarity":        {Type: "string", Description: "Charge polarity (mutate(create, type=charge) only). Must be 'positive' or 'negative'.", Enum: []string{"positive", "negative"}},
 		"weight":          {Type: "number", Description: "Charge weight 1-10 (mutate(create, type=charge) only). Significance of the evidence."},
 		"reasoning":       {Type: "string", Description: "Why this charge applies (mutate(create, type=charge) only)."},
 		"charge_evidence": {Type: "array", Description: "Evidence node IDs backing the charge (mutate(create, type=charge) only). Renamed from `evidence` on the wire to avoid collision with the finding evidence field.", Items: &kgtools.Property{Type: "string"}},
 		"thought_parent":  {Type: "string", Description: "Parent thought ID the charge attaches to (mutate(create, type=charge) only)."},
+		// Negation-gate proof-of-work fields, read by InterceptNegationGate
+		// (negation_gate.go) BEFORE the call reaches any write handler. Declared in
+		// their own block so gofmt gives them their own alignment group rather than
+		// re-aligning the thought/charge run above.
+		"verified_quote": {Type: "string", Description: "Negation-gate proof of work — a TOP-LEVEL param on the call, NOT a metadata key and NOT edge_evidence. REQUIRED for negation-class calls: mutate(link, relationship:\"contradicts\") and mutate(update, status:\"invalidated\"). Must be a verbatim substring of the TARGET node's CURRENT source (whitespace-normalized before matching). Consumed by the gate before any write and never persisted; supplying it on a non-negation call is rejected."},
+		"cited_range":    {Type: "string", Description: "Optional locality hint accompanying verified_quote on a negation-class call, as \"path/file.go:start-end\". When set, the verbatim substring must resolve to the cited path; when empty the gate checks existence and currency only. TOP-LEVEL param, consumed by the gate before any write and never persisted."},
 	}
 	maps.Copy(props, mutateBatchProperties())
 	return props
+}
+
+// mutateDeclaredOperations is the mutate operation vocabulary, read from the
+// live schema rather than transcribed — so unlike the hand-copied lists the
+// other operation-dispatched tools keep, there is no second copy that can drift
+// from what the tool advertises.
+//
+// A plain package-level var, not sync.OnceValue: mutateProperties() is a pure
+// static map literal with no dependencies or I/O, so package-init evaluation
+// can never observe a partial or stale value and there is nothing to defer.
+// What the lazy form was protecting against still holds and is still
+// satisfied — the property map is built ONCE, never per request. Calling
+// mutateProperties() from inside the guard is the anti-pattern to avoid.
+var mutateDeclaredOperations = mutateProperties()["operation"].Enum
+
+// mutateOperationDeclared reports whether op is in the schema's operation enum.
+func mutateOperationDeclared(op string) bool {
+	return slices.Contains(mutateDeclaredOperations, op)
 }
 
 // mutateBatchProperties returns the array-of-object batch params whose element

@@ -6,12 +6,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"strings"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/backends/dispatch"
-	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
-	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
 // linearArchiveRetryGuidance is the locked single-line operator guidance
@@ -113,6 +110,12 @@ type mutateArgs struct {
 	// with false and silently disable the cascade for every caller that omits
 	// the flag. Same explicit-false-opt-out idiom as search.go's Rerank *bool.
 	ExpandToDescendants *bool `json:"expand_to_descendants,omitempty"`
+
+	// raw is the caller's verbatim arguments payload, captured once at the
+	// dispatch entry so each arm can account for exactly the params the caller
+	// supplied. Never marshaled — it has no json tag and json.Unmarshal leaves
+	// unexported fields untouched.
+	raw json.RawMessage
 }
 
 // cascadeToDescendants reports whether the completed-status container rollup
@@ -134,8 +137,17 @@ type findingReference struct {
 	Title  string `json:"title,omitempty"`
 }
 
-// InterceptMutate intercepts mutate(update) and mutate(delete) on
-// knowledge-graph nodes. For backend-backed nodes (those carrying a
+// InterceptMutate is the client-side mutate dispatch head. It claims the
+// knowledge-graph arms of update, delete, create, answer and link, and declines
+// everything the engine owns.
+//
+// EVERY arm runs accountMutateParams at its head, BEFORE any write: the arm
+// declares which schema params it consumes, rejects and deliberately ignores,
+// and a caller-supplied param the arm classifies as rejected fails the call with
+// an error naming the field rather than being silently dropped. See
+// mutate_param_accounting.go for the classification and its guarantees.
+//
+// For backend-backed nodes (those carrying a
 // `backend` metadata key) it runs the Linear write-through INLINE
 // BEFORE forwarding the knowledge-graph portion of the mutate through the
 // login-routed GraphCaller (cloud when logged in). A non-backend non-rollup
@@ -157,6 +169,8 @@ type findingReference struct {
 //     is contract-valid (passes guardBatchUpdateShape).
 //
 // Returns (true, errorResult) on:
+//   - Any param the selected arm classifies as rejected (the accounting gate),
+//     before the arm does any work.
 //   - A multi-id update batch carrying any backend-backed id, a per-type param,
 //     source, or a container-status (guardBatchUpdateShape rejects).
 //   - Mixed delete batches containing any backend-backed node (delete-path guard).
@@ -167,14 +181,30 @@ func InterceptMutate(ctx context.Context, deps ClientDeps, params kgtools.CallTo
 	if params.Name != "mutate" {
 		return false, kgtools.ToolResult{}
 	}
-	gc := deps.GraphCaller()
-	if gc == nil {
-		return false, kgtools.ToolResult{}
-	}
-
 	var a mutateArgs
 	if err := json.Unmarshal(params.Arguments, &a); err != nil {
-		// Server will surface its own parse error — don't double-error.
+		// Still DECLINES rather than claiming. A payload that will not parse
+		// cannot be attributed to an operation, so this intercept has nothing
+		// specific to say about it; claiming the malformed case here is a
+		// separate decision with a chain-position consequence and is not made
+		// by this arm.
+		return false, kgtools.ToolResult{}
+	}
+	a.raw = params.Arguments
+
+	// An operation outside the declared vocabulary terminates HERE, above every
+	// graph-routing branch below and above the degraded-mode return: naming an
+	// unknown operation needs no GraphCaller, and a degraded client answering
+	// "mutate has no client intercept" is exactly as false as a healthy one
+	// doing it. Placement also has to precede the cross-graph link and
+	// non-knowledge-graph blocks, or mutate(graph:"practice", operation:"bogus")
+	// would keep the misleading engine deny.
+	if !mutateOperationDeclared(a.Operation) {
+		return true, unknownOperationResult("mutate", a.Operation, mutateDeclaredOperations)
+	}
+
+	gc := deps.GraphCaller()
+	if gc == nil {
 		return false, kgtools.ToolResult{}
 	}
 
@@ -190,11 +220,22 @@ func InterceptMutate(ctx context.Context, deps ClientDeps, params kgtools.CallTo
 	// endpoints. Checked BEFORE the knowledge-graph guard below because a
 	// cross-graph link may carry graph:practice / a foreign endpoint.
 	if a.Operation == "link" {
+		// The composer runs FIRST and accounts its own arm on the paths it
+		// CLAIMS (gateCrossGraphLink). Accounting armLinkCrossGraph here instead
+		// would apply its stricter surface to every link before the claim is
+		// decided, hard-rejecting shapes it never handles — a link on a
+		// name-addressed graph carrying `name` routes fine through the engine LINK
+		// arm, which consumes name as the Target instance for those families.
 		if handled, res := handleClientCrossGraphLink(ctx, deps, a); handled {
 			return true, res
 		}
 		// Not claimed → route through the cloud-aware engine dispatch
-		// (generic MUTATION_KIND_LINK Execute) / proxy path.
+		// (generic MUTATION_KIND_LINK Execute) / proxy path. The declined link
+		// gets its own accounting here because the engine LINK arm's param
+		// surface differs from the client cross-graph composer's.
+		if err := accountMutateParams(armLinkFallthrough, a); err != nil {
+			return true, errorResult(err.Error())
+		}
 	}
 
 	// practice/transformers create/update/delete: with no
@@ -207,46 +248,49 @@ func InterceptMutate(ctx context.Context, deps ClientDeps, params kgtools.CallTo
 	// decision tree (intra-practice claim + proxy/link_graph fall-through). Runs
 	// BEFORE the knowledge-graph guard below so practice/transformers ops are not
 	// dropped to legacy.
-	if (a.Graph == "practice" || a.Graph == "transformers") && a.LinkGraph == "" &&
-		(a.Operation == "create" || a.Operation == "create_batch" || a.Operation == "update" || a.Operation == "delete") {
-		ex, eerr := persistExecutor(gc)
-		if eerr != nil {
-			return true, errorResult("mutate(" + a.Operation + "): " + eerr.Error())
-		}
-		res, err := engine.Dispatch(ctx, ex.Execute, "mutate", params.Arguments)
-		if err != nil {
-			return true, errorResult("mutate(" + a.Operation + "): " + err.Error())
-		}
+	if claimed, res := handleGraphPassthroughMutate(ctx, gc, a, params); claimed {
 		return true, res
 	}
 
 	if a.Graph != "" && a.Graph != "knowledge" {
 		// Backend-backed nodes only live in the knowledge graph.
+		//
+		// The link conjunct is load-bearing: the link block above does NOT return
+		// when the cross-graph composer declines, so a declined link carrying a
+		// non-knowledge graph reaches here too. It was already accounted upstream
+		// under its own arm, and accounting it a second time under a different
+		// spec would reject a call neither arm rejects on its own.
+		if a.Operation != "link" {
+			if err := accountMutateParams(armNonKnowledgeFallthrough, a); err != nil {
+				return true, errorResult(err.Error())
+			}
+		}
 		return false, kgtools.ToolResult{}
 	}
 	switch a.Operation {
 	case "update":
 		return handleInterceptMutateUpdate(ctx, deps, a, params)
 	case "delete":
+		if err := accountMutateParams(armDelete, a); err != nil {
+			return true, errorResult(err.Error())
+		}
 		return handleInterceptMutateDelete(ctx, deps, a)
 	case "create":
-		// Claim create=finding/research/rule. Other
-		// create types (criterion, knowledge nodes, etc.) fall through —
-		// InterceptAddCriterion fires earlier in the chain for criterion;
-		// generic create flows to the server.
-		switch a.Type {
-		case "finding":
-			return true, handleClientMutateCreateFinding(ctx, deps, a)
-		case "research":
-			return true, handleClientMutateCreateResearch(ctx, deps, a)
-		case "rule":
-			return true, handleClientMutateCreateRule(ctx, deps, a)
-		}
-		return false, kgtools.ToolResult{}
+		return dispatchClientMutateCreate(ctx, deps, a)
 	case "answer":
 		// Claim mutate(answer).
+		if err := accountMutateParams(armAnswer, a); err != nil {
+			return true, errorResult(err.Error())
+		}
 		return true, handleClientMutateAnswer(ctx, deps, a)
 	default:
+		// This arm now carries only DECLARED operations that decline to an
+		// engine arm — the head guard already rejected everything outside the
+		// schema vocabulary. Of those, only the ones that decline to a KNOWN
+		// engine arm are accounted here; a link was already accounted upstream.
+		if err := accountDefaultBucketMutate(a); err != nil {
+			return true, errorResult(err.Error())
+		}
 		return false, kgtools.ToolResult{}
 	}
 }
@@ -260,6 +304,13 @@ func InterceptMutate(ctx context.Context, deps ClientDeps, params kgtools.CallTo
 // container rollup → per-type first-class-param router (typed knowledge nodes) →
 // generic engine dispatch fall-through. Each later arm fires only when the earlier
 // ones decline.
+//
+// The update arms are separately accounted because their param surfaces differ:
+// each calls accountMutateParams with its OWN armID once selected, so a param
+// routable on one update arm can still be rejected on another. The batch arm is
+// the one place accounting runs BEFORE the sibling contract gate rather than
+// instead of it — both reject the same set, and the contract gate carries the
+// actionable split-into-per-id remedy.
 func handleInterceptMutateUpdate(
 	ctx context.Context,
 	deps ClientDeps,
@@ -282,7 +333,14 @@ func handleInterceptMutateUpdate(
 		// contract-valid, so it returns (false,_) and the cloud-aware engine
 		// dispatch reduces it via compileMutateByIDUpdate to a homogeneous
 		// MUTATION_KIND_UPDATE over Selection.Ids and Executes it.
+		// The contract gate runs FIRST: it rejects the same params this arm's
+		// accounting does, and its message names the per-id remedy the generic
+		// accounting error cannot. Its per-id lookups are reads, so a reject from
+		// either gate still leaves every node byte-identical.
 		if err := guardBatchUpdateShape(ctx, gc, a); err != nil {
+			return true, errorResult(err.Error())
+		}
+		if err := accountMutateParams(armUpdateBatchIDs, a); err != nil {
 			return true, errorResult(err.Error())
 		}
 		return false, kgtools.ToolResult{}
@@ -293,28 +351,21 @@ func handleInterceptMutateUpdate(
 		return true, errorResult("mutate(update): " + lookupErr.Error())
 	}
 	if backendName == "" {
-		// Claim closure-rollup for local-only container updates
-		// (status=completed on plan/phase/ticket/project). The client owns the
-		// cascade. The cascadeToDescendants() term honors expand_to_descendants:
-		// when the caller sets it false, the rollup arm declines and the explicit-
-		// false update falls through to the typed-router/engine single-node path
-		// below (which writes status=completed to the NAMED container only — a real
-		// single-node update, not a no-op). Absent/true preserves the cascade.
-		if a.Status == kgtypes.StatusCompleted && node != nil && isClientRollupContainer(kgtypes.NodeType(node.Type)) && a.cascadeToDescendants() {
-			return true, handleClientUpdateStatusRollup(ctx, gc, a, node)
-		}
-		// Per-type first-class-param routing: a typed knowledge node update
-		// (criterion/rule/finding/...) routes its create-time params
-		// (command/criterion_type/scope/enforcement/evidence/source) into metadata,
-		// re-derives the summary, re-stamps a criterion's name, and loudly rejects
-		// params unroutable for the type. Fires AFTER the backend + rollup arms so
-		// it claims only non-backend non-rollup typed updates.
-		if claimed, res := handleClientMutateUpdateTyped(ctx, deps, a, node); claimed {
-			return true, res
-		}
-		// Non-backend non-rollup update the typed router did not claim — return
-		// (false,_) to route through the cloud-aware engine dispatch.
-		return false, kgtools.ToolResult{}
+		return handleLocalOnlyMutateUpdate(ctx, deps, gc, a, node)
+	}
+	if err := accountMutateParams(armUpdateBackend, a); err != nil {
+		return true, errorResult(err.Error())
+	}
+	// Clear-to-blank has no meaning on a tracker-backed node: the work item lives
+	// in an external tracker whose status vocabulary has no blank state, so the
+	// write could not be represented there even though it is legal locally.
+	// Rejected BEFORE any tracker write, so the item is left untouched.
+	if statusExplicitlySupplied(a.raw) && a.Status == "" {
+		return true, errorResult(fmt.Sprintf(
+			"mutate(update): status cannot be cleared to blank — node %s is backed by the %s tracker, "+
+				"which has no blank state; set an explicit status instead",
+			a.ID, backendName,
+		))
 	}
 	backend := deps.BackendResolver().ByName(backendName)
 	if backend == nil {
@@ -370,94 +421,6 @@ func handleInterceptMutateUpdate(
 	return true, textResult(fmt.Sprintf("mutate(update): backend %q + local update succeeded for %s", backendName, a.ID))
 }
 
-func handleInterceptMutateDelete(
-	ctx context.Context,
-	deps ClientDeps,
-	a mutateArgs,
-) (bool, kgtools.ToolResult) {
-	if a.ID == "" && len(a.IDs) == 0 {
-		// Server will emit its own "delete requires id=..." error.
-		return false, kgtools.ToolResult{}
-	}
-	ids := a.IDs
-	if len(ids) == 0 {
-		ids = []string{a.ID}
-	}
-
-	gc := deps.GraphCaller()
-	if err := guardBatchHasNoBackendBacked(ctx, gc, a.IDs); err != nil {
-		return true, errorResult(err.Error())
-	}
-
-	var archived []string
-	for _, id := range ids {
-		node, backendName, _, _, _, lookupErr := lookupNodeBackend(ctx, gc, id)
-		if lookupErr != nil {
-			return true, errorResult("mutate(delete): " + lookupErr.Error())
-		}
-		if backendName == "" {
-			// Non-backend id — skip; the final routed forward will tombstone it.
-			continue
-		}
-		backend := deps.BackendResolver().ByName(backendName)
-		if backend == nil {
-			msg := fmt.Sprintf(
-				"mutate(delete): backend %q recorded on node %s but not currently configured",
-				backendName, id,
-			)
-			if len(archived) > 0 {
-				msg = fmt.Sprintf(
-					"%s; Linear archive succeeded for %d node(s) (%s) before this failure. %s",
-					msg, len(archived), strings.Join(archived, ","), linearArchiveRetryGuidance,
-				)
-			}
-			return true, errorResult(msg)
-		}
-		if err := dispatch.Archive(ctx, node, backendName, backend, dispatch.DeleteArgs{NodeID: id}); err != nil {
-			msg := fmt.Sprintf("mutate(delete): %v", err)
-			if len(archived) > 0 {
-				msg = fmt.Sprintf(
-					"%s; Linear archive succeeded for %d prior node(s) (%s) before this failure. %s",
-					msg, len(archived), strings.Join(archived, ","), linearArchiveRetryGuidance,
-				)
-			}
-			return true, errorResult(msg)
-		}
-		archived = append(archived, id)
-	}
-
-	// Forward the tombstone — the knowledge graph tombstones every id regardless
-	// of Linear's involvement — routed through the login-aware Execute carrier
-	// seam (by-id DELETE, cloud when logged in). The engine DELETE arm selects
-	// via Selection.Ids, so the forward
-	// carries the normalized PLURAL ids[] (a singular caller `id` was folded
-	// into ids above); the caller's graph/format are preserved. Reuses
-	// params.Arguments-equivalent intent without the singular-id wire shape the
-	// generic delete arm does not reduce.
-	forwardedDelete, derr := json.Marshal(struct {
-		Operation string   `json:"operation"`
-		IDs       []string `json:"ids"`
-		Graph     string   `json:"graph,omitempty"`
-		Language  string   `json:"language,omitempty"`
-	}{Operation: "delete", IDs: ids, Graph: a.Graph, Language: a.Language})
-	if derr != nil {
-		return true, errorResult("mutate(delete): marshal forward: " + derr.Error())
-	}
-	if _, err := executeMutate(ctx, gc, forwardedDelete); err != nil {
-		if len(archived) > 0 {
-			return true, errorResult(fmt.Sprintf(
-				"Linear archive succeeded for %d node(s) (%s), but local delete failed: %v. %s",
-				len(archived), strings.Join(archived, ","), err, linearArchiveRetryGuidance,
-			))
-		}
-		return true, errorResult(fmt.Sprintf("mutate(delete): local delete failed: %v", err))
-	}
-	return true, textResult(fmt.Sprintf(
-		"mutate(delete): archived %d node(s) in the external tracker + tombstoned %d node(s) in the knowledge graph",
-		len(archived), len(ids),
-	))
-}
-
 // marshalForwardedMutateUpdateArgs builds a fresh JSON payload for the
 // forwarded local-only mutate(update). Strips backend-private metadata
 // keys from a copy of a.Metadata so the caller's struct is untouched
@@ -472,7 +435,12 @@ func marshalForwardedMutateUpdateArgs(a mutateArgs, backendName string) json.Raw
 		Summary:     a.Summary,
 		Content:     a.Content,
 		Status:      a.Status,
-		Metadata:    stripBackendPrivateMetadata(a.Metadata, backendName),
+		Keywords:    a.Keywords,
+		// Top-level source is correct HERE even though the per-type router strips
+		// it for findings (whose source lives in metadata): a backend-backed node
+		// is a tracker-backed work item, never a finding.
+		Source:   a.Source,
+		Metadata: stripBackendPrivateMetadata(a.Metadata, backendName),
 	}
 	b, err := json.Marshal(payload)
 	if err != nil {
@@ -493,5 +461,7 @@ type forwardedMutateUpdatePayload struct {
 	Summary     string            `json:"summary,omitempty"`
 	Content     string            `json:"content,omitempty"`
 	Status      string            `json:"status,omitempty"`
+	Keywords    string            `json:"keywords,omitempty"`
+	Source      string            `json:"source,omitempty"`
 	Metadata    map[string]string `json:"metadata,omitempty"`
 }

@@ -18,7 +18,7 @@ import (
 // the bounded-accumulation signal the reconcile test asserts on.
 func serverSegCount(t *testing.T, svc *sharedServerFake, target *knowledgev1.GraphSelector) int {
 	t.Helper()
-	return len(svc.listMetas(target, 0))
+	return len(svc.listMetas(target))
 }
 
 // TestReconcileOnShipPrunesMergedAway is the bounded-server-segment proof.
@@ -30,6 +30,8 @@ func serverSegCount(t *testing.T, svc *sharedServerFake, target *knowledgev1.Gra
 // drops back to ~1 — BOUNDED, not ~8. Without the reconcile the server would
 // accumulate every pre-merge segment forever.
 func TestReconcileOnShipPrunesMergedAway(t *testing.T) {
+	t.Parallel()
+
 	svc, gc := newSegmentHarness(t)
 	target := &knowledgev1.GraphSelector{Graph: "code", Repo: "boundedRepo"}
 	ctx := context.Background()
@@ -94,7 +96,7 @@ func TestReconcileOnShipPrunesMergedAway(t *testing.T) {
 	// live set — BOUNDED (~1), NOT the ~8 pre-merge accumulation.
 	exported := prodEng.Export()
 	serverIDs := map[string]bool{}
-	for _, m := range svc.listMetas(target, 0) {
+	for _, m := range svc.listMetas(target) {
 		serverIDs[m.GetId()] = true
 	}
 	for _, b := range exported {

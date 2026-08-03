@@ -5,8 +5,7 @@ import "testing"
 // TestStandard14Widths_SingleSourcing asserts the runtime path reads the
 // canonical pinned values from the embedded .dat. T=611 and o=556 are
 // pinned per Requirement C′ (revision 4) and verified against pdfcpu's
-// public `font.CharWidth` API (probe values matched orchestrator-supplied
-// expectations during Phase 1 verification — see plan d76acb28).
+// public `font.CharWidth` API.
 func TestStandard14Widths_SingleSourcing(t *testing.T) {
 	t.Parallel()
 	widths, err := loadStandard14Widths()
@@ -25,12 +24,11 @@ func TestStandard14Widths_SingleSourcing(t *testing.T) {
 	}
 }
 
-// TestStandard14Width_HelveticaCapitalT is the named test referenced by
-// the manual mutation criterion (a8b57517048b8006cff613f72b169f52). When
-// the .dat row "Helvetica\tT\t611" is mutated to "Helvetica\tT\t999",
-// THIS TEST MUST FAIL — proving the runtime path actually reads the
-// embedded .dat (and not some stale transcribed copy). Mutation+revert
-// is performed once during Phase 1 implementation per the criterion.
+// TestStandard14Width_HelveticaCapitalT is the mutation probe. When the .dat
+// row "Helvetica\tT\t611" is mutated to "Helvetica\tT\t999", THIS TEST MUST
+// FAIL — proving the runtime path actually reads the embedded .dat (and not
+// some stale transcribed copy). The mutation is applied and reverted by hand;
+// a test that stays green through it is not reading the file it claims to.
 func TestStandard14Width_HelveticaCapitalT(t *testing.T) {
 	t.Parallel()
 	w, ok := standard14Width("Helvetica", "T")

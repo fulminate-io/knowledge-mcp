@@ -329,11 +329,9 @@ func TestMapFinishReason(t *testing.T) {
 	}
 }
 
-// TestGenerate_EndToEnd is the criterion test for step 3 / criterion
-// d381c01c87ba03742801bc74f18c3ba0: "Generate end-to-end test with fake
-// claude binary on PATH passes". Wires a fake claude binary on PATH that
-// emits the real CLI's JSON envelope shape; verifies the substrate
-// Generate call returns a populated llm.Response.
+// TestGenerate_EndToEnd wires a fake claude binary on PATH that emits the real
+// CLI's JSON envelope shape, and verifies the substrate Generate call returns a
+// populated llm.Response.
 func TestGenerate_EndToEnd(t *testing.T) {
 	envelope := `{"type":"result","subtype":"success","is_error":false,` +
 		`"result":"the answer is 42","stop_reason":"end_turn",` +

@@ -45,16 +45,21 @@ const helpMutate = `# mutate — Create, update, and link knowledge nodes
     keywords:       sets Node.Keywords (top-level struct field, NOT a metadata
                     key). Powers the BM25 keyword-token boost and the keywords
                     facet.
-    binary_vector:  base64-encoded binary embedding (decoded length must equal
-                    32 bytes / 256-bit). Installed via PutBinaryVector on the
-                    write target's overlay layer. Mismatched length rejects with
-                    a structured error and no write is performed.
+
+  binary_vector is NOT a single-update field — there is no carrier for it on
+  this path and supplying it is rejected. Install an embedding through
+  update_batch items[].binary_vector below.
 
 ## operation: update_batch
   mutate({ "operation": "update_batch", "items": [
     { "id": "n1", "summary": "...", "keywords": "...", "binary_vector": "<base64>" },
     { "id": "n2", "metadata": { "summary_failure_reason": "" } }
   ] })
+
+  items[].binary_vector is the ONLY binary-embedding carrier: a base64-encoded
+  binary embedding whose decoded length must equal 32 bytes (256-bit), installed
+  via PutBinaryVector on the write target's overlay layer. A mismatched length
+  rejects with a structured error and no write is performed.
 
   all-or-nothing: every item is applied inside a single store transaction with
   one commit at the end. Per-item validation mirrors single-item update —

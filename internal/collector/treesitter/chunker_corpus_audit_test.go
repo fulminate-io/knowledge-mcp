@@ -17,7 +17,7 @@ import (
 // kind directory name. Catches regressions where a fixture exists and the
 // matrix entry is correct but the predicate produces the wrong TestKind.
 //
-// Per locked Q5 / step 536b0b8e:
+// The locked coverage rule:
 //   - Positive kinds (test/benchmark/example/fuzz/setup/teardown): at least
 //     one chunk classified IsTest=true && TestKind==<kind>.
 //   - Negative-only kinds (helper/mock/fixture): at least one chunk classified

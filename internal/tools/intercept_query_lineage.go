@@ -44,6 +44,10 @@ func InterceptQueryLineage(ctx context.Context, deps ClientDeps, params kgtools.
 		return true, errorResult("lineage mode requires 'id' parameter")
 	}
 
+	if err := accountQueryParams(armLineage, params.Arguments); err != nil {
+		return true, errorResult(err.Error())
+	}
+
 	gc := deps.GraphCaller()
 	if gc == nil {
 		return true, errorResult("lineage: graph caller unavailable")

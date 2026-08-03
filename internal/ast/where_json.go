@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // where_json.go — JSON parse helpers for the where-tree. Split from
-// where.go to keep both files under the 500-LOC fail threshold (rule
-// 710d9f91). Contains the polymorphic-string-or-array unmarshaler used by
-// KindLeaf and the public ParseWhere entry point.
+// where.go to keep both files under the repo's 500-line fail threshold.
+// Contains the polymorphic-string-or-array unmarshaler used by KindLeaf and
+// the public ParseWhere entry point.
 
 package ast
 

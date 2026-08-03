@@ -29,6 +29,8 @@ import (
 
 // TestMultiWriterE2ELifecycle runs the N-writer mixed-lifecycle workload.
 func TestMultiWriterE2ELifecycle(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	const k = 3
 	mgrs, svc := newMultiWriterFleet(t, k)
@@ -50,7 +52,7 @@ func TestMultiWriterE2ELifecycle(t *testing.T) {
 	// seals on Flush) + publishes. Deterministic convergence ⇒ one content-hash blob X
 	// referenced by all K writers (refcount K).
 	for _, mgr := range mgrs {
-		require.NoError(t, mgr.AddAndShip(ctx, gt, name, docs))
+		require.NoError(t, mgr.AddAndMarkDirty(ctx, gt, name, docs))
 		require.NoError(t, mgr.Flush(ctx, gt, name))
 	}
 	dm0 := mgrs[0].managerFor(gt, name)
@@ -71,14 +73,18 @@ func TestMultiWriterE2ELifecycle(t *testing.T) {
 		require.False(t, leaked, "writer %d leaks no absent doc", i)
 	}
 
-	// MERGE: writer 0 deletes > 33% of its docs → dead-ratio merge → consolidated blob.
-	// Its deleted docs become its `absent` set; the other writers are untouched.
+	// MERGE: writer 0 deletes > 33% of its docs and consolidates the survivors into a
+	// new blob. Its deleted docs become its `absent` set; the other writers are
+	// untouched. The merge occasion is applied directly (applyMerge) because the
+	// engines a Manager builds have the automatic triggers disarmed — the fleet
+	// properties under test are unchanged by how the consolidation was initiated.
 	deleted := map[searchengine.ExternalID]struct{}{}
-	for i := range corpusN/3 + 1 {
+	dead := corpusN/3 + 1
+	for i := range dead {
 		dm0.engine.Delete(docs[i].ID)
 		deleted[docs[i].ID] = struct{}{}
 	}
-	require.GreaterOrEqual(t, waitMergeCount(dm0.engine.MergeCount, 1), uint64(1), "writer 0's merge fires")
+	applyMerge(t, dm0, []searchengine.SegmentID{sharedX}, consolidatedHNSWBlob(t, docs[dead:]))
 	require.NoError(t, mgrs[0].Flush(ctx, gt, name)) // re-publish writer 0's consolidated live set
 
 	// Writer 0's search now excludes its deleted docs (no absent leak); its live-set
@@ -102,7 +108,7 @@ func TestMultiWriterE2ELifecycle(t *testing.T) {
 	r1 := restartFleetMember(t, svc, 1, mgrs[1].cacheDir)
 	r1DM := r1.managerFor(gt, name)
 	require.NoError(t, r1DM.load(ctx))
-	_, err := r1DM.shipAndPublish(ctx, nil, r1DM.locallyShipped)
+	_, err := r1DM.shipAndPublish(ctx, r1DM.locallyShipped)
 	require.NoError(t, err)
 	recall1, leaked1 := hnswRecallOK(r1DM, docs, noneDeleted)
 	require.GreaterOrEqual(t, recall1, 0.95, "restarted writer 1 recalls its reloaded corpus")
@@ -115,7 +121,7 @@ func TestMultiWriterE2ELifecycle(t *testing.T) {
 	require.NotEmpty(t, departedRef, "departed writer 2 left a manifest")
 	// Writers 0 and 1 publish again.
 	require.NoError(t, mgrs[0].Flush(ctx, gt, name))
-	_, err = r1DM.shipAndPublish(ctx, nil, r1DM.locallyShipped)
+	_, err = r1DM.shipAndPublish(ctx, r1DM.locallyShipped)
 	require.NoError(t, err)
 	for _, id := range departedRef {
 		require.True(t, serverHasBlob(svc, target, id),

@@ -29,19 +29,7 @@ func CreateTicketToolDef() kgtools.MCPTool {
 				"no_patterns_reason": {Type: "string", Description: "Audited escape hatch when no pattern applies (trivial doc edit, scaffolding, etc.). Persisted as ticket-node metadata `no_patterns_reason`. Exactly one of pattern_ids, no_patterns_reason, or proposed_patterns must be supplied."},
 				"proposed_patterns":  {Type: "array", Description: "Not-yet-cataloged patterns this ticket introduces. Each entry creates a pattern node with status='emerging' linked via uses. Exactly one of pattern_ids, no_patterns_reason, or proposed_patterns must be supplied.", Items: proposedPatternItems()},
 				"language_patterns":  {Type: "array", Description: "Language-specific defensive patterns/findings (e.g., Go anti-patterns from practice/go with metadata.dsl_pattern set) the ticket should be vigilant of. Wired as ticket→<finding|pattern> EdgeAudits edges. INDEPENDENT of pattern_ids / no_patterns_reason / proposed_patterns — accepts any non-empty subset, including none. Broken/unknown IDs produce a non-fatal warning under the `## Warnings` section.", Items: &kgtools.Property{Type: "string"}},
-
-				// Backend metadata passthrough. Pre-populated by the
-				// client-side intercept after a successful Linear
-				// write-through, then forwarded to the server in the
-				// same mutate(create_batch) call.
-				"backend":           {Type: "string", Description: "Backend identifier (e.g. \"linear\") to stamp on the ticket's `backend` metadata. Set by the client-side intercept after a successful remote create; never supplied by direct callers."},
-				"linear_id":         {Type: "string", Description: "Linear-side ticket UUID returned by backend.CreateTicket. Maps to `linear_id` metadata."},
-				"external_url":      {Type: "string", Description: "Deeplink URL to the remote ticket. Maps to `external_url` metadata."},
-				"linear_project_id": {Type: "string", Description: "Linear-side project UUID for the parent project. Maps to `linear_project_id` metadata so the ticket carries an explicit backend-side parent pointer."},
-				"linear_group_id":   {Type: "string", Description: "Linear team UUID inherited from the parent project. Maps to `linear_group_id` metadata."},
-				"linear_group_key":  {Type: "string", Description: "Linear team key (e.g. \"ABC\") inherited from the parent project. Maps to `linear_group_key` metadata."},
-
-				"format": {Type: "string", Description: "Output format: 'text' (default) or 'json' (structured: {id, name, warnings})."},
+				"format":             {Type: "string", Description: "Output format: 'text' (default) or 'json' (structured: {id, name, warnings})."},
 			},
 			Required: []string{"name", "project_id", "description", "summary"},
 		},

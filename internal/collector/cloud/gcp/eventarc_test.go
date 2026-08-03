@@ -95,8 +95,8 @@ func TestEventarcTriggerEdges_Workflow(t *testing.T) {
 
 func TestEventarcTriggerEdges_ServiceAccount(t *testing.T) {
 	// Eventarc lifts the invocation SA to the trigger top-level. Mirrors
-	// scheduler.go OIDC token pattern (cb9f10a) — the SA is the identity
-	// used to call the destination endpoint.
+	// scheduler.go's OIDC token pattern — the SA is the identity used to
+	// call the destination endpoint.
 	trigger := &eventarcpb.Trigger{
 		Name:           "projects/p/locations/us-central1/triggers/with-sa",
 		ServiceAccount: "invoker@proj.iam.gserviceaccount.com",

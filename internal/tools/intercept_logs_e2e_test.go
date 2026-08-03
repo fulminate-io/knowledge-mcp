@@ -45,8 +45,11 @@ func (d *logE2EDeps) SegmentManager() SegmentSearcher              { return nil 
 func (d *logE2EDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
 func (d *logE2EDeps) SegmentShipper() SegmentShipper               { return nil }
 func (d *logE2EDeps) SegmentPruner() SegmentPruner                 { return nil }
-func (d *logE2EDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
-func (d *logE2EDeps) PipelineScanner() PipelineScanner             { return nil }
+
+func (d *logE2EDeps) SegmentCacheDropper() SegmentCacheDropper { return nil }
+func (d *logE2EDeps) SegmentDeleter() SegmentDeleter           { return nil }
+func (d *logE2EDeps) SegmentCoverage() SegmentCoverageReader   { return nil }
+func (d *logE2EDeps) PipelineScanner() PipelineScanner         { return nil }
 
 func (d *logE2EDeps) ClearHealLatch(kgtypes.GraphType, string) {}
 func (d *logE2EDeps) ReflectionForcer() ReflectionForcer       { return nil }

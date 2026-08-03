@@ -123,8 +123,7 @@ func wirePatternEdges(planIdx int, plan PlanArgs, nodes []*knowledgev1.Node, edg
 		// The plan→pattern EdgeUses edge below IS the relationship —
 		// no proposed_in_plan metadata is written, since the plan's ID
 		// is not known until after the create-batch wire call and the
-		// mutate(create_batch) seam lacks a metadata-update primitive
-		// (see research node 32ecc5f687edd163f620fbf60cbb61af).
+		// mutate(create_batch) seam lacks a metadata-update primitive.
 		nodes = append(nodes, patNode)
 		edges = append(edges, kgwire.BatchEdge{FromIdx: planIdx, ToIdx: patIdx, Type: kgtypes.EdgeUses})
 	}

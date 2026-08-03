@@ -82,6 +82,9 @@ func InterceptManage(ctx context.Context, deps ClientDeps, params kgtools.CallTo
 	if params.Name != "manage" {
 		return false, kgtools.ToolResult{}
 	}
+	if err := rejectUndeclaredParams("manage", "", ManageToolDef().InputSchema.Properties, params.Arguments); err != nil {
+		return true, errorResult(err.Error())
+	}
 	var a manageArgs
 	if err := json.Unmarshal(params.Arguments, &a); err != nil {
 		return false, kgtools.ToolResult{}
@@ -123,8 +126,15 @@ func InterceptManage(ctx context.Context, deps ClientDeps, params kgtools.CallTo
 		return true, handleClientDropGraph(ctx, deps, a)
 	case "register_repo":
 		return true, handleRegisterRepo(a)
+	default:
+		// A KNOWN operation this switch does not dispatch belongs to a claimant
+		// further down the chain (InterceptLogsManage) — decline so it gets there.
+		// Anything else is genuinely unknown and terminates here.
+		if manageOperationKnown(a.Operation) {
+			return false, kgtools.ToolResult{}
+		}
+		return true, unknownOperationResult("manage", a.Operation, manageOperations)
 	}
-	return false, kgtools.ToolResult{}
 }
 
 // handleClientLinker dispatches manage(link) to the client-side cross-
@@ -231,6 +241,13 @@ type manageArgs struct {
 	// pause_pipeline operator reason, surfaced verbatim by pipeline_status.
 	// Empty falls back to a generic "manually paused by operator" string.
 	Reason string `json:"reason"`
+
+	// Reset is the rebuild_segments from-scratch escape hatch. A rebuild normally
+	// scans only what changed since the last one that landed; Reset ignores that
+	// watermark and the deleted ids retained with it, so the whole corpus is
+	// re-emitted. It is what an operator reaches for when the shipped segments are
+	// suspect and the incremental path has nothing to correct them with.
+	Reset bool `json:"reset"`
 }
 
 // handleServerStatus reports liveness (and, when the server is up, basic

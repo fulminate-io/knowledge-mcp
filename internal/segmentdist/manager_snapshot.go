@@ -48,6 +48,38 @@ func (m *Manager) ShippedManifestSnapshot(
 	return source.List(ctx, 0)
 }
 
+// PublishedManifestCount reads the graph's manifest BACK FROM THE SOURCE and
+// reports how many entries it holds for one format.
+//
+// IT MUST BE A SOURCE READ, and that is the whole reason the method exists rather
+// than a caller comparing two in-process numbers. A rebuild driver already knows
+// how many buckets it built and how many blobs its engine exported; comparing those
+// to each other is an identity that cannot fail for the reason a cardinality gate
+// exists. Only what the server actually published can disagree.
+//
+// It reuses ShippedManifestSnapshot, so on the cloud path this IS the agent's
+// manifest/read and no new wire surface is introduced. On the OSS path it counts
+// the L2-local set, which is that path's whole notion of published.
+func (m *Manager) PublishedManifestCount(
+	ctx context.Context, gt kgtypes.GraphType, name, format string,
+) (int, error) {
+	snapshot, err := m.ShippedManifestSnapshot(ctx, gt, name, format)
+	if err != nil {
+		return 0, err
+	}
+	n := 0
+	for _, meta := range snapshot {
+		// Same load-bearing filter as ShippedDocCountFromSnapshot: a source is not
+		// REQUIRED to be format-scoped, and counting another format's entries here
+		// would inflate the cardinality this gate compares against a build count.
+		if meta.Format != format {
+			continue
+		}
+		n++
+	}
+	return n, nil
+}
+
 // HasShippedFromSnapshot is the snapshot-derived presence answer: true when the
 // server holds at least one segment meta for the graph. The body HasShippedSegments
 // previously inlined, lifted to operate on a passed-in snapshot.

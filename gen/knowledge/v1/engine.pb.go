@@ -533,20 +533,36 @@ func (IndexRequest_IndexOp) EnumDescriptor() ([]byte, []int) {
 // PipelineScanRequest carries the (graph_type, graph_name, axis) scope, an item
 // cap, and the cheap-tick last_seen_gen.
 type PipelineScanRequest struct {
-	state       protoimpl.MessageState `protogen:"open.v1"`
-	GraphType   string                 `protobuf:"bytes,1,opt,name=graph_type,json=graphType,proto3" json:"graph_type,omitempty"`          // graph type (knowledge / code / practice / cloud / cicd / transformers / ...)
-	GraphName   string                 `protobuf:"bytes,2,opt,name=graph_name,json=graphName,proto3" json:"graph_name,omitempty"`          // graph name within the type; may carry a "@overlay" suffix
-	Axis        string                 `protobuf:"bytes,3,opt,name=axis,proto3" json:"axis,omitempty"`                                     // discovery axis: "summary" (NodeIDsBySummaryGap), "embed" (NodeIDsByEmbedGap), "segment_rebuild" (NodeIDsBySegmentRebuild), or "reflect" (ReflectDirtyGen — watermark-only, returns dirty_gen + empty items)
-	Limit       int32                  `protobuf:"varint,4,opt,name=limit,proto3" json:"limit,omitempty"`                                  // max items to return; 0 = no cap
-	LastSeenGen uint64                 `protobuf:"varint,5,opt,name=last_seen_gen,json=lastSeenGen,proto3" json:"last_seen_gen,omitempty"` // client's prior dirty_gen; when non-zero AND equal to the current gen the handler short-circuits to empty items
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	GraphType string                 `protobuf:"bytes,1,opt,name=graph_type,json=graphType,proto3" json:"graph_type,omitempty"` // graph type (knowledge / code / practice / cloud / cicd / transformers / ...)
+	// graph name within the type; may carry a "@overlay" suffix.
+	//
+	// SINGLETON EXCEPTION for graph_type "knowledge": a server holds exactly ONE
+	// knowledge graph and it is named "default". For that type
+	// the name is a label, not a selector: "default" is the only value a server
+	// accepts, and every other value is refused with NOT_FOUND on every serving
+	// flavor. A "@overlay" suffix on the "default" base is still honored.
+	GraphName string `protobuf:"bytes,2,opt,name=graph_name,json=graphName,proto3" json:"graph_name,omitempty"`
+	Axis      string `protobuf:"bytes,3,opt,name=axis,proto3" json:"axis,omitempty"` // discovery axis: "summary" (NodeIDsBySummaryGap), "embed" (NodeIDsByEmbedGap), "segment_rebuild" (NodeIDsBySegmentRebuild), or "reflect" (ReflectDirtyGen — watermark-only, returns dirty_gen + empty items)
+	// max items to return. An absent, zero or negative limit — and any limit above
+	// the server's ceiling — is served AT that ceiling, never uncapped. When the
+	// returned page fills the ceiling, the response's `truncated` field says so and
+	// completeness is not guaranteed.
+	Limit       int32  `protobuf:"varint,4,opt,name=limit,proto3" json:"limit,omitempty"`
+	LastSeenGen uint64 `protobuf:"varint,5,opt,name=last_seen_gen,json=lastSeenGen,proto3" json:"last_seen_gen,omitempty"` // client's prior dirty_gen; when non-zero AND equal to the current gen the handler short-circuits to empty items
 	// stable id-cursor for the segment_rebuild axis; the scan returns items with
 	// id > after_id ordered ascending. Empty/unset starts from the beginning.
 	// Ignored on summary/embed axes (those use last_seen_gen).
 	AfterId string `protobuf:"bytes,6,opt,name=after_id,json=afterId,proto3" json:"after_id,omitempty"`
 	// client_context carries the per-request client provenance. See ClientContext.
 	ClientContext *ClientContext `protobuf:"bytes,7,opt,name=client_context,json=clientContext,proto3" json:"client_context,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// change-scoping watermark for the segment_rebuild axis: when non-zero the
+	// scan emits only rows changed after this unix-nanos value, so a rebuild
+	// costs work proportional to the change rather than to the corpus.
+	// Zero or unset means the full vectored corpus. Ignored on other axes.
+	AfterStampedAtNanos int64 `protobuf:"varint,8,opt,name=after_stamped_at_nanos,json=afterStampedAtNanos,proto3" json:"after_stamped_at_nanos,omitempty"`
+	unknownFields       protoimpl.UnknownFields
+	sizeCache           protoimpl.SizeCache
 }
 
 func (x *PipelineScanRequest) Reset() {
@@ -628,12 +644,32 @@ func (x *PipelineScanRequest) GetClientContext() *ClientContext {
 	return nil
 }
 
+func (x *PipelineScanRequest) GetAfterStampedAtNanos() int64 {
+	if x != nil {
+		return x.AfterStampedAtNanos
+	}
+	return 0
+}
+
 // PipelineScanResponse carries the gap items plus the per-axis dirty generation
 // counter sampled at scan time.
 type PipelineScanResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Items         []*PipelineScanItem    `protobuf:"bytes,1,rep,name=items,proto3" json:"items,omitempty"`                        // (graph_name, node_id) tuples still needing work
-	DirtyGen      uint64                 `protobuf:"varint,2,opt,name=dirty_gen,json=dirtyGen,proto3" json:"dirty_gen,omitempty"` // per-axis dirty generation counter at scan time (cheap-tick comparison key)
+	state    protoimpl.MessageState `protogen:"open.v1"`
+	Items    []*PipelineScanItem    `protobuf:"bytes,1,rep,name=items,proto3" json:"items,omitempty"`                        // (graph_name, node_id) tuples still needing work
+	DirtyGen uint64                 `protobuf:"varint,2,opt,name=dirty_gen,json=dirtyGen,proto3" json:"dirty_gen,omitempty"` // per-axis dirty generation counter at scan time (cheap-tick comparison key)
+	// the safe horizon this scan served up to, in unix nanos. The client
+	// advances its watermark to THIS value, and only after the publish that
+	// consumed the page succeeds. Populated only on the segment_rebuild axis.
+	ServedHorizonNanos int64 `protobuf:"varint,3,opt,name=served_horizon_nanos,json=servedHorizonNanos,proto3" json:"served_horizon_nanos,omitempty"`
+	// truncated reports that maxPipelineScanItems ENGAGED and this page FILLED
+	// it — not merely that the request omitted a limit. Completeness of the page
+	// is not guaranteed: a page landing exactly on the ceiling may still be
+	// complete, because the server does not count past the cap to find out. The
+	// scan itself still converges regardless, because cursor semantics are
+	// unchanged: a truncated page is a VALID page and the caller continues from
+	// after_id as normal. It matters to a caller that sized its page
+	// deliberately and would otherwise silently receive a smaller one.
+	Truncated     bool `protobuf:"varint,4,opt,name=truncated,proto3" json:"truncated,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -682,6 +718,20 @@ func (x *PipelineScanResponse) GetDirtyGen() uint64 {
 	return 0
 }
 
+func (x *PipelineScanResponse) GetServedHorizonNanos() int64 {
+	if x != nil {
+		return x.ServedHorizonNanos
+	}
+	return 0
+}
+
+func (x *PipelineScanResponse) GetTruncated() bool {
+	if x != nil {
+		return x.Truncated
+	}
+	return false
+}
+
 // PipelineScanItem is one (node_id, graph_name) tuple plus the server-composed
 // per-axis LLM input text. embed_text and summarize_text are AXIS-KEYED: a
 // scan with request axis=="embed" populates embed_text only (the EmbedText
@@ -696,7 +746,11 @@ type PipelineScanItem struct {
 	Bm25Fields    *Bm25Fields            `protobuf:"bytes,5,opt,name=bm25_fields,json=bm25Fields,proto3" json:"bm25_fields,omitempty"`          // server-composed BM25 per-field text; populated only on the embed axis (mirrors the embed_text=3/summarize_text=4 additive mechanic)
 	// server-supplied 256-bit binary vector; populated only on the segment_rebuild
 	// axis. Empty on summary/embed axes.
-	BinaryVector  []byte `protobuf:"bytes,6,opt,name=binary_vector,json=binaryVector,proto3" json:"binary_vector,omitempty"`
+	BinaryVector []byte `protobuf:"bytes,6,opt,name=binary_vector,json=binaryVector,proto3" json:"binary_vector,omitempty"`
+	// true when this item is a TOMBSTONED node the client must remove from
+	// its index rather than add. Populated only on the segment_rebuild axis;
+	// binary_vector and bm25_fields are always empty when it is set.
+	Tombstoned    bool `protobuf:"varint,7,opt,name=tombstoned,proto3" json:"tombstoned,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -771,6 +825,13 @@ func (x *PipelineScanItem) GetBinaryVector() []byte {
 		return x.BinaryVector
 	}
 	return nil
+}
+
+func (x *PipelineScanItem) GetTombstoned() bool {
+	if x != nil {
+		return x.Tombstoned
+	}
+	return false
 }
 
 // Bm25Fields carries the five documented per-field BM25 texts the CLIENT needs to
@@ -916,9 +977,16 @@ func (x *PipelineGenPollRequest) GetClientContext() *ClientContext {
 // axes of. FLAT shape (not the GraphSelector envelope) mirroring
 // PipelineScanRequest — the handler resolves a flat gt/name pair directly.
 type PipelineGenPollGraph struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	GraphType     string                 `protobuf:"bytes,1,opt,name=graph_type,json=graphType,proto3" json:"graph_type,omitempty"` // graph type (knowledge / code / practice / cloud / cicd / transformers / ...)
-	GraphName     string                 `protobuf:"bytes,2,opt,name=graph_name,json=graphName,proto3" json:"graph_name,omitempty"` // graph name within the type; may carry a "@overlay" suffix
+	state     protoimpl.MessageState `protogen:"open.v1"`
+	GraphType string                 `protobuf:"bytes,1,opt,name=graph_type,json=graphType,proto3" json:"graph_type,omitempty"` // graph type (knowledge / code / practice / cloud / cicd / transformers / ...)
+	// graph name within the type; may carry a "@overlay" suffix.
+	//
+	// SINGLETON EXCEPTION for graph_type "knowledge": a server holds exactly ONE
+	// knowledge graph and it is named "default". For that type
+	// the name is a label, not a selector: "default" is the only value a server
+	// accepts, and every other value is refused with NOT_FOUND on every serving
+	// flavor. A "@overlay" suffix on the "default" base is still honored.
+	GraphName     string `protobuf:"bytes,2,opt,name=graph_name,json=graphName,proto3" json:"graph_name,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1089,10 +1157,21 @@ func (x *PipelineGenPollEntry) GetDirtyGen() uint64 {
 type CorpusDeltaRequest struct {
 	state     protoimpl.MessageState `protogen:"open.v1"`
 	GraphType string                 `protobuf:"bytes,1,opt,name=graph_type,json=graphType,proto3" json:"graph_type,omitempty"` // graph type (knowledge for the thought corpus)
-	GraphName string                 `protobuf:"bytes,2,opt,name=graph_name,json=graphName,proto3" json:"graph_name,omitempty"` // graph name within the type; may carry a "@overlay" suffix
-	NodeTypes []string               `protobuf:"bytes,3,rep,name=node_types,json=nodeTypes,proto3" json:"node_types,omitempty"` // thought-corpus filter ("thought","charge","thought_session"); empty = the thought-corpus default set (reader substitutes those three)
-	Cursors   []*LayerCursor         `protobuf:"bytes,4,rep,name=cursors,proto3" json:"cursors,omitempty"`                      // per-layer keyset positions the client has already drained to
-	Limit     int32                  `protobuf:"varint,5,opt,name=limit,proto3" json:"limit,omitempty"`                         // max items to return across all layers; 0 = server default
+	// graph name within the type; may carry a "@overlay" suffix.
+	//
+	// SINGLETON EXCEPTION for graph_type "knowledge": a server holds exactly ONE
+	// knowledge graph and it is named "default". For that type
+	// the name is a label, not a selector: "default" is the only value a server
+	// accepts, and every other value is refused with NOT_FOUND on every serving
+	// flavor. A "@overlay" suffix on the "default" base is still honored.
+	GraphName string         `protobuf:"bytes,2,opt,name=graph_name,json=graphName,proto3" json:"graph_name,omitempty"`
+	NodeTypes []string       `protobuf:"bytes,3,rep,name=node_types,json=nodeTypes,proto3" json:"node_types,omitempty"` // thought-corpus filter ("thought","charge","thought_session"); empty = the thought-corpus default set (reader substitutes those three)
+	Cursors   []*LayerCursor `protobuf:"bytes,4,rep,name=cursors,proto3" json:"cursors,omitempty"`                      // per-layer keyset positions the client has already drained to
+	// max items to return across all layers. An absent, zero or negative limit —
+	// and any limit above the server's ceiling — is served AT that ceiling, never
+	// uncapped. When the returned page fills the ceiling, the response's
+	// `truncated` field says so and completeness is not guaranteed.
+	Limit int32 `protobuf:"varint,5,opt,name=limit,proto3" json:"limit,omitempty"`
 	// pinned_horizon anchors a MULTI-PAGE drain to a single horizon. H =
 	// min(xact_start) − epsilon is DELIBERATELY NON-MONOTONIC: it DROPS when a
 	// long-lived write txn appears, so recomputing a fresh H per page could regress
@@ -1215,7 +1294,14 @@ type CorpusDeltaResponse struct {
 	LayerProbes []*LayerProbe `protobuf:"bytes,3,rep,name=layer_probes,json=layerProbes,proto3" json:"layer_probes,omitempty"`
 	// next_cursors are the advanced per-layer keyset positions the client persists
 	// and passes back on the next drain.
-	NextCursors   []*LayerCursor `protobuf:"bytes,4,rep,name=next_cursors,json=nextCursors,proto3" json:"next_cursors,omitempty"`
+	NextCursors []*LayerCursor `protobuf:"bytes,4,rep,name=next_cursors,json=nextCursors,proto3" json:"next_cursors,omitempty"`
+	// truncated reports that maxCorpusDeltaItems ENGAGED and this page FILLED it.
+	// As with the scan sibling, a truncated page is a valid page: next_cursors
+	// still advance correctly and the drain still converges, so this is a notice
+	// rather than an error condition, and a page landing exactly on the ceiling
+	// may still be complete, because the server does not count past the cap to
+	// find out.
+	Truncated     bool `protobuf:"varint,5,opt,name=truncated,proto3" json:"truncated,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1276,6 +1362,13 @@ func (x *CorpusDeltaResponse) GetNextCursors() []*LayerCursor {
 		return x.NextCursors
 	}
 	return nil
+}
+
+func (x *CorpusDeltaResponse) GetTruncated() bool {
+	if x != nil {
+		return x.Truncated
+	}
+	return false
 }
 
 // LayerCursor is one per-layer keyset position. The keyset is
@@ -2290,7 +2383,18 @@ type ExecuteResponse struct {
 	// surfaces the total here so the operator sees how many phantom markers were
 	// passed over. Mirrors affected_count (field 6): 0 for reads and for an
 	// UPDATE that found every selected node.
-	SkippedCount  int64 `protobuf:"varint,11,opt,name=skipped_count,json=skippedCount,proto3" json:"skipped_count,omitempty"`
+	SkippedCount int64 `protobuf:"varint,11,opt,name=skipped_count,json=skippedCount,proto3" json:"skipped_count,omitempty"`
+	// truncated reports that a server-side row ceiling ENGAGED on this response
+	// and the result FILLED IT: the request carried no limit (or a non-positive
+	// one), or a positive limit above the ceiling, and the arm returned as many
+	// rows as the ceiling allows — or it named an id/pivot set larger than the
+	// ceiling, in which case entries were dropped before the graph was read.
+	// When true, completeness is NOT guaranteed: a result landing exactly on the
+	// ceiling may still be complete, because the server does not count past the
+	// cap to find out. When false, the server returned everything the request
+	// selected. A client that needs certainty pages with an explicit limit and
+	// drains until a short page.
+	Truncated     bool `protobuf:"varint,12,opt,name=truncated,proto3" json:"truncated,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2393,6 +2497,13 @@ func (x *ExecuteResponse) GetSkippedCount() int64 {
 		return x.SkippedCount
 	}
 	return 0
+}
+
+func (x *ExecuteResponse) GetTruncated() bool {
+	if x != nil {
+		return x.Truncated
+	}
+	return false
 }
 
 // MetadataPredicate is IR extension #3 (richer metadata predicates). Today
@@ -2748,7 +2859,22 @@ type QueryPlan struct {
 	// (GetIncludeTombstones(), q_export.go:63-67). False (default) filters
 	// tombstoned nodes at every executor read path.
 	IncludeTombstones bool `protobuf:"varint,10,opt,name=include_tombstones,json=includeTombstones,proto3" json:"include_tombstones,omitempty"`
-	// limit mirrors store.Q.limit (GetLimit(), q_export.go:75-78). Zero = no cap.
+	// limit is the caller's requested row count. An absent, zero or negative
+	// limit — and any limit above the server's per-arm ceiling — is served AT that
+	// ceiling, never uncapped: a server serving more than one caller cannot let any
+	// of them request an unbounded accumulation.
+	//
+	// TO KNOW WHETHER YOU RECEIVED A COMPLETE RESULT, READ ExecuteResponse.truncated.
+	// That is the only reliable signal, and it replaces the previous guidance of
+	// sending an explicit positive limit and comparing the returned count, which was
+	// written when no wire signal existed.
+	//
+	// ROLLING DEPLOY: a client built before this change sends limit=0 and will now
+	// observe a result bounded at the ceiling rather than a complete one. Such a
+	// client also ignores the truncated field, so the notice reaches only clients
+	// rebuilt against the new descriptor — which is why the ceilings were chosen
+	// above every in-tree consumer's real page size rather than at a value an older
+	// client would notice.
 	Limit int32 `protobuf:"varint,11,opt,name=limit,proto3" json:"limit,omitempty"`
 	// offset mirrors store.Q.offset (GetOffset(), q_export.go:80-83). Zero = no skip.
 	Offset int32 `protobuf:"varint,12,opt,name=offset,proto3" json:"offset,omitempty"`
@@ -4666,18 +4792,49 @@ func (x *IndexRequest) GetClientContext() *ClientContext {
 }
 
 // IndexResponse carries an op-specific result + the affected count. The op
-// payload is HETEROGENEOUS, so it splits across two fields:
+// payload is HETEROGENEOUS, so it splits across four fields:
 //   - branches: the typed []store.GraphInfo the list_branches op returns
 //     (reuses the GraphInfo message). Empty for every other op.
 //   - result_json: the synthetic {operation,ok} status map the rebuild/promote/
 //     set/delete ops marshal. It has NO shared method-free Go type (an inline
 //     map[string]any with no struct backing it), so it is OUT of the FUL-276
 //     migration filter and stays bytes.
+//   - pruned_ids: the node ids the prune op actually hard-deleted, following
+//     the same op-specific convention as branches. Empty for every other op.
+//   - warning: a non-fatal degradation notice attached to an OTHERWISE
+//     SUCCESSFUL op. Empty on a fully clean run.
+//
+// WHY IDS RATHER THAN ONLY A COUNT: the prune op HARD-deletes rows, so nothing
+// is left behind for a later tombstone or delta scan to resurface. A caller
+// that mirrors the removal in its own index has no other source for the id
+// set, and an id it never learns about stays resident in that index until a
+// full rebuild.
+//
+// WHY A WARNING RATHER THAN AN ERROR: an op whose durable effect ALREADY
+// LANDED cannot be reported as a failure without losing the result payload the
+// caller needs to mirror that effect — an error carries no response, so the ids
+// above would never reach anyone and the mirroring index would keep those
+// documents until a full rebuild. The warning is the carrier for "the work is
+// done, but something after it degraded": the response is a success envelope,
+// the payload is complete, and the caller is expected to surface the text
+// verbatim rather than swallow it. A step that fails BEFORE the durable effect
+// lands is still a plain error — the envelope is for partial success only.
+//
+// ROLLING-DEPLOY CONTRACT — both directions, because a staged rollout runs
+// both at once:
+//   - a server built before these fields returns them unset, which decodes as
+//     an empty list / empty string; a client that reads them treats empty as
+//     nothing-to-propagate and nothing-to-warn, so behavior is identical to
+//     before the fields existed.
+//   - a client built before these fields ignores them, so a newer server may
+//     populate them freely.
 type IndexResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	ResultJson    []byte                 `protobuf:"bytes,1,opt,name=result_json,json=resultJson,proto3" json:"result_json,omitempty"`           // synthetic {operation,ok} status map (no shared Go type — stays bytes)
 	AffectedCount int64                  `protobuf:"varint,2,opt,name=affected_count,json=affectedCount,proto3" json:"affected_count,omitempty"` // rows/keys/branches the op touched
 	Branches      []*GraphInfo           `protobuf:"bytes,3,rep,name=branches,proto3" json:"branches,omitempty"`                                 // []store.GraphInfo for the list_branches op
+	PrunedIds     []string               `protobuf:"bytes,4,rep,name=pruned_ids,json=prunedIds,proto3" json:"pruned_ids,omitempty"`              // node ids the prune op ACTUALLY hard-deleted; empty for every other op
+	Warning       string                 `protobuf:"bytes,5,opt,name=warning,proto3" json:"warning,omitempty"`                                   // non-fatal degradation notice on an otherwise successful op; empty on a clean run
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4731,6 +4888,20 @@ func (x *IndexResponse) GetBranches() []*GraphInfo {
 		return x.Branches
 	}
 	return nil
+}
+
+func (x *IndexResponse) GetPrunedIds() []string {
+	if x != nil {
+		return x.PrunedIds
+	}
+	return nil
+}
+
+func (x *IndexResponse) GetWarning() string {
+	if x != nil {
+		return x.Warning
+	}
+	return ""
 }
 
 // HiveRequest is the op-dispatched hive work-queue request. The op discriminator
@@ -4957,7 +5128,7 @@ var File_knowledge_v1_engine_proto protoreflect.FileDescriptor
 
 const file_knowledge_v1_engine_proto_rawDesc = "" +
 	"\n" +
-	"\x19knowledge/v1/engine.proto\x12\fknowledge.v1\"\x80\x02\n" +
+	"\x19knowledge/v1/engine.proto\x12\fknowledge.v1\"\xb5\x02\n" +
 	"\x13PipelineScanRequest\x12\x1d\n" +
 	"\n" +
 	"graph_type\x18\x01 \x01(\tR\tgraphType\x12\x1d\n" +
@@ -4967,10 +5138,13 @@ const file_knowledge_v1_engine_proto_rawDesc = "" +
 	"\x05limit\x18\x04 \x01(\x05R\x05limit\x12\"\n" +
 	"\rlast_seen_gen\x18\x05 \x01(\x04R\vlastSeenGen\x12\x19\n" +
 	"\bafter_id\x18\x06 \x01(\tR\aafterId\x12B\n" +
-	"\x0eclient_context\x18\a \x01(\v2\x1b.knowledge.v1.ClientContextR\rclientContext\"i\n" +
+	"\x0eclient_context\x18\a \x01(\v2\x1b.knowledge.v1.ClientContextR\rclientContext\x123\n" +
+	"\x16after_stamped_at_nanos\x18\b \x01(\x03R\x13afterStampedAtNanos\"\xb9\x01\n" +
 	"\x14PipelineScanResponse\x124\n" +
 	"\x05items\x18\x01 \x03(\v2\x1e.knowledge.v1.PipelineScanItemR\x05items\x12\x1b\n" +
-	"\tdirty_gen\x18\x02 \x01(\x04R\bdirtyGen\"\xf0\x01\n" +
+	"\tdirty_gen\x18\x02 \x01(\x04R\bdirtyGen\x120\n" +
+	"\x14served_horizon_nanos\x18\x03 \x01(\x03R\x12servedHorizonNanos\x12\x1c\n" +
+	"\ttruncated\x18\x04 \x01(\bR\ttruncated\"\x90\x02\n" +
 	"\x10PipelineScanItem\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x1d\n" +
 	"\n" +
@@ -4980,7 +5154,10 @@ const file_knowledge_v1_engine_proto_rawDesc = "" +
 	"\x0esummarize_text\x18\x04 \x01(\tR\rsummarizeText\x129\n" +
 	"\vbm25_fields\x18\x05 \x01(\v2\x18.knowledge.v1.Bm25FieldsR\n" +
 	"bm25Fields\x12#\n" +
-	"\rbinary_vector\x18\x06 \x01(\fR\fbinaryVector\"\x9f\x01\n" +
+	"\rbinary_vector\x18\x06 \x01(\fR\fbinaryVector\x12\x1e\n" +
+	"\n" +
+	"tombstoned\x18\a \x01(\bR\n" +
+	"tombstoned\"\x9f\x01\n" +
 	"\n" +
 	"Bm25Fields\x12\x1f\n" +
 	"\vsymbol_name\x18\x01 \x01(\tR\n" +
@@ -5016,12 +5193,13 @@ const file_knowledge_v1_engine_proto_rawDesc = "" +
 	"\acursors\x18\x04 \x03(\v2\x19.knowledge.v1.LayerCursorR\acursors\x12\x14\n" +
 	"\x05limit\x18\x05 \x01(\x05R\x05limit\x12%\n" +
 	"\x0epinned_horizon\x18\x06 \x01(\x03R\rpinnedHorizon\x12B\n" +
-	"\x0eclient_context\x18\a \x01(\v2\x1b.knowledge.v1.ClientContextR\rclientContext\"\xdd\x01\n" +
+	"\x0eclient_context\x18\a \x01(\v2\x1b.knowledge.v1.ClientContextR\rclientContext\"\xfb\x01\n" +
 	"\x13CorpusDeltaResponse\x12(\n" +
 	"\x05items\x18\x01 \x03(\v2\x12.knowledge.v1.NodeR\x05items\x12!\n" +
 	"\fsafe_horizon\x18\x02 \x01(\x03R\vsafeHorizon\x12;\n" +
 	"\flayer_probes\x18\x03 \x03(\v2\x18.knowledge.v1.LayerProbeR\vlayerProbes\x12<\n" +
-	"\fnext_cursors\x18\x04 \x03(\v2\x19.knowledge.v1.LayerCursorR\vnextCursors\"o\n" +
+	"\fnext_cursors\x18\x04 \x03(\v2\x19.knowledge.v1.LayerCursorR\vnextCursors\x12\x1c\n" +
+	"\ttruncated\x18\x05 \x01(\bR\ttruncated\"o\n" +
 	"\vLayerCursor\x12\x1b\n" +
 	"\tlayer_key\x18\x01 \x01(\tR\blayerKey\x12(\n" +
 	"\x10after_updated_at\x18\x02 \x01(\x03R\x0eafterUpdatedAt\x12\x19\n" +
@@ -5108,7 +5286,7 @@ const file_knowledge_v1_engine_proto_rawDesc = "" +
 	"\x04node\x18\x03 \x01(\v2\x12.knowledge.v1.NodeR\x04node\"U\n" +
 	"\x0fTraversalResult\x12\x1a\n" +
 	"\bdistance\x18\x02 \x01(\x05R\bdistance\x12&\n" +
-	"\x04node\x18\x03 \x01(\v2\x12.knowledge.v1.NodeR\x04node\"\xe1\x03\n" +
+	"\x04node\x18\x03 \x01(\v2\x12.knowledge.v1.NodeR\x04node\"\xff\x03\n" +
 	"\x0fExecuteResponse\x12\x10\n" +
 	"\x03ids\x18\x02 \x03(\tR\x03ids\x12C\n" +
 	"\x0esearch_results\x18\x03 \x03(\v2\x1c.knowledge.v1.HydratedResultR\rsearchResults\x12J\n" +
@@ -5121,7 +5299,8 @@ const file_knowledge_v1_engine_proto_rawDesc = "" +
 	"\x0ftraversal_edges\x18\t \x03(\v2\x12.knowledge.v1.EdgeR\x0etraversalEdges\x12(\n" +
 	"\x05nodes\x18\n" +
 	" \x03(\v2\x12.knowledge.v1.NodeR\x05nodes\x12#\n" +
-	"\rskipped_count\x18\v \x01(\x03R\fskippedCount\"\xeb\x01\n" +
+	"\rskipped_count\x18\v \x01(\x03R\fskippedCount\x12\x1c\n" +
+	"\ttruncated\x18\f \x01(\bR\ttruncated\"\xeb\x01\n" +
 	"\x11MetadataPredicate\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x122\n" +
 	"\x02op\x18\x02 \x01(\x0e2\".knowledge.v1.MetadataPredicate.OpR\x02op\x12\x14\n" +
@@ -5373,12 +5552,15 @@ const file_knowledge_v1_engine_proto_rawDesc = "" +
 	"\x16INDEX_OP_DELETE_BRANCH\x10\x05\x12\x1a\n" +
 	"\x16INDEX_OP_LIST_BRANCHES\x10\x06\x12\x12\n" +
 	"\x0eINDEX_OP_PRUNE\x10\a\x12\x1a\n" +
-	"\x16INDEX_OP_REBUILD_CACHE\x10\b\"\x04\b\x01\x10\x01\"\x04\b\x02\x10\x02*\x15INDEX_OP_REBUILD_HNSW*\x15INDEX_OP_REBUILD_BM25\"\x8c\x01\n" +
+	"\x16INDEX_OP_REBUILD_CACHE\x10\b\"\x04\b\x01\x10\x01\"\x04\b\x02\x10\x02*\x15INDEX_OP_REBUILD_HNSW*\x15INDEX_OP_REBUILD_BM25\"\xc5\x01\n" +
 	"\rIndexResponse\x12\x1f\n" +
 	"\vresult_json\x18\x01 \x01(\fR\n" +
 	"resultJson\x12%\n" +
 	"\x0eaffected_count\x18\x02 \x01(\x03R\raffectedCount\x123\n" +
-	"\bbranches\x18\x03 \x03(\v2\x17.knowledge.v1.GraphInfoR\bbranches\"\xb3\x03\n" +
+	"\bbranches\x18\x03 \x03(\v2\x17.knowledge.v1.GraphInfoR\bbranches\x12\x1d\n" +
+	"\n" +
+	"pruned_ids\x18\x04 \x03(\tR\tprunedIds\x12\x18\n" +
+	"\awarning\x18\x05 \x01(\tR\awarning\"\xb3\x03\n" +
 	"\vHiveRequest\x12$\n" +
 	"\x02op\x18\x01 \x01(\x0e2\x14.knowledge.v1.HiveOpR\x02op\x123\n" +
 	"\x06target\x18\x02 \x01(\v2\x1b.knowledge.v1.GraphSelectorR\x06target\x12\x12\n" +

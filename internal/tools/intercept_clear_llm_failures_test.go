@@ -185,6 +185,33 @@ func TestMutateComposers_ClearLLMFailures_KnowledgeRootNilTarget(t *testing.T) {
 	}
 }
 
+// TestMutateComposers_ClearLLMFailures_KnowledgeOverlayNilTarget asserts the
+// OVERLAY half of the same contract: the knowledge family is a singleton, so a
+// knowledge session overlay clears against the nil selector exactly like the
+// base does. Fails-when-absent: the root test above seeds no overlay key, so it
+// passes whether or not the overlay branch emits a Name.
+func TestMutateComposers_ClearLLMFailures_KnowledgeOverlayNilTarget(t *testing.T) {
+	fc := &fakeGraphCaller{
+		mutateAffected:    1,
+		listGraphsResult:  listGraphsResultJSON(t, [2]string{"knowledge", "knowledge"}),
+		overlayKeysByBase: map[string][]string{"knowledge": {"knowledge@session-x"}},
+	}
+	deps := interceptTestDeps{gc: fc}
+	handled, res := InterceptManage(opCtx(), deps, kgtools.CallToolParams{
+		Name:      "manage",
+		Arguments: json.RawMessage(`{"operation":"clear_llm_failures","graph":"knowledge","name":"knowledge"}`),
+	})
+	require.True(t, handled)
+	require.False(t, res.IsError, "clear: %s", toolResultText(res))
+	// 2 markers * 2 resolved keys (base knowledge + overlay knowledge@session-x)
+	// = 4 UPDATEs. Fixture-derived, not set-derived.
+	mutReqs := mutationExecRequests(fc)
+	require.Len(t, mutReqs, 4, "two markers per resolved key (base + overlay)")
+	for _, req := range mutReqs {
+		assert.Nil(t, req.GetTarget(), "every knowledge clear target resolves to the nil selector")
+	}
+}
+
 // TestMutateComposers_ClearLLMFailures_MultiGraphFanOut asserts the empty-graph
 // case resolves the loaded graphs via pipeline_list_graphs then issues the two
 // predicate UPDATEs PER resolved graph (two graphs → 4 UPDATEs).

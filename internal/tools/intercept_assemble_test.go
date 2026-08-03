@@ -47,8 +47,11 @@ func (d *fakeAssembleDeps) SegmentManager() SegmentSearcher              { retur
 func (d *fakeAssembleDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
 func (d *fakeAssembleDeps) SegmentShipper() SegmentShipper               { return nil }
 func (d *fakeAssembleDeps) SegmentPruner() SegmentPruner                 { return nil }
-func (d *fakeAssembleDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
-func (d *fakeAssembleDeps) PipelineScanner() PipelineScanner             { return nil }
+
+func (d *fakeAssembleDeps) SegmentCacheDropper() SegmentCacheDropper { return nil }
+func (d *fakeAssembleDeps) SegmentDeleter() SegmentDeleter           { return nil }
+func (d *fakeAssembleDeps) SegmentCoverage() SegmentCoverageReader   { return nil }
+func (d *fakeAssembleDeps) PipelineScanner() PipelineScanner         { return nil }
 
 func (d *fakeAssembleDeps) ClearHealLatch(kgtypes.GraphType, string) {}
 func (d *fakeAssembleDeps) ReflectionForcer() ReflectionForcer       { return nil }

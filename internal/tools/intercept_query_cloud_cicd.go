@@ -83,6 +83,13 @@ func InterceptQueryCloudCICD(ctx context.Context, deps ClientDeps, params kgtool
 	default:
 		return false, kgtools.ToolResult{}
 	}
+	// mode:topology belongs to the topology intercept, which resolves cloud/cicd
+	// instances itself (account-keyed). Claiming it here would silently render a
+	// resource browse instead of running the analyzer — the mode must fall
+	// through, not be swallowed.
+	if a.Mode == "topology" {
+		return false, kgtools.ToolResult{}
+	}
 	gc := deps.GraphCaller()
 	if gc == nil {
 		return true, errorResult(a.Graph + ": graph client unavailable")
@@ -90,6 +97,9 @@ func InterceptQueryCloudCICD(ctx context.Context, deps ClientDeps, params kgtool
 
 	// (1) list-graphs: no account, no id/text, mode != stats.
 	if a.Account == "" && a.ID == "" && a.Text == "" && a.Mode != "stats" {
+		if err := accountQueryParams(armCloudCICDListGraphs, params.Arguments); err != nil {
+			return true, errorResult(err.Error())
+		}
 		return true, listResourceGraphs(ctx, deps, kind)
 	}
 	// account is required for every other shape.
@@ -99,11 +109,17 @@ func InterceptQueryCloudCICD(ctx context.Context, deps ClientDeps, params kgtool
 
 	// (3) id getNode.
 	if a.ID != "" {
+		if err := accountQueryParams(armCloudCICDGetNode, params.Arguments); err != nil {
+			return true, errorResult(err.Error())
+		}
 		return true, resourceGetNode(ctx, gc.Execute, kind, a)
 	}
 
 	// (2) mode=stats.
 	if a.Mode == "stats" {
+		if err := accountQueryParams(armCloudCICDStats, params.Arguments); err != nil {
+			return true, errorResult(err.Error())
+		}
 		sc, ok := gc.(statsRPC)
 		if !ok {
 			return true, errorResult(a.Graph + " stats: stats seam unavailable")
@@ -115,6 +131,9 @@ func InterceptQueryCloudCICD(ctx context.Context, deps ClientDeps, params kgtool
 	// entirely CLIENT-side via composeResourceSearchClient (Manager.Search →
 	// RRF → hydrate → RenderResourceSearch); never a server RETURN_MODE_SEARCH.
 	if query := resourceQueryText(a); query != "" {
+		if err := accountQueryParams(armCloudCICDSearch, params.Arguments); err != nil {
+			return true, errorResult(err.Error())
+		}
 		// Readiness gate (bind-first startup): the mgr==nil case below is already nil-safe (no
 		// panic) but emits a permanent-degrade message that misleads during the
 		// bind-first wiring window. Add the uniform not-ready pre-check so the
@@ -130,6 +149,9 @@ func InterceptQueryCloudCICD(ctx context.Context, deps ClientDeps, params kgtool
 	}
 
 	// (5) browse (optionally resource_type-prefixed).
+	if err := accountQueryParams(armCloudCICDBrowse, params.Arguments); err != nil {
+		return true, errorResult(err.Error())
+	}
 	return true, resourceBrowse(ctx, gc.Execute, kind, a)
 }
 

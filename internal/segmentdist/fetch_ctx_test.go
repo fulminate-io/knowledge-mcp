@@ -22,6 +22,8 @@ import (
 // the caller ctx threads through fetchMisses → fetchChunkAdaptive → Fetch, so the
 // cancel unwinds the in-flight RPC and load returns context.Canceled.
 func TestSearchFetchHonorsCallerCtx(t *testing.T) {
+	t.Parallel()
+
 	gt, name := kgtypes.GraphCode, "hangRepo"
 	target := graphSelector(gt, name)
 	svc := newSharedServerFake()
@@ -29,7 +31,7 @@ func TestSearchFetchHonorsCallerCtx(t *testing.T) {
 	// A producer ships a real corpus so the consumer's cold List returns misses to
 	// Fetch (the path that must be cancellable).
 	producer := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(svc.viewFor(target, "")))
-	require.NoError(t, producer.AddAndShip(context.Background(), gt, name, hnswVecDocs(1024)))
+	seedShipped(t, context.Background(), producer, gt, name, hnswVecDocs(1024))
 
 	// Consumer points at a view that hangs Fetch; its L2 is cold (fresh TempDir),
 	// so load() falls through to loadFromServer → fetchMisses → the hung Fetch.

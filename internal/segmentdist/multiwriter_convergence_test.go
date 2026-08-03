@@ -51,7 +51,7 @@ func convergeDocs(n, seed int) []searchengine.Document {
 func addShipFlush(t *testing.T, mgr *Manager, gt kgtypes.GraphType, name string, docs []searchengine.Document) string {
 	t.Helper()
 	ctx := context.Background()
-	require.NoError(t, mgr.AddAndShip(ctx, gt, name, docs))
+	require.NoError(t, mgr.AddAndMarkDirty(ctx, gt, name, docs))
 	require.NoError(t, mgr.Flush(ctx, gt, name))
 	export := mgr.managerFor(gt, name).engine.Export()
 	require.Len(t, export, 1, "the tiny corpus seals exactly one segment")
@@ -64,6 +64,8 @@ func addShipFlush(t *testing.T, mgr *Manager, gt kgtypes.GraphType, name string,
 // writer0 drops X (survives via writer1), writer1 drops X (now reaped). A broken or
 // no-op refcount fails either the survival or the final reap.
 func TestMultiWriterConvergenceRefcount(t *testing.T) {
+	t.Parallel()
+
 	mgrs, svc := newMultiWriterFleet(t, 2)
 	w0, w1 := mgrs[0], mgrs[1]
 	gt, name := kgtypes.GraphKnowledge, "converge"
@@ -117,6 +119,8 @@ func TestMultiWriterConvergenceRefcount(t *testing.T) {
 // coexist — both copies survive both publishes and neither writer's publish-driven
 // refcount-GC reaps the other's referenced blob (cross-writer reap == 0).
 func TestMultiWriterSafeCoexistence(t *testing.T) {
+	t.Parallel()
+
 	mgrs, svc := newMultiWriterFleet(t, 2)
 	w0, w1 := mgrs[0], mgrs[1]
 	gt, name := kgtypes.GraphKnowledge, "coexist"

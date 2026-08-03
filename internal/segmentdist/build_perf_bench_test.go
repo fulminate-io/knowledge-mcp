@@ -1,15 +1,18 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// Deterministic-path live-ship perf benchmark. Drives the REAL ship path —
-// Manager.AddAndShip → engine.Add/seal → Format.Build (the deterministic serial
-// builder) → Encode → content-hash → ship — across K concurrent segments, so the
-// reported ns/op + alloc/op reflect the production embed-writeback cost. There is
-// one builder now (deterministic), so this is single-arm: absolute numbers to track
-// allocation/throughput progress, not an A-vs-B comparison.
+// Deterministic-path live-ship perf benchmark. Drives the REAL write path —
+// Manager.AddAndMarkDirty (engine.Add + force-seal) followed by ReEmitDirtyBuckets
+// (Format.Build with the deterministic serial builder → Encode → content-hash →
+// ship) — across K concurrent segments, so the reported ns/op + alloc/op reflect the
+// production embed-writeback cost. Both halves are timed together because together
+// they are what one corpus costs; the split between them is a scheduling question,
+// not a cost question. There is one builder now (deterministic), so this is
+// single-arm: absolute numbers to track allocation/throughput progress, not an
+// A-vs-B comparison.
 //
 // Run with:
 //   CGO_ENABLED=1 go test ./cmd/knowledge/internal/segmentdist/ \
-//     -run '^$' -bench 'BenchmarkDeterministicAddAndShip' -benchmem -benchtime 5x
+//     -run '^$' -bench 'BenchmarkDeterministicMarkDirtyAndReEmit' -benchmem -benchtime 5x
 
 package segmentdist
 
@@ -24,7 +27,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
 
-const perfCorpusDocs = 1024 // == MinSegmentDocs: each AddAndShip seals exactly one segment.
+const perfCorpusDocs = 1024 // == MinSegmentDocs: one corpus is one sealed segment.
 
 var perfK = []int{8, 32, 64, 128}
 
@@ -85,10 +88,13 @@ func makePerfFieldCorpora(k int) [][]searchengine.Document {
 	return corpora
 }
 
-// BenchmarkDeterministicAddAndShip AddAndShips K distinct 1024-doc corpora
-// CONCURRENTLY (one goroutine per call, each a distinct graph), each built by the
-// deterministic serial builder. This is the production cross-segment shape.
-func BenchmarkDeterministicAddAndShip(b *testing.B) {
+// BenchmarkDeterministicMarkDirtyAndReEmit writes and re-emits K distinct 1024-doc
+// corpora CONCURRENTLY (one goroutine per corpus, each a distinct graph), each built
+// by the deterministic serial builder. This is the production cross-segment shape.
+//
+// The errors are collected rather than asserted with require, because a require
+// failure calls FailNow, which is only valid on the goroutine running the benchmark.
+func BenchmarkDeterministicMarkDirtyAndReEmit(b *testing.B) {
 	ctx := context.Background()
 	for _, k := range perfK {
 		corpora := makePerfCorpora(k)
@@ -105,7 +111,12 @@ func BenchmarkDeterministicAddAndShip(b *testing.B) {
 				for i, docs := range corpora {
 					go func(idx int, d []searchengine.Document) {
 						defer wg.Done()
-						if err := mgr.AddAndShip(ctx, kgtypes.GraphKnowledge, fmt.Sprintf("g%d", idx), d); err != nil {
+						name := fmt.Sprintf("g%d", idx)
+						err := mgr.AddAndMarkDirty(ctx, kgtypes.GraphKnowledge, name, d)
+						if err == nil {
+							err = mgr.ReEmitDirtyBuckets(ctx, kgtypes.GraphKnowledge, name)
+						}
+						if err != nil {
 							mu.Lock()
 							if firstErr == nil {
 								firstErr = err
@@ -116,26 +127,27 @@ func BenchmarkDeterministicAddAndShip(b *testing.B) {
 				}
 				wg.Wait()
 				if firstErr != nil {
-					b.Fatalf("AddAndShip: %v", firstErr)
+					b.Fatalf("mark-dirty + re-emit: %v", firstErr)
 				}
 			}
 		})
 	}
 }
 
-// BenchmarkDeterministicAddAndShipFields is the BM25 analog of
-// BenchmarkDeterministicAddAndShip: it AddAndShipFields K distinct 1024-doc field
-// corpora CONCURRENTLY (one goroutine per call, each a distinct graph), driving the
-// REAL ship path — AddAndShipFields → engine.Add/seal → bm25.Build → Encode →
-// content-hash → ship. The reported allocs/op + alloc/op reflect the BM25
-// build+Encode cost on the production embed-writeback path. Single-arm absolute
-// numbers (BM25 has one engine per graph, no deterministic sibling).
+// BenchmarkDeterministicMarkDirtyAndReEmitFields is the BM25 analog of
+// BenchmarkDeterministicMarkDirtyAndReEmit: it writes and re-emits K distinct
+// 1024-doc field corpora CONCURRENTLY (one goroutine per corpus, each a distinct
+// graph), driving the REAL write path — AddAndMarkDirtyFields (engine.Add +
+// force-seal) then ReEmitDirtyBuckets (bm25.Build → Encode → content-hash → ship).
+// The reported allocs/op + alloc/op reflect the BM25 build+Encode cost on the
+// production embed-writeback path. Single-arm absolute numbers (BM25 has one engine
+// per graph, no deterministic sibling).
 //
 // Run with:
 //
 //	go test ./cmd/knowledge/internal/segmentdist/ \
-//	  -run '^$' -bench 'BenchmarkDeterministicAddAndShipFields' -benchmem -benchtime 5x
-func BenchmarkDeterministicAddAndShipFields(b *testing.B) {
+//	  -run '^$' -bench 'BenchmarkDeterministicMarkDirtyAndReEmitFields' -benchmem -benchtime 5x
+func BenchmarkDeterministicMarkDirtyAndReEmitFields(b *testing.B) {
 	ctx := context.Background()
 	for _, k := range perfK {
 		corpora := makePerfFieldCorpora(k)
@@ -152,7 +164,12 @@ func BenchmarkDeterministicAddAndShipFields(b *testing.B) {
 				for i, docs := range corpora {
 					go func(idx int, d []searchengine.Document) {
 						defer wg.Done()
-						if err := mgr.AddAndShipFields(ctx, kgtypes.GraphKnowledge, fmt.Sprintf("g%d", idx), d); err != nil {
+						name := fmt.Sprintf("g%d", idx)
+						err := mgr.AddAndMarkDirtyFields(ctx, kgtypes.GraphKnowledge, name, d)
+						if err == nil {
+							err = mgr.ReEmitDirtyBuckets(ctx, kgtypes.GraphKnowledge, name)
+						}
+						if err != nil {
 							mu.Lock()
 							if firstErr == nil {
 								firstErr = err
@@ -163,7 +180,7 @@ func BenchmarkDeterministicAddAndShipFields(b *testing.B) {
 				}
 				wg.Wait()
 				if firstErr != nil {
-					b.Fatalf("AddAndShipFields: %v", firstErr)
+					b.Fatalf("mark-dirty + re-emit fields: %v", firstErr)
 				}
 			}
 		})

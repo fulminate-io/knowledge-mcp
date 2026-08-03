@@ -61,6 +61,9 @@ func InterceptQueryExamine(ctx context.Context, deps ClientDeps, params kgtools.
 	if id == "" {
 		return true, errorResult("examine: 'id' is required")
 	}
+	if err := accountQueryParams(armExamine, params.Arguments); err != nil {
+		return true, errorResult(err.Error())
+	}
 	gc := deps.GraphCaller()
 	if gc == nil {
 		return true, errorResult("examine: graph client unavailable")

@@ -56,10 +56,15 @@ the full operation reference, run `help("thoughts")`.
 <!-- BEGIN GENERATED: params -->
 | Parameter | Type | Required | Enum | Description |
 | --- | --- | --- | --- | --- |
+| `all_types` | boolean |  |  | (recall, mode:'clusters') Run cluster detection over EVERY node type rather than thoughts only — the boolean spelling of the adjacency arm's scope:'all_types'. |
 | `branches_from` | string |  |  | (think) Thought ID this branches from (usually after invalidation of the original). |
+| `cited_range` | string |  |  | (think) Optional locality hint accompanying verified_quote on a supersession, as "path/file.go:start-end". When set, the verbatim substring must resolve to the cited path. TOP-LEVEL param, consumed by the gate before any write and never persisted. |
 | `connected_to` | string |  |  | (recall) Must be connected to this node ID. |
 | `consistency_max` | number |  |  | (recall) Maximum consistency (low values find contested thoughts). |
 | `content` | string |  |  | (think) The thought content — what you're thinking and why. |
+| `densify_edge_budget` | number |  |  | (propagate, similarity:true) Cap on edges the densification phase may add in one pass. Absent uses the package default. |
+| `densify_k` | number |  |  | (propagate, similarity:true) Neighbor count per node for the densification phase. Absent uses the package default. |
+| `densify_threshold` | number |  |  | (propagate, similarity:true) Similarity floor for the post-link within-topic kNN densification phase. Absent uses the package default. |
 | `depth` | number |  |  | (trace) Max hops (default 5). |
 | `direction` | string |  | forward, backward, both | (trace) Traversal direction. |
 | `evidence` | array of string |  |  | (charge) Node IDs of evidence — tests, PRs, incidents, related thoughts, or other charges. Citing a related thought records a charge→thought evidenced-by edge that feeds cross-cluster trust differentiation. |
@@ -69,10 +74,12 @@ the full operation reference, run `help("thoughts")`.
 | `id` | string |  |  | (similarity_report) Optional id of a specific past similarity pass to fetch. Omit to fetch the LATEST pass (running → in-progress + estimate; completed → the full rendered report; failed → the failure). |
 | `include_artifacts` | boolean |  |  | (trace) Include linked artifacts (code, decisions, PRs). |
 | `include_charges` | boolean |  |  | (trace) Include charge nodes in the trace. |
-| `limit` | number |  |  | (recall) Max results (default 20). |
+| `limit` | number |  |  | (recall) Max results (default 20, max 50). |
+| `link_threshold` | number |  |  | (propagate, similarity:true) Per-call override for the topic-link similarity threshold. Absent uses the package default. Accepts a number or its quoted-string form; any other value is surfaced loudly rather than defaulted. |
 | `links` | array of string |  |  | (think) Node IDs to link this thought to (decisions, findings, code, etc.). |
 | `links[]` | string |  |  |  |
 | `magnitude_min` | number |  |  | (recall) Minimum magnitude (significance threshold). |
+| `merge_threshold` | number |  |  | (propagate, similarity:true) Per-call override for the topic-merge cascade threshold. Absent uses the package default. Accepts a number or its quoted-string form. |
 | `mode` | string |  | search, timeline, charges, graph, clusters | (recall) Output format. |
 | `operation` | string | yes | think, charge, recall, trace, propagate, adjacency, charges_for, similarity_report | Which thoughts op to run. |
 | `origin` | string |  |  | (think) Developer-origin role of the agent recording this thought — conventional values planner\|implementer\|reviewer\|researcher\|tester\|orchestrator\|main; absent => main. Open string (flex-parsed, NOT an enum gate): a custom value is stored as-is. Stamped as origin metadata, and when it resolves to a seeded agent node, an agent--produced-->thought hub edge is written. |
@@ -81,9 +88,11 @@ the full operation reference, run `help("thoughts")`.
 | `reasoning` | string |  |  | (charge) WHY this charge applies — the specific evidence that supports or contradicts the thought's claim. Put any sentiment about the subject HERE, never in the polarity sign. |
 | `scope` | string |  | all, all_types | (adjacency) Which adjacency view to build. 'all' = NodeThought-filtered with session-sibling expansion (cluster detection on thoughts only). 'all_types' = every node except NodeProxy with no edge filter (cross-type cluster detection). |
 | `session` | string |  |  | (think, recall filter) Session name to group related thoughts (e.g., 'backend-auth-design'). Creates session if new on think. |
+| `similarity` | boolean |  |  | (propagate) Trigger the topic-similarity lever ASYNCHRONOUSLY (drain → centroids → reconcile → merge cascade → summaries → drift → links). Returns immediately with a similarity_report fetch call and a duration estimate; only one pass runs at a time and a second trigger coalesces. |
 | `status` | string |  | hypothesized, validated, invalidated | (think initial status / recall filter) Default hypothesized for think. |
 | `summary` | string |  |  | (think, REQUIRED) Search-optimized one-line summary of the thought, max 500 chars. Authored deliberately — this is what makes the thought findable via recall. NOT auto-derived from content. (max length: 500) |
 | `thought` | string |  |  | (charge, trace) Thought node ID. Required for charge and trace. |
+| `thought_id` | string |  |  | (charge) Singular alias for `thought` — the charge arm accepts either spelling for the thought node ID. |
 | `thought_ids` | array of string |  |  | (adjacency, charges_for) Optional subset filter (adjacency) / required charge sources (charges_for). When set on adjacency, response is projected down to just these IDs. |
 | `thought_ids[]` | string |  |  |  |
 | `ticket_id` | string |  |  | (think) Active ticket/project ID — born-linked as ticket--contains-->thought so the thought is grouped under the work item that produced it. An unresolvable ticket_id is dropped with a warning, never blocking the think. |
@@ -91,5 +100,6 @@ the full operation reference, run `help("thoughts")`.
 | `time_start` | string |  |  | (recall) Start of time range (ISO date, e.g. 2026-03-01). |
 | `valence_max` | number |  |  | (recall) Maximum valence (-1.0 to 1.0). |
 | `valence_min` | number |  |  | (recall) Minimum valence (-1.0 to 1.0). |
+| `verified_quote` | string |  |  | (think) Negation-gate proof of work — a TOP-LEVEL param on the call. REQUIRED whenever branches_from is set (a supersession): a verbatim substring of the superseded node's CURRENT source. Consumed by the gate before any write and never persisted. |
 | `weight` | number |  |  | (charge) Charge significance (1-10). Higher = stronger evidence. |
 <!-- END GENERATED: params -->

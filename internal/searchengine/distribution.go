@@ -27,6 +27,27 @@ func (e *SegmentedIndex[Q, S]) Export() []SegmentBlob {
 	return blobs
 }
 
+// ResidentSegmentIDs lists the id of every sealed segment currently resident in
+// the searchable set. It is the CHEAP id-only counterpart of Export: one atomic
+// snapshot load and a walk of the entry metas, with NO per-segment Encode.
+//
+// Export is the wrong call for a caller that only needs to know WHICH segments are
+// resident — it re-serializes every payload, which on a full corpus is tens of
+// megabytes of encoding to answer a set-membership question. The completeness
+// reconcile asks exactly that question, per graph, per tick.
+//
+// Same snapshot semantics as Search/Export/ResidentDocCount: the SEALED set only,
+// read through the lock-free atomic pointer. The sub-threshold active buffer holds
+// no segment and is intentionally absent.
+func (e *SegmentedIndex[Q, S]) ResidentSegmentIDs() []SegmentID {
+	set := e.set.Load()
+	ids := make([]SegmentID, 0, len(set.entries))
+	for _, entry := range set.entries {
+		ids = append(ids, entry.meta.ID)
+	}
+	return ids
+}
+
 // Import decodes a batch of blobs into segments and publishes them in ONE CAS.
 // Each decoded segment seeds its liveDocs from the tombstones (contract: liveDocs
 // seeded from tombstones at Import), so already-deleted documents start dead.
@@ -87,7 +108,10 @@ func (e *SegmentedIndex[Q, S]) entryFromDecoded(seg Segment[Q, S], blob SegmentB
 	for ord, extID := range ids {
 		members[extID] = ord
 	}
-	live := newLiveDocsFromTombstones(tombstones, members)
+	live := newLiveDocsFromTombstones(len(ids), tombstones, members)
+	// DISTINCT, exactly as newEntry counts it — this is the IMPORT path, and a
+	// blob built before the count was corrected carries duplicate ids, so it is
+	// precisely the path that would otherwise re-inflate the corpus size on load.
 	return &segmentEntry[Q, S]{
 		payload: seg,
 		live:    live,
@@ -96,8 +120,8 @@ func (e *SegmentedIndex[Q, S]) entryFromDecoded(seg Segment[Q, S], blob SegmentB
 			ID:         blob.ID,
 			Format:     blob.Format,
 			Generation: blob.Generation,
-			DocCount:   len(ids),
-			DeadCount:  live.DeadCount(),
+			DocCount:   len(members),
+			DeadCount:  distinctDeadCount(members, live),
 		},
 	}
 }

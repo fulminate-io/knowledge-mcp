@@ -133,6 +133,24 @@ type interceptTestDeps struct {
 	// keeps the reflection loop ready, so every pre-existing test exercises the
 	// wired path.
 	propNotReady bool
+	// deleter backs SegmentDeleter(). The zero value is nil — the headless client
+	// with no segment engine — so every fake that does not set it keeps the
+	// behavior it had before this field existed.
+	deleter SegmentDeleter
+
+	// shipper backs SegmentShipper(). The zero value is nil — the headless client
+	// again — so every other fake ClientDeps in this package is unaffected. Without
+	// it the record-seeding arms are unreachable and their tests record zero saves.
+	shipper SegmentShipper
+
+	// searcher backs SegmentManager(). The zero value is nil — the headless client
+	// with no segment engine, which is what every pre-existing fake in this package
+	// relies on. The Phase-5 query parity harness sets it: the six ranked-search
+	// arms bail with the client-segment-engine-unavailable error before issuing a
+	// read when it is nil, so their cells would measure a degrade path rather than
+	// the arm. TestQueryArmParity_DeclaredClassMatchesObservedBehavior goes red on
+	// every search-arm row if this knob is dropped.
+	searcher SegmentSearcher
 }
 
 // fakeBlindSpotProvider serves a constructed faceted report for the cache-serve
@@ -184,12 +202,15 @@ func (d interceptTestDeps) BackendResolver() BackendResolver {
 }
 func (d interceptTestDeps) GraphCaller() GraphCaller                     { return d.gc }
 func (d interceptTestDeps) LocalGraphCaller() GraphCaller                { return d.gc }
-func (d interceptTestDeps) SegmentManager() SegmentSearcher              { return nil }
+func (d interceptTestDeps) SegmentManager() SegmentSearcher              { return d.searcher }
 func (d interceptTestDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
-func (d interceptTestDeps) SegmentShipper() SegmentShipper               { return nil }
+func (d interceptTestDeps) SegmentShipper() SegmentShipper               { return d.shipper }
 func (d interceptTestDeps) SegmentPruner() SegmentPruner                 { return nil }
-func (d interceptTestDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
-func (d interceptTestDeps) PipelineScanner() PipelineScanner             { return nil }
+
+func (d interceptTestDeps) SegmentCacheDropper() SegmentCacheDropper { return nil }
+func (d interceptTestDeps) SegmentDeleter() SegmentDeleter           { return d.deleter }
+func (d interceptTestDeps) SegmentCoverage() SegmentCoverageReader   { return nil }
+func (d interceptTestDeps) PipelineScanner() PipelineScanner         { return nil }
 
 func (d interceptTestDeps) ClearHealLatch(kgtypes.GraphType, string) {}
 func (d interceptTestDeps) ReflectionForcer() ReflectionForcer {

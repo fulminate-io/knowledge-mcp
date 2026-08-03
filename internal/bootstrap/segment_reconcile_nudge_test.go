@@ -44,7 +44,7 @@ func TestReconcileLoopWakesOnNudge(t *testing.T) {
 	// publish until the coverage-skip streak crosses its suppression bound. Each
 	// Flush re-reads the SAME sub-ratio resident and skips again; the skip that
 	// passes the bound records the graph for an earlier reconcile look.
-	require.NoError(t, c.segmentMgr.AddAndShip(ctx, kgtypes.GraphCode, repo, fastloadVecDocs(repo, 10)))
+	require.NoError(t, c.segmentMgr.AddAndMarkDirty(ctx, kgtypes.GraphCode, repo, fastloadVecDocs(repo, 10)))
 	for range 4 {
 		require.NoError(t, c.segmentMgr.Flush(ctx, kgtypes.GraphCode, repo))
 	}

@@ -16,10 +16,13 @@
 // Determinism + idempotency: the build uses the deterministic HNSW path (fixed
 // seed + serial-within-segment + concurrent-across-segments), so a re-run over an
 // unchanged node set produces byte-identical segments → identical content hash →
-// the ship diff is empty → a true no-op. The FIRST rebuild over an embed-segmented
-// graph ships the deterministic segments and reconcilePrune drops the superseded
-// embed ones server-side; the superseded local .seg files are then evicted via
-// InvalidateLocal so they do not orphan under an unbounded cache.
+// the ship diff is empty → a true no-op. Segment membership is decided by HASHING
+// each node's id into a bucket, so it depends on the NODE rather than on where the
+// node fell in the scan: adding or removing one node re-emits the single bucket it
+// belongs to, leaving every other bucket byte-identical. The FIRST rebuild over an
+// embed-segmented graph ships the deterministic segments and reconcilePrune drops
+// the superseded embed ones server-side; the superseded local .seg files are then
+// evicted via InvalidateLocal so they do not orphan under an unbounded cache.
 //
 // The actual scan/build/ship work — and the per-graphKey single-flight guard —
 // live in the reusable RebuildSegments core, which is ALSO invoked by the
@@ -32,104 +35,11 @@ package tools
 import (
 	"context"
 	"fmt"
-	"runtime"
-	"sort"
 	"strings"
-	"sync"
 
-	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
-
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
-	"github.com/fulminate-io/knowledge-mcp/internal/pipeline"
-	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
-
-// rebuildSegmentsScanPage caps how many segment_rebuild items the driver pulls
-// per PipelineScan RPC. It is a wire-batching knob ONLY — independent of the
-// segment seal threshold (DefaultMinSegmentDocs); the driver re-chunks the
-// accumulated id-ascending stream into exactly-MinSegmentDocs segments itself.
-const rebuildSegmentsScanPage = 2048
-
-// rebuildSegmentsInFlight is the per-graphKey single-flight guard. A second
-// concurrent rebuild_segments for the SAME repo returns a started-ack rather than
-// racing a duplicate scan+ship. Mirrors the server rebuild_cache rebuildInFlight
-// shape (engine_index_rebuild_cache.go): a plain Mutex + set, claimed at entry,
-// released on completion.
-var (
-	rebuildSegmentsInFlightMu sync.Mutex
-	rebuildSegmentsInFlight   = map[string]struct{}{}
-)
-
-// RebuildSegments is the REUSABLE driver core both the manual manage(rebuild_segments)
-// op (handleClientRebuildSegments) and the auto-heal closure call. It owns
-// the per-graphKey single-flight guard INTERNALLY so the two callers coalesce onto
-// one run, and reports WHY it returned via the leading `ran` bool:
-//   - ran=false, err==nil  → another rebuild for (gt, name) was already in flight
-//     (the caller should treat it as a benign coalesce, NOT an error).
-//   - ran=false, err!=nil  → the deps were not wired (nil scanner/shipper) — a
-//     genuine misconfiguration the caller surfaces.
-//   - ran=true             → a real run completed; scanned/built/partial/pruned
-//     carry the counts (scanned==0 means a real run that found nothing to do).
-//     partial is the length of the sub-threshold tail FlushDeterministic sealed
-//     (a graph smaller than one full chunk ships built=0, partial>0 — a real
-//     ship, not an empty run).
-//
-// Flow (unchanged from the manual op): page the segment_rebuild scan id-ascending,
-// chunk into exactly-MinSegmentDocs groups, build each FULL chunk's HNSW+BM25
-// Documents and Add them CONCURRENTLY (NumCPU pool) via the Add-ONLY entrypoints,
-// then FlushDeterministic ONCE (seals tail, ships, reconciles) and InvalidateLocal
-// the superseded local .seg files.
-func RebuildSegments(
-	ctx context.Context, scanner PipelineScanner, shipper SegmentShipper, gt kgtypes.GraphType, name string,
-) (ran bool, scanned, built, partial int, pruned []searchengine.SegmentID, err error) {
-	if scanner == nil || shipper == nil {
-		return false, 0, 0, 0, nil, fmt.Errorf("rebuild_segments: pipeline not wired — the client is running in degraded mode (no segment engine)")
-	}
-
-	// Single-flight per (graphType, name): claim or bail with ran=false (no error →
-	// coalesce). Keyed on the threaded gt so a custom graph and a code graph of the
-	// same name never collide.
-	key := string(gt) + "/" + name
-	rebuildSegmentsInFlightMu.Lock()
-	if _, busy := rebuildSegmentsInFlight[key]; busy {
-		rebuildSegmentsInFlightMu.Unlock()
-		return false, 0, 0, 0, nil, nil
-	}
-	rebuildSegmentsInFlight[key] = struct{}{}
-	rebuildSegmentsInFlightMu.Unlock()
-	defer func() {
-		rebuildSegmentsInFlightMu.Lock()
-		delete(rebuildSegmentsInFlight, key)
-		rebuildSegmentsInFlightMu.Unlock()
-	}()
-
-	items, err := scanRebuildSegments(ctx, scanner, gt, name)
-	if err != nil {
-		return false, 0, 0, 0, nil, fmt.Errorf("scan failed: %w", err)
-	}
-	if len(items) == 0 {
-		// A real run that found nothing to do: ran=true, zero counts.
-		return true, 0, 0, 0, nil, nil
-	}
-
-	built, partial, err = buildAndAddRebuildSegments(ctx, shipper, gt, name, items)
-	if err != nil {
-		return false, 0, 0, 0, nil, fmt.Errorf("build failed (no segments shipped — re-run to retry): %w", err)
-	}
-
-	// FINALIZE: the ONE serial ship+reconcile. Seals the deterministic HNSW tail +
-	// the BM25 tail, ships once over the fully-published set, returns the pruned ids.
-	pruned, err = shipper.FlushDeterministic(ctx, gt, name)
-	if err != nil {
-		return false, 0, 0, 0, nil, fmt.Errorf("flush/ship failed: %w", err)
-	}
-	// Evict the superseded embed .seg files locally (T3a return path).
-	shipper.InvalidateLocal(gt, name, pruned)
-
-	return true, len(items), built, partial, pruned, nil
-}
 
 // handleClientRebuildSegments drives the client-side segment backfill for one
 // graph (the builtin code or knowledge graph, or a registered custom graph type).
@@ -140,16 +50,18 @@ func RebuildSegments(
 //     name to "default" and reject a knowledge overlay name) + non-empty name;
 //     resolve the PipelineScanner + SegmentShipper deps (error "pipeline not
 //     wired" on nil).
-//  2. page the segment_rebuild scan by the stable after_id id-cursor; terminate
-//     on an EMPTY page (the set is stable, so a full final page is normal).
-//  3. accumulate items id-ascending; chunk into EXACTLY-DefaultMinSegmentDocs
-//     groups; build each FULL chunk's HNSW + BM25 Documents and Add them
-//     CONCURRENTLY (NumCPU pool) via the Add-ONLY AddDeterministic / AddFields —
-//     NO per-chunk ship (the concurrent-ship/reconcilePrune race fix).
-//  4. if any concurrent Add errored, ABORT before flush (no partial ship).
-//  5. otherwise FlushDeterministic ONCE (seals the tail, ships, reconciles,
-//     returns the pruned ids), then InvalidateLocal evicts the superseded local
-//     .seg files.
+//  2. load the persisted watermark (zeroed by reset) and page the segment_rebuild
+//     scan from it by the stable after_id id-cursor; terminate on an EMPTY page
+//     (the set is stable, so a full final page is normal).
+//  3. accumulate items id-ascending; group them by hash bucket; build each group's
+//     HNSW + BM25 Documents CONCURRENTLY (NumCPU pool), then STAGE each group serially
+//     through StageRebuildPartition, which carries both formats in one call and writes
+//     to no engine — NO per-group ship (the concurrent-ship/reconcilePrune race fix).
+//  4. if any staging call errored, ABORT before the finalize (nothing is shipped).
+//  5. otherwise FinalizeRebuild ONCE (ships, reconciles, returns the pruned
+//     ids and whether the manifest swap landed), then InvalidateLocal evicts the
+//     superseded local .seg files and — only on a landed swap — the watermark
+//     advances to the horizon the server served.
 func handleClientRebuildSegments(ctx context.Context, deps ClientDeps, a manageArgs) kgtools.ToolResult {
 	// Graph gate, registry-aware (segmentTarget shape): accept the builtin `code`
 	// or `knowledge` graph OR any registered custom graph type; reject an empty
@@ -212,14 +124,14 @@ func handleClientRebuildSegments(ctx context.Context, deps ClientDeps, a manageA
 	// The single-flight guard + scan/build/flush all live in the shared core
 	// (also called by the auto-heal closure). The wrapper only validates,
 	// invokes, and renders.
-	ran, scanned, built, partial, pruned, err := RebuildSegments(ctx, scanner, shipper, kgtypes.GraphType(a.Graph), a.Name)
+	out, err := RebuildSegments(ctx, scanner, shipper, kgtypes.GraphType(a.Graph), a.Name, a.Reset)
 	if err != nil {
 		return errorResult("manage(rebuild_segments): " + err.Error())
 	}
-	if !ran {
+	if !out.Ran {
 		return textResult(fmt.Sprintf("rebuild_segments already in progress for %s/%s — ignoring the duplicate request", a.Graph, a.Name))
 	}
-	if scanned == 0 {
+	if out.Scanned == 0 {
 		return textResult(fmt.Sprintf("rebuild_segments: %s/%s has no embedded nodes to rebuild segments from — nothing to do", a.Graph, a.Name))
 	}
 
@@ -230,157 +142,20 @@ func handleClientRebuildSegments(ctx context.Context, deps ClientDeps, a manageA
 	// routinely 0 on a legit sub-1024 heal).
 	deps.ClearHealLatch(kgtypes.GraphType(a.Graph), a.Name)
 
+	// SHIPPED IS NOT PUBLISHED, and the operator-facing text is where that has to be
+	// said. A refused publish returns a NIL ERROR — the coverage gate skips a
+	// degenerate live set and the agent skips a manifest referencing a blob it has not
+	// seen, both quietly — so the counts above describe blobs that landed while the
+	// live set never swapped. An unqualified "complete" over that state is how the
+	// failed clean restore was scored as having run, and a WARN in the daemon log is
+	// not a surface the operator issuing this op ever sees.
+	if !out.Published {
+		return textResult(fmt.Sprintf(
+			"rebuild_segments INCOMPLETE for %s/%s: %d embedded nodes scanned and %d hash buckets built + shipped, but the manifest swap was REFUSED — the rebuilt segments are NOT the live set and the corpus is NOT restored. The publish gate skips a live set that does not cover the shipped corpus, and the daemon log carries the reason. Re-run after the resident pool recovers; nothing was lost, the prior manifest and blobs are intact.",
+			a.Graph, a.Name, out.Scanned, out.Built))
+	}
+
 	return textResult(fmt.Sprintf(
-		"rebuild_segments complete for %s/%s: %d embedded nodes scanned, %d full deterministic chunks built + shipped, %s, %d superseded segments pruned (local cache invalidated). Re-running is a content-hash no-op.",
-		a.Graph, a.Name, scanned, built, renderPartialTail(partial), len(pruned)))
-}
-
-// renderPartialTail describes the sub-threshold tail FlushDeterministic sealed,
-// so a rebuild over a graph smaller than one full chunk (built=0, partial>0)
-// reads as a SUCCESSFUL ship of the tail rather than "0 chunks built". A zero
-// tail (the item count is an exact multiple of the chunk size) renders as "no
-// partial tail".
-func renderPartialTail(partial int) string {
-	if partial == 0 {
-		return "no partial tail"
-	}
-	return fmt.Sprintf("%d-node partial tail chunk sealed + shipped", partial)
-}
-
-// rebuildSegItem is one scanned segment_rebuild node: its id, stored vector, and
-// server-composed BM25 fields. Accumulated id-ascending across the paged scan.
-type rebuildSegItem struct {
-	nodeID     string
-	vector     []byte
-	bm25Fields map[string]string
-}
-
-// scanRebuildSegments pages the segment_rebuild PipelineScan axis by the stable
-// after_id id-cursor, accumulating every embedded node (id-ascending). It
-// terminates on an EMPTY page — NOT on a short page: the segment_rebuild set is
-// stable (a shipped segment never clears a node's vector) so a full final page is
-// normal, and only a zero-item page signals exhaustion.
-func scanRebuildSegments(ctx context.Context, scanner PipelineScanner, gt kgtypes.GraphType, name string) ([]rebuildSegItem, error) {
-	// Re-stamp over the tool-level manage term: the segment-rebuild scan pages
-	// the whole vectored corpus, which is worth separating from every other
-	// manage op in the metrics.
-	ctx = graphclient.WithOperation(ctx, graphclient.OpRebuildSegments)
-	var out []rebuildSegItem
-	afterID := ""
-	for {
-		resp, err := scanner.PipelineScan(ctx, &knowledgev1.PipelineScanRequest{
-			GraphType: string(gt),
-			GraphName: name,
-			Axis:      "segment_rebuild",
-			Limit:     rebuildSegmentsScanPage,
-			AfterId:   afterID,
-		})
-		if err != nil {
-			return nil, err
-		}
-		page := resp.GetItems()
-		if len(page) == 0 {
-			break // empty page = scan exhausted
-		}
-		for _, it := range page {
-			out = append(out, rebuildSegItem{
-				nodeID:     it.GetNodeId(),
-				vector:     it.GetBinaryVector(),
-				bm25Fields: pipeline.BuildBM25FieldsFromProto(it.GetBm25Fields()),
-			})
-		}
-		// Advance the cursor to the LAST item's id (the scan returns id-ascending).
-		afterID = page[len(page)-1].GetNodeId()
-	}
-	// Defensive: the cursor relies on ascending ids; sort to guarantee the chunk
-	// boundaries (and therefore segment membership) are stable even if a backend
-	// ever returns an out-of-order page.
-	sort.Slice(out, func(i, j int) bool { return out[i].nodeID < out[j].nodeID })
-	return out, nil
-}
-
-// buildAndAddRebuildSegments chunks the id-ascending items into EXACTLY
-// DefaultMinSegmentDocs groups and, for each FULL chunk, builds the HNSW + BM25
-// Documents and Adds them CONCURRENTLY (NumCPU pool) via the Add-ONLY
-// AddDeterministic / AddFields — no per-chunk ship. The trailing remainder
-// (< MinSegmentDocs) is NOT sent via a concurrent Add; FlushDeterministic seals
-// that tail. Returns (built, partial): built = the number of FULL chunks built,
-// partial = the length of the sub-threshold tail that FlushDeterministic seals
-// (0 when the item count is an exact multiple of minDocs). ERROR POLICY: the
-// first non-nil Add error is captured and returned; the caller ABORTS before
-// FlushDeterministic, so a partial set is never shipped.
-func buildAndAddRebuildSegments(ctx context.Context, shipper SegmentShipper, gt kgtypes.GraphType, name string, items []rebuildSegItem) (built, partial int, err error) {
-	minDocs := searchengine.DefaultMinSegmentDocs
-
-	// Slice into full exactly-minDocs chunks; the remainder is left for the
-	// FlushDeterministic tail seal.
-	var chunks [][]rebuildSegItem
-	for len(items) >= minDocs {
-		chunks = append(chunks, items[:minDocs])
-		items = items[minDocs:]
-	}
-	// The trailing remainder is still Added (Add-only, buffered sub-threshold) so
-	// FlushDeterministic can seal it into the final segment. partial = its length,
-	// captured before the Add block so it can be reported even though the tail is
-	// only sealed (not full-chunk built).
-	tail := items
-	partial = len(tail)
-
-	var (
-		wg       sync.WaitGroup
-		sem      = make(chan struct{}, runtime.NumCPU())
-		firstErr error
-		errOnce  sync.Once
-	)
-	addChunk := func(chunk []rebuildSegItem) {
-		defer wg.Done()
-		defer func() { <-sem }()
-		hnswDocs, bm25Docs := buildRebuildDocs(chunk)
-		if err := shipper.AddDeterministic(ctx, gt, name, hnswDocs); err != nil {
-			errOnce.Do(func() { firstErr = err })
-			return
-		}
-		if err := shipper.AddFields(ctx, gt, name, bm25Docs); err != nil {
-			errOnce.Do(func() { firstErr = err })
-			return
-		}
-	}
-
-	for _, chunk := range chunks {
-		sem <- struct{}{}
-		wg.Add(1)
-		go addChunk(chunk)
-	}
-	wg.Wait()
-	if firstErr != nil {
-		return 0, 0, firstErr
-	}
-
-	// Add the sub-threshold tail (buffered, sealed by FlushDeterministic). Done
-	// serially after the pool joins so it can't race the concurrent chunks.
-	if len(tail) > 0 {
-		hnswDocs, bm25Docs := buildRebuildDocs(tail)
-		if aerr := shipper.AddDeterministic(ctx, gt, name, hnswDocs); aerr != nil {
-			return 0, 0, aerr
-		}
-		if aerr := shipper.AddFields(ctx, gt, name, bm25Docs); aerr != nil {
-			return 0, 0, aerr
-		}
-	}
-	return len(chunks), partial, nil
-}
-
-// buildRebuildDocs maps one chunk to its HNSW + BM25 searchengine.Documents via
-// the SHARED builders (pipeline.BuildHNSWDocuments / BuildBM25Documents), so the
-// rebuild assembles Documents identically to the embed-writeback ship path.
-func buildRebuildDocs(chunk []rebuildSegItem) (hnsw, bm25 []searchengine.Document) {
-	ids := make([]string, 0, len(chunk))
-	vectors := make(map[string][]byte, len(chunk))
-	segDocs := make([]pipeline.SegmentDoc, 0, len(chunk))
-	for _, it := range chunk {
-		ids = append(ids, it.nodeID)
-		vectors[it.nodeID] = it.vector
-		segDocs = append(segDocs, pipeline.SegmentDoc{NodeID: it.nodeID, Fields: it.bm25Fields})
-	}
-	return pipeline.BuildHNSWDocuments(vectors, ids), pipeline.BuildBM25Documents(segDocs)
+		"rebuild_segments complete for %s/%s: %d embedded nodes scanned, %d hash buckets built + shipped and PUBLISHED as the live set, %d hnsw + %d bm25 superseded segments pruned (hnsw local cache invalidated). Re-running is a content-hash no-op, and a later run re-emits only the buckets whose members changed.",
+		a.Graph, a.Name, out.Scanned, out.Built, len(out.HNSWPruned), len(out.BM25Pruned)))
 }

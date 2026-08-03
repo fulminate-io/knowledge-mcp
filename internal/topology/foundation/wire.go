@@ -113,31 +113,52 @@ func FetchNodesByType(ctx context.Context, caller GraphCaller, graphType kgtypes
 	}, engine.BrowsePageSize)
 }
 
-// FetchAllNodes returns every node in the scoped (graphType, name) graph in ONE
-// Execute. It builds a Match-all RETURN_MODE_NODES plan (empty Selection →
-// Match(""), Limit 0 → no cap) directly with the envelope Target, rather than
-// through engine.Compile: the LLM-facing Compile surface deliberately has no
-// all-nodes (no id / type / meta) arm, so the all-nodes browse is expressed as
-// a raw plan exactly as dispatch_graphwide.go's node-enumeration pass does. The
-// gonum builder's node-materialize pass and the content family's full node walk
-// both use this.
+// FetchAllNodes returns every node in the scoped (graphType, name) graph, read
+// in BOUNDED keyset pages. It builds a Match-all RETURN_MODE_NODES plan (empty
+// Selection → Match("")) directly with the envelope Target, rather than through
+// engine.Compile: the LLM-facing Compile surface deliberately has no all-nodes
+// (no id / type / meta) arm, so the all-nodes browse is expressed as a raw plan
+// exactly as dispatch_graphwide.go's node-enumeration pass does. The gonum
+// builder's node-materialize pass and the content family's full node walk both
+// use this.
+//
+// It used to be ONE Execute carrying Limit 0, which the server read as "no cap".
+// That is retired: an uncapped browse costs the whole node table on demand, and
+// no user-reachable read may be unbounded. Each page now carries an explicit
+// positive Limit and the drain advances a keyset cursor.
+//
+// Results arrive in id-ASCENDING order (after_id presence pins the ordering on
+// both backends), NOT in the backend's default order as before — consumers must
+// not depend on the previous ordering.
 func FetchAllNodes(ctx context.Context, caller GraphCaller, graphType kgtypes.GraphType, name string) ([]*knowledgev1.Node, error) {
 	if caller == nil {
 		return nil, fmt.Errorf("topology/wire: graph caller unavailable")
 	}
-	plan := &knowledgev1.QueryPlan{Selection: &knowledgev1.Selection{}}
-	resp, err := caller.Execute(ctx, &knowledgev1.ExecuteRequest{
-		Plan:   &knowledgev1.ExecuteRequest_Query{Query: plan},
-		Target: graphTarget(graphType, name),
-	})
-	if err != nil {
-		return nil, fmt.Errorf("topology/wire: execute all-nodes: %w", err)
-	}
-	nodes, err := engine.DecodeNodes(resp)
-	if err != nil {
-		return nil, fmt.Errorf("topology/wire: decode all-nodes: %w", err)
-	}
-	return nodes, nil
+	return engine.DrainKeysetPages(func(afterID string) ([]*knowledgev1.Node, error) {
+		cursor := afterID
+		plan := &knowledgev1.QueryPlan{
+			Selection: &knowledgev1.Selection{},
+			Limit:     int32(engine.BrowsePageSize),
+			// SET on EVERY page including the first, where the value is empty:
+			// presence, not emptiness, selects the keyset browse. An omitted field
+			// leaves the backend paging in its own default order, so the cursor
+			// taken from page 1 would skip every lower id.
+			AfterId:   &cursor,
+			SkipTotal: true, // the drain discards Total
+		}
+		resp, err := caller.Execute(ctx, &knowledgev1.ExecuteRequest{
+			Plan:   &knowledgev1.ExecuteRequest_Query{Query: plan},
+			Target: graphTarget(graphType, name),
+		})
+		if err != nil {
+			return nil, fmt.Errorf("topology/wire: execute all-nodes: %w", err)
+		}
+		nodes, derr := engine.DecodeNodes(resp)
+		if derr != nil {
+			return nil, fmt.Errorf("topology/wire: decode all-nodes: %w", derr)
+		}
+		return nodes, nil
+	}, engine.BrowsePageSize)
 }
 
 // FetchNodeByID returns the single node with the given id in the scoped
@@ -218,45 +239,83 @@ func FetchEdges(ctx context.Context, caller GraphCaller, graphType kgtypes.Graph
 	return edges, nil
 }
 
-// FetchAllEdges returns EVERY edge of the scoped (graphType, name) graph in ONE
-// Execute, optionally filtered to edgeTypes: a RETURN_MODE_EDGES query carrying
-// NO pivot discriminant, which the engine reads as "all edges of the graph".
+// FetchAllEdges returns every edge incident to the ids set in the scoped
+// (graphType, name) graph, optionally filtered to edgeTypes. It is the
+// WHOLE-GRAPH shape of FetchEdges, for callers whose node set is the entire
+// graph, and it reads that set in BOUNDED PIVOT PAGES: ids are chunked into
+// pages of engine.EdgePivotPageSize, each page carries an explicit positive
+// Limit, and the pages are deduped into one union by engine.DrainPivotEdges.
 //
-// This is the match-all counterpart of FetchEdges, for the callers whose node set
-// IS the whole graph. Those callers used to hand every node id to FetchEdges as
-// the pivot set, which made the backend evaluate a per-endpoint id-membership
-// predicate over a set that selects the entire edge table — measured ~1.29s
-// against ~23ms for the equivalent unfiltered read at ~157k edges. A caller that
-// only needed the ids to fill that pivot set can now drop the id enumeration too.
+// The read used to be a single match-all request carrying NO pivot — faster
+// (measured ~23ms against ~1.29s for the equivalent pivot read at ~157k edges)
+// and unbounded by construction, which is exactly why it is retired: a request
+// whose cost scales with the whole edge table is a denial-of-service surface,
+// and no user-supplied read may be uncapped. The latency is traded deliberately.
 //
-// Use FetchEdges, not this, whenever the node set is a genuine SUBSET: the pivot
-// forms are index-bound and linear in pivot count, and asking for every edge
-// would pull edges the caller is about to discard.
-func FetchAllEdges(ctx context.Context, caller GraphCaller, graphType kgtypes.GraphType, name string, edgeTypes []kgtypes.EdgeType) ([]knowledgev1.Edge, error) {
+// TWO CONSEQUENCES CALLERS MUST KNOW.
+//
+// The RPC count is now ceil(len(ids)/engine.EdgePivotPageSize) sequential round
+// trips rather than one — on a ~100k-node graph that is ~200 per whole-graph
+// edge load, paid by every topology analyzer that materializes a graph. Do NOT
+// parallelize the pages: they share the drain's dedup map, and the server is the
+// shared resource this bound exists to protect.
+//
+// A FULLY-DANGLING edge — one whose BOTH endpoints have been hard-deleted — is
+// no longer returned, because a vanished endpoint can never appear in the pivot
+// set. The match-all read surfaced those; nothing that consumes this function
+// can map them to nodes anyway.
+//
+// A SATURATED SINGLE PIVOT ABORTS, and callers must propagate the error rather
+// than degrade. If one node alone returns a full ceiling page, the drain cannot
+// split further and returns an error naming it. This function feeds whole-graph
+// analyzers — centrality, community detection, degree histograms, structural
+// motifs — which consume an edge SET and emit rankings; a silently short edge
+// set does not degrade those gracefully, it produces confidently WRONG rankings
+// indistinguishable from right ones. Degrading with a notice was rejected
+// because the intermediate helpers carry no channel for one, and because the
+// findings those analyzers emit describe the GRAPH rather than the read that
+// produced it, so a notice would attach to the wrong subject.
+//
+// Use FetchEdges, not this, whenever the node set is a genuine SUBSET: it is one
+// round trip for a set small enough to send at once.
+func FetchAllEdges(ctx context.Context, caller GraphCaller, graphType kgtypes.GraphType, name string, ids []string, edgeTypes []kgtypes.EdgeType) ([]knowledgev1.Edge, error) {
 	if caller == nil {
 		return nil, nil
 	}
-	plan := &knowledgev1.QueryPlan{
-		ReturnMode:        knowledgev1.ReturnMode_RETURN_MODE_EDGES,
-		IncludeTombstones: true,
-	}
-	if len(edgeTypes) > 0 {
-		ets := make([]string, len(edgeTypes))
-		for i := range edgeTypes {
-			ets[i] = string(edgeTypes[i])
-		}
-		plan.Selection = &knowledgev1.Selection{EdgeTypes: ets}
-	}
-	resp, err := caller.Execute(ctx, &knowledgev1.ExecuteRequest{
-		Plan:   &knowledgev1.ExecuteRequest_Query{Query: plan},
-		Target: graphTarget(graphType, name),
-	})
+	// The plan Limit and the drain's edgeCap are the same number twice on
+	// purpose: the Limit is what the server enforces, the cap is what the drain
+	// uses to notice it was enforced. One without the other yields a drain that
+	// never detects truncation, or one that splits on a threshold nobody applies.
+	edges, err := engine.DrainPivotEdges(ids, engine.EdgePivotPageSize, engine.CorrelationsEdgeScanCap,
+		func(idPage []string) ([]knowledgev1.Edge, error) {
+			plan := &knowledgev1.QueryPlan{
+				Ids:               idPage,
+				ReturnMode:        knowledgev1.ReturnMode_RETURN_MODE_EDGES,
+				IncludeTombstones: true,
+				Limit:             int32(engine.CorrelationsEdgeScanCap),
+			}
+			if len(edgeTypes) > 0 {
+				ets := make([]string, len(edgeTypes))
+				for i := range edgeTypes {
+					ets[i] = string(edgeTypes[i])
+				}
+				plan.Selection = &knowledgev1.Selection{EdgeTypes: ets}
+			}
+			resp, rerr := caller.Execute(ctx, &knowledgev1.ExecuteRequest{
+				Plan:   &knowledgev1.ExecuteRequest_Query{Query: plan},
+				Target: graphTarget(graphType, name),
+			})
+			if rerr != nil {
+				return nil, fmt.Errorf("topology/wire: execute all edges: %w", rerr)
+			}
+			page, derr := engine.DecodeEdges(resp)
+			if derr != nil {
+				return nil, fmt.Errorf("topology/wire: decode all edges: %w", derr)
+			}
+			return page, nil
+		})
 	if err != nil {
-		return nil, fmt.Errorf("topology/wire: execute all edges: %w", err)
-	}
-	edges, err := engine.DecodeEdges(resp)
-	if err != nil {
-		return nil, fmt.Errorf("topology/wire: decode all edges: %w", err)
+		return nil, fmt.Errorf("topology/wire: all edges %s/%s: %w", graphType, name, err)
 	}
 	return edges, nil
 }

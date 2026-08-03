@@ -24,11 +24,14 @@ import (
 //   - mutate(operation:upsert) → return success (records the args).
 //   - mutate(operation:link)   → return success unless linkErr is set.
 type scriptedCriterionGc struct {
-	stepNode    *knowledgev1.Node // returned by query(id) when ID matches; nil = not found
-	upsertErr   error
-	upsertRes   *kgtools.ToolResult // optional override of upsert result body
-	linkErr     map[string]error    // keyed by relationship; nil = success
-	linkResults map[string]*kgtools.ToolResult
+	stepNode *knowledgev1.Node // returned by query(id) when ID matches; nil = not found
+	// lastUpsertBody is the full NodeBody of the most recent upsert — the
+	// recorded call-shape args carry only a narrow summary of it.
+	lastUpsertBody *knowledgev1.NodeBody
+	upsertErr      error
+	upsertRes      *kgtools.ToolResult // optional override of upsert result body
+	linkErr        map[string]error    // keyed by relationship; nil = success
+	linkResults    map[string]*kgtools.ToolResult
 
 	calls []scriptedCall
 }
@@ -107,6 +110,9 @@ func (g *scriptedCriterionGc) executeMutation(m *knowledgev1.MutationPlan) (*kno
 	switch m.GetKind() {
 	case knowledgev1.MutationPlan_MUTATION_KIND_UPSERT:
 		body := m.GetNodeBodies()[0]
+		// Retain the whole body: the recorded arg map is a deliberately narrow
+		// call-shape summary, and the routed status/content/metadata are not in it.
+		g.lastUpsertBody = body
 		g.calls = append(g.calls, scriptedCall{tool: "mutate", args: map[string]any{
 			"operation":   "upsert",
 			"type":        body.GetType(),
@@ -195,6 +201,83 @@ func TestInterceptAddCriterion_Success(t *testing.T) {
 	assert.Equal(t, "contains", gc.calls[3].args["relationship"])
 	assert.Equal(t, testStepID, gc.calls[3].args["from"])
 	assert.Equal(t, upsertedID, gc.calls[3].args["to"])
+}
+
+// TestInterceptAddCriterion_RoutesStatusContentMetadata_RejectsDerivedName pins
+// both halves of the criterion arm's accounting: status, content and metadata
+// now persist on the upserted node, while name and summary are REJECTED because
+// both are derived — name from description, summary from criterion_type +
+// description + command. Accepting a caller value for a derived field would
+// silently lose it to the derivation, which is the same silent-drop shape in
+// reverse, so the rejection explains what to set instead.
+//
+// The derivation itself is deliberately untouched here; only the accounting for
+// caller-supplied values changes.
+func TestInterceptAddCriterion_RoutesStatusContentMetadata_RejectsDerivedName(t *testing.T) {
+	t.Run("status, content and metadata persist on the upserted node", func(t *testing.T) {
+		gc := seededStepGc()
+		args := mustMarshal(t, map[string]any{
+			"operation": "create", "type": "criterion", "step_id": testStepID,
+			"description": "Test that the thing works", "command": "go test ./...",
+			"status": "pending", "content": "the long form",
+			// "type" collides with the derived criterion-type key on purpose.
+			"metadata": map[string]string{"owner": "me", "type": "caller-loses"},
+		})
+		handled, res := InterceptAddCriterion(opCtx(), &logE2EDeps{gc: gc}, kgtools.CallToolParams{
+			Name: "mutate", Arguments: args,
+		})
+		require.True(t, handled)
+		require.False(t, res.IsError, "the routed create must succeed: %v", res.Content)
+
+		body := gc.lastUpsertBody
+		require.NotNil(t, body, "an upsert must have been issued")
+		assert.Equal(t, "pending", body.GetStatus())
+		assert.Equal(t, "the long form", body.GetContent())
+		assert.Equal(t, "me", body.GetMetadata()["owner"], "caller metadata must persist")
+		assert.Equal(t, "manual", body.GetMetadata()["type"],
+			"the derived criterion-type key must win on a collision with caller metadata")
+		assert.Equal(t, "go test ./...", body.GetMetadata()["command"])
+		// Derivation untouched: name is still the description.
+		assert.Equal(t, "Test that the thing works", body.GetName())
+	})
+
+	// The upsert stamps its derived type/command keys on top of the caller map,
+	// so an aliased map would leak them back into the caller's own arguments and
+	// a retry would silently send a different payload. Driven at the builder so
+	// the assertion sees the very map the caller handed over.
+	t.Run("the caller's metadata map is copied, never aliased", func(t *testing.T) {
+		callerMeta := map[string]string{"owner": "me"}
+		gc := seededStepGc()
+		err := upsertCriterionNode(opCtx(), gc, "crit-1", criterionCreateArgs{
+			Operation: "create", Type: "criterion", StepID: testStepID,
+			Description: "Test that the thing works", Command: "go test ./...",
+			Metadata: callerMeta,
+		})
+		require.NoError(t, err)
+		assert.Equal(t, map[string]string{"owner": "me"}, callerMeta,
+			"the caller's map must be byte-identical — never gaining the derived type/command keys")
+	})
+
+	for _, param := range []string{"name", "summary"} {
+		t.Run(param+" rejects with zero mutations and explains the derivation", func(t *testing.T) {
+			gc := seededStepGc()
+			args := mustMarshal(t, map[string]any{
+				"operation": "create", "type": "criterion", "step_id": testStepID,
+				"description": "Test that the thing works", param: "caller supplied",
+			})
+			handled, res := InterceptAddCriterion(opCtx(), &logE2EDeps{gc: gc}, kgtools.CallToolParams{
+				Name: "mutate", Arguments: args,
+			})
+			require.True(t, handled, "a rejected param must be claimed, not fall through")
+			require.True(t, res.IsError, "a derived param must reject")
+			got := extractText(res)
+			assert.Contains(t, got, param, "the rejection must name the offending param")
+			assert.Contains(t, got, "derived from its description",
+				"the rejection must explain the derivation so the caller knows what to set")
+			assert.Empty(t, gc.calls,
+				"the reject must precede the step-lookup RPC — zero calls of any kind")
+		})
+	}
 }
 
 // Validation order: step_id checked first.

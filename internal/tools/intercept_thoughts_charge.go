@@ -8,8 +8,12 @@
 // gate, the charge node layout, EdgeChargedBy (thought_parent→charge) + EdgeEvidencedBy
 // (charge→evidence) edges, and the 3-outcome cross-graph evidence resolve
 // matching the server's ResolveOrProxy. After the create, it re-pulls charges
-// via the bulk charges_for helper and computes thought properties locally — the
-// identical "Charge recorded → ... Thought properties: ..." render.
+// via the bulk charges_for helper and computes thought properties locally.
+//
+// The render is NO LONGER identical to the server's: it adds a
+// "Charged: <id> (<type>)" line naming the RESOLVED target, immediately after
+// the charge-id line. A caller who charged by prefix would otherwise have no way
+// to learn the full id the write and the readout were keyed on.
 
 package tools
 
@@ -76,10 +80,10 @@ func handleChargeClient(ctx context.Context, deps ClientDeps, params kgtools.Cal
 	// valence/magnitude a thought does.
 	parent, ferr := render.FetchNode(ctx, gc, a.Thought)
 	if ferr != nil {
-		return errorResult(fmt.Sprintf("thought lookup failed for %s: %s", a.Thought, ferr.Error()))
+		return errorResult(fmt.Sprintf("thought lookup failed for %s - no charge was recorded: %s", a.Thought, ferr.Error()))
 	}
 	if parent == nil || parent.Id == "" {
-		return errorResult(fmt.Sprintf("thought %s not found", a.Thought))
+		return errorResult(fmt.Sprintf("thought %s not found - no charge was recorded", a.Thought))
 	}
 	switch kgtypes.NodeType(parent.Type) {
 	case kgtypes.NodeThought, kgtypes.NodeFinding, kgtypes.NodeResearch:
@@ -88,6 +92,15 @@ func handleChargeClient(ctx context.Context, deps ClientDeps, params kgtools.Cal
 		return errorResult(fmt.Sprintf("charge target %s is type %q, must be one of thought/finding/research (charges carry valence/magnitude that apply to chargeable claim nodes)",
 			a.Thought, parent.Type))
 	}
+
+	// THE SINGLE RESOLUTION POINT. The lookup above is a ById plan, which the
+	// server resolves through its prefix resolver, so for a unique >=8-char
+	// prefix parent.Id is the full 32-char ID. Everything downstream keys on
+	// this — the written edge, the readout and its map key — so the write and
+	// the report can never disagree about which node was charged. The
+	// caller-typed form survives only in the error messages above, which should
+	// echo what the caller actually sent.
+	target := parent.Id
 
 	// Resolve cross-graph evidence to proxies CLIENT-SIDE (3-outcome mirror of
 	// the server ResolveOrProxy). Enumerate the foreign graph list once.
@@ -106,7 +119,7 @@ func handleChargeClient(ctx context.Context, deps ClientDeps, params kgtools.Cal
 	// Edges: EdgeChargedBy thought_parent → charge(slot 0); EdgeEvidencedBy
 	// charge(slot 0) → each resolved evidence id.
 	edges := []kgwire.BatchEdge{
-		{FromID: a.Thought, FromIdx: -1, ToIdx: 0, Type: kgtypes.EdgeChargedBy},
+		{FromID: target, FromIdx: -1, ToIdx: 0, Type: kgtypes.EdgeChargedBy},
 	}
 	for _, evID := range resolvedEvidence {
 		if evID == "" {
@@ -124,20 +137,20 @@ func handleChargeClient(ctx context.Context, deps ClientDeps, params kgtools.Cal
 	}
 	chargeID := ids[0]
 
-	// Bulk-fetch the new charge set for property computation (identical tail).
-	// The GraphClient is the concrete *graphclient.GraphClient FetchChargesFor needs;
-	// production always wires it. When it is unavailable (degraded boot), the
-	// charge has already landed — render the bare ID rather than failing the write.
-	graphCli := deps.GraphCaller()
-	if graphCli == nil {
-		return textResult(fmt.Sprintf("Charge recorded → ID: %s", chargeID))
-	}
-	chargesByThought := clientthought.FetchChargesFor(ctx, graphCli, []string{a.Thought})
+	// Bulk-fetch the charge set for the property recompute, keyed on the RESOLVED
+	// target so the readout looks up the same node the edge above was written
+	// against. Keying this on the caller's raw string is what made a
+	// prefix-charged thought report an all-zero property block.
+	chargesByThought := clientthought.FetchChargesFor(ctx, gc, []string{target})
 	now := time.Now()
-	props := clientthought.ComputePropertiesFromCharges(chargesByThought[a.Thought], now)
+	props := clientthought.ComputePropertiesFromCharges(chargesByThought[target], now)
 
-	msg := fmt.Sprintf("Charge recorded → ID: %s\nThought properties:\n  Valence: %.3f\n  Magnitude: %.3f\n  Consistency: %.3f\n  Self-trust: %.3f\n  Charges: %d (positive: %.1f, negative: %.1f)",
-		chargeID, props.Valence, props.Magnitude, props.Consistency, props.SelfTrust,
+	// The charge-id line stays FIRST: the bench harness extracts the id by taking
+	// the first ID-like match in this text, so line ORDER is the contract. The
+	// Charged: line follows it and names the resolved node, so a caller who
+	// passed a prefix can copy the full id instead of guessing and re-charging.
+	msg := fmt.Sprintf("Charge recorded → ID: %s\nCharged: %s (%s)\nThought properties:\n  Valence: %.3f\n  Magnitude: %.3f\n  Consistency: %.3f\n  Self-trust: %.3f\n  Charges: %d (positive: %.1f, negative: %.1f)",
+		chargeID, target, parent.Type, props.Valence, props.Magnitude, props.Consistency, props.SelfTrust,
 		props.ChargeCount, props.PositiveWeight, props.NegativeWeight)
 	return textResult(msg)
 }
@@ -161,7 +174,7 @@ func validateChargeArgs(a chargeArgs) string {
 
 // resolveChargeEvidence resolves each evidence id to the id the EdgeEvidencedBy
 // edge should target, reproducing the server ResolveOrProxy's 3 outcomes
-// (routing.go:234-250): (a) in knowledge → raw id; (b) in a scan-eligible
+// (routing.go:234-250): (a) in knowledge → the RESOLVED node id; (b) in a scan-eligible
 // foreign graph (code/practice/cloud/cicd) → build+upsert proxy, use proxy id;
 // (c) NOT found anywhere → raw id AS-IS (best-effort dangling, NOT dropped —
 // this composer has no legacy fall-through). The foreign graph list is
@@ -186,32 +199,46 @@ func resolveChargeEvidence(ctx context.Context, gc GraphCaller, evidence []strin
 }
 
 // resolveCrossGraphID is the per-id ResolveOrProxy mirror (routing.go:234-250),
-// shared by the charge-evidence and think-links composers: knowledge hit → raw;
+// shared by the charge-evidence and think-links composers: knowledge hit → the
+// RESOLVED node id (so a prefix endpoint rides the wire already resolved, matching
+// the charged-by endpoint rather than disagreeing with it);
 // foreign hit → build+upsert proxy → proxy id; no hit (or proxy failure) → raw
 // id AS-IS (server outcome c — best-effort dangling, NOT dropped). An empty id
 // returns "" so callers can skip it (mirrors the server's empty-entry skip). The
 // proxy materialization rides the single-owner crossgraph package; a nil ex (no
 // Execute seam) skips the foreign-proxy arm.
 func resolveCrossGraphID(ctx context.Context, gc GraphCaller, ex render.Executor, graphs []crossgraph.ForeignGraph, id string) string {
+	out, _ := resolveCrossGraphIDOutcome(ctx, gc, ex, graphs, id)
+	return out
+}
+
+// resolveCrossGraphIDOutcome is resolveCrossGraphID plus the outcome bit: true
+// when the id resolved (outcome a or b), false for outcome c — the raw
+// best-effort fall-through — and for an empty id. The bit CANNOT be recovered
+// from the returned string: outcome (a) on an already-full knowledge id returns
+// that same id, which is byte-identical to the outcome-(c) fall-through. Callers
+// that report resolution to the user (the think write receipt) need the bit; the
+// charge-evidence composer, which acts identically either way, uses the wrapper.
+func resolveCrossGraphIDOutcome(ctx context.Context, gc GraphCaller, ex render.Executor, graphs []crossgraph.ForeignGraph, id string) (string, bool) {
 	if id == "" {
-		return ""
+		return "", false
 	}
-	// (a) Knowledge → raw id.
+	// (a) Knowledge → the RESOLVED node id (the lookup already resolved a prefix).
 	if known, ferr := render.FetchNodeIn(ctx, gc, id, "knowledge", ""); ferr == nil && known != nil && known.Id != "" {
-		return id
+		return known.Id, true
 	}
 	// (b) Foreign → deterministic proxy id (knowledge-target proxy).
 	if ex != nil {
 		gt, name, node, found := crossgraph.LocateForeignNode(ctx, gc, graphs, id)
 		if found {
 			if proxy, uerr := crossgraph.UpsertForeignProxy(ctx, ex, "knowledge", gt, name, id, node); uerr == nil {
-				return proxy.Id
+				return proxy.Id, true
 			}
 			// proxy build/upsert failed → fall through to raw (best-effort).
 		}
 	}
 	// (c) No hit (or proxy failure) → raw id as-is (server outcome c).
-	return id
+	return id, false
 }
 
 // truncateAtWordCreate truncates s to at most maxLen RUNES at a word

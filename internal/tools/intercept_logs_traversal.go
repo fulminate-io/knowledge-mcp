@@ -33,6 +33,9 @@ func InterceptLogsTraversal(ctx context.Context, deps ClientDeps, params kgtools
 	if params.Name != "traverse" {
 		return false, kgtools.ToolResult{}
 	}
+	if err := rejectUndeclaredParams("traverse", "", TraverseToolDef().InputSchema.Properties, params.Arguments); err != nil {
+		return true, errorResult(err.Error())
+	}
 	var a traverseArgs
 	if err := json.Unmarshal(params.Arguments, &a); err != nil {
 		return false, kgtools.ToolResult{}

@@ -180,7 +180,7 @@ const (
 	// edge models AWS PrivateLink consumer-side exposure and is unrelated.
 	EdgeExposedBy EdgeType = "EXPOSED_BY" // K8s Service/Ingress/Gateway → cloud LB resource (cross-graph proxy)
 
-	// Singleton-subcollector edges (Phase 1 of plan 889752364e3453ec8e8dfa65c3bed823).
+	// Singleton-subcollector edges.
 	//
 	// These constants land unused in this phase — downstream phases (AWS SES /
 	// CloudWatch / ACM / DynamoDB, GCP disk / artifact registry / firestore,

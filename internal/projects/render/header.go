@@ -12,7 +12,9 @@ import (
 
 // renderTicketHeader writes the status/external_id/external_url/archived/
 // priority/labels/description metadata header + the `ID:` line to sb.
-// Verbatim port of cmd/knowledge-server/tools/tools_assemble_containers.go:102.
+// Ported from cmd/knowledge-server/tools/tools_assemble_containers.go:102;
+// the ID line additionally carries updatedSuffix (read-time provenance),
+// which the server-side original does not emit.
 //
 // Render shape is intentionally backend-agnostic: no adapter name (no
 // "Linear", "Jira", etc.) appears in the output — the `external_url` and
@@ -42,7 +44,7 @@ func renderTicketHeader(node *knowledgev1.Node, sb *strings.Builder) {
 	if node.Description != "" {
 		fmt.Fprintf(sb, "\n%s\n", node.Description)
 	}
-	fmt.Fprintf(sb, "\nID: %s\n", node.Id)
+	fmt.Fprintf(sb, "\nID: %s%s\n", node.Id, updatedSuffix(node))
 }
 
 // renderProjectHeader writes the project's status/external_id/URL/archived/
@@ -52,7 +54,9 @@ func renderTicketHeader(node *knowledgev1.Node, sb *strings.Builder) {
 // from the deeplink, so BuildProjectNode sets external_id = ref.URL. The
 // collapsed render avoids duplicating the URL on two adjacent lines.
 //
-// Verbatim port of cmd/knowledge-server/tools/tools_assemble_containers.go:138.
+// Ported from cmd/knowledge-server/tools/tools_assemble_containers.go:138;
+// as with renderTicketHeader the ID line carries updatedSuffix, which the
+// server-side original does not emit.
 //
 // Render shape is intentionally backend-agnostic: the adapter name
 // ("linear", "jira", ...) is in the `backend` metadata key but never
@@ -83,5 +87,5 @@ func renderProjectHeader(node *knowledgev1.Node, sb *strings.Builder) {
 	if node.Description != "" {
 		fmt.Fprintf(sb, "\n%s\n", node.Description)
 	}
-	fmt.Fprintf(sb, "\nID: %s\n", node.Id)
+	fmt.Fprintf(sb, "\nID: %s%s\n", node.Id, updatedSuffix(node))
 }

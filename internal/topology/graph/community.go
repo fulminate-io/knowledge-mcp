@@ -90,10 +90,10 @@ func BuildAdjacency(
 // forward+backward walk the legacy store-backed collectNeighbors performed.
 //
 // allNodes says no NodeFilter narrowed the set, so nodeIDs IS every node of the
-// graph and the read takes the match-all form rather than listing every id as a
-// pivot. A filtered build keeps the pivot read so it pulls only usable edges.
-// Either way `link` drops an edge unless BOTH endpoints are in idSet, so the two
-// reads build the same adjacency.
+// graph and the read takes the paged whole-graph form; a filtered build keeps
+// the single pivot read so it pulls only usable edges. Both drive off the same
+// nodeIDs, and either way `link` drops an edge unless BOTH endpoints are in
+// idSet, so the two reads build the same adjacency.
 func buildAdjacencyEdges(
 	ctx context.Context,
 	caller foundation.GraphCaller,
@@ -115,7 +115,7 @@ func buildAdjacencyEdges(
 	var edges []knowledgev1.Edge
 	var err error
 	if allNodes {
-		edges, err = foundation.FetchAllEdges(ctx, caller, graphType, name, edgeTypes)
+		edges, err = foundation.FetchAllEdges(ctx, caller, graphType, name, nodeIDs, edgeTypes)
 	} else {
 		edges, err = foundation.FetchEdges(ctx, caller, graphType, name, nodeIDs, edgeTypes)
 	}

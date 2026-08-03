@@ -28,6 +28,7 @@ package render
 
 import (
 	"strings"
+	"time"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgwire"
@@ -40,6 +41,21 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "..."
+}
+
+// updatedSuffix renders a node's UpdatedAt as a compact read-time
+// provenance marker for the line that carries the node's own `ID:`.
+// Empty when the timestamp is unset, mirroring the conditional at
+// cmd/knowledge/internal/tools/intercept_query_examine_projects.go:118.
+// The suffix belongs only on a node's own ID line, never on a
+// cross-reference row citing some other node — a reader distinguishes
+// "I read stale text" from "the text changed after my read" by the
+// timestamp of the node under audit, not of its neighbors.
+func updatedSuffix(n *knowledgev1.Node) string {
+	if n == nil || n.UpdatedAt == 0 {
+		return ""
+	}
+	return "  (updated " + time.Unix(0, n.UpdatedAt).Format("2006-01-02 15:04") + ")"
 }
 
 // proxyAnnotation returns the inline-metadata view of a proxy node,

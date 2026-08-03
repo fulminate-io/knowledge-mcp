@@ -52,11 +52,24 @@ func lastUpdatePlan(t *testing.T, fc *fakeGraphCaller) *knowledgev1.MutationPlan
 	return m
 }
 
+// typedUpdateRaw rebuilds the caller payload for a direct typed-update call. The
+// wire mirror's omitempty tags make the marshal of the test's own literal carry
+// exactly the fields it populated, which is the payload InterceptMutate would
+// have seeded on the production path. This lives in the test only — a production
+// helper synthesizing raw from the struct would reintroduce the absent-versus-
+// empty collision the raw carrier exists to remove.
+func typedUpdateRaw(t *testing.T, a mutateArgs) string {
+	t.Helper()
+	raw, err := json.Marshal(a)
+	require.NoError(t, err)
+	return string(raw)
+}
+
 func runTypedUpdate(t *testing.T, node *knowledgev1.Node, a mutateArgs) (*fakeGraphCaller, bool) {
 	t.Helper()
 	fc := &fakeGraphCaller{}
 	deps := interceptTestDeps{byName: map[string]backends.Backend{}, gc: fc}
-	handled, res := handleClientMutateUpdateTyped(context.Background(), deps, a, node)
+	handled, res := handleClientMutateUpdateTyped(context.Background(), deps, withRawArgs(a, typedUpdateRaw(t, a)), node)
 	if handled {
 		require.False(t, res.IsError, "unexpected error result: %s", toolResultText(res))
 	}
@@ -227,7 +240,8 @@ func TestTypedUpdate_RejectsUnroutableParam(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			fc := &fakeGraphCaller{}
 			deps := interceptTestDeps{byName: map[string]backends.Backend{}, gc: fc}
-			handled, res := handleClientMutateUpdateTyped(context.Background(), deps, tc.args, tc.node)
+			handled, res := handleClientMutateUpdateTyped(context.Background(), deps,
+				withRawArgs(tc.args, typedUpdateRaw(t, tc.args)), tc.node)
 			require.True(t, handled, "an unroutable param must be claimed (and rejected)")
 			require.True(t, res.IsError, "expected a structured rejection error")
 			body := toolResultText(res)
@@ -274,4 +288,164 @@ func TestInterceptMutate_TypedRouter_AfterBackendAndRollup(t *testing.T) {
 		})
 		assert.False(t, handled, "a plain typed update with no per-type param must fall through")
 	})
+}
+
+// TestMutateUpdateTyped_CriterionNameRejected pins Gate 14: a criterion update
+// carrying BOTH name and description must be REJECTED naming `name`, not
+// silently resolved in favor of the description.
+//
+// The discard itself was deliberate — a criterion's name is DERIVED from its
+// description (the Name==Description convention upsertCriterionNode
+// establishes) — but it was silent, so a caller supplying both got a node that
+// disagreed with the call and no signal. The create arm already answers this
+// question by rejecting `name` on a criterion create; update must agree, or the
+// two paths disagree about whether a criterion may carry an independent name.
+//
+// Zero forwards is load-bearing: a rejected update leaves the node
+// byte-identical.
+func TestMutateUpdateTyped_CriterionNameRejected(t *testing.T) {
+	node := nodeOf(t, "c1", "criterion", "old desc", "old desc", map[string]string{"type": "manual"})
+	a := mutateArgs{
+		Operation:   "update",
+		ID:          "c1",
+		Name:        "short name",
+		Description: "the long observable check",
+	}
+	fc := &fakeGraphCaller{}
+	deps := interceptTestDeps{byName: map[string]backends.Backend{}, gc: fc}
+	handled, res := handleClientMutateUpdateTyped(context.Background(), deps,
+		withRawArgs(a, typedUpdateRaw(t, a)), node)
+
+	require.True(t, handled, "the rejection is a claim — the call must not fall through silently")
+	require.True(t, res.IsError, "a criterion update carrying name must reject: %s", toolResultText(res))
+	assert.Contains(t, toolResultText(res), "name", "the rejection must NAME the offending param")
+	assert.Empty(t, fc.execMutations, "a rejected update issues ZERO forwards")
+}
+
+// TestMutateUpdateTyped_RuleNameApplied is the SCOPE FENCE for the rejection
+// above: it proves the new rule is criterion-scoped and not a blanket name ban.
+// A rule update carrying name and description together forwards the name
+// VERBATIM — rule updates are field-independent and always were, so this
+// exercises behavior that already works.
+func TestMutateUpdateTyped_RuleNameApplied(t *testing.T) {
+	node := nodeOf(t, "r1", "rule", "old name", "old desc", nil)
+	fc, handled := runTypedUpdate(t, node, mutateArgs{
+		Operation:   "update",
+		ID:          "r1",
+		Name:        "short name",
+		Description: "the long rule text",
+	})
+	require.True(t, handled)
+	m := lastUpdatePlan(t, fc)
+	assert.Equal(t, "short name", m.GetSetFields()["name"],
+		"a rule update forwards the caller's name verbatim, never the description")
+	assert.Equal(t, "the long rule text", m.GetSetFields()["description"])
+}
+
+// TestMutateUpdateTyped_SiblingFieldsPassThrough discharges the ticket's
+// sibling-pair audit as an executable assertion rather than prose: name,
+// summary, content and keywords each ride the forward under their OWN key with
+// no cross-write.
+//
+// The four sentinel values are deliberately DISTINCT — a fixture reusing one
+// string cannot tell a pass-through from a cross-write. `name` was the only
+// collision; summary already implements caller-wins (the re-derive runs only
+// when the caller passed none) and content and keywords are pure pass-through.
+func TestMutateUpdateTyped_SiblingFieldsPassThrough(t *testing.T) {
+	node := nodeOf(t, "r1", "rule", "old name", "old desc", nil)
+	a := mutateArgs{
+		Operation: "update",
+		ID:        "r1",
+		Name:      "sentinel-name",
+		Summary:   "sentinel-summary",
+		Content:   "sentinel-content",
+		Keywords:  "sentinel-keywords",
+		Scope:     "*.go",
+	}
+	fc, handled := runTypedUpdate(t, node, a)
+	require.True(t, handled)
+	m := lastUpdatePlan(t, fc)
+
+	fields := map[string]string{
+		"name":     "sentinel-name",
+		"summary":  "sentinel-summary",
+		"content":  "sentinel-content",
+		"keywords": "sentinel-keywords",
+	}
+	for key, want := range fields {
+		assert.Equalf(t, want, m.GetSetFields()[key], "%s must ride the forward under its own key", key)
+		for otherKey := range fields {
+			if otherKey == key {
+				continue
+			}
+			assert.NotEqualf(t, want, m.GetSetFields()[otherKey],
+				"%s's value leaked into %s — a cross-write", key, otherKey)
+		}
+	}
+}
+
+// TestMutateUpdate_StatusClearToBlank_TypedAndFallthrough pins Gate 19 on both
+// LOCAL paths: an explicit status:"" is a clear-to-blank WRITE and must reach
+// the forward as an empty value, while an absent status must leave the key out
+// entirely.
+//
+// The absent case is the guard, not decoration: without it a fix that always
+// emits status would clear the status of every node updated for any other
+// reason.
+func TestMutateUpdate_StatusClearToBlank_TypedAndFallthrough(t *testing.T) {
+	t.Run("typed router: explicit blank forwards status=\"\"", func(t *testing.T) {
+		node := nodeOf(t, "c1", "criterion", "desc", "desc", map[string]string{"type": "manual"})
+		a := mutateArgs{Operation: "update", ID: "c1", Command: "go test ./..."}
+		fc := &fakeGraphCaller{}
+		deps := interceptTestDeps{byName: map[string]backends.Backend{}, gc: fc}
+		handled, res := handleClientMutateUpdateTyped(context.Background(), deps,
+			withRawArgs(a, `{"operation":"update","id":"c1","command":"go test ./...","status":""}`), node)
+		require.True(t, handled)
+		require.False(t, res.IsError, "unexpected error: %s", toolResultText(res))
+		m := lastUpdatePlan(t, fc)
+		require.Contains(t, m.GetSetFields(), "status",
+			"an explicit blank status must reach the forward — it is a clear-to-blank request")
+		assert.Empty(t, m.GetSetFields()["status"])
+	})
+
+	t.Run("typed router: absent status omits the key", func(t *testing.T) {
+		node := nodeOf(t, "c1", "criterion", "desc", "desc", map[string]string{"type": "manual"})
+		fc, handled := runTypedUpdate(t, node, mutateArgs{Operation: "update", ID: "c1", Command: "go test ./..."})
+		require.True(t, handled)
+		m := lastUpdatePlan(t, fc)
+		assert.NotContains(t, m.GetSetFields(), "status",
+			"an update that never mentions status must leave it untouched")
+	})
+
+	t.Run("generic single-id path: explicit blank compiles to status=\"\"", func(t *testing.T) {
+		m := compileUpdateForTest(t, `{"operation":"update","id":"n1","status":""}`)
+		require.Contains(t, m.GetSetFields(), "status")
+		assert.Empty(t, m.GetSetFields()["status"])
+	})
+
+	t.Run("generic single-id path: absent status omits the key", func(t *testing.T) {
+		m := compileUpdateForTest(t, `{"operation":"update","id":"n1","summary":"s"}`)
+		assert.NotContains(t, m.GetSetFields(), "status")
+	})
+}
+
+// TestMutateUpdate_StatusClearToBlank_BackendRejected pins the other half of
+// Gate 19: clear-to-blank is legal locally but MEANINGLESS on a tracker-backed
+// node, whose external tracker has no blank state. The rejection is loud, names
+// `status`, and lands before any tracker write.
+func TestMutateUpdate_StatusClearToBlank_BackendRejected(t *testing.T) {
+	backend := &fakeBackend{name: "linear"}
+	fc := &fakeGraphCaller{queryResponses: map[string]kgtools.ToolResult{
+		"backend-1": nodeResultJSON(t, "backend-1", "ticket", map[string]string{"backend": "linear"}),
+	}}
+	deps := interceptTestDeps{byName: map[string]backends.Backend{"linear": backend}, gc: fc}
+
+	handled, res := InterceptMutate(opCtx(), deps, kgtools.CallToolParams{
+		Name:      "mutate",
+		Arguments: json.RawMessage(`{"operation":"update","id":"backend-1","status":""}`),
+	})
+	require.True(t, handled, "the rejection is a claim — it must not fall through silently")
+	require.True(t, res.IsError, "clearing status on a tracker-backed node must reject: %s", toolResultText(res))
+	assert.Contains(t, toolResultText(res), "status", "the rejection must NAME the offending param")
+	assert.Zero(t, backend.updateTicketCalls, "a rejected update issues NO tracker write")
 }

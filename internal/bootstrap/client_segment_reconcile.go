@@ -10,9 +10,151 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
-	"github.com/fulminate-io/knowledge-mcp/internal/searchengine/formats/hnsw"
 	"github.com/fulminate-io/knowledge-mcp/internal/tools"
 )
+
+// segmentGraphRef names one segment-bearing graph instance. It is the key the
+// reconcile pass enumerates and the key the per-graph delta horizons are held under.
+type segmentGraphRef struct {
+	gt   kgtypes.GraphType
+	name string
+}
+
+// mergePending is what one delta pull produced and what the caller must commit ONLY
+// after the drain that made it durable.
+type mergePending struct {
+	// Horizon is the server-served horizon this window was pulled up to.
+	Horizon int64
+	// Merged is how many live items were handed to the local segments.
+	Merged int
+	// Pull reports whether a pull happened at all this pass. A graph with no horizon
+	// of any kind pulls nothing, and a commit must not advance anything for it.
+	Pull bool
+}
+
+// consumeSegmentDelta pulls one graph's bounded delta window and lands BOTH halves —
+// the deletes on the local pool and the live items into the local segments — unless
+// deltaScope excludes it this pass (see reconcileSegmentCoverageScoped).
+//
+// WHERE THE HORIZON COMES FROM, in order:
+//  1. the in-memory horizon carried by this process;
+//  2. otherwise the DURABLE merge horizon;
+//  3. otherwise the durable REBUILD watermark;
+//  4. otherwise NO PULL AT ALL.
+//
+// CLAUSE 4 IS THE LOAD RULE AND IT IS DELIBERATE. A zero-watermark scan of this axis
+// is the full vectored corpus, so seeding an unseeded graph from zero would make
+// every process pay one full-corpus read per such graph, and merging that window
+// would be the whole-corpus rebuild this path exists to replace. An unseeded graph
+// therefore pulls nothing and waits for the coverage backstop's rotation, which seeds
+// its horizon on both of that arm's writing exits — bounded at one rotation, once per
+// machine, against a full-corpus read on EVERY boot today.
+//
+// THE CONSEQUENCE, stated rather than hidden: until a graph's horizon is seeded it
+// learns no server-side deletes from this feed either. Hard deletes never rode this
+// feed at all, so nothing about that story changes.
+//
+// Best-effort throughout, like every other arm of this pass: a failure WARNs and the
+// pass moves on. A window that does not land this tick lands on the next one, because
+// the caller only commits the horizon after a successful drain.
+func (c *client) consumeSegmentDelta(
+	ctx context.Context, g segmentGraphRef, deltaScope map[segmentGraphRef]struct{},
+) mergePending {
+	if deltaScope != nil {
+		if _, signaled := deltaScope[g]; !signaled {
+			return mergePending{}
+		}
+	}
+	scanner := c.PipelineScanner()
+	if scanner == nil {
+		return mergePending{} // degraded client — no scan seam to read the feed through.
+	}
+
+	since, ok := c.mergeHorizonFor(g)
+	if !ok {
+		slog.Debug("bootstrap: segment delta has no horizon for this graph yet — pulling nothing until the backstop seeds one",
+			"graph_type", g.gt, "name", g.name)
+		return mergePending{}
+	}
+
+	out, err := tools.MergeSegmentDelta(
+		ctx, scanner, c.SegmentShipper(), c.segmentMgr, c.segmentMgr, g.gt, g.name, since)
+	if err != nil {
+		slog.Warn("bootstrap: segment delta merge failed (continuing; the horizon is not advanced, so the window is re-read next pass)",
+			"graph_type", g.gt, "name", g.name, "error", err)
+		return mergePending{}
+	}
+	if out.Learned > 0 {
+		slog.Info("bootstrap: segment delta landed server-side deletes on the local pool",
+			"graph_type", g.gt, "name", g.name, "learned", out.Learned, "carried", out.Carried)
+	}
+	if out.Merged > 0 {
+		slog.Info("bootstrap: segment delta merged co-worker updates into the local segments",
+			"graph_type", g.gt, "name", g.name, "merged", out.Merged, "since", since)
+	}
+	return mergePending{Horizon: out.Horizon, Merged: out.Merged, Pull: true}
+}
+
+// mergeHorizonFor resolves the window's start for one graph, walking the three seed
+// sources in order. ok=false is clause 4 — no horizon of any kind, so no pull.
+func (c *client) mergeHorizonFor(g segmentGraphRef) (int64, bool) {
+	c.deltaHorizonMu.Lock()
+	since, carried := c.deltaHorizon[g]
+	c.deltaHorizonMu.Unlock()
+	if carried {
+		return since, true
+	}
+
+	// The durable merge horizon: what the last landed merge for this graph was
+	// scanned up to, which survives a restart precisely so the next process re-merges
+	// one bounded window rather than the corpus.
+	if h, err := c.segmentMgr.LoadMergeWatermark(g.gt, g.name); err != nil {
+		slog.Warn("bootstrap: segment delta could not read the merge horizon (skipping this graph this pass)",
+			"graph_type", g.gt, "name", g.name, "error", err)
+		return 0, false
+	} else if h > 0 {
+		return h, true
+	}
+
+	// The durable rebuild watermark: the last horizon a landed rebuild published up
+	// to. A graph that has landed one has a genuine bound to read from.
+	w, _, err := c.segmentMgr.LoadRebuildState(g.gt, g.name)
+	if err != nil {
+		slog.Warn("bootstrap: segment delta could not read the rebuild state to seed its horizon (skipping this graph this pass)",
+			"graph_type", g.gt, "name", g.name, "error", err)
+		return 0, false
+	}
+	if w > 0 {
+		return w, true
+	}
+	return 0, false
+}
+
+// commitMergeWatermark is part TWO of the merge's two-part commit, and the caller
+// runs it ONLY on the branch where the drain that shipped the merge succeeded. A
+// skipped commit leaves the horizon where it was, so the same window is re-pulled next
+// tick and the same items are re-merged — idempotent, because the add is keyed by id.
+func (c *client) commitMergeWatermark(g segmentGraphRef, pending mergePending) {
+	if !pending.Pull || pending.Horizon <= 0 {
+		return
+	}
+	c.deltaHorizonMu.Lock()
+	if c.deltaHorizon == nil {
+		c.deltaHorizon = make(map[segmentGraphRef]int64)
+	}
+	advanced := pending.Horizon > c.deltaHorizon[g]
+	if advanced {
+		c.deltaHorizon[g] = pending.Horizon
+	}
+	c.deltaHorizonMu.Unlock()
+	if !advanced {
+		return
+	}
+	if err := c.segmentMgr.SaveMergeWatermark(g.gt, g.name, pending.Horizon); err != nil {
+		slog.Warn("bootstrap: segment delta could not persist the merge horizon (continuing; the window is re-read next process)",
+			"graph_type", g.gt, "name", g.name, "error", err)
+	}
+}
 
 // reconcileSegmentCoverage is the startup + periodic read-side reconcile: it
 // enumerates every segment-bearing builtin (the embeddable graph types
@@ -24,8 +166,15 @@ import (
 // ONLY when the healNeedsRebuild gate confirms the SHIPPED corpus is genuinely
 // incomplete (not merely a lazily-loaded read engine) — heals it through
 // the PROVEN RebuildSegments path — the SAME single-flight the manual rebuild op
-// and the embed-drain auto-heal share, so the three triggers coalesce onto one run
-// rather than racing three rebuilds.
+// and the embed-drain auto-heal share, so those triggers coalesce onto one run
+// rather than racing several rebuilds.
+//
+// IT CARRIES A SECOND, INDEPENDENT REBUILD REASON: the re-bucket trigger. A graph
+// whose resident layout is a full doubling behind the partition count its corpus now
+// derives is re-bucketed once, through that same single-flight. It is not a heal —
+// such a graph is perfectly healthy and would otherwise leave this pass at the
+// healthy-graph continue — so it has its own detector, its own log line and its own
+// placement, and only the rebuild entry point and the breaker are shared.
 //
 // It is the recovery lever the prior two fixes left a gap for: the read-side
 // recoverIfDegenerate only runs lazily inside a Search, and the write-side
@@ -35,11 +184,47 @@ import (
 //
 // Best-effort throughout: a nil segment manager (headless/--no-llm-pipeline) is a
 // no-op; a per-graph probe or rebuild error WARNs and continues to the next graph,
-// never blocking boot or the periodic tick. The probe is cheap (the healthy graphs
-// each pay one cache-first load + one atomic resident count + at most one
-// ListDelta(0); only a graph whose shipped corpus is genuinely incomplete — past
-// the healNeedsRebuild gate — pays a rebuild).
+// never blocking boot or the periodic tick. The probing stays cheap: the healthy
+// graphs each pay one cache-first load + one atomic resident count + at most one
+// ListDelta(0), plus the re-bucket detector's two local reads per format, which
+// touch no source at all. A rebuild is paid only by a graph whose shipped corpus is
+// genuinely incomplete (past the healNeedsRebuild gate) or whose layout is a full
+// doubling behind its corpus — and the latter at most once per crossing, because the
+// landed reset makes the detector read false again.
 func (c *client) reconcileSegmentCoverage(ctx context.Context) {
+	c.reconcileSegmentCoverageScoped(ctx, nil)
+}
+
+// reconcileSegmentCoverageScoped is the pass body. deltaScope selects which graphs
+// the pass VISITS AT ALL:
+//
+//   - nil — the PERIODIC SWEEP (startup and the interval ticker). Every graph is
+//     visited, which is what guarantees a delete reaches the pool within one
+//     interval even when nothing local signaled it: a collect that only REMOVES
+//     files writes nothing here, so it produces no nudge, and a nudge-only consumer
+//     would never learn about it.
+//   - non-nil — a NUDGE-WOKEN pass. ONLY the graphs that signaled change are
+//     visited. That is the cross-graph fan-out bound, and it tightened from
+//     scoping only the delta read to scoping the whole walk because the recorder
+//     set grew: the search nudge can fire once per graph per cool-off window, and
+//     the per-graph body is not free — the degeneracy probe alone costs one
+//     shipped-count read per format arm. A woken pass that ran the full body over
+//     every segment-bearing graph would multiply that by the graph count on a
+//     cadence measured in minutes.
+//
+// FILTERING THE WALK RATHER THAN FORKING THE BODY is deliberate. Running only the
+// merge and drain arms for nudged graphs would be cheaper still, but it would
+// silently retire the arms the other recorders exist to reach: a
+// coverage-suppression nudge fires precisely when the read engine is stuck below
+// the publish coverage ratio, and what unsticks it is the manifest-completeness arm
+// and the degeneracy → heal → rebuild chain, neither of which is the drain.
+// Filtering keeps every recorder's lever intact and keeps reconcileOneGraph's body
+// byte-identical.
+//
+// The delta read is bounded on the OTHER axis too, independently of the scope: it
+// is scoped by the graph's merge horizon, so after the first pass of a process a
+// graph with no changes costs one empty page.
+func (c *client) reconcileSegmentCoverageScoped(ctx context.Context, deltaScope map[segmentGraphRef]struct{}) {
 	if c.segmentMgr == nil {
 		return // headless / degraded — no segment engine to reconcile.
 	}
@@ -47,20 +232,48 @@ func (c *client) reconcileSegmentCoverage(ctx context.Context) {
 	// query-origin operation so its per-tick reads are attributable.
 	ctx = graphclient.WithOperation(ctx, graphclient.OpSegmentReconcile)
 
-	// Every segment-bearing builtin: knowledge/default (seeded explicitly — its
-	// default instance has an empty enumerated name that ListGraphNamesOfType drops)
-	// plus every instance of the other embeddable builtins (code, cloud, cicd,
-	// practice), enumerated through the SAME ListGraphNamesOfType seam the status
-	// coverage table uses (the *client satisfies tools.ClientDeps). The
-	// kgtypes.HasRebuildableSegments gate mirrors segCoveredFor's matching gate
-	// (manage_status_coverage.go) so the reconcile probes exactly the graph set
-	// manage(status) reports as segment-bearing — linkage + transformers (sync-
-	// eligible but non-embeddable) are skipped, they carry no rebuildable segments.
-	type graphRef struct {
-		gt   kgtypes.GraphType
-		name string
+	// Reset the coverage-repair arm's per-pass round-robin bookkeeping before the
+	// walk, so exactly one graph can claim this tick's repair slot. PERIODIC PASSES
+	// ONLY: the backstop returns at its first gate on a woken pass, so a woken pass
+	// claims no slots and would leave the offer count at zero — and the next periodic
+	// pass's wrap condition would then be false, skipping a whole rotation for a
+	// cursor sitting past its end. Gating the reset here leaves the rotation
+	// bookkeeping entirely untouched by woken passes.
+	if deltaScope == nil {
+		c.beginRepairTick()
 	}
-	graphs := []graphRef{{gt: kgtypes.GraphKnowledge, name: "default"}}
+
+	for _, g := range c.segmentBearingGraphs(ctx) {
+		if deltaScope != nil {
+			if _, signaled := deltaScope[g]; !signaled {
+				continue // a woken pass is the nudged graphs' pass, not a corpus sweep.
+			}
+		}
+		c.reconcileOneGraph(ctx, g, deltaScope)
+	}
+}
+
+// segmentBearingGraphs enumerates every segment-bearing builtin: knowledge/default
+// (seeded explicitly — its default instance has an empty enumerated name that
+// ListGraphNamesOfType drops) plus every instance of the other embeddable builtins
+// (code, cloud, cicd, practice), enumerated through the SAME ListGraphNamesOfType
+// seam the status coverage table uses (the *client satisfies tools.ClientDeps). The
+// kgtypes.HasRebuildableSegments gate mirrors segCoveredFor's matching gate
+// (manage_status_coverage.go) so the reconcile probes exactly the graph set
+// manage(status) reports as segment-bearing — linkage + transformers (sync-eligible
+// but non-embeddable) are skipped, they carry no rebuildable segments.
+//
+// IT IS A SHARED HELPER ON PURPOSE. The periodic reconcile pass and the
+// clean-shutdown backlog drain both need "every segment-bearing graph", and two
+// independent enumerations of that set is exactly the drift this area has already
+// produced once — an instrument asking knowledge/"" while the reconcile seeded
+// knowledge/"default". One definition means the drain cannot walk a different set
+// from the pass that queued the work.
+//
+// A per-type enumeration failure WARNs and skips that type rather than failing the
+// whole walk, so one unreachable graph type never costs the others their pass.
+func (c *client) segmentBearingGraphs(ctx context.Context) []segmentGraphRef {
+	graphs := []segmentGraphRef{{gt: kgtypes.GraphKnowledge, name: "default"}}
 	for _, gt := range kgtypes.SyncEligibleGraphTypes() {
 		if gt == kgtypes.GraphKnowledge {
 			continue // already seeded explicitly above (empty default-instance name).
@@ -70,112 +283,61 @@ func (c *client) reconcileSegmentCoverage(ctx context.Context) {
 		}
 		names, err := tools.ListGraphNamesOfType(ctx, c, string(gt))
 		if err != nil {
-			slog.Warn("bootstrap: segment reconcile could not enumerate graphs of type (skipping this type this pass)",
+			slog.Warn("bootstrap: segment enumeration could not list graphs of type (skipping this type)",
 				"graph_type", gt, "error", err)
 			continue
 		}
 		for _, name := range names {
-			graphs = append(graphs, graphRef{gt: gt, name: name})
+			graphs = append(graphs, segmentGraphRef{gt: gt, name: name})
 		}
 	}
+	return graphs
+}
 
-	for _, g := range graphs {
-		degenerate, err := c.segmentMgr.ReconcileResidentDegenerate(ctx, g.gt, g.name)
-		if err != nil {
-			slog.Warn("bootstrap: segment reconcile probe failed (continuing)",
-				"graph_type", g.gt, "name", g.name, "error", err)
-			continue
-		}
-		if !degenerate {
-			continue // healthy (or disarmed) — no rebuild.
-		}
-		// reconcile diagnostic (kept per keep-debug-logging): on the degenerate branch
-		// record the SHIPPED-corpus doc count vs the EMBEDDED node count. When shipped
-		// covers embedded, the read engine is flagged degenerate only because it has
-		// not loaded the intact corpus — a PG RebuildSegments writes the DETERMINISTIC
-		// engine (not this read engine), so it cannot raise the resident count the
-		// probe re-reads and the rebuild is wasted. The healNeedsRebuild gate below
-		// acts on exactly this shipped-vs-embedded signal; this line makes it
-		// observable per tick.
-		if snapshot, serr := c.segmentMgr.ShippedManifestSnapshot(ctx, g.gt, g.name, hnsw.New().Name()); serr != nil {
-			slog.Debug("bootstrap: segment reconcile degenerate-branch shipped probe failed",
-				"graph_type", g.gt, "name", g.name, "error", serr)
-		} else {
-			shippedDocs, anyUnknown := c.segmentMgr.ShippedDocCountFromSnapshot(snapshot, hnsw.New().Name())
-			embedded, eerr := tools.GraphEmbeddedCount(ctx, c.GraphCaller(), g.gt, g.name)
-			slog.Debug("bootstrap: segment reconcile degenerate branch",
-				"graph_type", g.gt, "name", g.name,
-				"shipped_docs", shippedDocs, "any_unknown", anyUnknown,
-				"embedded", embedded, "embedded_err", eerr)
-		}
-		// SHIPPED-COMPLETENESS GATE: ReconcileResidentDegenerate above flags
-		// when the READ engine (m.managers) is below the SHIPPED corpus — which a
-		// merely lazily-loaded read engine trips even when the shipped corpus is
-		// COMPLETE. A PG RebuildSegments writes the DETERMINISTIC engine (m.detManagers),
-		// so it can never raise the read engine's resident count; the next 5-min tick
-		// re-flags and rebuilds again — the ~85 rebuilds/wk loop. healNeedsRebuild asks
-		// the RIGHT question for a PG regen — is the SHIPPED/L2 corpus genuinely
-		// incomplete vs the embedded node count? (HasShippedFromSnapshot +
-		// segmentPoolDegenerate, then a read-engine-load attempt) — returning true ONLY
-		// when the corpus is genuinely zero/incomplete AND a load cannot restore it. So
-		// the expensive PG rebuild fires on genuine incompleteness, never on a lazy read
-		// engine. The ReconcileResidentDegenerate call above is still made FIRST so its
-		// warm-load side effect (load()+recoverIfDegenerate) is preserved. healNeedsRebuild
-		// re-probes ReconcileResidentDegenerate internally on this rare degenerate branch
-		// (a second cheap load/List, off the bind path); healthy graphs short-circuited at
-		// `if !degenerate` above and never reach it. The MANUAL manage(rebuild_segments)
-		// path (handleClientRebuildSegments) is intentionally NOT gated — an operator
-		// asking for a rebuild always gets one.
-		//
-		// SCOPE (boot herd + hypothesis c): this collapses the STEADY-STATE 5-min re-flag
-		// loop, not a boot-time one-rebuild-per-daemon herd — the RebuildSegments
-		// single-flight is PER-PROCESS, so N cold fleet daemons can each pay one rebuild
-		// until a complete corpus is shipped+visible. That is also how the gate mitigates
-		// c: once ANY daemon ships a complete corpus, every other daemon's healNeedsRebuild
-		// sees shipped-complete and skips. The residual boot rebuild is within the ticket
-		// goal — post-deploy observers must not read it as a regression.
-		needsRebuild, herr := c.healNeedsRebuild(ctx, g.gt, g.name)
-		if herr != nil {
-			slog.Warn("bootstrap: segment reconcile shipped-completeness gate failed (continuing, no rebuild)",
-				"graph_type", g.gt, "name", g.name, "error", herr)
-			continue
-		}
-		if !needsRebuild {
-			slog.Debug("bootstrap: read pool degenerate but shipped corpus complete — skipping PG rebuild (load retry)",
-				"graph_type", g.gt, "name", g.name)
-			continue
-		}
-		// Heal breaker gate: once a graph has latched disarmed after
-		// healBreakerTripThreshold no-progress rebuilds, skip the FUTILE RebuildSegments.
-		// The recovery probe (ReconcileResidentDegenerate) above still ran — only the
-		// rebuild is gated — so the legitimate ~5-min recovery path keeps working.
-		if !c.healBreaker.Allow(g.gt, g.name) {
-			slog.Debug("bootstrap: segment reconcile — auto-heal breaker latched for graph, skipping rebuild (recovery probe still ran)",
-				"graph_type", g.gt, "name", g.name)
-			continue
-		}
-		// Genuinely-incomplete shipped corpus (healNeedsRebuild==true): heal via the
-		// PROVEN rebuild path (single-flight shared with the manual op + embed-drain
-		// auto-heal — NOT a bare load).
-		ran, scanned, built, partial, pruned, rerr := tools.RebuildSegments(
-			ctx, c.PipelineScanner(), c.segmentMgr, g.gt, g.name)
-		if rerr != nil {
-			slog.Warn("bootstrap: segment reconcile rebuild failed (continuing)",
-				"graph_type", g.gt, "name", g.name, "error", rerr)
-			continue
-		}
-		slog.Info("bootstrap: segment reconcile rebuilt a degenerate live pool",
-			"graph_type", g.gt, "name", g.name,
-			"ran", ran, "scanned", scanned, "built", built, "partial", partial, "pruned", len(pruned))
-		// A COMPLETED rebuild (ran; the rerr path continued above) consumes the BM25
-		// arm's no-progress shot — a no-op when this pass never consulted that gate.
-		if ran {
-			c.armBM25HealProgress(g.gt, g.name)
-		}
-		// Classify against the breaker (records ONLY on ran==true) — the same strict
-		// no-progress/progress rule the embed-drain trigger uses.
-		c.classifyHealOutcome(ctx, g.gt, g.name, ran, scanned, built, partial)
+// drainSegmentBacklog ships whatever is queued in the in-memory segment backlog,
+// once, on the clean-shutdown path. Manager.dirty is in-memory and the periodic
+// drain cadence is segmentReconcileInterval, so without this every clean daemon stop
+// discards up to one full interval of queued documents with no record of what was
+// lost. It closes the non-crash half of that: the crash half is inherently
+// after-the-fact and is what the repair arm exists to find on the next boot.
+//
+// BOUNDED BY THE CALLER'S CONTEXT, and the bound is not optional. A graph whose
+// drain does not finish inside the shutdown window is logged and skipped: a
+// shutdown that hangs past the SIGTERM window is strictly worse than a backlog the
+// repair arm picks up next boot. Best-effort per graph, mirroring every arm of the
+// reconcile pass — one graph's failure must not cost the others their drain.
+//
+// The walk is serial across graphs deliberately. Draining concurrently at shutdown
+// would multiply peak memory and contend for the ship path at the moment the
+// process is least able to absorb either.
+//
+// The single log line naming what drained and what was skipped IS the clean-shutdown
+// attribution record — the thing whose absence made this loss untraceable.
+func (c *client) drainSegmentBacklog(ctx context.Context) {
+	if c.segmentMgr == nil {
+		return // headless / degraded — no segment engine, so no backlog.
 	}
+	ctx = graphclient.WithOperation(ctx, graphclient.OpSegmentReconcile)
+
+	var drained, skipped []string
+	for _, g := range c.segmentBearingGraphs(ctx) {
+		label := string(g.gt) + "/" + g.name
+		if ctx.Err() != nil {
+			// The window closed mid-walk: record the remainder rather than pushing
+			// past the deadline the shutdown budget depends on.
+			skipped = append(skipped, label)
+			continue
+		}
+		if err := c.segmentMgr.ReEmitDirtyBuckets(ctx, g.gt, g.name); err != nil {
+			slog.Warn("bootstrap: shutdown backlog drain failed for a graph (continuing; the repair arm picks it up next boot)",
+				"graph_type", g.gt, "name", g.name, "error", err)
+			skipped = append(skipped, label)
+			continue
+		}
+		drained = append(drained, label)
+	}
+	slog.Info("bootstrap: clean-shutdown segment backlog drain",
+		"drained", drained, "skipped", skipped)
 }
 
 // segmentReconcileInterval is the periodic cadence of runSegmentReconcileLoop — a
@@ -217,14 +379,18 @@ func (c *client) bootDelayReconcile(ctx context.Context) {
 // fork is just two call sites of the same function. Mirrors the RefreshLoadedGraphs
 // select{ctx.Done / timer} loop shape; exits promptly on ctx.Done (no leak).
 //
-// It ALSO wakes on the segment manager's reconcile nudge: when a graph's publish
-// coverage gate becomes unsatisfiable, waiting up to the full interval wastes the
-// window in which the condition is already known. The nudge changes only WHEN a pass
-// runs — the woken pass is the SAME full body over every segment-bearing graph, with
-// the same gates and the same rebuild entry points. It is deliberately NOT scoped to
-// the nudged graphs: the full pass is already cheap by design (see
-// reconcileSegmentCoverage), and scoping it would fork a second, divergent reconcile
-// path.
+// It ALSO wakes on the segment manager's reconcile nudge, which now has THREE
+// recorders: a publish coverage gate becoming unsatisfiable, the backlog byte-cap
+// crossing, and a user search asking for its graph's delta sooner than the next
+// tick. Waiting up to the full interval wastes the window in which the condition is
+// already known.
+//
+// The woken pass runs the SAME per-graph body with the same gates and the same
+// rebuild entry points, but it is SCOPED to the nudged graphs (see
+// reconcileSegmentCoverageScoped). That scoping is what makes a search-driven
+// recorder affordable: the body costs shipped-count reads per graph, and the search
+// nudge can fire once per graph per cool-off window, so an unscoped woken pass would
+// multiply that cost by the whole graph count on an interactive cadence.
 func (c *client) runSegmentReconcileLoop(ctx context.Context, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
@@ -251,10 +417,20 @@ func (c *client) runSegmentReconcileLoop(ctx context.Context, interval time.Dura
 		case <-ticker.C:
 			c.reconcileSegmentCoverage(ctx)
 		case <-nudges:
+			// The drained set SCOPES THE WHOLE WALK on this woken pass — the cross-graph
+			// fan-out bound. The per-graph body is unchanged, so the sooner-look does not
+			// fork a second, divergent reconcile path; only the graph set narrows.
 			nudged := c.segmentMgr.TakeReconcileNudges()
-			slog.Debug("bootstrap: segment reconcile woken by publish coverage-skip suppression",
+			scope := make(map[segmentGraphRef]struct{}, len(nudged))
+			for _, n := range nudged {
+				scope[segmentGraphRef{gt: n.GraphType, name: n.Name}] = struct{}{}
+			}
+			// The message names the MECHANISM rather than any one recorder: three
+			// different conditions reach this wake, so naming one of them would
+			// misattribute the other two.
+			slog.Debug("bootstrap: segment reconcile woken by nudge",
 				"graphs", len(nudged))
-			c.reconcileSegmentCoverage(ctx)
+			c.reconcileSegmentCoverageScoped(ctx, scope)
 		}
 	}
 }

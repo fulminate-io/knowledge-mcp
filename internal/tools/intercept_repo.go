@@ -110,14 +110,23 @@ var manageCodeGraphOps = map[string]bool{
 //     detached/non-git HEAD, or repo="all" leaves branch unstamped and falls
 //     through to the base graph WITHOUT error. Never inferred from cwd.
 //
-//  5. Staleness trio: ONLY when tool == "search" AND args["staleness"]
+//  5. Graph materialization (search only): a `search` that got past the gate
+//     targets the code graph — an omitted graph was the code default, an
+//     explicit one was already "code" — so args["graph"] is set to "code".
+//     This is the ONE field written rather than merely filled: it records a
+//     routing decision this function MAKES, so that nothing downstream has to
+//     re-derive it from the raw field (where omitted reads as knowledge).
+//     Non-code searches never reach it; the gate returned them above.
+//
+//  6. Staleness trio: ONLY when tool == "search" AND args["staleness"]
 //     is true. Populates current_head / uncommitted_count /
 //     commits_behind from coderun helpers. Skips all three subprocess
 //     calls when staleness is unset/false.
 //
-//  6. Explicit-value preservation: caller-supplied values are never
+//  7. Explicit-value preservation: caller-supplied values are never
 //     overwritten. Resolver / detect / staleness helpers only fill
-//     MISSING fields.
+//     MISSING fields. The graph write in step 5 is the sole exception, and
+//     only ever writes the value the caller's own shape already implied.
 func InjectRepoIfCodeGraph(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (kgtools.CallToolParams, bool, kgtools.ToolResult) {
 	// manage subdispatch: code-graph-targeted operations (list_branches,
 	// delete_branch, rebuild_{hnsw,bm25} with graph=code) carry the repo
@@ -158,6 +167,18 @@ func InjectRepoIfCodeGraph(ctx context.Context, deps ClientDeps, params kgtools.
 	repo := decodeStringField(args, "repo")
 	if repo == "" {
 		return params, true, errorResult(params.Name + ": graph=\"code\" requires repo. Pass repo=\"<name>\" (or repo=\"all\" to search every code repo). For the memory/decision/thought graph, use graph=\"knowledge\".")
+	}
+
+	// Materialize the search arm's graph decision. Reaching this line on a
+	// `search` means the graph-selector gate above already concluded this call
+	// targets the code graph — it is why the repo requirement was just enforced.
+	// Writing that conclusion onto the args is what stops the next reader in the
+	// chain from re-deriving it from the raw field, where an omitted graph reads
+	// as the KNOWLEDGE default and the search is answered from the wrong corpus.
+	// Only `search` defaults to code; query/traverse arrive here solely with an
+	// explicit graph="code", so their args already say so.
+	if params.Name == "search" {
+		args["graph"] = json.RawMessage(`"code"`)
 	}
 
 	// Branch auto-detect (machine-correct, manifest-based). Repo STAYS explicitly

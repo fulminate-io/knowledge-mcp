@@ -302,20 +302,26 @@ func TestDispatch_BareChargeCreate_NoSummaryGate(t *testing.T) {
 }
 
 // TestDispatch_PrecheckQueryEmptyTextRequiresText is the GAP-B regression guard
-// (CEO decision: REQUIRE TEXT). The text-required query mode (text) with EMPTY
-// text used to fall through to the GENERIC post-cutover deny ("tool query is not a
-// recognized engine-reducible shape"). The precheckQuery seam now intercepts it
-// BEFORE Compile and returns the SPECIFIC requires-text validation error naming
-// the mode — exec NEVER runs (bounded-constant: 0). This exercises the path
+// (CEO decision: REQUIRE TEXT). A text-required query mode with EMPTY text used to
+// fall through to the GENERIC post-cutover deny ("tool query is not a recognized
+// engine-reducible shape"). The precheckQuery seam now intercepts it BEFORE
+// Compile and returns the SPECIFIC requires-text validation error naming the
+// mode — exec NEVER runs (bounded-constant: 0). This exercises the path
 // END-TO-END through Dispatch, not precheckQuery in isolation, so the suite catches
-// a future regression where the seam stops being invoked. (graph_reach surfaces
-// the unknown-mode deny. recent is served entirely client-side and never reaches
-// this engine path — both arms: text-bearing recent via composeKnowledgeSearch and
-// bare empty-text recent via composeRecentBrowse, in intercept_search_knowledge.go.
-// recent is not in reducibleTextRequiredModes — only "text" is — so it is not in
-// this test's loop.)
+// a future regression where the seam stops being invoked.
+//
+// Both members of reducibleTextRequiredModes are driven: text and hybrid. A
+// TEXT-BEARING hybrid never reaches here — the client knowledge search arm claims
+// it — so the empty-text case is the only hybrid this seam sees, which is exactly
+// why hybrid is in the text-required set without being engine-reducible.
+//
+// (graph_reach surfaces the unknown-mode deny. recent is served entirely
+// client-side and never reaches this engine path — both arms: text-bearing recent
+// via composeKnowledgeSearch and bare empty-text recent via composeRecentBrowse,
+// in intercept_search_knowledge.go. recent is not in reducibleTextRequiredModes,
+// so it is not in this test's loop.)
 func TestDispatch_PrecheckQueryEmptyTextRequiresText(t *testing.T) {
-	for _, mode := range []string{"text"} {
+	for _, mode := range []string{"text", "hybrid"} {
 		t.Run(mode, func(t *testing.T) {
 			d := &dispatchCounters{}
 			args := `{"mode":"` + mode + `"}` // no text field → empty.

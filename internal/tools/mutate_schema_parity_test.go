@@ -33,111 +33,66 @@ func TestStatusOpenStringLockdown_Untouched(t *testing.T) {
 		"the kgtypes status open-string lockdown comment must be present verbatim")
 }
 
-// updateParamClass classifies how a mutateProperties() schema key is handled on
-// the mutate(update) path. The buckets align with the Phase-2 unified seam.
-type updateParamClass int
-
-const (
-	// classRoutedUniversal — routed for every claimed update type: the universal
-	// passthrough scalars (top-level set_fields / set_metadata / target selectors).
-	classRoutedUniversal updateParamClass = iota
-	// classRoutedPerType — routed into metadata for the owning node type only
-	// (criterion: command/criterion_type; rule: scope/enforcement; finding:
-	// evidence/source) by handleClientMutateUpdateTyped.
-	classRoutedPerType
-	// classRejected — declared in the schema but NOT routable on the update path
-	// (a create/link/answer/thought/charge/batch param). A typed update carrying
-	// one for the wrong type is rejected loudly; otherwise it is a no-op the
-	// update path does not consume.
-	classRejected
-)
-
-// updateParamClassification is the EXHAUSTIVE classification of every
-// mutateProperties() key for the update operation. It is the schema↔handler
-// parity contract: the test below cross-checks it against the LIVE schema in
-// BOTH directions so a newly-added schema param with no classification FAILS
-// until someone routes or rejects it, and a stale map key (removed from the
-// schema) FAILS as drift. Driving the test off mutateProperties() directly
-// (not a hand-copied key list) is what makes a silently-dropped param impossible.
-var updateParamClassification = map[string]updateParamClass{
-	// Universal passthrough (top-level set_fields / set_metadata / target).
-	"operation":             classRoutedUniversal,
-	"id":                    classRoutedUniversal,
-	"ids":                   classRoutedUniversal,
-	"name":                  classRoutedUniversal,
-	"description":           classRoutedUniversal,
-	"summary":               classRoutedUniversal,
-	"content":               classRoutedUniversal,
-	"status":                classRoutedUniversal,
-	"metadata":              classRoutedUniversal,
-	"format":                classRoutedUniversal,
-	"graph":                 classRoutedUniversal,
-	"language":              classRoutedUniversal,
-	"expand_to_descendants": classRoutedUniversal,
-	"keywords":              classRoutedUniversal,
-	// source routes universally too: finding → metadata (per-type), every other
-	// type → the node Source field via the Phase-1 widening. Classified per-type
-	// because the finding arm routes it into metadata.
-	"source": classRoutedPerType,
-	// Per-type (routed into metadata by the typed update router).
-	"command":        classRoutedPerType,
-	"criterion_type": classRoutedPerType,
-	"scope":          classRoutedPerType,
-	"enforcement":    classRoutedPerType,
-	"evidence":       classRoutedPerType,
-	// Rejected on the update path (create/link/answer/thought/charge/batch params).
-	"type":            classRejected,
-	"question_id":     classRejected,
-	"concludes":       classRejected,
-	"step_id":         classRejected,
-	"from":            classRejected,
-	"to":              classRejected,
-	"relationship":    classRejected,
-	"conclusion":      classRejected,
-	"findings":        classRejected,
-	"binary_vector":   classRejected,
-	"confidence":      classRejected,
-	"method":          classRejected,
-	"edge_evidence":   classRejected,
-	"last_validated":  classRejected,
-	"link_graph":      classRejected,
-	"branches_from":   classRejected,
-	"links":           classRejected,
-	"session":         classRejected,
-	"ticket_id":       classRejected,
-	"polarity":        classRejected,
-	"weight":          classRejected,
-	"reasoning":       classRejected,
-	"charge_evidence": classRejected,
-	"thought_parent":  classRejected,
-	"references":      classRejected,
-	"items":           classRejected,
-	"nodes":           classRejected,
-	"edges":           classRejected,
-	"updates":         classRejected,
-}
-
-// TestMutateSchemaUpdateParityClassification proves schema↔handler completeness
-// for the update path: every mutateProperties() key is classified (routed or
-// rejected), and the classification map has no entry absent from the live
-// schema. This is the greenfield regression backstop — a new mutate param that
-// nobody routes or rejects fails here instead of silently falling on the floor.
-func TestMutateSchemaUpdateParityClassification(t *testing.T) {
+// TestMutateParamAccounting_TablePartitionsSchemaPerArm is the schema↔handler
+// parity contract, now asserted PER ARM rather than once for the whole update
+// path. It replaces a single static classification map that stayed green while
+// individual arms dropped params: a one-map-for-all-arms classification cannot
+// see that one arm consumes a param another silently discards.
+//
+// For every arm it asserts the three sets PARTITION the live schema exactly:
+//
+//	(a) their union is the exact key set of mutateProperties() — a schema param
+//	    in no set is unclassified and fails here until someone classifies it;
+//	(b) the three sets are pairwise disjoint — no param may be two things at once;
+//	(c) no set names a key absent from the live schema — the stale-entry drift
+//	    guard, so a removed or renamed param cannot linger in the table.
+func TestMutateParamAccounting_TablePartitionsSchemaPerArm(t *testing.T) {
 	schema := mutateProperties()
 	require.NotEmpty(t, schema, "mutateProperties() must declare params")
+	require.NotEmpty(t, mutateArmRegistry, "the arm registry must declare arms")
 
-	// Direction 1: every LIVE schema key must be classified.
-	for key := range schema {
-		_, ok := updateParamClassification[key]
-		assert.Truef(t, ok,
-			"schema param %q is unclassified for the update path — route it (universal/per-type) or reject it in updateParamClassification", key)
-	}
+	for arm, spec := range mutateArmRegistry {
+		t.Run(string(arm), func(t *testing.T) {
+			// (b) pairwise disjoint.
+			for key := range spec.consumed {
+				assert.NotContainsf(t, spec.rejected, key,
+					"param %q is BOTH consumed and rejected for arm %q", key, arm)
+				assert.NotContainsf(t, spec.deliberatelyIgnored, key,
+					"param %q is BOTH consumed and deliberately ignored for arm %q", key, arm)
+			}
+			for key := range spec.rejected {
+				assert.NotContainsf(t, spec.deliberatelyIgnored, key,
+					"param %q is BOTH rejected and deliberately ignored for arm %q", key, arm)
+			}
 
-	// Direction 2: every classification entry must exist in the LIVE schema
-	// (drift guard — a removed/renamed schema key must not linger here).
-	for key := range updateParamClassification {
-		_, ok := schema[key]
-		assert.Truef(t, ok,
-			"classification map names %q which is absent from mutateProperties() — stale entry (schema drift)", key)
+			// (a) every live schema key is classified.
+			for key := range schema {
+				_, classified := paramClassFor(arm, key)
+				assert.Truef(t, classified,
+					"schema param %q is unclassified for arm %q — consume it, reject it, or deliberately ignore it with a justification",
+					key, arm)
+			}
+
+			// (c) no set names a key absent from the live schema.
+			for key := range spec.consumed {
+				assert.Containsf(t, schema, key,
+					"arm %q names consumed param %q which is absent from mutateProperties() — stale entry (schema drift)", arm, key)
+			}
+			for key := range spec.rejected {
+				assert.Containsf(t, schema, key,
+					"arm %q names rejected param %q which is absent from mutateProperties() — stale entry (schema drift)", arm, key)
+			}
+			for key := range spec.deliberatelyIgnored {
+				assert.Containsf(t, schema, key,
+					"arm %q names deliberately-ignored param %q which is absent from mutateProperties() — stale entry (schema drift)", arm, key)
+			}
+
+			// Every deliberately-ignored entry must carry its justification: the
+			// class exists to record a reasoned drop, never to park a param.
+			for key, justification := range spec.deliberatelyIgnored {
+				assert.NotEmptyf(t, justification,
+					"arm %q ignores param %q with no justification", arm, key)
+			}
+		})
 	}
 }

@@ -17,6 +17,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
@@ -139,6 +140,18 @@ func LocateForeignNode(ctx context.Context, gc GraphCaller, graphs []ForeignGrap
 		n, err := render.FetchNodeIn(ctx, gc, id, fg.GraphType, fg.GraphName)
 		if err != nil {
 			// A transport/decode error on one graph is not fatal — keep scanning.
+			// The trade-off is deliberate: propagating would fail the callers that
+			// tolerate a missing proxy today (born-linking drops an unresolvable
+			// referent rather than failing the write), so the scan still degrades
+			// to not-found. But a SILENT skip once hid a whole broken family — a
+			// wrongly-keyed selector made every cloud/cicd probe error and the
+			// location feature no-op'd with no operator-visible signal — so the
+			// failure is logged loudly instead of dropped on the floor.
+			slog.Warn("crossgraph locate: foreign-graph probe failed",
+				"graph_type", fg.GraphType,
+				"graph_name", fg.GraphName,
+				"node_id", id,
+				"error", err)
 			continue
 		}
 		if n != nil {

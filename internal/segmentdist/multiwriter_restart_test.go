@@ -42,7 +42,7 @@ func addFlushSeg(t *testing.T, mgr *Manager, gt kgtypes.GraphType, name string, 
 	t.Helper()
 	ctx := context.Background()
 	docs := convergeDocs(8, seed)
-	require.NoError(t, mgr.AddAndShip(ctx, gt, name, docs))
+	require.NoError(t, mgr.AddAndMarkDirty(ctx, gt, name, docs))
 	require.NoError(t, mgr.Flush(ctx, gt, name))
 	export := mgr.managerFor(gt, name).engine.Export()
 	require.NotEmpty(t, export)
@@ -51,6 +51,8 @@ func addFlushSeg(t *testing.T, mgr *Manager, gt kgtypes.GraphType, name string, 
 
 // TestMultiWriterRestartReapsNothing is the restart-safety arm.
 func TestMultiWriterRestartReapsNothing(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	mgrs, svc := newMultiWriterFleet(t, 2)
 	a, b := mgrs[0], mgrs[1]
@@ -88,7 +90,7 @@ func TestMultiWriterRestartReapsNothing(t *testing.T) {
 	require.NoError(t, aRestartDM.loadFromServer(ctx))
 	require.Len(t, aRestartDM.engine.Export(), aSegs+1,
 		"the restarted writer re-imports the whole server corpus for the graph (writer-agnostic List)")
-	_, err := aRestartDM.shipAndPublish(ctx, nil, aRestartDM.locallyShipped)
+	_, err := aRestartDM.shipAndPublish(ctx, aRestartDM.locallyShipped)
 	require.NoError(t, err)
 
 	// The restarted publish reaped NOTHING of the prior corpus — the restart-tail
@@ -125,6 +127,8 @@ func distinctWriterManifestCount(svc *sharedServerFake, target *knowledgev1.Grap
 // writer that reloads + Search()es but never re-publishes keeps its manifest +
 // blobs across other writers' repeated ship/publish churn.
 func TestMultiWriterGoldenGraphSurvival(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	mgrs, svc := newMultiWriterFleet(t, 2)
 	golden, churner := mgrs[0], mgrs[1]

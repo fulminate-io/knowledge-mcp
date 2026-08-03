@@ -59,7 +59,7 @@ func RenderTree(
 	if node.Description != "" && depth > 0 {
 		fmt.Fprintf(sb, "%s  %s\n", indent, truncate(node.Description, 120))
 	}
-	fmt.Fprintf(sb, "%s  ID: %s\n", indent, node.Id)
+	fmt.Fprintf(sb, "%s  ID: %s%s\n", indent, node.Id, updatedSuffix(node))
 
 	if depth >= maxDepth {
 		return
@@ -114,7 +114,7 @@ func RenderTreeFromIndex(
 	if node.Description != "" && depth > 0 {
 		fmt.Fprintf(sb, "%s  %s\n", indent, truncate(node.Description, 120))
 	}
-	fmt.Fprintf(sb, "%s  ID: %s\n", indent, node.Id)
+	fmt.Fprintf(sb, "%s  ID: %s%s\n", indent, node.Id, updatedSuffix(node))
 
 	if depth >= maxDepth {
 		return

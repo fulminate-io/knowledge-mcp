@@ -11,8 +11,7 @@ import (
 
 // standard14_widths.dat is sourced from collector/pdf/font/ — fixturelib
 // embeds the SAME byte sequence the runtime path under collector/pdf/font/
-// embeds (Option A layering, recorded in Phase 1 think for plan d76acb28).
-// Both packages parse the .dat independently; neither imports the other,
+// embeds. Both packages parse the .dat independently; neither imports the other,
 // proving single-sourcing via the .dat byte sequence rather than a shared
 // Go-level helper. Layering audit:
 //
@@ -133,8 +132,8 @@ func standard14WidthsFor(baseFont string) (firstChar int, widths []int, ok bool)
 // winAnsiCodeToGlyphName is fixturelib's local mini WinAnsiEncoding
 // table, derived from PDF 32000-1:2008 Annex D Table D.2. Kept here
 // (and not imported from font/) because fixturelib must remain
-// independent of the runtime font/ package per the Option A layering
-// audit (Phase 1 think note for plan d76acb28). Only the codes used
+// independent of the runtime font/ package — that independence is what
+// the layering audit above proves. Only the codes used
 // by SimpleFontSpec auto-population matter; missing slots return ""
 // and the corresponding width is set to 0.
 func winAnsiCodeToGlyphName(code int) string {

@@ -26,9 +26,10 @@ import (
 //     KNOWLEDGE graph and the TO resolves in practice/<language>, it materializes
 //     the deterministic practice proxy (store.BuildCrossGraphProxy) and writes
 //     it plus the from->proxy edge into the knowledge graph via the Execute
-//     seam: the proxy UPSERT rides the type-blind engine MUTATION_KIND_UPSERT arm
-//     (NOT the legacy handleMutateUpsert, which blocks type=proxy via
-//     ValidateSystemManagedType), and the LINK rides MUTATION_KIND_LINK.
+//     seam: the proxy UPSERT rides the engine MUTATION_KIND_UPSERT arm, on whose
+//     type allowlist `proxy` sits — so the body bypasses create-time validation,
+//     which is what keeps this path working (the create-time system-managed-type
+//     guard rejects type=proxy outright). The LINK rides MUTATION_KIND_LINK.
 //
 // FROM-GRAPH GUARD (dangling-edge fix): the proxy branch claims ONLY when a.From
 // resolves in KNOWLEDGE. A code/cloud/cicd FROM (e.g. a documented
@@ -43,8 +44,18 @@ import (
 // fully handle: link_graph, the FROM-in-practice/TO-elsewhere direction (the
 // symmetric ResolveOrProxy-on-FROM case), and a non-knowledge/unresolved FROM.
 // The server's best-effort RefreshProxyKeywords is INTENTIONALLY omitted — it
-// operates on the linkage graph and is not needed for link correctness (finding
-// 48bbf0c8); the interactive proxy lands in knowledge.
+// operates on the linkage graph and is not needed for link correctness; the
+// interactive proxy lands in knowledge.
+// gateCrossGraphLink runs the cross-graph composer's param accounting. It is
+// the arm's SINGLE gate call site, deliberately invoked from each point where
+// the composer has COMMITTED to claiming the call rather than once at the top:
+// this arm's surface is narrower than the engine LINK arm's, so gating before
+// the claim decision would reject shapes the composer never handles and the
+// engine routes correctly.
+func gateCrossGraphLink(a mutateArgs) error {
+	return accountMutateParams(armLinkCrossGraph, a)
+}
+
 func handleClientCrossGraphLink(ctx context.Context, deps ClientDeps, a mutateArgs) (bool, kgtools.ToolResult) {
 	if a.From == "" || a.To == "" || a.Relationship == "" {
 		// Missing a required field — let the legacy handler surface its own
@@ -64,12 +75,25 @@ func handleClientCrossGraphLink(ctx context.Context, deps ClientDeps, a mutateAr
 
 	// link_graph:"linkage" (e.g. the interactive mutate(link, link_graph:linkage)):
 	// the client OWNS this path via crossgraph.ResolveAndLink targeting the LINKAGE
-	// graph, carrying the edge metadata — no server-side ResolveOrProxy. A
-	// link_graph value OTHER than "linkage" (none exists today; defensive) falls
-	// through to legacy.
+	// graph, carrying the edge metadata — no server-side ResolveOrProxy.
+	//
+	// DECLINING A link_graph SHAPE IS NOW A REJECT, NOT A FALL-THROUGH. Any
+	// link_graph call this composer does not claim — a value other than
+	// "linkage" (none exists today; defensive), or a linkage call whose
+	// ResolveAndLink declines — reaches the engine LINK arm's accounting, which
+	// rejects link_graph because the engine provably cannot route it
+	// (engine/compile_mutate.go returns (nil,false) for any non-empty
+	// LinkGraph). The decline is therefore terminal rather than a hand-off.
+	// Note the transient case: ResolveAndLink declines on a foreign-graph
+	// ENUMERATION failure, so an infra blip surfaces as that rejection and the
+	// same call can succeed on retry — which is why the rejection carries a
+	// retry hint rather than the generic not-routed wording.
 	if a.LinkGraph != "" {
 		if a.LinkGraph != "linkage" {
 			return false, kgtools.ToolResult{}
+		}
+		if err := gateCrossGraphLink(a); err != nil {
+			return true, errorResult(err.Error())
 		}
 		handled, res, lerr := crossgraph.ResolveAndLink(ctx, gc, ex, crossgraph.LinkRequest{
 			From: a.From, To: a.To, Relationship: a.Relationship,
@@ -109,7 +133,14 @@ func handleClientCrossGraphLink(ctx context.Context, deps ClientDeps, a mutateAr
 		}
 	}
 
-	// Cross-graph confirmed. Run the slug-less→slug-ful practice-proxy migration
+	// Cross-graph confirmed — the composer OWNS this call from here, so this is
+	// where its param accounting belongs. Everything above is a decline path
+	// that must reach the engine LINK arm with its own (wider) surface.
+	if err := gateCrossGraphLink(a); err != nil {
+		return true, errorResult(err.Error())
+	}
+
+	// Run the slug-less→slug-ful practice-proxy migration
 	// once per session (lazy-on-first-cross-graph-link, mirroring RepoResolver's
 	// lazy-on-first-use shape). Best-effort: never blocks the link being composed.
 	migratePracticeProxiesOnce(ctx, gc)

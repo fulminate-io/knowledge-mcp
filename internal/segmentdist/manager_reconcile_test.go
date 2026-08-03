@@ -49,6 +49,8 @@ func shipHNSWMetas(t *testing.T, view *fakeSegmentSource, target *knowledgev1.Gr
 // fresh (cold, resident=0) Manager — ReconcileResidentDegenerate load()s the corpus
 // cache-first → resident >= floor → degenerate=false (no rebuild needed).
 func TestReconcileResidentDegenerate_ColdHeals(t *testing.T) {
+	t.Parallel()
+
 	_, gc := newSegmentHarness(t)
 	ctx := context.Background()
 	target := &knowledgev1.GraphSelector{Graph: "code", Repo: "coldRepo"}
@@ -56,7 +58,7 @@ func TestReconcileResidentDegenerate_ColdHeals(t *testing.T) {
 	// Ship a real HNSW corpus (1024 docs == one sealed segment) via a producer
 	// Manager pointed at the same server.
 	producer := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
-	require.NoError(t, producer.AddAndShip(ctx, kgtypes.GraphCode, "coldRepo", hnswVecDocs(1024)))
+	seedShipped(t, ctx, producer, kgtypes.GraphCode, "coldRepo", hnswVecDocs(1024))
 	require.GreaterOrEqual(t, serverHNSWDocCount(t, gc, target), residentBackstopFloor)
 
 	// A FRESH consumer Manager starts cold (resident 0). The probe load()s first.
@@ -78,6 +80,8 @@ func TestReconcileResidentDegenerate_ColdHeals(t *testing.T) {
 // empty) — the case the read-side recoverIfDegenerate would also catch, but here on
 // the startup/periodic edge with no Search.
 func TestReconcileResidentDegenerate_Incident(t *testing.T) {
+	t.Parallel()
+
 	gc := newEmptyFetchHarness(t)
 	ctx := context.Background()
 	target := &knowledgev1.GraphSelector{Graph: "code", Repo: "incidentRepo"}
@@ -108,13 +112,16 @@ func TestReconcileResidentDegenerate_Incident(t *testing.T) {
 // floor → degenerate=true. GREEN after the recoverIfDegenerate re-wire: the cheap
 // re-import pulls the full corpus, resident >= floor → degenerate=false.
 func TestReconcileResidentDegenerate_PartialL2HealsViaServerReimport(t *testing.T) {
+	t.Parallel()
+
 	_, gc := newSegmentHarness(t)
 	ctx := context.Background()
 
 	// Server holds a real, Fetch-able full HNSW corpus (>> floor) shipped by a
 	// producer Manager pointed at the same server.
 	producer := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
-	require.NoError(t, producer.AddAndShip(ctx, kgtypes.GraphCode, "partialHealRepo", hnswVecDocs(1024)))
+	require.NoError(t, producer.AddAndMarkDirty(ctx, kgtypes.GraphCode, "partialHealRepo", hnswVecDocs(1024)))
+	require.NoError(t, producer.ReEmitDirtyBuckets(ctx, kgtypes.GraphCode, "partialHealRepo"))
 
 	// Consumer Manager. Grab the SAME dm ReconcileResidentDegenerate will use, then
 	// force the partial-L2-already-loaded state: import a sub-floor segment, latch
@@ -147,6 +154,8 @@ func TestReconcileResidentDegenerate_PartialL2HealsViaServerReimport(t *testing.
 // sub-floor disarms, mirroring recoverIfDegenerate's so the reconcile never storms a
 // migrating fleet or churns a tiny graph.
 func TestReconcileResidentDegenerate_Disarms(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 
 	t.Run("pre-doc_count blob disarms (DocCount==0)", func(t *testing.T) {

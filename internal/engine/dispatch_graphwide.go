@@ -56,24 +56,38 @@ func dispatchGraphWideEdges(ctx context.Context, exec ExecuteFn, args json.RawMe
 
 // dispatchGraphWideJSON serves the hydrated arm: renderGraphWideJSON emits
 // id/name/type/status/description per node and no wire projection carries that
-// shape, so this enumeration stays a full match-all node read. It is a NAMED
-// SURVIVOR of the bounded-reads census (bootstrap/bounded_reads_census_test.go)
-// for exactly that reason — not an oversight.
+// shape, so this enumeration hydrates full nodes rather than bare ids. It reads
+// them in BOUNDED keyset pages all the same — the hydration shape is why it
+// cannot use the ids-only twin, never a reason to leave the read uncapped.
 func dispatchGraphWideJSON(ctx context.Context, exec ExecuteFn, a traverseArgs, target *knowledgev1.GraphSelector) (kgtools.ToolResult, bool) {
-	nodesPlan := &knowledgev1.QueryPlan{Selection: &knowledgev1.Selection{}}
-	applyTombstones(nodesPlan, a.IncludeTombstones)
-	nodesResp, err := exec(ctx, &knowledgev1.ExecuteRequest{
-		Plan:   &knowledgev1.ExecuteRequest_Query{Query: nodesPlan},
-		Target: target,
-	})
+	nodes, err := DrainKeysetPages(func(afterID string) ([]*knowledgev1.Node, error) {
+		cursor := afterID
+		nodesPlan := &knowledgev1.QueryPlan{
+			Selection: &knowledgev1.Selection{},
+			Limit:     int32(BrowsePageSize),
+			// SET on every page including the first, where the value is empty:
+			// presence is what selects the keyset browse.
+			AfterId:   &cursor,
+			SkipTotal: true,
+		}
+		applyTombstones(nodesPlan, a.IncludeTombstones)
+		nodesResp, rerr := exec(ctx, &knowledgev1.ExecuteRequest{
+			Plan:   &knowledgev1.ExecuteRequest_Query{Query: nodesPlan},
+			Target: target,
+		})
+		if rerr != nil {
+			return nil, rerr
+		}
+		page, derr := DecodeNodes(nodesResp)
+		if derr != nil {
+			return nil, fmt.Errorf("graph-wide node enumeration decode: %w", derr)
+		}
+		return page, nil
+	}, BrowsePageSize)
 	if err != nil {
 		return renderEngineError(err), true
 	}
-	nodes, derr := DecodeNodes(nodesResp)
-	if derr != nil {
-		return errorResult("graph-wide node enumeration decode: " + derr.Error()), true
-	}
-	edges, err := graphWideEdgeUnion(ctx, exec, len(nodes), a.EdgeTypes, a.Graph, target)
+	edges, err := graphWideEdgeUnion(ctx, exec, nodeIDsOf(nodes), a.EdgeTypes, a.Graph, target)
 	if err != nil {
 		return renderEngineError(err), true
 	}
@@ -111,7 +125,7 @@ func dispatchGraphWideText(ctx context.Context, exec ExecuteFn, a traverseArgs, 
 		return renderEngineError(err), true
 	}
 
-	edges, uerr := graphWideEdgeUnion(ctx, exec, len(ids), a.EdgeTypes, a.Graph, target)
+	edges, uerr := graphWideEdgeUnion(ctx, exec, ids, a.EdgeTypes, a.Graph, target)
 	if uerr != nil {
 		return renderEngineError(uerr), true
 	}
@@ -119,14 +133,15 @@ func dispatchGraphWideText(ctx context.Context, exec ExecuteFn, a traverseArgs, 
 }
 
 // nodeIDSet indexes the enumerated nodes for the render-side source membership
-// check. The match-all read returns every stored edge, including a dangling one
-// left behind when a node was hard-deleted without its edges: neither endpoint
-// exists, and a vanished node is not a tombstoned node, so no tombstone filter
-// catches it (~0.16% of edges on a real graph). The id-pivoted read this replaced
-// could not return those, because a dangling endpoint is never in the pivot set.
-// The renderers therefore skip an edge whose source is not in the enumerated set,
-// keeping the rendered list exactly what it was — using the ids already fetched
-// for the response, so no extra round trip.
+// check. It was the sole defense against DANGLING edges under the match-all read:
+// that read returned every stored edge, including one left behind when a node was
+// hard-deleted without its edges — neither endpoint exists, and a vanished node is
+// not a tombstoned node, so no tombstone filter catches it (~0.16% of edges on a
+// real graph). The read is id-pivoted again, and a dangling endpoint is never in
+// the pivot set, so those edges can no longer arrive at all: this filter is now
+// belt-and-braces rather than load-bearing. It stays because it costs nothing —
+// the ids were already fetched for the response — and keeps the renderers correct
+// independent of the read shape.
 func nodeIDSet(ids []string) map[string]struct{} {
 	known := make(map[string]struct{}, len(ids))
 	for _, id := range ids {
@@ -145,34 +160,39 @@ func nodeIDsOf(nodes []*knowledgev1.Node) []string {
 	return ids
 }
 
-// graphWideEdgeUnion issues ONE match-all RETURN_MODE_EDGES read — a plan with no
-// pivot discriminant, which the engine reads as "every edge of the graph" — and
-// returns those edges. nodeCount is the enumerated node count and gates the call:
-// a graph with no nodes has no edges to render, and skipping the Execute keeps
-// the empty-graph shape identical to the id-pivoted read this replaced. A count
-// is all the gate ever needed, which is what lets the text arm enumerate ids
-// only. The renderers apply the source-membership check (nodeIDSet). edge_types
-// are canonicalized per-graph client-side.
-func graphWideEdgeUnion(ctx context.Context, exec ExecuteFn, nodeCount int, edgeTypes []string, graph string, target *knowledgev1.GraphSelector) ([]knowledgev1.Edge, error) {
-	if nodeCount == 0 {
-		return nil, nil
-	}
-	sel := &knowledgev1.Selection{}
-	if len(edgeTypes) > 0 {
-		sel.EdgeTypes = canonicalEdgeCasings(graph, edgeTypes)
-	}
-	edgesPlan := &knowledgev1.QueryPlan{
-		Selection:  sel,
-		ReturnMode: knowledgev1.ReturnMode_RETURN_MODE_EDGES,
-	}
-	resp, err := exec(ctx, &knowledgev1.ExecuteRequest{
-		Plan:   &knowledgev1.ExecuteRequest_Query{Query: edgesPlan},
-		Target: target,
+// graphWideEdgeUnion reads every edge incident to the enumerated ids in BOUNDED
+// PIVOT PAGES and returns their union. It takes the ids themselves rather than
+// only their count because the ids ARE the pivot set now: the match-all read it
+// used to issue — one plan with no pivot discriminant, which the engine read as
+// "every edge of the graph" — was unbounded by construction, and a user-supplied
+// read whose cost scales with the whole edge table is precisely the surface this
+// must no longer expose. An empty id set still skips the read entirely, keeping
+// the empty-graph shape unchanged. The renderers apply the source-membership
+// check (nodeIDSet). edge_types are canonicalized per-graph client-side.
+//
+// The per-page Limit and the drain's edgeCap are deliberately the same number:
+// one is what the server enforces, the other is what the drain uses to notice it.
+func graphWideEdgeUnion(ctx context.Context, exec ExecuteFn, ids []string, edgeTypes []string, graph string, target *knowledgev1.GraphSelector) ([]knowledgev1.Edge, error) {
+	return DrainPivotEdges(ids, EdgePivotPageSize, CorrelationsEdgeScanCap, func(idPage []string) ([]knowledgev1.Edge, error) {
+		sel := &knowledgev1.Selection{}
+		if len(edgeTypes) > 0 {
+			sel.EdgeTypes = canonicalEdgeCasings(graph, edgeTypes)
+		}
+		edgesPlan := &knowledgev1.QueryPlan{
+			Ids:        idPage,
+			Selection:  sel,
+			ReturnMode: knowledgev1.ReturnMode_RETURN_MODE_EDGES,
+			Limit:      int32(CorrelationsEdgeScanCap),
+		}
+		resp, err := exec(ctx, &knowledgev1.ExecuteRequest{
+			Plan:   &knowledgev1.ExecuteRequest_Query{Query: edgesPlan},
+			Target: target,
+		})
+		if err != nil {
+			return nil, err
+		}
+		return DecodeEdges(resp)
 	})
-	if err != nil {
-		return nil, err
-	}
-	return DecodeEdges(resp)
 }
 
 // renderGraphWideJSON emits the structured {start,graph,direction,nodes,edges}

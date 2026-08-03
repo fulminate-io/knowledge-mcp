@@ -18,14 +18,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
-	"sort"
 	"strings"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/crossgraph"
-	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgwire"
 	"github.com/fulminate-io/knowledge-mcp/internal/validate"
@@ -107,7 +105,13 @@ type composeThoughtArgs struct {
 // (empty => "main"); when it resolves to a seeded agent node, the EdgeProduced
 // hub edge also rides the batch. Code referents mechanically extracted from
 // summary+content are resolve-or-dropped and born-linked on the same batch.
-// Returns the created thought's ID.
+//
+// Returns a thinkReceipt of what LANDED — the new thought's ID plus the session
+// node it resolved to, whether the ticket contains edge rode the batch, the
+// resolved/unresolved link split, and the born-link count. The outcomes are
+// collected here because this is the only place that holds them; the render tail
+// reports them instead of echoing the caller's own arguments back (see
+// intercept_thoughts_think_receipt.go for why that distinction is load-bearing).
 //
 // PERF: faithful session reproduction needs a get-or-create-session READ + a
 // session-thoughts READ (one EdgeKGContains traverse) BEFORE the create so the
@@ -121,15 +125,21 @@ type composeThoughtArgs struct {
 // Call — explicitly accepted; the create itself is ONE Execute (PersistBatch)
 // carrying the session containment edge, the EdgeNext lineage is a single bounded
 // LinkOne, and the status chase-up is at most one more Execute.
-func composeThoughtCreate(ctx context.Context, gc GraphCaller, a composeThoughtArgs) (string, error) {
+func composeThoughtCreate(ctx context.Context, gc GraphCaller, a composeThoughtArgs) (thinkReceipt, error) {
 	source := a.Source
 	if source == "" {
 		source = "llm:claude"
 	}
+	receipt := thinkReceipt{
+		SessionName:  a.Session,
+		TicketID:     a.Ticket,
+		BranchesFrom: a.BranchesFrom,
+	}
 
 	// Resolve cross-graph links (3-outcome mirror of ResolveOrProxy). Enumerate
 	// the foreign graph list once, reuse across all links.
-	resolvedLinks := resolveThinkLinks(ctx, gc, a.Links)
+	resolvedLinks, linkOutcome := resolveThinkLinks(ctx, gc, a.Links)
+	receipt.LinksResolved, receipt.LinksUnresolved = linkOutcome.resolved, linkOutcome.unresolved
 
 	// Session get-or-create + previous-thought read BEFORE the create, so the
 	// EdgeNext lineage edge can point from the prior session thought.
@@ -138,9 +148,10 @@ func composeThoughtCreate(ctx context.Context, gc GraphCaller, a composeThoughtA
 	if a.Session != "" {
 		sid, serr := getOrCreateThoughtSessionClient(ctx, gc, a.Session)
 		if serr != nil {
-			return "", serr
+			return thinkReceipt{}, serr
 		}
 		sessionID = sid
+		receipt.SessionID = sid
 		prevThoughtID = lastSessionThoughtID(ctx, gc, sessionID)
 	}
 
@@ -169,20 +180,75 @@ func composeThoughtCreate(ctx context.Context, gc GraphCaller, a composeThoughtA
 		originVal = "main"
 	}
 	kgtypes.SetValue(&thoughtNode, "origin", originVal)
+
+	edges := composeThoughtEdges(ctx, gc, a, thoughtEdgeInputs{
+		sessionID:     sessionID,
+		originVal:     originVal,
+		resolvedLinks: resolvedLinks,
+	}, &receipt)
+
+	ids, err := PersistBatch(ctx, gc, []*knowledgev1.Node{&thoughtNode}, edges, "")
+	if err != nil {
+		return thinkReceipt{}, err
+	}
+	if len(ids) == 0 {
+		return thinkReceipt{}, fmt.Errorf("create returned no id")
+	}
+	id := ids[0]
+	receipt.ID = id
+
+	// Session EdgeNext lineage (needs the new thought ID): prev→thought when the
+	// session held a prior thought. The session→thought EdgeKGContains edge already
+	// rode the create_batch above (atomic); EdgeNext stays a post-create link
+	// because its source (prevThoughtID) is the PRIOR session thought, not slot 0,
+	// and a failed EdgeNext is a benign lineage gap (containment is intact).
+	if lerr := linkSessionLineage(ctx, gc, prevThoughtID, id); lerr != "" {
+		return thinkReceipt{}, fmt.Errorf("%s", lerr)
+	}
+
+	// Caller requested a non-default status — chase up with a by-id UPDATE.
+	if uerr := chaseThinkStatus(ctx, gc, id, a.Status); uerr != "" {
+		return thinkReceipt{}, fmt.Errorf("%s", uerr)
+	}
+
+	return receipt, nil
+}
+
+// thoughtEdgeInputs carries the values composeThoughtCreate resolved BEFORE the
+// batch is assembled — the session node id (pre-resolved so its containment edge
+// can ride the create atomically), the normalized origin, and the resolved link
+// ids. Grouped into one struct so the edge assembly takes a readable parameter
+// list rather than five positional strings and slices.
+type thoughtEdgeInputs struct {
+	sessionID     string
+	originVal     string
+	resolvedLinks []string
+}
+
+// composeThoughtEdges assembles EVERY batch edge the new thought (slot 0) rides
+// with: session containment, branches-from, the caller's relates-to links, the
+// born-link code referents, the ticket containment, and the origin hub edge. All
+// of them ride the SAME create_batch as the node, which is what makes them atomic
+// with it — a created thought can never exist without the edges assembled here.
+//
+// It also fills the outcome fields of receipt that are only knowable at assembly
+// time (born-link count, ticket linked-or-dropped), which is why receipt is a
+// pointer: the write receipt reports what the batch actually carried.
+func composeThoughtEdges(ctx context.Context, gc GraphCaller, a composeThoughtArgs, in thoughtEdgeInputs, receipt *thinkReceipt) []kgwire.BatchEdge {
 	var edges []kgwire.BatchEdge
 	// Session containment rides the SAME create_batch as the thought node (slot 0)
 	// — session--contains-->thought as an existing-node FROM endpoint (sessionID
-	// resolved pre-batch above). This makes the contains edge ATOMIC with the
-	// thought create: a created thought-with-session can never exist without its
+	// resolved pre-batch by the caller). This makes the contains edge ATOMIC with
+	// the thought create: a created thought-with-session can never exist without its
 	// containment edge (the live orphan-leak bug this fixes). Mirrors the
 	// handleChargeClient idiom (thought_parent--charged_by-->charge on slot 0).
-	if sessionID != "" {
-		edges = append(edges, kgwire.BatchEdge{FromIdx: -1, FromID: sessionID, ToIdx: 0, Type: kgtypes.EdgeKGContains})
+	if in.sessionID != "" {
+		edges = append(edges, kgwire.BatchEdge{FromIdx: -1, FromID: in.sessionID, ToIdx: 0, Type: kgtypes.EdgeKGContains})
 	}
 	if a.BranchesFrom != "" {
 		edges = append(edges, kgwire.BatchEdge{FromIdx: 0, ToIdx: -1, ToID: a.BranchesFrom, Type: kgtypes.EdgeBranchesFrom})
 	}
-	for _, linkID := range resolvedLinks {
+	for _, linkID := range in.resolvedLinks {
 		if linkID == "" {
 			continue
 		}
@@ -191,7 +257,9 @@ func composeThoughtCreate(ctx context.Context, gc GraphCaller, a composeThoughtA
 	// Born-link arm: extracted code referents resolve-or-drop to knowledge-graph
 	// proxies, each riding a thought--relates-to-->proxy (Method="code-ref") edge on
 	// the SAME create_batch (see bornLinkCodeEdges). Atomic; never blocking.
-	edges = append(edges, bornLinkCodeEdges(ctx, gc, a.Summary, a.Content)...)
+	bornLinks := bornLinkCodeEdges(ctx, gc, a.Summary, a.Content)
+	receipt.BornLinks = len(bornLinks)
+	edges = append(edges, bornLinks...)
 
 	// Ticket context: a resolvable ticket_id rides the SAME create_batch
 	// as the branches_from/links edges (ticket--contains-->thought, slot 0). An
@@ -202,6 +270,10 @@ func composeThoughtCreate(ctx context.Context, gc GraphCaller, a composeThoughtA
 	if a.Ticket != "" {
 		cl := buildContextLinks(ctx, gc, a.Ticket, "", nil)
 		edges = append(edges, cl.batchEdges...)
+		// A ticket edge on the batch IS the linked outcome: buildContextLinks
+		// pre-validates the ticket and emits the contains edge only on a hit, so
+		// an empty batchEdges here means the ticket was dropped.
+		receipt.TicketLinked = len(cl.batchEdges) > 0
 		for _, w := range cl.warnings {
 			slog.Warn("think: context link dropped", "detail", w)
 		}
@@ -210,32 +282,7 @@ func composeThoughtCreate(ctx context.Context, gc GraphCaller, a composeThoughtA
 	// Origin hub edge: when the origin resolves to a seeded agent node, an
 	// agent--produced-->thought edge rides the SAME create_batch (see
 	// originHubEdges). An unresolvable origin writes no edge — never blocking.
-	edges = append(edges, originHubEdges(ctx, gc, a.Origin, originVal)...)
-
-	ids, err := PersistBatch(ctx, gc, []*knowledgev1.Node{&thoughtNode}, edges, "")
-	if err != nil {
-		return "", err
-	}
-	if len(ids) == 0 {
-		return "", fmt.Errorf("create returned no id")
-	}
-	id := ids[0]
-
-	// Session EdgeNext lineage (needs the new thought ID): prev→thought when the
-	// session held a prior thought. The session→thought EdgeKGContains edge already
-	// rode the create_batch above (atomic); EdgeNext stays a post-create link
-	// because its source (prevThoughtID) is the PRIOR session thought, not slot 0,
-	// and a failed EdgeNext is a benign lineage gap (containment is intact).
-	if lerr := linkSessionLineage(ctx, gc, prevThoughtID, id); lerr != "" {
-		return "", fmt.Errorf("%s", lerr)
-	}
-
-	// Caller requested a non-default status — chase up with a by-id UPDATE.
-	if uerr := chaseThinkStatus(ctx, gc, id, a.Status); uerr != "" {
-		return "", fmt.Errorf("%s", uerr)
-	}
-
-	return id, nil
+	return append(edges, originHubEdges(ctx, gc, a.Origin, in.originVal)...)
 }
 
 // originHubEdges resolves the developer-origin role to a seeded agent node and,
@@ -260,8 +307,9 @@ func originHubEdges(ctx context.Context, gc GraphCaller, origin, originVal strin
 // handleThinkClient claims thoughts(operation:think) and lowers it onto a
 // generic create_batch MutationPlan via the reusable composeThoughtCreate
 // composition (which reproduces handleMutateCreateThought). This handler owns
-// only the thoughts(think) parse + content validation + render tail; the
-// node/edge/session composition lives in composeThoughtCreate.
+// only the thoughts(think) parse + content validation + the receipt render and
+// its non-fatal warnings; the node/edge/session composition lives in
+// composeThoughtCreate.
 func handleThinkClient(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) kgtools.ToolResult {
 	gc := deps.GraphCaller()
 	if gc == nil {
@@ -287,7 +335,7 @@ func handleThinkClient(ctx context.Context, deps ClientDeps, params kgtools.Call
 	}
 	a.Summary = clamped
 
-	id, err := composeThoughtCreate(ctx, gc, composeThoughtArgs{
+	receipt, err := composeThoughtCreate(ctx, gc, composeThoughtArgs{
 		Content: a.Content,
 		// a.Summary is already trimmed + clamped by validate.ClampSummary.
 		Summary:      a.Summary,
@@ -304,10 +352,19 @@ func handleThinkClient(ctx context.Context, deps ClientDeps, params kgtools.Call
 	}
 
 	var sb strings.Builder
-	sb.WriteString(renderThinkTail(id, a))
+	sb.WriteString(renderThinkTail(receipt))
+	// Non-fatal warnings, in one section below the receipt: the summary clamp,
+	// then the parameter-shaped-tail advisory. The advisory NEVER refuses — see
+	// intercept_thoughts_think_receipt.go — so it is appended after a successful
+	// write, alongside the receipt it defers to for what actually landed.
+	var warnings []string
 	if clampWarn != "" {
-		writeClientWarningsSection(&sb, []string{clampWarn}, "\n\n")
+		warnings = append(warnings, clampWarn)
 	}
+	if tailWarn := paramShapedTailWarning(a.Content); tailWarn != "" {
+		warnings = append(warnings, tailWarn)
+	}
+	writeClientWarningsSection(&sb, warnings, "\n\n")
 	return textResult(sb.String())
 }
 
@@ -328,19 +385,6 @@ func chaseThinkStatus(ctx context.Context, gc GraphCaller, id, status string) st
 	return ""
 }
 
-// renderThinkTail builds the "Thought recorded → ID: ..." render + optional
-// Session / Branches-from lines, matching the server tail verbatim.
-func renderThinkTail(id string, a thinkArgs) string {
-	sb := fmt.Sprintf("Thought recorded → ID: %s", id)
-	if a.Session != "" {
-		sb += fmt.Sprintf("\nSession: %s", a.Session)
-	}
-	if a.BranchesFrom != "" {
-		sb += fmt.Sprintf("\nBranches from: %s", a.BranchesFrom)
-	}
-	return sb
-}
-
 // linkSessionLineage wires the EdgeNext lineage edge AFTER the thought create
 // (it needs the new thought ID): EdgeNext prev→thought when the session held a
 // prior thought. The session→thought EdgeKGContains edge is NOT linked here — it
@@ -356,12 +400,26 @@ func linkSessionLineage(ctx context.Context, gc GraphCaller, prevThoughtID, thou
 	return ""
 }
 
+// linkResolveOutcome counts how the caller's link ids fared, for the write
+// receipt. unresolved is NOT "dropped": a no-hit id still rides the batch as a
+// raw relates-to target (server outcome c), so the edge is attempted — the count
+// exists so a caller can see that an id it passed matched nothing indexed.
+type linkResolveOutcome struct {
+	resolved   int
+	unresolved int
+}
+
 // resolveThinkLinks resolves each link id via the shared 3-outcome
-// resolveCrossGraphID (knowledge→raw, foreign→proxy, no-hit→raw as-is),
-// enumerating the foreign graph list once.
-func resolveThinkLinks(ctx context.Context, gc GraphCaller, links []string) []string {
+// resolveCrossGraphIDOutcome (knowledge→resolved id, foreign→proxy, no-hit→raw
+// as-is), enumerating the foreign graph list once, and reports the
+// resolved/unresolved split alongside the resolved ids — the outcome-reporting
+// form is used precisely because the split is invisible in the returned ids.
+// Empty entries are neither resolved nor unresolved: the composer skips them
+// when building edges.
+func resolveThinkLinks(ctx context.Context, gc GraphCaller, links []string) ([]string, linkResolveOutcome) {
+	var outcome linkResolveOutcome
 	if len(links) == 0 {
-		return nil
+		return nil, outcome
 	}
 	ex, _ := persistExecutor(gc)
 	var graphs []crossgraph.ForeignGraph
@@ -370,119 +428,18 @@ func resolveThinkLinks(ctx context.Context, gc GraphCaller, links []string) []st
 	}
 	out := make([]string, 0, len(links))
 	for _, l := range links {
-		out = append(out, resolveCrossGraphID(ctx, gc, ex, graphs, l))
-	}
-	return out
-}
-
-// getOrCreateThoughtSessionClient resolves a session by name, store-portably:
-// it issues a bounded symbol_name-EQ field-predicate browse over
-// NodeThoughtSession (Selection.field_predicates, the server applies the WHERE
-// where supported), then ALWAYS filters the returned rows to SymbolName==name
-// client-side — defense-in-depth that stays correct even against an old or
-// predicate-blind server that ignores field_predicates, so the resolver never
-// attaches to a wrong-named session. On a same-name collision it returns the
-// lowest id (sort.Strings, ids[0]) over the filtered set — the lowest-id tie-break
-// idiom reproducing the deleted resolveSessionsByName backfill — else it creates a
-// new session node and returns its id. The browse sets no explicit limit, so it
-// inherits browseDefaultLimit=10; the store orders matches by id, keeping the
-// lowest id on page one, so the tie-break is deterministic without a drain. The
-// browse rides the Execute carrier (engine.DecodeNodes). The prior limit:0 browse
-// — capped to browseDefaultLimit=10, so the existing session fell off the page
-// once the corpus exceeded 10 sessions — was the duplicate-spawning defect this
-// resolve replaces.
-func getOrCreateThoughtSessionClient(ctx context.Context, gc GraphCaller, name string) (string, error) {
-	args, err := json.Marshal(map[string]any{
-		"type": string(kgtypes.NodeThoughtSession),
-		"field_predicates": []map[string]string{
-			{"field": "symbol_name", "op": "eq", "value": name},
-		},
-	})
-	if err != nil {
-		return "", fmt.Errorf("marshal session browse: %w", err)
-	}
-	resp, err := executeQuery(ctx, gc, args)
-	if err != nil {
-		return "", fmt.Errorf("session browse: %w", err)
-	}
-	sessions, derr := engine.DecodeNodes(resp)
-	if derr != nil {
-		return "", fmt.Errorf("session decode: %w", derr)
-	}
-	// Client-side SymbolName guard (DEFENSE-IN-DEPTH, store-portable — do NOT
-	// delete): against a server that HONORS field_predicates (the OSS embedded
-	// executor via nodeMatchesField, or the cloud executor's fieldPredicateClauses)
-	// the browse already returns only exact-name matches and this filter is a cheap
-	// no-op over 1-2 rows; against a predicate-BLIND server that ignored
-	// field_predicates and returned an arbitrary capped page, it is the load-bearing
-	// guard that prevents attaching to a session of the WRONG name. Collect every
-	// match id, sort, and return the lowest (the established lowest-id tie-break) so
-	// duplicate same-name sessions converge deterministically.
-	var matchIDs []string
-	for _, n := range sessions {
-		if n.SymbolName == name {
-			matchIDs = append(matchIDs, n.Id)
+		id, ok := resolveCrossGraphIDOutcome(ctx, gc, ex, graphs, l)
+		out = append(out, id)
+		switch {
+		case l == "":
+		case ok:
+			outcome.resolved++
+		default:
+			outcome.unresolved++
 		}
 	}
-	if len(matchIDs) > 0 {
-		sort.Strings(matchIDs)
-		return matchIDs[0], nil
-	}
-	// Create a new session node. NodeThoughtSession is !Summarizable
-	// (neverSummarize, node_type_eligibility.go) and is NOT in the
-	// thought/charge summary-validation carve-out (engine_mutate_validate.go:69),
-	// so it MUST carry a non-empty Summary or the server rejects the create with
-	// "summary is required". The session has no author-supplied summary (only the
-	// THOUGHT does); derive a composer summary from the session name — concise,
-	// search-optimized, and well within SummaryMaxLen for any reasonable name.
-	sessionNode := knowledgev1.Node{
-		Type:       string(kgtypes.NodeThoughtSession),
-		Source:     "llm:claude",
-		SymbolName: name,
-		Summary:    thoughtSessionSummary(name),
-	}
-	ids, perr := PersistBatch(ctx, gc, []*knowledgev1.Node{&sessionNode}, nil, "")
-	if perr != nil {
-		return "", fmt.Errorf("create session: %w", perr)
-	}
-	if len(ids) == 0 {
-		return "", fmt.Errorf("create session: no id returned")
-	}
-	return ids[0], nil
+	return out, outcome
 }
 
-// thoughtSessionSummary derives the composer-supplied, search-optimized summary
-// for an auto-created NodeThoughtSession from its name. The session has no
-// author-supplied summary (only the thought carries the new required param), so
-// the composer mints one. truncateAtWordCreate bounds it well under
-// validate.SummaryMaxLen even for a pathologically long session name.
-func thoughtSessionSummary(name string) string {
-	return truncateAtWordCreate("Reasoning session: "+name, validate.SummaryMaxLen)
-}
-
-// lastSessionThoughtID returns the ID of the most-recently-created thought
-// already in the session (the "prev" the EdgeNext lineage edge originates from),
-// or "" when the session has no prior thoughts. Mirrors getSessionThoughts +
-// the prev = thoughts[len-2] selection (tools_mutate_create_thought.go:115-119):
-// the new thought is NOT yet linked, so the current last session thought IS the
-// prev. Reads the session's contained thoughts via an EdgeKGContains traverse
-// and picks the latest by CreatedAt.
-func lastSessionThoughtID(ctx context.Context, gc GraphCaller, sessionID string) string {
-	nodes, err := TraverseDescendants(ctx, gc, sessionID, kgtypes.EdgeKGContains, 1)
-	if err != nil || len(nodes) == 0 {
-		return ""
-	}
-	var latest *knowledgev1.Node
-	for _, n := range nodes {
-		if kgtypes.NodeType(n.Type) != kgtypes.NodeThought {
-			continue
-		}
-		if latest == nil || n.CreatedAt > latest.CreatedAt {
-			latest = n
-		}
-	}
-	if latest == nil {
-		return ""
-	}
-	return latest.Id
-}
+// The session seam — getOrCreateThoughtSessionClient, thoughtSessionSummary and
+// lastSessionThoughtID — lives in intercept_thoughts_think_session.go.

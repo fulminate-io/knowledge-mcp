@@ -3,8 +3,9 @@
 // engine.go — pattern compilation pipeline for the v2 manual-walker engine.
 //
 // The compiler turns a parsed Pattern (from dsl.go) into a PatternTree the
-// runtime walker matches against target ASTs. Pipeline (per ticket
-// badce432a4917ba4b5e8867e093d0b9e "Engine architecture (locked)"):
+// runtime walker matches against target ASTs. The pipeline below is the LOCKED
+// engine architecture — its stage order is a contract, not an implementation
+// detail, because each stage's output is the next one's precondition:
 //
 //  1. Substitute every placeholder in pat.Source with a reserved-prefix
 //     identifier (e.g. `$X` → `__META_AST_X`) chosen from cfg.Reserved.

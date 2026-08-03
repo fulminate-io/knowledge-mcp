@@ -19,16 +19,21 @@ import (
 // TestReconcileSegmentCoverage_ShippedCompleteNoRebuild is the shipped-completeness-gate fix proof: a
 // graph whose READ engine is degenerate (empty Fetch → resident 0, so
 // ReconcileResidentDegenerate flags it) but whose SHIPPED corpus already COVERS the
-// embedded node count must NOT be rebuilt. The read engine is merely lazily loaded,
-// and a PG RebuildSegments writes the DETERMINISTIC engine (m.detManagers) — never
-// raising the READ engine's (m.managers) resident count the probe re-reads — so
-// rebuilding would re-flag on every 5-min tick: the ~85 rebuilds/wk loop. The
-// healNeedsRebuild shipped-completeness gate skips it.
+// embedded node count must NOT be rebuilt. The read engine is merely lazily loaded, so
+// the expensive full rebuild would buy nothing the shipped corpus does not already have.
+// The healNeedsRebuild shipped-completeness gate skips it.
+//
+// THE HISTORICAL LOOP IT WAS WRITTEN AGAINST CANNOT RECUR. A PG RebuildSegments used to
+// write a SECOND, deterministic engine, so it never raised the READ engine's resident
+// count and the probe re-flagged on every 5-min tick — the ~85 rebuilds/wk loop. One
+// engine per format means a landed rebuild raises the count the probe reads. This test
+// keeps its subject regardless: the gate must skip a COMPLETE shipped corpus, which is
+// about cost rather than about how many engines exist.
 //
 // TWO reconcile passes assert scanCallCount stays FLAT at 0 — the loop is CLOSED, not
 // merely deferred one tick. Per the coverage-ratio advisory the fixture arms the REAL
 // ratio branch of segmentPoolDegenerate, NOT the sub-floor small-graph disarm:
-// embedded=64 (== segmentCoverageFloor, so the `embedded < floor` disarm does NOT
+// embedded=64 (== tools.SegmentCoverageFloor, so the `embedded < floor` disarm does NOT
 // fire) and shipped covered=64 (>= 0.5*64 ratio) → segmentPoolDegenerate=false via the
 // coverage branch.
 //
@@ -38,7 +43,7 @@ import (
 func TestReconcileSegmentCoverage_ShippedCompleteNoRebuild(t *testing.T) {
 	const (
 		repo = "shippedCompleteRepo"
-		// == segmentCoverageFloor so segmentPoolDegenerate takes the coverage-RATIO
+		// == tools.SegmentCoverageFloor so segmentPoolDegenerate takes the coverage-RATIO
 		// branch, not the sub-floor small-graph disarm (the advisory's point: exercise
 		// the real coverage branch, so the GREEN is not a vacuous tiny-graph pass).
 		embedded = 64

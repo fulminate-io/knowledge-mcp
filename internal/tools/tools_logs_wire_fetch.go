@@ -11,17 +11,18 @@
 //
 // This file owns the bulk-fetch primitives:
 //
-//   - fetchAllLogNodes — three raw type-browse Match-all Execute reads
-//     (one per log node type, Limit:0 = no cap), decodes chunk content_b64
-//     back to raw bytes. Built as raw QueryPlans (not via engine.Compile) so
-//     the LLM-facing browse default-10 does not cap the internal full pull.
+//   - fetchAllLogNodes — three raw type-browse keyset DRAINS (one per log
+//     node type, each page carrying an explicit BrowsePageSize limit), decodes
+//     chunk content_b64 back to raw bytes. Built as raw QueryPlans (not via
+//     engine.Compile) so the LLM-facing browse default-10 does not cap the
+//     internal full pull.
 //
 //   - fetchLogNodesByIDs — bulk hydrate-by-IDs (one query, no per-ID
 //     loop). Caller passes the ID list; the server's IDs-projection
 //     returns hydrated nodes in one round-trip.
 //
-// Three RPC ceiling (one per node type) for the full bulk fetch. No
-// engine cache — every MCP call refetches.
+// Three DRAINS (one per node type) for the full bulk fetch, each costing
+// O(N/BrowsePageSize) requests. No engine cache — every MCP call refetches.
 
 package tools
 
@@ -99,14 +100,15 @@ func fetchAllLogAuxNodes(
 // — required for log chunks because their Content carries raw zstd bytes
 // that don't survive plain JSON serialization.
 //
-// This is an INTERNAL Match-all aggregation: it wants EVERY node of the type
-// for the in-client logState assembly, so the plan carries Limit:0 (no cap),
-// which the server now honors per the proto contract. It builds the
-// raw typed QueryPlan and calls Execute DIRECTLY — the sibling fetchAllLogEdges
-// pattern — rather than routing through engine.Compile/the JSON query tool. The
-// compile path applies the LLM-facing browse default-10 (applyBrowseLimitOffset),
-// which would silently re-cap this internal full-type pull at 10; the raw plan
-// bypasses that default so Limit:0 reaches the store as a genuine no-cap.
+// This is an INTERNAL aggregation: it wants EVERY node of the type for the
+// in-client logState assembly, and it gets there by DRAINING keyset pages rather
+// than asking for the whole type at once. It still builds the raw typed QueryPlan
+// and calls Execute DIRECTLY — the sibling fetchAllLogEdges pattern — rather than
+// routing through engine.Compile/the JSON query tool, because the compile path
+// applies the LLM-facing browse default-10 (applyBrowseLimitOffset) and would
+// silently re-cap this internal full-type pull at 10. What the raw plan carries
+// now is an EXPLICIT per-page limit: an unbounded request is a cost a caller
+// should never be able to impose, and the drain reaches the same complete set.
 func fetchLogNodesByType(
 	ctx context.Context,
 	gc GraphCaller,
@@ -117,20 +119,26 @@ func fetchLogNodesByType(
 	if err != nil {
 		return nil, err
 	}
-	plan := &knowledgev1.QueryPlan{
-		Selection:  &knowledgev1.Selection{NodeType: nodeType},
-		ContentB64: wantContent,
-		// Limit unset → 0 → no cap (server honors the proto contract; this is an
-		// internal Match-all that wants every node of the type).
-	}
-	resp, err := ex.Execute(ctx, &knowledgev1.ExecuteRequest{
-		Plan:   &knowledgev1.ExecuteRequest_Query{Query: plan},
-		Target: &knowledgev1.GraphSelector{Graph: "logs", Name: queryID},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("rpc: %w", err)
-	}
-	return decodeLogBrowseResponse(resp, wantContent)
+	return engine.DrainKeysetPages(func(afterID string) ([]*knowledgev1.Node, error) {
+		cursor := afterID
+		plan := &knowledgev1.QueryPlan{
+			Selection:  &knowledgev1.Selection{NodeType: nodeType},
+			ContentB64: wantContent,
+			Limit:      int32(engine.BrowsePageSize),
+			// SET on every page including the first, where the value is empty:
+			// presence is what selects the keyset browse.
+			AfterId:   &cursor,
+			SkipTotal: true,
+		}
+		resp, rerr := ex.Execute(ctx, &knowledgev1.ExecuteRequest{
+			Plan:   &knowledgev1.ExecuteRequest_Query{Query: plan},
+			Target: &knowledgev1.GraphSelector{Graph: "logs", Name: queryID},
+		})
+		if rerr != nil {
+			return nil, fmt.Errorf("rpc: %w", rerr)
+		}
+		return decodeLogBrowseResponse(resp, wantContent)
+	}, engine.BrowsePageSize)
 }
 
 // fetchLogNodesByIDs hydrates a caller-supplied set of node IDs in ONE

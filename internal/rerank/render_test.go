@@ -5,6 +5,7 @@ package rerank
 import (
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 
@@ -243,7 +244,8 @@ func TestRenderForRerank_CICDNode(t *testing.T) {
 // default branch (currently renderKnowledgeForRerank) must NOT fall
 // through to renderCodeForRerank. kgtypes.NodeMetaValue is a knowledge type
 // without code-shape fields — its render must NOT contain code-only
-// fields like Signature/FilePath/Keywords.
+// fields like Signature/FilePath. (Keywords is no longer code-only: the
+// knowledge branch emits it deliberately.)
 //
 // If a future refactor reintroduces "default falls through to code",
 // this test fails because the code shape would surface a Signature
@@ -266,4 +268,136 @@ func TestRenderForRerank_DefaultNode(t *testing.T) {
 	// regresses to code rendering, the prefix flips.
 	assert.True(t, strings.HasPrefix(out, string(kgtypes.NodeMetaValue)),
 		"default branch must use knowledge render (Type prefix), not code render; got %q", out)
+}
+
+// TestRenderForRerank_KnowledgeNode_SummaryKeywordsContent verifies the
+// knowledge branch reaches parity with its four siblings: Summary and
+// Keywords surface alongside Type/SymbolName/Description/Status, and a
+// bounded slice of Content surfaces too. The five markers are deliberately
+// DISTINCT so the auto-summary duplicate-skip branch does not fire here —
+// that branch has its own test below.
+func TestRenderForRerank_KnowledgeNode_SummaryKeywordsContent(t *testing.T) {
+	n := &knowledgev1.Node{
+		Type:        string(kgtypes.NodeThought),
+		SymbolName:  "sk-title",
+		Summary:     "sk-summary-marker",
+		Keywords:    "sk-keyword-marker",
+		Description: "sk-description-marker",
+		Content:     "sk-content-marker",
+		Status:      "hypothesized",
+	}
+	out := renderForRerank(n)
+
+	assert.Contains(t, out, "sk-title")
+	assert.Contains(t, out, "sk-summary-marker")
+	assert.Contains(t, out, "sk-keyword-marker")
+	assert.Contains(t, out, "sk-description-marker")
+	assert.Contains(t, out, "sk-content-marker")
+	assert.Contains(t, out, "hypothesized")
+}
+
+// TestRenderForRerank_KnowledgeNode_ContentPrefixOfSummarySkipped covers
+// BOTH auto-summary duplicate shapes, not the prefix shape alone — the
+// function name keeps its historical "Prefix" wording but the coverage is
+// two-sided, because the server composes auto-summaries in two directions.
+// Thought summaries put Content FIRST (Content + " [status] (session: X)");
+// charge summaries put Content LAST (polarity + " charge: " + Content).
+// Either way the body text must reach the rerank document exactly once.
+//
+// The suffix case is the catcher for a one-sided HasPrefix guard: under
+// prefix-only skipping, every charge node emits its body twice and the
+// count becomes 2. The prefix case cannot catch that — it passes under
+// either guard.
+func TestRenderForRerank_KnowledgeNode_ContentPrefixOfSummarySkipped(t *testing.T) {
+	t.Run("content is a prefix of summary", func(t *testing.T) {
+		n := &knowledgev1.Node{
+			Type:       string(kgtypes.NodeThought),
+			SymbolName: "cp-title",
+			Content:    "cp-body-marker",
+			Summary:    "cp-body-marker [hypothesized] (session: s1)",
+		}
+		out := renderForRerank(n)
+		assert.Equal(t, 1, strings.Count(out, "cp-body-marker"),
+			"auto-summary body must appear once, not duplicated by Content; got %q", out)
+	})
+	t.Run("content is a suffix of summary", func(t *testing.T) {
+		n := &knowledgev1.Node{
+			Type:       string(kgtypes.NodeCharge),
+			SymbolName: "ch-title",
+			Content:    "ch-body-marker",
+			Summary:    "positive charge: ch-body-marker",
+		}
+		out := renderForRerank(n)
+		assert.Equal(t, 1, strings.Count(out, "ch-body-marker"),
+			"charge auto-summary body must appear once; a prefix-only guard emits it twice; got %q", out)
+	})
+}
+
+// TestRenderForRerank_KnowledgeNode_BodyBudgetTruncates pins the body
+// budget: text inside the budget survives, text past it is dropped, and
+// Content is skipped entirely once Summary has exhausted the budget. The
+// budget is written as the raw literal 1000 rather than read from the
+// constant — a test that reads the constant cannot catch a wrong constant,
+// so the literal here and the declaration in render.go are two independent
+// measurements that must agree.
+func TestRenderForRerank_KnowledgeNode_BodyBudgetTruncates(t *testing.T) {
+	n := &knowledgev1.Node{
+		Type:       string(kgtypes.NodeThought),
+		SymbolName: "budget-title",
+		Summary:    strings.Repeat("a", 980) + "INBUDGET" + strings.Repeat("b", 500) + "OVERBUDGET",
+		Content:    "cx-content-marker",
+	}
+	out := renderForRerank(n)
+
+	// INBUDGET ends at byte 988 of the summary, inside the 1000-byte budget.
+	assert.Contains(t, out, "INBUDGET")
+	assert.NotContains(t, out, "OVERBUDGET")
+	assert.NotContains(t, out, "cx-content-marker",
+		"Summary exhausts the budget, so Content must be skipped")
+	assert.LessOrEqual(t, len(out), 1300)
+}
+
+// TestRenderForRerank_KnowledgeNode_TruncationKeepsValidUTF8 is the catcher
+// for a byte slice taken without backing off to a rune boundary. é is two
+// bytes, so a 1000-byte cut of "x" + 600 é lands mid-rune. The Contains leg
+// keeps the test honest: without it the UTF-8 assertion passes vacuously
+// against a renderer that emits no summary at all.
+func TestRenderForRerank_KnowledgeNode_TruncationKeepsValidUTF8(t *testing.T) {
+	n := &knowledgev1.Node{
+		Type:       string(kgtypes.NodeThought),
+		SymbolName: "utf8-title",
+		Summary:    "x" + strings.Repeat("é", 600),
+	}
+	out := renderForRerank(n)
+
+	assert.True(t, utf8.ValidString(out), "truncation must not split a rune; got %q", out)
+	assert.Contains(t, out, "x"+strings.Repeat("é", 3))
+}
+
+// TestRenderForRerank_AllBranchesEmitSummary is the class catcher: every
+// render branch must emit Summary, so a sixth branch cannot ship the same
+// omission this gate exists to fix.
+//
+// SCOPE, stated honestly: this asserts the SUMMARY-INCLUSION class only.
+// Branch ROUTING is guarded separately by the Type-prefix assertion in
+// TestRenderForRerank_DefaultNode.
+func TestRenderForRerank_AllBranchesEmitSummary(t *testing.T) {
+	cases := []struct {
+		name   string
+		node   *knowledgev1.Node
+		marker string
+	}{
+		{"code", &knowledgev1.Node{Type: "function", SymbolName: "parity-code", Summary: "parity-marker-code"}, "parity-marker-code"},
+		{"cloud", &knowledgev1.Node{Type: string(kgtypes.NodeCloudResource), SymbolName: "parity-cloud", Summary: "parity-marker-cloud"}, "parity-marker-cloud"},
+		{"cicd", &knowledgev1.Node{Type: string(kgtypes.NodeCICDResource), SymbolName: "parity-cicd", Summary: "parity-marker-cicd"}, "parity-marker-cicd"},
+		{"practice", &knowledgev1.Node{Type: string(kgtypes.NodePattern), SymbolName: "parity-practice", Summary: "parity-marker-practice"}, "parity-marker-practice"},
+		{"knowledge", &knowledgev1.Node{Type: string(kgtypes.NodeDecision), SymbolName: "parity-knowledge", Summary: "parity-marker-knowledge"}, "parity-marker-knowledge"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			out := renderForRerank(tc.node)
+			assert.Contains(t, out, tc.marker,
+				"branch %s must emit Summary into the rerank document", tc.name)
+		})
+	}
 }

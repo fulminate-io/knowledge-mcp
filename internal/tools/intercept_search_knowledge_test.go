@@ -191,14 +191,17 @@ func TestInterceptQueryKnowledgeSearch_BareRecentTemporalBrowse(t *testing.T) {
 	// No server RETURN_MODE_SEARCH dispatch — the browse is a Selection plan.
 	require.False(t, dispatchedAServerSearch(handler.recordedReqs()), "bare recent must NOT dispatch a server search")
 
-	// The recorded Execute is a Match-empty (all-types) browse carrying NO Limit —
-	// truncation is client-side AFTER the sort.
+	// The recorded Execute is a Match-empty (all-types) browse PAGE. The page
+	// carries the drain's limit, not the caller's: the whole candidate set is
+	// still considered, and truncation to the caller's limit stays client-side
+	// AFTER the recency sort.
 	sel := browseSelection(handler.recordedReqs())
 	require.NotNil(t, sel, "recorded a Selection-bearing browse plan")
 	require.Empty(t, sel.GetNodeTypes(), "bare recent (no types) is a Match-empty all-types browse")
 	plan := recordedBrowsePlan(handler.recordedReqs())
 	require.NotNil(t, plan)
-	require.Zero(t, plan.GetLimit(), "browse carries NO Limit — truncation is client-side after the sort")
+	require.EqualValues(t, engine.BrowsePageSize, plan.GetLimit(),
+		"the page carries the DRAIN's limit — never the caller's, which would bias which nodes are considered")
 
 	// Rendered JSON: recency order (new before mid) and limit=2 honored (old omitted).
 	var got recentJSONResult
@@ -236,9 +239,75 @@ func TestInterceptQueryKnowledgeSearch_TextBearingRecentUnchanged(t *testing.T) 
 // plan's Selection.NodeTypes equals the requested set), carries NO Limit on the
 // plan, renders in recency order honoring limit, drives no Manager.Search, and
 // dispatches no server search. The canned resp contains ONLY the requested types
-// (the fake handler cannot itself apply the server-side postFilterBrowseNodeTypes),
+// (the fake handler cannot itself apply the server-side store type selection),
 // so the rendered recency order is unambiguous; the real fetch-filter proof is the
 // recorded Selection.NodeTypes assertion.
+// TestInterceptQueryKnowledgeSearch_RecentSingularTypeFilter pins the SINGULAR
+// type spelling on the bare recent arm. Live, query(type:"decision",
+// mode:"recent") returned five rows and zero decisions: the arm read only the
+// plural a.Types, so the singular filter was dropped and the drain paged the
+// whole node set before the temporal sort — confidently wrong rows rather than
+// an error or an empty result.
+//
+// The fixture seeds TWO node types with different concrete values and the
+// handler applies the plan's type filter, so an arm that drops the filter is
+// observable in the RETURNED ROWS. A single-type corpus, or a handler that
+// answers every plan identically, would pass either way.
+func TestInterceptQueryKnowledgeSearch_RecentSingularTypeFilter(t *testing.T) {
+	corpus := []*knowledgev1.Node{
+		{Id: "d1", Type: "decision", SymbolName: "Decide", UpdatedAt: daysAgoNanos(2)},
+		{Id: "s1", Type: "step", SymbolName: "Stepped", UpdatedAt: daysAgoNanos(1)},
+	}
+
+	t.Run("singular_type_returns_only_that_type", func(t *testing.T) {
+		var execHits atomic.Int64
+		gc, handler := newInterceptHarnessWithHandler(t, &execHits, nil)
+		handler.typedCorpus = corpus
+		deps := &interceptDeps{gc: gc, segMgr: &fakeSegmentSearcher{}}
+
+		handled, out := InterceptQueryKnowledgeSearch(opCtx(), deps, queryParams(t, map[string]any{
+			"mode": "recent", "type": "decision", "limit": 5, "format": "json",
+		}))
+		require.True(t, handled)
+		require.False(t, out.IsError, "recent+type renders cleanly: %v", engine.FirstTextContent(out))
+
+		sel := browseSelection(handler.recordedReqs())
+		require.NotNil(t, sel, "recorded a Selection-bearing browse plan")
+		assert.Equal(t, []string{"decision"}, sel.GetNodeTypes(),
+			"the singular type is promoted to the fetch-level type set")
+
+		var got recentJSONResult
+		require.NoError(t, json.Unmarshal([]byte(engine.FirstTextContent(out)), &got))
+		require.Len(t, got.Results, 1, "only the decision survives the filter")
+		assert.Equal(t, "d1", got.Results[0].ID, "the step must not appear under type=decision")
+	})
+
+	t.Run("types_wins_over_singular_type", func(t *testing.T) {
+		// The precedence the text-bearing route already implements: the plural set
+		// wins and the singular is not applied when both are supplied, so the two
+		// arms cannot disagree about the same payload.
+		var execHits atomic.Int64
+		gc, handler := newInterceptHarnessWithHandler(t, &execHits, nil)
+		handler.typedCorpus = corpus
+		deps := &interceptDeps{gc: gc, segMgr: &fakeSegmentSearcher{}}
+
+		handled, out := InterceptQueryKnowledgeSearch(opCtx(), deps, queryParams(t, map[string]any{
+			"mode": "recent", "types": []string{"step"}, "type": "decision", "limit": 5, "format": "json",
+		}))
+		require.True(t, handled)
+		require.False(t, out.IsError)
+
+		sel := browseSelection(handler.recordedReqs())
+		require.NotNil(t, sel)
+		assert.Equal(t, []string{"step"}, sel.GetNodeTypes(), "the plural set wins outright")
+
+		var got recentJSONResult
+		require.NoError(t, json.Unmarshal([]byte(engine.FirstTextContent(out)), &got))
+		require.Len(t, got.Results, 1)
+		assert.Equal(t, "s1", got.Results[0].ID, "types won, so the singular decision is absent")
+	})
+}
+
 func TestInterceptQueryKnowledgeSearch_RecentWithTypesFilter(t *testing.T) {
 	var execHits atomic.Int64
 	// Mixed-recency project/ticket nodes, appended so neither type nor recency is
@@ -265,7 +334,8 @@ func TestInterceptQueryKnowledgeSearch_RecentWithTypesFilter(t *testing.T) {
 
 	plan := recordedBrowsePlan(handler.recordedReqs())
 	require.NotNil(t, plan)
-	require.Zero(t, plan.GetLimit(), "browse carries NO Limit — truncation is client-side after the sort")
+	require.EqualValues(t, engine.BrowsePageSize, plan.GetLimit(),
+		"the page carries the DRAIN's limit — never the caller's, which would bias which nodes are considered")
 
 	require.Equal(t, int64(0), mgr.calls.Load(), "recent+types does NOT drive Manager.Search")
 	require.False(t, dispatchedAServerSearch(handler.recordedReqs()), "recent+types must NOT dispatch a server search")

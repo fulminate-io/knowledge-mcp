@@ -4,7 +4,6 @@ package segmentdist
 
 import (
 	"context"
-	"sort"
 
 	"connectrpc.com/connect"
 
@@ -96,40 +95,4 @@ func (m *distManager[Q, S]) fetchChunkAdaptive(ctx context.Context, chunk []sear
 		return nil, err
 	}
 	return append(left, right...), nil
-}
-
-// unloadUnderPressure drops resident segments (lowest generation first) via
-// engine.Unload until the approximate resident-byte total is at or below target.
-// Returns the ids it unloaded so the caller can reload them later. The L2 cache
-// retains the bytes, so reload is a cache hit.
-func (m *distManager[Q, S]) unloadUnderPressure(targetResidentBytes int) []searchengine.SegmentID {
-	m.resMu.Lock()
-	defer m.resMu.Unlock()
-
-	type res struct {
-		id  searchengine.SegmentID
-		seg residentSeg
-	}
-	ordered := make([]res, 0, len(m.resident))
-	total := 0
-	for id, seg := range m.resident {
-		ordered = append(ordered, res{id: id, seg: seg})
-		total += seg.bytes
-	}
-	// Lowest generation = oldest = evict first.
-	sort.Slice(ordered, func(i, j int) bool {
-		return ordered[i].seg.generation < ordered[j].seg.generation
-	})
-
-	var unloaded []searchengine.SegmentID
-	for _, r := range ordered {
-		if total <= targetResidentBytes {
-			break
-		}
-		m.engine.Unload([]searchengine.SegmentID{r.id})
-		delete(m.resident, r.id)
-		total -= r.seg.bytes
-		unloaded = append(unloaded, r.id)
-	}
-	return unloaded
 }

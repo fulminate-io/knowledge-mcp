@@ -4,6 +4,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sort"
 	"strings"
@@ -22,18 +23,29 @@ import (
 // shapes (list-graphs, mode=stats + proxy breakdown, id getNode, retired ranked
 // search) are dispatched by routeLinkageClient.
 
-// routeLinkageClient dispatches the linkage shapes.
-func routeLinkageClient(ctx context.Context, gc statsRPC, a queryArgs) kgtools.ToolResult {
+// routeLinkageClient dispatches the linkage shapes. raw is the caller's
+// verbatim payload, threaded explicitly (rather than stashed on queryArgs) so
+// the per-arm accounting gate cannot be forgotten at a claim point.
+func routeLinkageClient(ctx context.Context, gc statsRPC, a queryArgs, raw json.RawMessage) kgtools.ToolResult {
 	// (1) list-graphs: no id/text/mode.
 	if a.ID == "" && a.Text == "" && a.Mode == "" && len(a.Queries) == 0 {
+		if err := accountQueryParams(armLinkageListGraphs, raw); err != nil {
+			return errorResult(err.Error())
+		}
 		return listLinkageGraphs(ctx, gc)
 	}
 	// (2) mode=stats.
 	if a.Mode == "stats" {
+		if err := accountQueryParams(armLinkageStats, raw); err != nil {
+			return errorResult(err.Error())
+		}
 		return linkageStatsClient(ctx, gc, a.Format)
 	}
 	// (3) id getNode.
 	if a.ID != "" {
+		if err := accountQueryParams(armLinkageGetNode, raw); err != nil {
+			return errorResult(err.Error())
+		}
 		resp, err := gc.Execute(ctx, &knowledgev1.ExecuteRequest{
 			Plan:   &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{ById: a.ID}},
 			Target: &knowledgev1.GraphSelector{Graph: "linkage"},
@@ -51,6 +63,9 @@ func routeLinkageClient(ctx context.Context, gc statsRPC, a queryArgs) kgtools.T
 	// source-graph text and carry no unique client-indexable content, so there is
 	// no client linkage search index. The index-free ops above (list-graphs, stats
 	// + proxy breakdown, id getNode) — and proxy read-through — are unaffected.
+	if err := accountQueryParams(armLinkageSearchRetired, raw); err != nil {
+		return errorResult(err.Error())
+	}
 	return rankedSearchRetiredResult("linkage")
 }
 

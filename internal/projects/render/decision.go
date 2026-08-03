@@ -36,7 +36,7 @@ func assembleDecision(ctx context.Context, gc GraphCaller, node *knowledgev1.Nod
 	if alts := kgtypes.Value(node, "alternatives"); alts != "" {
 		fmt.Fprintf(&sb, "**Alternatives:** %s\n", alts)
 	}
-	fmt.Fprintf(&sb, "ID: %s\n", node.Id)
+	fmt.Fprintf(&sb, "ID: %s%s\n", node.Id, updatedSuffix(node))
 
 	// Follow EdgeInformedBy to findings/research.
 	outEdges, _ := IterEdges(ctx, gc, node.Id, kgwire.OutgoingEdges, kgtypes.EdgeInformedBy)

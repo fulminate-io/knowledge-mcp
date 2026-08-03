@@ -54,6 +54,12 @@ func InterceptQuery(ctx context.Context, deps ClientDeps, params kgtools.CallToo
 	if !didEmbed {
 		return false, kgtools.ToolResult{}
 	}
+	// Accounting runs on the CALLER's payload, not on args: args is the embedded
+	// rewrite this intercept just produced, and the gate reports on what the
+	// caller supplied.
+	if err := accountQueryParams(armEngineDispatch, params.Arguments); err != nil {
+		return true, errorResult(err.Error())
+	}
 	gc := deps.GraphCaller()
 	if gc == nil {
 		return true, errorResult("server unreachable; start it with `knowledge-server`")

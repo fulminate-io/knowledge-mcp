@@ -19,6 +19,8 @@ import (
 // reclaims ONLY genuinely-superseded constituents. The whole corpus stays
 // searchable and the invariant holds at every step.
 func TestReclaimRestartTailNoFalsePrune(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	gt, name := kgtypes.GraphCode, "restart-tail"
 	dir := t.TempDir()
@@ -83,7 +85,7 @@ func TestReclaimRestartTailNoFalsePrune(t *testing.T) {
 	// merge-eligible. This supersedes exactly those two constituents.
 	dm2.engine.Delete(corpus[0].ID)
 	dm2.engine.Delete(corpus[1].ID)
-	require.GreaterOrEqual(t, waitMergeCount(dm2.engine.MergeCount, 1), uint64(1), "a merge must fire on the reloaded set")
+	waitForMerge(t, dm2.engine.MergeCount, "a merge must fire on the reloaded set")
 	waitMergeQuiesce(dm2.engine.MergeCount)
 	warmExported(dm2)
 

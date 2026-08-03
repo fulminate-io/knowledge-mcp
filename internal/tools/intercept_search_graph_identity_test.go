@@ -174,8 +174,7 @@ func TestSearchJSONCarriesSourceGraph_AllFamilies(t *testing.T) {
 			"go": {{ID: "p:go", Score: 0.90}},
 		})
 		deps := &interceptDeps{gc: gc, segMgr: mgr}
-		res := routePracticeClient(opCtx(), deps, gc,
-			queryArgs{Graph: "practice", Language: "go", Text: "pool", Format: "json"})
+		res := gatedRoutePractice(opCtx(), deps, gc, queryArgs{Graph: "practice", Language: "go", Text: "pool", Format: "json"})
 		env := parseEnv(t, textBodyTools(res))
 		require.Len(t, env.Results, 1)
 		assert.Equal(t, "practice", env.Results[0].Graph, "practice single stamps graph=practice")
@@ -194,8 +193,7 @@ func TestSearchJSONCarriesSourceGraph_AllFamilies(t *testing.T) {
 			"python": {{ID: "p:py", Score: 0.70}},
 		})
 		deps := &interceptDeps{gc: gc, segMgr: mgr}
-		res := routePracticeClient(opCtx(), deps, gc,
-			queryArgs{Graph: "practice", Language: "all", Text: "pool", Format: "json"})
+		res := gatedRoutePractice(opCtx(), deps, gc, queryArgs{Graph: "practice", Language: "all", Text: "pool", Format: "json"})
 		env := parseEnv(t, textBodyTools(res))
 		require.Len(t, env.Results, 2)
 		byID := map[string]engine.SearchJSONResult{}

@@ -11,6 +11,7 @@ import (
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
 // dropGraphCall drives InterceptManage(drop_graph) over a fakeGraphCaller wired
@@ -21,6 +22,46 @@ import (
 func dropGraphCall(t *testing.T, fc *fakeGraphCaller, args string) (bool, kgtools.ToolResult) {
 	t.Helper()
 	deps := interceptTestDeps{gc: fc}
+	return InterceptManage(opCtx(), deps, kgtools.CallToolParams{Name: "manage", Arguments: json.RawMessage(args)})
+}
+
+// fakeCacheDropper records the (graphType, name) the handler resolved and how many
+// times it was called, and returns a programmable report + error. The call count is
+// what lets the dry-run test assert the dropper was never REACHED — an assertion on
+// the rendered text alone cannot tell a preview that removed nothing from one that
+// removed files and then described them as hypothetical.
+type fakeCacheDropper struct {
+	report DropGraphCacheReport
+	err    error
+
+	calls  int
+	gotGT  kgtypes.GraphType
+	gotNam string
+}
+
+func (f *fakeCacheDropper) DropGraphCache(gt kgtypes.GraphType, name string) (DropGraphCacheReport, error) {
+	f.calls++
+	f.gotGT = gt
+	f.gotNam = name
+	return f.report, f.err
+}
+
+// dropGraphTestDeps embeds interceptTestDeps (PipelineReady()==true, GraphCaller()
+// returns gc) and overrides SegmentCacheDropper() so the handler reaches the fake.
+// A nil dropper exercises the no-segment-engine degraded path.
+type dropGraphTestDeps struct {
+	interceptTestDeps
+	dropper SegmentCacheDropper
+}
+
+func (d dropGraphTestDeps) SegmentCacheDropper() SegmentCacheDropper { return d.dropper }
+
+// dropGraphCallWithDropper is dropGraphCall with a SegmentCacheDropper wired in.
+func dropGraphCallWithDropper(
+	t *testing.T, fc *fakeGraphCaller, dropper SegmentCacheDropper, args string,
+) (bool, kgtools.ToolResult) {
+	t.Helper()
+	deps := dropGraphTestDeps{interceptTestDeps: interceptTestDeps{gc: fc}, dropper: dropper}
 	return InterceptManage(opCtx(), deps, kgtools.CallToolParams{Name: "manage", Arguments: json.RawMessage(args)})
 }
 
@@ -46,7 +87,28 @@ func TestInterceptManage_DropGraph_CustomGraph(t *testing.T) {
 
 	body := toolResultText(res)
 	assert.Contains(t, body, "Dropped graph hellograph/demo")
-	assert.Contains(t, body, "12", "the affected_count is rendered")
+	// The Execute affected_count is deliberately NOT rendered: it is the server's
+	// one-graph handle count, not a node count. See
+	// TestInterceptManage_DropGraph_MessageDoesNotClaimNodeCount.
+	assert.Contains(t, body, "server-side graph removed", "the ack states what actually happened")
+}
+
+// TestInterceptManage_DropGraph_MessageDoesNotClaimNodeCount asserts the ack
+// never reports a node count. The server returns ONE handle for the dropped
+// graph, and rendering that 1 as "(1 node(s) removed)" tells an operator who
+// just dropped a 40k-node graph that one node went away. The "Dropped graph"
+// prefix survives (the executed path must still claim the drop); only the
+// bogus count phrasing goes.
+func TestInterceptManage_DropGraph_MessageDoesNotClaimNodeCount(t *testing.T) {
+	fc := &fakeGraphCaller{mutateAffected: 1}
+	handled, res := dropGraphCall(t, fc, `{"operation":"drop_graph","graph":"hellograph","name":"demo"}`)
+	require.True(t, handled, "drop_graph must be handled by InterceptManage")
+	require.False(t, res.IsError, "drop_graph: %s", toolResultText(res))
+
+	body := toolResultText(res)
+	assert.Contains(t, body, "Dropped graph hellograph/demo", "the executed path still claims the drop")
+	assert.NotContains(t, body, "node(s) removed",
+		"the server's one-graph handle count must not be rendered as a node count")
 }
 
 // TestInterceptManage_DropGraph_CodeRoutesRepo asserts graph=code routes the name
@@ -91,15 +153,101 @@ func TestInterceptManage_DropGraph_LogsRejected(t *testing.T) {
 // dry_run verb discipline) — never "Dropped".
 func TestInterceptManage_DropGraph_DryRunPreviewOnly(t *testing.T) {
 	fc := &fakeGraphCaller{}
-	handled, res := dropGraphCall(t, fc, `{"operation":"drop_graph","graph":"hellograph","name":"demo","dry_run":true}`)
+	dropper := &fakeCacheDropper{}
+	handled, res := dropGraphCallWithDropper(t, fc, dropper,
+		`{"operation":"drop_graph","graph":"hellograph","name":"demo","dry_run":true}`)
 	require.True(t, handled)
 	require.False(t, res.IsError, "dry_run preview is not an error: %s", toolResultText(res))
 
 	assert.Empty(t, fc.execRequests, "dry_run issues ZERO Execute mutations")
+	// This and the NotContains below catch the SAME defect — cleanup hoisted above
+	// the dry-run branch — from opposite sides: this one notices the preview
+	// actually PERFORMED a removal, the NotContains notices it started CLAIMING one.
+	// Neither subsumes the other.
+	require.Equal(t, 0, dropper.calls, "dry_run must never reach the local cache dropper")
 	body := toolResultText(res)
 	assert.Contains(t, body, "DRY RUN", "the preview is labeled DRY RUN")
 	assert.Contains(t, body, "would drop graph hellograph/demo", "verb is 'would drop'")
 	assert.NotContains(t, body, "Dropped graph", "dry_run must NOT claim a completed drop")
+}
+
+// TestInterceptManage_DropGraph_RemovesLocalSegmentCache asserts the handler drives
+// the local L2 teardown with the RESOLVED cache target and renders the true totals.
+// The knowledge sub-case is the normalization catcher: the knowledge cache lives at
+// <root>/<format>/knowledge/default, so an empty name must reach the dropper as
+// "default" or the teardown silently misses every knowledge-graph artifact.
+func TestInterceptManage_DropGraph_RemovesLocalSegmentCache(t *testing.T) {
+	t.Run("knowledge normalizes the empty name to default", func(t *testing.T) {
+		fc := &fakeGraphCaller{mutateAffected: 1}
+		dropper := &fakeCacheDropper{report: DropGraphCacheReport{
+			Formats: []string{"hnsw", "bm25", "rebuildstate"},
+			Files:   7,
+			Bytes:   4096,
+		}}
+		handled, res := dropGraphCallWithDropper(t, fc, dropper, `{"operation":"drop_graph","graph":"knowledge"}`)
+		require.True(t, handled)
+		require.False(t, res.IsError, "drop_graph: %s", toolResultText(res))
+
+		require.Equal(t, 1, dropper.calls, "the dropper is driven exactly once")
+		assert.Equal(t, kgtypes.GraphKnowledge, dropper.gotGT)
+		assert.Equal(t, "default", dropper.gotNam, "knowledge with no name keys the cache as default")
+
+		body := toolResultText(res)
+		assert.Contains(t, body, "server-side graph removed")
+		assert.Contains(t, body, "local segment cache: 7 file(s), 4096 bytes")
+		assert.NotContains(t, body, "node(s) removed")
+	})
+
+	t.Run("code passes the repo name through unchanged", func(t *testing.T) {
+		fc := &fakeGraphCaller{mutateAffected: 1}
+		dropper := &fakeCacheDropper{report: DropGraphCacheReport{
+			Formats: []string{"hnsw"}, Files: 3, Bytes: 512,
+		}}
+		handled, res := dropGraphCallWithDropper(t, fc, dropper,
+			`{"operation":"drop_graph","graph":"code","name":"demoRepo"}`)
+		require.True(t, handled)
+		require.False(t, res.IsError, "drop_graph: %s", toolResultText(res))
+
+		assert.Equal(t, kgtypes.GraphCode, dropper.gotGT)
+		assert.Equal(t, "demoRepo", dropper.gotNam, "non-knowledge families need no normalization")
+		assert.Contains(t, toolResultText(res), "local segment cache: 3 file(s), 512 bytes")
+	})
+
+	t.Run("a graph never cached locally reports no artifacts", func(t *testing.T) {
+		fc := &fakeGraphCaller{mutateAffected: 1}
+		dropper := &fakeCacheDropper{} // zero report — the never-loaded case
+		handled, res := dropGraphCallWithDropper(t, fc, dropper,
+			`{"operation":"drop_graph","graph":"hellograph","name":"demo"}`)
+		require.True(t, handled)
+		require.False(t, res.IsError, "drop_graph: %s", toolResultText(res))
+
+		body := toolResultText(res)
+		assert.Contains(t, body, "Dropped graph hellograph/demo", "the drop still completed")
+		assert.Contains(t, body, "no local segment cache artifacts found")
+		assert.NotContains(t, body, "node(s) removed")
+	})
+}
+
+// TestInterceptManage_DropGraph_NoLocalDropperStillDropsServerSide is the
+// degraded-client catcher: a client with no segment engine must still complete the
+// server-side drop and SAY the cache went uninspected. Without this, a nil
+// dereference or an early error return would report a drop that genuinely
+// succeeded as a failure.
+func TestInterceptManage_DropGraph_NoLocalDropperStillDropsServerSide(t *testing.T) {
+	fc := &fakeGraphCaller{mutateAffected: 1}
+	handled, res := dropGraphCallWithDropper(t, fc, nil,
+		`{"operation":"drop_graph","graph":"hellograph","name":"demo"}`)
+	require.True(t, handled)
+	require.False(t, res.IsError, "a missing local segment engine is not a drop failure: %s", toolResultText(res))
+
+	require.Len(t, fc.execRequests, 1, "the server-side DROP_GRAPH still fired")
+	assert.Equal(t, knowledgev1.MutationPlan_MUTATION_KIND_DROP_GRAPH,
+		fc.execRequests[0].GetMutation().GetKind())
+
+	body := toolResultText(res)
+	assert.Contains(t, body, "Dropped graph hellograph/demo")
+	assert.Contains(t, body, "local segment cache not inspected")
+	assert.NotContains(t, body, "node(s) removed")
 }
 
 // TestInterceptManage_DropGraph_LogsPathRegression asserts the existing

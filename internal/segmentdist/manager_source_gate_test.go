@@ -18,6 +18,8 @@ import (
 // the OSS-local *localSegmentSource, while a logged-in caller with NO transport
 // builder yields the fail-loud *errorSegmentSource sentinel.
 func TestNewSegmentSource_CapabilityGate(t *testing.T) {
+	t.Parallel()
+
 	t.Run("not-logged-in caller selects the OSS-local source", func(t *testing.T) {
 		mgr := NewManager(loginStateStub{loggedIn: false}, t.TempDir(), 0)
 		hnsw := mgr.managerFor(kgtypes.GraphCode, "repo")
@@ -41,6 +43,8 @@ func TestNewSegmentSource_CapabilityGate(t *testing.T) {
 // the *gcsSegmentSource for BOTH the HNSW and BM25 engines. A logged-in caller whose
 // builder FAILS yields the fail-loud *errorSegmentSource sentinel.
 func TestNewSegmentSource_LoggedInWithTransportSelectsGCS(t *testing.T) {
+	t.Parallel()
+
 	builder := func() (SegmentControlTransport, error) {
 		return auth.NewSyncTransport("http://unused", auth.StaticTokenSource{AccessToken: "t"}), nil
 	}
@@ -67,6 +71,8 @@ func TestNewSegmentSource_LoggedInWithTransportSelectsGCS(t *testing.T) {
 // l2Authoritative true exactly when the source is a *localSegmentSource, and false
 // for a non-local (server/agent-backed) source.
 func TestNewDistManager_L2AuthoritativeFlag(t *testing.T) {
+	t.Parallel()
+
 	target := &knowledgev1.GraphSelector{Graph: "code", Repo: "l2auth"}
 	cache := newDiskSegmentCache(t.TempDir(), 0)
 

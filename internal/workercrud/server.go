@@ -120,13 +120,12 @@ func (c *Client) ByName(ctx context.Context, name string) (workers.Worker, bool,
 	return workers.Worker{}, false, err
 }
 
-// Create writes a NEW graph-resident NodeWorker via a wire
-// mutate(upsert) call. The underlying handleMutateUpsert handler at
-// cmd/knowledge-server/tools/tools_mutate_upsert.go bypasses the
-// create-path validation guards (validateSummary/validateName/
-// findExistingByName) that would otherwise reject the write because
-// NodeWorker is Summarizable()=false and WorkerToNode leaves Summary
-// empty.
+// Create writes a NEW graph-resident NodeWorker via a wire mutate(upsert) call.
+// `worker` is on the engine upsert arm's type allowlist, so the body bypasses
+// the create-path validation guards (summary/name) that would otherwise reject
+// the write because NodeWorker is Summarizable()=false and WorkerToNode leaves
+// Summary empty. That bypass is the allowlist's whole purpose — a type dropped
+// from it starts running full create-time validation here.
 func (c *Client) Create(ctx context.Context, w workers.Worker) error {
 	return c.upsertWorker(ctx, w, "Create")
 }

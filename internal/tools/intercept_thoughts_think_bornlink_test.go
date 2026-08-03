@@ -52,12 +52,13 @@ func TestComposeThoughtCreate_BornLink(t *testing.T) {
 			},
 			mutateIDs: []string{"th-new"},
 		}
-		id, err := composeThoughtCreate(context.Background(), fc, composeThoughtArgs{
+		receipt, err := composeThoughtCreate(context.Background(), fc, composeThoughtArgs{
 			Content: "the bug is in " + ref + " today",
 			Summary: "born-link smoke",
 		})
 		require.NoError(t, err)
-		assert.Equal(t, "th-new", id)
+		assert.Equal(t, "th-new", receipt.ID)
+		assert.Equal(t, 1, receipt.BornLinks, "the receipt counts the born-link edge it minted")
 
 		// Exactly one create Mutation, and it carries the born-link edge.
 		var creates int
@@ -80,12 +81,13 @@ func TestComposeThoughtCreate_BornLink(t *testing.T) {
 			listGraphsResult: listGraphsResultJSON(t, [2]string{"code", repo}),
 			mutateIDs:        []string{"th-plain"},
 		}
-		id, err := composeThoughtCreate(context.Background(), fc, composeThoughtArgs{
+		receipt, err := composeThoughtCreate(context.Background(), fc, composeThoughtArgs{
 			Content: "a prose-only thought with no code citation whatsoever",
 			Summary: "no referent",
 		})
 		require.NoError(t, err)
-		assert.Equal(t, "th-plain", id)
+		assert.Equal(t, "th-plain", receipt.ID)
+		assert.Zero(t, receipt.BornLinks, "no referents → the receipt reports zero born-links")
 		assert.Empty(t, bornLinkEdges(fc), "a referent-free think writes zero born-link edges")
 	})
 
@@ -98,12 +100,13 @@ func TestComposeThoughtCreate_BornLink(t *testing.T) {
 			},
 			mutateIDs: []string{"th-unresolv"},
 		}
-		id, err := composeThoughtCreate(context.Background(), fc, composeThoughtArgs{
+		receipt, err := composeThoughtCreate(context.Background(), fc, composeThoughtArgs{
 			Content: "cites tools/ghost.go:Missing which resolves nowhere",
 			Summary: "unresolvable referent",
 		})
 		require.NoError(t, err, "an unresolvable referent must never block the think")
-		assert.Equal(t, "th-unresolv", id)
+		assert.Equal(t, "th-unresolv", receipt.ID)
+		assert.Zero(t, receipt.BornLinks, "an unresolvable referent contributes no born-link to the receipt")
 		assert.Empty(t, bornLinkEdges(fc), "an unresolvable referent writes zero born-link edges")
 	})
 }

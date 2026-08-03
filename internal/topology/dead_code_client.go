@@ -91,8 +91,8 @@ func RunDeadCode(ctx context.Context, gc graphCaller, repoRoot, repo string, top
 // fetchNodeIndex issues a single Execute that pulls every function-ish node in
 // the scoped code graph. The request is a code-graph PLURAL-types browse
 // (`{graph:"code", repo:X, types:[...]}`) that lowers to the plural
-// arm (Selection.NodeTypes + postFilterBrowseNodeTypes) on the relaxed code
-// guard; the typed Nodes carrier (engine.DecodeNodes) carries the function nodes,
+// arm (Selection.NodeTypes, honored inside the store selection) on the relaxed
+// code guard; the typed Nodes carrier (engine.DecodeNodes) carries the function nodes,
 // which buildNodeIndexFromNodes keys by (filePath, line).
 func fetchNodeIndex(ctx context.Context, gc graphCaller, repo string) (*codeNodeIndex, error) {
 	ex, ok := gc.(topoExecutor)

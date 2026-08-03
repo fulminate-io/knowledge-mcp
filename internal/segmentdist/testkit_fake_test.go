@@ -6,11 +6,10 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 	"sync/atomic"
-	"testing"
 
-	"github.com/stretchr/testify/require"
 	"google.golang.org/protobuf/proto"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
@@ -141,12 +140,46 @@ func (f *sharedServerFake) listDelta(target *knowledgev1.GraphSelector, writerID
 	return metas
 }
 
+// manifestMetas returns one meta per id in EVERY format manifest writerID has
+// published for target, resolved back to the stored blob so the meta carries the
+// blob's real Format and DocCount. It is the in-memory model of the cloud
+// manifest/read the gcs source Lists through: a blob the server still holds but no
+// manifest of this writer references is NOT in the result, which is what makes the
+// manifest — rather than the accumulated blob store — the shipped denominator.
+func (f *sharedServerFake) manifestMetas(target *knowledgev1.GraphSelector, writerID string) []*knowledgev1.SegmentMetaProto {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.recordWriter(writerID)
+	k := f.key(target)
+	blobs := map[string]*knowledgev1.SegmentBlobProto{}
+	for _, b := range f.byKey[k] {
+		blobs[b.GetId()] = b
+	}
+	referenced := map[string]bool{}
+	for mk, set := range f.manifests[k] {
+		if !strings.HasPrefix(mk, writerID+"\x00") {
+			continue
+		}
+		for id := range set {
+			referenced[id] = true
+		}
+	}
+	var metas []*knowledgev1.SegmentMetaProto
+	for id := range referenced {
+		if b, ok := blobs[id]; ok {
+			metas = append(metas, metaOf(b))
+		}
+	}
+	sort.Slice(metas, func(i, j int) bool { return metas[i].GetId() < metas[j].GetId() })
+	return metas
+}
+
 // listMetas is the read surface a few tests (e2e, prune_reconcile) call directly on
 // svc to count/inspect the server's segments for a target. The successor to the
 // deleted fakeSegmentService.ListDelta connect method (the SegmentService RPC is
 // gone); it returns the ascending metas with generation > sinceGen.
-func (f *sharedServerFake) listMetas(target *knowledgev1.GraphSelector, sinceGen uint64) []*knowledgev1.SegmentMetaProto {
-	return f.listDelta(target, "", sinceGen)
+func (f *sharedServerFake) listMetas(target *knowledgev1.GraphSelector) []*knowledgev1.SegmentMetaProto {
+	return f.listDelta(target, "", 0)
 }
 
 // fetch serves the requested ids for (target) from the store.
@@ -266,6 +299,14 @@ type fakeSegmentSource struct {
 	// server-model source keeps the client subset check, matching the rpc/local shape
 	// the machinery tests grew up on).
 	verifies bool
+	// listFromManifest switches List to the LIVE CLOUD SHAPE: one meta per digest in
+	// this writer's PUBLISHED manifests rather than every blob the server holds. It
+	// mirrors gcsSegmentSource.List (source_gcs.go), which reads manifest/read and
+	// ignores sinceGen, and it is the only shape in which the publish gate's shipped
+	// denominator is the manifest — the operand the manifest-swap tests reason about.
+	// Off by default: the generation-delta tests predate the manifest and read the
+	// whole shipped set through this same view.
+	listFromManifest bool
 	// listErr, when set, fails List (the seed-List transient-failure probe).
 	listErr error
 	// publishErr, when set, fails PublishManifest with it (the publishPending
@@ -288,6 +329,14 @@ func (s *fakeSegmentSource) List(_ context.Context, sinceGen uint64) ([]searchen
 	s.listCalls.Add(1)
 	if s.listErr != nil {
 		return nil, s.listErr
+	}
+	if s.listFromManifest {
+		protos := s.server.manifestMetas(s.target, s.writerID)
+		metas := make([]searchengine.SegmentMeta, 0, len(protos))
+		for _, m := range protos {
+			metas = append(metas, metaFromMeta(m))
+		}
+		return metas, nil
 	}
 	protos := s.server.listDelta(s.target, s.writerID, sinceGen)
 	metas := make([]searchengine.SegmentMeta, 0, len(protos))
@@ -423,26 +472,4 @@ func bindViewTarget(src segmentSource, target *knowledgev1.GraphSelector) {
 // fmt.Sprintf helper — no longer tied to the deleted writerid.go machine-id path.
 func fleetWriterID(n int) string {
 	return fmt.Sprintf("%016x", n+1)
-}
-
-// TestBlobProtoRoundTripsDocCount pins the doc_count plumbing: blobToProto carries
-// SegmentBlob.DocCount into the wire carrier and blobFromProto reads it back
-// unchanged, so the per-segment live doc count survives the ship → store → list
-// round-trip the coverage levers depend on. (Relocated from the deleted source_test.go
-// — blobToProto/blobFromProto survive the SegmentService deletion.)
-func TestBlobProtoRoundTripsDocCount(t *testing.T) {
-	orig := searchengine.SegmentBlob{
-		ID:         "seg-dc",
-		Format:     "hnsw",
-		Generation: 7,
-		DocCount:   1024,
-		Bytes:      []byte("payload"),
-	}
-	p := blobToProto(orig)
-	require.Equal(t, int32(1024), p.GetDocCount(), "blobToProto carries DocCount into the proto")
-	back := blobFromProto(p)
-	require.Equal(t, orig.DocCount, back.DocCount, "blobFromProto reads DocCount back unchanged")
-	require.Equal(t, orig.ID, back.ID)
-	require.Equal(t, orig.Format, back.Format)
-	require.Equal(t, orig.Generation, back.Generation)
 }

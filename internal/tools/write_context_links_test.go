@@ -78,40 +78,56 @@ func TestBuildContextLinks_SessionGetOrCreate(t *testing.T) {
 // link-class matrix table runs identically across all five.
 type writePathInvoker func(t *testing.T, fc *fakeGraphCaller, ticketID, session string, links []string) (text string, isErr bool, create *knowledgev1.MutationPlan)
 
+// contextLinkRaw rebuilds the caller payload for a context-linking create so a
+// direct handler call carries the same raw args InterceptMutate would have
+// seeded. Empty ticket/session and a nil links slice marshal to values
+// suppliedMutateParams reads as unsupplied, matching an omitted key.
+func contextLinkRaw(t *testing.T, nodeType, name, summary, ticketID, session string, links []string) string {
+	t.Helper()
+	raw, err := json.Marshal(map[string]any{
+		"operation": "create", "type": nodeType, "name": name, "summary": summary,
+		"ticket_id": ticketID, "session": session, "links": links,
+	})
+	require.NoError(t, err)
+	return string(raw)
+}
+
 func findingInvoker(t *testing.T, fc *fakeGraphCaller, ticketID, session string, links []string) (string, bool, *knowledgev1.MutationPlan) {
-	res := handleClientMutateCreateFinding(context.Background(), interceptTestDeps{gc: fc}, mutateArgs{
+	res := handleClientMutateCreateFinding(context.Background(), interceptTestDeps{gc: fc}, withRawArgs(mutateArgs{
 		Operation: "create", Type: "finding", Name: "f", Summary: "a finding summary searchable",
 		TicketID: ticketID, Session: session, Links: links,
-	})
+	}, contextLinkRaw(t, "finding", "f", "a finding summary searchable", ticketID, session, links)))
 	return toolResultText(res), res.IsError, firstCreatePlan(t, fc)
 }
 
 func researchInvoker(t *testing.T, fc *fakeGraphCaller, ticketID, session string, links []string) (string, bool, *knowledgev1.MutationPlan) {
-	res := handleClientMutateCreateResearch(context.Background(), interceptTestDeps{gc: fc}, mutateArgs{
+	res := handleClientMutateCreateResearch(context.Background(), interceptTestDeps{gc: fc}, withRawArgs(mutateArgs{
 		Operation: "create", Type: "research", Name: "r", Summary: "a research summary searchable",
 		TicketID: ticketID, Session: session, Links: links,
-	})
+	}, contextLinkRaw(t, "research", "r", "a research summary searchable", ticketID, session, links)))
 	return toolResultText(res), res.IsError, firstCreatePlan(t, fc)
 }
 
 func ruleInvoker(t *testing.T, fc *fakeGraphCaller, ticketID, session string, links []string) (string, bool, *knowledgev1.MutationPlan) {
-	res := handleClientMutateCreateRule(context.Background(), interceptTestDeps{gc: fc}, mutateArgs{
+	res := handleClientMutateCreateRule(context.Background(), interceptTestDeps{gc: fc}, withRawArgs(mutateArgs{
 		Operation: "create", Type: "rule", Name: "ru", Summary: "a rule summary searchable",
 		TicketID: ticketID, Session: session, Links: links,
-	})
+	}, contextLinkRaw(t, "rule", "ru", "a rule summary searchable", ticketID, session, links)))
 	return toolResultText(res), res.IsError, firstCreatePlan(t, fc)
 }
 
 func decisionInvoker(t *testing.T, fc *fakeGraphCaller, ticketID, session string, links []string) (string, bool, *knowledgev1.MutationPlan) {
+	// No `operation` key: record_decision is a single-purpose tool and declares
+	// no such param, so one was always dropped on the floor here. It is now
+	// refused, which is what surfaced it.
 	a := struct {
-		Operation string   `json:"operation"`
 		Name      string   `json:"name"`
 		Choice    string   `json:"choice"`
 		Rationale string   `json:"rationale"`
 		TicketID  string   `json:"ticket_id,omitempty"`
 		Session   string   `json:"session,omitempty"`
 		Links     []string `json:"links,omitempty"`
-	}{Operation: "record_decision", Name: "d", Choice: "X", Rationale: "because", TicketID: ticketID, Session: session, Links: links}
+	}{Name: "d", Choice: "X", Rationale: "because", TicketID: ticketID, Session: session, Links: links}
 	args, err := json.Marshal(a)
 	require.NoError(t, err)
 	_, res := InterceptRecordDecision(opCtx(), interceptTestDeps{gc: fc}, kgtools.CallToolParams{Name: "record_decision", Arguments: args})

@@ -33,7 +33,12 @@ import (
 // carries no quote, or a quote that does not match the contradicted node's
 // current source (a hallucinated or stale quote). The message tells the negator
 // exactly what to supply.
-const errFirstPartyEvidenceMsg = "first-party evidence required — quote the current source of %s you verified (supply verified_quote as a verbatim substring of the node's current source; a hallucinated or stale quote will not match)"
+const errFirstPartyEvidenceMsg = "first-party evidence required — quote the current source of %s you verified (supply verified_quote as a TOP-LEVEL param on this call — not inside metadata and not inside edge_evidence — holding a verbatim substring of the node's current source; a hallucinated or stale quote will not match)"
+
+// errNonNegationProofMsg is the rejection returned when a call that is NOT a
+// negation carries a negation-gate proof param. Naming the three shapes that DO
+// take one is what makes the refusal actionable rather than a bare no.
+const errNonNegationProofMsg = "%s is a negation-gate proof-of-work param and this call is not a negation — supply it only on mutate(link, relationship:\"contradicts\"), mutate(update, status:\"invalidated\"), or thoughts(think) with branches_from set; drop it, or issue the negation call that needs it"
 
 // negationOp is the recognized shape of a single negation tool-call: which node
 // is being contradicted, the supplied proof-of-work quote, and the optional
@@ -118,6 +123,37 @@ func firstPartyEvidenceError(contradictedID string) error {
 	return fmt.Errorf(errFirstPartyEvidenceMsg, contradictedID)
 }
 
+// rejectNonNegationProofParams returns a non-nil error when a call the gate has
+// already determined is NOT a negation nevertheless carries a proof param. It
+// names the FIRST non-empty field in a fixed order — verified_quote before
+// cited_range — so the same payload always produces the same message, mirroring
+// the deterministic first-hit contract accountMutateParams gets from
+// rejectedSorted (mutate_param_accounting.go).
+//
+// WHY THIS LIVES HERE rather than in the arm registry: the registry classifies
+// per ARM, but negation-ness is per CALL — it is decided by the relationship /
+// status VALUE. A link arm that consumes verified_quote (as it must, since a
+// contradicts-link legitimately carries one) would therefore accept-and-ignore
+// the same param on relationship:"relates-to", which is exactly the silent-drop
+// shape the accounting gate exists to close. The in-tree idiom for a
+// value-conditional refinement the table cannot express is a sibling gate — the
+// same shape as rejectUnroutableUpdateParams (intercept_mutate_update.go) — and
+// this is the one function that already parses both arg structs and already
+// knows whether the call is a negation, so it costs no second parse.
+func rejectNonNegationProofParams(a mutateArgs, t thinkArgs) error {
+	for _, param := range []struct{ name, value string }{
+		{"verified_quote", a.VerifiedQuote},
+		{"verified_quote", t.VerifiedQuote},
+		{"cited_range", a.CitedRange},
+		{"cited_range", t.CitedRange},
+	} {
+		if strings.TrimSpace(param.value) != "" {
+			return fmt.Errorf(errNonNegationProofMsg, param.name)
+		}
+	}
+	return nil
+}
+
 // normalize collapses every run of whitespace (spaces, tabs, AND newlines) to a
 // single space and trims the ends — the canonical strings.Fields/Join idiom. This
 // is INTENTIONAL and load-bearing: a quote pulled from a multi-line code body or a
@@ -174,8 +210,10 @@ func pathBeforeLastColon(s string) string {
 // negation ops BEFORE they reach their write handler. It claims only mutate +
 // thoughts tool names, recognizes the negation shape, and:
 //
-//   - returns (false, _) for any NON-negation call (fall through untouched — v1
-//     enables the gate for negation ops only);
+//   - returns (true, errorResult) for a NON-negation call that nevertheless
+//     carries a proof param — REJECT, naming the field (rejectNonNegationProofParams);
+//   - returns (false, _) for any other NON-negation call (fall through untouched —
+//     v1 enables the gate for negation ops only);
 //   - returns (false, _) when there is no graph access (nil gc, headless/test
 //     fixtures) — FAIL-OPEN to the existing handler, which itself handles nil gc;
 //     the gate cannot validate without reads and must not block the daemon's
@@ -184,6 +222,16 @@ func pathBeforeLastColon(s string) string {
 //     / unresolvable — REJECT, the negation never reaches its write handler;
 //   - returns (false, _) when the quote validates — fall through so the real
 //     InterceptThoughts / InterceptMutate handler runs the actual negation write.
+//
+// THE ORDER OF THOSE FIRST TWO AGAINST THE NIL-GC FAIL-OPEN IS LOAD-BEARING.
+// The non-negation proof-param reject runs BEFORE the GraphCaller lookup, not
+// after. The fail-open below exists for an EPISTEMIC limitation — with no graph
+// access the gate cannot read ground truth, so it cannot judge a quote and must
+// not block the daemon's degraded mode. That reasoning does not extend to this
+// check, which reads NOTHING: it is pure argument shape, decidable from the
+// parsed structs alone. So it stays LOUD in degraded mode, where a fail-open
+// would silently accept-and-drop exactly the param this gate exists to make
+// visible.
 //
 // It must be wired into runInterceptChainInner BEFORE both InterceptThoughts
 // (claims thoughts(think)) and InterceptMutate (claims mutate(update/link)).
@@ -199,10 +247,18 @@ func InterceptNegationGate(ctx context.Context, deps ClientDeps, params kgtools.
 	var t thinkArgs
 	switch params.Name {
 	case "mutate":
+		// mutate passes its flex-open carrier so the rejection keeps the
+		// did-you-mean pointer the live mutate gate already emits.
+		if err := rejectUndeclaredParams("mutate", "metadata", mutateProperties(), params.Arguments); err != nil {
+			return true, errorResult(err.Error())
+		}
 		if err := json.Unmarshal(params.Arguments, &a); err != nil {
 			return false, kgtools.ToolResult{}
 		}
 	case "thoughts":
+		if err := rejectUndeclaredParams("thoughts", "", ThoughtsToolDef().InputSchema.Properties, params.Arguments); err != nil {
+			return true, errorResult(err.Error())
+		}
 		if err := json.Unmarshal(params.Arguments, &t); err != nil {
 			return false, kgtools.ToolResult{}
 		}
@@ -210,6 +266,11 @@ func InterceptNegationGate(ctx context.Context, deps ClientDeps, params kgtools.
 
 	op, isNeg := recognizeNegationOp(params.Name, a, t)
 	if !isNeg {
+		// Pure arg-shape check, deliberately ahead of the GraphCaller lookup — see
+		// the doc comment above on why this one does not ride the fail-open.
+		if err := rejectNonNegationProofParams(a, t); err != nil {
+			return true, errorResult(err.Error()) // REJECT — a proof param here routes nothing.
+		}
 		return false, kgtools.ToolResult{} // not a negation — fall through untouched.
 	}
 

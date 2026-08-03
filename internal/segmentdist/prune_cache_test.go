@@ -47,22 +47,28 @@ func poolReport(rep PruneCacheReport, format string) *PruneCacheGraphReport {
 // TestPruneCacheForceLoad proves forceCompleteLiveSet makes Export() COMPLETE even
 // after a live segment was Unloaded (resident-only Export would miss it).
 func TestPruneCacheForceLoad(t *testing.T) {
+	t.Parallel()
+
 	_, gc := newSegmentHarness(t)
 	ctx := context.Background()
 	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 
-	require.NoError(t, mgr.AddAndShip(ctx, kgtypes.GraphCode, "forceRepo", hnswVecDocs(1024)))
+	// 512 keeps the graph inside a SINGLE partition through the tick (the tick counts
+	// the incoming window alongside the resident set), so the unload/force-load
+	// round trip below has exactly one segment to reason about.
+	require.NoError(t, mgr.AddAndMarkDirty(ctx, kgtypes.GraphCode, "forceRepo", hnswVecDocs(512)))
+	require.NoError(t, mgr.ReEmitDirtyBuckets(ctx, kgtypes.GraphCode, "forceRepo"))
 	dm := mgr.managerFor(kgtypes.GraphCode, "forceRepo")
-	require.Len(t, dm.engine.Export(), 1, "one sealed segment after AddAndShip")
+	require.Len(t, dm.engine.Export(), 1, "one shipped segment after the tick")
 
 	// load() to populate the resident-tracking map (recordResident runs in load/reload,
-	// NOT in Add/ship), so unloadUnderPressure has a segment to drop. load is idempotent
+	// NOT in Add/ship), so the eviction has a segment to drop. load is idempotent
 	// by segment id, so re-listing this process's own shipped tail is harmless.
 	require.NoError(t, dm.load(ctx))
 
 	// Drop the live segment from resident: a bare Export() now misses it.
-	unloaded := dm.unloadUnderPressure(0)
-	require.NotEmpty(t, unloaded, "unloadUnderPressure(0) drops the resident segment")
+	unloaded := dm.evictAllResidentForTest()
+	require.NotEmpty(t, unloaded, "the eviction drops the resident segment")
 	require.Empty(t, dm.engine.Export(), "resident-only Export is now empty (the false-prune trap)")
 
 	// forceCompleteLiveSet resets the load floor + reloads → Export complete again.
@@ -71,33 +77,49 @@ func TestPruneCacheForceLoad(t *testing.T) {
 	require.Len(t, ids, 1, "force-load restores the unloaded-but-live segment into the live set")
 }
 
-// TestPruneCacheDetUnion proves completeHNSWLiveSet UNIONs the deterministic engine's
-// live set — a deterministic-built blob (sharing the one 'hnsw' root) is in the HNSW
-// live set, so it is never an orphan.
-func TestPruneCacheDetUnion(t *testing.T) {
+// TestPruneCacheCoversTheRebuiltLayer proves a blob a RESET rebuild just published is in
+// the HNSW live set, so PruneCache can never reap the layer the graph is being served
+// from.
+//
+// THE MECHANISM CHANGED UNDER THIS TEST AND THE CLAIM DID NOT, which is why it is
+// rewritten rather than retired. It used to prove completeHNSWLiveSet UNIONED a second,
+// deterministic engine's export, because the rebuild wrote that engine and the embed
+// engine could not see it. The reset now finalizes at the SERVING engine — there is no
+// second export to union — so the union is what has become uninteresting, not the
+// property. What must stay true is what an operator depends on: freshly rebuilt content
+// is live, never an orphan.
+func TestPruneCacheCoversTheRebuiltLayer(t *testing.T) {
+	t.Parallel()
+
 	_, gc := newSegmentHarness(t)
 	ctx := context.Background()
 	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 
-	// Build a deterministic segment (Add-only) then FlushDeterministic to seal+ship it.
-	require.NoError(t, mgr.AddDeterministic(ctx, kgtypes.GraphCode, "detRepo", hnswVecDocs(1024)))
-	_, err := mgr.FlushDeterministic(ctx, kgtypes.GraphCode, "detRepo")
+	// Stage one partition, then the single finalize that builds, ships and swaps it in.
+	// BOTH formats are staged: Swapped is the AND of the two legs, so staging only the
+	// vector share would leave the field leg reporting not-swapped and the assertion
+	// below would fail for a reason that has nothing to do with the live set.
+	corpus := vecContentDocs(1024)
+	require.NoError(t, mgr.StageRebuildPartition(ctx, kgtypes.GraphCode, "detRepo", corpus, corpus))
+	res, err := mgr.FinalizeRebuild(ctx, kgtypes.GraphCode, "detRepo")
 	require.NoError(t, err)
+	require.True(t, res.Swapped, "the reset's publish must LAND, or the live set below is about nothing")
 
-	detDM := mgr.hnswManagerFor(mgr.detManagers, hnsw.NewDeterministic(), kgtypes.GraphCode, "detRepo", false)
-	detExport := detDM.engine.Export()
-	require.Len(t, detExport, 1, "deterministic engine holds one sealed segment")
-	detID := detExport[0].ID
+	export := mgr.managerFor(kgtypes.GraphCode, "detRepo").engine.Export()
+	require.Len(t, export, 1, "the serving engine holds the one partition this run built")
+	builtID := export[0].ID
 
 	live, err := mgr.completeHNSWLiveSet(ctx, kgtypes.GraphCode, "detRepo")
 	require.NoError(t, err)
-	_, present := live[detID]
-	require.True(t, present, "the deterministic-built blob IS in the unioned HNSW live set (det-union)")
+	_, present := live[builtID]
+	require.True(t, present, "the rebuilt blob IS in the HNSW live set — PruneCache must never treat it as an orphan")
 }
 
 // TestPruneCacheOnDisk covers listOnDiskSegIDs: missing dir => empty+nil; a dir with
 // .seg files returns their ids + FileInfo sizes (and skips non-.seg).
 func TestPruneCacheOnDisk(t *testing.T) {
+	t.Parallel()
+
 	// Missing dir => empty, nil error.
 	segs, err := listOnDiskSegIDs(filepath.Join(t.TempDir(), "nope"))
 	require.NoError(t, err)
@@ -123,10 +145,12 @@ func TestPruneCacheOnDisk(t *testing.T) {
 // TestPruneCacheSubset proves liveSetSubsetOfList0 returns false when the computed
 // live set contains an id absent from the server's List(0) — the subset-abort guard.
 func TestPruneCacheSubset(t *testing.T) {
+	t.Parallel()
+
 	_, gc := newSegmentHarness(t)
 	ctx := context.Background()
 	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
-	require.NoError(t, mgr.AddAndShip(ctx, kgtypes.GraphCode, "subsetRepo", hnswVecDocs(1024)))
+	seedShipped(t, ctx, mgr, kgtypes.GraphCode, "subsetRepo", hnswVecDocs(1024))
 	dm := mgr.managerFor(kgtypes.GraphCode, "subsetRepo")
 
 	// The genuinely-shipped live set IS a subset of List(0).
@@ -146,10 +170,12 @@ func TestPruneCacheSubset(t *testing.T) {
 // TestPruneCacheDriverDryRun proves execute=false reports the planted orphan + its
 // bytes and DELETES NOTHING (the .seg still exists after).
 func TestPruneCacheDriverDryRun(t *testing.T) {
+	t.Parallel()
+
 	_, gc := newSegmentHarness(t)
 	ctx := context.Background()
 	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
-	require.NoError(t, mgr.AddAndShip(ctx, kgtypes.GraphCode, "dryRepo", hnswVecDocs(1024)))
+	seedShipped(t, ctx, mgr, kgtypes.GraphCode, "dryRepo", hnswVecDocs(1024))
 
 	hnswDir := graphCacheDirFor(mgr.cacheDir, kgtypes.GraphCode, "dryRepo", hnsw.New().Name())
 	orphanPath, orphanBytes := plantOrphan(t, hnswDir, "orphan-dryrun", 777)
@@ -172,14 +198,16 @@ func TestPruneCacheDriverDryRun(t *testing.T) {
 // os.Remove of a file NOT in the cache index — the T2-1 regression), leaves the live
 // .seg untouched, and reports Removed/RemovedBytes. It exercises BOTH formats.
 func TestPruneCacheDriverExecute(t *testing.T) {
+	t.Parallel()
+
 	svc, gc := newSegmentHarness(t)
 	_ = svc
 	ctx := context.Background()
 	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 
 	// Ship a real HNSW + BM25 corpus (warms each format's L2 cache with real .seg files).
-	require.NoError(t, mgr.AddAndShip(ctx, kgtypes.GraphCode, "execRepo", hnswVecDocs(1024)))
-	require.NoError(t, mgr.AddAndShipFields(ctx, kgtypes.GraphCode, "execRepo", bm25FieldDocs(1024)))
+	seedShipped(t, ctx, mgr, kgtypes.GraphCode, "execRepo", hnswVecDocs(1024))
+	seedShippedFields(t, ctx, mgr, kgtypes.GraphCode, "execRepo", bm25FieldDocs(1024))
 
 	hnswDir := graphCacheDirFor(mgr.cacheDir, kgtypes.GraphCode, "execRepo", hnsw.New().Name())
 	bm25Dir := graphCacheDirFor(mgr.cacheDir, kgtypes.GraphCode, "execRepo", "bm25")
@@ -225,10 +253,15 @@ func TestPruneCacheDriverExecute(t *testing.T) {
 // pruned: drop it from resident, then execute a prune — force-load restores it so it
 // is not an orphan and its .seg survives.
 func TestPruneCacheUnloadedButLiveSurvives(t *testing.T) {
+	t.Parallel()
+
 	_, gc := newSegmentHarness(t)
 	ctx := context.Background()
 	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
-	require.NoError(t, mgr.AddAndShip(ctx, kgtypes.GraphCode, "unloadRepo", hnswVecDocs(1024)))
+	// 512 keeps the graph inside a SINGLE partition through the tick, so exactly one
+	// .seg lands on disk to unload and then rescue.
+	require.NoError(t, mgr.AddAndMarkDirty(ctx, kgtypes.GraphCode, "unloadRepo", hnswVecDocs(512)))
+	require.NoError(t, mgr.ReEmitDirtyBuckets(ctx, kgtypes.GraphCode, "unloadRepo"))
 
 	hnswDir := graphCacheDirFor(mgr.cacheDir, kgtypes.GraphCode, "unloadRepo", hnsw.New().Name())
 	live := liveSegPaths(t, hnswDir)
@@ -239,7 +272,7 @@ func TestPruneCacheUnloadedButLiveSurvives(t *testing.T) {
 	// load/reload, not Add/ship); load is idempotent by id.
 	dm := mgr.managerFor(kgtypes.GraphCode, "unloadRepo")
 	require.NoError(t, dm.load(ctx))
-	require.NotEmpty(t, dm.unloadUnderPressure(0))
+	require.NotEmpty(t, dm.evictAllResidentForTest())
 	require.Empty(t, dm.engine.Export(), "resident-only Export is empty after unload")
 
 	rep, err := mgr.PruneCache(ctx, []PruneCacheTarget{{GraphType: kgtypes.GraphCode, Name: "unloadRepo"}}, true)
@@ -265,10 +298,12 @@ func TestPruneCacheUnloadedButLiveSurvives(t *testing.T) {
 // corpus (distinct vectors + ids) that was never shipped here — an honest injection of
 // a foreign id, not a reliance on two builds of the same data diverging.
 func TestPruneCacheList0Abort(t *testing.T) {
+	t.Parallel()
+
 	_, gc := newSegmentHarness(t)
 	ctx := context.Background()
 	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
-	require.NoError(t, mgr.AddAndShip(ctx, kgtypes.GraphCode, "abortRepo", hnswVecDocs(1024)))
+	seedShipped(t, ctx, mgr, kgtypes.GraphCode, "abortRepo", hnswVecDocs(1024))
 
 	hnswDir := graphCacheDirFor(mgr.cacheDir, kgtypes.GraphCode, "abortRepo", hnsw.New().Name())
 	orphanPath, _ := plantOrphan(t, hnswDir, "orphan-abort", 222)
@@ -297,6 +332,8 @@ func TestPruneCacheList0Abort(t *testing.T) {
 // TestPruneCacheNoOpEmptyGraph proves a never-shipped graph (no live set, no on-disk
 // segments) is a clean no-op.
 func TestPruneCacheNoOpEmptyGraph(t *testing.T) {
+	t.Parallel()
+
 	_, gc := newSegmentHarness(t)
 	ctx := context.Background()
 	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
@@ -315,12 +352,14 @@ func TestPruneCacheNoOpEmptyGraph(t *testing.T) {
 // execute=true prune over a graph with a planted orphan, a live Search returns the
 // full shipped corpus (every live segment still searchable).
 func TestPruneCacheLiveSearchAfterPrune(t *testing.T) {
+	t.Parallel()
+
 	_, gc := newSegmentHarness(t)
 	ctx := context.Background()
 	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 
 	docs := hnswVecDocs(1024)
-	require.NoError(t, mgr.AddAndShip(ctx, kgtypes.GraphCode, "searchRepo", docs))
+	seedShipped(t, ctx, mgr, kgtypes.GraphCode, "searchRepo", docs)
 
 	// Search BEFORE the prune to establish the searchable corpus size.
 	before := mgr.managerFor(kgtypes.GraphCode, "searchRepo").engine.ResidentDocCount()

@@ -385,3 +385,38 @@ func TestRenderTree_DepthCutoff(t *testing.T) {
 	assert.NotContains(t, out, "ID: n2", "depth=1 should cut off at n1")
 	assert.NotContains(t, out, "ID: n3")
 }
+
+// TestRenderTreeFromIndex_UpdatedSuffixParity pins the split-brain risk
+// of the two renderers that are documented as byte-identical per node
+// (tree.go:77-95): RenderTree walks per-node RPCs, RenderTreeFromIndex
+// walks a prebuilt index, and every per-node line format change must
+// land in both. This is the only test that goes red when the read-time
+// provenance suffix is added to one renderer and missed in the other —
+// the assemble-arm test reaches RenderTree alone, and plan_tree's
+// goldens seed no timestamps.
+func TestRenderTreeFromIndex_UpdatedSuffixParity(t *testing.T) {
+	const ts = int64(1785548993004179000)
+
+	gc := newScriptedGc().
+		putNode("p", "parent", "plan", "active", "parent desc").
+		putNode("c", "child", "phase", "pending", "child desc").
+		putEdges("p",
+			map[string]string{"peer_id": "c", "relationship": "contains", "direction": "outgoing"}).
+		putEdges("c")
+	gc.nodes["p"].UpdatedAt = ts
+	gc.nodes["c"].UpdatedAt = ts
+
+	// Both renderers walk the SAME root pointer, so any divergence is
+	// the renderer's, never the fixture's.
+	root := gc.nodes["p"]
+
+	var sb strings.Builder
+	RenderTree(context.Background(), gc, &sb, root, 0, 5)
+	viaWalk := sb.String()
+	viaIndex := renderViaIndex(gc, root, 5)
+
+	assert.Equal(t, viaWalk, viaIndex,
+		"RenderTree and RenderTreeFromIndex must stay byte-identical per node")
+	assert.Contains(t, viaWalk, "(updated ", "RenderTree must carry the suffix")
+	assert.Contains(t, viaIndex, "(updated ", "RenderTreeFromIndex must carry the suffix")
+}

@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
 
 // multiwriter_publish_reclaim_test.go proves writer A's merge-driven republish
@@ -40,6 +41,8 @@ func assertLiveSetPublished(t *testing.T, svc *sharedServerFake, mgr *fleetMembe
 // Tiny corpora keep the server's shipped doc count under residentBackstopFloor so
 // the coverage ratio disarms and the legitimate post-merge republish is not gated.
 func TestMultiWriterPublishReclaim(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	mgrs, svc := newMultiWriterFleet(t, 2)
 	a, b := mgrs[0], mgrs[1]
@@ -54,7 +57,7 @@ func TestMultiWriterPublishReclaim(t *testing.T) {
 
 	// B ships + publishes its OWN distinct corpus (seed far from A's).
 	bDocs := vecContentDocsSeed(seg, 5000)
-	require.NoError(t, b.AddAndShip(ctx, gt, name, bDocs))
+	require.NoError(t, b.AddAndMarkDirty(ctx, gt, name, bDocs))
 	require.NoError(t, b.Flush(ctx, gt, name))
 	bExport := b.managerFor(gt, name).engine.Export()
 	require.Len(t, bExport, 1, "B seals one segment")
@@ -63,7 +66,7 @@ func TestMultiWriterPublishReclaim(t *testing.T) {
 
 	// A ships + publishes its own distinct corpus (one segment).
 	aDocs := vecContentDocsSeed(seg, 0)
-	require.NoError(t, a.AddAndShip(ctx, gt, name, aDocs))
+	require.NoError(t, a.AddAndMarkDirty(ctx, gt, name, aDocs))
 	require.NoError(t, a.Flush(ctx, gt, name))
 	aDM := a.managerFor(gt, name)
 	preExport := aDM.engine.Export()
@@ -76,13 +79,15 @@ func TestMultiWriterPublishReclaim(t *testing.T) {
 	assertLiveSetPublished(t, svc, b, gt, name, "after A's first publish (B)")
 	require.True(t, serverHasBlob(svc, target, bSeg), "B's blob survives A's publish")
 
-	// Trigger A's dead-ratio merge: delete > 33% of A's docs so aSeg0 consolidates
-	// into a NEW content-hash (aSeg0 becomes the merged-away constituent).
-	for i := range seg/3 + 1 {
+	// A merges: delete > 33% of A's docs and consolidate the survivors, so aSeg0
+	// becomes the merged-away constituent behind a NEW content-hash. The occasion is
+	// applied directly because this Manager's engines have the automatic triggers
+	// disarmed; the publish-reclaim behavior under test is unchanged.
+	aDead := seg/3 + 1
+	for i := range aDead {
 		aDM.engine.Delete(aDocs[i].ID)
 	}
-	require.GreaterOrEqual(t, waitMergeCount(aDM.engine.MergeCount, 1), uint64(1),
-		"A's dead-ratio merge must fire")
+	applyMerge(t, aDM, []searchengine.SegmentID{aSeg0}, consolidatedHNSWBlob(t, aDocs[aDead:]))
 	postExport := aDM.engine.Export()
 	require.Len(t, postExport, 1, "A's merge consolidates to exactly one segment")
 	aSegMerged := postExport[0].ID

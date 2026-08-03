@@ -79,6 +79,9 @@ func InterceptWorker(ctx context.Context, deps ClientDeps, params kgtools.CallTo
 	if params.Name != "worker" {
 		return false, kgtools.ToolResult{}
 	}
+	if err := rejectUndeclaredParams("worker", "", WorkerToolDef().InputSchema.Properties, params.Arguments); err != nil {
+		return true, errorResult(err.Error())
+	}
 	var a workerArgs
 	if err := json.Unmarshal(params.Arguments, &a); err != nil {
 		// Malformed args are fatal regardless of which op was intended;
@@ -106,10 +109,9 @@ func InterceptWorker(ctx context.Context, deps ClientDeps, params kgtools.CallTo
 	default:
 		// The server has no worker handler at all — the only
 		// way "unknown operation" surfaces is through this client-side
-		// dispatcher, so we own the error message. Mirrors the server-
-		// side message from tools_worker_crud.go.
-		ops := []string{"list", "create", "update", "delete", "trigger", "status", "running", "cancel"}
-		return true, errorResult(fmt.Sprintf("worker: unknown operation %q — valid operations: %s", a.Operation, strings.Join(ops, ", ")))
+		// dispatcher, so we own the error message.
+		return true, unknownOperationResult("worker", a.Operation,
+			[]string{"list", "create", "update", "delete", "trigger", "status", "running", "cancel"})
 	}
 }
 

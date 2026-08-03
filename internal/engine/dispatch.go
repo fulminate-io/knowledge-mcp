@@ -183,7 +183,28 @@ func isNotFound(err error) bool {
 // the render context (graph label, search mode, node type, offset, format,
 // fields, meta keys, traverse start/direction, mutation kind) — the same intent
 // Compile lowered into the plan.
+// It also carries the server's truncation notice through to the caller. This is
+// the SINGLE function through which every response becomes a ToolResult, so one
+// wrapper covers every tool; appending in the five per-tool renderers instead
+// would be five places to forget.
 func Render(tool string, args json.RawMessage, resp *knowledgev1.ExecuteResponse) (kgtools.ToolResult, error) {
+	res, err := renderByTool(tool, args, resp)
+	if err != nil || !resp.GetTruncated() {
+		// A notice appended to a failed render would be noise.
+		return res, err
+	}
+	// A SEPARATE content block, never concatenated into the existing text: the
+	// blocks are delivered as an array, so a format=json payload stays in its own
+	// block and remains independently parseable.
+	res.Content = append(res.Content, kgtools.ContentBlock{
+		Type: "text",
+		Text: truncationNotice(resp),
+	})
+	return res, nil
+}
+
+// renderByTool is Render's per-tool dispatch.
+func renderByTool(tool string, args json.RawMessage, resp *knowledgev1.ExecuteResponse) (kgtools.ToolResult, error) {
 	switch tool {
 	case "search":
 		return renderSearchTool(args, resp)
@@ -198,6 +219,42 @@ func Render(tool string, args json.RawMessage, resp *knowledgev1.ExecuteResponse
 	default:
 		return kgtools.ToolResult{}, fmt.Errorf("Render: unrenderable tool %q", tool)
 	}
+}
+
+// truncationNotice is the caller-facing sentence for a clamped result. Product
+// copy: plain, actionable, and free of internal vocabulary — it says "the server
+// row ceiling", never a constant name. It names `limit` verbatim so a reader
+// maps the advice onto the actual parameter.
+func truncationNotice(resp *knowledgev1.ExecuteResponse) string {
+	return fmt.Sprintf(
+		"Showing %d rows — the server row ceiling engaged, so this result may be incomplete. "+
+			"Re-run with an explicit `limit` and page until a short page for a complete set.",
+		responseRowCount(resp))
+}
+
+// responseRowCount is the number of rows the response actually carries.
+//
+// The carrier list is a deliberate SUPERSET of the set a server arm can
+// populate: server-side search is retired, so nothing populates SearchResults
+// and no server ceiling can engage on it. That arm is therefore unreachable
+// today — kept anyway, because it costs one branch and means this helper stays
+// correct if an arm ever starts populating that carrier, instead of silently
+// reporting zero. Do not "fix" the asymmetry by deleting it.
+func responseRowCount(resp *knowledgev1.ExecuteResponse) int {
+	switch {
+	case len(resp.GetNodes()) > 0:
+		return len(resp.GetNodes())
+	case len(resp.GetIds()) > 0:
+		return len(resp.GetIds())
+	case len(resp.GetEdges()) > 0:
+		return len(resp.GetEdges())
+	case len(resp.GetTraversalResults()) > 0:
+		return len(resp.GetTraversalResults())
+	case len(resp.GetSearchResults()) > 0:
+		return len(resp.GetSearchResults())
+	}
+	// Unreachable in practice: truncated is set only when a ceiling was FILLED.
+	return 0
 }
 
 // renderDeleteTool renders the standalone `delete` tool's compiled DELETE

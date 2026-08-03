@@ -25,10 +25,11 @@ const voyageRerankModel = "rerank-2.5"
 
 // voyageRerankerInputCap is the absolute max documents per Voyage rerank
 // call. The API rejects requests with more than 1000 documents. The
-// constructor accepts a configurable inputDocs (BootstrapConfig.RerankInputDocs)
-// but defensively caps at this constant inside Rerank — guards against an
-// unwise BootstrapConfig override and preserves the "no client-side
-// windowing" property at the configured cap.
+// constructor accepts an inputDocs argument — both production callers pass
+// the operating pool widePoolSize (cmd/knowledge/internal/tools/search.go
+// and intercept_thoughts_recall.go) — and Rerank defensively re-caps at
+// this constant, guarding against an over-large caller value and preserving
+// the "no client-side windowing" property at the configured cap.
 const voyageRerankerInputCap = 1000
 
 // voyageReranker calls the Voyage AI rerank API to re-score a candidate set.
@@ -43,7 +44,7 @@ const voyageRerankerInputCap = 1000
 //     this many scored docs back, rather than re-scoring all candidates.
 type voyageReranker struct {
 	apiKey    string
-	inputDocs int    // max candidates sent per request (defensive cap; default 1000)
+	inputDocs int    // max candidates per request; callers pass the operating pool, Rerank re-caps at voyageRerankerInputCap
 	topK      int    // top_k value sent in request body (response size)
 	baseURL   string // rerank endpoint URL (defaults to voyageRerankURL; overridden in tests)
 	client    *http.Client

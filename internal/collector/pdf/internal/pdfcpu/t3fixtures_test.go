@@ -8,10 +8,9 @@ import "testing"
 // assertions live in resolvedfont_t3_test.go (alongside the deeper
 // content-stream checks).
 //
-// Per plan d76acb28 step 8309c27a — the criterion exercises the
-// "Each generated PDF loads via internalpdf.LoadFile without error"
-// + "single-page fixtures expose 1 page; multipage_one_font.pdf
-// exposes exactly 3 pages" requirements.
+// Two requirements: every generated PDF loads via internalpdf.LoadFile
+// without error, and single-page fixtures expose 1 page while
+// multipage_one_font.pdf exposes exactly 3.
 func TestT3Fixtures_LoadAndPageCount(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

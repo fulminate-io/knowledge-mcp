@@ -87,6 +87,13 @@ func InterceptQueryExamineProjects(ctx context.Context, deps ClientDeps, params 
 		return false, kgtools.ToolResult{}
 	}
 
+	// The claim point: everything above this line DECLINES to a later claimant
+	// (non-project type, absent graph caller, unresolvable id), so the gate runs
+	// here — where the arm commits to serving the call — rather than at the top.
+	if err := accountQueryParams(armExamineProjects, params.Arguments); err != nil {
+		return true, errorResult(err.Error())
+	}
+
 	if a.Format == "json" {
 		return true, jsonResult(buildExamineJSON(ctx, gc, node))
 	}

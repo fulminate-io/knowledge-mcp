@@ -91,7 +91,7 @@ id: thought_id). Link a thought to another node via mutate(operation:
   consistency_max — max consistency (low = contested thoughts)
   connected_to    — node ID thoughts must be connected to
   time_start/end  — date range (ISO 8601)
-  limit           — max results (default 20)
+  limit           — max results (default 20, max 50)
   mode            — search | timeline | charges | graph | clusters
   format          — text (default) | json
 
@@ -332,7 +332,6 @@ const helpSearchCode = `# search — Unified search across code, knowledge, prac
 ## Parameters (all graphs)
   query          — single search query
   queries        — batch array of queries (deduped, merged)
-  mode           — "hybrid" (default) | "text" (BM25 only) | "vector" (semantic only)
   limit          — max results per query (default 10, max 50)
   query_vector   — optional base64-encoded binary embedding (32 bytes / 256-bit
                    decoded). When set, the server skips its local embedder and
@@ -350,9 +349,16 @@ const helpSearchCode = `# search — Unified search across code, knowledge, prac
   group_by_file  — group results by file
   branch         — search branch overlay (auto-detected on feature branch)
   staleness      — show index staleness info
+  NOTE           — mode is not honored on the code arm: code search always fuses
+                   BM25 and vector whenever an embedder is available.
 
 ## Knowledge graph parameters
-  mode           — also supports "recent"/"temporal" (recency boost) and "similar"
+  mode           — "hybrid" (default) fuses the BM25 and vector arms.
+                   "text" — BM25 only, with no query embedding and no rerank.
+                   "vector" — the vector arm alone; needs a configured embedder.
+                   "recent"/"temporal" — one recency boost, both spellings equal.
+                   "similar" — see node_id below.
+                   The same vocabulary is honored on registered custom graphs.
   node_id        — with mode:"similar", the node whose nearest corpus neighbors to
                    return. mode:"similar" searches the node's OWN STORED vector (its
                    on-disk embedding, NOT a fresh embedding of any query text) and

@@ -51,7 +51,13 @@ func InterceptQueryModulesCodeStats(ctx context.Context, deps ClientDeps, params
 		return true, errorResult(a.Mode + ": graph client unavailable")
 	}
 	if a.Mode == "modules" {
+		if err := accountQueryParams(armCodeModules, params.Arguments); err != nil {
+			return true, errorResult(err.Error())
+		}
 		return true, composeListModules(ctx, deps, gc.Execute, a)
+	}
+	if err := accountQueryParams(armCodeStats, params.Arguments); err != nil {
+		return true, errorResult(err.Error())
 	}
 	sc, ok := gc.(statsRPC)
 	if !ok {

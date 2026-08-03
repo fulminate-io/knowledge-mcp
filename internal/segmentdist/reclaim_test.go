@@ -28,7 +28,17 @@ func warmExported[Q, S any](dm *distManager[Q, S]) map[searchengine.SegmentID]st
 // (HNSW and BM25) and asserts the wired reclaim hook: the consolidated blob is
 // present in L2, every superseded constituent is gone, the invariant holds, and
 // full-corpus search still returns every added doc.
+//
+// THIS IS THE END-TO-END TRIGGER-TO-HOOK SENTINEL, and it is the only one left.
+// It builds its engines through the reclaim testkit with merge ARMED, so a real
+// background trigger reaches Options.OnMerge here. The engines a Manager builds
+// have those triggers disarmed, so the Manager-level reclaim tests apply the merge
+// occasion directly instead and assert only what the reclaim DOES. Do not
+// "restore" a MergeCount assertion to those tests: on a Manager-built engine the
+// count cannot move, and this test is where that link is kept instead.
 func TestMergeReclaimHappyPath(t *testing.T) {
+	t.Parallel()
+
 	const nSeg = 8
 	docs := vecContentDocs(nSeg)
 
@@ -44,7 +54,7 @@ func TestMergeReclaimHappyPath(t *testing.T) {
 		// have been superseded by an async merge; warm whatever is currently sealed.
 		warmExported(dm)
 
-		require.GreaterOrEqual(t, waitMergeCount(dm.engine.MergeCount, 1), uint64(1), "count-driven merge must fire")
+		waitForMerge(t, dm.engine.MergeCount, "count-driven merge must fire")
 		waitMergeQuiesce(dm.engine.MergeCount)
 		warmExported(dm) // ensure the final consolidated blob(s) are L2-backed
 
@@ -67,7 +77,7 @@ func TestMergeReclaimHappyPath(t *testing.T) {
 		}
 		warmExported(dm)
 
-		require.GreaterOrEqual(t, waitMergeCount(dm.engine.MergeCount, 1), uint64(1), "count-driven merge must fire")
+		waitForMerge(t, dm.engine.MergeCount, "count-driven merge must fire")
 		waitMergeQuiesce(dm.engine.MergeCount)
 		warmExported(dm)
 
@@ -100,6 +110,8 @@ func assertReclaimHappened(t *testing.T, ic *instrumentedCache) {
 // supersede is retained: a dead-ratio merge consolidates only the DIRTY segment;
 // a sibling clean segment stays in Export() and its L2 file is never Removed.
 func TestReclaimContentSharedIdRetained(t *testing.T) {
+	t.Parallel()
+
 	// High count target so ONLY the dead-ratio trigger fires (not count-driven).
 	dm, ic := buildHNSWReclaimManager(t, kgtypes.GraphCode, "shared-id", t.TempDir(), 1<<30)
 	defer dm.engine.Close()
@@ -126,7 +138,7 @@ func TestReclaimContentSharedIdRetained(t *testing.T) {
 	// Delete 2 of the 4 dirty docs → 50% dead ≥ 0.33 → only segment A is eligible.
 	dm.engine.Delete(dirty[0].ID)
 	dm.engine.Delete(dirty[1].ID)
-	require.GreaterOrEqual(t, waitMergeCount(dm.engine.MergeCount, 1), uint64(1), "dead-ratio merge must fire")
+	waitForMerge(t, dm.engine.MergeCount, "dead-ratio merge must fire")
 	waitMergeQuiesce(dm.engine.MergeCount)
 	warmExported(dm)
 
@@ -152,6 +164,8 @@ func TestReclaimContentSharedIdRetained(t *testing.T) {
 // a high SegmentCountTarget so a >16-segment load does NOT trip a count-driven
 // merge (which would legitimately consolidate and test the wrong thing).
 func TestReclaimReadOnlyNoRemoval(t *testing.T) {
+	t.Parallel()
+
 	// 20 segments (each its own Add) — would exceed the default target of 16, so the
 	// high SegmentCountTarget is load-bearing here.
 	const nSeg = 20

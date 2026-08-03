@@ -323,30 +323,30 @@ func execClearMarkerUpdate(ctx context.Context, ex render.Executor, tgt clearLLM
 	return resp.GetAffectedCount(), resp.GetSkippedCount(), nil
 }
 
-// clearTarget builds the GraphSelector for one clear target. The knowledge
-// root graph (empty graphType, or graph==knowledge with the root name) maps to a
-// nil selector when targeting the BASE — the engine treats an absent/empty graph
-// as the knowledge root (parity with the server's empty-graph default). Other
-// graph types each carry their name discriminant on a TYPE-SPECIFIC GraphSelector
-// field (Repo for code, Account for cloud/cicd, Language for practice, Name for
-// logs/web/pdf/transformers and the knowledge root). The server-side resolver
+// clearTarget builds the GraphSelector for one clear target. The
+// knowledge family is a SINGLETON — one graph, on which the name is a label rather than a selector — so EVERY
+// knowledge target (empty graphType, or graph==knowledge), base and per-overlay-key
+// alike, maps to the nil selector. The server's knowledge arm returns the
+// request-scoped composite of that one graph and consults no selector field at
+// all (tools_graph_routing.go), so base and overlay targets already resolved to
+// the same DB; emitting nil for all of them changes which bytes go on the wire
+// and nothing about which graph is written. Other graph types each carry their
+// name discriminant on a TYPE-SPECIFIC GraphSelector field (Repo for code,
+// Account for cloud/cicd, Language for practice, Name for
+// logs/web/pdf/transformers). The server-side resolver
 // enforces the right field per graph type and rejects a sel.Name on a code graph
 // with "graph=code requires repo: graph selector invalid", so the discriminant
 // choice here is load-bearing.
 //
 // The OVERLAY dimension (tgt.branch): for code it rides GraphSelector.Branch
 // (the server composes repo@branch and Scopes to the overlay — tools_graph_routing.go:214);
-// for every other type the base@overlay is composed onto the type-specific name
-// discriminant (the server Scope @-split resolves it — cloud lifecycle.go,
-// composite_db_lifecycle.go). Empty branch == the base graph (today's behavior),
-// so a base-only target with an empty branch still maps to the nil knowledge-root
-// selector.
+// for every other non-knowledge type the base@overlay is composed onto the
+// type-specific name discriminant (the server Scope @-split resolves it — cloud
+// lifecycle.go, composite_db_lifecycle.go). Empty branch == the base graph
+// (today's behavior).
 func clearTarget(tgt clearLLMFailureTarget) *knowledgev1.GraphSelector {
 	if tgt.graphType == "" || tgt.graphType == string(kgtypes.GraphKnowledge) {
-		if isKnowledgeRootName(tgt.name) && tgt.branch == "" {
-			return nil
-		}
-		return &knowledgev1.GraphSelector{Graph: tgt.graphType, Name: overlayName(tgt.name, tgt.branch)}
+		return nil
 	}
 	sel := &knowledgev1.GraphSelector{Graph: tgt.graphType}
 	switch tgt.graphType {
@@ -378,10 +378,4 @@ func overlayName(base, overlay string) string {
 // summary, surfacing the overlay key (name@overlay) when the target is an overlay.
 func targetLabel(tgt clearLLMFailureTarget) string {
 	return overlayName(tgt.name, tgt.branch)
-}
-
-// isKnowledgeRootName reports whether the wire name refers to the knowledge root
-// graph (empty, or the "knowledge"/"default" aliases the overview reports).
-func isKnowledgeRootName(name string) bool {
-	return name == "" || name == "knowledge" || name == "default"
 }

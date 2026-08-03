@@ -23,6 +23,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strconv"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
@@ -113,14 +114,26 @@ func InterceptThoughts(ctx context.Context, deps ClientDeps, params kgtools.Call
 	return false, kgtools.ToolResult{}
 }
 
-// interceptThoughtsOp dispatches the reflective subset of the `thoughts`
-// tool. Unrecognized ops fall through unchanged.
+// interceptThoughtsOp dispatches the `thoughts` tool. An unrecognized
+// operation TERMINATES here with the canonical unknown-operation diagnostic —
+// nothing downstream claims this tool, so falling through would only reach the
+// engine's tool-level deny and misreport a bad operation as a missing
+// intercept. The query/reflect entry point (interceptQueryReflect) still falls
+// through on an unrecognized mode; only the `thoughts` operation switch is
+// terminal.
 func interceptThoughtsOp(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
+	// The single accounting point for the thoughts tool. The per-operation
+	// handlers below are deliberately NOT gated: every thoughts call reaches
+	// this function first, so one check here covers the whole surface.
+	if err := rejectUndeclaredParams("thoughts", "", ThoughtsToolDef().InputSchema.Properties, params.Arguments); err != nil {
+		return true, errorResult(err.Error())
+	}
 	var a thoughtsArgs
 	if err := json.Unmarshal(params.Arguments, &a); err != nil {
-		// Don't claim the call — let the server surface the parse
-		// error so the message matches every other parse-error site.
-		return false, kgtools.ToolResult{}
+		// Claimed: post-cutover nothing downstream would surface a better
+		// message, so a malformed payload gets a parse error naming the tool
+		// rather than the engine's "no client intercept" deny.
+		return true, errorResult(fmt.Sprintf("thoughts: invalid arguments: %v", err))
 	}
 
 	switch a.Operation {
@@ -143,8 +156,18 @@ func interceptThoughtsOp(ctx context.Context, deps ClientDeps, params kgtools.Ca
 		return true, handleAdjacencyClient(ctx, deps, params)
 	case "charges_for":
 		return true, handleChargesForClient(ctx, deps, params)
+	default:
+		return true, unknownOperationResult("thoughts", a.Operation, thoughtsOperations)
 	}
-	return false, kgtools.ToolResult{}
+}
+
+// thoughtsOperations is the operation vocabulary interceptThoughtsOp's terminal
+// arm reports. Hand-written because it is passed as a call argument here;
+// TestUnknownOperationLists_MatchDeclaredSchemas keeps it set-equal to the enum
+// ThoughtsToolDef() publishes.
+var thoughtsOperations = []string{
+	"think", "charge", "recall", "trace", "propagate",
+	"adjacency", "charges_for", "similarity_report",
 }
 
 // interceptQueryReflect dispatches the reflective subset of query(mode:...).
@@ -158,6 +181,15 @@ func interceptQueryReflect(ctx context.Context, deps ClientDeps, params kgtools.
 	// Mirror the server-side guard at cmd/knowledge-server/tools/tools_query.go:172-173.
 	if a.Graph != "" && a.Graph != "knowledge" {
 		return false, kgtools.ToolResult{}
+	}
+	// Per-arm param accounting for whichever reflect arm this payload resolves
+	// to. ONE call rather than ten: the mode-to-armID mapping lives in
+	// query_arm_reflect_dispatch.go, which also documents why a payload this
+	// surface DECLINES is never gated. A rejection terminates the chain — a
+	// rejected call that fell through would reach a later claimant that never
+	// accounted for it.
+	if err := accountReflectArm(a, params.Arguments); err != nil {
+		return true, errorResult(err.Error())
 	}
 
 	switch a.Mode {
@@ -206,10 +238,28 @@ func interceptQueryReflect(ctx context.Context, deps ClientDeps, params kgtools.
 	// Recall routing: query(mode:timeline / mode:charges) and any
 	// query(...) carrying a thought-property filter route to recall, so the
 	// client claims them here.
+	//
+	// The core six are thought-graph properties in every graph: nothing but a
+	// thought carries a valence, a magnitude, a consistency, a session or a
+	// connected-to, so their presence identifies the corpus on its own and the
+	// requested node type is irrelevant to them.
+	//
+	// `status` is the exception, and it is why this is two conditions rather
+	// than one. Every node type has a status, so a status filter identifies the
+	// thought corpus ONLY when the query is already about thoughts — an absent
+	// type (recall's own default), or one of the two spellings that name the
+	// thought corpus explicitly. On a typed browse it is an ordinary knowledge
+	// filter, and claiming it here would answer query(type:"step",
+	// status:"completed") out of the thought corpus with no error.
 	recallModes := map[string]bool{"timeline": true, "charges": true}
+	// The core must stay TERM-IDENTICAL to its two copies — hasThoughtQueryFilter
+	// (intercept_search_knowledge.go) and hasThoughtFilter (engine/compile_query.go).
+	// TestThoughtFilterCoreTermsMatchKnowledgeSearchSibling enforces it per field.
 	hasThoughtFilter := a.ValenceMin != nil || a.ValenceMax != nil || a.MagnitudeMin != nil ||
-		a.ConsistMax != nil || a.Session != "" || a.ConnectedTo != "" || a.Status != ""
-	if hasThoughtFilter || recallModes[a.Mode] {
+		a.ConsistMax != nil || a.Session != "" || a.ConnectedTo != ""
+	statusOnThoughtCorpus := a.Status != "" &&
+		(a.Type == "" || a.Type == "thought" || a.Type == "all")
+	if hasThoughtFilter || statusOnThoughtCorpus || recallModes[a.Mode] {
 		return true, handleRecallClient(ctx, deps, recallParamsFromQuery(params, a))
 	}
 

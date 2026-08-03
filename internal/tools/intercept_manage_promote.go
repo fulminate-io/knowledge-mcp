@@ -28,12 +28,6 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
-// ticketIDPromoteMetadata is the T5 ticket node ID the batch-level
-// narrative think() links to (locked decision 3: batch-level,
-// ticket-linked, non-dry-run only). Stable across plan revisions
-// because changesets carry the linkage forward.
-const ticketIDPromoteMetadata = "31811c79a6c14eb19eede0bc595a1686"
-
 // metadataStatsCaller is the narrow MetadataStats RPC seam the promote_metadata
 // composer type-asserts the GraphCaller to (the production graphClientCaller
 // implements it, mirroring the render.Executor / tools.Indexer narrow seams). It
@@ -321,12 +315,12 @@ func parseMetadataGraphTypeForBackfill(ctx context.Context, crud GraphTypeCRUDAP
 }
 
 // emitPromoteMetadataNarrative records the batch-level think() summarizing
-// the backfill outcome via the reusable composeThoughtCreate composition —
-// equivalent to the legacy mutate(create,type:thought,session:"T5-backfill",
-// links:[ticket]) it replaces: it creates the thought, its NodeThoughtSession
-// membership (EdgeKGContains + EdgeNext), and the EdgeRelatesTo link to the
-// ticket. Failure is log-not-return — the backfill itself succeeded, narrative
-// telemetry is observability not correctness.
+// the backfill outcome via the reusable composeThoughtCreate composition: it
+// creates the thought and its NodeThoughtSession membership (EdgeKGContains +
+// EdgeNext). No Links are passed — session membership is the only anchor a
+// consumer's graph can resolve, and no caller-supplied work item exists at this
+// call site to link instead. Failure is log-not-return — the backfill itself
+// succeeded, narrative telemetry is observability not correctness.
 func emitPromoteMetadataNarrative(ctx context.Context, gc GraphCaller, report *promoteMetadataReport) {
 	if _, err := composeThoughtCreate(ctx, gc, composeThoughtArgs{
 		Content: promoteMetadataThoughtContent(report),
@@ -335,8 +329,7 @@ func emitPromoteMetadataNarrative(ctx context.Context, gc GraphCaller, report *p
 		// not, and we set the author summary on the thought too). This internal
 		// caller mints a deliberate search-optimized one-liner from the report.
 		Summary: fmt.Sprintf("Metadata backfill narrative: %s/%s refreshed %d keys", report.Graph, report.Name, report.StatsKeyCount),
-		Session: "T5-backfill",
-		Links:   []string{ticketIDPromoteMetadata},
+		Session: "metadata-backfill",
 	}); err != nil {
 		slog.Warn("promote_metadata: failed to record narrative think", "error", err)
 	}

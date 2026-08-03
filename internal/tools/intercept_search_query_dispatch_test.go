@@ -45,6 +45,12 @@ type dispatchEngineHandler struct {
 	// captures the full set for per-query assertions.
 	mu   sync.Mutex
 	reqs []*knowledgev1.ExecuteRequest
+	// typedCorpus, when set, makes the handler serve NODES FILTERED BY the plan's
+	// Selection.NodeTypes instead of the fixed resp — the server's type push-down,
+	// modeled. A canned resp answers every plan identically, which cannot tell a
+	// browse that carries a type filter from one that dropped it. Nil (the zero
+	// value) keeps the fixed-resp behavior every other test relies on.
+	typedCorpus []*knowledgev1.Node
 }
 
 func (h *dispatchEngineHandler) Check(
@@ -66,8 +72,33 @@ func (h *dispatchEngineHandler) Execute(
 	h.mu.Lock()
 	h.lastReq = req.Msg
 	h.reqs = append(h.reqs, req.Msg)
+	corpus := h.typedCorpus
 	h.mu.Unlock()
+	if corpus != nil {
+		return connect.NewResponse(h.serveTypedCorpus(req.Msg.GetQuery(), corpus)), nil
+	}
 	return connect.NewResponse(h.resp), nil
+}
+
+// serveTypedCorpus applies the plan's Selection.NodeTypes to the seeded corpus,
+// the way the server's type push-down does. An EMPTY NodeTypes matches
+// everything — which is exactly what makes a dropped type filter observable in
+// the ROWS rather than only in the recorded plan.
+func (h *dispatchEngineHandler) serveTypedCorpus(
+	q *knowledgev1.QueryPlan, corpus []*knowledgev1.Node,
+) *knowledgev1.ExecuteResponse {
+	want := map[string]bool{}
+	for _, t := range q.GetSelection().GetNodeTypes() {
+		want[t] = true
+	}
+	out := make([]*knowledgev1.Node, 0, len(corpus))
+	for _, n := range corpus {
+		if len(want) > 0 && !want[n.GetType()] {
+			continue
+		}
+		out = append(out, n)
+	}
+	return &knowledgev1.ExecuteResponse{Nodes: out}
 }
 
 // recordedReqs returns a copy of every ExecuteRequest the handler captured,
@@ -204,8 +235,11 @@ func (d *interceptDeps) SegmentManager() SegmentSearcher              { return d
 func (d *interceptDeps) SegmentVectorResolver() SegmentVectorResolver { return d.segRes }
 func (d *interceptDeps) SegmentShipper() SegmentShipper               { return nil }
 func (d *interceptDeps) SegmentPruner() SegmentPruner                 { return nil }
-func (d *interceptDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
-func (d *interceptDeps) PipelineScanner() PipelineScanner             { return nil }
+
+func (d *interceptDeps) SegmentCacheDropper() SegmentCacheDropper { return nil }
+func (d *interceptDeps) SegmentDeleter() SegmentDeleter           { return nil }
+func (d *interceptDeps) SegmentCoverage() SegmentCoverageReader   { return nil }
+func (d *interceptDeps) PipelineScanner() PipelineScanner         { return nil }
 
 func (d *interceptDeps) ClearHealLatch(kgtypes.GraphType, string) {}
 func (d *interceptDeps) ReflectionForcer() ReflectionForcer       { return nil }
@@ -276,24 +310,53 @@ func TestInterceptSearch_EmbedThenClientEngine(t *testing.T) {
 }
 
 // TestInterceptSearch_LogsShortCircuit asserts graph=logs never reaches the
-// embed/dispatch pipeline (the log short-circuit owns it). Execute is not hit.
+// embed/dispatch pipeline — the log short-circuit owns it.
+//
+// THE ASSERTION IS "NO SERVER SEARCH", NOT "NO EXECUTE", and the difference is
+// the whole point. The logs arm serves the log graph by issuing its OWN
+// client-side reads through the graph caller, so Execute is legitimately hit.
+// An earlier form asserted zero Execute calls and passed only because the
+// payload carried the query under a key this tool does not read, leaving the
+// log search with nothing to run: it measured an empty query, not a
+// short-circuit.
 func TestInterceptSearch_LogsShortCircuit(t *testing.T) {
 	var execHits, embedCalls atomic.Int64
-	gc := newInterceptHarness(t, &execHits, cannedSearchResp(t))
+	gc, handler := newInterceptHarnessWithHandler(t, &execHits, cannedSearchResp(t))
 	deps := &interceptDeps{gc: gc, emb: stubEmbedder{calls: &embedCalls}}
 
-	handled, _ := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{"graph": "logs", "name": "q1", "text": "err"}))
+	// `query`, not `text` — see the sibling note in intercept_search_bindfirst_test.go.
+	// With `text` this test would stay green while asserting nothing: the
+	// rejection satisfies both handled==true and execHits==0 trivially, so the
+	// logs short-circuit would no longer be under test.
+	handled, _ := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{"graph": "logs", "name": "q1", "query": "err"}))
 	require.True(t, handled, "logs search is handled client-side")
-	assert.Equal(t, int64(0), execHits.Load(), "logs short-circuit does NOT hit Execute")
+	assert.False(t, dispatchedAServerSearch(handler.recordedReqs()),
+		"the logs arm must not dispatch a server SEARCH — it serves the log graph with its own client-side reads")
 }
 
-// TestInterceptQuery_EmbedThenNonCompilableDenied asserts InterceptQuery embeds
-// the default-hybrid query (maybeEmbedQuery reads the "query" field) then routes
-// the tail through engine.Dispatch. A "query"-field-only call is not a
-// §A-compilable shape (compileQuery keys on text/id/type/ids/meta), so
-// Dispatch DENIES it (the legacy ToolService.Call fall-through is deleted) — exec
-// is not hit and the result is the explicit deny.
-func TestInterceptQuery_EmbedThenNonCompilableDenied(t *testing.T) {
+// BOTH TESTS BELOW CHANGED MEANING when the query param-accounting gate went
+// live, and the reason is a finding rather than a test detail.
+//
+// InterceptQuery claims a query call ONLY when maybeEmbedQuery succeeds
+// (query.go), and maybeEmbedQuery keys on the payload field "query"
+// (search.go:397). The query TOOL has no `query` param — its search text rides
+// `text` — so the only payload that reaches the engine-dispatch arm carries a
+// field QueryToolDef does not declare. The Phase-1 census could not see it: that
+// walk derives payload fields from arg STRUCTS, and maybeEmbedQuery reads a raw
+// map. The accounting gate's unknown-key sweep does see it, and rejects it.
+//
+// The consequence, stated plainly so nobody reads these tests as a happy path:
+// InterceptQuery's client-side embed pre-step is now UNREACHABLE for the query
+// tool. No capability is lost — callers reach client-side embedding through
+// `text`, which InterceptQueryKnowledgeSearch claims and embeds itself — but the
+// engine-dispatch arm keeps a registry cell and a gate call site because the
+// bijection requires them. engine.Dispatch's own query branch keeps its direct
+// coverage in cmd/knowledge/internal/engine (dispatch_test.go).
+
+// TestInterceptQuery_UndeclaredQueryKeyRejected pins the rejection for the
+// query-field-only payload. Before the gate this reached engine.Dispatch and got
+// the generic non-compilable deny; now it is refused up front by name.
+func TestInterceptQuery_UndeclaredQueryKeyRejected(t *testing.T) {
 	var execHits, embedCalls atomic.Int64
 	gc := newInterceptHarness(t, &execHits, cannedSearchResp(t))
 	deps := &interceptDeps{gc: gc, emb: stubEmbedder{calls: &embedCalls}}
@@ -301,34 +364,33 @@ func TestInterceptQuery_EmbedThenNonCompilableDenied(t *testing.T) {
 	raw, err := json.Marshal(map[string]any{"query": "x"})
 	require.NoError(t, err)
 	handled, out := InterceptQuery(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: raw})
-	require.True(t, handled)
-	assert.GreaterOrEqual(t, embedCalls.Load(), int64(1), "client embed pre-step ran")
-	// query-field-only is not compilable → Dispatch DENIES (no legacy fallback).
-	assert.Equal(t, int64(0), execHits.Load(), "non-compilable query is denied, NOT Execute")
-	assert.True(t, out.IsError, "non-compilable query → explicit deny")
-	assert.Contains(t, out.Content[0].Text, "denied")
+	require.True(t, handled, "a rejection must terminate the chain, never fall through")
+	assert.GreaterOrEqual(t, embedCalls.Load(), int64(1),
+		"the embed pre-step still runs before the claim — it is what makes this intercept claim at all")
+	assert.Equal(t, int64(0), execHits.Load(), "the rejection issues NO read")
+	require.True(t, out.IsError, "an undeclared top-level key is a caller error")
+	assert.Contains(t, out.Content[0].Text, `unknown parameter "query"`,
+		"the error names the offending field rather than failing generically")
+	assert.Contains(t, out.Content[0].Text, "text",
+		"and enumerates the valid params, which is how a caller finds the right spelling")
 }
 
-// TestInterceptQuery_TextModeCompilesToExecute asserts a query carrying the
-// mode=text shape (a §A-reducible text search) routes through Dispatch and
-// compiles to Engine.Execute. This exercises the InterceptQuery → Dispatch →
-// Execute happy path with a real compilable shape.
-func TestInterceptQuery_TextModeCompilesToExecute(t *testing.T) {
+// TestInterceptQuery_DeclaredParamDoesNotRescueAnUndeclaredOne pins that the
+// sweep is per-KEY, not per-payload: supplying a legitimate `text` alongside the
+// undeclared `query` still fails on `query`. Without this, a caller could
+// smuggle an unknown key in beside a known one.
+func TestInterceptQuery_DeclaredParamDoesNotRescueAnUndeclaredOne(t *testing.T) {
 	var execHits, embedCalls atomic.Int64
 	gc := newInterceptHarness(t, &execHits, cannedSearchResp(t))
 	deps := &interceptDeps{gc: gc, emb: stubEmbedder{calls: &embedCalls}}
 
-	// InterceptQuery only fires for queryModesNeedingEmbedding (""/hybrid) AND
-	// when maybeEmbedQuery embeds the "query" field. Supply both: query (so the
-	// embed fires) + text (so compileQuery's default-mode text arm builds a
-	// search plan that compiles to Execute).
 	raw, err := json.Marshal(map[string]any{"query": "x", "text": "x"})
 	require.NoError(t, err)
 	handled, out := InterceptQuery(opCtx(), deps, kgtools.CallToolParams{Name: "query", Arguments: raw})
 	require.True(t, handled)
-	assert.GreaterOrEqual(t, embedCalls.Load(), int64(1), "client embed pre-step ran")
-	assert.Equal(t, int64(1), execHits.Load(), "compilable query routes through Engine.Execute")
-	assert.Contains(t, out.Content[0].Text, "[finding] Hit")
+	assert.Equal(t, int64(0), execHits.Load(), "still no read")
+	require.True(t, out.IsError)
+	assert.Contains(t, out.Content[0].Text, `unknown parameter "query"`)
 }
 
 // recordingCodeSearcher captures the per-query queryVec handed to Manager.Search

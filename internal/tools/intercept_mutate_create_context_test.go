@@ -50,11 +50,11 @@ func TestMutateCreateFinding_TicketContains(t *testing.T) {
 		mutateIDs: []string{"finding-1"},
 	}
 	deps := interceptTestDeps{gc: fc}
-	res := handleClientMutateCreateFinding(context.Background(), deps, mutateArgs{
+	res := handleClientMutateCreateFinding(context.Background(), deps, withRawArgs(mutateArgs{
 		Operation: "create", Type: "finding",
 		Name: "a finding", Summary: "a searchable finding summary",
 		TicketID: "tkt-1",
-	})
+	}, `{"operation":"create","type":"finding","name":"a finding","summary":"a searchable finding summary","ticket_id":"tkt-1"}`))
 	require.False(t, res.IsError, "create must succeed: %s", toolResultText(res))
 
 	m := firstCreatePlan(t, fc)
@@ -97,11 +97,11 @@ func TestRecordDecision_TicketContains(t *testing.T) {
 func TestMutateCreateFinding_AbsentTicket_NodeStillCreated(t *testing.T) {
 	fc := &fakeGraphCaller{mutateIDs: []string{"finding-2"}} // ticket resolves nowhere.
 	deps := interceptTestDeps{gc: fc}
-	res := handleClientMutateCreateFinding(context.Background(), deps, mutateArgs{
+	res := handleClientMutateCreateFinding(context.Background(), deps, withRawArgs(mutateArgs{
 		Operation: "create", Type: "finding",
 		Name: "a finding", Summary: "a searchable finding summary",
 		TicketID: "ghost-ticket",
-	})
+	}, `{"operation":"create","type":"finding","name":"a finding","summary":"a searchable finding summary","ticket_id":"ghost-ticket"}`))
 	require.False(t, res.IsError, "an absent ticket must NOT fail the create")
 	assert.Contains(t, toolResultText(res), "finding-2", "node ID is still returned")
 	assert.Contains(t, toolResultText(res), "ghost-ticket", "a drop warning is rendered")
@@ -119,11 +119,11 @@ func TestMutateCreateFinding_AbsentTicket_NodeStillCreated(t *testing.T) {
 func TestMutateCreateFinding_AbsentKnowledgeLink_NodeStillCreated(t *testing.T) {
 	fc := &fakeGraphCaller{mutateIDs: []string{"finding-3"}} // link resolves nowhere.
 	deps := interceptTestDeps{gc: fc}
-	res := handleClientMutateCreateFinding(context.Background(), deps, mutateArgs{
+	res := handleClientMutateCreateFinding(context.Background(), deps, withRawArgs(mutateArgs{
 		Operation: "create", Type: "finding",
 		Name: "a finding", Summary: "a searchable finding summary",
 		Links: []string{"ghost-link"},
-	})
+	}, `{"operation":"create","type":"finding","name":"a finding","summary":"a searchable finding summary","links":["ghost-link"]}`))
 	require.False(t, res.IsError, "an absent link must NOT fail the create")
 	assert.Contains(t, toolResultText(res), "finding-3", "node ID is still returned")
 	assert.Contains(t, toolResultText(res), "ghost-link", "a drop warning is rendered")
@@ -158,11 +158,11 @@ func TestMutateCreateFinding_CodeLinkFailure_CreateStillSucceeds(t *testing.T) {
 		},
 	}
 	deps := interceptTestDeps{gc: fc}
-	res := handleClientMutateCreateFinding(context.Background(), deps, mutateArgs{
+	res := handleClientMutateCreateFinding(context.Background(), deps, withRawArgs(mutateArgs{
 		Operation: "create", Type: "finding",
 		Name: "a finding", Summary: "a searchable finding summary",
 		Links: []string{"code-sym-1"},
-	})
+	}, `{"operation":"create","type":"finding","name":"a finding","summary":"a searchable finding summary","links":["code-sym-1"]}`))
 	require.False(t, res.IsError, "a failing code-link must NOT fail the create: %s", toolResultText(res))
 	assert.Contains(t, toolResultText(res), "finding-4", "node ID is still returned despite the link failure")
 

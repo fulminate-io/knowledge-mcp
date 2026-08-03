@@ -11,8 +11,8 @@ import (
 
 // residentBackstopFloor and residentBackstopRatio gate the READ-SIDE coverage
 // backstop (recoverIfDegenerate). They are INTENTIONALLY a SEPARATE pair from the
-// write-side auto-heal's segmentCoverageFloor / coverageRatioThreshold
-// (bootstrap/client_segment.go:91-94): that pair compares segment-COVERED docs
+// write-side auto-heal's tools.SegmentCoverageFloor / tools.CoverageRatioThreshold
+// (tools/manage_status_coverage.go): that pair compares segment-COVERED docs
 // against the graph's EMBEDDED-node count (a server-vs-server ratio on the write
 // drain edge). THIS pair compares the daemon's RESIDENT in-memory engine doc count
 // against the server's SHIPPED doc count (an in-memory-vs-server ratio on the read

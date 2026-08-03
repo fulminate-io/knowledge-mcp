@@ -15,13 +15,18 @@ import (
 )
 
 // assembleNode is a recursive tree node for JSON assemble output.
-// Verbatim port of cmd/knowledge-server/tools/tools_assemble_json.go:15.
+// Ported from cmd/knowledge-server/tools/tools_assemble_json.go:15,
+// plus UpdatedAt: the JSON counterpart of the text renders'
+// updatedSuffix, following the by-id convention (raw int64 unix nanos,
+// key omitted when zero — cmd/knowledge/internal/tools/
+// intercept_query_examine.go:299-304).
 type assembleNode struct {
 	ID          string            `json:"id"`
 	Name        string            `json:"name"`
 	Type        string            `json:"type"`
 	Status      string            `json:"status,omitempty"`
 	Description string            `json:"description,omitempty"`
+	UpdatedAt   int64             `json:"updated_at,omitempty"`
 	Metadata    map[string]string `json:"metadata,omitempty"`
 	Children    []assembleNode    `json:"children,omitempty"`
 }
@@ -61,6 +66,7 @@ func buildAssembleTree(ctx context.Context, gc GraphCaller, node *knowledgev1.No
 		Type:        node.Type,
 		Status:      node.Status,
 		Description: node.Description,
+		UpdatedAt:   node.UpdatedAt,
 		Metadata:    nonEmptyMeta(node),
 	}
 
@@ -118,7 +124,8 @@ func collectLinkedNodes(ctx context.Context, gc GraphCaller, nodeID string) ([]a
 }
 
 // nodeToAssembleNode converts a wire node to a flat assembleNode
-// (no children). Verbatim port of tools_assemble_json.go:120.
+// (no children). Ported from tools_assemble_json.go:120, plus the
+// UpdatedAt carry that buildAssembleTree also performs.
 func nodeToAssembleNode(n *knowledgev1.Node) assembleNode {
 	return assembleNode{
 		ID:          n.Id,
@@ -126,6 +133,7 @@ func nodeToAssembleNode(n *knowledgev1.Node) assembleNode {
 		Type:        n.Type,
 		Status:      n.Status,
 		Description: n.Description,
+		UpdatedAt:   n.UpdatedAt,
 		Metadata:    nonEmptyMeta(n),
 	}
 }

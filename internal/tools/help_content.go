@@ -64,6 +64,25 @@ summary at creation time so search quality survives the pipeline change.
 500-char cap, handler-side validation, structured error if missing.
 record_decision / criterion / rule keep their auto-synthesized Summary;
 think keeps the SymbolName / first-line-of-content convention.
+
+## Read consistency — there is no stale-read window
+
+Reads are read-your-writes and cross-session fresh. Writes are synchronous:
+a successful mutate means the backend applied it, so every later read —
+yours or another session's — sees it. Sessions are a client-side concept;
+the server holds no per-session view of the graph.
+
+Measured: one session writes, a second session's query(id) / search /
+plan_tree / traverse reflects it in ~30 ms against a local file-backed
+server and ~85 ms against a remote-backed one, flat under concurrent load.
+
+So when you disagree with another agent about a node's contents, "I read
+stale data" is not an available explanation. The likely one is read-then-
+report skew: you loaded the text minutes ago and it was revised while you
+reasoned. Re-fetch immediately before filing a finding or negating someone
+else's claim, and cite the node's updated_at — rendered on every ID line in
+plan_tree and assemble, and present in the by-id JSON — so a reader can
+tell "read before the revision" from "read after".
 `
 
 const helpNodeTypes = `# Node Types
@@ -271,7 +290,7 @@ Design: query is a generic primitive. It dispatches on params: 'id' → direct l
   hybrid search. Wired by the client-side LLM pipeline's InterceptQuery so the
   server stays unencumbered by Voyage API keys post-Phase-5. Decoded length
   mismatches return the same structured validation error as
-  mutate(update, binary_vector=...).
+  mutate(update_batch, items[].binary_vector=...).
 
 ### Recency-boosted search
   query({ "mode": "recent", "text": "authentication" })
@@ -403,7 +422,7 @@ const helpTraverse = `# traverse — Edge-first graph traversal
 
 ## Parameters
   start (required), direction, edge_types, depth, limit, graph, name, language,
-  account, repo, branch, overlay, include_edge_metadata, format
+  account, repo, branch, include_edge_metadata, format
 
 ## Gotchas
   - depth:1 gives only immediate neighbors (default)

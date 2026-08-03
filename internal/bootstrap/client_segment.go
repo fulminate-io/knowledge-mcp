@@ -11,6 +11,7 @@ import (
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/pipeline"
+	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 	"github.com/fulminate-io/knowledge-mcp/internal/segmentdist"
 	"github.com/fulminate-io/knowledge-mcp/internal/tools"
 )
@@ -111,19 +112,98 @@ func (c *client) SegmentCoverage() tools.SegmentCoverageReader {
 	if c.segmentMgr == nil {
 		return nil
 	}
-	return c.segmentMgr
+	return segmentCoverageAdapter{mgr: c.segmentMgr}
 }
 
-// SegmentShipper returns the SAME *segmentdist.Manager as the build-concurrent/
-// ship-once SHIP surface the rebuild_segments driver drives (AddDeterministic /
-// AddFields / FlushDeterministic / InvalidateLocal). Returns an UNTYPED nil
-// interface (not a typed nil *Manager) when the pipeline was not wired, so the
+// segmentCoverageAdapter is the ONE place the backstop's record crosses from the
+// segment package into the tools carrier.
+//
+// IT EXISTS BECAUSE THE IMPORT CANNOT GO THE OTHER WAY: the segment package's own
+// in-package tests import tools, so tools may not import the segment package in
+// production, and therefore cannot name segmentdist.RepairState. bootstrap is the
+// composition root and already imports both, so the conversion belongs here rather
+// than inverting either layer. Every other method is a straight pass-through.
+type segmentCoverageAdapter struct{ mgr *segmentdist.Manager }
+
+func (a segmentCoverageAdapter) ShippedSegmentDocCount(
+	ctx context.Context, gt kgtypes.GraphType, name string,
+) (int, bool, error) {
+	return a.mgr.ShippedSegmentDocCount(ctx, gt, name)
+}
+
+func (a segmentCoverageAdapter) ResidentDocCount(gt kgtypes.GraphType, name string) int {
+	return a.mgr.ResidentDocCount(gt, name)
+}
+
+func (a segmentCoverageAdapter) LiveResidentDocCount(gt kgtypes.GraphType, name string) int {
+	return a.mgr.LiveResidentDocCount(gt, name)
+}
+
+func (a segmentCoverageAdapter) RepairVerification(
+	gt kgtypes.GraphType, name string,
+) (tools.RepairVerification, bool) {
+	st, ok := a.mgr.RepairStateCached(gt, name)
+	if !ok {
+		return tools.RepairVerification{}, false
+	}
+	return tools.RepairVerification{
+		Residue:         st.Residue,
+		Converged:       st.Converged,
+		Scanned:         st.Scanned,
+		VerifiedAtNanos: st.VerifiedAtNanos,
+	}, true
+}
+
+// SegmentShipper returns the SAME *segmentdist.Manager as the stage-then-finalize SHIP
+// surface the rebuild_segments driver drives (StageRebuildPartition / FinalizeRebuild /
+// InvalidateLocal). Returns an UNTYPED nil
+// interface (not a typed nil adapter) when the pipeline was not wired, so the
 // driver's nil-guard fires correctly.
+//
+// It is wrapped rather than returned bare because ONE method's result crosses the
+// package boundary as a tools-local type: the delta finalize reports three coupled
+// facts, and segmentdist cannot name tools.RebuildDeltaResult (nor tools segmentdist).
+// The adapter EMBEDS the Manager, so every other method of the seam is the Manager's
+// own — the same vocabulary-mapping shape segmentPrunerAdapter uses below.
 func (c *client) SegmentShipper() tools.SegmentShipper {
 	if c.segmentMgr == nil {
 		return nil
 	}
-	return c.segmentMgr
+	return segmentShipperAdapter{Manager: c.segmentMgr}
+}
+
+// segmentShipperAdapter is the ONLY place the tools-local and segmentdist-native
+// delta-result vocabularies meet. Embedding keeps it to exactly one translated
+// method; adding a method to the seam that the Manager satisfies directly needs no
+// change here.
+type segmentShipperAdapter struct{ *segmentdist.Manager }
+
+// FinalizeRebuild maps the Manager's reset-finalize result onto the tools-local
+// struct. The values are carried across UNCHANGED; the two vocabularies exist only
+// because neither package may import the other.
+func (a segmentShipperAdapter) FinalizeRebuild(
+	ctx context.Context, gt kgtypes.GraphType, name string,
+) (tools.RebuildFinalizeResult, error) {
+	res, err := a.Manager.FinalizeRebuild(ctx, gt, name)
+	return tools.RebuildFinalizeResult{
+		HNSWSuperseded: res.HNSWSuperseded,
+		BM25Superseded: res.BM25Superseded,
+		Swapped:        res.Swapped,
+	}, err
+}
+
+// ReEmitRebuiltDelta maps the Manager's three coupled return values onto the
+// tools-local result struct. The values are carried across UNCHANGED — the struct
+// exists to keep the seam at one method, not to reinterpret anything.
+func (a segmentShipperAdapter) ReEmitRebuiltDelta(
+	ctx context.Context, gt kgtypes.GraphType, name string, hnswDocs, bm25Docs []searchengine.Document,
+) (tools.RebuildDeltaResult, error) {
+	swapped, applicable, derived, err := a.Manager.ReEmitRebuiltDelta(ctx, gt, name, hnswDocs, bm25Docs)
+	return tools.RebuildDeltaResult{
+		Swapped:            swapped,
+		Applicable:         applicable,
+		DerivedBucketCount: derived,
+	}, err
 }
 
 // SegmentPruner returns the one-shot manage(prune-cache) orphaned-L2-reclaim seam
@@ -142,6 +222,21 @@ func (c *client) SegmentPruner() tools.SegmentPruner {
 		return nil
 	}
 	return segmentPrunerAdapter{mgr: c.segmentMgr}
+}
+
+// SegmentDeleter returns the seam that carries a delete into the shipped segment
+// corpus, wrapping the SAME *segmentdist.Manager the client holds. Returns an
+// UNTYPED nil interface (not a typed nil *Manager) when the segment manager was not
+// constructed, so a caller's nil-check fires correctly and the delete simply skips
+// its re-emit — the same best-effort disposition a failed re-emit gets.
+//
+// No adapter is needed: the seam's only method takes already-imported kgtypes and
+// searchengine types, so *segmentdist.Manager satisfies it directly.
+func (c *client) SegmentDeleter() tools.SegmentDeleter {
+	if c.segmentMgr == nil {
+		return nil
+	}
+	return c.segmentMgr
 }
 
 // segmentPrunerAdapter bridges the tools.SegmentPruner seam (parallel slices +
@@ -211,24 +306,6 @@ func (c *client) ClearHealLatch(gt kgtypes.GraphType, name string) {
 	c.healBreaker.ClearHealLatch(gt, name)
 }
 
-// Coverage-heal gate constants. The auto-heal arm no longer triggers only on a
-// ZERO-segment pool — it also heals a DEGENERATE-but-nonzero pool (segments
-// present, but covering far fewer docs than the graph has embedded). Two
-// thresholds keep it from flapping:
-//
-//   - segmentCoverageFloor: the absolute embedded-count MAGNITUDE below which the
-//     ratio probe is NEVER consulted — a small graph (e.g. a handful of embedded
-//     nodes) can legitimately sit in one small segment, so the ratio is noisy
-//     there. Below the floor only the zero-segments probe heals (never the ratio),
-//     so a tiny healthy graph never churns.
-//   - coverageRatioThreshold: covered/embedded BELOW this fraction marks the pool
-//     degenerate (the live incident was ~6-of-60 shards covering a fraction of the
-//     embedded corpus). At/above it the pool is healthy and the arm disarms.
-const (
-	segmentCoverageFloor   = 64
-	coverageRatioThreshold = 0.5
-)
-
 // buildHealFactory constructs the auto-heal closure factory the pipeline
 // injects into each collector (Pipeline.AttachHealFactory). It is the ONLY layer
 // where the pipeline, the segmentdist probe, and the tools rebuild driver are all
@@ -251,8 +328,8 @@ const (
 // The probe makes a THREE-way decision (the middle path is the fix):
 //  1. zero shipped segments (the never-shipped case) → rebuild from scratch.
 //  2. a degenerate-but-nonzero pool (segment-covered docs — summed HNSW doc_count —
-//     below coverageRatioThreshold × the graph's embedded-node count, once the
-//     embedded count clears segmentCoverageFloor) → try a one-shot read-engine
+//     below tools.CoverageRatioThreshold × the graph's embedded-node count, once the
+//     embedded count clears tools.SegmentCoverageFloor) → try a one-shot read-engine
 //     load FIRST via Manager.ReconcileResidentDegenerate, which cache-first
 //     load()s the intact persisted corpus and re-probes coverage. If that load
 //     restores resident coverage (degenerate=false) the pool was intact-but-not-
@@ -310,19 +387,30 @@ func (c *client) buildHealFactory() func(kgtypes.GraphType, string) func(context
 			// SAME login-routed scanner seam the manual op uses (the accessor carries
 			// the c.router==nil guard) and the SAME segment manager as shipper.
 			// RebuildSegments owns the single-flight shared with the manual op.
-			ran, scanned, built, partial, pruned, err := tools.RebuildSegments(ctx, c.PipelineScanner(), c.segmentMgr, gt, name)
+			// FROM SCRATCH: the heal fires precisely because the shipped corpus is
+			// absent or degenerate, so it needs the whole corpus rebuilt — scoping the
+			// scan to what changed recently would rebuild a slice of a corpus that is
+			// missing, and the heal would never converge.
+			out, err := tools.RebuildSegments(ctx, c.PipelineScanner(), c.SegmentShipper(), gt, name, true)
 			if err != nil {
 				return err
 			}
+			// published is logged beside the counts because they answer different
+			// questions: the counts say what was BUILT AND SHIPPED, published says
+			// whether the manifest swap that makes those blobs the live set LANDED. A
+			// heal that ships everything and publishes nothing restored no coverage, and
+			// a line reading only the counts calls that a successful heal.
 			slog.Info("bootstrap: auto-heal rebuilt segments after read-engine load could not restore coverage for builtin graph",
-				"graph_type", gt, "name", name, "ran", ran, "scanned", scanned, "built", built, "partial", partial, "pruned", len(pruned))
+				"graph_type", gt, "name", name, "ran", out.Ran, "scanned", out.Scanned, "built", out.Built,
+				"partial", out.Partial, "hnsw_pruned", len(out.HNSWPruned), "bm25_pruned", len(out.BM25Pruned),
+				"published", out.Published)
 			// A COMPLETED rebuild (ran, with the error path already returned above)
 			// consumes the BM25 arm's no-progress shot, then classifies against the
 			// breaker — scanned==0, or no shipped-completeness gain, is no-progress.
-			if ran {
+			if out.Ran {
 				c.armBM25HealProgress(gt, name)
 			}
-			c.classifyHealOutcome(ctx, gt, name, ran, scanned, built, partial)
+			c.classifyHealOutcome(ctx, gt, name, out.Ran, out.Scanned, out.Built, out.Partial)
 			return nil
 		}
 	}

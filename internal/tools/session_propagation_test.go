@@ -73,8 +73,11 @@ func (d sessionPropagationDeps) SegmentManager() SegmentSearcher              { 
 func (d sessionPropagationDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
 func (d sessionPropagationDeps) SegmentShipper() SegmentShipper               { return nil }
 func (d sessionPropagationDeps) SegmentPruner() SegmentPruner                 { return nil }
-func (d sessionPropagationDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
-func (d sessionPropagationDeps) PipelineScanner() PipelineScanner             { return nil }
+
+func (d sessionPropagationDeps) SegmentCacheDropper() SegmentCacheDropper { return nil }
+func (d sessionPropagationDeps) SegmentDeleter() SegmentDeleter           { return nil }
+func (d sessionPropagationDeps) SegmentCoverage() SegmentCoverageReader   { return nil }
+func (d sessionPropagationDeps) PipelineScanner() PipelineScanner         { return nil }
 
 func (d sessionPropagationDeps) ClearHealLatch(kgtypes.GraphType, string) {}
 func (d sessionPropagationDeps) ReflectionForcer() ReflectionForcer       { return nil }

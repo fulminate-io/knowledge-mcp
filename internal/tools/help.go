@@ -72,5 +72,8 @@ func InterceptHelp(_ context.Context, _ ClientDeps, params kgtools.CallToolParam
 	if params.Name != "help" {
 		return false, kgtools.ToolResult{}
 	}
+	if err := rejectUndeclaredParams("help", "", HelpToolDef().InputSchema.Properties, params.Arguments); err != nil {
+		return true, errorResult(err.Error())
+	}
 	return true, handleHelpClient(params.Arguments)
 }

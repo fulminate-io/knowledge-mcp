@@ -17,6 +17,8 @@ import (
 // over L2 alone. The type holds only a cache + format — there is no transport
 // field, so a network call is structurally impossible to issue.
 func TestLocalSegmentSource_ZeroNetworkOverL2(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	cache := newDiskSegmentCache(t.TempDir(), 0)
 	src := newLocalSegmentSource(cache, "hnsw")

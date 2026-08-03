@@ -33,6 +33,7 @@ repo. For the full parameter reference, run `help("file_symbols")`.
 <!-- BEGIN GENERATED: params -->
 | Parameter | Type | Required | Enum | Description |
 | --- | --- | --- | --- | --- |
+| `branch` | string |  |  | Code-graph branch overlay to read instead of the base graph. Auto-filled by the client from the machine-local repo manifest when the caller omits it and repo is not 'all', so it arrives on the call even when unset by hand; supply it explicitly to pin a specific overlay. |
 | `file_path` | string | yes |  | File path (partial paths work). |
 | `file_paths` | array of string |  |  | Multiple file paths in one call (combined with file_path). |
 | `file_paths[]` | string |  |  |  |

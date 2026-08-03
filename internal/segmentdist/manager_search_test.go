@@ -15,12 +15,12 @@ import (
 )
 
 // searchCorpusN is the fixed corpus size every searchCorpus caller uses: ==
-// MinSegmentDocs default, so AddAndShip / the deterministic chunker seals exactly
-// one segment per format.
+// MinSegmentDocs default, so the embed write / the deterministic chunker seals
+// exactly one segment per format.
 const searchCorpusN = 1024
 
-// searchCorpus builds a searchCorpusN-doc corpus (== MinSegmentDocs, so AddAndShip
-// seals exactly one segment per format) for BOTH formats. Every doc carries a
+// searchCorpus builds a searchCorpusN-doc corpus (== MinSegmentDocs, so one batch
+// seals one segment per format) for BOTH formats. Every doc carries a
 // vector AND BM25 fields. One designated "target" doc is the discriminator: it
 // carries a UNIQUE BM25 term that no other doc has, and its vector is returned so
 // the caller can use it as the query vector. Both arms therefore rank the target
@@ -62,6 +62,8 @@ func searchCorpus(targetIdx int) (docs []searchengine.Document, targetID string,
 // Run under -race (the criterion requires the concurrent two-engine fan-out be
 // race-clean); `make test` / `go test -race ./...` exercise that.
 func TestManagerSearchFusesBothEngines(t *testing.T) {
+	t.Parallel()
+
 	_, gc := newSegmentHarness(t)
 	ctx := context.Background()
 
@@ -70,8 +72,8 @@ func TestManagerSearchFusesBothEngines(t *testing.T) {
 	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 
 	// Ship both formats for one graph.
-	require.NoError(t, mgr.AddAndShip(ctx, kgtypes.GraphKnowledge, "kg", docs))
-	require.NoError(t, mgr.AddAndShipFields(ctx, kgtypes.GraphKnowledge, "kg", docs))
+	seedShipped(t, ctx, mgr, kgtypes.GraphKnowledge, "kg", docs)
+	seedShippedFields(t, ctx, mgr, kgtypes.GraphKnowledge, "kg", docs)
 
 	// Fused search: the target is strong in BOTH arms → fused #1.
 	fused, err := mgr.Search(ctx, kgtypes.GraphKnowledge, "kg", uniqueTerm, targetVec, 10)
@@ -89,14 +91,16 @@ func TestManagerSearchFusesBothEngines(t *testing.T) {
 // BM25 arm (the HNSW arm is skipped on empty queryVec) and still returns the
 // unique-term doc as the top fused hit. Proves the single-modality degrade path.
 func TestManagerSearchTextOnlyArm(t *testing.T) {
+	t.Parallel()
+
 	_, gc := newSegmentHarness(t)
 	ctx := context.Background()
 
 	docs, targetID, _, uniqueTerm := searchCorpus(3)
 
 	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
-	require.NoError(t, mgr.AddAndShip(ctx, kgtypes.GraphKnowledge, "kg", docs))
-	require.NoError(t, mgr.AddAndShipFields(ctx, kgtypes.GraphKnowledge, "kg", docs))
+	seedShipped(t, ctx, mgr, kgtypes.GraphKnowledge, "kg", docs)
+	seedShippedFields(t, ctx, mgr, kgtypes.GraphKnowledge, "kg", docs)
 
 	fused, err := mgr.Search(ctx, kgtypes.GraphKnowledge, "kg", uniqueTerm, nil, 10)
 	require.NoError(t, err)
@@ -107,6 +111,8 @@ func TestManagerSearchTextOnlyArm(t *testing.T) {
 // TestManagerSearchEmptyGraph asserts searching a graph with no shipped segments
 // returns an empty fused list (not an error) — the engine's empty-set return.
 func TestManagerSearchEmptyGraph(t *testing.T) {
+	t.Parallel()
+
 	_, gc := newSegmentHarness(t)
 	ctx := context.Background()
 

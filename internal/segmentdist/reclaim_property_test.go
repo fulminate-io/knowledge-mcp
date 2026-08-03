@@ -7,6 +7,7 @@ import (
 	"math/rand"
 	"os"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -52,6 +53,15 @@ type propGraph struct {
 // assertLiveSetBackedByL2 after EVERY op of EVERY stream. Each stream's seed is
 // logged before it runs, so any failure is reproducible. Set RECLAIM_PROP_SEED=<n>
 // to replay a single failing seed deterministically.
+//
+// DELIBERATELY NOT PARALLEL. Shared resource: CPU scheduling, which this test
+// reads as a signal. Every assertion here is taken after a wall-clock quiescence
+// window — propQuiesceStableFor of no change in the merge counter — and the
+// invariant it then asserts requires the reclaim hook to have finished writing L2
+// for the merge that counter recorded. Peers saturating the cores stretch the gap
+// between the counter's increment and the hook's completion, so a parallel run
+// can report an invariant violation that is really a scheduling artifact. The
+// window is not the thing to widen; the contention is the thing to keep out.
 func TestReclaimPropertyRandomized(t *testing.T) {
 	if override, ok := os.LookupEnv("RECLAIM_PROP_SEED"); ok {
 		seed, err := strconv.ParseInt(override, 0, 64)
@@ -91,9 +101,28 @@ func runPropertyWithSeed(t *testing.T, seed int64) {
 		}
 	}()
 
+	// checkAll settles every graph, then asserts the invariant on every graph.
+	//
+	// THE WAITS OVERLAP; THE WINDOW DOES NOT SHRINK. Each graph polls its OWN
+	// engine's merge counter and must still observe propQuiesceStableFor of no
+	// change before it returns, so nothing about what quiescence MEANS is
+	// weakened here — only the dead time spent watching one graph settle while
+	// another is already settling. Waiting serially made the per-op floor the SUM
+	// of the per-graph windows rather than the longest of them, which is what
+	// dominated this test's wall clock (it burns almost no CPU).
+	//
+	// ASSERTIONS STAY ON THE TEST GOROUTINE. require's failure path calls
+	// t.FailNow, which is only valid there; asserting from the wait goroutines
+	// would turn a real invariant violation into an undefined-behavior report.
 	checkAll := func() {
+		var wg sync.WaitGroup
 		for _, g := range graphs {
-			waitMergeQuiesceWindow(g.dm.engine.MergeCount, propQuiesceStableFor)
+			wg.Go(func() {
+				waitMergeQuiesceWindow(g.dm.engine.MergeCount, propQuiesceStableFor)
+			})
+		}
+		wg.Wait()
+		for _, g := range graphs {
 			warmExported(g.dm)
 			assertLiveSetBackedByL2(t, g.dm, g.ic.removedSet(), nil, nil)
 		}
@@ -125,7 +154,7 @@ func runPropertyWithSeed(t *testing.T, seed int64) {
 		case 2: // ROLE-B embed ship
 			_, err := g.dm.ship(ctx, g.dm.locallyShipped)
 			require.NoError(t, err)
-		case 3: // ROLE-A: a full-corpus replace-prune ship (the FlushDeterministic shape)
+		case 3: // ROLE-A: a full-corpus replace-prune ship (the FinalizeRebuild shape)
 			_, err := g.dm.ship(ctx, g.dm.shippedIDs)
 			require.NoError(t, err)
 		case 4: // restart: fresh distManager over the same dir + caller, then reload

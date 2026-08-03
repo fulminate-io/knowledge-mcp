@@ -33,24 +33,52 @@ import (
 //     embed branches below do not apply since log graphs carry no
 //     vector index.
 //  2. Client-side query embedding (Phase 4.5). When deps.Embedder() is
-//     non-nil and the caller did not already supply query_vector, the
-//     query text is embedded locally and the bytes are forwarded via
-//     the query_vector wire field. The server's compositor short-circuits
-//     its own embed call, so servers without a Voyage key still
-//     return vector-quality results.
+//     non-nil, the caller did not already supply query_vector, AND the
+//     resolved mode is not BM25-only, the query text is embedded locally and
+//     the bytes are forwarded via the query_vector wire field. The server's
+//     compositor short-circuits its own embed call, so servers without a
+//     Voyage key still return vector-quality results.
 //  3. Client-side rerank. When [credentials] voyage_api_key
-//     is configured this interceptor widens limit + coerces format=json
-//     on the wire, calls the server, hydrates the JSON response, invokes
-//     the moved cmd/knowledge/internal/rerank package's Voyage reranker
-//     locally, and re-renders for the caller.
+//     is configured AND the resolved mode is not BM25-only, this interceptor
+//     widens limit + coerces format=json on the wire, calls the server,
+//     hydrates the JSON response, invokes the moved
+//     cmd/knowledge/internal/rerank package's Voyage reranker locally, and
+//     re-renders for the caller.
+//  4. Mode honoring. The declared `mode` selects which retrieval arms run.
+//     mode:text suppresses BOTH pre-steps above and refuses a payload that
+//     also asks for a vector operation; search_mode_contract.go holds the
+//     vocabulary and the reasoning.
 //
 // Returns (handled, result). When handled is false, the next interceptor
 // (or the bare server call) takes over with the ORIGINAL params.
+//
+// This outer is deliberately thin. It owns exactly one thing the arms cannot:
+// the CALLER-BOUNDARY limit clamp and its disclosure. Placing it here rather
+// than in the arms is what makes the declared maximum bind on EVERY serving
+// path — rerank success, all four rerank degrade branches, keyless installs,
+// the custom-graph arm, logs, code and similar — without enumerating them.
+// It also keeps the clamp strictly BEFORE the rerank rewrite widens the same
+// wire key to the candidate-pool size; see clampSearchCallerLimit for why those
+// two writes must not be collapsed.
 func InterceptSearch(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
-	if params.Name != "search" {
-		return false, kgtools.ToolResult{}
+	if claimed, res, done := searchClaimGate(params); done {
+		return claimed, res
 	}
+	var clamped bool
+	params.Arguments, clamped = clampSearchCallerLimit(params.Arguments)
+	handled, res := interceptSearchArms(ctx, deps, params)
+	if handled && clamped && !res.IsError {
+		// A SEPARATE content block, never concatenated: a format:json body must
+		// stay independently parseable.
+		res.Content = append(res.Content, kgtools.ContentBlock{Type: "text", Text: searchLimitClampNotice})
+	}
+	return handled, res
+}
 
+// interceptSearchArms is InterceptSearch's body: every per-graph claim, the
+// mode resolution, and the embed/rerank pipeline. Split out so the clamp and
+// its disclosure in the outer apply uniformly to whatever this returns.
+func interceptSearchArms(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	// graph=logs short-circuit. Decoded here so the rewrite/
 	// embed/rerank pipeline below never sees a log-graph payload it
 	// wasn't designed for.
@@ -105,21 +133,23 @@ func InterceptSearch(ctx context.Context, deps ClientDeps, params kgtools.CallTo
 	// combined text) — the code arm is the only one that fans out per-query.
 	params.Arguments = normalizeQueriesToQuery(params.Arguments)
 
-	voyageKey := config.VoyageAPIKey()
-	hasReranker := voyageKey != ""
-	// Honor an explicit rerank:false — the caller opts out of the
-	// (latency-heavy) client-side Voyage rerank; unset or rerank:true keep
-	// the key-driven default. Without this the rerank param was captured into
-	// savedState.originalRerank but never consulted, so rerank:false was
-	// silently ignored and every search paid the rerank round-trip.
-	if hasReranker {
-		var rr struct {
-			Rerank *bool `json:"rerank"`
-		}
-		if err := json.Unmarshal(params.Arguments, &rr); err == nil && rr.Rerank != nil && !*rr.Rerank {
-			hasReranker = false
+	// Resolve the declared mode ONCE. bm25Only is what suppresses both the embed
+	// and the rerank below; the contract file owns what each mode means.
+	execMode := normalizeSegmentSearchMode(sniff.Mode)
+	bm25Only := execMode == "text"
+	if bm25Only {
+		// Refuse BEFORE any rewrite or embed: a payload asking for BM25-only
+		// retrieval and a vector operation at once cannot be honored both ways.
+		if msg := searchModeConflict(params.Arguments); msg != "" {
+			return true, errorResult(msg)
 		}
 	}
+
+	voyageKey := config.VoyageAPIKey()
+	// The rerank decision, including the caller's explicit rerank:false opt-out
+	// and the mode suppression. Extracted as a pure predicate so the key is an
+	// argument a test can choose rather than an ambient value it inherits.
+	hasReranker := searchRerankActive(voyageKey != "", searchRerankParam(params.Arguments), bm25Only)
 	expanded, saved, hasRewrite, err := rewriteSearchArgs(params.Arguments, hasReranker)
 	if err != nil {
 		return true, errorResult("rewrite search args: " + err.Error())
@@ -136,9 +166,14 @@ func InterceptSearch(ctx context.Context, deps ClientDeps, params kgtools.CallTo
 	if !hasRewrite {
 		args = params.Arguments
 	}
-	embedded, didEmbed := maybeEmbedQuery(ctx, deps.Embedder(), args)
+	// Suppressed entirely under a BM25-only mode: not called, rather than called
+	// and discarded. On a metered embedder the difference is billed.
+	embedded, didEmbed := args, false
+	if !bm25Only {
+		embedded, didEmbed = maybeEmbedQuery(ctx, deps.Embedder(), args)
+	}
 	slog.Debug("rerank-trace: post-embed",
-		"did_embed", didEmbed, "embedder_nil", deps.Embedder() == nil)
+		"did_embed", didEmbed, "bm25_only", bm25Only, "embedder_nil", deps.Embedder() == nil)
 	// The knowledge/default arm is CLAIMED by the client engine
 	// UNCONDITIONALLY — even with no rewrite and no client embed (BM25-only via
 	// RRF-over-one-list). The segment Manager is wired for the life of the daemon
@@ -187,6 +222,24 @@ func InterceptSearch(ctx context.Context, deps ClientDeps, params kgtools.CallTo
 		"pool_size", widePoolSize, "top_k", widePoolTopK)
 	reranker := rerank.NewVoyage(voyageKey, widePoolSize, widePoolTopK)
 	return true, applyClientRerank(ctx, resp, saved, reranker)
+}
+
+// searchClaimGate settles the two questions that precede any search work: does
+// this call belong to the search tool at all, and does its payload carry a param
+// the tool does not declare. done=true means InterceptSearch returns (claimed,
+// res) immediately — not ours, or ours and refused.
+//
+// It is a separate function only so the param-accounting guard does not push
+// InterceptSearch past the statement cap; InterceptSearch's body is otherwise
+// unchanged.
+func searchClaimGate(params kgtools.CallToolParams) (claimed bool, res kgtools.ToolResult, done bool) {
+	if params.Name != "search" {
+		return false, kgtools.ToolResult{}, true
+	}
+	if err := rejectUndeclaredParams("search", "", SearchToolDef().InputSchema.Properties, params.Arguments); err != nil {
+		return true, errorResult(err.Error()), true
+	}
+	return false, kgtools.ToolResult{}, false
 }
 
 // normalizeQueriesToQuery folds a `queries` array into the single `query` field
@@ -333,9 +386,21 @@ func interceptSearchReducibleGraph(ctx context.Context, deps ClientDeps, graph s
 		if err := json.Unmarshal(raw, &ca); err != nil {
 			return true, errorResult(graph + " search: decode args: " + err.Error())
 		}
-		query := searchReducibleQueryText(searchReducibleArgs{Query: ca.Query, Queries: ca.Queries})
+		// Decode the SAME raw payload a second time into segmentSearchArgs — what
+		// composeKnowledgeSearch does for the knowledge arm — so both tools' segment
+		// arms read the same wire fields (types, limit, fields, format, mode)
+		// through the same struct and cannot disagree about which params exist.
+		// searchArgs is NOT widened for this: it is the client-side mirror of the
+		// server search struct, and bending it to one arm's needs breaks the mirror.
+		var sa segmentSearchArgs
+		if err := json.Unmarshal(raw, &sa); err != nil {
+			return true, errorResult(graph + " search: decode args: " + err.Error())
+		}
+		// The queries[] merge differs from the decoded query field whenever the
+		// caller sent `queries`, so it overrides Query rather than riding along.
+		sa.Query = searchReducibleQueryText(searchReducibleArgs{Query: ca.Query, Queries: ca.Queries})
 		return true, composeRegisteredGraphSearch(ctx, deps, deps.SegmentManager(),
-			kgtypes.GraphType(graph), ca.Name, query, ca.Format)
+			kgtypes.GraphType(graph), ca.Name, sa)
 	}
 
 	var a searchReducibleArgs

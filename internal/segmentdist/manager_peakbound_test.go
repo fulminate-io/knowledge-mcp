@@ -128,6 +128,8 @@ func newLoadBoundManager(t *testing.T, src *loadBoundSource) *distManager[mockQu
 // maxFetchSegmentIDs ids, AND every listed segment was imported (no loss across
 // sub-batches), AND importedGen advanced to the listed max.
 func TestLoadNeverExceedsFetchIDCap(t *testing.T) {
+	t.Parallel()
+
 	src := &loadBoundSource{}
 	const m = 3*maxFetchSegmentIDs + 11 // M well over the cap, not a clean multiple
 	maxGen := src.seedMockSegments(t, m, 16)
@@ -151,6 +153,8 @@ func TestLoadNeverExceedsFetchIDCap(t *testing.T) {
 // load() must halve+retry through fetchMisses, import EVERY listed id (no loss),
 // and advance importedGen to listedMaxGen ONLY after the complete fetch.
 func TestLoadHalvesAndRetriesUnderByteCeiling(t *testing.T) {
+	t.Parallel()
+
 	src := &loadBoundSource{}
 	// Each blob ~ 1 KiB of content. A full count-capped chunk (256 ids) is ~256
 	// KiB; set the ceiling to 32 KiB so the first chunk is rejected and must halve
@@ -176,6 +180,8 @@ func TestLoadHalvesAndRetriesUnderByteCeiling(t *testing.T) {
 // BEFORE Import/advance, and importedGen does NOT move — so the unfetched id stays
 // re-listable on the next load (no silent loss).
 func TestLoadSingleBlobOverCeilingDoesNotAdvance(t *testing.T) {
+	t.Parallel()
+
 	src := &loadBoundSource{}
 	// One fat blob whose bytes alone exceed the ceiling, plus some normal ones.
 	const perBlob = 1 << 10 // 1 KiB normal

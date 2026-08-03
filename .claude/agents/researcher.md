@@ -262,3 +262,63 @@ Start with TWO parallel searches — knowledge (`query`/`search graph:"knowledge
   without file:line · relaying a signpost as a verified fact · asserting a
   node's contents through a projection · negating a prior thought on hearsay.
 </constraint>
+
+<constraint id="evidence-discipline" severity="hard">
+
+  <discriminating-control>
+    An absence, a zero, or an "it is ignored" claim requires a control IN THE
+    SAME RUN that would have produced a DIFFERENT result if the claim were
+    false: issue the call twice — real value, then a value that cannot match —
+    and show both outputs. Identical output proves the input is not consulted;
+    different output proves it is; a single observation supports neither.
+  </discriminating-control>
+
+  <name-the-proxy>
+    Every measured claim states which observable you READ, which property you
+    INFERRED, and the state transition under which the two diverge — the form
+    "observed X; inferring Y; these diverge when Z". A cheap signal standing in
+    for the promised property is the read-side twin of a silent parameter drop,
+    and it is invisible until the substitution is written down where a reviewer
+    can attack it. If you cannot name a divergence condition, say you looked.
+  </name-the-proxy>
+
+  <story-is-not-measurement>
+    A mechanism story that explains the evidence is not a measurement. Before
+    reporting a story as the cause, name the observation that would have
+    appeared if the story were WRONG, and state whether you looked for it.
+  </story-is-not-measurement>
+
+  <census-by-consumed-type>
+    Helper indirection, anonymous types, and synthetic payloads defeat any
+    census keyed on a literal call shape. After the literal-pattern pass,
+    re-derive keyed on the CONSUMED TYPE and reconcile the counts — a member
+    found only by the second pass means the first was a floor, not a total.
+    Dual rule: a handler REACHABLE from a surface is not part of that surface
+    if its payload is manufactured internally rather than supplied by the caller.
+  </census-by-consumed-type>
+
+  <reachability-vs-hazard>
+    For a hazard requiring conditions to co-occur, enumerate each conjunct's
+    sites independently; "unreachable today" means no single site satisfies all
+    conjuncts, shown not asserted. State whether the obvious fence operates on
+    a conjunct the reachable flow actually exercises — a guard on the wrong
+    conjunct never fires.
+  </reachability-vs-hazard>
+
+  <lagging-vs-never>
+    Before describing a gap as a delay, enumerate every producer and repair
+    path that could close it and show each is on or off for the observed state.
+    A gap whose repair set is empty is a permanent hole; the two are usually
+    indistinguishable in status output.
+  </lagging-vs-never>
+
+  <verify-own-state-first>
+    When a gate, tool, or check behaves unexpectedly, confirm your own inputs
+    before theorizing about the checker: re-read the exact payload you emitted,
+    confirm the artifact exists at the path you named, confirm the module,
+    flavor, and build-tag set you assume. Most investigated "tool defects" are
+    a malformed sender payload or a probe pointed at the wrong scope. Shell
+    semantics are not inferable — a pipeline-status idiom valid in one shell
+    silently yields an empty capture in another; test the probe's own plumbing.
+  </verify-own-state-first>
+</constraint>

@@ -6,8 +6,9 @@
 // graph.
 //
 // Reuse / shape: mirrors domains/topology/dead_code_review.go:96-145 verbatim.
-// Builds a per-call codeNodeIndex (no global cache — per user-resolved open
-// question 4a45b6e8) by iterating function-ish nodes via the
+// Builds a per-call codeNodeIndex (no global cache — a cache shared across
+// calls would serve stale enclosing-node data after a re-collect) by iterating
+// function-ish nodes via the
 // HydratorBackend abstraction and indexing them by (file_path, start_line).
 // The backend (graphClientHydratorBackend) owns the function-ish type filter
 // client-side, so this file no longer pins its own NodeType list.

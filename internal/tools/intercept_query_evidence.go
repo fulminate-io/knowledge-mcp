@@ -41,6 +41,10 @@ func InterceptQueryEvidence(ctx context.Context, deps ClientDeps, params kgtools
 		return true, errorResult("evidence mode requires 'id' parameter (the decision ID)")
 	}
 
+	if err := accountQueryParams(armEvidence, params.Arguments); err != nil {
+		return true, errorResult(err.Error())
+	}
+
 	gc := deps.GraphCaller()
 	if gc == nil {
 		return true, errorResult("evidence: graph caller unavailable")

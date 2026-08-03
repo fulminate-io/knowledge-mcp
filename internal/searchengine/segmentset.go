@@ -96,6 +96,39 @@ func (s *segmentSet[Q, S]) withReplaced(f SegmentFormat[Q, S], removeIDs map[Seg
 	return &segmentSet[Q, S]{entries: entries, route: route, stats: f.AggregateStats(segs)}
 }
 
+// withReplacedGroup is withReplaced for a GROUP of partitions swapped together:
+// the entries in removeIDs are dropped and ALL of entries are appended, in ONE
+// new snapshot. It exists because a group of partitions sharing constituents
+// cannot be published as a sequence of single-partition swaps — the first swap
+// would remove a constituent the later partitions have not yet harvested.
+//
+// IT ALSO COSTS LESS. Rebuilding the route map is O(resident corpus) and happens
+// once per call, so a group of N partitions pays it ONCE rather than N times.
+func (s *segmentSet[Q, S]) withReplacedGroup(
+	f SegmentFormat[Q, S], removeIDs map[SegmentID]bool, added []*segmentEntry[Q, S],
+) *segmentSet[Q, S] {
+	entries := make([]*segmentEntry[Q, S], 0, len(s.entries)+len(added))
+	for _, e := range s.entries {
+		if !removeIDs[e.meta.ID] {
+			entries = append(entries, e)
+		}
+	}
+	entries = append(entries, added...)
+
+	route := make(map[ExternalID]SegmentID, len(s.route))
+	for _, e := range entries {
+		for id := range e.members {
+			route[id] = e.meta.ID
+		}
+	}
+
+	segs := make([]Segment[Q, S], len(entries))
+	for i, e := range entries {
+		segs[i] = e.payload
+	}
+	return &segmentSet[Q, S]{entries: entries, route: route, stats: f.AggregateStats(segs)}
+}
+
 // entryByID returns the entry owning the given SegmentID, or nil.
 func (s *segmentSet[Q, S]) entryByID(id SegmentID) *segmentEntry[Q, S] {
 	for _, e := range s.entries {

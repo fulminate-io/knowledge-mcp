@@ -48,20 +48,28 @@ func hubFixture() *fakeCaller {
 	return &fakeCaller{nodes: nodes, edges: edges}
 }
 
-// TestDegreeHistogram_EdgeReadShape asserts the conditional split: no Subset →
-// match-all plan (no pivot ids); Subset set → pivot plan carrying exactly the
-// surviving ids.
+// TestDegreeHistogram_EdgeReadShape asserts the conditional split, now that BOTH
+// legs are bounded pivot reads: no Subset → every node id is the pivot set, read
+// in pages carrying an explicit positive limit; Subset set → the same shape over
+// exactly the surviving ids. The unbounded match-all plan the no-subset leg used
+// to send is retired — a read whose cost scales with the whole edge table is the
+// denial-of-service surface this gate closes.
 func TestDegreeHistogram_EdgeReadShape(t *testing.T) {
-	t.Run("no subset sends the match-all plan", func(t *testing.T) {
+	t.Run("no subset pivots on every node id under an explicit limit", func(t *testing.T) {
 		rc := &recordingCaller{fakeCaller: hubFixture()}
 		r := req(rc.fakeCaller, nil)
 		r.Caller = rc
 		_, err := DegreeHistogramAnalyzer{}.Run(context.Background(), r)
 		require.NoError(t, err)
-		require.Len(t, rc.edgePlans, 1, "one bulk edge read")
-		assert.Empty(t, rc.edgePlans[0].GetIds(), "no-subset build must send no pivot ids")
-		assert.Empty(t, rc.edgePlans[0].GetById())
-		assert.Empty(t, rc.edgePlans[0].GetSelection().GetFromId())
+		require.Len(t, rc.edgePlans, 1, "51 pivots fit a single page")
+		wantIDs := make([]string, 0, 51)
+		wantIDs = append(wantIDs, "hub")
+		for i := range 50 {
+			wantIDs = append(wantIDs, fmt.Sprintf("leaf-%d", i))
+		}
+		assert.ElementsMatch(t, wantIDs, rc.edgePlans[0].GetIds(),
+			"a whole-graph build pivots on every node id rather than sending no pivot at all")
+		assert.Positive(t, rc.edgePlans[0].GetLimit(), "every page must carry an explicit positive limit")
 	})
 
 	t.Run("subset keeps the pivot plan", func(t *testing.T) {
@@ -117,17 +125,18 @@ func (a *allEdgesCaller) Execute(ctx context.Context, req *knowledgev1.ExecuteRe
 	return a.fakeCaller.Execute(ctx, req)
 }
 
-// TestStructuralMotif_EdgeReadShape asserts the motif analyzer sends the
-// match-all plan (it always indexes every node) while keeping its edge-type
-// filter — Subset narrows which ROOTS participate, never which edges are read.
+// TestStructuralMotif_EdgeReadShape asserts the motif analyzer pivots on every
+// node id (it always indexes every node) while keeping its edge-type filter —
+// Subset narrows which ROOTS participate, never which edges are read.
 func TestStructuralMotif_EdgeReadShape(t *testing.T) {
 	rc := &recordingCaller{fakeCaller: buildMotifFixture()}
 	r := req(rc.fakeCaller, map[string]string{"root_types": "section"})
 	r.Caller = rc
 	_, err := StructuralMotifAnalyzer{}.Run(context.Background(), r)
 	require.NoError(t, err)
-	require.Len(t, rc.edgePlans, 1, "one bulk edge read")
-	assert.Empty(t, rc.edgePlans[0].GetIds(), "motif build must send no pivot ids")
+	require.Len(t, rc.edgePlans, 1, "the fixture fits a single page")
+	assert.NotEmpty(t, rc.edgePlans[0].GetIds(), "the motif build pivots on the ids it indexed")
+	assert.Positive(t, rc.edgePlans[0].GetLimit(), "every page must carry an explicit positive limit")
 	assert.Equal(t, []string{string(kgtypes.EdgeContains)}, rc.edgePlans[0].GetSelection().GetEdgeTypes(),
-		"the contains-only edge-type filter still rides the match-all plan")
+		"the contains-only edge-type filter still rides every page")
 }

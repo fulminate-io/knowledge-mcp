@@ -33,10 +33,10 @@ func (r *recordingStatsRPC) Stats(_ context.Context, _ *knowledgev1.StatsRequest
 	return &knowledgev1.StatsResponse{GraphStats: r.stats}, nil
 }
 
-// TestResourceBrowse_OPPrefixPredicate is the BOUNDED guard (criterion
-// 769013f5): the resource_type browse compiles to an Execute query carrying the
-// OP_PREFIX metadata predicate on resource_type — NOT a client-side full-scan +
-// filter. Asserted on the lowered QueryPlan for both cloud and cicd.
+// TestResourceBrowse_OPPrefixPredicate is the BOUNDED guard: the resource_type
+// browse compiles to an Execute query carrying the OP_PREFIX metadata predicate
+// on resource_type — NOT a client-side full-scan + filter. Asserted on the
+// lowered QueryPlan for both cloud and cicd.
 func TestResourceBrowse_OPPrefixPredicate(t *testing.T) {
 	for _, tc := range []struct {
 		name string
@@ -162,4 +162,25 @@ func textBodyTools(r kgtools.ToolResult) string {
 		}
 	}
 	return string(sb)
+}
+
+// TestInterceptQueryCloudCICD_DeclinesTopologyMode pins that a
+// query(mode:"topology") over a cloud or cicd graph is NOT claimed by this
+// intercept: the topology intercept runs LATER in the daemon's chain (the
+// query-domain subchain dispatches first), so a claim here silently renders a
+// resource browse instead of running the analyzer — which is exactly how the
+// defect shipped and was caught live.
+func TestInterceptQueryCloudCICD_DeclinesTopologyMode(t *testing.T) {
+	for _, graph := range []string{"cloud", "cicd"} {
+		t.Run(graph, func(t *testing.T) {
+			params := kgtools.CallToolParams{
+				Name: "query",
+				Arguments: []byte(`{"mode":"topology","algorithm":"hits_hubs","graph":"` +
+					graph + `","account":"acme","top_k":10}`),
+			}
+			handled, _ := InterceptQueryCloudCICD(context.Background(), nil, params)
+			require.False(t, handled,
+				"mode:topology must fall through to the topology intercept, never render a browse")
+		})
+	}
 }

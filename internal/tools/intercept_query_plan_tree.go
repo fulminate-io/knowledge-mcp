@@ -13,6 +13,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
@@ -42,6 +43,10 @@ func InterceptQueryPlanTree(ctx context.Context, deps ClientDeps, params kgtools
 		// callers cannot distinguish server-side vs client-side
 		// rejection.
 		return true, errorResult("plan_tree mode requires 'id' parameter (the root plan/project/ticket ID)")
+	}
+
+	if err := accountQueryParams(armPlanTree, params.Arguments); err != nil {
+		return true, errorResult(err.Error())
 	}
 
 	gc := deps.GraphCaller()
@@ -80,14 +85,14 @@ func InterceptQueryPlanTree(ctx context.Context, deps ClientDeps, params kgtools
 	// the parent→child index is assembled client-side with no per-node
 	// fetch. edgeTypes[0] is the single structure edge type (the wire
 	// EdgeType field is singular — see the fallback comment above).
-	nodes, structureEdges, terr := TraverseDescendantsWithEdges(ctx, gc, a.ID, edgeTypes[0], depth)
+	nodes, structureEdges, truncated, terr := TraverseDescendantsWithEdges(ctx, gc, a.ID, edgeTypes[0], depth)
 	if terr != nil {
 		return true, errorResult("plan_tree: " + terr.Error())
 	}
 	childIndex, _ := render.BuildChildIndex(a.ID, nodes, structureEdges)
 
 	if a.Format == "json" {
-		return true, jsonResult(buildPlanTreeJSON(node, 0, depth, childIndex))
+		return true, withTruncationNotice(jsonResult(buildPlanTreeJSON(node, 0, depth, childIndex)), truncated, len(nodes))
 	}
 
 	// Text path needs depends-on ordering. Fetch every node's depends-on
@@ -107,12 +112,44 @@ func InterceptQueryPlanTree(ctx context.Context, deps ClientDeps, params kgtools
 
 	var sb strings.Builder
 	render.RenderTreeFromIndex(&sb, node, 0, depth, childIndex, dependsOn)
-	return true, kgtools.TextResult(sb.String())
+	return true, withTruncationNotice(kgtools.TextResult(sb.String()), truncated, len(nodes))
+}
+
+// withTruncationNotice carries the traversal's truncated flag onto the rendered
+// result. plan_tree assembles its own output and returns it directly, so it
+// never passes through engine.Render — the single place every other tool's
+// response picks up the notice. Without this the subtree a ceiling clamped
+// renders as a complete-looking tree with branches silently missing.
+//
+// The notice is a SEPARATE trailing block, never concatenated into the tree
+// text: blocks are delivered as an array, so a format=json payload stays in its
+// own block and remains independently parseable — the same reason
+// engine.Render appends rather than concatenates.
+//
+// Copy tracks engine's truncationNotice — the row count, the "server row
+// ceiling" phrasing, and `limit` named verbatim so a reader maps the advice
+// onto the actual parameter. The action clause deliberately differs: a tree has
+// no pages to walk, and plan_tree's `limit` IS the subtree depth (see the depth
+// default above), so the re-run that yields a complete result is a smaller one.
+// rows is the descendant count, mirroring engine's traversal-results row count
+// (which likewise excludes nothing but the filtered root).
+func withTruncationNotice(res kgtools.ToolResult, truncated bool, rows int) kgtools.ToolResult {
+	if !truncated {
+		return res
+	}
+	res.Content = append(res.Content, kgtools.ContentBlock{
+		Type: "text",
+		Text: fmt.Sprintf(
+			"Showing %d rows — the server row ceiling engaged, so this subtree may be incomplete. "+
+				"Re-run with a smaller `limit` (the subtree depth) for a complete tree at that depth.",
+			rows),
+	})
+	return res
 }
 
 // buildPlanTreeJSON renders the recursive
-// {id, name, type, status, description, children} payload the server's
-// handleWalk emits for format=json, reading children from a prebuilt
+// {id, name, type, status, description, updated_at, children} payload
+// the server's handleWalk emits for format=json, reading children from a prebuilt
 // parent→child index (render.BuildChildIndex) instead of a per-node
 // edge+node fetch. The whole subtree is fetched in one traversal up
 // front, so this recursion issues zero RPCs.
@@ -138,6 +175,13 @@ func buildPlanTreeJSON(
 		"type":        node.Type,
 		"status":      node.Status,
 		"description": node.Description,
+	}
+	// Read-time provenance, set before the leaf returns below so it
+	// reaches every row and not just the internal ones. Raw unix nanos,
+	// key omitted when zero — the by-id convention at
+	// intercept_query_examine.go:299-304.
+	if node.UpdatedAt != 0 {
+		row["updated_at"] = node.UpdatedAt
 	}
 	if depth >= maxDepth {
 		return row

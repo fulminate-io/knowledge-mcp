@@ -54,7 +54,6 @@ knowledge node id with `graph: "code"`. For the full parameter reference, run
 | `language` | string |  |  | Language slug for graph='practice' (e.g. 'go', 'python'). |
 | `limit` | number |  |  | Max results to return (0 = no cap) |
 | `name` | string |  |  | Graph identifier (e.g. query_id for graph='logs'). |
-| `overlay` | string |  |  | Optional knowledge session overlay name; diagnostic scoping. |
 | `repo` | string |  |  | Repo name for graph='code'. |
 | `start` | string |  |  | Starting node ID |
 <!-- END GENERATED: params -->

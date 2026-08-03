@@ -11,7 +11,7 @@ import (
 // constituents' L2 disk files from THIS engine's LIVE cache. It is registered as
 // the engine's Options.OnMerge at construction (managers/bm25Managers only — the
 // deterministic rebuild engines get nil OnMerge and reclaim via the existing
-// FlushDeterministic→InvalidateLocal path instead).
+// FinalizeRebuild→InvalidateLocal path instead).
 //
 // CRASH-SAFE ORDERING (the load-bearing logic): the merged blob is Put FIRST,
 // then the constituents are Removed. doMerge does NOT persist the merged blob —

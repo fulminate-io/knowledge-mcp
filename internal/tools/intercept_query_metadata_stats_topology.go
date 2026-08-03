@@ -40,6 +40,9 @@ func InterceptQueryMetadataStats(ctx context.Context, deps ClientDeps, params kg
 	if a.Mode != "metadata_stats" {
 		return false, kgtools.ToolResult{}
 	}
+	if err := accountQueryParams(armMetadataStats, params.Arguments); err != nil {
+		return true, errorResult(err.Error())
+	}
 	gc := deps.GraphCaller()
 	if gc == nil {
 		return true, errorResult("metadata_stats: graph client unavailable")

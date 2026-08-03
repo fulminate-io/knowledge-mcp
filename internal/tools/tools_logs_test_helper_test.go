@@ -104,6 +104,8 @@ func (f *fakeLogGraphCaller) execQuery(q *knowledgev1.QueryPlan, target *knowled
 		return f.execEdgesUnion(q, target), nil
 	case knowledgev1.ReturnMode_RETURN_MODE_GRAPH_NAMES:
 		return f.execGraphNames(target), nil
+	case knowledgev1.ReturnMode_RETURN_MODE_IDS:
+		return f.execNodeIDs(q, target), nil
 	}
 
 	g := f.graphFor(target)
@@ -153,6 +155,33 @@ func (f *fakeLogGraphCaller) execQuery(q *knowledgev1.QueryPlan, target *knowled
 	resp := enginetest.ResponseWithNodes(out...)
 	resp.Total = int64(len(out))
 	return resp, nil
+}
+
+// execNodeIDs mirrors the engine's RETURN_MODE_IDS keyset browse: node ids
+// ascending, strictly after the cursor when one is present, capped at the plan's
+// limit. The bounded log edge read drains this first and pivots its edge pages on
+// the result, so a fake without this arm hands the drain an empty id set and
+// every edge silently disappears.
+func (f *fakeLogGraphCaller) execNodeIDs(q *knowledgev1.QueryPlan, target *knowledgev1.GraphSelector) *knowledgev1.ExecuteResponse {
+	g := f.graphFor(target)
+	ids := make([]string, 0, len(g.nodes))
+	for _, n := range g.nodes {
+		ids = append(ids, n.Id)
+	}
+	slices.Sort(ids)
+	if cursor := q.GetAfterId(); cursor != "" {
+		kept := ids[:0]
+		for _, id := range ids {
+			if id > cursor {
+				kept = append(kept, id)
+			}
+		}
+		ids = kept
+	}
+	if lim := int(q.GetLimit()); lim > 0 && len(ids) > lim {
+		ids = ids[:lim]
+	}
+	return &knowledgev1.ExecuteResponse{Ids: ids}
 }
 
 // execEdgesUnion mirrors the engine's RETURN_MODE_EDGES arm: the union over the

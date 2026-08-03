@@ -106,3 +106,35 @@ func TestHelpTopics_OverviewLinksNewTopics(t *testing.T) {
 		}
 	}
 }
+
+// TestHelpOverview_DocumentsReadConsistencyContract pins the measured
+// read-consistency contract in the overview topic. This is the surface
+// agents actually read, and its absence is what let "I must have read
+// stale data" stand as a first hypothesis whenever two sessions
+// disagreed about a node's text — an explanation the measurements rule
+// out. Each marker carries one load-bearing clause of the contract:
+// the section itself, the guarantee, the no-window claim, the
+// discipline that replaces the stale-read hypothesis, and the field a
+// reader cites to date someone else's read.
+func TestHelpOverview_DocumentsReadConsistencyContract(t *testing.T) {
+	args, err := json.Marshal(map[string]string{"topic": "overview"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	res := handleHelpClient(args)
+	if res.IsError {
+		t.Fatalf("help(overview) returned error: %q", resultText(res))
+	}
+	text := resultText(res)
+	for _, marker := range []string{
+		"Read consistency",
+		"read-your-writes",
+		"no stale-read window",
+		"Re-fetch immediately before filing",
+		"updated_at",
+	} {
+		if !strings.Contains(text, marker) {
+			t.Errorf("overview missing read-consistency marker %q", marker)
+		}
+	}
+}

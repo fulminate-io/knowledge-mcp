@@ -69,7 +69,7 @@ func TestCapstone_RegisteredGraphEnumerateAndShip(t *testing.T) {
 	})
 
 	// Embed axis: a hellograph:demo embed work item with BM25 fields drains through
-	// the embed worker → ships HNSW (AddAndShip) AND BM25 (AddAndShipFields).
+	// the embed worker → seals HNSW (AddAndMarkDirty) AND BM25 (AddAndMarkDirtyFields).
 	runEmbedWorkerBatch(ctx, p, []EmbedWork{
 		{
 			GraphType:  customGT,

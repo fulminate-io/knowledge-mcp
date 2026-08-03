@@ -4,9 +4,11 @@
 // dispatch. Asserts:
 //
 //   - name-filtering: only "thoughts" / "query" tool calls are considered
-//   - operation/mode routing: recognized ops/modes return (true, _);
-//     unrecognized ones fall through (false, zero)
-//   - malformed JSON falls through unchanged
+//   - operation/mode routing: recognized ops/modes return (true, _); an
+//     unrecognized `thoughts` operation TERMINATES with the canonical
+//     unknown-operation diagnostic, while an unrecognized query mode still
+//     falls through (false, zero) to the arms behind this one
+//   - malformed JSON: claimed for `thoughts`, still fallen through for `query`
 //
 // The handlers themselves require a live *graphclient.GraphClient (they
 // issue real wire calls), so the tests cover only the dispatch shape.
@@ -24,6 +26,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/collector"
 )
@@ -54,11 +57,14 @@ func (thoughtTestDeps) SegmentManager() SegmentSearcher              { return ni
 func (thoughtTestDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
 func (thoughtTestDeps) SegmentShipper() SegmentShipper               { return nil }
 func (thoughtTestDeps) SegmentPruner() SegmentPruner                 { return nil }
-func (thoughtTestDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
-func (thoughtTestDeps) PipelineScanner() PipelineScanner             { return nil }
-func (thoughtTestDeps) ClearHealLatch(kgtypes.GraphType, string)     {}
-func (thoughtTestDeps) ReflectionForcer() ReflectionForcer           { return nil }
-func (thoughtTestDeps) SimilarityForcer() SimilarityForcer           { return nil }
+
+func (thoughtTestDeps) SegmentCacheDropper() SegmentCacheDropper { return nil }
+func (thoughtTestDeps) SegmentDeleter() SegmentDeleter           { return nil }
+func (thoughtTestDeps) SegmentCoverage() SegmentCoverageReader   { return nil }
+func (thoughtTestDeps) PipelineScanner() PipelineScanner         { return nil }
+func (thoughtTestDeps) ClearHealLatch(kgtypes.GraphType, string) {}
+func (thoughtTestDeps) ReflectionForcer() ReflectionForcer       { return nil }
+func (thoughtTestDeps) SimilarityForcer() SimilarityForcer       { return nil }
 
 func (thoughtTestDeps) BlindSpotProvider() BlindSpotProvider { return nil }
 func (thoughtTestDeps) ClusterProvider() ClusterProvider     { return nil }
@@ -78,23 +84,27 @@ func TestInterceptThoughts_NameFiltering(t *testing.T) {
 	}
 }
 
-// TestInterceptThoughts_ThoughtsFallthroughUnknownOp pins that an
-// UNRECOGNIZED thoughts op falls through unchanged so the server can
-// surface its own error. Every documented op — think, charge, recall,
-// trace, propagate, similarity_report, adjacency, charges_for — is
-// claimed client-side; the dispatch-claim of adjacency + charges_for is
-// asserted positively in their own intercept tests.
-func TestInterceptThoughts_ThoughtsFallthroughUnknownOp(t *testing.T) {
+// TestInterceptThoughts_UnknownOpTerminalError pins that an UNRECOGNIZED
+// thoughts op TERMINATES here with the canonical diagnostic. It used to fall
+// through so the server could surface its own error; post-cutover there is no
+// server fallback, so falling through only reached the engine's tool-level
+// deny — which reports a missing intercept for a tool that has one.
+//
+// Every documented op — think, charge, recall, trace, propagate,
+// similarity_report, adjacency, charges_for — is claimed client-side; that
+// none of them can reach this arm is asserted by
+// TestInterceptThoughts_DeclaredOperationsStillRoute.
+func TestInterceptThoughts_UnknownOpTerminalError(t *testing.T) {
 	t.Parallel()
 	deps := thoughtTestDeps{}
-	cases := []string{
-		`{"operation":"unknown-op"}`,
+	params := kgtools.CallToolParams{
+		Name:      "thoughts",
+		Arguments: json.RawMessage(`{"operation":"unknown-op"}`),
 	}
-	for _, args := range cases {
-		params := kgtools.CallToolParams{Name: "thoughts", Arguments: json.RawMessage(args)}
-		handled, _ := InterceptThoughts(opCtx(), deps, params)
-		assert.False(t, handled, "thoughts op %q must fall through to server", args)
-	}
+	handled, res := InterceptThoughts(opCtx(), deps, params)
+	require.True(t, handled, "an unknown thoughts op must be answered here, not deferred")
+	assert.True(t, res.IsError)
+	assert.Contains(t, contentText(res), `thoughts: unknown operation "unknown-op" — valid operations:`)
 }
 
 // TestInterceptThoughts_ThoughtsRecognizedOpsHandled pins the
@@ -164,8 +174,20 @@ func TestInterceptThoughts_QueryReflectiveModesHandled(t *testing.T) {
 		"tensions":    false,
 		"summary":     false,
 	}
+	// Each mode gets ONLY the params its own arm routes. The cluster pair used to
+	// ride every payload, which the per-arm accounting gate now rejects on the six
+	// arms that do not route it — correctly: query(mode:"personality",
+	// cluster_a:...) was a silent drop before the gate. evolution is the one arm
+	// that consumes the pair, and it needs it to reach its nil-gc error rather
+	// than its own missing-cluster refusal.
+	modeArgs := map[string]string{
+		"evolution": `{"mode":"evolution","cluster_a":"A","cluster_b":"B"}`,
+	}
 	for mode, wantErr := range requiresGC {
-		args := `{"mode":"` + mode + `","cluster_a":"A","cluster_b":"B"}`
+		args, ok := modeArgs[mode]
+		if !ok {
+			args = `{"mode":"` + mode + `"}`
+		}
 		params := kgtools.CallToolParams{Name: "query", Arguments: json.RawMessage(args)}
 		handled, res := InterceptThoughts(opCtx(), deps, params)
 		assert.True(t, handled, "query mode %q must be handled client-side", mode)
@@ -192,16 +214,132 @@ func TestInterceptThoughts_BlindSpotsCacheServed(t *testing.T) {
 		"the message names the not-running reflection loop")
 }
 
-// TestInterceptThoughts_MalformedArgsFallthrough pins that JSON parse
-// errors don't claim the call — the server-side handler reparses and
-// surfaces the canonical error message.
-func TestInterceptThoughts_MalformedArgsFallthrough(t *testing.T) {
+// TestInterceptThoughts_MalformedArgs pins the two entry points diverging on a
+// JSON parse error, which they now do deliberately.
+//
+// `thoughts` CLAIMS it: this intercept is the terminal claimer for that tool,
+// so nothing downstream would produce a better message than the engine's
+// tool-level deny. `query` still DECLINES: the reflective arm is one claimant
+// among many for that tool name, and claiming every malformed query payload
+// here would starve the arms behind it.
+//
+// THE MESSAGE NOW COMES FROM PARAM ACCOUNTING, not from the decode. The
+// accounting gate runs ahead of the decode, and an unparseable payload means it
+// could not read the supplied keys — which it reports rather than passing
+// through, since a payload it cannot read is one it cannot account for. The
+// property this test pins is unchanged: thoughts answers a malformed payload
+// itself, naming the tool, and query still falls through to the arms behind it.
+func TestInterceptThoughts_MalformedArgs(t *testing.T) {
 	t.Parallel()
 	deps := thoughtTestDeps{}
-	for _, name := range []string{"thoughts", "query"} {
-		params := kgtools.CallToolParams{Name: name, Arguments: json.RawMessage(`{not json`)}
-		handled, _ := InterceptThoughts(opCtx(), deps, params)
-		assert.False(t, handled, "malformed %q args must fall through to server", name)
+
+	handled, res := InterceptThoughts(opCtx(), deps, kgtools.CallToolParams{
+		Name: "thoughts", Arguments: json.RawMessage(`{not json`),
+	})
+	require.True(t, handled, "a malformed thoughts payload is answered here")
+	assert.True(t, res.IsError)
+	assert.Contains(t, contentText(res), "thoughts: param accounting could not read the supplied params")
+
+	handled, _ = InterceptThoughts(opCtx(), deps, kgtools.CallToolParams{
+		Name: "query", Arguments: json.RawMessage(`{not json`),
+	})
+	assert.False(t, handled, "a malformed query payload must still reach the arms behind this one")
+}
+
+// TestInterceptThoughts_StatusOnTypedBrowse_NotClaimed pins the routing rule a
+// status filter obeys: `status` is a thought-graph property only when the query
+// is ABOUT thoughts. A typed browse that happens to carry a status filter —
+// query(type:"step", status:"completed") — is a knowledge-graph browse, and
+// claiming it here answers it from the thought corpus instead: wrong rows, no
+// error, the worst failure shape available to a dispatch predicate.
+//
+// The two reproduction cases assert the claim is released. The four fence cases
+// assert the narrowing stopped where it should: a bare status filter, the two
+// explicit thought-corpus type spellings, and — the one that keeps the fix from
+// being written as "type disables recall" — a typed query carrying a genuine
+// six-term thought field, which must still route to recall regardless of type.
+func TestInterceptThoughts_StatusOnTypedBrowse_NotClaimed(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name    string
+		args    string
+		claimed bool
+	}{
+		// The live reproductions: a typed browse is not a thought query.
+		{"typed_step_with_status", `{"type":"step","status":"completed"}`, false},
+		{"typed_finding_with_status", `{"type":"finding","status":"open"}`, false},
+		// Scope fences against over-narrowing.
+		{"status_only", `{"status":"completed"}`, true},
+		{"type_thought", `{"type":"thought","status":"validated"}`, true},
+		{"type_all", `{"type":"all","status":"anything"}`, true},
+		{"typed_step_with_session", `{"type":"step","session":"s"}`, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			deps := interceptTestDeps{gc: &fakeGraphCaller{}}
+			handled, _ := InterceptThoughts(opCtx(), deps, kgtools.CallToolParams{
+				Name:      "query",
+				Arguments: json.RawMessage(tc.args),
+			})
+			if tc.claimed {
+				assert.True(t, handled,
+					"%s is a thought-corpus query and must still route to recall: %s", tc.name, tc.args)
+				return
+			}
+			assert.False(t, handled,
+				"%s is a knowledge-graph browse — claiming it answers from the thought corpus: %s",
+				tc.name, tc.args)
+		})
+	}
+}
+
+// TestThoughtFilterCoreTermsMatchKnowledgeSearchSibling is the anti-drift
+// catcher for the three copies of "does this query concern thoughts". The
+// status misrouting existed precisely because one copy grew a term the others
+// never got, and nothing in the suite could see the copies disagree.
+//
+// Each case feeds the SAME payload bytes to both readers — InterceptThoughts
+// for the thought.go core, hasThoughtQueryFilter for the knowledge-search
+// sibling — and asserts they reach the same verdict. queryReflectArgs and
+// queryArgs are distinct structs with distinct field sets, so the agreement is
+// asserted through the two readers rather than factored into a shared
+// predicate. A seventh term added to one copy alone fails on that term's case.
+func TestThoughtFilterCoreTermsMatchKnowledgeSearchSibling(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name string
+		args string
+		// sibling is the verdict hasThoughtQueryFilter must reach. It matches
+		// the thought.go core on the six shared terms and diverges on status.
+		sibling bool
+	}{
+		{"valence_min", `{"valence_min":0.5}`, true},
+		{"valence_max", `{"valence_max":0.9}`, true},
+		{"magnitude_min", `{"magnitude_min":1.0}`, true},
+		{"consistency_max", `{"consistency_max":0.5}`, true},
+		{"session", `{"session":"s"}`, true},
+		{"connected_to", `{"connected_to":"node-1"}`, true},
+		// DELIBERATE DIVERGENCE, not drift. A bare status routes to recall on
+		// the thought.go side because an absent type means the thought corpus
+		// there; the sibling never treats status as a thought signal because
+		// every node type has one. The type guard in interceptQueryReflect is
+		// what makes the thought.go side safe — do not "fix" this to agree.
+		{"status_divergence_by_design", `{"status":"validated"}`, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			deps := interceptTestDeps{gc: &fakeGraphCaller{}}
+			handled, _ := InterceptThoughts(opCtx(), deps, kgtools.CallToolParams{
+				Name:      "query",
+				Arguments: json.RawMessage(tc.args),
+			})
+			assert.True(t, handled,
+				"the thought.go core must treat %s as thought-flavored: %s", tc.name, tc.args)
+
+			var a queryArgs
+			require.NoError(t, json.Unmarshal([]byte(tc.args), &a))
+			assert.Equal(t, tc.sibling, hasThoughtQueryFilter(a),
+				"hasThoughtQueryFilter disagrees with the thought.go core on %s — the copies have "+
+					"drifted apart, which is the defect this catcher exists for: %s", tc.name, tc.args)
+		})
 	}
 }
 

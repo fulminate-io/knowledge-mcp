@@ -25,9 +25,11 @@ func setupHome(t *testing.T) string {
 
 // clearCredEnv unsets the five credential env vars so a test controls
 // exactly which are visible to AutoDetect / the headless persist path.
+// providerKeyEnv (provider_env_test.go) is the one list, so this and the
+// suite-wide TestMain neutralization cannot drift apart.
 func clearCredEnv(t *testing.T) {
 	t.Helper()
-	for _, k := range []string{"VOYAGE_API_KEY", "LINEAR_API_KEY", "ANTHROPIC_API_KEY", "OPENAI_API_KEY", "GEMINI_API_KEY"} {
+	for _, k := range providerKeyEnv {
 		t.Setenv(k, "")
 	}
 }

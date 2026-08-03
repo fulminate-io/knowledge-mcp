@@ -15,9 +15,13 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/validate"
 )
 
-// createTicketArgs mirrors the server-side batchTicket shape (subset
-// fields a caller can supply). The 6 backend metadata fields live on
-// the FORWARDED args — callers never set them.
+// createTicketArgs is the complete set of create_ticket wire params — every
+// field here is declared by CreateTicketToolDef and every declared property is
+// read here, with no passthrough slots. The ticket's backend metadata
+// (`backend`, `linear_id`, `external_url`, `linear_project_id`,
+// `linear_group_id`, `linear_group_key`) is NOT caller-suppliable: BuildTicketNode
+// stamps it from the backends.RemoteRef that backend.CreateTicket returned and
+// from the parent project's own metadata.
 type createTicketArgs struct {
 	Name             string          `json:"name"`
 	ProjectID        string          `json:"project_id"`
@@ -58,6 +62,13 @@ func InterceptCreateTicket(ctx context.Context, deps ClientDeps, params kgtools.
 	var a createTicketArgs
 	if err := json.Unmarshal(params.Arguments, &a); err != nil {
 		return true, errorResult("create_ticket: invalid arguments: " + err.Error())
+	}
+	// Ahead of every validation and BEFORE any backend side-effect: the decode
+	// above discards any top-level key createTicketArgs has no field for, so an
+	// undeclared param would otherwise vanish into a successful create — and a
+	// rejection that ran later could leave an orphan remote ticket behind.
+	if err := rejectUndeclaredParams("create_ticket", "", CreateTicketToolDef().InputSchema.Properties, params.Arguments); err != nil {
+		return true, errorResult(err.Error())
 	}
 	if err := validateCreateTicketArgs(a); err != nil {
 		return true, errorResult(err.Error())

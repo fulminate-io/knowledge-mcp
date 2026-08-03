@@ -96,6 +96,13 @@ func InterceptCreatePlan(ctx context.Context, deps ClientDeps, params kgtools.Ca
 	if err := json.Unmarshal(params.Arguments, &a); err != nil {
 		return true, errorResult("invalid arguments: " + err.Error())
 	}
+	// Ahead of every validation and every write: the decode above discards any
+	// top-level key createPlanArgs has no field for, so an undeclared param would
+	// otherwise vanish into a successful create. TOP-LEVEL ONLY — the nested
+	// phases[]/steps[]/criteria[] keys (file_paths among them) are out of scope.
+	if err := rejectUndeclaredParams("create_plan", "", CreatePlanToolDef().InputSchema.Properties, params.Arguments); err != nil {
+		return true, errorResult(err.Error())
+	}
 	if len(a.Phases) == 0 {
 		return true, errorResult("at least one phase is required")
 	}
@@ -208,10 +215,13 @@ func validatePlanSummaries(a *createPlanArgs) (warnings []string, err error) {
 	return warnings, nil
 }
 
-// validateDerivedCriteria validates the AUTO-DERIVED summaries of one step's
-// criteria. cType is defaulted to "manual" exactly as BuildCriterionNode does,
-// then projects.DeriveCriterionSummary produces the text the builder will
-// store, gated through validate.DerivedSummary with the indexed criteria path.
+// validateDerivedCriteria validates one step's criteria on two axes, both under
+// the indexed criteria path so an author can find the offender in a tree of
+// dozens. First the AUTO-DERIVED summary: cType is defaulted to "manual" exactly
+// as BuildCriterionNode does, then projects.DeriveCriterionSummary produces the
+// text the builder will store, gated through validate.DerivedSummary. Then the
+// COMMAND's shape, gated through validate.RunSelectorGuard, which rejects a
+// `go test` selector carrying no assertion that the selector matched anything.
 func validateDerivedCriteria(phaseIdx, stepIdx int, criteria []createPlanCriterion) error {
 	for k, c := range criteria {
 		cType := c.Type
@@ -220,6 +230,9 @@ func validateDerivedCriteria(phaseIdx, stepIdx int, criteria []createPlanCriteri
 		}
 		derived := projects.DeriveCriterionSummary(cType, c.Description, c.Command)
 		if err := validate.DerivedSummary("create_plan", fmt.Sprintf("phases[%d].steps[%d].criteria[%d].summary", phaseIdx, stepIdx, k), "description + command", derived); err != nil {
+			return err
+		}
+		if err := validate.RunSelectorGuard("create_plan", fmt.Sprintf("phases[%d].steps[%d].criteria[%d].command", phaseIdx, stepIdx, k), c.Command); err != nil {
 			return err
 		}
 	}

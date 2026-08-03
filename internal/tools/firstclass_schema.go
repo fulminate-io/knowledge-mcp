@@ -41,12 +41,17 @@ func ThoughtsToolDef() kgtools.MCPTool {
 				"status":        {Type: "string", Description: "(think initial status / recall filter) Default hypothesized for think.", Enum: []string{"hypothesized", "validated", "invalidated"}},
 				"origin":        {Type: "string", Description: "(think) Developer-origin role of the agent recording this thought — conventional values planner|implementer|reviewer|researcher|tester|orchestrator|main; absent => main. Open string (flex-parsed, NOT an enum gate): a custom value is stored as-is. Stamped as origin metadata, and when it resolves to a seeded agent node, an agent--produced-->thought hub edge is written."},
 
+				// negation gate (think supersession)
+				"verified_quote": {Type: "string", Description: "(think) Negation-gate proof of work — a TOP-LEVEL param on the call. REQUIRED whenever branches_from is set (a supersession): a verbatim substring of the superseded node's CURRENT source. Consumed by the gate before any write and never persisted."},
+				"cited_range":    {Type: "string", Description: "(think) Optional locality hint accompanying verified_quote on a supersession, as \"path/file.go:start-end\". When set, the verbatim substring must resolve to the cited path. TOP-LEVEL param, consumed by the gate before any write and never persisted."},
+
 				// charge
-				"thought":   {Type: "string", Description: "(charge, trace) Thought node ID. Required for charge and trace."},
-				"polarity":  {Type: "string", Description: "(charge) Whether the evidence SUPPORTS the thought's claim (\"positive\") or CONTRADICTS it (\"negative\"). NOT good-news/bad-news about the subject — sentiment about the subject belongs in reasoning/content text.", Enum: []string{"positive", "negative"}},
-				"weight":    {Type: "number", Description: "(charge) Charge significance (1-10). Higher = stronger evidence."},
-				"reasoning": {Type: "string", Description: "(charge) WHY this charge applies — the specific evidence that supports or contradicts the thought's claim. Put any sentiment about the subject HERE, never in the polarity sign."},
-				"evidence":  {Type: "array", Description: "(charge) Node IDs of evidence — tests, PRs, incidents, related thoughts, or other charges. Citing a related thought records a charge→thought evidenced-by edge that feeds cross-cluster trust differentiation.", Items: &kgtools.Property{Type: "string"}},
+				"thought":    {Type: "string", Description: "(charge, trace) Thought node ID. Required for charge and trace."},
+				"thought_id": {Type: "string", Description: "(charge) Singular alias for `thought` — the charge arm accepts either spelling for the thought node ID."},
+				"polarity":   {Type: "string", Description: "(charge) Whether the evidence SUPPORTS the thought's claim (\"positive\") or CONTRADICTS it (\"negative\"). NOT good-news/bad-news about the subject — sentiment about the subject belongs in reasoning/content text.", Enum: []string{"positive", "negative"}},
+				"weight":     {Type: "number", Description: "(charge) Charge significance (1-10). Higher = stronger evidence."},
+				"reasoning":  {Type: "string", Description: "(charge) WHY this charge applies — the specific evidence that supports or contradicts the thought's claim. Put any sentiment about the subject HERE, never in the polarity sign."},
+				"evidence":   {Type: "array", Description: "(charge) Node IDs of evidence — tests, PRs, incidents, related thoughts, or other charges. Citing a related thought records a charge→thought evidenced-by edge that feeds cross-cluster trust differentiation.", Items: &kgtools.Property{Type: "string"}},
 
 				// recall
 				"query":           {Type: "string", Description: "(recall) Semantic search text (optional — omit to browse all thoughts)."},
@@ -58,7 +63,7 @@ func ThoughtsToolDef() kgtools.MCPTool {
 				"time_start":      {Type: "string", Description: "(recall) Start of time range (ISO date, e.g. 2026-03-01)."},
 				"time_end":        {Type: "string", Description: "(recall) End of time range (ISO date)."},
 				"mode":            {Type: "string", Description: "(recall) Output format.", Enum: []string{"search", "timeline", "charges", "graph", "clusters"}},
-				"limit":           {Type: "number", Description: "(recall) Max results (default 20)."},
+				"limit":           {Type: "number", Description: "(recall) Max results (default 20, max 50)."},
 				"format":          {Type: "string", Description: "(recall) Output format: 'text' (default) or 'json' (structured)."},
 
 				// trace
@@ -70,9 +75,16 @@ func ThoughtsToolDef() kgtools.MCPTool {
 				// adjacency
 				"scope":       {Type: "string", Description: "(adjacency) Which adjacency view to build. 'all' = NodeThought-filtered with session-sibling expansion (cluster detection on thoughts only). 'all_types' = every node except NodeProxy with no edge filter (cross-type cluster detection).", Enum: []string{"all", "all_types"}},
 				"thought_ids": {Type: "array", Description: "(adjacency, charges_for) Optional subset filter (adjacency) / required charge sources (charges_for). When set on adjacency, response is projected down to just these IDs.", Items: &kgtools.Property{Type: "string"}},
+				"all_types":   {Type: "boolean", Description: "(recall, mode:'clusters') Run cluster detection over EVERY node type rather than thoughts only — the boolean spelling of the adjacency arm's scope:'all_types'."},
 
 				// propagate
-				"force_full": {Type: "boolean", Description: "(propagate) Run the full-corpus backstop pass now — bypasses the quiet-tick skip and incremental scoping, recomputes every component, and resets the backstop cadence. Use for an on-demand full reflection (ops/debug) instead of waiting for the periodic backstop tick. Errors if the reflection loop is not running in this process."},
+				"force_full":          {Type: "boolean", Description: "(propagate) Run the full-corpus backstop pass now — bypasses the quiet-tick skip and incremental scoping, recomputes every component, and resets the backstop cadence. Use for an on-demand full reflection (ops/debug) instead of waiting for the periodic backstop tick. Errors if the reflection loop is not running in this process."},
+				"similarity":          {Type: "boolean", Description: "(propagate) Trigger the topic-similarity lever ASYNCHRONOUSLY (drain → centroids → reconcile → merge cascade → summaries → drift → links). Returns immediately with a similarity_report fetch call and a duration estimate; only one pass runs at a time and a second trigger coalesces."},
+				"link_threshold":      {Type: "number", Description: "(propagate, similarity:true) Per-call override for the topic-link similarity threshold. Absent uses the package default. Accepts a number or its quoted-string form; any other value is surfaced loudly rather than defaulted."},
+				"merge_threshold":     {Type: "number", Description: "(propagate, similarity:true) Per-call override for the topic-merge cascade threshold. Absent uses the package default. Accepts a number or its quoted-string form."},
+				"densify_threshold":   {Type: "number", Description: "(propagate, similarity:true) Similarity floor for the post-link within-topic kNN densification phase. Absent uses the package default."},
+				"densify_k":           {Type: "number", Description: "(propagate, similarity:true) Neighbor count per node for the densification phase. Absent uses the package default."},
+				"densify_edge_budget": {Type: "number", Description: "(propagate, similarity:true) Cap on edges the densification phase may add in one pass. Absent uses the package default."},
 
 				// similarity_report
 				"id": {Type: "string", Description: "(similarity_report) Optional id of a specific past similarity pass to fetch. Omit to fetch the LATEST pass (running → in-progress + estimate; completed → the full rendered report; failed → the failure)."},
@@ -103,7 +115,9 @@ func SearchToolDef() kgtools.MCPTool {
 	return kgtools.MCPTool{
 		Name: "search",
 		Description: "Search the codebase, knowledge graph, or practice graphs using text and semantic search. " +
-			"Returns matching results ranked by relevance. Modes: 'hybrid' (default), 'text' (BM25 only), 'vector' (semantic only). " +
+			"Returns matching results ranked by relevance. Modes: 'hybrid' (default, BM25 and vector fused), " +
+			"'text' (BM25 only — the query is not embedded and no rerank runs), " +
+			"'vector' (vector only — requires a configured embedder). " +
 			"Supports BATCH queries via 'queries' array. Set 'graph' to route: code (default), knowledge, practice, cloud, cicd, linkage, or logs.",
 		InputSchema: kgtools.InputSchema{
 			Type: "object",
@@ -117,7 +131,7 @@ func SearchToolDef() kgtools.MCPTool {
 				"limit":              {Type: "number", Description: "Max results per query (default: 10, max: 50)."},
 				"include_source":     {Type: "boolean", Description: "Include full source code (default: true). Code graph only."},
 				"include_comments":   {Type: "boolean", Description: "Include comment nodes in code search results (default: false). Comments are excluded by default to reduce noise."},
-				"mode":               {Type: "string", Description: "Search mode: 'hybrid', 'text', 'vector' (code); 'recent'/'temporal' (knowledge recency boost); 'similar' (knowledge graph). mode:'similar' takes a node_id and returns that node's nearest corpus neighbors by searching the node's OWN STORED vector (its embedding already on disk — NOT a fresh embedding of any query text), with the node itself EXCLUDED from results. Results are ranked by the client engine's reciprocal-rank fusion over the stored-vector (HNSW) arm — with no query text the order is pure stored-vector proximity — NOT a raw cosine similarity score."},
+				"mode":               {Type: "string", Description: "Search mode, honored on the knowledge and registered custom-graph arms: 'hybrid' (default — BM25 and vector fused), 'text' (BM25 only — no query embedding and no rerank), 'vector' (vector only — requires an embedder). 'recent'/'temporal' are one recency boost (knowledge graph). Not honored on the code arm, which always fuses BM25 and vector when an embedder is available. 'similar' (knowledge graph). mode:'similar' takes a node_id and returns that node's nearest corpus neighbors by searching the node's OWN STORED vector (its embedding already on disk — NOT a fresh embedding of any query text), with the node itself EXCLUDED from results. Results are ranked by the client engine's reciprocal-rank fusion over the stored-vector (HNSW) arm — with no query text the order is pure stored-vector proximity — NOT a raw cosine similarity score."},
 				"node_id":            {Type: "string", Description: "The node whose nearest stored-vector neighbors to return when mode:'similar' is set (knowledge graph). The named node is resolved to its on-disk embedding and excluded from its own results."},
 				"group_by_file":      {Type: "boolean", Description: "Group results by file (default: false). Code graph only."},
 				"path_prefix":        {Type: "string", Description: "Filter to files under this path. Code graph only."},
@@ -128,15 +142,14 @@ func SearchToolDef() kgtools.MCPTool {
 				"current_head":       {Type: "string", Description: "Current git HEAD SHA (auto-populated by client intercept when staleness:true). Code graph only."},
 				"uncommitted_count":  {Type: "number", Description: "Count of uncommitted files (auto-populated when staleness:true). Code graph only."},
 				"commits_behind":     {Type: "number", Description: "Commits between sync_commit and HEAD (auto-populated when staleness:true). Code graph only."},
-				"overlay":            {Type: "string", Description: "Optional: target a specific knowledge session overlay name. When set, the search reads from base + that single overlay only, ignoring the live overlay list. Useful for diagnosing cross-session visibility issues."},
-				"types":              {Type: "array", Description: "Filter results by node type (e.g. [\"thought\",\"decision\",\"finding\"]). Knowledge graph only.", Items: &kgtools.Property{Type: "string"}},
+				"types":              {Type: "array", Description: "Filter results by node type (e.g. [\"thought\",\"decision\",\"finding\"]). Applied on the knowledge graph and on registered custom graphs.", Items: &kgtools.Property{Type: "string"}},
 				"include_tests":      {Type: "boolean", Description: "Include test code (test/benchmark/example/fuzz/setup/teardown/fixture/mock/helper) in results. Default true. Code graph only — silently ignored on other graphs (mirrors path_prefix). Set false to exclude all test code from impl-style queries. Note: until per-language predicate-population tickets land, all code nodes have is_test=false so this filter is currently a no-op."},
 				"test_kinds":         {Type: "array", Description: "Filter set for test classification kinds: any of test, benchmark, example, fuzz, setup, teardown, fixture, mock, helper. Empty/absent means no filter (combined with include_tests=true: all results pass; with include_tests=false: tests of any kind are dropped). Code graph only. Note: until per-language predicate-population tickets land, all code nodes have test_kind=\"\" so this filter is currently a no-op.", Items: &kgtools.Property{Type: "string"}},
 				"format":             {Type: "string", Description: "Output format: 'text' (default, markdown) or 'json' (structured). JSON returns {results:[{id,name,type,score,...}]} instead of markdown text."},
 				"explain":            {Type: "boolean", Description: "Append per-result match-field annotations (which fields contain the literal query tokens) and a search-mode disclosure footer. Off by default — adds context without changing ranking."},
 				"include_tombstones": {Type: "boolean", Description: "Include tombstoned (deleted) nodes in results. Default false."},
 				"rerank":             {Type: "boolean", Description: "Apply post-fusion rerank when configured. Default true. Set false for cheap exact-symbol-name lookups where fan-in scoring suffices."},
-				"fields":             {Type: "array", Description: "Field projection (format=json only): list of fields to include per result, dramatically shrinking response size for high-volume queries. Top-level: id, name, type, score, description, source, status. Per-metadata-key: 'metadata.<key>' (e.g. 'metadata.dsl_pattern'). Bare 'metadata' includes the whole metadata map. Empty/absent = full hydration (current default). Unknown field names silently dropped.", Items: &kgtools.Property{Type: "string"}},
+				"fields":             {Type: "array", Description: "Field projection (format=json only): list of fields to include per result, dramatically shrinking response size for high-volume queries. Top-level: id, name, type, score, description, source, status. Per-metadata-key: 'metadata.<key>' (e.g. 'metadata.dsl_pattern'). Bare 'metadata' includes the whole metadata map. Empty/absent = full hydration (current default). Unknown field names silently dropped. A per-metadata-key projection is OMITTED ENTIRELY from any result whose node lacks that key — absent from the row, never an empty string. So zero projected values across a result set means the key is unset on those nodes; it is NOT evidence that a write failed.", Items: &kgtools.Property{Type: "string"}},
 				"query_vector":       {Type: "string", Description: "Optional base64-encoded binary embedding for the query text (32 bytes / 256-bit decoded). Client-supplied: set by the client-side LLM pipeline's InterceptSearch so the server can serve hybrid-search results without holding a Voyage key. The server never embeds — when query_vector is unset the search runs BM25-only (no server-side embedding fallback). Decoded length mismatches return a structured validation error and no search is performed."},
 			},
 		},
@@ -158,6 +171,7 @@ func FileSymbolsToolDef() kgtools.MCPTool {
 				"include_tombstones": {Type: "boolean", Description: "Include tombstoned (deleted) symbols in results. Default false."},
 				"format":             {Type: "string", Description: "Output format: 'text' (default, markdown) or 'json' (structured rows: {id, symbol_name, type, file_path, start_line, end_line, signature, summary})."},
 				"repo":               repoProp,
+				"branch":             {Type: "string", Description: "Code-graph branch overlay to read instead of the base graph. Auto-filled by the client from the machine-local repo manifest when the caller omits it and repo is not 'all', so it arrives on the call even when unset by hand; supply it explicitly to pin a specific overlay."},
 			},
 			Required: []string{"file_path"},
 		},

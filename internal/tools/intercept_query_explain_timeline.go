@@ -38,10 +38,18 @@ func copyEdge(e *knowledgev1.Edge) knowledgev1.Edge {
 //
 // BOUNDED: explain fetches the target id(s)' edges in ONE RETURN_MODE_EDGES
 // Execute (both directions) + ONE bulk endpoint-name hydrate; the pair form
-// filters to the b-peer client-side over that single fetch. timeline issues ONE
-// Limit-0 Execute over the target type then sorts in memory by the time_field
-// (the render-output limit is applied AFTER sort — truncating the fetch would
-// bias which entries are considered, per tools_query_timeline.go).
+// filters to the b-peer client-side over that single fetch. Its cost is O(degree
+// of one node), never graph cardinality.
+//
+// timeline reads the target node set in BOUNDED KEYSET PAGES and folds each page
+// into an engine.TimelineTopK, which retains only the cap earliest entries — so
+// neither the node set nor the entry slice is ever whole-corpus sized (a
+// TimelineEntry pins its *knowledgev1.Node, so an uncapped entry slice pinned the
+// entire fetch). The cap now applies BY DEFAULT rather than only when the caller
+// supplies a limit. The surviving rationale from the old post-sort limit still
+// holds and is why the cap is on RETENTION, not on the fetch: truncating the
+// fetch would bias which entries were ever considered, whereas the top-K always
+// keeps the earliest entries seen and therefore preserves T0.
 
 // InterceptQueryExplainTimeline claims query(mode in {explain,timeline}) for
 // non-logs graphs.
@@ -65,7 +73,13 @@ func InterceptQueryExplainTimeline(ctx context.Context, deps ClientDeps, params 
 	}
 
 	if a.Mode == "explain" {
+		if err := accountQueryParams(armExplain, params.Arguments); err != nil {
+			return true, errorResult(err.Error())
+		}
 		return true, composeExplain(ctx, gc.Execute, a)
+	}
+	if err := accountQueryParams(armTimeline, params.Arguments); err != nil {
+		return true, errorResult(err.Error())
 	}
 	return true, composeTimeline(ctx, deps, a)
 }
@@ -192,35 +206,39 @@ func renderExplainWithNames(ctx context.Context, exec engine.ExecuteFn, target *
 }
 
 // composeTimeline ports handleGenericTimeline: require time_field (non-logs),
-// fetch one bounded node-set, sort ascending, apply render-output limit, render
-// flat or bucketed.
+// drain the node set in bounded keyset pages into a bounded top-K, render flat
+// or bucketed. The top-K owns the cap — there is no post-sort truncation here.
 func composeTimeline(ctx context.Context, deps ClientDeps, a queryArgs) kgtools.ToolResult {
 	field := a.TimeField
 	if field == "" {
 		return errorResult("timeline requires time_field when graph is not logs")
 	}
 	label := domainGraphLabel(a)
-	nodes, err := pivotFetchNodesClient(ctx, deps, a) // same fetch shape (type/text/all, Limit 0).
-	if err != nil {
+	tk := engine.NewTimelineTopK(field, timelineRowCap(a))
+	if err := pivotFetchNodesClient(ctx, deps, a, tk.Add); err != nil { // same fetch shape (type/text/all).
 		return errorResult(fmt.Sprintf("timeline fetch failed: %v", err))
 	}
-	entries := engine.CollectTimelineEntries(nodes, field)
-	if len(entries) == 0 {
+	if tk.Total() == 0 {
 		return textResult(engine.RenderTimelineEmpty(label, field))
 	}
-	engine.SortTimelineEntries(entries)
-	// Render-output limit AFTER sort (truncating the fetch would bias which
-	// entries are considered; truncating after preserves T0).
-	if l := int(a.Limit); l > 0 && len(entries) > l {
-		entries = entries[:l]
-	}
+	entries := tk.Entries()
 	bucket := strings.TrimSpace(a.Extra["bucket"])
 	if bucket != "" {
-		body, errMsg := engine.RenderTimelineBucketed(label, field, entries, bucket)
+		body, errMsg := engine.RenderTimelineBucketed(label, field, entries, bucket, tk.Total())
 		if errMsg != "" {
 			return errorResult(errMsg)
 		}
 		return textResult(body)
 	}
-	return textResult(engine.RenderTimelineFlat(label, field, entries))
+	return textResult(engine.RenderTimelineFlat(label, field, entries, tk.Total()))
+}
+
+// timelineRowCap resolves how many entries the top-K RETAINS and the render
+// shows: the default when the caller passes no limit, otherwise the caller's
+// limit under the hard ceiling.
+func timelineRowCap(a queryArgs) int {
+	if l := int(a.Limit); l > 0 {
+		return min(l, engine.TimelineRowCapMax)
+	}
+	return engine.TimelineRowCapDefault
 }

@@ -9,9 +9,8 @@
 // long_tail_smoke_besteffort_test.go and skip with a finding pointer
 // when wrapper iteration didn't converge.
 //
-// Engine constraint: walker's seq-shadow is depth=1 (Phase C finding
-// 2224314716b17a0554f7b416c4ee6b72). Patterns requiring depth-2 descent
-// for sequence captures are out of scope for this phase.
+// Engine constraint: the walker's seq-shadow is depth=1, so patterns
+// requiring depth-2 descent for sequence captures are out of scope here.
 
 package ast
 

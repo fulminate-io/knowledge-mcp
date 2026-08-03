@@ -45,7 +45,10 @@ type pruneCacheTestDeps struct {
 }
 
 func (d pruneCacheTestDeps) SegmentPruner() SegmentPruner { return d.pruner }
-func (d pruneCacheTestDeps) PipelineReady() bool          { return !d.pipelineNotRdy }
+
+func (d pruneCacheTestDeps) SegmentCacheDropper() SegmentCacheDropper { return nil }
+func (d pruneCacheTestDeps) SegmentDeleter() SegmentDeleter           { return nil }
+func (d pruneCacheTestDeps) PipelineReady() bool                      { return !d.pipelineNotRdy }
 
 // pruneCacheCall builds a deps wired with the given pruner + a graph-caller seeded
 // with the given code repos, and invokes the handler with the given args.
@@ -203,11 +206,60 @@ func TestInterceptManage_PruneCache_Dispatches(t *testing.T) {
 	assert.Contains(t, toolResultText(res), "segment engine unavailable")
 }
 
-// TestInterceptManage_UnknownOp_FallsThrough asserts an unknown operation is NOT
-// handled (returns false, {}) so the dispatch addition did not swallow other ops.
-func TestInterceptManage_UnknownOp_FallsThrough(t *testing.T) {
+// TestInterceptManage_UnknownOp_TerminalError asserts a genuinely unknown
+// operation is answered HERE with the canonical diagnostic rather than falling
+// through to the engine's tool-level deny, which would claim `manage` has no
+// client intercept — false, since this function is one.
+//
+// The guarantee that this arm did not swallow operations belonging to another
+// claimant is NOT this test's job: it belongs to
+// TestInterceptManage_LogsOperationsFallThrough below (the four downstream
+// InterceptLogsManage operations) and TestInterceptManage_DeclaredOperationsAllKnown
+// (everything the schema advertises).
+func TestInterceptManage_UnknownOp_TerminalError(t *testing.T) {
 	handled, res := manageCall(t, &fakeIndexer{}, `{"operation":"definitely-not-an-op"}`)
-	assert.False(t, handled, "an unknown operation must fall through unhandled")
-	assert.False(t, res.IsError)
-	assert.Empty(t, toolResultText(res))
+	assert.True(t, handled, "an unknown operation must be answered here, not deferred")
+	assert.True(t, res.IsError)
+	assert.Contains(t, toolResultText(res),
+		`manage: unknown operation "definitely-not-an-op" — valid operations:`)
+}
+
+// TestInterceptManage_LogsOperationsFallThrough is the named catcher for the
+// starvation trap. InterceptManage runs BEFORE InterceptLogsManage in the
+// chain, so the four log operations must still leave this intercept UNCLAIMED.
+// A terminal arm written without its decline branch breaks all four, and this
+// is the only test in the suite that would notice.
+func TestInterceptManage_LogsOperationsFallThrough(t *testing.T) {
+	for _, op := range []string{"list_logs", "discard_logs", "configure_log_backend", "list_log_backends"} {
+		t.Run(op, func(t *testing.T) {
+			handled, res := manageCall(t, &fakeIndexer{}, `{"operation":"`+op+`"}`)
+			assert.Falsef(t, handled,
+				"%s is claimed by InterceptLogsManage downstream — InterceptManage must decline it", op)
+			assert.False(t, res.IsError)
+			assert.Empty(t, toolResultText(res))
+		})
+	}
+}
+
+// TestInterceptManage_DeclaredOperationsAllKnown is the over-rejection catcher.
+// manageOperations is hand-copied while the schema declares the same set, and
+// the drift that matters is SILENT: an operation the tool still advertises and
+// some arm still dispatches, omitted from the list, now dies at the terminal
+// arm instead of routing.
+//
+// It asserts the predicate rather than driving all the operations through
+// InterceptManage, deliberately: the real handlers have process- and
+// disk-level side effects (pprof_start/pprof_stop toggle profiling on the
+// running process, register_repo writes repo config, prune/drop_graph/rebuild_*
+// issue destructive calls), so a unit fixture must not execute them.
+// manageOperationKnown IS the gate the terminal arm consults, so exercising it
+// exercises the decision under test.
+func TestInterceptManage_DeclaredOperationsAllKnown(t *testing.T) {
+	enum := ManageToolDef().InputSchema.Properties["operation"].Enum
+	require.NotEmpty(t, enum, "the manage schema must publish its operation enum")
+	for _, op := range enum {
+		assert.Truef(t, manageOperationKnown(op),
+			"manage advertises %q but manageOperations omits it — the terminal arm would "+
+				"reject an operation the tool still dispatches", op)
+	}
 }

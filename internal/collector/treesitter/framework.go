@@ -12,8 +12,8 @@ package treesitter
 //
 // Producer-side type only: `type Framework string` lives in this package.
 // Frameworks are NOT persisted on the graph node — they are a per-file fact
-// computed at chunk time (rule 42dba7de — store does not import domain
-// packages). Predicates in sibling chunker_<lang>.go files read them from
+// computed at chunk time (the store does not import domain packages).
+// Predicates in sibling chunker_<lang>.go files read them from
 // chunk.Context.Frameworks. Mirrors how `type TestKind string` is producer-
 // typed and how `type Language string` is stored as plain string when it
 // crosses the persistence boundary.

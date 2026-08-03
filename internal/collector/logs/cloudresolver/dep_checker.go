@@ -88,7 +88,8 @@ func (c *depChecker) HasDependency(ctx context.Context, a, b logs.ResolvedResour
 
 // hasGraph reports whether the named cloud graph is loaded in the
 // subgraph. Used by depChecker to fail-fast when the starting account
-// isn't materialized — equivalent to the original retrieveCloudDB miss.
+// isn't materialized, rather than walking an empty graph and reporting
+// "not reachable" for what is really "not loaded".
 func (sg *CloudSubgraph) hasGraph(name string) bool {
 	if sg == nil {
 		return false

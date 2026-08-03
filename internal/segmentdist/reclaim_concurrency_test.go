@@ -20,6 +20,8 @@ import (
 // instrumented seam intercepts Remove). The reclaim callback runs post-CAS holding
 // no engine lock, so it must never stall the 50ms merger.
 func TestReclaimConcurrency(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	// Low count target so the background merger fires frequently as segments pile up.
 	dm, ic := buildHNSWReclaimManager(t, kgtypes.GraphCode, "concurrency", t.TempDir(), 3)
@@ -31,7 +33,7 @@ func TestReclaimConcurrency(t *testing.T) {
 	)
 	var wg sync.WaitGroup
 
-	// Writers: each seals + ships its own docs concurrently. AddAndShip-style ship
+	// Writers: each seals + ships its own docs concurrently. An embed-style ship
 	// against locallyShipped races the background merger and the reclaim hook.
 	for w := range writers {
 		wg.Add(1)

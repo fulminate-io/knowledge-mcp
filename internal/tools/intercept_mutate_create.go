@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"strings"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
@@ -62,7 +63,24 @@ func handleClientMutateCreateFinding(ctx context.Context, deps ClientDeps, a mut
 	return textResult(sb.String())
 }
 
-// buildFindingNode constructs the finding node with metadata.
+// copyCallerMetadata returns a FRESH copy of the caller's metadata map, or nil
+// when there is nothing to carry. Copied, never aliased: each builder stamps its
+// derived keys on top, and mutating the caller's map in place would leak those
+// derived keys back into the caller's own arguments — breaking retry
+// idempotency for anyone who reuses the map. Same rule mergeUpdateMetadata
+// states for the update path.
+func copyCallerMetadata(in map[string]string) map[string]string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	maps.Copy(out, in)
+	return out
+}
+
+// buildFindingNode constructs the finding node with metadata. The caller's
+// metadata is seeded FIRST so the derived evidence/source keys below win on a
+// key collision.
 func buildFindingNode(a mutateArgs) *knowledgev1.Node {
 	summary := a.Summary
 	if summary == "" {
@@ -74,6 +92,9 @@ func buildFindingNode(a mutateArgs) *knowledgev1.Node {
 		SymbolName:  a.Name,
 		Description: a.Description,
 		Summary:     summary,
+		Content:     a.Content,
+		Status:      a.Status,
+		Metadata:    copyCallerMetadata(a.Metadata),
 	}
 	if a.Evidence != "" {
 		kgtypes.SetValue(node, "evidence", a.Evidence)
@@ -160,14 +181,26 @@ func handleClientMutateCreateResearch(ctx context.Context, deps ClientDeps, a mu
 			summary += ". Context: " + bgContext
 		}
 	}
+	// A caller-supplied description wins; absent one, the question text is the
+	// description (the long-standing default). SymbolName stays the question
+	// unconditionally — a research node's name IS its question.
+	description := a.Description
+	if description == "" {
+		description = question
+	}
+	status := a.Status
+	if status == "" {
+		status = "open"
+	}
 	node := knowledgev1.Node{
 		Type:        string(kgtypes.NodeResearch),
 		Source:      "llm:claude",
 		SymbolName:  question,
-		Description: question,
+		Description: description,
 		Summary:     summary,
 		Content:     bgContext,
-		Status:      "open",
+		Status:      status,
+		Metadata:    copyCallerMetadata(a.Metadata),
 	}
 	// Context links: pre-validated ticket/session/knowledge-link edges
 	// ride the create_batch; code links + warnings handled after. Node is slot 0.
@@ -205,12 +238,17 @@ func handleClientMutateCreateRule(ctx context.Context, deps ClientDeps, a mutate
 	if summary == "" {
 		summary = projects.DeriveRuleSummary(a.Name, a.Scope)
 	}
+	// Caller metadata is seeded FIRST so the derived scope/enforcement keys below
+	// win on a key collision.
 	node := knowledgev1.Node{
 		Type:        string(kgtypes.NodeRule),
 		Source:      "llm:claude",
 		SymbolName:  a.Name,
 		Description: a.Description,
 		Summary:     summary,
+		Content:     a.Content,
+		Status:      a.Status,
+		Metadata:    copyCallerMetadata(a.Metadata),
 	}
 	if a.Scope != "" {
 		kgtypes.SetValue(&node, "scope", a.Scope)
@@ -255,6 +293,13 @@ func handleClientMutateAnswer(ctx context.Context, deps ClientDeps, a mutateArgs
 		return errorResult(fmt.Sprintf("research not found: %s", id))
 	}
 	updatedSummary := "Research question: " + node.SymbolName + ". Conclusion: " + a.Conclusion
+	// Caller metadata is seeded FIRST so the derived conclusion key wins on a
+	// key collision. Copied, never aliased — see copyCallerMetadata.
+	metadata := copyCallerMetadata(a.Metadata)
+	if metadata == nil {
+		metadata = map[string]string{}
+	}
+	metadata["conclusion"] = a.Conclusion
 	updateArgs, merr := json.Marshal(struct {
 		Operation string            `json:"operation"`
 		ID        string            `json:"id"`
@@ -266,7 +311,7 @@ func handleClientMutateAnswer(ctx context.Context, deps ClientDeps, a mutateArgs
 		ID:        id,
 		Status:    "answered",
 		Summary:   updatedSummary,
-		Metadata:  map[string]string{"conclusion": a.Conclusion},
+		Metadata:  metadata,
 	})
 	if merr != nil {
 		return errorResult("mutate(answer): marshal: " + merr.Error())
@@ -308,26 +353,122 @@ func isTerminalForClientRollup(status string) bool {
 	return false
 }
 
-// handleClientUpdateStatusRollup walks the contains tree under a.ID,
-// collects every non-terminal descendant, and issues ONE
-// mutate(update_batch) with status=completed for all of them PLUS the
-// root. Exactly 2 RPCs total (one traverse + one update_batch)
-// regardless of descendant count.
+// handleClientUpdateStatusRollup walks the contains tree under a.ID, collects
+// the non-terminal descendants the cascade may move — only those whose own type
+// is one of the five container types, since partitionRollupTargets holds every
+// other type back — and issues ONE mutate(update_batch) with status=completed
+// for all of them PLUS the root. The traversal still enumerates the held nodes
+// so the success line can name them.
+//
+// A caller may send body fields alongside the status. Those apply to the NAMED
+// node only — cascading a description down a contains tree would be nonsense —
+// so they ride their own by-id UPDATE carrying no status, issued BEFORE the
+// rollup so a failure there is a clean zero-write reject. A status-only rollup
+// skips that write entirely and stays exactly 2 RPCs (one traverse + one
+// update_batch) regardless of descendant count; a combined one costs 3.
 func handleClientUpdateStatusRollup(ctx context.Context, gc GraphCaller, a mutateArgs, _ *knowledgev1.Node) kgtools.ToolResult {
+	fields := rollupNamedNodeFields(a)
+	if len(fields) > 0 {
+		if ferr := applyRollupNamedNodeFields(ctx, gc, a); ferr != nil {
+			// Nothing has been written yet — a plain reject, no partial language.
+			return errorResult("mutate(update): rollup field update: " + ferr.Error())
+		}
+	}
+
 	descs, terr := TraverseDescendants(ctx, gc, a.ID, kgtypes.EdgeKGContains, 16)
 	if terr != nil {
-		return errorResult("mutate(update): rollup traverse: " + terr.Error())
+		return rollupFailureResult(a.ID, fields, "rollup traverse", terr)
 	}
-	ids := []string{a.ID}
-	for _, d := range descs {
-		if isTerminalForClientRollup(d.Status) {
-			continue
-		}
-		ids = append(ids, d.Id)
-	}
+	ids, heldCriteria, heldQuestions, heldOther := partitionRollupTargets(a.ID, descs)
 	bundleID := newBundleID()
 	if uerr := UpdateBatchStatus(ctx, gc, ids, kgtypes.StatusCompleted, bundleID); uerr != nil {
-		return errorResult("mutate(update): " + uerr.Error())
+		return rollupFailureResult(a.ID, fields, "", uerr)
 	}
-	return textResult(fmt.Sprintf("Status updated: %d/%d → %s [graph: knowledge/default]", len(ids), len(ids), kgtypes.StatusCompleted))
+	msg := rollupStatusMessage(a.ID, ids, heldCriteria, heldQuestions, heldOther)
+	if len(fields) > 0 {
+		// Silent success about the second write would be the same defect in
+		// miniature, so name what else landed.
+		msg += fmt.Sprintf(" — also applied %s to %s", strings.Join(fields, ", "), a.ID)
+	}
+	return textResult(msg)
+}
+
+// rollupNamedNodeFields returns, in a stable order, the names of the body fields
+// the caller supplied alongside the status. An empty result is the status-only
+// rollup, which must stay byte-for-byte the original two-RPC path.
+func rollupNamedNodeFields(a mutateArgs) []string {
+	var names []string
+	if a.Name != "" {
+		names = append(names, "name")
+	}
+	if a.Description != "" {
+		names = append(names, "description")
+	}
+	if a.Summary != "" {
+		names = append(names, "summary")
+	}
+	if a.Content != "" {
+		names = append(names, "content")
+	}
+	if a.Keywords != "" {
+		names = append(names, "keywords")
+	}
+	if a.Source != "" {
+		names = append(names, "source")
+	}
+	if len(a.Metadata) > 0 {
+		names = append(names, "metadata")
+	}
+	return names
+}
+
+// applyRollupNamedNodeFields writes the caller's body fields to the named
+// container via the full-fidelity by-id forward: executeMutate re-compiles it so
+// name/description/summary/content/keywords/source route as top-level set_fields
+// and metadata as set_metadata.
+//
+// Status is deliberately LEFT UNSET — the rollup batch owns it, and emitting it
+// here would write the same field twice through two plans. Now that the field
+// is a POINTER, nil MEANS "untouched" by construction rather than by accident
+// of omitempty: an unset pointer omits the key, where an empty string would
+// have become a clear-to-blank write.
+func applyRollupNamedNodeFields(ctx context.Context, gc GraphCaller, a mutateArgs) error {
+	args, merr := json.Marshal(forwardedTypedUpdatePayload{
+		Operation:   "update",
+		ID:          a.ID,
+		Name:        a.Name,
+		Description: a.Description,
+		Summary:     a.Summary,
+		Content:     a.Content,
+		Keywords:    a.Keywords,
+		Source:      a.Source,
+		Metadata:    a.Metadata,
+	})
+	if merr != nil {
+		return fmt.Errorf("marshal forward: %w", merr)
+	}
+	if _, uerr := executeMutate(ctx, gc, args); uerr != nil {
+		return uerr
+	}
+	return nil
+}
+
+// rollupFailureResult builds the rollup's failure result for the two paths that
+// run AFTER the named-node field write. When no field write was issued there is
+// nothing partial to report and the original messages stand verbatim; once the
+// fields HAVE landed, a bare "traverse failed" would itself be a silent-partial
+// report, so both paths name the id, exactly which fields persisted, and that
+// status reached neither the node nor its descendants.
+func rollupFailureResult(id string, fields []string, stage string, err error) kgtools.ToolResult {
+	if len(fields) == 0 {
+		if stage != "" {
+			return errorResult("mutate(update): " + stage + ": " + err.Error())
+		}
+		return errorResult("mutate(update): " + err.Error())
+	}
+	return errorResult(fmt.Sprintf(
+		"mutate(update): %s applied to %s, but the status rollup failed: %v; "+
+			"status reached neither %s nor its descendants — re-run the status update once the cause is cleared",
+		strings.Join(fields, ", "), id, err, id,
+	))
 }

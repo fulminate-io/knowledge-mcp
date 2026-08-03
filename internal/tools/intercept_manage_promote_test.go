@@ -181,12 +181,14 @@ func TestHandleManagePromoteMetadata_KeysFilter(t *testing.T) {
 	assert.Equal(t, []string{"team"}, migrated, "only the keys-filtered 'team' key is migrated")
 }
 
-// TestHandleManagePromoteMetadata_NarrativeFires covers the batch-level narrative
-// think() on a non-dry-run with keys processed: a thought CREATE joins the
-// T5-backfill session (EdgeKGContains, now riding the create_batch atomically per
-// the Phase-1 think-path fix) and links to the ticket (EdgeRelatesTo) — the same
-// outcome the legacy path produced, now after the client-composed pass.
-func TestHandleManagePromoteMetadata_NarrativeFires(t *testing.T) {
+// TestPromoteMetadataNarrative_NoForeignTicketLink covers the batch-level
+// narrative think() on a non-dry-run with keys processed: a thought CREATE joins
+// the metadata-backfill session (EdgeKGContains, riding the create_batch
+// atomically per the Phase-1 think-path fix) and carries NO relates-to edge out
+// of the thought. Session membership is the only anchor a consumer's graph can
+// resolve; any node id minted at this call site belongs to a different graph and
+// would dangle in every one it is shipped to.
+func TestPromoteMetadataNarrative_NoForeignTicketLink(t *testing.T) {
 	fc := &fakeGraphCaller{
 		metadataStatsResp: metadataStatsResp(t, map[string]*knowledgev1.KeyStats{
 			"team": {DistinctValues: 4, MedianNodesPerValue: 10, CurrentRepresentation: engine.RepresentationScalar},
@@ -198,11 +200,11 @@ func TestHandleManagePromoteMetadata_NarrativeFires(t *testing.T) {
 		json.RawMessage(`{"operation":"promote_metadata","graph":"cloud","name":"x"}`))
 	require.False(t, res.IsError)
 
-	// The session ("T5-backfill") is not pre-seeded, so getOrCreateThoughtSessionClient
+	// The session ("metadata-backfill") is not pre-seeded, so getOrCreateThoughtSessionClient
 	// CREATES it first (PersistBatch returns "sess-or-thought-id"); the narrative
 	// thought's CREATE batch then carries session--contains-->thought from that id.
 	var thoughtBody *knowledgev1.NodeBody
-	sawContains, sawTicketLink := false, false
+	sawContains, sawThoughtRelatesTo := false, false
 	for _, m := range fc.execMutations {
 		if m.GetKind() != knowledgev1.MutationPlan_MUTATION_KIND_CREATE {
 			continue
@@ -216,17 +218,20 @@ func TestHandleManagePromoteMetadata_NarrativeFires(t *testing.T) {
 		if hasContainsFrom(m, "sess-or-thought-id") {
 			sawContains = true
 		}
+		// Any relates-to out of the narrative thought (slot 0) is a violation. The
+		// check names no id at all, so it cannot be satisfied by swapping one
+		// hardcoded target for another.
 		for _, e := range m.GetEdges() {
-			if e.GetType() == string(kgtypes.EdgeRelatesTo) && e.GetToId() == ticketIDPromoteMetadata {
-				sawTicketLink = true
+			if e.GetType() == string(kgtypes.EdgeRelatesTo) && e.GetFromIdx() == 0 {
+				sawThoughtRelatesTo = true
 			}
 		}
 	}
 	require.NotNil(t, thoughtBody, "narrative must create a type:thought node")
 	assert.Contains(t, thoughtBody.GetContent(), "Backfill on cloud/x: refreshed 1 keys")
-	assert.Equal(t, "T5-backfill", thoughtBody.GetMetadata()["session"])
-	assert.True(t, sawContains, "narrative thought must join the T5-backfill session via the EdgeKGContains batch edge on the CREATE plan")
-	assert.True(t, sawTicketLink, "narrative thought must link to the ticket via EdgeRelatesTo")
+	assert.Equal(t, "metadata-backfill", thoughtBody.GetMetadata()["session"])
+	assert.True(t, sawContains, "narrative thought must join the metadata-backfill session via the EdgeKGContains batch edge on the CREATE plan")
+	assert.False(t, sawThoughtRelatesTo, "narrative thought must carry no relates-to edge out of it — a link minted here dangles in every consumer graph")
 }
 
 // TestHandleManagePromoteMetadata_StatsLoadFailure covers the stats-read error

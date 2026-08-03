@@ -49,9 +49,8 @@ func TestFontResource_OnePageFixture_F1Helvetica(t *testing.T) {
 	}
 }
 
-// TestFontResource_MissingKey_ReturnsNilNil covers criterion
-// 1060337969739f2649fb0ac399db3d8d: an absent resource name returns
-// (nil, nil), not an error. The walker uses this to skip
+// TestFontResource_MissingKey_ReturnsNilNil asserts an absent resource name
+// returns (nil, nil), not an error. The walker uses this to skip
 // content-stream Tf references to undeclared fonts.
 func TestFontResource_MissingKey_ReturnsNilNil(t *testing.T) {
 	t.Parallel()
@@ -86,8 +85,7 @@ func TestFontResource_NilReceiver_ReturnsError(t *testing.T) {
 }
 
 // TestBaseFontStyleHeuristics covers the name-pattern fallbacks used
-// when /FontDescriptor is absent (Standard 14 fonts), per criterion
-// e89a48539b19ee42e291de92555798a2.
+// when /FontDescriptor is absent (Standard 14 fonts).
 func TestBaseFontStyleHeuristics(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

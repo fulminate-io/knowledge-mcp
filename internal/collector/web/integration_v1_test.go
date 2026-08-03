@@ -90,9 +90,7 @@ is embedded twice so the ContentHash is distinct per followup.</p>
 // Readability strips class and role attributes from all elements and
 // replaces the <body> wrapper entirely, so assertions below target
 // the subset of attributes that SURVIVE the readability pass: id,
-// data-*, cite, rel, and inline-emphasis tag names. See finding
-// 80353ac299a4d25434d117dee3c2402a for details on what readability
-// preserves vs strips.
+// data-*, cite, rel, and inline-emphasis tag names.
 func TestCollectorV1_AttrsAndEmphasis_IntegrationFixture(t *testing.T) {
 	sink := initWebTestSink(t)
 
@@ -201,9 +199,8 @@ func TestCollectorV1_AttrsAndEmphasis_IntegrationFixture(t *testing.T) {
 		// works against raw *html.Node trees; downstream transformers
 		// that need language detection must use a different signal
 		// (file extension, cue word frequency) when reading from
-		// GraphWebRaw. See finding
-		// 80353ac299a4d25434d117dee3c2402a for the full list of
-		// readability-stripped attributes.
+		// GraphWebRaw. Readability strips class and role from every
+		// element; id, data-*, cite and rel survive.
 		cb := snap.firstOfType("code_block")
 		require.NotNil(t, cb, "no code_block emitted")
 		assert.NotEmpty(t, cb.Content, "code_block must retain source content")

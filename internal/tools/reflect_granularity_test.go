@@ -99,8 +99,11 @@ func (d reflectTestDeps) SegmentManager() SegmentSearcher              { return 
 func (d reflectTestDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
 func (d reflectTestDeps) SegmentShipper() SegmentShipper               { return nil }
 func (d reflectTestDeps) SegmentPruner() SegmentPruner                 { return nil }
-func (d reflectTestDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
-func (d reflectTestDeps) PipelineScanner() PipelineScanner             { return nil }
+
+func (d reflectTestDeps) SegmentCacheDropper() SegmentCacheDropper { return nil }
+func (d reflectTestDeps) SegmentDeleter() SegmentDeleter           { return nil }
+func (d reflectTestDeps) SegmentCoverage() SegmentCoverageReader   { return nil }
+func (d reflectTestDeps) PipelineScanner() PipelineScanner         { return nil }
 
 func (d reflectTestDeps) ClearHealLatch(kgtypes.GraphType, string) {}
 func (d reflectTestDeps) ReflectionForcer() ReflectionForcer       { return nil }

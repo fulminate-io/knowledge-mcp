@@ -27,7 +27,7 @@ func assembleFallback(ctx context.Context, gc GraphCaller, node *knowledgev1.Nod
 	if node.Description != "" {
 		fmt.Fprintf(&sb, "%s\n", node.Description)
 	}
-	fmt.Fprintf(&sb, "ID: %s\n", node.Id)
+	fmt.Fprintf(&sb, "ID: %s%s\n", node.Id, updatedSuffix(node))
 
 	outEdges, _ := IterEdges(ctx, gc, node.Id, kgwire.OutgoingEdges)
 	if len(outEdges) > 0 {

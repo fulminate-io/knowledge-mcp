@@ -42,7 +42,7 @@ func createPayload(a mutateArgs) ([]*knowledgev1.NodeBody, []*knowledgev1.BatchE
 		Description: a.Description,
 		Summary:     a.Summary,
 		Content:     a.Content,
-		Status:      a.Status,
+		Status:      derefStatus(a.Status),
 		Metadata:    a.Metadata,
 		ID:          a.ID,
 		Source:      a.Source,

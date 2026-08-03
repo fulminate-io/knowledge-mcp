@@ -97,6 +97,8 @@ var _ segmentSource = (*failAfterWarmSource)(nil)
 // RED pre-fix: load() returns the List error at the source.List error arm (resident
 // stays 0). GREEN after the load() L2 fallback lands.
 func TestLoadL2FallbackReachesCoverageWithoutServer(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	gt, name := kgtypes.GraphCode, "l2-fallback"
 	dir := t.TempDir()
@@ -155,6 +157,8 @@ func TestLoadL2FallbackReachesCoverageWithoutServer(t *testing.T) {
 // even though L2 is populated. GREEN after the flip: the L2-first path returns
 // before any List, so listCount()==0 AND fetchCount()==0.
 func TestLoadL2FirstPrimaryPathIssuesZeroList(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	gt, name := kgtypes.GraphCode, "l2-first-primary"
 	dir := t.TempDir()
@@ -223,6 +227,8 @@ func TestLoadL2FirstPrimaryPathIssuesZeroList(t *testing.T) {
 // reload swallows the unfetchable miss, imports the available hits, load() returns
 // nil, and the engine holds the corpus minus the single raced-out segment.
 func TestLoadL2PartialImportToleratesRacedMissWithServerDown(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	gt, name := kgtypes.GraphCode, "l2-partial-import"
 	dir := t.TempDir()
@@ -270,6 +276,8 @@ func TestLoadL2PartialImportToleratesRacedMissWithServerDown(t *testing.T) {
 // genuinely cold/wiped L2 (no cached segments) + an erroring server returns the
 // original List error from load() — there is nothing to fall back to.
 func TestLoadL2FallbackEmptyCacheReturnsListError(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	gt, name := kgtypes.GraphCode, "l2-empty"
 	dir := t.TempDir() // empty — no .seg files warmed.

@@ -41,6 +41,10 @@
     <case>Reading a SPECIFIC file/range you already located — `Read` (optionally after `file_symbols`), not `sed -n`.</case>
     <case>Anything NOT in the list above that lives in indexed source: search/ast/file_symbols/traverse first.</case>
   </shell-is-right>
+  <reads>
+    <rule>Reads are read-your-writes and cross-session fresh — writes are synchronous, and the server holds no per-session view, so "I must have read stale data" is not an available explanation for a disagreement. The likely one is read-then-report skew: you loaded the text minutes ago and it was revised while you reasoned.</rule>
+    <rule>Re-fetch immediately before filing a finding or negating another agent's claim, and cite the node's updated_at — rendered on every ID line in plan_tree and assemble, and present in the by-id JSON — so a reader can tell "read before the revision" from "read after".</rule>
+  </reads>
   <writes>
     <rule>`search` / `recall` BEFORE creating — decisions, findings, and research don't exist in isolation. Check for an existing node first to avoid duplicates.</rule>
     <rule>Name for retrieval. The node `name` and the first sentence of its `description` are what BM25 matches later; vague titles are search-invisible. State the concept/concern in plain terms.</rule>

@@ -55,6 +55,18 @@ func (e *recordingIngest) Finalize(
 	return connect.NewResponse(&knowledgev1.FinalizeResponse{}), nil
 }
 
+// FinalizeStatus completes the handler interface. This fake does all its work in
+// Finalize and returns no finalize_id, so the sink never polls it; UNKNOWN is the
+// honest answer for a server that tracks nothing.
+func (e *recordingIngest) FinalizeStatus(
+	context.Context,
+	*connect.Request[knowledgev1.FinalizeStatusRequest],
+) (*connect.Response[knowledgev1.FinalizeStatusResponse], error) {
+	return connect.NewResponse(&knowledgev1.FinalizeStatusResponse{
+		State: knowledgev1.FinalizeState_FINALIZE_STATE_UNKNOWN,
+	}), nil
+}
+
 func (e *recordingIngest) FetchCloudSubgraph(
 	context.Context,
 	*connect.Request[knowledgev1.FetchCloudSubgraphRequest],

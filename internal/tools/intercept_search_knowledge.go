@@ -9,7 +9,6 @@ import (
 	"sort"
 	"time"
 
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
@@ -33,240 +32,44 @@ func isKnowledgeDefaultGraph(graph string) bool {
 	return graph == "" || graph == "knowledge"
 }
 
-// knowledgeSearchArgs is the slice of the search payload the client-engine
-// knowledge arm consumes: the query text, the (client-embedded) query vector,
-// the limit, the requested render format/fields, and the optional node-type
-// post-filter. Mirrors the fields compileSearch read for the server path.
+// segmentSearchArgs is the slice of the search payload a client-engine SEGMENT
+// search arm consumes: the query text, the (client-embedded) query vector, the
+// limit, the requested render format/fields, and the optional node-type
+// post-filter. Mirrors the fields compileSearch read for the server path. It is
+// not knowledge-specific — both segment arms decode into it, the
+// knowledge/default arm here and the registered custom-graph arm in
+// intercept_search_registered_graph.go, so neither can drift about which wire
+// fields exist.
 //
-// Mode/HalfLife carry the query-tool temporal arm (mode=recent): when Mode is
-// "recent" the hydrated rows get a client UpdatedAt half-life rerank
-// (applyTemporalRerank) before render, mirroring the server temporal boost. The
-// SEARCH tool never sets a mode, so its knowledge arm leaves Mode empty (no
-// rerank). HalfLife defaults to recentTemporalHalfLifeDays when unset.
-type knowledgeSearchArgs struct {
+// Mode selects which retrieval arms run and whether the recency rerank applies;
+// HalfLife tunes that rerank. Mode now arrives faithfully from BOTH tools — the
+// search tool decodes it straight off the wire, and the query tool writes the
+// resolved execution mode into the payload it builds — so neither tool's callers
+// get a mode the other would have honored.
+//
+// normalizeSegmentSearchMode (search_mode_contract.go) is the ONE place the
+// declared equivalences are resolved: an absent mode to hybrid, and temporal to
+// recent. Consumers here read the normalized value rather than re-deriving it.
+// HalfLife defaults to recentTemporalHalfLifeDays when unset.
+type segmentSearchArgs struct {
 	Query       string   `json:"query"`
 	QueryVector []byte   `json:"query_vector"`
 	Limit       int      `json:"limit"`
 	Format      string   `json:"format"`
 	Fields      []string `json:"fields"`
 	Types       []string `json:"types"`
-	Mode        string   `json:"mode"`
-	HalfLife    float64  `json:"half_life"`
+	// Meta is a QUERY-TOOL-ONLY carrier: the search tool publishes no `meta`
+	// param at all, so it decodes empty on every search-tool arm and the metadata
+	// post-filter is a no-op there. Parity by construction, not coincidence.
+	Meta     map[string]string `json:"meta,omitempty"`
+	Mode     string            `json:"mode"`
+	HalfLife float64           `json:"half_life"`
 }
 
 // recentTemporalHalfLifeDays is the default half-life for the mode=recent
 // temporal rerank — mirrors the engine recentHalfLifeDays / the server's 30-day
 // floor (temporal_rerank.go computeTemporalScore halfLife<=0 → 30).
 const recentTemporalHalfLifeDays = 30.0
-
-// InterceptQueryKnowledgeSearch claims the query-tool knowledge text-search modes
-// that were previously compiled to a server RETURN_MODE_SEARCH dispatch and routes
-// them through the CLIENT knowledge engine (composeKnowledgeSearch).
-// mode=recent has TWO arms: text-bearing recent runs the client search with a
-// client UpdatedAt half-life rerank (composeKnowledgeSearch); BARE recent (empty
-// text) is a pure temporal browse over GraphCaller (composeRecentBrowse) — no
-// search query, just most-recently-updated nodes, optionally scoped by `types`.
-// Returns (false,_) for any other tool/graph/mode — and for empty-text text/default
-// modes — so the chain proceeds. The query tool carries the search text in `text`
-// (not `query`); this claim maps it onto the knowledgeSearchArgs `query` field
-// composeKnowledgeSearch reads.
-func InterceptQueryKnowledgeSearch(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
-	if params.Name != "query" {
-		return false, kgtools.ToolResult{}
-	}
-	var a queryArgs
-	if err := json.Unmarshal(params.Arguments, &a); err != nil {
-		return false, kgtools.ToolResult{}
-	}
-	if !isKnowledgeDefaultGraph(a.Graph) {
-		return false, kgtools.ToolResult{}
-	}
-	if hasThoughtQueryFilter(a) {
-		return false, kgtools.ToolResult{} // recall/reflect shape stays on the thoughts surface.
-	}
-	// Claimed knowledge text-search shapes: mode=recent (temporal rerank), mode=text,
-	// and the DEFAULT mode (empty) carrying ONLY a text query (no id/ids/type/meta —
-	// those non-search default shapes stay on the compileQuery browse/getNode path).
-	mode, claimed := knowledgeSearchModeFor(a)
-	if !claimed {
-		return false, kgtools.ToolResult{}
-	}
-	gc := deps.GraphCaller()
-
-	if a.Text == "" {
-		// Empty-text recent is a pure temporal BROWSE (no search query): fetch the
-		// most-recently-updated nodes via GraphCaller and rerank by UpdatedAt. Every
-		// other empty-text mode (text/default) still bails so precheck/deny owns the
-		// requires-text message.
-		if mode != "recent" {
-			return false, kgtools.ToolResult{} // empty text → precheck/deny owns the message.
-		}
-		if gc == nil {
-			return true, errorResult("recent browse: graph client unavailable")
-		}
-		return true, composeRecentBrowse(ctx, gc, a)
-	}
-	if gc == nil {
-		return true, errorResult(mode + " search: graph client unavailable")
-	}
-	// Readiness gate (bind-first startup): composeKnowledgeSearch dereferences the segment
-	// Manager (mgr.Search) with no nil-check; during the bind-first wiring window
-	// SegmentManager() is an untyped nil → panic. Gate before the deref.
-	if !deps.PipelineReady() {
-		return true, errorResult("knowledge search: daemon still starting — LLM pipeline not ready yet, retry shortly")
-	}
-	halfLife := 0.0
-	if mode == "recent" {
-		halfLife = recentTemporalHalfLifeDays
-	}
-	return true, composeKnowledgeSearch(ctx, gc, deps.SegmentManager(),
-		knowledgeQueryToSearchArgs(ctx, deps, a, mode, halfLife))
-}
-
-// composeRecentBrowse serves bare query(mode:recent) (empty text) as a temporal
-// browse: it fetches the candidate node set over GraphCaller (type-scoped when
-// `types` is set, else every node), maps each node to a unit-score SearchResult,
-// applies the UpdatedAt half-life rerank verbatim, then truncates to the limit
-// AFTER the sort and renders. Because every base score is 1.0, applyTemporalRerank's
-// UpdatedAt boost is the SOLE ordering signal → pure most-recently-updated order.
-//
-// The type filter is pushed to the FETCH: a Selection.NodeTypes-bearing browse
-// plan is trimmed to that type set server-side by postFilterBrowseNodeTypes
-// (cmd/knowledge-server/internal/bootstrap/engine_normalize.go) BEFORE responding —
-// the same mechanism the plural-types browse arm uses (no client-side fetch-all).
-// The plan carries NO Limit (Limit 0 = no cap) so every recency-eligible node is
-// considered before the sort; the limit is honored only after ordering.
-func composeRecentBrowse(ctx context.Context, gc GraphCaller, a queryArgs) kgtools.ToolResult {
-	selection := &knowledgev1.Selection{}
-	if len(a.Types) > 0 {
-		selection = &knowledgev1.Selection{NodeTypes: a.Types}
-	}
-	plan := &knowledgev1.QueryPlan{
-		Selection:         selection,
-		IncludeTombstones: a.IncludeTombstones,
-	}
-	resp, err := gc.Execute(ctx, &knowledgev1.ExecuteRequest{
-		Plan:   &knowledgev1.ExecuteRequest_Query{Query: plan},
-		Target: domainTarget(a),
-	})
-	if err != nil {
-		return errorResult("recent browse: fetch: " + err.Error())
-	}
-	nodes, derr := engine.DecodeNodes(resp)
-	if derr != nil {
-		return errorResult("recent browse: decode: " + derr.Error())
-	}
-
-	results := make([]engine.SearchResult, len(nodes))
-	for i, n := range nodes {
-		// Stamp the source-graph identity: this is the knowledge default
-		// graph (no instance). composeRecentBrowse builds SearchResults directly
-		// (it is a temporal BROWSE, not a hydrateEngineHits funnel), so it stamps
-		// here rather than inheriting the hydrate stamp.
-		results[i] = engine.SearchResult{Node: n, Score: 1.0, Graph: string(kgtypes.GraphKnowledge)}
-	}
-
-	// UpdatedAt half-life rerank (BOOST + re-sort); base scores are all 1.0 so the
-	// resulting order is pure most-recently-updated.
-	applyTemporalRerank(results, recentTemporalHalfLifeDays)
-
-	// Truncate AFTER the sort — truncating the fetch would bias which nodes are
-	// considered (mirrors composeTimeline's render-output limit-after-sort).
-	k := int(a.Limit)
-	if k <= 0 {
-		k = knowledgeSearchDefaultLimit
-	}
-	if len(results) > k {
-		results = results[:k]
-	}
-
-	format := a.Format
-	if format == "" {
-		format = "text"
-	}
-	return engine.RenderForCaller("", results, format, a.Fields, "recency-boosted")
-}
-
-// knowledgeSearchModeFor reports whether a knowledge-graph query is one of the
-// claimed text-search shapes and returns the composeKnowledgeSearch mode to use:
-//   - mode=recent → "recent" (temporal rerank).
-//   - mode=text   → "text".
-//   - default mode (empty) carrying a text query AND no id/ids/type/meta-only
-//     browse shape → "text" (the default-text search arm).
-//
-// Returns ("", false) for every non-search default shape (id getNode, ids[] bulk,
-// type-browse, meta-only) so compileQuery keeps owning those.
-func knowledgeSearchModeFor(a queryArgs) (string, bool) {
-	switch a.Mode {
-	case "recent":
-		return "recent", true
-	case "text":
-		return "text", true
-	case "":
-		// Default mode: claim ONLY the pure text-search shape. Any id / ids / type
-		// / meta-only signal means this is a browse/getNode read, not a search.
-		if a.Text != "" && a.ID == "" && len(a.IDs) == 0 && a.Type == "" && len(a.Meta) == 0 {
-			return "text", true
-		}
-		return "", false
-	default:
-		return "", false
-	}
-}
-
-// hasThoughtQueryFilter reports whether a query carries a thought-graph filter
-// field — the recall/reflect surface owns those, not the knowledge search arm.
-// Mirrors the engine hasThoughtFilter gate so the knowledge-search claim never
-// swallows a recall-shaped query.
-func hasThoughtQueryFilter(a queryArgs) bool {
-	return a.ValenceMin != nil || a.ValenceMax != nil || a.MagnitudeMin != nil ||
-		a.ConsistMax != nil || a.Session != "" || a.ConnectedTo != ""
-}
-
-// knowledgeQueryToSearchArgs builds the knowledgeSearchArgs JSON the
-// composeKnowledgeSearch arm consumes from a query-tool queryArgs: it maps text→
-// query, embeds the query client-side (so the HNSW arm is exercised), and carries
-// the mode + half-life for the temporal rerank. A nil embedder leaves the vector
-// empty (BM25-only via RRF-over-one-list).
-func knowledgeQueryToSearchArgs(ctx context.Context, deps ClientDeps, a queryArgs, mode string, halfLife float64) json.RawMessage {
-	out := map[string]any{
-		"query":  a.Text,
-		"limit":  int(a.Limit),
-		"format": a.Format,
-		"fields": a.Fields,
-		"mode":   mode,
-	}
-	// The query tool's singular `type` maps onto the knowledge-search plural
-	// node-type post-filter when set.
-	if a.Type != "" {
-		out["types"] = []string{a.Type}
-	}
-	if halfLife > 0 {
-		out["half_life"] = halfLife
-	}
-	if emb := deps.Embedder(); emb != nil && a.Text != "" {
-		if vec, err := emb.EmbedBinary(ctx, a.Text); err == nil && len(vec) > 0 {
-			out["query_vector"] = vec
-		}
-	}
-	raw, err := json.Marshal(out)
-	if err != nil {
-		return params0RawForKnowledgeArgs(a.Text)
-	}
-	return raw
-}
-
-// params0RawForKnowledgeArgs is the fail-soft fallback when the args re-marshal
-// fails (should never happen for a string-keyed map) — a minimal {query} payload
-// so the search still runs BM25-only rather than erroring. Uses the typed
-// knowledgeSearchArgs (no `any` map) so the marshal is statically safe.
-func params0RawForKnowledgeArgs(text string) json.RawMessage {
-	raw, err := json.Marshal(knowledgeSearchArgs{Query: text})
-	if err != nil {
-		return json.RawMessage(`{"query":""}`)
-	}
-	return raw
-}
 
 // composeKnowledgeSearch runs the knowledge/default search arm against the
 // CLIENT engines (Manager.Search → RRF fusion) + RETURN_MODE_NODES hydration,
@@ -275,7 +78,10 @@ func params0RawForKnowledgeArgs(text string) json.RawMessage {
 // a missing embedder leaves QueryVector empty and Manager.Search degrades to the
 // BM25 arm via RRF-over-one-list. Returns a rendered ToolResult in the caller's
 // format — the InterceptSearch rerank gate then hydrates + reranks the JSON
-// envelope exactly as it did for the server path.
+// envelope exactly as it did for the server path. Its post-hydrate tail is
+// finishSegmentSearchRender, shared with the registered custom-graph arm so the
+// two segment-search arms cannot drift on filtering, reranking, field projection
+// or the search-mode footer.
 // runKnowledgeOrServerSearch routes the search tail: the knowledge/default arm
 // runs against the CLIENT BM25+HNSW engines (composeKnowledgeSearch →
 // Manager.Search → RRF + RETURN_MODE_NODES hydration). The segment Manager is
@@ -316,7 +122,7 @@ func composeKnowledgeSearch(
 	mgr SegmentSearcher,
 	args json.RawMessage,
 ) kgtools.ToolResult {
-	var a knowledgeSearchArgs
+	var a segmentSearchArgs
 	if err := json.Unmarshal(args, &a); err != nil {
 		return errorResult("knowledge search: decode args: " + err.Error())
 	}
@@ -334,7 +140,16 @@ func composeKnowledgeSearch(
 		k = knowledgeSearchDefaultLimit
 	}
 
-	hits, err := mgr.Search(ctx, kgtypes.GraphKnowledge, knowledgeDefaultName, a.Query, a.QueryVector, k)
+	mode := normalizeSegmentSearchMode(a.Mode)
+	engineText, engineVec := segmentSearchEngineArms(mode, a.Query, a.QueryVector)
+	if mode == "vector" && len(engineVec) == 0 {
+		// Serving this renders zero rows, which a caller reads as "no matches"
+		// when the truth is "this install has no semantic index".
+		return errorResult("knowledge search: mode:vector needs a query embedding, " +
+			"but no embedder is configured — use mode:hybrid or mode:text instead")
+	}
+
+	hits, err := mgr.Search(ctx, kgtypes.GraphKnowledge, knowledgeDefaultName, engineText, engineVec, k)
 	if err != nil {
 		return errorResult("knowledge search: client engine: " + err.Error())
 	}
@@ -344,6 +159,42 @@ func composeKnowledgeSearch(
 		return errorResult("knowledge search: hydrate: " + err.Error())
 	}
 
+	// The render header carries the CALLER's query, not the engine text: under
+	// mode:vector the engine text is empty, but the caller still asked for that
+	// query and the response header is where they look to confirm it.
+	return finishSegmentSearchRender(a.Query, results, a, mode, engineText, engineVec)
+}
+
+// finishSegmentSearchRender is the post-hydrate tail BOTH client-engine segment
+// search arms share: the node-type post-filter, the metadata post-filter, the
+// mode=recent temporal rerank, the format default and the render. Extracted so
+// the knowledge/default arm above and the registered custom-graph arm
+// (composeRegisteredGraphSearch) cannot drift on filtering, reranking, field
+// projection or the search-mode footer — every one of those was a block one arm
+// had and the other did not, for exactly as long as each owned its own tail.
+//
+// query is a SEPARATE parameter rather than a.Query because a search-tool call
+// site supplies a queries[]-merged text that differs from the decoded query
+// field. mode is the ALREADY-NORMALIZED execution mode — normalized once by the
+// caller and reused here, never re-derived, so the two cannot disagree.
+//
+// engineText and engineVec are what actually reached the segment engine, and the
+// footer label is computed from THEM rather than from a.Query/a.QueryVector.
+// That distinction is the whole point: under mode:text the raw QueryVector can
+// still be populated even though the arm dropped it, and under mode:vector the
+// raw Query is non-empty even though the arm emptied the engine text — so
+// re-reading the args would announce a BM25 contribution that never happened.
+//
+// The ONE ordering constraint below is a data dependency: the format default
+// must run before the render that consumes it. The two filters and the rerank
+// commute — both filters are order-preserving subset selections and
+// applyTemporalRerank is a per-row score multiply followed by a STABLE sort — so
+// this order carries no semantics beyond being the order the knowledge arm
+// already had.
+func finishSegmentSearchRender(
+	query string, results []engine.SearchResult, a segmentSearchArgs,
+	mode, engineText string, engineVec []byte,
+) kgtools.ToolResult {
 	// node_types post-filter: the server applied this on the ranked set
 	// (compileSearch Selection.NodeTypes); reproduce it client-side over the
 	// fused+hydrated rows so the type filter still narrows the result.
@@ -351,10 +202,18 @@ func composeKnowledgeSearch(
 		results = filterResultsByNodeTypes(results, a.Types)
 	}
 
-	// mode=recent: apply the client UpdatedAt half-life rerank (BOOST + re-sort)
-	// over the hydrated rows, mirroring the server temporal rerank EXACTLY. The
-	// SEARCH tool leaves Mode empty, so this is a no-op there.
-	if a.Mode == "recent" {
+	// metadata post-filter, for the same reason as the type filter above: a
+	// metadata predicate does not compose with a ranked search server-side,
+	// because the search over-fetches and ranks BEFORE metadata is consulted.
+	if len(a.Meta) > 0 {
+		results = filterResultsByMetadata(results, a.Meta)
+	}
+
+	// The recency arm: apply the client UpdatedAt half-life rerank (BOOST +
+	// re-sort) over the hydrated rows, mirroring the server temporal rerank
+	// EXACTLY. Keyed on the NORMALIZED mode, so the declared temporal spelling
+	// reranks exactly like recent does instead of silently doing nothing.
+	if mode == "recent" {
 		applyTemporalRerank(results, a.HalfLife)
 	}
 
@@ -362,7 +221,8 @@ func composeKnowledgeSearch(
 	if format == "" {
 		format = "text"
 	}
-	return engine.RenderForCaller(a.Query, results, format, a.Fields, "vector+text")
+	return engine.RenderForCaller(query, results, format, a.Fields,
+		segmentSearchModeLabel(engineText != "", len(engineVec) > 0))
 }
 
 // applyTemporalRerank reranks hydrated rows by an UpdatedAt half-life BOOST,
@@ -413,6 +273,44 @@ func filterResultsByNodeTypes(results []engine.SearchResult, types []string) []e
 	filtered := make([]engine.SearchResult, 0, len(results))
 	for _, r := range results {
 		if allow[r.Node.GetType()] {
+			filtered = append(filtered, r)
+		}
+	}
+	return filtered
+}
+
+// filterResultsByMetadata trims hydrated rows to those whose node metadata
+// satisfies every supplied predicate. Mirrors filterResultsByNodeTypes above,
+// and exists for the same reason: a metadata predicate cannot be pushed into a
+// ranked search, because the search ranks before metadata is consulted.
+//
+// Semantics match the metadata predicate the browse path uses and the query
+// schema advertises: a value of "*" requires the key PRESENT AND NON-EMPTY, any
+// other value requires exact equality, and multiple keys are AND'd. An empty
+// filter is a no-op.
+func filterResultsByMetadata(results []engine.SearchResult, meta map[string]string) []engine.SearchResult {
+	if len(meta) == 0 {
+		return results
+	}
+	filtered := make([]engine.SearchResult, 0, len(results))
+	for _, r := range results {
+		nodeMeta := r.Node.GetMetadata()
+		match := true
+		for key, want := range meta {
+			got, present := nodeMeta[key]
+			if want == "*" {
+				if !present || got == "" {
+					match = false
+					break
+				}
+				continue
+			}
+			if got != want {
+				match = false
+				break
+			}
+		}
+		if match {
 			filtered = append(filtered, r)
 		}
 	}

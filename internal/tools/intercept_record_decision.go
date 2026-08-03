@@ -53,6 +53,10 @@ func InterceptRecordDecision(ctx context.Context, deps ClientDeps, params kgtool
 	if params.Name != "record_decision" {
 		return false, kgtools.ToolResult{}
 	}
+	// Above the GraphCaller nil check, for the same reason as hive and assemble.
+	if err := rejectUndeclaredParams("record_decision", "", RecordDecisionToolDef().InputSchema.Properties, params.Arguments); err != nil {
+		return true, errorResult(err.Error())
+	}
 	gc := deps.GraphCaller()
 	if gc == nil {
 		return true, errorResult("record_decision: graph caller unavailable")

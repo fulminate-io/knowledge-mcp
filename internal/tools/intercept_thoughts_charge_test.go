@@ -5,8 +5,11 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 
 	"github.com/stretchr/testify/assert"
@@ -15,6 +18,7 @@ import (
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	clientthought "github.com/fulminate-io/knowledge-mcp/internal/thought"
 	"github.com/fulminate-io/knowledge-mcp/internal/validate"
 )
 
@@ -56,8 +60,9 @@ func TestHandleChargeClient_NonChargeableTarget_Rejected(t *testing.T) {
 
 // TestHandleChargeClient_FindingTarget_Accepted proves the relaxed gate: a charge
 // against a FINDING node succeeds (no IsError, charge id rendered). Mirrors the
-// LowersToCreateBatch success-path scaffolding — seeded mutateIDs + nil GraphClient
-// (interceptTestDeps wires no GraphClient) → the bare-ID tail.
+// LowersToCreateBatch success-path scaffolding. interceptTestDeps supplies the
+// NON-nil fake graph caller, so this takes the full property-render tail; the
+// assertion here is on the charge-id line.
 func TestHandleChargeClient_FindingTarget_Accepted(t *testing.T) {
 	fc := &fakeGraphCaller{
 		queryResponses: map[string]kgtools.ToolResult{
@@ -107,7 +112,8 @@ func TestHandleChargeClient_MissingTarget_NotFound(t *testing.T) {
 // valid charge against a NodeThought parent lowers to a CREATE MutationPlan with
 // the charge NodeBody (type=charge, SymbolName=truncated reasoning, polarity +
 // weight metadata) + EdgeChargedBy (thought→charge) + EdgeEvidencedBy
-// (charge→evidence). GraphClient is nil (test affordance) → the bare-ID tail.
+// (charge→evidence). The seeded fake serves the property recompute, so this
+// takes the full property-render tail; the assertion is on the charge-id line.
 func TestHandleChargeClient_LowersToCreateBatch(t *testing.T) {
 	fc := &fakeGraphCaller{
 		queryResponses: map[string]kgtools.ToolResult{
@@ -176,7 +182,8 @@ func TestHandleChargeClient_NoHitEvidence_RawIDPreserved(t *testing.T) {
 // evidence resolves via outcome (a) (knowledge-hit → raw id) and lands a direct
 // EdgeEvidencedBy edge targeting the thought node — no proxy materialization, no
 // drop. A thought is a knowledge-graph node, so resolveCrossGraphID returns the
-// raw id at intercept_thoughts_charge.go:193-195; this test guards against a
+// resolved node id at the knowledge-hit branch of resolveCrossGraphID (the seed
+// here uses key-equals-Id, so that resolves to the same string); this test guards against a
 // future NodeThought guard that would proxy or drop thought evidence.
 func TestHandleChargeClient_ThoughtEvidence_ResolvesToDirectEdge(t *testing.T) {
 	fc := &fakeGraphCaller{
@@ -238,4 +245,156 @@ func TestTruncateAtWordCreate_RuneCorrect(t *testing.T) {
 	gotSummary := truncateAtWordCreate(bigSummary, validate.SummaryMaxLen)
 	assert.Equal(t, validate.SummaryMaxLen, utf8.RuneCountInString(gotSummary))
 	assert.True(t, utf8.ValidString(gotSummary))
+}
+
+// chargePrefix / chargeFullID model the server's prefix resolution as it
+// presents to this client: a ById query for the SHORT form returns a node whose
+// Id is the FULL 32 chars.
+const (
+	chargePrefix = "8e30f608"
+	chargeFullID = "8e30f608cccccccccccccccccccccccc"
+)
+
+// prefixChargeFake seeds the one-charge fixture used by the resolution tests.
+// The seeded charge deliberately carries NO UpdatedAt: a zero timestamp gives
+// the deterministic neutral recency scalar, so the rendered %.3f property values
+// are fixed rather than clock-dependent.
+func prefixChargeFake(t *testing.T) *fakeGraphCaller {
+	t.Helper()
+	return &fakeGraphCaller{
+		queryResponses: map[string]kgtools.ToolResult{
+			chargePrefix: nodeResultJSON(t, chargeFullID, "thought", nil),
+			chargeFullID: nodeResultJSON(t, chargeFullID, "thought", nil),
+			"c1":         nodeResultJSON(t, "c1", "charge", map[string]string{"polarity": "positive", "weight": "7"}),
+			"ev8":        nodeResultJSON(t, "ev8f0000000000000000000000000000", "finding", nil),
+		},
+		edgesByID: map[string][]*knowledgev1.Edge{
+			chargeFullID: {{Type: string(kgtypes.EdgeChargedBy), FromId: chargeFullID, ToId: "c1"}},
+		},
+		mutateIDs: []string{"charge-t"},
+	}
+}
+
+// TestHandleChargeClient_PrefixResolvesOnce is the reproduction: a charge issued
+// with an 8-char thought prefix must resolve ONCE and key both the written edge
+// and the property readout on the RESOLVED full ID.
+//
+// Pre-fix this fails — the handler keys the edge FromID and the readout on the
+// raw prefix, so the write carries the short form and the property block renders
+// the all-zero fill.
+func TestHandleChargeClient_PrefixResolvesOnce(t *testing.T) {
+	fc := prefixChargeFake(t)
+	res := handleChargeClient(context.Background(), interceptTestDeps{gc: fc}, kgtools.CallToolParams{
+		Name: "thoughts",
+		Arguments: json.RawMessage(`{"operation":"charge","thought":"` + chargePrefix + `",` +
+			`"polarity":"positive","weight":2.0,"reasoning":"prefix resolution","evidence":["ev8"]}`),
+	})
+	body := toolResultText(res)
+	t.Logf("charge response:\n%s", body)
+
+	require.False(t, res.IsError, "the charge must succeed: %s", body)
+	require.Len(t, fc.execMutations, 1, "exactly one CREATE mutation")
+	edges := fc.execMutations[0].GetEdges()
+	require.GreaterOrEqual(t, len(edges), 2, "charged-by + evidenced-by")
+
+	assert.Equal(t, string(kgtypes.EdgeChargedBy), edges[0].GetType())
+	assert.Equal(t, chargeFullID, edges[0].GetFromId(),
+		"the WRITE must key on the RESOLVED id, not the prefix")
+	assert.Equal(t, "ev8f0000000000000000000000000000", edges[1].GetToId(),
+		"the evidence endpoint resolves too")
+
+	assert.Contains(t, body, "Charged: "+chargeFullID+" (thought)")
+	assert.Contains(t, body, "Charges: 1 (positive: 3.5, negative: 0.0)")
+	assert.Contains(t, body, "Valence: 1.000")
+	assert.Contains(t, body, "Magnitude: 1.504")
+	assert.NotContains(t, body, "Charges: 0", "the all-zero fill is the reported symptom")
+
+	// The bench ID extractor takes the FIRST match of an ID-like pattern, so what
+	// protects it is the charge-id line coming FIRST — not the absence of a later
+	// ID substring. Assert the ORDERING property.
+	assert.True(t, strings.HasPrefix(body, "Charge recorded"),
+		"the response must START with the charge-id line")
+	first, _, _ := strings.Cut(body, "\n")
+	assert.Contains(t, first, "charge-t", "the charge id must be on that first line")
+}
+
+// TestHandleChargeClient_AmbiguousPrefixNoWrite is a CHARACTERIZATION guard, not
+// a repro: it passes BEFORE the fix. Observing it green pre-fix is the point —
+// the zero-write contract already holds, so the fix cannot be credited with it.
+func TestHandleChargeClient_AmbiguousPrefixNoWrite(t *testing.T) {
+	fc := prefixChargeFake(t)
+	fc.queryErrors = map[string]error{
+		chargePrefix: errors.New("ambiguous id prefix \"8e30f608\" matches multiple nodes:\n" +
+			"  8e30f608aaaaaaaaaaaaaaaaaaaaaaaa  thought  A\n" +
+			"  8e30f608bbbbbbbbbbbbbbbbbbbbbbbb  thought  B"),
+	}
+	res := handleChargeClient(context.Background(), interceptTestDeps{gc: fc}, kgtools.CallToolParams{
+		Name: "thoughts",
+		Arguments: json.RawMessage(`{"operation":"charge","thought":"` + chargePrefix + `",` +
+			`"polarity":"positive","weight":2.0,"reasoning":"ambiguous"}`),
+	})
+	body := toolResultText(res)
+	t.Logf("charge response:\n%s", body)
+
+	assert.True(t, res.IsError, "an ambiguous prefix must be an error")
+	assert.Contains(t, body, chargePrefix, "the message names the prefix")
+	assert.Contains(t, body, "8e30f608aaaaaaaaaaaaaaaaaaaaaaaa", "the server candidate list is relayed")
+	assert.Contains(t, body, "8e30f608bbbbbbbbbbbbbbbbbbbbbbbb", "both candidates are relayed")
+	require.Empty(t, fc.execMutations, "ZERO writes on an unresolvable target")
+}
+
+// TestHandleChargeClient_MissingIDNoWrite is the catcher for the fail-closed
+// WORDING. Pre-fix it fails on the missing "no charge was recorded" clause —
+// without this assertion that wording would be specified behavior with no
+// verifying criterion.
+func TestHandleChargeClient_MissingIDNoWrite(t *testing.T) {
+	const missing = "deadbeefdeadbeef"
+	fc := prefixChargeFake(t)
+	fc.queryErrors = map[string]error{missing: errors.New("node deadbeefdeadbeef not found")}
+	res := handleChargeClient(context.Background(), interceptTestDeps{gc: fc}, kgtools.CallToolParams{
+		Name: "thoughts",
+		Arguments: json.RawMessage(`{"operation":"charge","thought":"` + missing + `",` +
+			`"polarity":"positive","weight":2.0,"reasoning":"missing"}`),
+	})
+	body := toolResultText(res)
+	t.Logf("charge response:\n%s", body)
+
+	assert.True(t, res.IsError, "a missing id must be an error")
+	assert.Contains(t, body, missing, "the message names the id")
+	assert.Contains(t, body, "no charge was recorded", "the fail-closed wording must be explicit")
+	require.Empty(t, fc.execMutations, "ZERO writes on an unresolvable target")
+}
+
+// TestHandleChargeClient_PropsAgreeWithChargesFor is the FULL-ID half of the
+// read-back agreement: the rendered properties must equal what a direct
+// charges_for read over the same state computes, and the response must NAME the
+// charged node.
+//
+// Pre-fix this fails only on the missing "Charged:" line — with a full 32-char
+// id the raw key and the resolved key are the same string, so the property
+// numbers are already correct. The fake does not fold the newly created charge
+// into its seeded read state, so both sides read the SAME seeded charge set: the
+// claim under test is that the response's LOOKUP KEY is the charged thought, not
+// the arithmetic of the fold.
+func TestHandleChargeClient_PropsAgreeWithChargesFor(t *testing.T) {
+	fc := prefixChargeFake(t)
+	res := handleChargeClient(context.Background(), interceptTestDeps{gc: fc}, kgtools.CallToolParams{
+		Name: "thoughts",
+		Arguments: json.RawMessage(`{"operation":"charge","thought":"` + chargeFullID + `",` +
+			`"polarity":"positive","weight":2.0,"reasoning":"agreement"}`),
+	})
+	body := toolResultText(res)
+	t.Logf("charge response:\n%s", body)
+	require.False(t, res.IsError, "the charge must succeed: %s", body)
+
+	byThought := clientthought.FetchChargesFor(context.Background(), fc, []string{chargeFullID})
+	props := clientthought.ComputePropertiesFromCharges(byThought[chargeFullID], time.Now())
+
+	assert.Contains(t, body, "Charged: "+chargeFullID+" (thought)")
+	assert.Contains(t, body, fmt.Sprintf("Valence: %.3f", props.Valence))
+	assert.Contains(t, body, fmt.Sprintf("Magnitude: %.3f", props.Magnitude))
+	assert.Contains(t, body, fmt.Sprintf("Consistency: %.3f", props.Consistency))
+	assert.Contains(t, body, fmt.Sprintf("Self-trust: %.3f", props.SelfTrust))
+	assert.Contains(t, body, fmt.Sprintf("Charges: %d (positive: %.1f, negative: %.1f)",
+		props.ChargeCount, props.PositiveWeight, props.NegativeWeight))
 }

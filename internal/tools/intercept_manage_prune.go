@@ -5,7 +5,8 @@
 // generic GraphClient.Index RPC (op INDEX_OP_PRUNE) over the resolved target
 // and renders the pruned count. The server does the store work (enumerate
 // tombstones, hard-delete sweep, rebuild + persist) — this handler only lowers
-// the args to one IndexRequest and renders the ack.
+// the args to one IndexRequest, carries the reported ids into the local segment
+// corpus, and renders the ack plus any warning the server attached.
 //
 // Prune is GENERIC across every graph type the server resolves; the only
 // validation here is a non-empty graph (no closed allowlist, no implicit
@@ -16,6 +17,7 @@ package tools
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"time"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
@@ -26,6 +28,13 @@ import (
 // handleClientPrune drives the Index prune op. It requires a non-empty graph,
 // parses the optional `before` cutoff (RFC3339 absolute, else relative window),
 // fires ONE Index RPC, and renders the pruned count.
+//
+// A response carrying a WARNING is a PARTIAL SUCCESS, not a failure: the server
+// completed the sweep and is reporting that something after it degraded (today,
+// the post-commit persist). It is handled loud-but-nonfatal — the ids propagate
+// exactly as on a clean success, because they are just as gone server-side, and
+// the server's text is logged and rendered VERBATIM rather than reworded, since
+// only the server knows what actually degraded.
 func handleClientPrune(ctx context.Context, deps ClientDeps, a manageArgs) kgtools.ToolResult {
 	ix, err := manageIndexer(deps)
 	if err != nil {
@@ -47,7 +56,66 @@ func handleClientPrune(ctx context.Context, deps ClientDeps, a manageArgs) kgtoo
 	if ierr != nil {
 		return errorResult("manage(prune): " + ierr.Error())
 	}
-	return textResult(renderPruneAck(a, resp.GetAffectedCount(), beforeNanos))
+	if w := resp.GetWarning(); w != "" {
+		slog.Warn("manage(prune): the server completed the sweep but reported a degradation",
+			"graph", a.Graph, "name", a.Name, "warning", w)
+	}
+	propagatePrunedToSegments(ctx, deps, a, resp)
+	return textResult(renderPruneAck(a, resp.GetAffectedCount(), beforeNanos, resp.GetWarning()))
+}
+
+// propagatePrunedToSegments carries a completed HARD prune into this client's
+// shipped segment corpus. Unlike a tombstone, a pruned row is gone from the
+// server outright: no later delta or tombstone scan can surface it again, so an
+// id dropped here stays resident in local search results until a full rebuild.
+// That is why the server reports the ids rather than only a count.
+//
+// A server built before the response carried ids returns an empty list. Doing
+// nothing is then exactly the pre-field behavior, which is safe — but silently,
+// so a non-zero count with no ids is logged rather than swallowed.
+//
+// A DEGRADED PRUNE REACHES HERE UNCHANGED, and deliberately so. The server
+// persists AFTER it commits the hard deletes; a failure in that persist returns
+// PARTIAL SUCCESS — the full id set plus a warning — rather than an error,
+// precisely so this function still runs. The rows are gone server-side either
+// way, so the propagation a degraded prune needs is identical to the one a
+// clean prune needs; the warning is the caller's problem to surface, not a
+// reason to skip the work. Branching on it here would recreate the very hole
+// the partial-success envelope exists to close.
+//
+// THE RECORD IS SEEDED BEFORE THE BUCKETS ARE TOUCHED, and that order IS the fix for
+// the other window. Seeding after the re-emit leaves a crash between the two ending
+// with the ids gone from the live buckets, absent from the record, and alive in every
+// shipped blob — so the next L2 import resurrects them permanently, and no scan will
+// ever report them again to repair it. Seeding first costs nothing if the re-emit then
+// fails: the record marks them dead, which is the safe direction.
+func propagatePrunedToSegments(ctx context.Context, deps ClientDeps, a manageArgs, resp *knowledgev1.IndexResponse) {
+	pruned := resp.GetPrunedIds()
+	if len(pruned) == 0 {
+		if affected := resp.GetAffectedCount(); affected > 0 {
+			slog.Warn("manage(prune): the server reported pruned rows but no ids — the local segment corpus keeps those documents until a rebuild",
+				"graph", a.Graph, "name", a.Name, "affected", affected)
+		}
+		return
+	}
+	// The SAME target resolution reEmitDeletedFromSegments performs internally, so the
+	// record, the stamps and the buckets cannot address different corpora.
+	gt, name := deleteSegmentTarget(a.Graph, a.Name)
+	if shipper := deps.SegmentShipper(); shipper != nil {
+		// `pruned` is exactly this window's own reported deletes, which is what the
+		// stamp requires. It precedes the merge so no interleaving can observe an id as
+		// tombstoned-without-a-stamp — an unstamped id reads as sequence zero, so any
+		// queued write for it, including one that began before the prune, would be
+		// reported as a re-creation and rebuilt.
+		shipper.NoteDeletedIDs(gt, name, pruned)
+		// BEST-EFFORT, NEVER FATAL: a completed prune must not be reported as failed
+		// because a local record write failed.
+		if _, _, merr := mergeTombstonesIntoRecord(shipper, gt, name, pruned); merr != nil {
+			slog.Warn("manage(prune): could not record the pruned ids as deleted — a crash before the re-emit ships would resurrect them from a stale imported blob",
+				"graph", a.Graph, "name", a.Name, "ids", len(pruned), "error", merr)
+		}
+	}
+	reEmitDeletedFromSegments(ctx, deps, a.Graph, a.Name, pruned)
 }
 
 // parsePruneBefore converts the `before` arg to an absolute unix-nanos cutoff.
@@ -69,15 +137,23 @@ func parsePruneBefore(before string) (int64, error) {
 	return time.Now().Add(-dur).UnixNano(), nil
 }
 
-// renderPruneAck reports the pruned count + the graph target and cutoff.
-func renderPruneAck(a manageArgs, pruned, beforeNanos int64) string {
+// renderPruneAck reports the pruned count + the graph target and cutoff, and
+// appends the server's warning when the prune completed in a degraded state.
+// The warning text is reproduced VERBATIM: only the server knows what degraded,
+// and a reworded summary would strip the detail an operator needs to decide
+// whether to act.
+func renderPruneAck(a manageArgs, pruned, beforeNanos int64, warning string) string {
 	target := a.Graph
 	if a.Name != "" {
 		target = fmt.Sprintf("%s/%s", a.Graph, a.Name)
 	}
-	if beforeNanos == 0 {
-		return fmt.Sprintf("Pruned %d tombstoned node(s) from %s (all tombstones).", pruned, target)
+	ack := fmt.Sprintf("Pruned %d tombstoned node(s) from %s (all tombstones).", pruned, target)
+	if beforeNanos != 0 {
+		cutoff := time.Unix(0, beforeNanos).UTC().Format(time.RFC3339)
+		ack = fmt.Sprintf("Pruned %d tombstoned node(s) from %s (tombstoned before %s).", pruned, target, cutoff)
 	}
-	cutoff := time.Unix(0, beforeNanos).UTC().Format(time.RFC3339)
-	return fmt.Sprintf("Pruned %d tombstoned node(s) from %s (tombstoned before %s).", pruned, target, cutoff)
+	if warning == "" {
+		return ack
+	}
+	return fmt.Sprintf("%s\n\nWARNING from the server — the prune COMPLETED, this is not a failure: %s", ack, warning)
 }

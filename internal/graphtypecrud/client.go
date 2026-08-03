@@ -108,9 +108,9 @@ func (c *Client) ByName(ctx context.Context, name string) (*knowledgev1.GraphTyp
 }
 
 // Create writes a NEW graph-resident NodeGraphTypeDef via a wire mutate(upsert)
-// call after registration validation. The underlying handleMutateUpsert handler
-// bypasses the create-path validation guards (validateSummary/validateName/
-// findExistingByName) that would otherwise reject the write because
+// call after registration validation. `graph_type_def` is on the engine upsert
+// arm's type allowlist, so the body bypasses the create-path validation guards
+// (summary/name) that would otherwise reject the write because
 // NodeGraphTypeDef is Summarizable()=false and ToNode leaves Summary empty.
 func (c *Client) Create(ctx context.Context, d *knowledgev1.GraphTypeDef) error {
 	return c.upsert(ctx, d, "Create")

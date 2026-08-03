@@ -5,7 +5,10 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -17,11 +20,14 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 )
 
-// etFake routes Execute by plan shape and counts node-set fetches (the timeline
-// one-fetch invariant).
+// etFake routes Execute by plan shape, counts node-set fetches, and records every
+// compiled plan so the page-plan shape can be asserted. Its node-set arm is
+// PAGE-AWARE (see pageOfMatchNodes) — a fake that returned the whole matchNodes
+// slice for every call would make a real keyset drain loop forever.
 type etFake struct {
 	nodeFetches int
 	edgeFetches int
+	plans       []*knowledgev1.QueryPlan
 	edges       []*knowledgev1.Edge
 	idNodes     []knowledgev1.Node // returned for an Ids[] hydrate
 	matchNodes  []knowledgev1.Node // returned for a Match (node-set) fetch
@@ -29,6 +35,7 @@ type etFake struct {
 
 func (f *etFake) exec(_ context.Context, req *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error) {
 	q := req.GetQuery()
+	f.plans = append(f.plans, q)
 	switch {
 	case q.GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_EDGES:
 		f.edgeFetches++
@@ -38,9 +45,34 @@ func (f *etFake) exec(_ context.Context, req *knowledgev1.ExecuteRequest) (*know
 		return resp, nil
 	default:
 		f.nodeFetches++
-		resp := enginetest.ResponseWithNodes(nodePtrs(f.matchNodes)...)
+		resp := enginetest.ResponseWithNodes(nodePtrs(f.pageOfMatchNodes(q))...)
 		return resp, nil
 	}
+}
+
+// pageOfMatchNodes serves matchNodes as a keyset page: everything after the
+// plan's AfterId cursor, truncated to a positive plan Limit. An unset cursor and
+// an unset limit both mean "from the start, all of it" — which is exactly the
+// unbounded shape the bound tests exist to catch.
+func (f *etFake) pageOfMatchNodes(q *knowledgev1.QueryPlan) []knowledgev1.Node {
+	nodes := f.matchNodes
+	if after := q.GetAfterId(); after != "" {
+		idx := -1
+		for i := range nodes {
+			if nodes[i].Id == after {
+				idx = i
+				break
+			}
+		}
+		if idx < 0 {
+			return nil
+		}
+		nodes = nodes[idx+1:]
+	}
+	if lim := int(q.GetLimit()); lim > 0 && len(nodes) > lim {
+		nodes = nodes[:lim]
+	}
+	return nodes
 }
 
 // Execute lets etFake double as a GraphCaller for composeTimeline (which now takes
@@ -115,7 +147,7 @@ func TestInterceptQueryExplainTimeline(t *testing.T) {
 		res := composeTimeline(context.Background(), newETFakeDeps(f), queryArgs{Mode: "timeline", TimeField: "ts"})
 		require.False(t, res.IsError, textBodyTools(res))
 		body := textBodyTools(res)
-		assert.Equal(t, 1, f.nodeFetches, "timeline issues exactly one node-set fetch")
+		assert.Equal(t, 1, f.nodeFetches, "a corpus below one page drains in a single keyset page")
 		assert.Contains(t, body, "## Timeline — knowledge")
 		// Early sorts before Mid before Late.
 		assert.Less(t, indexOf(body, "Early"), indexOf(body, "Mid"))
@@ -139,6 +171,49 @@ func TestInterceptQueryExplainTimeline(t *testing.T) {
 	})
 }
 
+// TestComposeTimeline_KeysetPagedAndCapped asserts the timeline fetch pages with
+// a bounded keyset browse AND that the flat render is capped by default, not
+// only when the caller supplies a limit. 600 nodes with distinct parseable
+// timestamps: an uncapped render emits all 600.
+func TestComposeTimeline_KeysetPagedAndCapped(t *testing.T) {
+	base := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	nodes := make([]knowledgev1.Node, 600)
+	for i := range nodes {
+		nodes[i] = knowledgev1.Node{
+			Id:         fmt.Sprintf("n%04d", i),
+			SymbolName: fmt.Sprintf("N%04d", i),
+			Type:       "finding",
+			Status:     "open",
+			Metadata:   map[string]string{"ts": base.Add(time.Duration(i) * time.Minute).Format(time.RFC3339)},
+		}
+	}
+	f := &etFake{matchNodes: nodes}
+	res := composeTimeline(context.Background(), newETFakeDeps(f), queryArgs{Mode: "timeline", TimeField: "ts"})
+	require.False(t, res.IsError, textBodyTools(res))
+
+	nodePlans := 0
+	for i, p := range f.plans {
+		if p.GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_EDGES {
+			continue
+		}
+		nodePlans++
+		assert.Equal(t, int32(engine.BrowsePageSize), p.GetLimit(), "plan[%d] carries the page limit", i)
+		assert.NotNil(t, p.AfterId, "plan[%d] SETS the keyset cursor (presence selects the keyset browse)", i)
+		assert.True(t, p.GetSkipTotal(), "plan[%d] skips Total", i)
+	}
+	assert.Positive(t, nodePlans, "no node plans recorded — the probe is broken")
+
+	body := textBodyTools(res)
+	rows := 0
+	for line := range strings.SplitSeq(body, "\n") {
+		if strings.HasPrefix(line, "| T+") {
+			rows++
+		}
+	}
+	assert.Equal(t, engine.TimelineRowCapDefault, rows, "the flat render is capped at the default timeline row cap")
+	assert.Contains(t, body, "more node(s) below the earliest", "truncation notice")
+}
+
 // TestRenderExplainTimeline_Golden are the engine renderer goldens.
 func TestRenderExplainTimeline_Golden(t *testing.T) {
 	t.Run("explain", func(t *testing.T) {
@@ -152,7 +227,7 @@ func TestRenderExplainTimeline_Golden(t *testing.T) {
 			{Id: "a", SymbolName: "A", Type: "finding", Status: "open", Metadata: map[string]string{"ts": "2026-01-01T00:00:00Z"}},
 		}, "ts")
 		engine.SortTimelineEntries(entries)
-		got := engine.RenderTimelineFlat("knowledge", "ts", entries)
+		got := engine.RenderTimelineFlat("knowledge", "ts", entries, 1)
 		assert.Contains(t, got, "**field:** `ts`")
 		assert.Contains(t, got, "| T+0s | `A` | finding | open |")
 	})

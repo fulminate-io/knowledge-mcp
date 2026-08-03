@@ -28,6 +28,8 @@ func newReclaimManager(t *testing.T, dir string) (*distManager[mockQuery, mockSt
 // Put op index must precede EVERY Remove op index, and the merged id ends up on
 // disk while every removed id is gone.
 func TestReclaimMergedPutBeforeRemove(t *testing.T) {
+	t.Parallel()
+
 	dm, ic := newReclaimManager(t, t.TempDir())
 
 	// Seed the two constituents on disk (the pre-merge state).
@@ -63,6 +65,8 @@ func TestReclaimMergedPutBeforeRemove(t *testing.T) {
 // Remove — so the constituents survive (a Remove without a durable Put would be a
 // fresh false-prune).
 func TestReclaimMergedEmptyIDSkipsRemoves(t *testing.T) {
+	t.Parallel()
+
 	dm, ic := newReclaimManager(t, t.TempDir())
 	dm.cache.Put("constituent-1", []byte("c1-bytes"))
 
@@ -80,6 +84,8 @@ func TestReclaimMergedEmptyIDSkipsRemoves(t *testing.T) {
 // TestReclaimMergedNoRemovedIsPutOnly pins that a MergeResult with a merged blob
 // but an empty Removed set Puts the merged blob and removes nothing.
 func TestReclaimMergedNoRemovedIsPutOnly(t *testing.T) {
+	t.Parallel()
+
 	dm, ic := newReclaimManager(t, t.TempDir())
 
 	dm.reclaimMerged(searchengine.MergeResult{
@@ -97,6 +103,8 @@ func TestReclaimMergedNoRemovedIsPutOnly(t *testing.T) {
 // disk reclamation: dm.shippedIDs / dm.locallyShipped / dm.resident are NOT
 // mutated (the ship/reconcile paths own that bookkeeping, against Export()).
 func TestReclaimMergedLeavesBookkeepingUntouched(t *testing.T) {
+	t.Parallel()
+
 	dm, _ := newReclaimManager(t, t.TempDir())
 
 	// Seed non-empty bookkeeping so a stray mutation would be observable.

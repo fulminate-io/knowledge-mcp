@@ -17,10 +17,10 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
-// scriptedEdgesFakeCaller answers the match-all edges read over the Execute
-// carrier seam: a RETURN_MODE_EDGES plan with no pivot discriminant, answered
-// from the edges_json carrier. Records every Execute request so tests can verify
-// the bounded 1-Execute contract (no node enumeration, no per-node N+1).
+// scriptedEdgesFakeCaller answers the two reads the bounded log edge fetch
+// issues: a RETURN_MODE_IDS keyset browse over the seeded node ids, then a
+// RETURN_MODE_EDGES pivot page answered from the edges_json carrier. Records
+// every Execute request so tests can verify the read shape (no per-node N+1).
 type scriptedEdgesFakeCaller struct {
 	nodes []knowledgev1.Node
 	edges []*knowledgev1.Edge
@@ -34,16 +34,29 @@ func (f *scriptedEdgesFakeCaller) Call(_ context.Context, _ string, _ json.RawMe
 
 func (f *scriptedEdgesFakeCaller) Execute(_ context.Context, req *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error) {
 	f.execs = append(f.execs, req)
-	if req.GetQuery().GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_EDGES {
+	switch req.GetQuery().GetReturnMode() {
+	case knowledgev1.ReturnMode_RETURN_MODE_EDGES:
 		return &knowledgev1.ExecuteResponse{Edges: f.edges}, nil
+	case knowledgev1.ReturnMode_RETURN_MODE_IDS:
+		// A single page: the fixtures are far smaller than the drain's page
+		// size, so the first short page ends the drain.
+		if req.GetQuery().GetAfterId() != "" {
+			return &knowledgev1.ExecuteResponse{}, nil
+		}
+		ids := make([]string, 0, len(f.nodes))
+		for i := range f.nodes {
+			ids = append(ids, f.nodes[i].Id)
+		}
+		return &knowledgev1.ExecuteResponse{Ids: ids}, nil
 	}
 	resp := enginetest.ResponseWithNodes(nodePtrs(f.nodes)...)
 	return resp, nil
 }
 
-// TestFetchAllLogEdges_OneExecAllMetadata asserts the bounded 1-Execute contract
-// (a single match-all RETURN_MODE_EDGES read, no node enumeration) and the
-// end-to-end metadata round-trip through the edges_json carrier.
+// TestFetchAllLogEdges_OneExecAllMetadata asserts the BOUNDED read shape — an id
+// keyset browse followed by pivot-paged edge reads, each carrying an explicit
+// positive limit — and the end-to-end metadata round-trip through the edges_json
+// carrier. The single unbounded match-all read it used to issue is retired.
 func TestFetchAllLogEdges_OneExecAllMetadata(t *testing.T) {
 	gc := &scriptedEdgesFakeCaller{
 		nodes: []knowledgev1.Node{{Id: "tpl-a"}, {Id: "tpl-b"}, {Id: "chunk-1"}},
@@ -60,7 +73,9 @@ func TestFetchAllLogEdges_OneExecAllMetadata(t *testing.T) {
 	out, err := fetchAllLogEdges(context.Background(), gc, "q-fixture",
 		[]kgtypes.EdgeType{"CORRELATES_WITH", "CONTAINS"})
 	require.NoError(t, err)
-	assert.Len(t, gc.execs, 1, "exactly one Execute call (the match-all edge read), no node enumeration, no N+1")
+	// One id page (short, so the drain stops) plus one edge page for the three
+	// seeded ids — bounded, and still nothing per-node.
+	assert.Len(t, gc.execs, 2, "one id keyset page + one pivot edge page, no per-node N+1")
 	require.Len(t, out, 2)
 
 	corr := &out[0]
@@ -77,26 +92,29 @@ func TestFetchAllLogEdges_OneExecAllMetadata(t *testing.T) {
 	assert.Equal(t, string(kgtypes.EdgeType("CONTAINS")), contains.Type)
 	assert.InDelta(t, 0.0, contains.Confidence, 1e-9, "no edge_metadata → zero defaults")
 
-	// The one Execute is the match-all RETURN_MODE_EDGES read: the edge-type
-	// filter rides, and NO node ids are sent — the empty pivot discriminant is
-	// what makes the plan mean "every edge of the graph".
-	require.Len(t, gc.execs, 1)
-	edgesQ := gc.execs[0].GetQuery()
+	// Read 1 is the id keyset browse; read 2 is the edge page, which names the
+	// drained ids as its pivots and carries an explicit positive limit. Both
+	// bounds are the point: an unlimited plan with no pivot is what was retired.
+	require.Len(t, gc.execs, 2)
+	idsQ := gc.execs[0].GetQuery()
+	assert.Equal(t, knowledgev1.ReturnMode_RETURN_MODE_IDS, idsQ.GetReturnMode())
+	assert.Positive(t, idsQ.GetLimit(), "the id page must carry an explicit positive limit")
+
+	edgesQ := gc.execs[1].GetQuery()
 	assert.Equal(t, knowledgev1.ReturnMode_RETURN_MODE_EDGES, edgesQ.GetReturnMode())
-	assert.Empty(t, edgesQ.GetSelection().GetIds(), "match-all plan must carry no pivot ids")
-	assert.Empty(t, edgesQ.GetIds(), "match-all plan must carry no pivot ids")
-	assert.Empty(t, edgesQ.GetById(), "match-all plan must carry no by-id pivot")
-	assert.Empty(t, edgesQ.GetSelection().GetFromId(), "match-all plan must carry no from_id pivot")
+	assert.ElementsMatch(t, []string{"tpl-a", "tpl-b", "chunk-1"}, edgesQ.GetIds(),
+		"the edge page pivots on the drained node ids")
+	assert.Positive(t, edgesQ.GetLimit(), "the edge page must carry an explicit positive limit")
 	assert.ElementsMatch(t, []string{"CORRELATES_WITH", "CONTAINS"}, edgesQ.GetSelection().GetEdgeTypes())
 }
 
 // TestFetchAllLogEdges_EmptyResponse asserts an empty log graph → no panic,
-// empty slice, still exactly one Execute (the match-all read answers "no edges"
-// itself — there is no node enumeration left to short-circuit on).
+// empty slice, and exactly ONE Execute: the id browse comes back empty, so the
+// edge drain short-circuits without asking for a single page.
 func TestFetchAllLogEdges_EmptyResponse(t *testing.T) {
 	gc := &scriptedEdgesFakeCaller{}
 	out, err := fetchAllLogEdges(context.Background(), gc, "q-empty", nil)
 	require.NoError(t, err)
 	assert.Empty(t, out)
-	assert.Len(t, gc.execs, 1, "one match-all edge read, nothing else")
+	assert.Len(t, gc.execs, 1, "the empty id browse alone — no edge page is requested")
 }

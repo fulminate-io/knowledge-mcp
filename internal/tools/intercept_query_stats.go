@@ -37,6 +37,9 @@ func InterceptQueryStats(ctx context.Context, deps ClientDeps, params kgtools.Ca
 	if a.Mode != "stats" || (a.Graph != "" && a.Graph != "knowledge") {
 		return false, kgtools.ToolResult{}
 	}
+	if err := accountQueryParams(armKnowledgeStats, params.Arguments); err != nil {
+		return true, errorResult(err.Error())
+	}
 	gc := deps.GraphCaller()
 	if gc == nil {
 		return true, errorResult("knowledge: graph client unavailable")

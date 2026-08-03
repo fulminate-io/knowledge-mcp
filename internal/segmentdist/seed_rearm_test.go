@@ -69,6 +69,8 @@ var _ segmentSource = (*failFirstListSource)(nil)
 // lifetime. GREEN after re-arm: the seed only latches on List(0) SUCCESS, so the
 // second ship retries and ships.
 func TestEnsureShippedSeeded_RetriesAfterTransientFailure(t *testing.T) {
+	t.Parallel()
+
 	target := &knowledgev1.GraphSelector{Graph: "code", Repo: "seedrearm"}
 	ctx := context.Background()
 

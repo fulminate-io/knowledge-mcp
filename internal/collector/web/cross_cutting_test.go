@@ -49,8 +49,8 @@ func TestCrossCutting_GithubMaterializer_Constraints(t *testing.T) {
 		// already linked into the knowledge binary).
 		//
 		// smacker/go-tree-sitter is ALSO forbidden: the ast MCP tool that
-		// previously pulled it server-side has been moved client-side
-		// (corrective rework on plan 0a8c4b30). Source files live on the
+		// previously pulled it server-side has been moved client-side.
+		// Source files live on the
 		// client's filesystem; the server has no repo (especially in
 		// Fulminate Cloud remote-server mode), so AST parsing must happen
 		// where the files do. The server keeps only the schema definition

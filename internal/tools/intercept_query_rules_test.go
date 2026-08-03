@@ -112,10 +112,26 @@ func TestInterceptQueryRules_NoMatch(t *testing.T) {
 	assert.Equal(t, want, got)
 }
 
+// browseJSONEnvelope is the {graph, type, results, total} shape the agent
+// graph-explorer BrowseResponse consumes — the contract a format:"json"
+// intercept branch must emit (handleBrowseJSON parity). It lived beside the
+// decisions intercept tests until that claimant was retired; the rules tests
+// are its remaining consumer, so it lives here now.
+type browseJSONEnvelope struct {
+	Graph   string `json:"graph"`
+	Type    string `json:"type"`
+	Total   int    `json:"total"`
+	Results []struct {
+		ID     string `json:"id"`
+		Name   string `json:"name"`
+		Type   string `json:"type"`
+		Status string `json:"status"`
+	} `json:"results"`
+}
+
 // TestInterceptQueryRules_JSON asserts the format:"json" branch returns the
 // {graph, type, results, total} browse envelope (agent graph-explorer contract),
-// while the default (no-format) caller still receives the human markdown. Reuses
-// browseJSONEnvelope defined in intercept_query_decisions_test.go (same package).
+// while the default (no-format) caller still receives the human markdown.
 func TestInterceptQueryRules_JSON(t *testing.T) {
 	gc := seedRulesFixture()
 	deps := &logE2EDeps{gc: gc}

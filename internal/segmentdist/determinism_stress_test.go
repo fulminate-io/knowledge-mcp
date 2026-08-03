@@ -33,14 +33,14 @@ func detStressDocs(n int) []searchengine.Document {
 // shipDeterministicAndExport builds the corpus through a Manager whose embed engine
 // is pinned to the DETERMINISTIC serial builder and returns the single sealed HNSW
 // blob (its content-hash ID + raw Encode bytes). This drives the real
-// Manager.AddAndShip → engine seal → Format.Build → Encode path, not a bare builder.
+// Manager write → engine seal → Format.Build → Encode path, not a bare builder.
 func shipDeterministicAndExport(t *testing.T, docs []searchengine.Document) searchengine.SegmentBlob {
 	t.Helper()
 	_, gc := newSegmentHarness(t)
 	// The embed ship path builds deterministically by default now — no seam to set.
 	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 
-	require.NoError(t, mgr.AddAndShip(context.Background(), kgtypes.GraphKnowledge, "kg", docs))
+	require.NoError(t, mgr.AddAndMarkDirty(context.Background(), kgtypes.GraphKnowledge, "kg", docs))
 
 	exported := mgr.managerFor(kgtypes.GraphKnowledge, "kg").engine.Export()
 	require.Len(t, exported, 1, "1024 docs seal exactly one segment")
@@ -55,6 +55,8 @@ func shipDeterministicAndExport(t *testing.T, docs []searchengine.Document) sear
 // the registry dedups to a single copy at refcount-N. This is what the deterministic
 // builder exists to deliver (and what the segment_rebuild path relies on).
 func TestDeterministicConvergenceAcrossWriters(t *testing.T) {
+	t.Parallel()
+
 	docs := detStressDocs(1024)
 
 	// Two fully independent Managers — distinct fake services, distinct L2 caches.
@@ -72,6 +74,8 @@ func TestDeterministicConvergenceAcrossWriters(t *testing.T) {
 // content hash + bytes equal the first — flushing out any residual run-to-run
 // non-determinism that a single A-vs-B comparison might miss.
 func TestDeterministicConvergenceRepeated(t *testing.T) {
+	t.Parallel()
+
 	docs := detStressDocs(1024)
 
 	first := shipDeterministicAndExport(t, docs)
@@ -86,9 +90,11 @@ func TestDeterministicConvergenceRepeated(t *testing.T) {
 // concurrent builder missed ~0.6% of the time: over the deterministic serial build,
 // every one of 500 indexed probes must recover its OWN node as the top-1 nearest
 // neighbor (exact-match self-recall = 500/500). It drives the deterministic embed
-// ship path (Manager.AddAndShip) and then searches the resident engine with each
+// write + tick path and then searches the resident engine with each
 // indexed vector.
 func TestDeterministicExactTop1Recovery500(t *testing.T) {
+	t.Parallel()
+
 	const n = 500
 	docs := detStressDocs(n)
 	ctx := context.Background()
@@ -96,9 +102,10 @@ func TestDeterministicExactTop1Recovery500(t *testing.T) {
 	_, gc := newSegmentHarness(t)
 	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 
-	// n < MinSegmentDocs(1024): AddAndShip just buffers, so Flush force-seals the
-	// sub-threshold tail into one searchable segment.
-	require.NoError(t, mgr.AddAndShip(ctx, kgtypes.GraphKnowledge, "kg", docs))
+	// n < MinSegmentDocs(1024). The write force-seals the batch and the tick ships
+	// it; the trailing Flush is a no-op on the now-empty buffer and is kept as the
+	// quiescence call the one-shot path makes.
+	seedShipped(t, ctx, mgr, kgtypes.GraphKnowledge, "kg", docs)
 	require.NoError(t, mgr.Flush(ctx, kgtypes.GraphKnowledge, "kg"))
 
 	hit := 0

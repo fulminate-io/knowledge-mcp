@@ -100,6 +100,8 @@ func newReclaimDMOverCache(t *testing.T, cache segmentL2Cache) *distManager[mock
 // case and that no reachable on-disk state has NEITHER the merged blob nor its
 // constituents.
 func TestReclaimCrashSafety(t *testing.T) {
+	t.Parallel()
+
 	constituents, merged := realMergeBlobs(t)
 	docs := vecContentDocs(2)
 	removed := []searchengine.SegmentID{constituents[0].ID, constituents[1].ID}

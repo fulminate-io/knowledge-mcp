@@ -16,8 +16,8 @@ import "log/slog"
 // (this auto-re-arms on a resident rise; the breaker latches until a manual op/restart).
 const coverageSkipMaxStreak = 2
 
-// This file holds the lifecycle-aware publish-gate predicates the embed entry
-// points (AddAndShip/AddAndShipFields/Flush) consult before running a ship/publish
+// This file holds the lifecycle-aware publish-gate predicates the embed ship
+// points (ReEmitDirtyBuckets/Flush) consult before running a ship/publish
 // pass. The gate skips a no-progress publish for sub-threshold unsealed batches:
 // ship/publish runs iff a SEALED unshipped export exists (hasUnshippedExport) OR a
 // prior publish did not land and is pending retry (publishRetryPending). The retry
@@ -55,6 +55,17 @@ func (m *distManager[Q, S]) publishRetryPending() bool {
 	m.shipMu.Lock()
 	defer m.shipMu.Unlock()
 	return m.publishPending
+}
+
+// completedSwapCount is the shipMu-guarded read of the landed-manifest-swap
+// counter. Callers read it BEFORE and AFTER a ship/publish call: a rise means
+// PublishManifest succeeded and the writer's manifest was replaced, while an
+// unchanged count means the publish was skipped (coverage gate, agent 409) even
+// though the call returned a nil error.
+func (m *distManager[Q, S]) completedSwapCount() uint64 {
+	m.shipMu.Lock()
+	defer m.shipMu.Unlock()
+	return m.completedSwaps
 }
 
 // setPublishPending latches the publishPending retry bit under shipMu. Called from

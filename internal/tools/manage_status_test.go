@@ -59,8 +59,11 @@ func (d *cloudStatusDeps) SegmentManager() SegmentSearcher              { return
 func (d *cloudStatusDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
 func (d *cloudStatusDeps) SegmentShipper() SegmentShipper               { return nil }
 func (d *cloudStatusDeps) SegmentPruner() SegmentPruner                 { return nil }
-func (d *cloudStatusDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
-func (d *cloudStatusDeps) PipelineScanner() PipelineScanner             { return nil }
+
+func (d *cloudStatusDeps) SegmentCacheDropper() SegmentCacheDropper { return nil }
+func (d *cloudStatusDeps) SegmentDeleter() SegmentDeleter           { return nil }
+func (d *cloudStatusDeps) SegmentCoverage() SegmentCoverageReader   { return nil }
+func (d *cloudStatusDeps) PipelineScanner() PipelineScanner         { return nil }
 
 func (d *cloudStatusDeps) ClearHealLatch(kgtypes.GraphType, string) {}
 func (d *cloudStatusDeps) ReflectionForcer() ReflectionForcer       { return nil }

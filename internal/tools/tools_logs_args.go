@@ -67,7 +67,6 @@ type queryArgs struct {
 	Fields            []string          `json:"fields,omitempty"`
 	Rows              string            `json:"rows"`
 	Cols              string            `json:"cols"`
-	Overlay           string            `json:"overlay"`
 	Format            string            `json:"format"`
 	Samples           bool              `json:"samples"`
 	EdgeType          []string          `json:"edge_type"`
@@ -111,7 +110,6 @@ type traverseArgs struct {
 	Account             string   `json:"account"`
 	Repo                string   `json:"repo"`
 	Branch              string   `json:"branch"`
-	Overlay             string   `json:"overlay"`
 	IncludeEdgeMetadata bool     `json:"include_edge_metadata"`
 	Format              string   `json:"format"`
 	IncludeTombstones   bool     `json:"include_tombstones"`

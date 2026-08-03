@@ -10,8 +10,8 @@ import "testing"
 // row "Helvetica\tT\t611" mutates to "Helvetica\tT\t999" AND the
 // regenerator is re-run (or the test is run mid-mutation), THIS TEST
 // FAILS — because both .dat files come from the same source and stay
-// byte-identical. The mutation criterion at plan d76acb28 step
-// 90ef422eb5725e809b021a3b8932d21e exercises this dual-failure path.
+// byte-identical. That dual-failure path is exercised by mutating the row
+// and re-running: both this test and the font-package test must go red.
 func TestFixturelibStandard14Widths_AgreesWithFontPackage(t *testing.T) {
 	t.Parallel()
 	widths, err := LoadStandard14Widths()

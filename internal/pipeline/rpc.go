@@ -315,15 +315,16 @@ type updateBatchArgs struct {
 // backing DB or the write lands on the knowledge graph default and the
 // pipeline silently never makes progress.
 //
-// graphName may be overlay-qualified ("repo@branch") when the gap scan read
-// from a branch overlay. We split it on "@": the bare base routes to the
-// instance key (Repo for code) and the branch threads through args.Branch →
-// the Execute Target so the write lands on the SAME overlay layer the scan
-// read from. Without the split the overlay dimension is lost and the write
-// resolves the base graph, failing not_found for overlay-resident nodes (and
-// discarding the already-billed summary/embed on a repeat-billing loop). A
-// bare base name (no "@") leaves Branch empty — base/default-branch writes are
-// unchanged.
+// graphName may be overlay-qualified ("repo@branch", or "default@session-x" for
+// a knowledge session overlay) when the gap scan read from an overlay. We split
+// it on "@" for EVERY family: the bare base routes to the instance key (Repo for
+// code, Name for knowledge, and so on). For the CODE family the branch then
+// threads through args.Branch → the Execute Target so the write lands on the SAME
+// overlay layer the scan read from. Without the split the overlay dimension is
+// lost and the write resolves the base graph, failing not_found for
+// overlay-resident nodes (and discarding the already-billed summary/embed on a
+// repeat-billing loop). A bare base name (no "@") leaves Branch empty —
+// base/default-branch writes are unchanged.
 //
 // Load-bearing perf criterion: this function MUST issue exactly 1 RPC per
 // call. The integration test asserts the wire-client call counter equals
@@ -340,7 +341,15 @@ func writeBatchUpdates(ctx context.Context, c WireClient, gt kgtypes.GraphType, 
 	// "@" (the base/default-branch case). This is the canonical established split
 	// (mirrors composite_db_lifecycle.go / engine_pipeline_scan.go).
 	base, branch, _ := strings.Cut(graphName, "@")
-	args := updateBatchArgs{Operation: "update_batch", Graph: string(gt), Branch: branch, Items: items}
+	args := updateBatchArgs{Operation: "update_batch", Graph: string(gt), Items: items}
+	// Branch is threaded for the CODE family only. resolveCode is the single resolver
+	// arm that reads sel.Branch (Scope(repo@branch) with a base fallback); every other
+	// family discards it, and the server's per-family selector partition rejects a field
+	// the family cannot honor. The Cut above stays unconditional — it is what strips the
+	// "@overlay" suffix off the INSTANCE KEY for every family.
+	if gt == kgtypes.GraphCode {
+		args.Branch = branch
+	}
 	graphsel.ApplyInstanceKey(gt, base, &args.Repo, &args.Account, &args.Name, &args.Language, true)
 	// Compile the update_batch to a MUTATION_KIND_UPDATE_ITEMS MutationPlan and
 	// run it through the Execute seam (the same engine.Compile+Execute shape

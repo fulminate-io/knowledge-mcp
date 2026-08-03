@@ -51,6 +51,11 @@ func TestManageGraphSelector(t *testing.T) {
 	t.Run("logs routes name to Name", func(t *testing.T) {
 		assert.Equal(t, "q123", manageGraphSelector("logs", "q123").GetName())
 	})
+	t.Run("branch ops carry repo and no name", func(t *testing.T) {
+		sel := branchGraphSelector(manageArgs{Name: "myrepo"})
+		assert.Equal(t, "myrepo", sel.GetRepo())
+		assert.Empty(t, sel.GetName())
+	})
 }
 
 // fakeIndexer implements GraphCaller + Indexer (the production graphClientCaller
@@ -64,6 +69,7 @@ type fakeIndexer struct {
 	listGraphsBody string
 	resultJSON     []byte
 	branches       []*knowledgev1.GraphInfo
+	prunedIDs      []string
 	affectedCount  int64
 	indexCalls     atomic.Int64
 }
@@ -109,7 +115,12 @@ func (f *fakeIndexer) Index(_ context.Context, req *knowledgev1.IndexRequest) (*
 	if f.indexErr != nil {
 		return nil, f.indexErr
 	}
-	return &knowledgev1.IndexResponse{ResultJson: f.resultJSON, Branches: f.branches, AffectedCount: f.affectedCount}, nil
+	return &knowledgev1.IndexResponse{
+		ResultJson:    f.resultJSON,
+		Branches:      f.branches,
+		AffectedCount: f.affectedCount,
+		PrunedIds:     f.prunedIDs,
+	}, nil
 }
 
 func (f *fakeIndexer) requests() []*knowledgev1.IndexRequest {
@@ -127,6 +138,28 @@ func manageDeps(ix *fakeIndexer) ClientDeps { return interceptTestDeps{gc: ix} }
 func manageCall(t *testing.T, ix *fakeIndexer, args string) (bool, kgtools.ToolResult) {
 	t.Helper()
 	return InterceptManage(opCtx(), manageDeps(ix), kgtools.CallToolParams{Name: "manage", Arguments: json.RawMessage(args)})
+}
+
+// manageDepsWithDeleter is manageDeps plus a SegmentDeleter, for the arms that
+// carry a completed server-side removal into the shipped segment corpus. A nil
+// deleter is the headless/router-less client, which every other fake keeps.
+func manageDepsWithDeleter(ix *fakeIndexer, del SegmentDeleter) ClientDeps {
+	return interceptTestDeps{gc: ix, deleter: del}
+}
+
+func manageCallWithDeleter(t *testing.T, ix *fakeIndexer, del SegmentDeleter, args string) (bool, kgtools.ToolResult) {
+	t.Helper()
+	return InterceptManage(opCtx(), manageDepsWithDeleter(ix, del), kgtools.CallToolParams{Name: "manage", Arguments: json.RawMessage(args)})
+}
+
+// manageCallWithDeleterAndShipper is the twin that ALSO supplies a SegmentShipper,
+// for the arms that write the persisted tombstone record as well as the buckets.
+func manageCallWithDeleterAndShipper(
+	t *testing.T, ix *fakeIndexer, del SegmentDeleter, ship SegmentShipper, args string,
+) (bool, kgtools.ToolResult) {
+	t.Helper()
+	return InterceptManage(opCtx(), interceptTestDeps{gc: ix, deleter: del, shipper: ship},
+		kgtools.CallToolParams{Name: "manage", Arguments: json.RawMessage(args)})
 }
 
 // ---------------------------------------------------------------------------

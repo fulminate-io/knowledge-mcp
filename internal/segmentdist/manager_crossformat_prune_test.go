@@ -14,7 +14,7 @@ import (
 
 // TestDeterministicShipKeepsBothFormatsResolvable models the REAL post-rebuild
 // state: manage(rebuild_segments) Adds BOTH the deterministic HNSW segments and
-// the BM25 segments for one graph, then FlushDeterministic ships them in one
+// the BM25 segments for one graph, then FinalizeRebuild ships them in one
 // finalize. The server keys blobs by graphKey ONLY (no format dimension), so each
 // engine's List(0) returns BOTH formats' blobs.
 //
@@ -26,18 +26,19 @@ import (
 // test fails-when-absent: with the bug, the require.True(ok) below fails because
 // the HNSW segment was pruned.
 func TestDeterministicShipKeepsBothFormatsResolvable(t *testing.T) {
+	t.Parallel()
+
 	svc, gc := newSegmentHarness(t)
 	ctx := context.Background()
 
 	// searchCorpusN == MinSegmentDocs → exactly one full deterministic chunk per format.
 	docs, targetID, targetVec, _ := searchCorpus(11)
 
-	// Ship via the DETERMINISTIC rebuild path: Add BOTH formats, then the single
-	// serial FlushDeterministic finalize — exactly what RebuildSegments drives.
+	// Ship via the RESET rebuild path: stage the partition carrying BOTH formats, then
+	// the single serial FinalizeRebuild — exactly what RebuildSegments drives.
 	shipper := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
-	require.NoError(t, shipper.AddDeterministic(ctx, kgtypes.GraphKnowledge, "kg", docs))
-	require.NoError(t, shipper.AddFields(ctx, kgtypes.GraphKnowledge, "kg", docs))
-	_, err := shipper.FlushDeterministic(ctx, kgtypes.GraphKnowledge, "kg")
+	require.NoError(t, shipper.StageRebuildPartition(ctx, kgtypes.GraphKnowledge, "kg", docs, docs))
+	_, err := shipper.FinalizeRebuild(ctx, kgtypes.GraphKnowledge, "kg")
 	require.NoError(t, err)
 
 	// BOTH formats must survive on the server — the BM25 ship must NOT prune the
@@ -56,18 +57,20 @@ func TestDeterministicShipKeepsBothFormatsResolvable(t *testing.T) {
 }
 
 // TestEmbedShipKeepsBothFormatsResolvable is the embed-path twin of the
-// deterministic test: AddAndShip (HNSW) + AddAndShipFields (BM25) interleave the
+// deterministic test: the HNSW and BM25 write paths interleave the
 // per-format ships, which is the same cross-format prune exposure. Both formats
 // must survive and the by-id read must resolve.
 func TestEmbedShipKeepsBothFormatsResolvable(t *testing.T) {
+	t.Parallel()
+
 	svc, gc := newSegmentHarness(t)
 	ctx := context.Background()
 
 	docs, targetID, targetVec, _ := searchCorpus(7)
 
 	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
-	require.NoError(t, mgr.AddAndShip(ctx, kgtypes.GraphKnowledge, "kg", docs))
-	require.NoError(t, mgr.AddAndShipFields(ctx, kgtypes.GraphKnowledge, "kg", docs))
+	seedShipped(t, ctx, mgr, kgtypes.GraphKnowledge, "kg", docs)
+	seedShippedFields(t, ctx, mgr, kgtypes.GraphKnowledge, "kg", docs)
 
 	hnsw, bm25 := countShippedByFormat(svc)
 	require.Positive(t, hnsw, "embed HNSW segment must survive the BM25 ship's reconcilePrune")

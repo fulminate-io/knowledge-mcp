@@ -6,7 +6,7 @@ import "testing"
 // collector/pdf/testdata/gen.go. Each test asserts the FontSpec the
 // fixture was built from round-tripped through pdfcpu's writer +
 // reader and our ResolvedFont accessor preserved the distinguishing
-// fields. See plan d76acb28 step 3d913d25.
+// fields.
 
 // TestResolvedFont_TouUnicodeClean: tounicode_clean.pdf has a TrueType
 // font with a /ToUnicode CMap and no /Encoding override. Asserts

@@ -286,11 +286,19 @@ func TestWriteBatchUpdates_PassesGraphContext(t *testing.T) {
 			wantAccount: "acct-42",
 		},
 		{
-			name:      "knowledge non-default routes via name",
+			// The knowledge family is a SINGLETON: it holds one graph, so its
+			// resolver reads no selector name and the server rejects a non-alias
+			// one outright ("graph=knowledge holds ONE graph: name= is a label,
+			// not a selector"). ApplyInstanceKey still assigns the instance key
+			// into args.Name — it is the family-generic mapper and knowledge falls
+			// in its default arm — so the compile step is what drops it, and the
+			// write lands on the one knowledge graph either way. Before that drop
+			// this row expected "personal" on the wire, which the server could
+			// only ever have refused.
+			name:      "knowledge non-default carries no name — the family is a singleton",
 			gt:        kgtypes.GraphKnowledge,
 			graphName: "personal",
 			wantGraph: "knowledge",
-			wantName:  "personal",
 		},
 		{
 			name:      "knowledge default omits name",
@@ -364,6 +372,21 @@ func TestWriteBatchUpdates_OverlayQualifiedGraphName(t *testing.T) {
 		require.Equal(t, "myrepo", req.GetTarget().GetRepo())
 		require.Empty(t, req.GetTarget().GetBranch(),
 			"a bare base name must leave Branch empty — no regression for base writes")
+	})
+
+	t.Run("knowledge overlay default@session-x leaves Branch empty", func(t *testing.T) {
+		f := newFakeWireClient()
+		s := "composed summary"
+		items := []updateBatchItem{{ID: "kn-1", Summary: &s}}
+		require.NoError(t, writeBatchUpdates(context.Background(), f, kgtypes.GraphKnowledge, "default@session-x", items))
+
+		req := f.lastExecRequest()
+		require.NotNil(t, req)
+		require.Equal(t, "knowledge", req.GetTarget().GetGraph())
+		require.Empty(t, req.GetTarget().GetBranch(),
+			"the knowledge resolver reads no Branch — sending one is a field the family cannot honor")
+		require.Empty(t, req.GetTarget().GetName(),
+			"the knowledge singleton's root name is omitted (omitDefaultName), so the Cut's base never lands on Name")
 	})
 }
 

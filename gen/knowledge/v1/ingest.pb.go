@@ -23,6 +23,72 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
+// FinalizeState is the lifecycle of a finalize's background tail.
+type FinalizeState int32
+
+const (
+	FinalizeState_FINALIZE_STATE_UNSPECIFIED FinalizeState = 0
+	// FINALIZE_STATE_RUNNING: the tail has not finished. Keep polling.
+	FinalizeState_FINALIZE_STATE_RUNNING FinalizeState = 1
+	// FINALIZE_STATE_DONE: every part of the finalize completed successfully.
+	FinalizeState_FINALIZE_STATE_DONE FinalizeState = 2
+	// FINALIZE_STATE_FAILED: the tail finished with an error, carried in `error`.
+	// The durable half still committed — a failed tail means follow-up work
+	// (staleness marks, prune) did not complete, not that the collection was lost.
+	FinalizeState_FINALIZE_STATE_FAILED FinalizeState = 3
+	// FINALIZE_STATE_UNKNOWN: this server has no record of the id. Finalize ids are
+	// PROCESS-LOCAL, so a poll that load-balances onto a different replica than the
+	// one that served the Finalize lands here legitimately. A client must NOT read
+	// it as failure — it means "cannot say", and the correct response is to stop
+	// polling and treat completion as unconfirmed rather than broken.
+	FinalizeState_FINALIZE_STATE_UNKNOWN FinalizeState = 4
+)
+
+// Enum value maps for FinalizeState.
+var (
+	FinalizeState_name = map[int32]string{
+		0: "FINALIZE_STATE_UNSPECIFIED",
+		1: "FINALIZE_STATE_RUNNING",
+		2: "FINALIZE_STATE_DONE",
+		3: "FINALIZE_STATE_FAILED",
+		4: "FINALIZE_STATE_UNKNOWN",
+	}
+	FinalizeState_value = map[string]int32{
+		"FINALIZE_STATE_UNSPECIFIED": 0,
+		"FINALIZE_STATE_RUNNING":     1,
+		"FINALIZE_STATE_DONE":        2,
+		"FINALIZE_STATE_FAILED":      3,
+		"FINALIZE_STATE_UNKNOWN":     4,
+	}
+)
+
+func (x FinalizeState) Enum() *FinalizeState {
+	p := new(FinalizeState)
+	*p = x
+	return p
+}
+
+func (x FinalizeState) String() string {
+	return protoimpl.X.EnumStringOf(x.Descriptor(), protoreflect.EnumNumber(x))
+}
+
+func (FinalizeState) Descriptor() protoreflect.EnumDescriptor {
+	return file_knowledge_v1_ingest_proto_enumTypes[0].Descriptor()
+}
+
+func (FinalizeState) Type() protoreflect.EnumType {
+	return &file_knowledge_v1_ingest_proto_enumTypes[0]
+}
+
+func (x FinalizeState) Number() protoreflect.EnumNumber {
+	return protoreflect.EnumNumber(x)
+}
+
+// Deprecated: Use FinalizeState.Descriptor instead.
+func (FinalizeState) EnumDescriptor() ([]byte, []int) {
+	return file_knowledge_v1_ingest_proto_rawDescGZIP(), []int{0}
+}
+
 // CollectChunkRequest carries one chunk of a collection. epoch is minted
 // client-side per collection (monotonic local counter, single-process);
 // every chunk of one collection AND its Finalize share the same epoch.
@@ -292,8 +358,20 @@ func (x *FinalizeRequest) GetClientContext() *ClientContext {
 	return nil
 }
 
+// FinalizeResponse acknowledges the collection. Its return means the DURABLE
+// half of the finalize is committed — the epoch-tombstone sweep that records
+// this collection's deletions — NOT that every follow-up has finished.
+//
+// The server detaches the remainder (container-staleness marking, the
+// tombstone-generation bump, the tombstone prune) to a background task so an
+// O(graph) tail cannot hold the response past an edge proxy's request timeout.
+// finalize_id names that background task; poll FinalizeStatus with it to learn
+// whether the tail succeeded. A server that did all its work in the request
+// still returns an id — it simply reports done immediately — so a client never
+// branches on which kind of server it is talking to.
 type FinalizeResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
+	FinalizeId    string                 `protobuf:"bytes,1,opt,name=finalize_id,json=finalizeId,proto3" json:"finalize_id,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -328,6 +406,120 @@ func (*FinalizeResponse) Descriptor() ([]byte, []int) {
 	return file_knowledge_v1_ingest_proto_rawDescGZIP(), []int{3}
 }
 
+func (x *FinalizeResponse) GetFinalizeId() string {
+	if x != nil {
+		return x.FinalizeId
+	}
+	return ""
+}
+
+// FinalizeStatusRequest asks after a previously returned finalize_id.
+type FinalizeStatusRequest struct {
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	FinalizeId string                 `protobuf:"bytes,1,opt,name=finalize_id,json=finalizeId,proto3" json:"finalize_id,omitempty"`
+	// client_context carries the per-request client provenance. See ClientContext.
+	ClientContext *ClientContext `protobuf:"bytes,2,opt,name=client_context,json=clientContext,proto3" json:"client_context,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FinalizeStatusRequest) Reset() {
+	*x = FinalizeStatusRequest{}
+	mi := &file_knowledge_v1_ingest_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FinalizeStatusRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FinalizeStatusRequest) ProtoMessage() {}
+
+func (x *FinalizeStatusRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_knowledge_v1_ingest_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FinalizeStatusRequest.ProtoReflect.Descriptor instead.
+func (*FinalizeStatusRequest) Descriptor() ([]byte, []int) {
+	return file_knowledge_v1_ingest_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *FinalizeStatusRequest) GetFinalizeId() string {
+	if x != nil {
+		return x.FinalizeId
+	}
+	return ""
+}
+
+func (x *FinalizeStatusRequest) GetClientContext() *ClientContext {
+	if x != nil {
+		return x.ClientContext
+	}
+	return nil
+}
+
+type FinalizeStatusResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	State FinalizeState          `protobuf:"varint,1,opt,name=state,proto3,enum=knowledge.v1.FinalizeState" json:"state,omitempty"`
+	// error is set only when state is FINALIZE_STATE_FAILED.
+	Error         string `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *FinalizeStatusResponse) Reset() {
+	*x = FinalizeStatusResponse{}
+	mi := &file_knowledge_v1_ingest_proto_msgTypes[5]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *FinalizeStatusResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*FinalizeStatusResponse) ProtoMessage() {}
+
+func (x *FinalizeStatusResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_knowledge_v1_ingest_proto_msgTypes[5]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use FinalizeStatusResponse.ProtoReflect.Descriptor instead.
+func (*FinalizeStatusResponse) Descriptor() ([]byte, []int) {
+	return file_knowledge_v1_ingest_proto_rawDescGZIP(), []int{5}
+}
+
+func (x *FinalizeStatusResponse) GetState() FinalizeState {
+	if x != nil {
+		return x.State
+	}
+	return FinalizeState_FINALIZE_STATE_UNSPECIFIED
+}
+
+func (x *FinalizeStatusResponse) GetError() string {
+	if x != nil {
+		return x.Error
+	}
+	return ""
+}
+
 // BatchEdge mirrors store.BatchEdge (pkg/store/db_types.go:11-26) AND the
 // engine.proto BatchEdgeSpec field shape — the CREATE/collector edge payload
 // addressed by slot index OR endpoint ID. Method-free pure-data carrier.
@@ -352,7 +544,7 @@ type BatchEdge struct {
 
 func (x *BatchEdge) Reset() {
 	*x = BatchEdge{}
-	mi := &file_knowledge_v1_ingest_proto_msgTypes[4]
+	mi := &file_knowledge_v1_ingest_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -364,7 +556,7 @@ func (x *BatchEdge) String() string {
 func (*BatchEdge) ProtoMessage() {}
 
 func (x *BatchEdge) ProtoReflect() protoreflect.Message {
-	mi := &file_knowledge_v1_ingest_proto_msgTypes[4]
+	mi := &file_knowledge_v1_ingest_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -377,7 +569,7 @@ func (x *BatchEdge) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BatchEdge.ProtoReflect.Descriptor instead.
 func (*BatchEdge) Descriptor() ([]byte, []int) {
-	return file_knowledge_v1_ingest_proto_rawDescGZIP(), []int{4}
+	return file_knowledge_v1_ingest_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *BatchEdge) GetFromIdx() int32 {
@@ -469,7 +661,7 @@ type FetchCloudSubgraphRequest struct {
 
 func (x *FetchCloudSubgraphRequest) Reset() {
 	*x = FetchCloudSubgraphRequest{}
-	mi := &file_knowledge_v1_ingest_proto_msgTypes[5]
+	mi := &file_knowledge_v1_ingest_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -481,7 +673,7 @@ func (x *FetchCloudSubgraphRequest) String() string {
 func (*FetchCloudSubgraphRequest) ProtoMessage() {}
 
 func (x *FetchCloudSubgraphRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_knowledge_v1_ingest_proto_msgTypes[5]
+	mi := &file_knowledge_v1_ingest_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -494,7 +686,7 @@ func (x *FetchCloudSubgraphRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FetchCloudSubgraphRequest.ProtoReflect.Descriptor instead.
 func (*FetchCloudSubgraphRequest) Descriptor() ([]byte, []int) {
-	return file_knowledge_v1_ingest_proto_rawDescGZIP(), []int{5}
+	return file_knowledge_v1_ingest_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *FetchCloudSubgraphRequest) GetGraphNames() []string {
@@ -533,7 +725,7 @@ type FetchCloudSubgraphResponse struct {
 
 func (x *FetchCloudSubgraphResponse) Reset() {
 	*x = FetchCloudSubgraphResponse{}
-	mi := &file_knowledge_v1_ingest_proto_msgTypes[6]
+	mi := &file_knowledge_v1_ingest_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -545,7 +737,7 @@ func (x *FetchCloudSubgraphResponse) String() string {
 func (*FetchCloudSubgraphResponse) ProtoMessage() {}
 
 func (x *FetchCloudSubgraphResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_knowledge_v1_ingest_proto_msgTypes[6]
+	mi := &file_knowledge_v1_ingest_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -558,7 +750,7 @@ func (x *FetchCloudSubgraphResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FetchCloudSubgraphResponse.ProtoReflect.Descriptor instead.
 func (*FetchCloudSubgraphResponse) Descriptor() ([]byte, []int) {
-	return file_knowledge_v1_ingest_proto_rawDescGZIP(), []int{6}
+	return file_knowledge_v1_ingest_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *FetchCloudSubgraphResponse) GetSlices() []*CloudSubgraphSlice {
@@ -579,7 +771,7 @@ type CloudSubgraphSlice struct {
 
 func (x *CloudSubgraphSlice) Reset() {
 	*x = CloudSubgraphSlice{}
-	mi := &file_knowledge_v1_ingest_proto_msgTypes[7]
+	mi := &file_knowledge_v1_ingest_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -591,7 +783,7 @@ func (x *CloudSubgraphSlice) String() string {
 func (*CloudSubgraphSlice) ProtoMessage() {}
 
 func (x *CloudSubgraphSlice) ProtoReflect() protoreflect.Message {
-	mi := &file_knowledge_v1_ingest_proto_msgTypes[7]
+	mi := &file_knowledge_v1_ingest_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -604,7 +796,7 @@ func (x *CloudSubgraphSlice) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CloudSubgraphSlice.ProtoReflect.Descriptor instead.
 func (*CloudSubgraphSlice) Descriptor() ([]byte, []int) {
-	return file_knowledge_v1_ingest_proto_rawDescGZIP(), []int{7}
+	return file_knowledge_v1_ingest_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *CloudSubgraphSlice) GetGraphName() string {
@@ -657,8 +849,17 @@ const file_knowledge_v1_ingest_proto_rawDesc = "" +
 	"graph_name\x18\x03 \x01(\tR\tgraphName\x12%\n" +
 	"\x0ecurrent_branch\x18\x04 \x01(\tR\rcurrentBranch\x12\x18\n" +
 	"\apromote\x18\x05 \x01(\bR\apromote\x12B\n" +
-	"\x0eclient_context\x18\x06 \x01(\v2\x1b.knowledge.v1.ClientContextR\rclientContext\"\x12\n" +
-	"\x10FinalizeResponse\"\x92\x02\n" +
+	"\x0eclient_context\x18\x06 \x01(\v2\x1b.knowledge.v1.ClientContextR\rclientContext\"3\n" +
+	"\x10FinalizeResponse\x12\x1f\n" +
+	"\vfinalize_id\x18\x01 \x01(\tR\n" +
+	"finalizeId\"|\n" +
+	"\x15FinalizeStatusRequest\x12\x1f\n" +
+	"\vfinalize_id\x18\x01 \x01(\tR\n" +
+	"finalizeId\x12B\n" +
+	"\x0eclient_context\x18\x02 \x01(\v2\x1b.knowledge.v1.ClientContextR\rclientContext\"a\n" +
+	"\x16FinalizeStatusResponse\x121\n" +
+	"\x05state\x18\x01 \x01(\x0e2\x1b.knowledge.v1.FinalizeStateR\x05state\x12\x14\n" +
+	"\x05error\x18\x02 \x01(\tR\x05error\"\x92\x02\n" +
 	"\tBatchEdge\x12\x19\n" +
 	"\bfrom_idx\x18\x01 \x01(\x05R\afromIdx\x12\x15\n" +
 	"\x06to_idx\x18\x02 \x01(\x05R\x05toIdx\x12\x17\n" +
@@ -685,10 +886,17 @@ const file_knowledge_v1_ingest_proto_rawDesc = "" +
 	"graph_name\x18\x01 \x01(\tR\tgraphName\x12\x1d\n" +
 	"\n" +
 	"nodes_json\x18\x02 \x01(\fR\tnodesJson\x12(\n" +
-	"\x05edges\x18\x03 \x03(\v2\x12.knowledge.v1.EdgeR\x05edges2\x9a\x02\n" +
+	"\x05edges\x18\x03 \x03(\v2\x12.knowledge.v1.EdgeR\x05edges*\x9b\x01\n" +
+	"\rFinalizeState\x12\x1e\n" +
+	"\x1aFINALIZE_STATE_UNSPECIFIED\x10\x00\x12\x1a\n" +
+	"\x16FINALIZE_STATE_RUNNING\x10\x01\x12\x17\n" +
+	"\x13FINALIZE_STATE_DONE\x10\x02\x12\x19\n" +
+	"\x15FINALIZE_STATE_FAILED\x10\x03\x12\x1a\n" +
+	"\x16FINALIZE_STATE_UNKNOWN\x10\x042\xf7\x02\n" +
 	"\rIngestService\x12U\n" +
 	"\fCollectChunk\x12!.knowledge.v1.CollectChunkRequest\x1a\".knowledge.v1.CollectChunkResponse\x12I\n" +
-	"\bFinalize\x12\x1d.knowledge.v1.FinalizeRequest\x1a\x1e.knowledge.v1.FinalizeResponse\x12g\n" +
+	"\bFinalize\x12\x1d.knowledge.v1.FinalizeRequest\x1a\x1e.knowledge.v1.FinalizeResponse\x12[\n" +
+	"\x0eFinalizeStatus\x12#.knowledge.v1.FinalizeStatusRequest\x1a$.knowledge.v1.FinalizeStatusResponse\x12g\n" +
 	"\x12FetchCloudSubgraph\x12'.knowledge.v1.FetchCloudSubgraphRequest\x1a(.knowledge.v1.FetchCloudSubgraphResponseB@Z>github.com/fulminate-io/knowledge/gen/knowledge/v1;knowledgev1b\x06proto3"
 
 var (
@@ -703,39 +911,47 @@ func file_knowledge_v1_ingest_proto_rawDescGZIP() []byte {
 	return file_knowledge_v1_ingest_proto_rawDescData
 }
 
-var file_knowledge_v1_ingest_proto_msgTypes = make([]protoimpl.MessageInfo, 8)
+var file_knowledge_v1_ingest_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
+var file_knowledge_v1_ingest_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
 var file_knowledge_v1_ingest_proto_goTypes = []any{
-	(*CollectChunkRequest)(nil),        // 0: knowledge.v1.CollectChunkRequest
-	(*CollectChunkResponse)(nil),       // 1: knowledge.v1.CollectChunkResponse
-	(*FinalizeRequest)(nil),            // 2: knowledge.v1.FinalizeRequest
-	(*FinalizeResponse)(nil),           // 3: knowledge.v1.FinalizeResponse
-	(*BatchEdge)(nil),                  // 4: knowledge.v1.BatchEdge
-	(*FetchCloudSubgraphRequest)(nil),  // 5: knowledge.v1.FetchCloudSubgraphRequest
-	(*FetchCloudSubgraphResponse)(nil), // 6: knowledge.v1.FetchCloudSubgraphResponse
-	(*CloudSubgraphSlice)(nil),         // 7: knowledge.v1.CloudSubgraphSlice
-	(*Node)(nil),                       // 8: knowledge.v1.Node
-	(*ClientContext)(nil),              // 9: knowledge.v1.ClientContext
-	(*Edge)(nil),                       // 10: knowledge.v1.Edge
+	(FinalizeState)(0),                 // 0: knowledge.v1.FinalizeState
+	(*CollectChunkRequest)(nil),        // 1: knowledge.v1.CollectChunkRequest
+	(*CollectChunkResponse)(nil),       // 2: knowledge.v1.CollectChunkResponse
+	(*FinalizeRequest)(nil),            // 3: knowledge.v1.FinalizeRequest
+	(*FinalizeResponse)(nil),           // 4: knowledge.v1.FinalizeResponse
+	(*FinalizeStatusRequest)(nil),      // 5: knowledge.v1.FinalizeStatusRequest
+	(*FinalizeStatusResponse)(nil),     // 6: knowledge.v1.FinalizeStatusResponse
+	(*BatchEdge)(nil),                  // 7: knowledge.v1.BatchEdge
+	(*FetchCloudSubgraphRequest)(nil),  // 8: knowledge.v1.FetchCloudSubgraphRequest
+	(*FetchCloudSubgraphResponse)(nil), // 9: knowledge.v1.FetchCloudSubgraphResponse
+	(*CloudSubgraphSlice)(nil),         // 10: knowledge.v1.CloudSubgraphSlice
+	(*Node)(nil),                       // 11: knowledge.v1.Node
+	(*ClientContext)(nil),              // 12: knowledge.v1.ClientContext
+	(*Edge)(nil),                       // 13: knowledge.v1.Edge
 }
 var file_knowledge_v1_ingest_proto_depIdxs = []int32{
-	8,  // 0: knowledge.v1.CollectChunkRequest.nodes:type_name -> knowledge.v1.Node
-	4,  // 1: knowledge.v1.CollectChunkRequest.edges:type_name -> knowledge.v1.BatchEdge
-	9,  // 2: knowledge.v1.CollectChunkRequest.client_context:type_name -> knowledge.v1.ClientContext
-	9,  // 3: knowledge.v1.FinalizeRequest.client_context:type_name -> knowledge.v1.ClientContext
-	9,  // 4: knowledge.v1.FetchCloudSubgraphRequest.client_context:type_name -> knowledge.v1.ClientContext
-	7,  // 5: knowledge.v1.FetchCloudSubgraphResponse.slices:type_name -> knowledge.v1.CloudSubgraphSlice
-	10, // 6: knowledge.v1.CloudSubgraphSlice.edges:type_name -> knowledge.v1.Edge
-	0,  // 7: knowledge.v1.IngestService.CollectChunk:input_type -> knowledge.v1.CollectChunkRequest
-	2,  // 8: knowledge.v1.IngestService.Finalize:input_type -> knowledge.v1.FinalizeRequest
-	5,  // 9: knowledge.v1.IngestService.FetchCloudSubgraph:input_type -> knowledge.v1.FetchCloudSubgraphRequest
-	1,  // 10: knowledge.v1.IngestService.CollectChunk:output_type -> knowledge.v1.CollectChunkResponse
-	3,  // 11: knowledge.v1.IngestService.Finalize:output_type -> knowledge.v1.FinalizeResponse
-	6,  // 12: knowledge.v1.IngestService.FetchCloudSubgraph:output_type -> knowledge.v1.FetchCloudSubgraphResponse
-	10, // [10:13] is the sub-list for method output_type
-	7,  // [7:10] is the sub-list for method input_type
-	7,  // [7:7] is the sub-list for extension type_name
-	7,  // [7:7] is the sub-list for extension extendee
-	0,  // [0:7] is the sub-list for field type_name
+	11, // 0: knowledge.v1.CollectChunkRequest.nodes:type_name -> knowledge.v1.Node
+	7,  // 1: knowledge.v1.CollectChunkRequest.edges:type_name -> knowledge.v1.BatchEdge
+	12, // 2: knowledge.v1.CollectChunkRequest.client_context:type_name -> knowledge.v1.ClientContext
+	12, // 3: knowledge.v1.FinalizeRequest.client_context:type_name -> knowledge.v1.ClientContext
+	12, // 4: knowledge.v1.FinalizeStatusRequest.client_context:type_name -> knowledge.v1.ClientContext
+	0,  // 5: knowledge.v1.FinalizeStatusResponse.state:type_name -> knowledge.v1.FinalizeState
+	12, // 6: knowledge.v1.FetchCloudSubgraphRequest.client_context:type_name -> knowledge.v1.ClientContext
+	10, // 7: knowledge.v1.FetchCloudSubgraphResponse.slices:type_name -> knowledge.v1.CloudSubgraphSlice
+	13, // 8: knowledge.v1.CloudSubgraphSlice.edges:type_name -> knowledge.v1.Edge
+	1,  // 9: knowledge.v1.IngestService.CollectChunk:input_type -> knowledge.v1.CollectChunkRequest
+	3,  // 10: knowledge.v1.IngestService.Finalize:input_type -> knowledge.v1.FinalizeRequest
+	5,  // 11: knowledge.v1.IngestService.FinalizeStatus:input_type -> knowledge.v1.FinalizeStatusRequest
+	8,  // 12: knowledge.v1.IngestService.FetchCloudSubgraph:input_type -> knowledge.v1.FetchCloudSubgraphRequest
+	2,  // 13: knowledge.v1.IngestService.CollectChunk:output_type -> knowledge.v1.CollectChunkResponse
+	4,  // 14: knowledge.v1.IngestService.Finalize:output_type -> knowledge.v1.FinalizeResponse
+	6,  // 15: knowledge.v1.IngestService.FinalizeStatus:output_type -> knowledge.v1.FinalizeStatusResponse
+	9,  // 16: knowledge.v1.IngestService.FetchCloudSubgraph:output_type -> knowledge.v1.FetchCloudSubgraphResponse
+	13, // [13:17] is the sub-list for method output_type
+	9,  // [9:13] is the sub-list for method input_type
+	9,  // [9:9] is the sub-list for extension type_name
+	9,  // [9:9] is the sub-list for extension extendee
+	0,  // [0:9] is the sub-list for field type_name
 }
 
 func init() { file_knowledge_v1_ingest_proto_init() }
@@ -749,13 +965,14 @@ func file_knowledge_v1_ingest_proto_init() {
 		File: protoimpl.DescBuilder{
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_knowledge_v1_ingest_proto_rawDesc), len(file_knowledge_v1_ingest_proto_rawDesc)),
-			NumEnums:      0,
-			NumMessages:   8,
+			NumEnums:      1,
+			NumMessages:   10,
 			NumExtensions: 0,
 			NumServices:   1,
 		},
 		GoTypes:           file_knowledge_v1_ingest_proto_goTypes,
 		DependencyIndexes: file_knowledge_v1_ingest_proto_depIdxs,
+		EnumInfos:         file_knowledge_v1_ingest_proto_enumTypes,
 		MessageInfos:      file_knowledge_v1_ingest_proto_msgTypes,
 	}.Build()
 	File_knowledge_v1_ingest_proto = out.File

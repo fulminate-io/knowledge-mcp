@@ -94,3 +94,18 @@ Failures need user input (legitimate touch point — design decision).
   </anti-patterns>
 
 </constraint>
+
+## Inline smoke protocol
+
+Test execution that claims live behavior follows the inline smoke protocol
+(defined in full in the implement skill): the minimum post-rebuild battery
+(read paths + write round-trip read back by identifier + processing-stage
+observation), deterministic-identifier create/delete/recreate probes verified
+through both the derived and the by-identifier read paths, probe eligibility
+established before interpretation, adversarial controls on every
+zero/absence/equality check, baseline-vs-treatment asymmetry as the signal,
+confound elimination (build identity, record existence by identifier,
+source-derived intervals, instance/flavor) before classifying any observation
+as a defect, and AMBER — storage-verified but serving-unverified — as a
+first-class result whose only disposition is reporting the asymmetry, never
+declaring green or red.

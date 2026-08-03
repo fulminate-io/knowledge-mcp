@@ -43,6 +43,8 @@ func metaIDs(metas []*knowledgev1.SegmentMetaProto) []string {
 // either side (a renamed tag, a dropped field) fails here rather than silently
 // mis-wiring the agent round-trip.
 func TestSegmentDTOWireContract(t *testing.T) {
+	t.Parallel()
+
 	// (1) Response DTOs decode the agent's on-the-wire JSON.
 	t.Run("presign_batch_response_decodes", func(t *testing.T) {
 		const in = `{"chunks":[{"upload_url":"https://gcs/put","object_path":"segments/a/knowledge/default/hnsw/h1.seg","agent_public_key":"-----PEM-----","expiry":"2026-01-01T00:00:00Z"}]}`
@@ -171,6 +173,8 @@ func TestSegmentDTOWireContract(t *testing.T) {
 // full objects, makes NO fetch/publish call, and returns 3 stamped metas whose ids
 // equal the inputs; each stored object decrypts to the original bytes under Push AAD.
 func TestGCSShipHappyPath(t *testing.T) {
+	t.Parallel()
+
 	b := newFakeSegmentBackend(t)
 	src := newGCSSegmentSource(b, "knowledge", "default", "hnsw")
 
@@ -215,6 +219,8 @@ func TestGCSShipHappyPath(t *testing.T) {
 // ABSENT), the failure is logged, and the other blobs' objects are stored intact —
 // the batch is not aborted and prior state is untouched.
 func TestGCSShipPUTFailureIsFailSafeButNotSilent(t *testing.T) {
+	t.Parallel()
+
 	b := newFakeSegmentBackend(t)
 	b.failPUTForHash("knowledge", "default", "hnsw", "h2")
 
@@ -253,6 +259,8 @@ func TestGCSShipPUTFailureIsFailSafeButNotSilent(t *testing.T) {
 // DocCount from the manifest, Generation 0, Format from the source); a never-published
 // manifest ({found:false}) returns an empty slice + nil error. sinceGen is ignored.
 func TestGCSListFromManifest(t *testing.T) {
+	t.Parallel()
+
 	b := newFakeSegmentBackend(t)
 	src := newGCSSegmentSource(b, "knowledge", "default", "hnsw")
 
@@ -302,6 +310,8 @@ func TestGCSListFromManifest(t *testing.T) {
 // SegmentBlobs whose bytes equal the originals; a per-element ok:false (a missing id)
 // is skipped without failing the batch.
 func TestGCSFetchRoundTrip(t *testing.T) {
+	t.Parallel()
+
 	b := newFakeSegmentBackend(t)
 	src := newGCSSegmentSource(b, "knowledge", "default", "hnsw")
 
@@ -339,6 +349,8 @@ func TestGCSFetchRoundTrip(t *testing.T) {
 
 // TestGCSPruneNoOp: Prune is a client no-op on the GCS path (the agent inline-GCs).
 func TestGCSPruneNoOp(t *testing.T) {
+	t.Parallel()
+
 	src := newGCSSegmentSource(newFakeSegmentBackend(t), "knowledge", "default", "hnsw")
 	n, err := src.Prune([]searchengine.SegmentID{"h1", "h2"})
 	if err != nil || n != 0 {
@@ -351,6 +363,8 @@ func TestGCSPruneNoOp(t *testing.T) {
 // agent 409s and PublishManifest returns a typed *manifestIncompleteError carrying
 // the missing hash and writes no manifest.
 func TestGCSPublishManifestHappyAnd409(t *testing.T) {
+	t.Parallel()
+
 	b := newFakeSegmentBackend(t)
 	src := newGCSSegmentSource(b, "knowledge", "default", "hnsw")
 

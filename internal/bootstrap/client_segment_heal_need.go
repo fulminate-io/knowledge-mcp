@@ -96,28 +96,30 @@ func (c *client) healNeedsRebuild(ctx context.Context, gt kgtypes.GraphType, nam
 //     (resident==0) with embedded nodes present rebuilds REGARDLESS of magnitude. It
 //     is the LOCAL analog of the original floor-LESS zero-segments presence probe
 //     (the "Below the floor only the zero-segments probe heals" rule the floor never
-//     disarmed — see the segmentCoverageFloor doc above). It restores the sub-floor
+//     disarmed — see the tools.SegmentCoverageFloor doc). It restores the sub-floor
 //     zero-presence heal a pure floor-gated ratio would drop: an OSS graph with e.g.
 //     30 embedded and a lost L2 → resident=0, embedded=30<64 → 30 nodes permanently
 //     unsearchable until growth past the floor or a manual rebuild_segments.
 //
-//     NON-FLAPPING IN PRACTICE — but NOT because the rebuild makes resident>0:
-//     tools.RebuildSegments populates the DETERMINISTIC engine (Manager.detManagers,
-//     via AddDeterministic/FlushDeterministic) and ships to L2, NOT the embed manager
-//     that LoadResidentDocCount reads (Manager.managers), and that read is the
-//     l2Loaded-once-guarded load(), so resident stays 0 immediately after a rebuild.
-//     The trigger self-clears when a LATER event raises the embed engine's resident
-//     set: a subsequent embed-drain AddAndShip (normal collect), a process restart
-//     (fresh load()→loadResidentFromL2 imports the shipped L2 set), or the search-side
-//     recover. A search-less re-probe before any of those correctly RE-FIRES the
-//     trigger — a bounded, idempotent no-op churn (RebuildSegments is a content-hash
-//     no-op), which is acceptable.
+//     NON-FLAPPING IN PRACTICE, AND THE REBUILD NOW CLEARS IT DIRECTLY. This paragraph
+//     used to say the opposite — that resident stayed 0 immediately after a rebuild,
+//     because tools.RebuildSegments populated a SECOND, deterministic engine and shipped
+//     to L2 while LoadResidentDocCount read the embed engine. There is one engine per
+//     format now: the reset builds its layer aside and swaps it into the very engine
+//     that read observes, so a landed rebuild raises resident above 0 and the trigger
+//     self-clears on the spot.
+//
+//     A rebuild whose publish did NOT land (the coverage gate or an agent 409, both
+//     nil-error) leaves resident where it was and the trigger correctly re-fires. The
+//     conclusion this paragraph has always carried is unchanged and is what still bounds
+//     that case: the re-probe churn is idempotent, because RebuildSegments over an
+//     unchanged corpus is a content-hash no-op.
 //
 //  2. TINY-GRAPH RATIO NO-FLAP: below the floor the resident/embedded ratio is too
 //     noisy to consult, but a non-empty L2 (resident>0) has already cleared the
 //     one-shot above, so a small HEALTHY graph never churns.
 //
-//  3. RATIO PROBE: resident covering below coverageRatioThreshold of the embedded
+//  3. RATIO PROBE: resident covering below tools.CoverageRatioThreshold of the embedded
 //     corpus marks the pool degenerate.
 //
 // The OSS manage(status) coverage column is now ALSO L2-sourced: with the
@@ -149,11 +151,11 @@ func (c *client) healNeedsRebuildLocal(ctx context.Context, gt kgtypes.GraphType
 	}
 	// 2. Tiny-graph ratio no-flap: a non-empty L2 (resident>0) already cleared the
 	//    one-shot, so a sub-floor healthy graph never churns.
-	if embedded < segmentCoverageFloor {
+	if embedded < tools.SegmentCoverageFloor {
 		return false, nil
 	}
 	// 3. Ratio probe.
-	return float64(resident) < coverageRatioThreshold*float64(embedded), nil
+	return float64(resident) < tools.CoverageRatioThreshold*float64(embedded), nil
 }
 
 // segmentPoolDegenerate reports whether a graph's shipped segment pool is present
@@ -165,8 +167,8 @@ func (c *client) healNeedsRebuildLocal(ctx context.Context, gt kgtypes.GraphType
 // healNeedsRebuild already fetched — no second List), and disarms (returns false)
 // conservatively in three cases so a healthy or ambiguous graph never churns: (1)
 // anyUnknown — at least one shipped HNSW segment has doc_count==0, so coverage is
-// unknowable (migration-storm guard); (2) embedded below segmentCoverageFloor — too
-// small for the ratio to be meaningful; (3) covered at/above coverageRatioThreshold
+// unknowable (migration-storm guard); (2) embedded below tools.SegmentCoverageFloor — too
+// small for the ratio to be meaningful; (3) covered at/above tools.CoverageRatioThreshold
 // × embedded — the pool is healthy.
 func (c *client) segmentPoolDegenerate(
 	ctx context.Context, gt kgtypes.GraphType, name string, snapshot []searchengine.SegmentMeta,
@@ -181,9 +183,9 @@ func (c *client) segmentPoolDegenerate(
 	if err != nil {
 		return false, err
 	}
-	if embedded < segmentCoverageFloor {
+	if embedded < tools.SegmentCoverageFloor {
 		// Small-graph no-flap: too few embedded nodes for the ratio to be meaningful.
 		return false, nil
 	}
-	return float64(covered) < coverageRatioThreshold*float64(embedded), nil
+	return float64(covered) < tools.CoverageRatioThreshold*float64(embedded), nil
 }

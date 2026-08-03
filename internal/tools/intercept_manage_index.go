@@ -213,8 +213,9 @@ func handleClientListBranches(ctx context.Context, deps ClientDeps, a manageArgs
 // branchGraphSelector targets the code graph for branch ops (the only graph type
 // that carries branch overlays via the manage surface), keyed by the injected
 // repo name.
+// The code family selects by repo and carries no name, so the server's per-family selector partition does not reject the call.
 func branchGraphSelector(a manageArgs) *knowledgev1.GraphSelector {
-	return &knowledgev1.GraphSelector{Graph: string(kgtypes.GraphCode), Repo: a.Name, Name: a.Name}
+	return &knowledgev1.GraphSelector{Graph: string(kgtypes.GraphCode), Repo: a.Name}
 }
 
 // renderBranchTable ports the server handleListBranches markdown table. Ranges

@@ -18,6 +18,7 @@ import (
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/projects/render"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	clientthought "github.com/fulminate-io/knowledge-mcp/internal/thought"
@@ -50,12 +51,70 @@ func handleChargesForClient(ctx context.Context, deps ClientDeps, params kgtools
 		return errorResult("charges_for: graph client unavailable")
 	}
 
-	chargesByThought := clientthought.FetchChargesFor(ctx, gc, a.ThoughtIDs)
+	// Resolve BEFORE reading, through the same resolution point the charge write
+	// uses. The resolved slice then feeds ALL THREE consumers below — the fetch,
+	// the json map and the text summary. Rewiring only the fetch would leave the
+	// DEFAULT (text) arm printing the caller's prefix against a zero count, which
+	// is this defect reproduced inside its own fix.
+	resolved, rerr := resolveChargesForIDs(ctx, gc, a.ThoughtIDs)
+	if rerr != "" {
+		return errorResult(rerr)
+	}
+
+	chargesByThought := clientthought.FetchChargesFor(ctx, gc, resolved)
 
 	if a.Format == "json" {
 		return jsonResult(map[string]any{"charges_by_thought": chargesByThought})
 	}
-	return textResult(formatChargesForSummary(a.ThoughtIDs, chargesByThought))
+	return textResult(formatChargesForSummary(resolved, chargesByThought))
+}
+
+// resolveChargesForIDs maps each caller-supplied thought id to its canonical
+// full id, returning the resolved slice and an error message ("" when ok).
+//
+// BOUNDED: an id already 32+ chars is taken verbatim with NO read, mirroring the
+// server write path's verbatim gate, so the common bulk case pays nothing. Only
+// a TRUNCATED id costs one ById probe, and there is no batch alternative — the
+// plural-ids carrier is deliberately not a prefix carrier server-side.
+//
+// The output is keyed by RESOLVED ids so charges_for(prefix) and
+// charges_for(full id) return identical output, and so the key matches the
+// "Charged: <id>" line the charge response prints — one canonical id across the
+// whole charge-then-read-back loop.
+//
+// DELIBERATE ASYMMETRY: a TRUNCATED id that does not resolve is a LOUD error,
+// because there is no usable key to report it under. A FULL id that does not
+// exist stays silently absent from the map — unchanged behavior, and the
+// documented bulk-hydrate contract (missing ids are skipped, not failed). Do not
+// "fix" the second; existing behavior depends on it.
+func resolveChargesForIDs(ctx context.Context, gc GraphCaller, ids []string) ([]string, string) {
+	if len(ids) == 0 {
+		return nil, ""
+	}
+	out := make([]string, 0, len(ids))
+	seen := make(map[string]bool, len(ids))
+	for _, id := range ids {
+		full := id
+		if len(id) < 32 {
+			node, ferr := render.FetchNode(ctx, gc, id)
+			if ferr != nil {
+				return nil, fmt.Sprintf(
+					"charges_for: thought id %s did not resolve - no charges were read: %s", id, ferr.Error())
+			}
+			if node == nil || node.Id == "" {
+				return nil, fmt.Sprintf("charges_for: thought id %s not found - no charges were read", id)
+			}
+			full = node.Id
+		}
+		// De-duplicate so a caller passing both a prefix and the full id of one
+		// thought does not produce a duplicated key and a duplicated hydrate.
+		if seen[full] {
+			continue
+		}
+		seen[full] = true
+		out = append(out, full)
+	}
+	return out, ""
 }
 
 // formatChargesForSummary renders a compact per-thought text summary: for each

@@ -51,7 +51,7 @@ func fastloadVecDocs(prefix string, n int) []searchengine.Document {
 // for a real decodable corpus, covered == resident == N (ShippedSegmentDocCount and
 // ResidentDocCount sum the same sealed segments). Both triggers line up on that N:
 //   - segmentPoolDegenerate TRUE (closure ENTERS load-first): covered N < 0.5*embedded
-//     AND embedded >= segmentCoverageFloor(64). With embedded=300, N=96: 96 < 150 ✓,
+//     AND embedded >= tools.SegmentCoverageFloor(64). With embedded=300, N=96: 96 < 150 ✓,
 //     300 >= 64 ✓.
 //   - ReconcileResidentDegenerate FALSE via the resident>=floor short-circuit (load
 //     REACHES coverage, rebuild skipped): resident N >= residentBackstopFloor(64).
@@ -71,11 +71,12 @@ func TestHealClosure_IntactCorpusLoadsNoRebuild(t *testing.T) {
 	ctx := opCtx()
 
 	// Ship a REAL decodable HNSW corpus of N=96 docs through the SAME router the
-	// consumer segmentMgr loads from. AddAndShip of a sub-MinSegmentDocs(1024) batch
-	// just BUFFERS, so Flush force-seals + ships the 96-doc tail as one real segment.
+	// consumer segmentMgr loads from. The write force-seals the batch whatever its size,
+	// and the re-emit ships it — 96 docs derive a single bucket, so the corpus lands as
+	// one real segment.
 	producer := segmentdist.NewManager(c.router, t.TempDir(), 0, segmentdist.WithSegmentTransport(backend.transportBuilder()))
-	require.NoError(t, producer.AddAndShip(ctx, kgtypes.GraphCode, repo, fastloadVecDocs(repo, corpusN)))
-	require.NoError(t, producer.Flush(ctx, kgtypes.GraphCode, repo))
+	require.NoError(t, producer.AddAndMarkDirty(ctx, kgtypes.GraphCode, repo, fastloadVecDocs(repo, corpusN)))
+	require.NoError(t, producer.ReEmitDirtyBuckets(ctx, kgtypes.GraphCode, repo))
 
 	// The shipped corpus is present (covered == N) but the consumer's live engine has
 	// not loaded it yet (resident 0) — the intact-but-not-resident post-restart state.

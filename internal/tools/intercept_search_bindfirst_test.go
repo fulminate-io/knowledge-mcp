@@ -158,7 +158,12 @@ func TestSearchBM25_UngatedDuringWindow(t *testing.T) {
 	var execHits, embedCalls atomic.Int64
 	gc := newInterceptHarness(t, &execHits, cannedSearchResp(t))
 	deps := &interceptDeps{gc: gc, emb: stubEmbedder{calls: &embedCalls}, pipelineNotReady: true}
-	handled, res := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{"graph": "logs", "name": "q1", "text": "err"}))
+	// `query`, not `text`: the search tool declares `query`; `text` is query's
+	// spelling of the same concept and search now refuses it. Sending `text`
+	// here would not go red — it would go VACUOUS, since a rejection also
+	// satisfies this test's handled-and-no-"daemon still starting" assertions
+	// while no longer exercising the bind-first window at all.
+	handled, res := InterceptSearch(opCtx(), deps, searchParams(t, map[string]any{"graph": "logs", "name": "q1", "query": "err"}))
 	require.True(t, handled, "logs search is handled client-side")
 	if res.IsError {
 		assert.NotContains(t, res.Content[0].Text, "daemon still starting",

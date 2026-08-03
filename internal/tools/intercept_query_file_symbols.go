@@ -60,6 +60,15 @@ func InterceptFileSymbols(ctx context.Context, deps ClientDeps, params kgtools.C
 	switch {
 	case params.Name == "file_symbols":
 		// standalone tool — always ours.
+		//
+		// The standalone arm accounts against FILE_SYMBOLS' OWN schema, and the
+		// query arm below is left to the query gate. Both halves matter: query
+		// declares ~50 params file_symbols does not, so accounting a standalone
+		// call against query's schema would ACCEPT those and drop them silently,
+		// and would name query in a refusal the file_symbols caller has to act on.
+		if err := rejectUndeclaredParams("file_symbols", "", FileSymbolsToolDef().InputSchema.Properties, params.Arguments); err != nil {
+			return true, errorResult(err.Error())
+		}
 	case params.Name == "query" && a.Mode == "file_symbols":
 		// query-mode — map path_prefix(es) → file_path(s).
 		if a.FilePath == "" {
@@ -72,6 +81,9 @@ func InterceptFileSymbols(ctx context.Context, deps ClientDeps, params kgtools.C
 		return false, kgtools.ToolResult{}
 	}
 
+	if err := accountQueryParams(armFileSymbols, params.Arguments); err != nil {
+		return true, errorResult(err.Error())
+	}
 	paths := a.FilePaths
 	if a.FilePath != "" {
 		paths = append([]string{a.FilePath}, paths...)

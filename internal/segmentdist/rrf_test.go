@@ -26,6 +26,8 @@ func hitIDs(hits []searchengine.Hit) []string {
 // lists by sum of 1/(60+rank0+1), keyed by Hit.ID, sorted desc, truncated to k,
 // and a hit ranked high in BOTH lists outranks one ranked high in only one.
 func TestReciprocalRankFusion(t *testing.T) {
+	t.Parallel()
+
 	hit := func(id string) searchengine.Hit { return searchengine.Hit{ID: id, Score: 0} }
 
 	cases := []struct {
@@ -90,6 +92,8 @@ func TestReciprocalRankFusion(t *testing.T) {
 // TestReciprocalRankFusionScoreFormula pins the exact 1/(60+rank+1) contribution
 // so a regression in the damping constant or rank offset is caught.
 func TestReciprocalRankFusionScoreFormula(t *testing.T) {
+	t.Parallel()
+
 	lists := [][]searchengine.Hit{
 		{{ID: "a"}, {ID: "b"}},
 		{{ID: "b"}, {ID: "a"}},

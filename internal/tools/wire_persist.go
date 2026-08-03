@@ -371,19 +371,26 @@ func TraverseDescendants(ctx context.Context, gc GraphCaller, rootID string, edg
 //
 // A separate function (rather than extending TraverseDescendants) keeps
 // the two existing nodes-only callers of TraverseDescendants unchanged.
+//
+// The third return is the response's truncated flag, carried out rather than
+// dropped: a server ceiling engaging mid-walk (the traversal hop clamp, the
+// edge-row cap) yields a PARTIAL subtree that is otherwise indistinguishable
+// from a complete one. Callers render their own output and so cannot route
+// through engine.Render's notice append — they must surface the clamp
+// themselves, or a caller reads a tree with silently missing branches.
 func TraverseDescendantsWithEdges(
 	ctx context.Context,
 	gc GraphCaller,
 	rootID string,
 	edgeType kgtypes.EdgeType,
 	depth int,
-) ([]*knowledgev1.Node, []*knowledgev1.Edge, error) {
+) ([]*knowledgev1.Node, []*knowledgev1.Edge, bool, error) {
 	if gc == nil {
-		return nil, nil, fmt.Errorf("TraverseDescendantsWithEdges: graph caller unavailable")
+		return nil, nil, false, fmt.Errorf("TraverseDescendantsWithEdges: graph caller unavailable")
 	}
 	ex, err := persistExecutor(gc)
 	if err != nil {
-		return nil, nil, fmt.Errorf("TraverseDescendantsWithEdges: %w", err)
+		return nil, nil, false, fmt.Errorf("TraverseDescendantsWithEdges: %w", err)
 	}
 	fwd := true
 	plan := &knowledgev1.QueryPlan{
@@ -399,11 +406,11 @@ func TraverseDescendantsWithEdges(
 		Plan: &knowledgev1.ExecuteRequest_Query{Query: plan},
 	})
 	if err != nil {
-		return nil, nil, fmt.Errorf("TraverseDescendantsWithEdges: %w", err)
+		return nil, nil, false, fmt.Errorf("TraverseDescendantsWithEdges: %w", err)
 	}
 	results, derr := engine.DecodeTraversal(resp)
 	if derr != nil {
-		return nil, nil, fmt.Errorf("TraverseDescendantsWithEdges: decode: %w", derr)
+		return nil, nil, false, fmt.Errorf("TraverseDescendantsWithEdges: decode: %w", derr)
 	}
 	nodes := filterTraversalDescendants(results, rootID)
 	// engine.EdgesFromProto returns a []knowledgev1.Edge value slice;
@@ -414,7 +421,7 @@ func TraverseDescendantsWithEdges(
 	for i := range edgeVals {
 		edges[i] = &edgeVals[i]
 	}
-	return nodes, edges, nil
+	return nodes, edges, resp.GetTruncated(), nil
 }
 
 // filterTraversalDescendants applies the skip-root / skip-empty-ID filter over a

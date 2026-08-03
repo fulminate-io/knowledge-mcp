@@ -15,6 +15,8 @@ import (
 // id returns (nil,false); and a fresh cache over the same dir Gets a prior id
 // (restart re-load from disk).
 func TestDiskSegmentCachePutGet(t *testing.T) {
+	t.Parallel()
+
 	dir := t.TempDir()
 	c := newDiskSegmentCache(dir, 0) // unbounded
 
@@ -36,6 +38,8 @@ func TestDiskSegmentCachePutGet(t *testing.T) {
 // TestDiskSegmentCacheLRUEviction verifies Put past the byte cap evicts the
 // least-recently-used entry and keeps the most-recently-used.
 func TestDiskSegmentCacheLRUEviction(t *testing.T) {
+	t.Parallel()
+
 	dir := t.TempDir()
 	// Cap at 20 bytes; each blob is 10 bytes → at most 2 resident.
 	c := newDiskSegmentCache(dir, 20)
@@ -65,6 +69,8 @@ func TestDiskSegmentCacheLRUEviction(t *testing.T) {
 // passes is evicted explicitly (not left to orphan until LRU). A Remove of an
 // absent id is a no-op.
 func TestDiskSegmentCacheRemove(t *testing.T) {
+	t.Parallel()
+
 	dir := t.TempDir()
 	c := newDiskSegmentCache(dir, 0) // unbounded — LRU never fires, so Remove is the only eviction
 
@@ -90,6 +96,8 @@ func TestDiskSegmentCacheRemove(t *testing.T) {
 // (set-equal, recovered by scanExisting); a Removed id drops from Keys() and a
 // Put id appears — proving Keys() tracks the live index, not a one-shot disk scan.
 func TestDiskSegmentCacheKeys(t *testing.T) {
+	t.Parallel()
+
 	dir := t.TempDir()
 	seed := newDiskSegmentCache(dir, 0)
 	seed.Put("seg-a", []byte("blob-a"))

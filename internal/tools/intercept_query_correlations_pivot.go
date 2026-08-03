@@ -23,12 +23,51 @@ import (
 // handleGenericCorrelations (tools_query_correlations.go) and handleGenericPivot
 // (tools_query_pivot.go) recipes over generic Execute primitives.
 //
-// BOUNDED-CONSTANT (correlations): the server walks every node then per-node
-// IterEdges (N edge-iterations). The client issues exactly TWO Execute calls —
-// ONE node-set fetch (Match empty, Limit 0, RETURN_MODE_NODES) and ONE
-// RETURN_MODE_EDGES over the collected ids[] (Forward=true → outgoing edges,
-// matching the server's per-node OutgoingEdges loop) — never a per-node edge
-// fetch (RETURN_MODE_EDGES ids[] node-set form).
+// BOUNDED PAYLOAD (correlations). The earlier contract here was a CALL-COUNT
+// one — "exactly two Executes" — which was true while the payload was unbounded,
+// and the payload is what killed the session: a Limit-0 whole-graph node hydrate
+// measured at 175.1 MB plus every one of the graph's 216,109 edges at 20.4 MB.
+// The contract is now measured in bytes, not calls:
+//
+//   - ONE match-all RETURN_MODE_EDGES read bounded by engine.CorrelationsEdgeScanCap
+//     (~5 MB at the measured ~99 bytes/edge), with edge_type pushed server-side.
+//   - The whole-graph node hydrate is GONE. Names come from ONE bulk ids[] hydrate
+//     over only the endpoints of the rows that survive the cap.
+//   - Rows rendered are capped (correlationRowCap), and a capped scan is reported
+//     as a SAMPLE — the server's match-all walk is unordered, so a truncated read
+//     is an arbitrary subset rather than a prefix.
+//
+// OLD-CLIENT CONTRACT, the non-obvious half of the design: the server caps the
+// edges arm only on a POSITIVE plan Limit — limit=0 still means UNLIMITED
+// (cmd/knowledge-server/internal/bootstrap/engine_edges.go
+// collectEdgesForReturnMode), which is what keeps every pre-existing whole-graph
+// edge reader — topology's full-graph load, tools_logs_wire_fetch_edges.go
+// fetchAllLogEdges — working across a rolling deploy.
+//
+// PER-MODE BOUNDEDNESS VERDICTS for the whole non-logs composite family, recorded
+// here so the sibling sweep is complete in one place:
+//
+//   - correlations — BOUNDED on every axis, as above: one capped match-all edge
+//     read, an endpoint-only hydrate bounded by 2x the row cap, and a render
+//     capped at engine.CorrelationsRowCapDefault/Max with a SAMPLE notice when the
+//     scan cap engaged (the walk ranges an unordered *xsync.Map,
+//     cmd/knowledge-server/internal/store/graph_graph.go:58).
+//   - pivot — BOUNDED. Keyset pages of engine.BrowsePageSize streamed into
+//     engine.PivotAccumulator (nodeSetPage below); the render was already capped
+//     at 20x20 by capPivotKeys (engine/render_correlations_pivot.go).
+//   - pivot text-seed arm — ALREADY BOUNDED before this ticket, by
+//     knowledgeSearchDefaultLimit (pivotSeedSearchClient below).
+//   - timeline — BOUNDED. The same keyset pages plus a top-K retention of
+//     engine.TimelineRowCapDefault/Max, render capped with a truncation notice
+//     (intercept_query_explain_timeline.go).
+//   - explain — BOUNDED, UNCHANGED BY THIS TICKET. Both forms pivot on a single
+//     node id (fetchNodeEdges sends ById) and hydrate only that node's edge
+//     endpoints: O(degree of one node), never graph cardinality. The census
+//     classifier exempts by-id plans, which is why explain never appeared on the
+//     survivor list.
+//   - metadata_stats — BOUNDED, and out of this file: a server-side aggregate over
+//     the MetadataStats RPC with no node enumeration at all
+//     (intercept_query_metadata_stats_topology.go).
 
 // InterceptQueryCorrelationsPivot claims query(mode in {correlations,pivot}) for
 // non-logs graphs.
@@ -52,40 +91,26 @@ func InterceptQueryCorrelationsPivot(ctx context.Context, deps ClientDeps, param
 	}
 
 	if a.Mode == "correlations" {
+		if err := accountQueryParams(armCorrelations, params.Arguments); err != nil {
+			return true, errorResult(err.Error())
+		}
 		return true, composeCorrelations(ctx, gc.Execute, a)
+	}
+	if err := accountQueryParams(armPivot, params.Arguments); err != nil {
+		return true, errorResult(err.Error())
 	}
 	return true, composePivot(ctx, deps, a)
 }
 
-// composeCorrelations issues the bounded two-Execute recipe and renders.
+// composeCorrelations issues the bounded recipe — one capped match-all edge read
+// plus one endpoint-only hydrate — and renders.
 func composeCorrelations(ctx context.Context, exec engine.ExecuteFn, a queryArgs) kgtools.ToolResult {
 	label := domainGraphLabel(a)
 	target := domainTarget(a)
 
-	// (1) ONE node-set fetch (Match empty, Limit 0).
-	nodesResp, err := exec(ctx, &knowledgev1.ExecuteRequest{
-		Plan:   &knowledgev1.ExecuteRequest_Query{Query: nodeSetPlan(a.IncludeTombstones)},
-		Target: target,
-	})
+	rows, total, scanCapped, err := fetchCorrelationRows(ctx, exec, target, a)
 	if err != nil {
 		return errorResult(fmt.Sprintf("correlations fetch failed: %v", err))
-	}
-	nodes, derr := engine.DecodeNodes(nodesResp)
-	if derr != nil {
-		return errorResult("correlations decode failed: " + derr.Error())
-	}
-	nameByID := make(map[string]*knowledgev1.Node, len(nodes))
-	ids := make([]string, 0, len(nodes))
-	for _, n := range nodes {
-		nameByID[n.Id] = n
-		ids = append(ids, n.Id)
-	}
-
-	// (2) ONE RETURN_MODE_EDGES over the collected ids[] (outgoing, matching the
-	// server per-node OutgoingEdges loop). Never a per-node edge fetch.
-	rows, eerr := fetchCorrelationRows(ctx, exec, target, ids, nameByID, a)
-	if eerr != nil {
-		return errorResult(fmt.Sprintf("correlations fetch failed: %v", eerr))
 	}
 	if len(rows) == 0 {
 		filterMsg := "any edge type"
@@ -94,55 +119,48 @@ func composeCorrelations(ctx context.Context, exec engine.ExecuteFn, a queryArgs
 		}
 		return textResult(engine.RenderCorrelationsEmpty(label, filterMsg))
 	}
-	sort.Slice(rows, func(i, j int) bool {
-		if rows[i].Edge.Confidence != rows[j].Edge.Confidence {
-			return rows[i].Edge.Confidence > rows[j].Edge.Confidence
-		}
-		if rows[i].Edge.FromId != rows[j].Edge.FromId {
-			return rows[i].Edge.FromId < rows[j].Edge.FromId
-		}
-		return rows[i].Edge.ToId < rows[j].Edge.ToId
-	})
-	return textResult(engine.RenderCorrelations(label, rows))
+	return textResult(engine.RenderCorrelations(label, rows, total, scanCapped))
 }
 
-// fetchCorrelationRows issues the single bulk RETURN_MODE_EDGES Execute over the
-// node-id set, filters by edge_type (client-side, mirroring the server typeSet),
-// and shapes the rows. An empty id set yields no rows (no Execute).
-func fetchCorrelationRows(ctx context.Context, exec engine.ExecuteFn, target *knowledgev1.GraphSelector, ids []string, nameByID map[string]*knowledgev1.Node, a queryArgs) ([]engine.CorrelationEdgeRow, error) {
-	if len(ids) == 0 {
-		return nil, nil
-	}
-	forward := true
+// fetchCorrelationRows issues ONE match-all RETURN_MODE_EDGES Execute capped at
+// engine.CorrelationsEdgeScanCap, shapes the surviving edges into rows, sorts by
+// confidence desc, truncates to the row cap, and hydrates only the endpoints of
+// the rows that survive. Returns the capped rows, the PRE-CAP row total, and
+// whether the server truncated the scan.
+func fetchCorrelationRows(ctx context.Context, exec engine.ExecuteFn, target *knowledgev1.GraphSelector, a queryArgs) ([]engine.CorrelationEdgeRow, int, bool, error) {
 	resp, err := exec(ctx, &knowledgev1.ExecuteRequest{
-		Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
-			Ids:               ids,
-			Forward:           &forward,
-			ReturnMode:        knowledgev1.ReturnMode_RETURN_MODE_EDGES,
-			IncludeTombstones: a.IncludeTombstones,
-		}},
+		Plan:   &knowledgev1.ExecuteRequest_Query{Query: matchAllEdgesPlan(a.EdgeType, a.IncludeTombstones)},
 		Target: target,
 	})
 	if err != nil {
-		return nil, err
+		return nil, 0, false, err
 	}
 	edges, derr := engine.DecodeEdges(resp)
 	if derr != nil {
-		return nil, derr
+		return nil, 0, false, derr
 	}
+	// Measured on the DECODED slice BEFORE the client-side type filter: that is
+	// the count the server actually returned, and it truncates at exactly the cap.
+	// `>=` rather than `==` so a future server that over-delivers still reports
+	// honestly. A graph holding exactly the cap's worth of edges reports capped
+	// when nothing was dropped — the SAFE direction (an over-cautious sample
+	// warning, never a silently wrong ranking).
+	scanCapped := len(edges) >= engine.CorrelationsEdgeScanCap
+
+	// The type filter is pushed server-side via the plan's Selection; this
+	// client-side pass is belt-and-braces over the same as-given comparison.
 	typeSet := correlationEdgeTypeSet(a.EdgeType)
-	var rows []engine.CorrelationEdgeRow
+	rows := make([]engine.CorrelationEdgeRow, 0, len(edges))
 	for i := range edges {
 		e := &edges[i]
 		if typeSet != nil && !typeSet[e.Type] {
 			continue
 		}
-		fromName, fromType := correlationEndpoint(e.FromId, nameByID)
-		toName, toType := correlationEndpoint(e.ToId, nameByID)
 		// Construct the row as a fresh composite literal directly into append,
 		// building the embedded Edge field-by-field. A `buildRow(...)` helper that
 		// returned the row by value would copylocks the proto MessageState on the
-		// return + append; an in-place fresh literal is lock-clean.
+		// return + append; an in-place fresh literal is lock-clean. Names are
+		// filled after the cap, by hydrateCorrelationEndpoints.
 		rows = append(rows, engine.CorrelationEdgeRow{
 			Edge: knowledgev1.Edge{
 				FromId:        e.FromId,
@@ -154,13 +172,85 @@ func fetchCorrelationRows(ctx context.Context, exec engine.ExecuteFn, target *kn
 				Evidence:      e.Evidence,
 				LastValidated: e.LastValidated,
 			},
-			FromName: fromName,
-			FromType: fromType,
-			ToName:   toName,
-			ToType:   toType,
 		})
 	}
-	return rows, nil
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].Edge.Confidence != rows[j].Edge.Confidence {
+			return rows[i].Edge.Confidence > rows[j].Edge.Confidence
+		}
+		if rows[i].Edge.FromId != rows[j].Edge.FromId {
+			return rows[i].Edge.FromId < rows[j].Edge.FromId
+		}
+		return rows[i].Edge.ToId < rows[j].Edge.ToId
+	})
+	total := len(rows)
+	if rowCap := correlationRowCap(a); len(rows) > rowCap {
+		rows = rows[:rowCap]
+	}
+	hydrateCorrelationEndpoints(ctx, exec, target, rows)
+	return rows, total, scanCapped, nil
+}
+
+// matchAllEdgesPlan builds the capped match-all edge read. Carrying NO
+// Ids/ById/FromId is what selects EdgeIterRequest.AllEdges server-side; Forward
+// is left UNSET because Direction is inert under AllEdges, so setting it would
+// be a false signal. edge_types ride the plan so the filter is applied at the
+// source (as-given, byte-identical to the client's own comparison).
+func matchAllEdgesPlan(edgeTypes []string, includeTombstones bool) *knowledgev1.QueryPlan {
+	plan := &knowledgev1.QueryPlan{
+		ReturnMode:        knowledgev1.ReturnMode_RETURN_MODE_EDGES,
+		IncludeTombstones: includeTombstones,
+		Limit:             int32(engine.CorrelationsEdgeScanCap),
+	}
+	if len(edgeTypes) > 0 {
+		plan.Selection = &knowledgev1.Selection{EdgeTypes: edgeTypes}
+	}
+	return plan
+}
+
+// correlationRowCap resolves how many rows to RENDER. Distinct from
+// engine.CorrelationsEdgeScanCap, which caps how many edges are SCANNED and is
+// what the plan's Limit field carries — the two must not be conflated.
+func correlationRowCap(a queryArgs) int {
+	if l := int(a.Limit); l > 0 {
+		return min(l, engine.CorrelationsRowCapMax)
+	}
+	return engine.CorrelationsRowCapDefault
+}
+
+// hydrateCorrelationEndpoints fills the from/to names and types of the capped
+// rows via ONE bulk ids[] Execute over their distinct endpoints — at most
+// 2*rowCap ids, never the whole graph. Same idiom as renderExplainWithNames
+// (intercept_query_explain_timeline.go). A failed hydrate is not fatal: the rows
+// keep their raw ids, matching correlationEndpoint's own fallback.
+func hydrateCorrelationEndpoints(ctx context.Context, exec engine.ExecuteFn, target *knowledgev1.GraphSelector, rows []engine.CorrelationEdgeRow) {
+	idSet := make(map[string]struct{}, len(rows)*2)
+	for i := range rows {
+		idSet[rows[i].Edge.FromId] = struct{}{}
+		idSet[rows[i].Edge.ToId] = struct{}{}
+	}
+	ids := make([]string, 0, len(idSet))
+	for id := range idSet {
+		ids = append(ids, id)
+	}
+	nameByID := map[string]*knowledgev1.Node{}
+	if len(ids) > 0 {
+		resp, err := exec(ctx, &knowledgev1.ExecuteRequest{
+			Plan:   &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{Ids: ids}},
+			Target: target,
+		})
+		if err == nil {
+			if nodes, derr := engine.DecodeNodes(resp); derr == nil {
+				for _, n := range nodes {
+					nameByID[n.Id] = n
+				}
+			}
+		}
+	}
+	for i := range rows {
+		rows[i].FromName, rows[i].FromType = correlationEndpoint(rows[i].Edge.FromId, nameByID)
+		rows[i].ToName, rows[i].ToType = correlationEndpoint(rows[i].Edge.ToId, nameByID)
+	}
 }
 
 func correlationEdgeTypeSet(edgeTypes []string) map[string]bool {
@@ -183,8 +273,8 @@ func correlationEndpoint(id string, nameByID map[string]*knowledgev1.Node) (stri
 	return id, ""
 }
 
-// composePivot validates rows/cols, fetches the candidate node set, builds the
-// matrix, and renders. Port of handleGenericPivot.
+// composePivot validates rows/cols, folds the candidate node set into the matrix
+// one page at a time, and renders. Port of handleGenericPivot.
 func composePivot(ctx context.Context, deps ClientDeps, a queryArgs) kgtools.ToolResult {
 	if a.Rows == "" || a.Cols == "" {
 		return errorResult("pivot requires rows and cols when graph is not logs")
@@ -192,46 +282,63 @@ func composePivot(ctx context.Context, deps ClientDeps, a queryArgs) kgtools.Too
 	if a.Rows == a.Cols {
 		return errorResult(fmt.Sprintf("rows and cols must differ (both were %q)", a.Rows))
 	}
-	nodes, err := pivotFetchNodesClient(ctx, deps, a)
-	if err != nil {
+	// Built AFTER validation so an invalid request still costs zero Executes.
+	acc := engine.NewPivotAccumulator(a.Rows, a.Cols)
+	if err := pivotFetchNodesClient(ctx, deps, a, acc.Add); err != nil {
 		return errorResult(fmt.Sprintf("pivot fetch failed: %v", err))
 	}
-	m := engine.BuildPivotMatrix(nodes, a.Rows, a.Cols)
-	return textResult(engine.RenderPivotMatrix(domainGraphLabel(a), m))
+	return textResult(engine.RenderPivotMatrix(domainGraphLabel(a), acc.Finish()))
 }
 
-// pivotFetchNodesClient pulls the candidate node set: by type (Match), by text
-// (the CLIENT segment engine — mgr.Search + bulk hydrate, NOT a server
-// RETURN_MODE_SEARCH), or every node (Match empty) — all Limit 0 (no cap; a
-// truncated pivot would mislead). BuildPivotMatrix consumes nodes, not ranked
-// scores, so the seed search just needs the candidate node set.
-func pivotFetchNodesClient(ctx context.Context, deps ClientDeps, a queryArgs) ([]*knowledgev1.Node, error) {
+// pivotFetchNodesClient streams the candidate node set to onPage: by type or
+// every node (ONE bounded keyset drain, differing only in the node-type string —
+// an empty type matches every node), or by text (the CLIENT segment engine —
+// mgr.Search + bulk hydrate, NOT a server RETURN_MODE_SEARCH), which is already
+// bounded by knowledgeSearchDefaultLimit and arrives as a single batch.
+//
+// Streaming rather than returning a slice is the bound: neither the pivot matrix
+// nor the timeline top-K needs the whole node set at once, so no caller holds it.
+func pivotFetchNodesClient(ctx context.Context, deps ClientDeps, a queryArgs, onPage func([]*knowledgev1.Node)) error {
 	gc := deps.GraphCaller()
 	target := domainTarget(a)
-	switch {
-	case a.Type != "":
+	if a.Text != "" {
+		nodes, err := pivotSeedSearchClient(ctx, deps, a)
+		if err != nil {
+			return err
+		}
+		onPage(nodes)
+		return nil
+	}
+	return engine.DrainKeysetPagesFunc(func(afterID string) ([]*knowledgev1.Node, error) {
+		cursor := afterID
 		resp, err := gc.Execute(ctx, &knowledgev1.ExecuteRequest{
-			Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
-				Selection:         &knowledgev1.Selection{NodeType: a.Type},
-				IncludeTombstones: a.IncludeTombstones,
-			}},
+			Plan:   &knowledgev1.ExecuteRequest_Query{Query: nodeSetPage(a.Type, &cursor, a.IncludeTombstones)},
 			Target: target,
 		})
 		if err != nil {
 			return nil, err
 		}
 		return engine.DecodeNodes(resp)
-	case a.Text != "":
-		return pivotSeedSearchClient(ctx, deps, a)
-	default:
-		resp, err := gc.Execute(ctx, &knowledgev1.ExecuteRequest{
-			Plan:   &knowledgev1.ExecuteRequest_Query{Query: nodeSetPlan(a.IncludeTombstones)},
-			Target: target,
-		})
-		if err != nil {
-			return nil, err
-		}
-		return engine.DecodeNodes(resp)
+	}, engine.BrowsePageSize, func(page []*knowledgev1.Node) error {
+		onPage(page)
+		return nil
+	})
+}
+
+// nodeSetPage builds one bounded keyset page of the pivot/timeline node set. An
+// EMPTY nodeType means "match every node" — what store.Match(NodeType("")) does
+// server-side — so the by-type and match-all arms are one drain. AfterId is SET
+// on every page including the first, where the value is empty: its PRESENCE is
+// what selects the keyset browse, and an omitted cursor would page in the
+// backend's default order so the cursor taken from page 1 skips every lower id.
+// Modeled on the in-package typeBrowsePage (intercept_query_modules_codestats.go).
+func nodeSetPage(nodeType string, cursor *string, includeTombstones bool) *knowledgev1.QueryPlan {
+	return &knowledgev1.QueryPlan{
+		Selection:         &knowledgev1.Selection{NodeType: nodeType},
+		Limit:             int32(engine.BrowsePageSize),
+		AfterId:           cursor,
+		SkipTotal:         true, // the drain consumes only the payload, never Total
+		IncludeTombstones: includeTombstones,
 	}
 }
 
@@ -303,15 +410,6 @@ func pivotHydrateSelector(a queryArgs) hydrateSelector {
 		Account:  a.Account,
 		Name:     a.Name,
 		Language: a.Language,
-	}
-}
-
-// nodeSetPlan builds the Match-empty Limit-0 RETURN_MODE_NODES plan (the full
-// node-set fetch). An empty Selection NodeType means "match every node".
-func nodeSetPlan(includeTombstones bool) *knowledgev1.QueryPlan {
-	return &knowledgev1.QueryPlan{
-		Selection:         &knowledgev1.Selection{},
-		IncludeTombstones: includeTombstones,
 	}
 }
 

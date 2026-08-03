@@ -9,6 +9,7 @@ import (
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
+	"github.com/fulminate-io/knowledge-mcp/internal/graphsel"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgwire"
 )
@@ -62,25 +63,22 @@ func asExecutor(gc GraphCaller) (Executor, error) {
 
 // graphTarget builds the GraphSelector for a cross-graph fetch. The MCP wire
 // keys each graph family by its typed selector field: `language` for practice,
-// `repo` for code (the server's code resolver REQUIRES sel.Repo and rejects a
-// name-keyed selector before any graph lookup — routing code through `name`
-// silently fails every cross-graph code fetch, which broke born-linking), and
-// `name` for the rest (cloud, cicd, logs, transformers, …). Empty graphType →
-// nil (the knowledge/default graph).
+// `repo` for code, `account` for cloud and cicd, and `name` for the rest (logs,
+// transformers, …). Routing an instance name through the wrong field is not a
+// soft failure — the server's resolver rejects the selector before any graph
+// lookup (the code resolver REQUIRES sel.Repo, the cloud/cicd resolver REQUIRES
+// sel.Account), so a wrongly-keyed selector fails every cross-graph fetch for
+// that family. That per-family mapping is owned by graphsel.InstanceField, the
+// single switch in the client; this helper delegates to it rather than carrying
+// a second hand-maintained copy that can drift a family at a time.
+// omitDefaultName is false here: a caller supplying an explicit graph name means
+// it, including the literal "default". Empty graphType → nil (the
+// knowledge/default graph).
 func graphTarget(graphType, graphName string) *knowledgev1.GraphSelector {
 	if graphType == "" {
 		return nil
 	}
-	sel := &knowledgev1.GraphSelector{Graph: graphType}
-	switch graphType {
-	case "practice":
-		sel.Language = graphName
-	case "code":
-		sel.Repo = graphName
-	default:
-		sel.Name = graphName
-	}
-	return sel
+	return graphsel.GraphSelectorFor(kgtypes.GraphType(graphType), graphName, false)
 }
 
 // decodeCarrierNodes reads the typed Nodes carrier (the same carrier the engine

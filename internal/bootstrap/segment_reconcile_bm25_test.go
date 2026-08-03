@@ -244,12 +244,45 @@ func TestReconcileBM25ArmingRequiresCompletedRebuild(t *testing.T) {
 // TestReconcileBM25ProbeLegCount pins the FIRST-TICK cost: the BM25 arm's L2 root is
 // separate from the HNSW one, so the first pass pulls that arm's shipped corpus once.
 // The second pass costs strictly fewer manifest reads — the load once-guard.
+//
+// THE pass2 < pass1 CHECK IS THE LOAD-BEARING ONE. The bound below is a measurement
+// of one fixture on one tree and moves whenever a deliberate read is added; the
+// strict-decrease check is the property — a read that recurs every tick would hold
+// pass2 equal to pass1 and fail there no matter where the bound sits. The recurring
+// cost of the never-shipped shape has its own gate in TestReconcileBM25SteadyStateReads.
 func TestReconcileBM25ProbeLegCount(t *testing.T) {
 	t.Cleanup(resetBM25HealProgress)
 	const (
 		repo = "bm25LegCountRepo"
 		// Measured on the implemented tree, not derived by reasoning.
-		firstPassReadBound = 28
+		//
+		// RE-MEASURED 28 -> 29 when the manifest-completeness reconcile landed. On this
+		// fixture the first tick genuinely IS degraded — the rebuild publishes a manifest
+		// while the arm's L2 cache is still cold — so the completeness pass's local gate
+		// fires and pays exactly ONE source read to fetch the missing entry. That read is
+		// the repair this fixture should be paying for, not overhead: pass 2 drops to a
+		// handful precisely because the arm converged and its gate now compares two local
+		// numbers and stops.
+		//
+		// RE-MEASURED 29 -> 30 when the BM25 reset moved to a build-aside swap. The
+		// degeneracy policy is now evaluated TWICE on that path and both evaluations are
+		// deliberate: once against the PROSPECTIVE layer before the swap, because under
+		// build-aside the swap is the destructive act and a publish-time verdict arrives
+		// after reads are already being served from a degenerate layer; and once inside
+		// publishResident, which is shared with every other publisher and whose gate is
+		// the manifest guard. Neither can be dropped, and the memo cannot absorb the
+		// second — publishCoverageOK deliberately re-derives before honoring a cached
+		// PASS. The cost is one List per RESET FINALIZE, not per tick: the recurring
+		// shape is gated by TestReconcileBM25SteadyStateReads, which is unchanged.
+		//
+		// RE-MEASURED 30 -> 31 when the HNSW reset joined it. This is the SAME read as
+		// the bump above, paid by the second format: both legs now run the one generic
+		// finalizeResetLayer, so each evaluates prospectiveLayerOK against its own
+		// prospective layer and each pays one publishCoverageOK source read. The
+		// increment is exactly one because exactly one leg moved onto the path — the
+		// arithmetic is what makes this a re-measurement of a known cost rather than an
+		// unexplained drift, and a bump larger than one would mean something else changed.
+		firstPassReadBound = 31
 	)
 	c, eng, backend := buildReconcileClientWithSeg(t, 64, repo)
 	ctx := context.Background()

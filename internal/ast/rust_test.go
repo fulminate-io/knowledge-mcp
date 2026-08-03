@@ -51,8 +51,7 @@ func TestRust_FunctionDeclaration(t *testing.T) {
 	// with seqShadowMaxDepth=1 in walker.go causes the seq-shadow to fire
 	// at function_item level rather than parameters level. Bare
 	// `fn $NAME($$$ARGS) { $$$BODY }` works because the no-return-type
-	// shape doesn't expose the over-greedy consumption — see finding
-	// 2224314716b17a0554f7b416c4ee6b72 for the engine architecture context.
+	// shape doesn't expose the over-greedy consumption.
 	target := `fn add(a: i32, b: i32) -> i32 { a + b }
 fn empty() {}
 fn one(x: u8) -> u8 { x }

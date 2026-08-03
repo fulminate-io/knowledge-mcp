@@ -417,3 +417,32 @@ func TestCompileMutate_BulkUpdateMetadata(t *testing.T) {
 	assert.Nil(t, items[0].Summary)
 	assert.Nil(t, items[0].Status)
 }
+
+// TestCompileMutate_UpdateStatusPresentEmpty pins status as PRESENCE-bearing on
+// the by-id update path. An explicit status:"" is a request to clear the node's
+// status to blank, so it must reach set_fields as an empty value; the gate used
+// to key on non-emptiness, which made "" indistinguishable from absent and
+// silently dropped the write while the call reported success.
+//
+// Both directions belong in one table: the ABSENT case is the guard that stops
+// the fix from clearing status on every update that does not mention it.
+func TestCompileMutate_UpdateStatusPresentEmpty(t *testing.T) {
+	t.Run("present but empty → set_fields carries status=\"\"", func(t *testing.T) {
+		req, ok := compileMutate(json.RawMessage(`{"operation":"update","id":"n1","status":""}`))
+		require.True(t, ok)
+		m := req.GetMutation()
+		require.NotNil(t, m)
+		assert.Equal(t, knowledgev1.MutationPlan_MUTATION_KIND_UPDATE, m.GetKind())
+		require.Contains(t, m.GetSetFields(), "status",
+			"an explicit empty status must reach set_fields — it is a clear-to-blank request")
+		assert.Empty(t, m.GetSetFields()["status"])
+	})
+	t.Run("absent → set_fields omits status", func(t *testing.T) {
+		req, ok := compileMutate(json.RawMessage(`{"operation":"update","id":"n1","summary":"s"}`))
+		require.True(t, ok)
+		m := req.GetMutation()
+		require.NotNil(t, m)
+		assert.NotContains(t, m.GetSetFields(), "status",
+			"an update that never mentions status must leave it untouched")
+	})
+}

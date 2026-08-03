@@ -82,11 +82,33 @@ const (
 	OpPipelineEmbedWriteback Operation = "pipeline.embed_writeback"
 	OpCorpusDeltaDrain       Operation = "corpus_delta.drain"
 	OpRebuildSegments        Operation = "rebuild_segments"
-	OpSegmentHeal            Operation = "segment.heal"
-	OpSegmentReconcile       Operation = "segment.reconcile"
-	OpInstructionBootstrap   Operation = "instruction.bootstrap"
-	OpPropagationReflect     Operation = "propagation.reflect"
-	OpHiveMonitor            Operation = "hive.monitor"
+	// OpSegmentDeltaMerge is the reconcile pass's per-graph BOUNDED delta read, which
+	// carries BOTH halves of the window: the deletes it lands on the local pool and
+	// the live items it merges into the local segments. It is kept distinct from
+	// OpRebuildSegments for the same reason OpPipelineGraphDiscovery is kept distinct
+	// from OpPipelineGapScan: the two are different load shapes over the SAME scan
+	// axis. A rebuild pages the whole vectored corpus once, on demand; this fires per
+	// segment-bearing graph on every reconcile tick and is bounded by the graph's
+	// merge horizon. Folding them together would hide a delta read that had
+	// degenerated into a full scan inside the rebuild bucket, which is exactly the
+	// regression the bound exists to prevent.
+	OpSegmentDeltaMerge Operation = "segment.delta_merge"
+	OpSegmentHeal       Operation = "segment.heal"
+	OpSegmentReconcile  Operation = "segment.reconcile"
+	// OpSegmentRepair is the coverage-repair arm's full-corpus scan. It pages the
+	// same segment_rebuild axis as OpRebuildSegments but with a different load
+	// shape — it ships only the gap, never a whole rebuild — so folding it into
+	// that term would hide a repair that had degenerated into rebuild-scale
+	// traffic inside the rebuild's own numbers.
+	OpSegmentRepair Operation = "segment.repair"
+	// OpSegmentHorizonSeed is the declined-graph seed's single-row horizon read. It
+	// pages the same segment_rebuild axis as OpSegmentRepair but reads ONE row rather
+	// than the corpus, and mixing it into the repair term would pollute exactly the
+	// bucket the backstop's load is measured in.
+	OpSegmentHorizonSeed   Operation = "segment.horizon_seed"
+	OpInstructionBootstrap Operation = "instruction.bootstrap"
+	OpPropagationReflect   Operation = "propagation.reflect"
+	OpHiveMonitor          Operation = "hive.monitor"
 	// OpWorkerRuntimeStart is the worker runtime's one-shot boot registry load
 	// (dream Runner.Start reading the worker set to install triggers). It is
 	// deliberately distinct from OpWorker: that term means a user invoked the
@@ -114,7 +136,8 @@ var AllOperations = []Operation{
 
 	OpPipelineGapScan, OpPipelineGraphDiscovery,
 	OpPipelineGenPoll, OpPipelineEmbedWriteback,
-	OpCorpusDeltaDrain, OpRebuildSegments, OpSegmentHeal, OpSegmentReconcile,
+	OpCorpusDeltaDrain, OpRebuildSegments, OpSegmentDeltaMerge,
+	OpSegmentHeal, OpSegmentReconcile, OpSegmentRepair, OpSegmentHorizonSeed,
 	OpInstructionBootstrap, OpPropagationReflect, OpHiveMonitor,
 	OpWorkerRuntimeStart,
 

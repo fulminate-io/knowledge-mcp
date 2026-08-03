@@ -77,8 +77,11 @@ func (d *recipeDeps) SegmentManager() SegmentSearcher              { return nil 
 func (d *recipeDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
 func (d *recipeDeps) SegmentShipper() SegmentShipper               { return nil }
 func (d *recipeDeps) SegmentPruner() SegmentPruner                 { return nil }
-func (d *recipeDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
-func (d *recipeDeps) PipelineScanner() PipelineScanner             { return nil }
+
+func (d *recipeDeps) SegmentCacheDropper() SegmentCacheDropper { return nil }
+func (d *recipeDeps) SegmentDeleter() SegmentDeleter           { return nil }
+func (d *recipeDeps) SegmentCoverage() SegmentCoverageReader   { return nil }
+func (d *recipeDeps) PipelineScanner() PipelineScanner         { return nil }
 
 func (d *recipeDeps) ClearHealLatch(kgtypes.GraphType, string) {}
 func (d *recipeDeps) ReflectionForcer() ReflectionForcer       { return nil }

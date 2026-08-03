@@ -21,6 +21,8 @@ import (
 // absent-id (ok=false, err=nil) from a load failure. Fails-when-absent: skipping
 // dm.load(ctx) returns (nil,false) for a known id on a fresh manager.
 func TestManagerVectorByIDResolvesShippedVector(t *testing.T) {
+	t.Parallel()
+
 	_, gc := newSegmentHarness(t)
 	ctx := context.Background()
 
@@ -28,7 +30,7 @@ func TestManagerVectorByIDResolvesShippedVector(t *testing.T) {
 
 	// Ship the HNSW segment with one manager.
 	shipper := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
-	require.NoError(t, shipper.AddAndShip(ctx, kgtypes.GraphKnowledge, "kg", docs))
+	seedShipped(t, ctx, shipper, kgtypes.GraphKnowledge, "kg", docs)
 
 	// Resolve on a FRESH manager that has never searched — it must pull the shipped
 	// segments cache-first via dm.load(ctx) before the by-id read.
@@ -51,6 +53,8 @@ func TestManagerVectorByIDResolvesShippedVector(t *testing.T) {
 // error and never a silent wrong vector. The caller turns ok=false into the loud
 // guidance error.
 func TestManagerVectorByIDEmptyGraph(t *testing.T) {
+	t.Parallel()
+
 	_, gc := newSegmentHarness(t)
 	ctx := context.Background()
 

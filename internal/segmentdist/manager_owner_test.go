@@ -31,34 +31,48 @@ func hnswVecDocs(n int) []searchengine.Document {
 	return docs
 }
 
-// TestManagerAddAndShipSealsOneBlob wires a production Manager over the HNSW
-// format and a counting caller, AddAndShips enough docs to seal exactly one
-// segment, and asserts exactly one Ship RPC carrying one hnsw-format blob fires.
-// A second AddAndShip with the same docs ships NOTHING (Export-diff no-op for the
-// already-shipped content hash). Criterion: Phase 3 Step 1.
-func TestManagerAddAndShipSealsOneBlob(t *testing.T) {
+// TestManagerAddAndMarkDirtySealsOneBlob wires a production Manager over the HNSW
+// format and a counting caller, marks enough docs dirty to seal exactly one
+// segment, and asserts the write path itself ships NOTHING — durability is the
+// reconcile tick's job now. The tick then re-emits the graph's partitions and
+// ships them in exactly one Ship RPC. A second ship() with no intervening Add
+// ships NOTHING (Export-diff no-op for the already-shipped content hash).
+// Criterion: Phase 3 Step 1.
+func TestManagerAddAndMarkDirtySealsOneBlob(t *testing.T) {
+	t.Parallel()
+
 	_, gc := newSegmentHarness(t)
 	cc := gc
 	ctx := context.Background()
 
 	// MinSegmentDocs default is 1024; seal exactly one segment with 1024 docs.
-	docs := hnswVecDocs(1024)
+	const n = 1024
+	docs := hnswVecDocs(n)
 
 	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(cc))
 
-	require.NoError(t, mgr.AddAndShip(ctx, kgtypes.GraphCode, "repoHNSW", docs))
-	require.Equal(t, int64(1), cc.shipCalls.Load(), "AddAndShip sealing one segment fires exactly one Ship RPC")
-	require.Equal(t, int64(1), cc.shipBlobs.Load(), "the Ship carries exactly one segment blob")
+	require.NoError(t, mgr.AddAndMarkDirty(ctx, kgtypes.GraphCode, "repoHNSW", docs))
+	require.Equal(t, int64(0), cc.shipCalls.Load(), "the write path force-seals but never ships")
 
-	// The shipped blob must be tagged with the HNSW format and decode back to a
-	// segment indexing exactly the embedded ids.
+	require.NoError(t, mgr.ReEmitDirtyBuckets(ctx, kgtypes.GraphCode, "repoHNSW"))
+	require.Equal(t, int64(1), cc.shipCalls.Load(), "the reconcile tick fires exactly one Ship RPC")
+
+	// After the tick the resident set is PARTITION-shaped, and how many partitions
+	// that is falls out of the corpus size rather than out of anything this test
+	// controls. Segment SHAPE is not the subject here, so assert COVERAGE: every
+	// shipped blob carries the HNSW format and together they index exactly the
+	// embedded ids.
 	dm := mgr.managerFor(kgtypes.GraphCode, "repoHNSW")
 	exported := dm.engine.Export()
-	require.Len(t, exported, 1)
-	require.Equal(t, "hnsw", exported[0].Format, "shipped blob is tagged hnsw")
-	seg, err := hnsw.New().Decode(exported[0].Bytes)
-	require.NoError(t, err)
-	require.Len(t, seg.IDs(), 1024, "decoded segment indexes exactly the embedded ids")
+	require.NotEmpty(t, exported, "the tick leaves the corpus resident as partitions")
+	covered := 0
+	for _, blob := range exported {
+		require.Equal(t, "hnsw", blob.Format, "shipped blob is tagged hnsw")
+		seg, err := hnsw.New().Decode(blob.Bytes)
+		require.NoError(t, err)
+		covered += len(seg.IDs())
+	}
+	require.Equal(t, n, covered, "the resident partitions index exactly the embedded ids")
 
 	// Export-diff no-op: a second ship() with NO intervening Add re-exports the
 	// SAME sealed segment (same content hash), so the diff against shippedIDs is
@@ -77,11 +91,19 @@ func TestManagerAddAndShipSealsOneBlob(t *testing.T) {
 
 // TestManagerFlushSealsSubThresholdTail is the steady-state searchability +
 // bounded-segment proof: a graph with FEWER than MinSegmentDocs (1024) embeddable
-// nodes, written incrementally, seals ZERO segments via AddAndShip (it just
-// buffers the sub-threshold tail). The quiescence Flush force-seals that tail into
-// exactly ONE searchable segment and ships it — and a redundant re-flush is a
-// cheap no-op (no segment-count blowup).
+// nodes, written incrementally, holds an unsealed sub-threshold tail that seals
+// ZERO segments and is therefore unsearchable. The quiescence Flush force-seals
+// that tail into exactly ONE searchable segment and ships it — and a redundant
+// re-flush is a cheap no-op (no segment-count blowup).
+//
+// The buffered half is built DIRECTLY ON THE ENGINE. That state is no longer
+// reachable through the Manager write surface at all: the write path force-seals
+// every batch, so no Manager call can leave a tail buffered across it. The engine
+// is the only remaining constructor of the precondition Flush exists to resolve,
+// and Flush's contract stays live for the migration/one-shot path.
 func TestManagerFlushSealsSubThresholdTail(t *testing.T) {
+	t.Parallel()
+
 	_, gc := newSegmentHarness(t)
 	cc := gc
 	ctx := context.Background()
@@ -91,10 +113,10 @@ func TestManagerFlushSealsSubThresholdTail(t *testing.T) {
 	docs := hnswVecDocs(n)
 	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(cc))
 
-	require.NoError(t, mgr.AddAndShip(ctx, kgtypes.GraphCode, "smallRepo", docs))
 	dm := mgr.managerFor(kgtypes.GraphCode, "smallRepo")
+	require.NoError(t, dm.engine.Add(docs))
 	require.Empty(t, dm.engine.Export(), "a sub-1024 incremental backlog seals ZERO segments — unsearchable")
-	require.Equal(t, int64(0), cc.shipCalls.Load(), "AddAndShip ships NOTHING for a sub-threshold backlog")
+	require.Equal(t, int64(0), cc.shipCalls.Load(), "an unsealed sub-threshold backlog ships NOTHING")
 
 	// Quiescence Flush: force-seal the tail. It becomes exactly ONE searchable
 	// segment indexing all the ids, shipped in exactly one Ship RPC carrying one blob.
@@ -120,6 +142,8 @@ func TestManagerFlushSealsSubThresholdTail(t *testing.T) {
 // TestManagerRoutesPerGraph asserts two distinct graphs get distinct engines and
 // independent ship state.
 func TestManagerRoutesPerGraph(t *testing.T) {
+	t.Parallel()
+
 	_, gc := newSegmentHarness(t)
 	cc := gc
 	ctx := context.Background()
@@ -128,8 +152,8 @@ func TestManagerRoutesPerGraph(t *testing.T) {
 	docsB := hnswVecDocs(1024)
 
 	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(cc))
-	require.NoError(t, mgr.AddAndShip(ctx, kgtypes.GraphCode, "repoA", docsA))
-	require.NoError(t, mgr.AddAndShip(ctx, kgtypes.GraphKnowledge, "kg", docsB))
+	seedShipped(t, ctx, mgr, kgtypes.GraphCode, "repoA", docsA)
+	seedShipped(t, ctx, mgr, kgtypes.GraphKnowledge, "kg", docsB)
 
 	dmA := mgr.managerFor(kgtypes.GraphCode, "repoA")
 	dmB := mgr.managerFor(kgtypes.GraphKnowledge, "kg")
@@ -157,32 +181,44 @@ func bm25FieldDocs(n int) []searchengine.Document {
 	return docs
 }
 
-// TestManagerAddAndShipFieldsSealsBM25Blob is Phase 3 Step 2's criterion:
-// AddAndShipFields builds + ships BM25 segments from field-bearing Documents
-// through the BM25 engine; a sealed-segment ship fires exactly one Ship RPC with
-// one bm25-format blob, and an empty-diff re-ship (no intervening Add) is a no-op.
-func TestManagerAddAndShipFieldsSealsBM25Blob(t *testing.T) {
+// TestManagerAddAndMarkDirtyFieldsSealsBM25Blob is Phase 3 Step 2's criterion on
+// the new vehicle: the field write path builds BM25 segments from field-bearing
+// Documents through the BM25 engine but ships nothing, and the reconcile tick then
+// ships the re-emitted partitions in exactly one Ship RPC with one bm25-format
+// blob. An empty-diff re-ship (no intervening Add) is a no-op.
+func TestManagerAddAndMarkDirtyFieldsSealsBM25Blob(t *testing.T) {
+	t.Parallel()
+
 	_, gc := newSegmentHarness(t)
 	cc := gc
 	ctx := context.Background()
 
 	// MinSegmentDocs default is 1024; seal exactly one segment with 1024 docs.
-	docs := bm25FieldDocs(1024)
+	const n = 1024
+	docs := bm25FieldDocs(n)
 
 	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(cc))
 
-	require.NoError(t, mgr.AddAndShipFields(ctx, kgtypes.GraphKnowledge, "kgBM25", docs))
-	require.Equal(t, int64(1), cc.shipCalls.Load(), "AddAndShipFields sealing one segment fires exactly one Ship RPC")
-	require.Equal(t, int64(1), cc.shipBlobs.Load(), "the Ship carries exactly one segment blob")
+	require.NoError(t, mgr.AddAndMarkDirtyFields(ctx, kgtypes.GraphKnowledge, "kgBM25", docs))
+	require.Equal(t, int64(0), cc.shipCalls.Load(), "the field write path force-seals but never ships")
 
-	// The shipped blob is tagged bm25 and decodes back to a segment indexing the ids.
+	require.NoError(t, mgr.ReEmitDirtyBuckets(ctx, kgtypes.GraphKnowledge, "kgBM25"))
+	require.Equal(t, int64(1), cc.shipCalls.Load(), "the reconcile tick fires exactly one Ship RPC")
+
+	// Segment shape is not the subject — assert COVERAGE over the re-emitted
+	// partitions: every shipped blob is bm25-tagged and together they index exactly
+	// the embedded ids.
 	dm := mgr.bm25ManagerFor(kgtypes.GraphKnowledge, "kgBM25")
 	exported := dm.engine.Export()
-	require.Len(t, exported, 1)
-	require.Equal(t, "bm25", exported[0].Format, "shipped blob is tagged bm25")
-	seg, err := bm25.New().Decode(exported[0].Bytes)
-	require.NoError(t, err)
-	require.Len(t, seg.IDs(), 1024, "decoded segment indexes exactly the embedded ids")
+	require.NotEmpty(t, exported, "the tick leaves the corpus resident as partitions")
+	covered := 0
+	for _, blob := range exported {
+		require.Equal(t, "bm25", blob.Format, "shipped blob is tagged bm25")
+		seg, err := bm25.New().Decode(blob.Bytes)
+		require.NoError(t, err)
+		covered += len(seg.IDs())
+	}
+	require.Equal(t, n, covered, "the resident partitions index exactly the embedded ids")
 
 	// Empty-diff re-ship: a second ship() with NO intervening Add re-exports the SAME
 	// sealed segment (BM25 Build is deterministic, so the content hash is identical),
@@ -200,6 +236,8 @@ func TestManagerAddAndShipFieldsSealsBM25Blob(t *testing.T) {
 // (and memoizes) its own distManager, and the same graph routed through both
 // formats yields two distinct engines.
 func TestManagerHoldsBothFormatMaps(t *testing.T) {
+	t.Parallel()
+
 	_, gc := newSegmentHarness(t)
 	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 
@@ -220,6 +258,8 @@ func TestManagerHoldsBothFormatMaps(t *testing.T) {
 // TestGraphCacheDirsAreFormatDistinct is Phase 3 Step 1's criterion: HNSW and BM25
 // L2 caches root under format-distinct directories for the same graph.
 func TestGraphCacheDirsAreFormatDistinct(t *testing.T) {
+	t.Parallel()
+
 	base := t.TempDir()
 	hnswDir := graphCacheDirFor(base, kgtypes.GraphCode, "repo", hnsw.New().Name())
 	bm25Dir := graphCacheDirFor(base, kgtypes.GraphCode, "repo", bm25.New().Name())
@@ -234,6 +274,8 @@ func TestGraphCacheDirsAreFormatDistinct(t *testing.T) {
 // holds one+. It must NEVER Fetch a blob — the probe is presence-only (metas), so
 // the fake's Fetch counter stays at zero.
 func TestHasShippedSegments(t *testing.T) {
+	t.Parallel()
+
 	_, gc := newSegmentHarness(t)
 	cc := gc
 	ctx := context.Background()
@@ -263,6 +305,8 @@ func TestHasShippedSegments(t *testing.T) {
 // the same nodes — double-counting), flags anyUnknown only when an HNSW meta has
 // DocCount==0, and never Fetches a blob.
 func TestShippedSegmentDocCount(t *testing.T) {
+	t.Parallel()
+
 	_, gc := newSegmentHarness(t)
 	cc := gc
 	ctx := context.Background()
@@ -303,14 +347,16 @@ func TestShippedSegmentDocCount(t *testing.T) {
 // the underlying engine's ResidentDocCount reports (the in-memory searchable
 // coverage), and a graph that was never added/loaded returns 0.
 func TestManagerResidentDocCount(t *testing.T) {
+	t.Parallel()
+
 	_, gc := newSegmentHarness(t)
 	ctx := context.Background()
 	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
 
-	// Seal exactly one segment (1024 docs == MinSegmentDocs) locally — AddAndShip
-	// both seals it into the engine (resident) and ships it.
+	// Seal exactly one segment (1024 docs == MinSegmentDocs) locally — the write
+	// seals it into the engine (resident) and the tick ships it.
 	docs := hnswVecDocs(1024)
-	require.NoError(t, mgr.AddAndShip(ctx, kgtypes.GraphCode, "residentRepo", docs))
+	seedShipped(t, ctx, mgr, kgtypes.GraphCode, "residentRepo", docs)
 
 	// The Manager accessor matches the engine's own resident snapshot.
 	engineResident := mgr.managerFor(kgtypes.GraphCode, "residentRepo").engine.ResidentDocCount()
@@ -327,6 +373,8 @@ func TestManagerResidentDocCount(t *testing.T) {
 // TestGraphSelectorMapping asserts the per-graph-type field routing mirrors the
 // canonical graphTarget mapping.
 func TestGraphSelectorMapping(t *testing.T) {
+	t.Parallel()
+
 	cases := []struct {
 		gt   kgtypes.GraphType
 		name string

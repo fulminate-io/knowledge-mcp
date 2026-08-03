@@ -27,6 +27,8 @@ import (
 // reload-from-L2 (zero network) → search hits → second load (empty delta, zero
 // Fetch) → concurrent load+search under -race.
 func TestSegmentDistributionE2E(t *testing.T) {
+	t.Parallel()
+
 	svc, gc := newSegmentHarness(t)
 	target := &knowledgev1.GraphSelector{Graph: "code", Repo: "e2e"}
 	ctx := context.Background()
@@ -60,7 +62,7 @@ func TestSegmentDistributionE2E(t *testing.T) {
 	require.Len(t, consEng.Search(mockQuery{term: "alpha"}, 10), 2, "search hits d1, d2")
 
 	// Unload everything; search drops the unloaded hits.
-	unloaded := consMgr.unloadUnderPressure(0)
+	unloaded := consMgr.evictAllResidentForTest()
 	require.NotEmpty(t, unloaded)
 	require.Empty(t, consEng.Search(mockQuery{term: "alpha"}, 10), "unloaded → search miss")
 
@@ -112,6 +114,8 @@ func buildManagerWithWriter(
 // fully-reloaded publish reaps nothing), and EVERY outbound RPC carries the
 // writer_id the server's last-connection liveness depends on.
 func TestRegistryReclaimE2E(t *testing.T) {
+	t.Parallel()
+
 	svc, _ := newSegmentHarness(t)
 	target := &knowledgev1.GraphSelector{Graph: "code", Repo: "registryE2E"}
 	ctx := context.Background()
@@ -132,13 +136,13 @@ func TestRegistryReclaimE2E(t *testing.T) {
 	const n = 8
 	for i := range n {
 		require.NoError(t, prodEng.Add([]searchengine.Document{doc(fmt.Sprintf("d%d", i), fmt.Sprintf("body %d", i))}))
-		_, err := prodMgr.shipAndPublish(ctx, nil, prodMgr.locallyShipped)
+		_, err := prodMgr.shipAndPublish(ctx, prodMgr.locallyShipped)
 		require.NoError(t, err)
 	}
 	require.Eventually(t, func() bool { return prodEng.MergeCount() > 0 },
 		2*time.Second, 2*time.Millisecond, "background merge fires once >SegmentCountTarget segments accumulate")
 	// One more cycle after the merge so the consolidated set is published + reconciled.
-	_, err := prodMgr.shipAndPublish(ctx, nil, prodMgr.locallyShipped)
+	_, err := prodMgr.shipAndPublish(ctx, prodMgr.locallyShipped)
 	require.NoError(t, err)
 
 	// BOUNDED: the server segment count matches the engine's post-merge resident
@@ -167,11 +171,11 @@ func TestRegistryReclaimE2E(t *testing.T) {
 	defer restartEng.Close()
 	restartMgr := buildManagerWithWriter(restartEng, svc, target, t.TempDir(), writer)
 	require.NoError(t, restartMgr.load(ctx))
-	_, err = restartMgr.shipAndPublish(ctx, nil, restartMgr.locallyShipped)
+	_, err = restartMgr.shipAndPublish(ctx, restartMgr.locallyShipped)
 	require.NoError(t, err)
 
 	after := map[string]bool{}
-	for _, m := range svc.listMetas(target, 0) {
+	for _, m := range svc.listMetas(target) {
 		after[m.GetId()] = true
 	}
 	for id := range priorCorpus {

@@ -173,17 +173,19 @@ func (g *GonumGraph) materializeEdges(ctx context.Context, caller GraphCaller, g
 	return nil
 }
 
-// fetchMaterializeEdges picks the bulk edge read for the build: the match-all
-// read when every node was materialized, the pivot read over the materialized
-// ids otherwise. Both return the same edges for the pairs this graph can map —
-// the subset build just stops short of pulling edges whose endpoints it dropped.
+// fetchMaterializeEdges picks the bulk edge read for the build: the paged
+// whole-graph drain when every node was materialized, the single pivot read over
+// the materialized ids otherwise. Both are driven by the SAME id set — the one
+// materializeNodes already loaded — and return the same edges for the pairs this
+// graph can map; the subset build just stops short of pulling edges whose
+// endpoints it dropped.
 func (g *GonumGraph) fetchMaterializeEdges(ctx context.Context, caller GraphCaller, graphType kgtypes.GraphType, name string, allNodes bool) ([]knowledgev1.Edge, error) {
-	if allNodes {
-		return FetchAllEdges(ctx, caller, graphType, name, nil)
-	}
 	ids := make([]string, 0, len(g.stringToInt))
 	for s := range g.stringToInt {
 		ids = append(ids, s)
+	}
+	if allNodes {
+		return FetchAllEdges(ctx, caller, graphType, name, ids, nil)
 	}
 	return FetchEdges(ctx, caller, graphType, name, ids, nil)
 }

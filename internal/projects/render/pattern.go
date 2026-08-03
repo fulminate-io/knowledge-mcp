@@ -51,7 +51,7 @@ func assemblePatternIn(ctx context.Context, gc GraphCaller, node *knowledgev1.No
 	if c := strings.TrimSpace(node.Content); c != "" {
 		fmt.Fprintf(&sb, "%s\n\n", c)
 	}
-	fmt.Fprintf(&sb, "ID: %s\n", node.Id)
+	fmt.Fprintf(&sb, "ID: %s%s\n", node.Id, updatedSuffix(node))
 
 	appliesWhen, avoidWhen, examples, refs := bucketPatternChildrenIn(ctx, gc, node.Id, graphType, graphName)
 

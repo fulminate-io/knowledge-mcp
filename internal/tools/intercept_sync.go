@@ -137,6 +137,9 @@ func InterceptSync(ctx context.Context, deps ClientDeps, params kgtools.CallTool
 	if params.Name != "sync" {
 		return false, kgtools.ToolResult{}
 	}
+	if err := rejectUndeclaredParams("sync", "", SyncToolDef().InputSchema.Properties, params.Arguments); err != nil {
+		return true, errorResult(err.Error())
+	}
 	var a syncArgs
 	if err := json.Unmarshal(params.Arguments, &a); err != nil {
 		return true, errorResult("sync: invalid args: " + err.Error())
@@ -174,10 +177,12 @@ func InterceptSync(ctx context.Context, deps ClientDeps, params kgtools.CallTool
 		return true, handlePull(ctx, deps, graph, name)
 	}
 
-	// promote was removed; only push/pull/list are supported.
+	// promote was removed; only push/pull/list are supported. The note rides
+	// AFTER the canonical list so the actionable history survives the shared
+	// wording.
 	if a.Operation != "" && a.Operation != "push" {
-		return true, errorResult(fmt.Sprintf(
-			"sync: %q is not supported — sync supports push, pull, list (promote was removed)", a.Operation))
+		return true, errorResult(unknownOperationMessage("sync", a.Operation,
+			[]string{"push", "pull", "list"}) + " (promote was removed)")
 	}
 
 	exp, err := exporterSeam(deps)

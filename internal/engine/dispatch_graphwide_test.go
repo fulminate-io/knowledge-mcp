@@ -14,11 +14,13 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/enginetest"
 )
 
-// TestDispatchGraphWide_MatchAllEdgePlan asserts the start-less traverse composes
-// TWO Executes — the node enumeration, then a MATCH-ALL edges read carrying no
-// pivot discriminant of any kind. The absent pivot is the whole point: the node
-// ids no longer make the round trip upstream just to spell "all".
-func TestDispatchGraphWide_MatchAllEdgePlan(t *testing.T) {
+// TestDispatchGraphWide_PivotPagedEdgePlan asserts the start-less traverse
+// composes TWO Executes — the node enumeration, then a BOUNDED edges read that
+// pivots on the enumerated ids under an explicit positive limit. Sending the ids
+// upstream is the whole point: the match-all plan they used to spell as an absent
+// pivot was unbounded, and cost that scales with the entire edge table is exactly
+// what a user-reachable read must not offer.
+func TestDispatchGraphWide_PivotPagedEdgePlan(t *testing.T) {
 	s := &seqExec{responses: []*knowledgev1.ExecuteResponse{
 		enginetest.ResponseWithNodes(
 			&knowledgev1.Node{Id: "n1", SymbolName: "One", Type: "plan"},
@@ -33,22 +35,24 @@ func TestDispatchGraphWide_MatchAllEdgePlan(t *testing.T) {
 		"traverse", json.RawMessage(`{"graph":"knowledge","format":"json"}`))
 	require.NoError(t, err)
 
-	assert.Equal(t, 2, s.calls, "node enumeration + ONE match-all edges read")
+	assert.Equal(t, 2, s.calls, "node enumeration + ONE bounded edge page")
 	require.Len(t, s.reqs, 2)
 	edgesQ := s.reqs[1].GetQuery()
 	assert.Equal(t, knowledgev1.ReturnMode_RETURN_MODE_EDGES, edgesQ.GetReturnMode())
-	assert.Empty(t, edgesQ.GetIds(), "match-all plan carries no ids[] pivot")
-	assert.Empty(t, edgesQ.GetById(), "match-all plan carries no by_id pivot")
-	assert.Empty(t, edgesQ.GetSelection().GetFromId(), "match-all plan carries no from_id pivot")
+	assert.ElementsMatch(t, []string{"n1", "n2"}, edgesQ.GetIds(),
+		"the edge page pivots on the enumerated node ids")
+	assert.Positive(t, edgesQ.GetLimit(), "the edge page carries an explicit positive limit")
 	assert.Contains(t, out.Content[0].Text, `"n1"`)
 	assert.Contains(t, out.Content[0].Text, `"target":"n2"`)
 }
 
-// TestDispatchGraphWide_DanglingSourceEdgeNotRendered pins the one place the
-// match-all read is BROADER than the all-node-ids pivot read it replaced: a
-// dangling edge whose source has no node row (hard-deleted node, no cascade on
-// the edges table) comes back from the backend, and the renderer must drop it so
-// the rendered list stays exactly what the pivot read produced.
+// TestDispatchGraphWide_DanglingSourceEdgeNotRendered pins the renderer's
+// source-membership filter directly. A dangling edge — one whose source has no
+// node row (hard-deleted node, no cascade on the edges table) — can no longer
+// arrive from a real backend now that the read pivots on the enumerated ids,
+// because a vanished endpoint is never in the pivot set. The fake serves one
+// anyway: the filter is belt-and-braces rather than load-bearing, and this keeps
+// it honest independent of the read shape.
 func TestDispatchGraphWide_DanglingSourceEdgeNotRendered(t *testing.T) {
 	s := &seqExec{responses: []*knowledgev1.ExecuteResponse{
 		enginetest.ResponseWithNodes(

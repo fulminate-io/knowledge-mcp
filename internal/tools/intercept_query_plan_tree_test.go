@@ -80,6 +80,9 @@ type parityGraphFixture struct {
 	nodes      map[string]*knowledgev1.Node
 	edges      []*knowledgev1.Edge
 	tombstoned map[string]bool
+	// truncated makes the traversal arm answer with the response's Truncated
+	// flag set, standing in for a server ceiling engaging mid-walk.
+	truncated bool
 }
 
 func newParityFixture() *parityGraphFixture {
@@ -217,7 +220,10 @@ func (g *parityCaller) answerTraversal(q *knowledgev1.QueryPlan) *knowledgev1.Ex
 			queue = append(queue, frontier{childID, cur.dist + 1})
 		}
 	}
-	resp := &knowledgev1.ExecuteResponse{TraversalResults: traversalResultsToProtoForTest(results)}
+	resp := &knowledgev1.ExecuteResponse{
+		TraversalResults: traversalResultsToProtoForTest(results),
+		Truncated:        g.f.truncated,
+	}
 	if q.GetIncludeEdgeMetadata() {
 		resp.TraversalEdges = edgePtrsForTest(containsEdges)
 	}
@@ -461,3 +467,7 @@ func TestInterceptQueryPlanTree_MissingID_Errors(t *testing.T) {
 
 // (extractText lives in intercept_add_criterion.go and is reused
 // by every parity test in this package.)
+//
+// The plan_tree read-time-provenance test lives in
+// intercept_query_plan_tree_updated_at_test.go — split out to keep this
+// file under the repo's hard 500-line commit gate.

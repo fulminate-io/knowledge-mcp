@@ -35,6 +35,27 @@ const (
 	defaultSegmentCountTarget = 16
 )
 
+// MergeDisabledCountTarget and MergeDisabledDeadRatio are the Options values an
+// owner passes to disarm the BACKGROUND merge triggers on an engine whose
+// segment layout it manages itself.
+//
+// A bucket-partitioned owner bounds the segment count by the bucket function
+// itself — which is the job the count trigger exists to do — and reclaims dead
+// documents through its scoped per-bucket re-emit rather than through the
+// background dead-ratio merge. Left armed, those triggers would consolidate
+// segments across bucket boundaries and undo the partition.
+//
+// They disarm rather than add a new switch because withDefaults fills these
+// fields only when unset, so a caller-supplied value survives: a count target of
+// 1<<30 is never exceeded by a real segment set, and a dead ratio above 1.0 is
+// unreachable because the ratio is dead documents over total. Neither value
+// disables format.Merge — an owner that drives a merge explicitly still gets
+// one, and OnMerge stays wired so its reclaim path is unaffected.
+const (
+	MergeDisabledCountTarget = 1 << 30
+	MergeDisabledDeadRatio   = 2.0
+)
+
 // DefaultMinSegmentDocs is the exported mirror of defaultMinSegmentDocs (the
 // withDefaults source of truth). It exists so the cross-package segment_rebuild
 // driver (cmd/knowledge/internal/tools) chunks scanned nodes by EXACTLY the

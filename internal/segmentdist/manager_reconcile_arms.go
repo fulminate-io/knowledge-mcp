@@ -10,17 +10,25 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine/formats/bm25"
 )
 
-// coverageArm is the non-generic seam the per-format degeneracy probe iterates. It
-// exists because distManager is generic over [Q, S] and the two live instantiations
-// carry DIFFERENT type arguments — *distManager[[]byte, struct{}] for the HNSW arm
-// (hnswManagerFor) and *distManager[bm25.Query, *bm25.CorpusStats] for the BM25 arm
-// (bm25ManagerFor) — so Go cannot hold both in one slice. An interface whose method
-// set mentions neither Q nor S can.
+// coverageArm is the GENERAL PER-FORMAT READ SEAM: the non-generic view every
+// per-format consumer walks the two engines through. It exists because distManager
+// is generic over [Q, S] and the two live instantiations carry DIFFERENT type
+// arguments — *distManager[[]byte, struct{}] for the HNSW arm (managerFor) and
+// *distManager[bm25.Query, *bm25.CorpusStats] for the BM25 arm (bm25ManagerFor) —
+// so Go cannot hold both in one slice. An interface whose method set mentions
+// neither Q nor S can.
 //
-// Four of the six methods are EXISTING distManager methods used verbatim (load,
-// recoverIfDegenerate, recoverIfDegenerateWithShipped, shippedDocCountForRatio);
-// only residentDocCount and armFormat are new, and both exist solely because the
-// underlying state is a FIELD on a generic struct rather than a method.
+// IT HAS TWO CONSUMERS AND NEITHER OWNS IT: the per-format degeneracy probe
+// (ReconcileResidentDegenerateByFormat) and the re-bucket detector (ReBucketNeeded).
+// The method set below is therefore the UNION of what per-format consumers read,
+// not one consumer's argument list — a type described by its first caller stops
+// being extendable without a lie.
+//
+// Four of the eight methods are EXISTING distManager methods used verbatim (load,
+// recoverIfDegenerate, recoverIfDegenerateWithShipped, shippedDocCountForRatio).
+// The other four — residentDocCount, armFormat, distinctResidentDocCount and
+// residentSegmentCount — are new FOR THE SEAM, and all four exist solely because
+// the underlying state is a FIELD on a generic struct rather than a method.
 //
 // recoverIfDegenerate and recoverIfDegenerateWithShipped are BOTH pinned here: the
 // arm probe calls the WithShipped variant (it has already read the denominator, so
@@ -32,6 +40,8 @@ type coverageArm interface {
 	recoverIfDegenerate(context.Context) error
 	recoverIfDegenerateWithShipped(context.Context, int, bool) error
 	residentDocCount() int
+	distinctResidentDocCount() int
+	residentSegmentCount() int
 	shippedDocCountForRatio(context.Context) (int, bool, error)
 	armFormat() string
 }
@@ -129,6 +139,21 @@ func (m *Manager) ReconcileResidentDegenerateByFormat(
 //     HEALTHY. Collapsing step 5 to a bare belowCoverageRatio call would flag such a
 //     partial re-import as degenerate and drive a rebuild that cannot raise the read
 //     pool it is measured against.
+//
+// THE MANIFEST-COMPLETENESS PASS RUNS EARLIER IN THE SAME TICK, and it does NOT
+// weaken the invariant above. ReconcileManifestCompleteness
+// (manager_completeness.go) converges each arm's L2 cache toward its published
+// manifest before this probe runs, because the two answer different questions: this
+// one asks whether the resident pool is degenerate against a doc-count ratio, that
+// one asks whether the cache is SHORT of the id set actually published — a shortfall
+// that is invisible here, since a cache holding a quarter of the corpus can still
+// clear the floor and read as perfectly healthy.
+//
+// ITS READ IS GATED THE SAME WAY THIS ONE IS. It compares a persisted per-format
+// manifest fingerprint against len(cache.Keys()) — two LOCAL numbers, no network —
+// and pays source.List(0) only inside the resulting mismatch branch. So the
+// no-read-above-the-floor property still describes this function exactly, and the
+// healthy arm still reaches step 2 having paid nothing.
 func armCoverageVerdict(
 	ctx context.Context, gt kgtypes.GraphType, name string, arm coverageArm,
 ) (v ArmVerdict) {
@@ -148,6 +173,14 @@ func armCoverageVerdict(
 			"floor", residentBackstopFloor,
 			"disarm", v.Disarm,
 			"degenerate", v.Degenerate,
+			// ANNOUNCE THE SEMANTICS ON THE LINE ITSELF. Every resident count above is
+			// a sum of DISTINCT member ids per segment. It did not always mean that: a
+			// segment carrying the same id more than once used to contribute one per
+			// COPY, so on a corpus that accumulated duplicate layers these numbers were
+			// inflated and now read roughly half what they did. THE DROP IS THE COUNT
+			// BECOMING CORRECT, NOT DOCUMENTS DISAPPEARING — without this note the fall
+			// is indistinguishable from the index loss this change repairs.
+			"count_semantics", "resident counts are distinct member ids; a one-time drop here is the count being corrected, not data lost",
 			"err", v.Err)
 	}()
 

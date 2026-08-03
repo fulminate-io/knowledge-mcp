@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -41,22 +40,30 @@ func segFiles(t *testing.T, base string, gt kgtypes.GraphType, name, format stri
 // A/bm25, B/hnsw, B/bm25 are all untouched. Observed via on-disk .seg state per
 // graphCacheDirFor subdir (no seam on the Manager path).
 func TestReclaimMultiGraphIsolation(t *testing.T) {
+	t.Parallel()
+
 	ctx := context.Background()
 	base := t.TempDir()
 	_, gc := newSegmentHarness(t)
 	mgr := NewManager(loginStateStub{loggedIn: true}, base, 0, withSegmentSource(gc))
 
-	const seal = searchengine.DefaultMinSegmentDocs
+	// Half a threshold keeps each graph inside a SINGLE partition through its tick
+	// (the tick counts the incoming window alongside the resident set), so each of
+	// the four engines holds exactly one segment for the isolation comparison.
+	const seal = searchengine.DefaultMinSegmentDocs / 2
 	gt := kgtypes.GraphCode
 	hnswFmt, bm25Fmt := hnsw.New().Name(), bm25.New().Name()
 
-	// Seal + ship one 1024-doc segment into each of the four (graph,format) engines.
+	// Seal + ship one segment into each of the four (graph,format) engines. One tick
+	// per graph drains BOTH of that graph's formats.
 	docsA := vecContentDocs(seal)
 	docsB := vecContentDocsSeed(seal, 100000)
-	require.NoError(t, mgr.AddAndShip(ctx, gt, "graphA", docsA))
-	require.NoError(t, mgr.AddAndShipFields(ctx, gt, "graphA", docsA))
-	require.NoError(t, mgr.AddAndShip(ctx, gt, "graphB", docsB))
-	require.NoError(t, mgr.AddAndShipFields(ctx, gt, "graphB", docsB))
+	require.NoError(t, mgr.AddAndMarkDirty(ctx, gt, "graphA", docsA))
+	require.NoError(t, mgr.AddAndMarkDirtyFields(ctx, gt, "graphA", docsA))
+	require.NoError(t, mgr.ReEmitDirtyBuckets(ctx, gt, "graphA"))
+	require.NoError(t, mgr.AddAndMarkDirty(ctx, gt, "graphB", docsB))
+	require.NoError(t, mgr.AddAndMarkDirtyFields(ctx, gt, "graphB", docsB))
+	require.NoError(t, mgr.ReEmitDirtyBuckets(ctx, gt, "graphB"))
 
 	// Snapshot the three engines that must stay untouched.
 	beforeABm25 := segFiles(t, base, gt, "graphA", bm25Fmt)
@@ -69,15 +76,17 @@ func TestReclaimMultiGraphIsolation(t *testing.T) {
 	aHnsw := mgr.managerFor(gt, "graphA")
 	beforeAHnsw := segFiles(t, base, gt, "graphA", hnswFmt)
 	require.NotEmpty(t, beforeAHnsw)
+	aResident := aHnsw.engine.Export()
+	require.Len(t, aResident, 1, "A/hnsw holds one sealed segment before the merge")
 
-	// Trigger a dead-ratio merge on A's HNSW engine ONLY.
-	for i := range seal/3 + 1 {
+	// Merge A's HNSW engine ONLY. The engines this Manager builds have the automatic
+	// triggers disarmed, so the occasion is applied directly; what it reclaims, and
+	// where, is exactly what this test measures.
+	aDead := seal/3 + 1
+	for i := range aDead {
 		aHnsw.engine.Delete(docsA[i].ID)
 	}
-	require.GreaterOrEqual(t, waitMergeCount(aHnsw.engine.MergeCount, 1), uint64(1), "A/hnsw merge must fire")
-	waitMergeQuiesce(aHnsw.engine.MergeCount)
-	// Let the lock-free post-CAS reclaim settle on disk.
-	time.Sleep(80 * time.Millisecond)
+	applyMerge(t, aHnsw, []searchengine.SegmentID{aResident[0].ID}, consolidatedHNSWBlob(t, docsA[aDead:]))
 
 	// A/hnsw: the superseded constituent's .seg file is gone; a NEW merged .seg
 	// replaced it.

@@ -16,8 +16,6 @@ package tools
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"strings"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
@@ -42,6 +40,9 @@ func InterceptGraphType(ctx context.Context, deps ClientDeps, params kgtools.Cal
 	if params.Name != "custom_collector" {
 		return false, kgtools.ToolResult{}
 	}
+	if err := rejectUndeclaredParams("custom_collector", "", GraphTypeToolDef().InputSchema.Properties, params.Arguments); err != nil {
+		return true, errorResult(err.Error())
+	}
 	var a graphTypeArgs
 	if err := json.Unmarshal(params.Arguments, &a); err != nil {
 		return true, errorResult("custom_collector: invalid arguments: " + err.Error())
@@ -57,7 +58,7 @@ func InterceptGraphType(ctx context.Context, deps ClientDeps, params kgtools.Cal
 	case "list":
 		return true, handleGraphTypeList(ctx, deps, a)
 	default:
-		ops := []string{"register", "update", "delete", "list"}
-		return true, errorResult(fmt.Sprintf("custom_collector: unknown operation %q — valid operations: %s", a.Operation, strings.Join(ops, ", ")))
+		return true, unknownOperationResult("custom_collector", a.Operation,
+			[]string{"register", "update", "delete", "list"})
 	}
 }

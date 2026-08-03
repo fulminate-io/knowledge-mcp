@@ -171,12 +171,25 @@ func (m *distManager[Q, S]) loadFromServer(ctx context.Context) error {
 		}
 	}
 
-	if err := m.engine.Import(blobs, nil); err != nil {
+	// Seed the imported segments' live bits from the known tombstones. A blob listed
+	// here may predate a delete, and an unseeded import starts every member LIVE —
+	// which is exactly how a removed node comes back into the searchable set.
+	if err := m.engine.Import(blobs, m.knownTombstones()); err != nil {
 		return err
 	}
 	m.recordResident(blobs)
 	m.advanceGen(&m.importedGen, clampedLoadFloor(listedMaxGen, maxGen, minUnfetchedKeptGen))
 	return nil
+}
+
+// knownTombstones reads the owner's current tombstone set, or nil when this engine
+// has no supplier (a directly-constructed test engine). Read per import rather than
+// held, so ids learned since the engine was built still apply.
+func (m *distManager[Q, S]) knownTombstones() []searchengine.ExternalID {
+	if m.tombstoneSeed == nil {
+		return nil
+	}
+	return m.tombstoneSeed()
 }
 
 // clampedLoadFloor computes the importedGen advance target for a loadFromServer
@@ -299,7 +312,9 @@ func (m *distManager[Q, S]) reload(ctx context.Context, ids []searchengine.Segme
 		}
 		blobs = append(blobs, searchengine.SegmentBlob{ID: id, Bytes: b})
 	}
-	if err := m.engine.Import(blobs, nil); err != nil {
+	// Same seed as loadFromServer: a reload re-imports stored blobs, and one of them
+	// may predate a delete.
+	if err := m.engine.Import(blobs, m.knownTombstones()); err != nil {
 		return err
 	}
 	m.recordResident(blobs)

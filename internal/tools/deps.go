@@ -14,7 +14,6 @@ package tools
 
 import (
 	"context"
-	"time"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/backends"
@@ -22,203 +21,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
 	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
-	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
-	clientthought "github.com/fulminate-io/knowledge-mcp/internal/thought"
 )
-
-// SegmentSearcher is the narrow consumer-side seam the search intercepts use to
-// query the client-hosted BM25+HNSW segment engines. *segmentdist.Manager
-// satisfies it (Manager.Search). Declared here as an interface — not the
-// concrete type — so the search arms reach the engine without tools importing
-// segmentdist's full surface, and so tests can inject a fake Manager that
-// asserts the arm drove the CLIENT engine instead of dispatching a server
-// search. Returns RRF-fused ranked Hits (ID + fused score) for hydration.
-type SegmentSearcher interface {
-	Search(ctx context.Context, gt kgtypes.GraphType, name, queryText string, queryVec []byte, k int) ([]searchengine.Hit, error)
-}
-
-// SegmentVectorResolver is the narrow consumer-side seam the mode:"similar" search
-// claim uses to resolve a node's STORED query vector from the client-local HNSW
-// segments by external id. *segmentdist.Manager satisfies it (Manager.VectorByID).
-// Kept DELIBERATELY SEPARATE from SegmentSearcher — not folded into it — so the
-// ~15 Search-only test doubles (fakeSegmentSearcher, recallFakeSearcher,
-// fanOutSegmentSearcher, every SegmentManager() stub) compile unchanged; a narrow
-// per-purpose seam over the same concrete is the established deps.go pattern
-// (SegmentShipper, PipelineScanner, ReflectionForcer). The (ok=false, err=nil)
-// tuple separates absent-id (node not embedded yet → caller loud-errors) from a
-// load failure (err!=nil).
-type SegmentVectorResolver interface {
-	VectorByID(ctx context.Context, gt kgtypes.GraphType, name, externalID string) ([]byte, bool, error)
-}
-
-// SegmentShipper is the build-concurrent / ship-once SHIP surface the
-// rebuild_segments driver drives. *segmentdist.Manager satisfies it. The method
-// set is DELIBERATELY the Add-ONLY + single-finalize shape (there is NO
-// AddAndShipDeterministic): the driver builds every full chunk concurrently via
-// the Add-ONLY AddDeterministic (HNSW) + AddFields (BM25) — no per-chunk ship —
-// then ships exactly ONCE via the single serial FlushDeterministic after the
-// concurrent pool joins. That is the fix for the concurrent-ship/reconcilePrune
-// data-loss race: a single ship over the fully-published Export can only prune
-// genuinely merged-away ids, never a live concurrently-built sibling.
-// FlushDeterministic RETURNS the server-pruned (merged-away) ids; the driver
-// passes them to InvalidateLocal so the superseded local .seg files are evicted
-// rather than orphaning under an unbounded cache.
-type SegmentShipper interface {
-	AddDeterministic(ctx context.Context, gt kgtypes.GraphType, name string, docs []searchengine.Document) error
-	AddFields(ctx context.Context, gt kgtypes.GraphType, name string, docs []searchengine.Document) error
-	FlushDeterministic(ctx context.Context, gt kgtypes.GraphType, name string) ([]searchengine.SegmentID, error)
-	InvalidateLocal(gt kgtypes.GraphType, name string, ids []searchengine.SegmentID)
-}
-
-// SegmentPruner is the narrow seam the one-shot manage(prune-cache) handler drives
-// to reclaim orphaned L2 segment files. *segmentdist.Manager satisfies it (via the
-// bootstrap client_segment.go adapter — the ONLY place the tools-local and
-// segmentdist-native vocabularies meet). The targets cross this seam as PARALLEL
-// slices (graphTypes[i] pairs with names[i]) of already-imported kgtypes.GraphType
-// + string — DELIBERATELY not a segmentdist target type — so tools never imports
-// segmentdist (the same intra-client decoupling the four sibling segment seams keep:
-// this file references *segmentdist.Manager in PROSE only, never in a signature or a
-// var _ assertion). execute=false previews (the report carries the would-remove
-// orphans, deletes nothing); execute=true unlinks the orphans and fills
-// Removed/RemovedBytes.
-type SegmentPruner interface {
-	PruneCache(ctx context.Context, graphTypes []kgtypes.GraphType, names []string, execute bool) (PruneCacheReport, error)
-}
-
-// PruneCacheGraphReport is the tools-local per-(graph, format) prune result — a
-// field-identical mirror of segmentdist.PruneCacheGraphReport over already-imported
-// types only (kgtypes.GraphType + searchengine.SegmentID). The client_segment.go
-// adapter copies it field-for-field across the package boundary. Orphans is the
-// would-remove (preview) OR did-remove set; Bytes is the summed .seg FileInfo size;
-// Aborted+AbortReason surface a List(0) subset-abort for a SKIPPED pool.
-type PruneCacheGraphReport struct {
-	GraphType   kgtypes.GraphType
-	Name        string
-	Format      string
-	Orphans     []searchengine.SegmentID
-	Bytes       int64
-	Aborted     bool
-	AbortReason string
-}
-
-// PruneCacheReport is the tools-local whole-run result mirroring
-// segmentdist.PruneCacheReport: one PruneCacheGraphReport per (graph, format) pool
-// plus the EXECUTED totals (Removed count + RemovedBytes), zero on a preview run.
-type PruneCacheReport struct {
-	Graphs       []PruneCacheGraphReport
-	Removed      int
-	RemovedBytes int64
-}
-
-// SegmentCoverageReader is the narrow read seam the manage(status) segment-coverage
-// column uses to read a graph's segment-covered doc count (summed HNSW
-// meta.DocCount). *segmentdist.Manager satisfies it (Manager.ShippedSegmentDocCount).
-// A narrow per-purpose seam over the same concrete is the established deps.go
-// pattern (SegmentSearcher, SegmentShipper, SegmentVectorResolver). The renderer
-// consumes only the covered count; anyUnknown (the conservative-unknown signal the
-// auto-heal probe reads) is irrelevant to a display column and ignored there.
-type SegmentCoverageReader interface {
-	ShippedSegmentDocCount(ctx context.Context, gt kgtypes.GraphType, name string) (covered int, anyUnknown bool, err error)
-	// ResidentDocCount returns the LIVE in-memory engine resident doc count for one
-	// graph — the searchable pool's actual size, distinct from the SERVER's shipped
-	// count above. The status column renders both so a collapse (server intact, live
-	// pool empty) shows "live 0 of N" instead of being masked behind the shipped
-	// figure. Satisfied by *segmentdist.Manager.ResidentDocCount (a single atomic
-	// read, no RPC).
-	ResidentDocCount(gt kgtypes.GraphType, name string) int
-}
-
-// PipelineScanner is the login-routed PipelineScan + Execute wire seam the
-// rebuild_segments driver pages the segment_rebuild scan through. GraphCaller
-// exposes only Execute and the *graphclient.Router has NO PipelineScan — only the
-// bootstrap routedWireClient does — so this is a distinct accessor satisfied by a
-// login-routed adapter (per-call cloud-when-logged-in / local-otherwise).
-type PipelineScanner interface {
-	PipelineScan(ctx context.Context, req *knowledgev1.PipelineScanRequest) (*knowledgev1.PipelineScanResponse, error)
-	Execute(ctx context.Context, req *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error)
-}
-
-// ReflectionForcer is the narrow seam the manual propagate tool uses to drive an
-// on-demand full-corpus reflection backstop pass (thoughts(propagate,
-// force_full:true)). *clientthought.PropagationLoop satisfies it (ForceFullPass).
-// Declared here as an interface — not the concrete loop type — so the tools layer
-// reaches the lever without importing the loop's full surface, and so tests inject
-// a fake recording the force call. ForceFullPass claims the per-account reflection
-// single-flight guard, bypasses the cadence + quiet-skip + incremental scoping, and
-// resets the backstop clock on completion; it returns
-// clientthought.ErrReflectionInFlight (a benign coalesce, not a failure) when
-// another pass already holds the guard.
-type ReflectionForcer interface {
-	ForceFullPass(ctx context.Context) (clientthought.PropagationResult, error)
-}
-
-// BlindSpotProvider is the narrow READ seam the on-demand query(mode:blind_spots)
-// handler serves the loop's cached faceted report through. *clientthought.
-// PropagationLoop satisfies it (GetBlindSpots). Declared as an interface — not the
-// concrete loop type — so the tools layer reads the cache without importing the
-// loop's full surface, and so tests inject a fake returning a constructed report.
-// GetBlindSpots is O(1) (a p.mu-guarded field read): the handler serves the report
-// the background tick already computed and NEVER recomputes on the call path. A
-// zero-value report (Computed=false) is the cold sentinel before the first tick —
-// the handler renders a not-yet-computed message rather than a synchronous
-// recompute.
-type BlindSpotProvider interface {
-	GetBlindSpots() clientthought.BlindSpotReport
-}
-
-// ClusterProvider is the narrow READ seam the on-demand query(mode:personality)
-// and query(mode:summary) handlers serve the loop's cached clusters + personality
-// profile through. *clientthought.PropagationLoop satisfies it (GetClustersCached).
-// Declared as an interface — not the concrete loop type — so the tools layer reads
-// the cache without importing the loop's full surface, and so tests inject a fake
-// returning constructed clusters. GetClustersCached is O(1) (a p.mu-guarded field
-// read): the handler serves the clusters the background tick already detected and
-// NEVER recomputes on the call path. The bool is the cold sentinel (false before
-// the first tick) — the handler renders a not-yet-computed message rather than a
-// synchronous cluster detect.
-type ClusterProvider interface {
-	GetClustersCached() ([]clientthought.ThoughtCluster, *clientthought.PersonalityProfile, bool)
-}
-
-// TensionsProvider is the narrow READ seam the on-demand query(mode:tensions)
-// handler serves the loop's cached tension reports through. *clientthought.
-// PropagationLoop satisfies it (GetTensions). Declared as an interface — not the
-// concrete loop type — so the tools layer reads the cache without importing the
-// loop's full surface, and so tests inject a fake returning constructed reports.
-// GetTensions is O(1) (a p.mu-guarded field read): the handler serves the reports
-// the background tick already computed and NEVER recomputes on the call path. The
-// bool is the cold sentinel (false before the first tick) — the handler renders a
-// not-yet-computed message rather than a synchronous tension detect.
-type TensionsProvider interface {
-	GetTensions() ([]clientthought.TensionReport, bool)
-}
-
-// SimilarityForcer is the narrow seam the manual propagate tool uses to drive the
-// now-ASYNC topic-similarity lever (thoughts(propagate, similarity:true)).
-// *clientthought.PropagationLoop satisfies it. Declared as an interface (mirroring
-// ReflectionForcer) so the tools layer reaches the lever without the loop's full
-// surface and tests inject a fake.
-//
-// The lever is async: StartSimilarityPass acquires the SAME per-account reflection
-// single-flight guard in the trigger path (coalescing onto an in-flight tick →
-// started=false, no second concurrent recompute), then runs the whole topic layer
-// (drain → centroids → reconcile → merge cascade → summaries → drift → links) on a
-// daemon-lifetime goroutine and invokes onComplete with the report — it does NOT
-// return the rendered report to the caller. The event seam persists one status
-// record per pass: BeginSimilarityEvent creates the status=running event at trigger
-// time and FinishSimilarityEvent REPLACES it at completion (re-supplying the FULL
-// metadata map — upsert is a whole-node REPLACE). The read methods back the
-// similarity_report fetch op. RunSimilarityPass stays on the interface as the worker
-// body StartSimilarityPass calls internally.
-type SimilarityForcer interface {
-	RunSimilarityPass(ctx context.Context, linkThreshold, mergeThreshold float64, densify clientthought.DensifyParams) (clientthought.SimilarityReport, error)
-	StartSimilarityPass(linkThreshold, mergeThreshold float64, densify clientthought.DensifyParams, onStarted func(), onComplete clientthought.SimilarityComplete) (started bool)
-	BeginSimilarityEvent(ctx context.Context, link, merge float64) (id string, startedAt time.Time, err error)
-	FinishSimilarityEvent(ctx context.Context, id string, startedAt time.Time, link, merge float64, status string, durationMs int64, rendered string, headline map[string]string) error
-	LatestSimilarityEvent(ctx context.Context) (*knowledgev1.Node, bool)
-	LatestCompletedSimilarityEvent(ctx context.Context) (*knowledgev1.Node, bool)
-	SimilarityEventByID(ctx context.Context, id string) (*knowledgev1.Node, bool)
-}
 
 // BackendResolver routes between configured external project/ticket
 // backends (Linear, Jira, GitHub Issues, ...). Production wires this to
@@ -381,6 +184,21 @@ type ClientDeps interface {
 	// client) — the handler's nil-guard surfaces a not-ready error rather than
 	// dereferencing.
 	SegmentPruner() SegmentPruner
+	// SegmentCacheDropper returns the SAME *segmentdist.Manager (via the
+	// client_segment_dropcache.go adapter) as the whole-graph L2 teardown surface
+	// manage(drop_graph) drives after the server-side drop succeeds. Returns nil
+	// when the segment manager was not constructed (router-less / headless client)
+	// — and drop_graph treats nil as "local cache not inspected", NOT as an error:
+	// the graph really is gone server-side, so reporting a failure because this
+	// client had no segment engine would send an operator hunting a drop that
+	// succeeded.
+	SegmentCacheDropper() SegmentCacheDropper
+	// SegmentDeleter returns the SAME *segmentdist.Manager (via the client_segment.go
+	// adapter) as the seam that carries a delete into the shipped segment corpus.
+	// Returns nil when the segment manager was not constructed (router-less /
+	// headless client); callers skip the re-emit on nil, which is the same
+	// best-effort disposition they give a failure.
+	SegmentDeleter() SegmentDeleter
 	// SegmentCoverage returns the SAME *segmentdist.Manager as the read seam the
 	// manage(status) segment-coverage column reads segment-covered doc counts
 	// through. Returns nil when the pipeline was not wired (same condition as

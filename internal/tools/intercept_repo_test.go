@@ -59,8 +59,11 @@ func (d *repoTestDeps) SegmentManager() SegmentSearcher              { return ni
 func (d *repoTestDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
 func (d *repoTestDeps) SegmentShipper() SegmentShipper               { return nil }
 func (d *repoTestDeps) SegmentPruner() SegmentPruner                 { return nil }
-func (d *repoTestDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
-func (d *repoTestDeps) PipelineScanner() PipelineScanner             { return nil }
+
+func (d *repoTestDeps) SegmentCacheDropper() SegmentCacheDropper { return nil }
+func (d *repoTestDeps) SegmentDeleter() SegmentDeleter           { return nil }
+func (d *repoTestDeps) SegmentCoverage() SegmentCoverageReader   { return nil }
+func (d *repoTestDeps) PipelineScanner() PipelineScanner         { return nil }
 
 func (d *repoTestDeps) ClearHealLatch(kgtypes.GraphType, string) {}
 func (d *repoTestDeps) ReflectionForcer() ReflectionForcer       { return nil }
@@ -334,6 +337,62 @@ func TestInjectManageRepo_CodeOp_ExplicitName_PassesThrough(t *testing.T) {
 		paramsFor("manage", `{"operation":"list_branches","name":"knowledge"}`))
 	assert.False(t, handled)
 	assert.Equal(t, "knowledge", callArgs(t, out.Arguments)["name"])
+}
+
+// TestInjectRepo_SearchMaterializesCodeGraph pins the search arm writing its
+// graph decision back onto the args instead of leaving it implicit.
+//
+// The gate above ALREADY decides that a search with no graph targets code — it
+// requires a repo and errors without one. But it left args["graph"] empty, so
+// the next reader down the chain re-derived the default from the raw field and
+// reached the opposite answer (empty → knowledge). Materializing the decision
+// where it is made removes the second derivation rather than teaching the
+// downstream reader the same rule.
+//
+// The four cases are deliberately contradictory: two shapes that must become
+// code, one that must be left alone, and one that must be idempotent. Any fix
+// that simply forced graph=code onto every search would fail the third.
+func TestInjectRepo_SearchMaterializesCodeGraph(t *testing.T) {
+	t.Run("no_graph_no_repo_errors", func(t *testing.T) {
+		// CHARACTERIZATION GUARD: the gate's existing decision that a graphless
+		// search targets code, observed through the repo requirement it enforces.
+		deps := &repoTestDeps{rootDir: t.TempDir()}
+		_, handled, res := InjectRepoIfCodeGraph(context.Background(), deps,
+			paramsFor("search", `{"query":"x"}`))
+		require.True(t, handled, "a graphless search with no repo must short-circuit")
+		assert.True(t, res.IsError)
+		assert.Contains(t, res.Content[0].Text, "repo")
+	})
+
+	t.Run("no_graph_with_repo_becomes_code", func(t *testing.T) {
+		deps := &repoTestDeps{rootDir: t.TempDir()}
+		out, handled, _ := InjectRepoIfCodeGraph(context.Background(), deps,
+			paramsFor("search", `{"query":"x","repo":"knowledge"}`))
+		assert.False(t, handled, "a graphless search with a repo continues the chain")
+		assert.Equal(t, "code", callArgs(t, out.Arguments)["graph"],
+			"the gate decided this search targets code by requiring a repo — it must write "+
+				"that decision onto the args so no reader downstream re-derives it")
+	})
+
+	t.Run("explicit_knowledge_untouched", func(t *testing.T) {
+		// The scope fence: materializing the code default must not hijack a
+		// search that explicitly named another graph.
+		deps := &repoTestDeps{rootDir: t.TempDir()}
+		out, handled, _ := InjectRepoIfCodeGraph(context.Background(), deps,
+			paramsFor("search", `{"query":"x","graph":"knowledge"}`))
+		assert.False(t, handled)
+		assert.JSONEq(t, `{"query":"x","graph":"knowledge"}`, string(out.Arguments),
+			"an explicit non-code search must come back byte-for-byte unrewritten")
+	})
+
+	t.Run("explicit_code_idempotent", func(t *testing.T) {
+		deps := &repoTestDeps{rootDir: t.TempDir()}
+		out, handled, _ := InjectRepoIfCodeGraph(context.Background(), deps,
+			paramsFor("search", `{"query":"x","graph":"code","repo":"knowledge"}`))
+		assert.False(t, handled)
+		assert.Equal(t, "code", callArgs(t, out.Arguments)["graph"],
+			"an already-explicit code search must survive the write unchanged")
+	})
 }
 
 func TestInjectRepoIfCodeGraph_NonCodeGraphTool_PassesThrough(t *testing.T) {

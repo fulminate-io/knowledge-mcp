@@ -92,13 +92,16 @@ func loadSourceView(
 		return sv, nil
 	}
 
-	// Match-all: this view indexes EVERY node of the source graph unconditionally,
-	// so the edge read wants the whole edge set. It used to spell that by handing
-	// every node id back as a pivot set; the ids are gone now, and only the node
-	// browse remains as a round trip. The maps below are read by keyed lookup
+	// Whole-graph: this view indexes EVERY node of the source graph
+	// unconditionally, so the edge read drives off every indexed id as the pivot
+	// set, read in bounded pages. The maps below are read by keyed lookup
 	// (edgesFrom / edgesTo), never ranged, so an entry keyed on an id no node
 	// carries is unreachable rather than visible.
-	edges, err := foundation.FetchAllEdges(ctx, caller, graphType, name, nil)
+	ids := make([]string, 0, len(sv.byID))
+	for id := range sv.byID {
+		ids = append(ids, id)
+	}
+	edges, err := foundation.FetchAllEdges(ctx, caller, graphType, name, ids, nil)
 	if err != nil {
 		return nil, fmt.Errorf("recipe: load source edges %s/%s: %w", graphType, name, err)
 	}

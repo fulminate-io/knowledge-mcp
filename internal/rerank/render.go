@@ -4,6 +4,7 @@ package rerank
 
 import (
 	"strings"
+	"unicode/utf8"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
@@ -81,8 +82,8 @@ func renderCodeForRerank(n *knowledgev1.Node) string {
 	}
 	// Surface test_kind so the rerank LLM sees the test/non-test classification.
 	// Down-weighting test_kind=test/benchmark/example/fuzz on impl-style queries
-	// is the reranker-tuning ticket (cddf5098); this ticket only plumbs the field
-	// into the prompt.
+	// is a ranking-policy decision that belongs to the reranker's own scoring;
+	// this function only plumbs the field into the prompt.
 	if n.TestKind != "" {
 		b.WriteString("// test_kind: ")
 		b.WriteString(n.TestKind)
@@ -111,6 +112,31 @@ func truncateDocComment(s string) string {
 		return s[:maxLen]
 	}
 	return s
+}
+
+// knowledgeBodyBudget caps the COMBINED bytes the knowledge branch spends
+// on Summary + Keywords + Content. Knowledge bodies run to kilobytes of
+// reasoning text, and the reranker is billed and rate-limited per token,
+// so the branch takes a fixed slice of each rather than the whole field.
+const knowledgeBodyBudget = 1000
+
+// truncateRerankBody returns at most max bytes of s, backing off to the
+// preceding rune boundary so the result is always valid UTF-8. Knowledge
+// text is full of em dashes and ellipses, and a mid-rune byte slice would
+// put invalid UTF-8 into the JSON request body. A non-positive max yields
+// the empty string, which is how the caller spends a budget down to zero
+// and then skips the remaining fields.
+func truncateRerankBody(s string, max int) string {
+	if max <= 0 || s == "" {
+		return ""
+	}
+	if len(s) <= max {
+		return s
+	}
+	for max > 0 && !utf8.RuneStart(s[max]) {
+		max--
+	}
+	return s[:max]
 }
 
 // renderCloudForRerank emits Type:resource_type SymbolName in region\nSummary.
@@ -192,11 +218,29 @@ func renderPracticeForRerank(n *knowledgev1.Node) string {
 // renderKnowledgeForRerank is the default branch — covers knowledge-graph
 // node types (decision/finding/plan/phase/step/rule/thought/project/ticket/
 // question/research/document/criterion/reuse_check/charge/thought_session)
-// AND any unclassified type a future addition introduces. Emits
-// Type\nSymbolName\nDescription\nStatus. Type prefix categorizes;
-// SymbolName carries title; Description carries body; Status disambiguates
-// lifecycle. For unclassified types missing Description/Status the output
-// gracefully degrades to Type+SymbolName.
+// AND any unclassified type a future addition introduces.
+//
+// Emits, in order: Type, SymbolName, Summary, Keywords, Description,
+// Content, Status. Type prefix categorizes; SymbolName carries the title;
+// Summary and Keywords are the two top-boost BM25 fields and belong in the
+// rerank document for the same reason they are indexed; Description and
+// Content carry the body; Status disambiguates lifecycle. For unclassified
+// types missing most fields the output gracefully degrades to
+// Type+SymbolName.
+//
+// Summary, Keywords and Content share one byte allowance, spent in that
+// order and bounded by knowledgeBodyBudget, so a node with a multi-kilobyte
+// summary cannot crowd out the whole document. Description is deliberately
+// unbudgeted: it is short on these node types and already carried this
+// branch's entire body text before the other fields were added, so bringing
+// it under the cap could evict text that currently ranks.
+//
+// Content is skipped when it is a prefix OR a suffix of Summary. The server
+// composes an absent Summary out of Content in two shapes — thought
+// summaries append status and session, putting Content first; charge
+// summaries prepend the polarity label, putting Content last — so a
+// one-sided check would spend the budget twice on the same bytes for every
+// node of one of those kinds.
 func renderKnowledgeForRerank(n *knowledgev1.Node) string {
 	var b strings.Builder
 	if n.Type != "" {
@@ -207,9 +251,24 @@ func renderKnowledgeForRerank(n *knowledgev1.Node) string {
 		b.WriteString(n.SymbolName)
 		b.WriteByte('\n')
 	}
+	remaining := knowledgeBodyBudget
+	writeBudgeted := func(s string) {
+		t := truncateRerankBody(s, remaining)
+		if t == "" {
+			return
+		}
+		b.WriteString(t)
+		b.WriteByte('\n')
+		remaining -= len(t)
+	}
+	writeBudgeted(n.Summary)
+	writeBudgeted(n.Keywords)
 	if n.Description != "" {
 		b.WriteString(n.Description)
 		b.WriteByte('\n')
+	}
+	if n.Content != "" && !strings.HasPrefix(n.Summary, n.Content) && !strings.HasSuffix(n.Summary, n.Content) {
+		writeBudgeted(n.Content)
 	}
 	if n.Status != "" {
 		b.WriteString(n.Status)

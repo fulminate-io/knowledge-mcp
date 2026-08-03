@@ -15,10 +15,12 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/validate"
 )
 
-// createProjectArgs mirrors the server-side batchProject shape (subset
-// of fields a caller can supply). The five backend metadata fields
-// (Backend / LinearID / ExternalURL / LinearGroupID / LinearGroupKey)
-// live on the FORWARDED args, not here — callers never set them.
+// createProjectArgs is the complete set of create_project wire params — every
+// field here is declared by CreateProjectToolDef and every declared property is
+// read here, with no passthrough slots. The project's backend metadata
+// (`backend`, `linear_id`, `external_url`, `linear_group_id`, `linear_group_key`)
+// is NOT caller-suppliable: BuildProjectNode stamps it from the
+// backends.RemoteRef and backends.Group that backend.CreateProject returned.
 type createProjectArgs struct {
 	Name        string `json:"name"`
 	Description string `json:"description"`
@@ -54,6 +56,13 @@ func InterceptCreateProject(ctx context.Context, deps ClientDeps, params kgtools
 	var a createProjectArgs
 	if err := json.Unmarshal(params.Arguments, &a); err != nil {
 		return true, errorResult("create_project: invalid arguments: " + err.Error())
+	}
+	// Ahead of every validation and BEFORE any backend side-effect: the decode
+	// above discards any top-level key createProjectArgs has no field for, so an
+	// undeclared param would otherwise vanish into a successful create — and a
+	// rejection that ran later could leave an orphan remote project behind.
+	if err := rejectUndeclaredParams("create_project", "", CreateProjectToolDef().InputSchema.Properties, params.Arguments); err != nil {
+		return true, errorResult(err.Error())
 	}
 	if err := validate.Name("create_project", a.Name); err != nil {
 		return true, errorResult(err.Error())

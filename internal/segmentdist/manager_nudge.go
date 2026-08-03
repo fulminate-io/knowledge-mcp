@@ -4,6 +4,7 @@ package segmentdist
 
 import (
 	"sync"
+	"time"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
@@ -37,18 +38,25 @@ type nudgeState struct {
 	mu     sync.Mutex
 	graphs map[graphKey]struct{}
 	wake   chan struct{} // buffered, capacity 1 — see the coalescing note above.
+	// lastNudge records when each graph last asked for an earlier DELTA PULL, so the
+	// search-driven recorder can be rate-limited per graph. It is guarded by the same
+	// mu as the rest of the file: one mutex for one mechanism.
+	lastNudge map[graphKey]time.Time
 }
 
-// ensure creates the set and the wake channel on first use. The caller MUST hold
-// mu. The channel in particular cannot be left at its zero value: a receive on a
-// nil channel blocks forever, so a consumer that took the channel before the first
-// recording would never wake.
+// ensure creates the set, the wake channel and the cool-off stamps on first use.
+// The caller MUST hold mu. The channel in particular cannot be left at its zero
+// value: a receive on a nil channel blocks forever, so a consumer that took the
+// channel before the first recording would never wake.
 func (n *nudgeState) ensure() {
 	if n.graphs == nil {
 		n.graphs = make(map[graphKey]struct{})
 	}
 	if n.wake == nil {
 		n.wake = make(chan struct{}, 1)
+	}
+	if n.lastNudge == nil {
+		n.lastNudge = make(map[graphKey]time.Time)
 	}
 }
 
@@ -110,4 +118,29 @@ func (m *Manager) flagReconcileNudge(gt kgtypes.GraphType, name string) {
 	case wake <- struct{}{}:
 	default:
 	}
+}
+
+// mergeNudgeCoolOff bounds how often ONE graph's searches may ask for an earlier
+// delta pull. It is per-graph rather than global because two graphs' searches are
+// independent events and collapsing them would let a hot graph starve a cold one.
+const mergeNudgeCoolOff = 60 * time.Second
+
+// nudgeMerge records that a user just searched this graph, so the reconcile loop
+// pulls its delta now rather than at its next tick — the search-nudged half of the
+// periodic cadence. Suppressed inside the cool-off window.
+func (m *Manager) nudgeMerge(gt kgtypes.GraphType, name string) {
+	k := graphKey{graphType: gt, graphName: name}
+
+	m.nudges.mu.Lock()
+	m.nudges.ensure()
+	last, seen := m.nudges.lastNudge[k]
+	now := time.Now()
+	if seen && now.Sub(last) < mergeNudgeCoolOff {
+		m.nudges.mu.Unlock()
+		return
+	}
+	m.nudges.lastNudge[k] = now
+	m.nudges.mu.Unlock()
+
+	m.flagReconcileNudge(gt, name)
 }

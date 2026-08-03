@@ -58,6 +58,9 @@ func InterceptTopology(ctx context.Context, deps ClientDeps, params kgtools.Call
 	if a.Mode != "topology" {
 		return false, kgtools.ToolResult{}
 	}
+	if err := accountQueryParams(armTopology, params.Arguments); err != nil {
+		return true, errorResult(err.Error())
+	}
 	// query(mode:"topology") requires an explicit graph + algorithm. There is no
 	// default sweep and no paramless/linkage fallback — both must be named, else a
 	// clear validation error is returned (not a vague fallthrough, the old

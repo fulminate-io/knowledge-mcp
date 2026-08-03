@@ -29,10 +29,11 @@ import (
 // rather than the "client segment engine unavailable" error.
 //
 // With the SegmentService deleted, the offline (NOT-logged-in) Manager runs on the
-// L2-local segment source: AddAndShipFields ships to the on-disk L2 cache with ZERO
-// server RPC, and the search arm reads BM25 over those L2 segments. The httptest
-// server mounts only the EngineService (so composeKnowledgeSearch's hydrate read
-// resolves the ranked Hit IDs to nodes) — the segment lifecycle is entirely local.
+// L2-local segment source: the field write plus its re-emit ship to the on-disk L2
+// cache with ZERO server RPC, and the search arm reads BM25 over those L2 segments.
+// The httptest server mounts only the EngineService (so composeKnowledgeSearch's
+// hydrate read resolves the ranked Hit IDs to nodes) — the segment lifecycle is
+// entirely local.
 
 // notLoggedInCaller is the not-logged-in loginState the offline Manager takes so the
 // source factory selects the L2-local segmentSource (no server segment RPC). It is
@@ -41,9 +42,9 @@ type notLoggedInCaller struct{}
 
 func (notLoggedInCaller) LoggedIn(context.Context) bool { return false }
 
-// offlineBM25Corpus builds a fixed-size BM25 corpus (== MinSegmentDocs default, so
-// AddAndShipFields seals exactly one segment) where one designated target doc
-// carries a unique high-IDF term. Mirrors segmentdist/manager_search_test.go's
+// offlineBM25Corpus builds a fixed-size BM25 corpus (kept at the MinSegmentDocs
+// default; the field write force-seals it into one segment) where one designated
+// target doc carries a unique high-IDF term. Mirrors segmentdist/manager_search_test.go's
 // searchCorpus, scoped to the BM25 fields the text-only degrade arm needs (no
 // vectors — the offline path never embeds).
 func offlineBM25Corpus(targetIdx int) (docs []searchengine.Document, targetID, uniqueTerm string) {
@@ -100,12 +101,12 @@ func TestInterceptSearchKnowledge_OfflineReturnsRealResults(t *testing.T) {
 
 	// Populate the Manager with real BM25 segments under knowledge/"default" (the
 	// graph+name composeKnowledgeSearch queries). A NOT-logged-in caller routes the
-	// Manager to the L2-local source, so AddAndShipFields + Flush seal the field-bearing
-	// docs into the on-disk L2 cache with ZERO server RPC — the offline degrade arm is
-	// BM25-over-local-L2, no vectors.
+	// Manager to the L2-local source, so the field write plus its re-emit seal the
+	// field-bearing docs into the on-disk L2 cache with ZERO server RPC — the offline
+	// degrade arm is BM25-over-local-L2, no vectors.
 	mgr := segmentdist.NewManager(notLoggedInCaller{}, t.TempDir(), 0)
-	require.NoError(t, mgr.AddAndShipFields(ctx, kgtypes.GraphKnowledge, knowledgeDefaultName, docs))
-	require.NoError(t, mgr.Flush(ctx, kgtypes.GraphKnowledge, knowledgeDefaultName))
+	require.NoError(t, mgr.AddAndMarkDirtyFields(ctx, kgtypes.GraphKnowledge, knowledgeDefaultName, docs))
+	require.NoError(t, mgr.ReEmitDirtyBuckets(ctx, kgtypes.GraphKnowledge, knowledgeDefaultName))
 
 	// Offline-but-ready: Embedder()==nil (emb left nil), PipelineReady()==true
 	// (pipelineNotReady false), and the wired populated Manager.

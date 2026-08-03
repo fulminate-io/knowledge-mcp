@@ -1,42 +1,29 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// Client-side dream.Runner construction.
+// The client-side MCP intercept chain, and the dispatch seam that hands the
+// same chain to the worker runtime.
 //
-// Post-Phase-F the server-side chokepoint that emitted tool-* events on
-// every MCP tool call is gone — no tool-* events ever cross the wire to
-// the client's local EventBus. The only events firing on the bus owned
-// by THIS Runner are worker-* events emitted from the Runner's own
-// runWorker (worker-started / worker-completed). Those are filtered by
-// the self-trigger guard in dispatchLoop (OriginIsDreamWorker), so a
-// worker subscribed to tool-completed can never re-fire on its own
-// child invocations.
+// TWO ENTRY POINTS, ONE CHAIN. runInterceptChain is what the serve daemon wires
+// as InterceptManageOp, so every upstream MCP tool call traverses it; and
+// dispatchForRunner wraps that same chain into a dream.DispatchFunc so worker
+// tool calls take the identical chain-then-engine.Dispatch path rather than any
+// worker-specific plumbing. A tool claimed client-side is served here; anything
+// unclaimed falls through to the server.
 //
-// The practical upshot: Runner.Start(ctx) walks Registry.All and installs
-// triggers, but in the client-side topology installed triggers are mostly
-// dead — they exist for shape consistency with the server-side wiring
-// they replace and for any future event source the client adds. Calling
-// Start() at boot is therefore mostly registry validation: it surfaces
-// load errors (worker rows that fail to decode, malformed triggers) so
-// the operator sees them at startup instead of when a manual trigger is
-// fired hours later.
+// The chain's ORDER is load-bearing and each ordering constraint is commented at
+// its own call site — a rewriter that must precede its consumers, a criterion
+// gate that must precede the generic mutate fall-through, a terminal claim that
+// must run last.
 //
-// Worker invocation in the client topology happens through the manual
-// path (worker.trigger MCP intercept, Phase H) which calls into
-// Runner.OnManualTrigger directly — no event bus involvement. The bus
-// remains live so worker-started / worker-completed status events can
-// still be observed if the client ever subscribes to them, but no
-// trigger-driven dispatch happens today.
+// The dream.Runner those worker calls belong to is CONSTRUCTED in the
+// dream_runtime.go sibling; this file only builds the DispatchFunc it dispatches
+// through.
 
 package bootstrap
 
 import (
 	"context"
 	"encoding/json"
-	"fmt"
-	"log/slog"
-	"net"
-	"os"
-	"path/filepath"
 	"slices"
 	"time"
 
@@ -44,33 +31,10 @@ import (
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
-	"github.com/fulminate-io/knowledge-mcp/internal/config"
 	"github.com/fulminate-io/knowledge-mcp/internal/dream"
 	"github.com/fulminate-io/knowledge-mcp/internal/tools"
-	"github.com/fulminate-io/knowledge-mcp/internal/workercrud"
 )
 
-// buildRuntime is the single-source construction path for the client-side
-// dream.Runner. Both wireWorkerRuntime (the serve daemon path) and Phase I's
-// runWorkerSubcommand (CLI `knowledge worker run` path) call through here
-// so the construction order — config load → bus → registry(client) →
-// runner(reg, bus, client, graphStorage) — stays in one place.
-//
-// gc is the login-aware Execute seam (runtimeLister). wireWorkerRuntime
-// passes the stdio client's c.router so the dream Registry's worker-list
-// loopback routes per-call to cloud when logged in (no local server) and
-// to the local graph otherwise. The CLI subcommand path runs BEFORE the
-// MCP client is built and so constructs its own local *graphclient.GraphClient
-// (which also satisfies runtimeLister) — the signature stays uniform across
-// both callers.
-//
-// graphStorage is the absolute path to ~/.knowledge/ (already
-// tilde-expanded by main()); the Runner writes per-worker logs under
-// <graphStorage>/workers/<name>.log.
-//
-// The Registry takes the Execute seam directly and resolves workers via a
-// wire-loopback query.
 // runInterceptChain dispatches an incoming MCP tool call through the same
 // client-side interceptor chain the serve daemon wires for upstream traffic.
 // Used in two places:
@@ -228,22 +192,35 @@ func (c *client) runInterceptChainInner(ctx context.Context, params kgtools.Call
 	if handled, res := tools.InterceptMutate(ctx, c, params); handled {
 		return params, true, res
 	}
-	handled, res = tools.InterceptCollect(ctx, c, params)
+	handled, res = c.runTerminalIntercepts(ctx, params)
 	return params, handled, res
 }
 
+// runTerminalIntercepts runs the chain's tail: the delete param guard, then the
+// terminal collect claim.
+//
+// The delete tool has no client intercept of its own — its arguments are decoded
+// in the engine package, which cannot reach the param-accounting helper — so the
+// guard exists purely to account for them and falls THROUGH on a clean payload,
+// leaving the delete itself to reach engine.Dispatch unchanged.
+func (c *client) runTerminalIntercepts(ctx context.Context, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
+	if handled, res := tools.InterceptDeleteGuard(ctx, c, params); handled {
+		return true, res
+	}
+	return tools.InterceptCollect(ctx, c, params)
+}
+
 // runQueryRenderingIntercepts dispatches the query-domain
-// intercepts (plan_tree, list_projects, decisions, evidence, lineage,
-// rules, examine projects). Extracted from runInterceptChainInner to
-// satisfy the funlen lint cap.
+// intercepts (plan_tree, evidence, lineage, rules, examine projects).
+// Extracted from runInterceptChainInner to satisfy the funlen
+// lint cap. Bare container-type browse (plan/project/ticket/research/
+// document) is deliberately NOT claimed here — it falls through to the
+// engine browse arm so it paginates like every other node type. A decision
+// browse is the same case and has no claimant here either: its two live
+// routes are the engine browse arm and, for a text-bearing query, the
+// knowledge search arm upstream.
 func runQueryRenderingIntercepts(ctx context.Context, c *client, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	if handled, res := tools.InterceptQueryPlanTree(ctx, c, params); handled {
-		return true, res
-	}
-	if handled, res := tools.InterceptQueryListProjects(ctx, c, params); handled {
-		return true, res
-	}
-	if handled, res := tools.InterceptQueryDecisions(ctx, c, params); handled {
 		return true, res
 	}
 	if handled, res := tools.InterceptQueryEvidence(ctx, c, params); handled {
@@ -420,80 +397,5 @@ func (c *client) dispatchForRunner() dream.DispatchFunc {
 	}
 }
 
-// runtimeLister is the Execute-only seam buildRuntime takes so it can be
-// handed the login-aware *graphclient.Router (cloud when logged in, local
-// otherwise) rather than the bare local *graphclient.GraphClient. The
-// argument flows ONLY to the dream Registry's worker-list lister
-// (workercrud.New); the worker tool-dispatch path is wired separately via
-// c.dispatchForRunner. Mirrors thought.Caller — both *graphclient.GraphClient
-// and *graphclient.Router satisfy it structurally.
-type runtimeLister interface {
-	Execute(ctx context.Context, req *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error)
-}
-
-func buildRuntime(gc runtimeLister, port int, graphStorage string, dispatch dream.DispatchFunc) (*dream.Runner, error) {
-	cfgPath, err := defaultConfigPath()
-	if err != nil {
-		return nil, fmt.Errorf("resolve config path: %w", err)
-	}
-	// Loopback bind addr — the client always talks to 127.0.0.1:<port>,
-	// so config.LoadOrAutoDetect's local-precedence path runs (matches
-	// the server's loadConfigForListener semantics for loopback bind).
-	bindAddr := &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: port}
-	cfg, wroteStarter, err := config.LoadOrAutoDetect(cfgPath, bindAddr)
-	if err != nil {
-		return nil, fmt.Errorf("load/auto-detect config: %w", err)
-	}
-	if wroteStarter {
-		slog.Info("auto-detected provider, wrote starter config",
-			"path", cfgPath,
-			"provider", cfg.Default.Provider,
-			"model", cfg.Default.Model,
-		)
-	}
-
-	bus := dream.NewEventBus()
-	// Wire the dream Registry through workercrud.Client so it reuses the
-	// query-tool wire path. workercrud.Client.List itself is wire-loopback;
-	// the indirection saves no round-trips but eliminates dream's bespoke
-	// wire-row decoder (~50 lines).
-	reg := dream.NewRegistry(workercrud.New(gc))
-	// The MCP tool catalog is client-owned. The Runner carries it so
-	// BuildAllowedTools can filter the worker allowlist locally (and without
-	// dream importing tools — that would cycle, since tools imports dream).
-	runner := dream.NewRunner(reg, bus, graphStorage, dispatch, tools.AllToolSchemas())
-	return runner, nil
-}
-
-// wireWorkerRuntime constructs the client-side dream.Runner and wires it
-// into the *client. It hands buildRuntime the login-aware c.router so the
-// Registry's worker-list loopback routes to cloud when logged in (no local
-// server) and local otherwise, and assigns the returned Runner to
-// c.runtime. After construction it calls startWorkerRuntime (Runner.Start
-// under a query-origin stamp) to install triggers; per the file-level
-// docstring this is mostly registry
-// validation in the client topology, so a Start failure is logged and
-// the runtime is still kept (manual triggers — the only invocation path
-// that matters today — work without Start).
-func wireWorkerRuntime(c *client, f Config) error {
-	runner, err := buildRuntime(c.router, f.Port, f.GraphStorage, c.dispatchForRunner())
-	if err != nil {
-		return err
-	}
-	c.runtime = runner
-	if err := startWorkerRuntime(context.Background(), runner); err != nil {
-		slog.Warn("dream runner Start failed; manual triggers still work", "error", err)
-	}
-	return nil
-}
-
-// defaultConfigPath returns the path to ~/.knowledge/config, mirroring
-// cmd/knowledge-server/server.go::loadConfigForListener. Extracted so
-// buildRuntime stays under the function-line cap.
-func defaultConfigPath() (string, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return "", fmt.Errorf("resolve home directory: %w", err)
-	}
-	return filepath.Join(home, ".knowledge", "config"), nil
-}
+// The dream.Runner this DispatchFunc feeds is constructed in the
+// dream_runtime.go sibling (runtimeLister / buildRuntime / wireWorkerRuntime).

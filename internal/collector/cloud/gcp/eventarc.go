@@ -130,8 +130,8 @@ func eventarcTriggerEdges(projectID, triggerName string, trigger *eventarcpb.Tri
 	}
 
 	// Trigger invocation service account (USES_SA). Mirrors the OIDC-token
-	// pattern in scheduler.go (cb9f10a) — Eventarc lifts the SA to the
-	// trigger top-level rather than nesting it under destination.
+	// pattern in scheduler.go — Eventarc lifts the SA to the trigger
+	// top-level rather than nesting it under destination.
 	if sa := trigger.GetServiceAccount(); sa != "" {
 		edges = append(edges, cloud.EdgeSpec{
 			SourceID:     triggerName,

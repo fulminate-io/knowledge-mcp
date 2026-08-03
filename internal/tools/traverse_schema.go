@@ -42,7 +42,6 @@ func TraverseToolDef() kgtools.MCPTool {
 				"account":               {Type: "string", Description: "Selects which inventoried external-provider account/org's resources to traverse within your own graph — an AWS/GCP account for graph='cloud', or a CI provider org (e.g. GitHub/GitLab) for graph='cicd'. Required for graph='cloud'/'cicd'; omit to list your available graphs."},
 				"repo":                  {Type: "string", Description: "Repo name for graph='code'."},
 				"branch":                {Type: "string", Description: "Branch name for graph='code' (optional)."},
-				"overlay":               {Type: "string", Description: "Optional knowledge session overlay name; diagnostic scoping."},
 				"include_edge_metadata": {Type: "boolean", Description: "When true, emit Weight/Confidence/Method/Evidence/LastValidated on every edge at every hop. Default off for all graphs."},
 				"format":                {Type: "string", Description: "Output format: 'text' (default) or 'json' (structured)"},
 				"include_tombstones":    {Type: "boolean", Description: "Include tombstoned (deleted) nodes in results. Default false."},

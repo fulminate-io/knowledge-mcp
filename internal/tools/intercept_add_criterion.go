@@ -50,6 +50,21 @@ type criterionCreateArgs struct {
 	Description   string `json:"description"`
 	Command       string `json:"command,omitempty"`
 	CriterionType string `json:"criterion_type,omitempty"`
+
+	// Status/Content/Metadata are routed onto the upserted criterion node.
+	// Name and summary are deliberately absent: both are DERIVED (name from
+	// description, summary from criterion_type + description + command), so the
+	// accounting table rejects them rather than letting a caller-supplied value
+	// silently lose to the derivation.
+	Status   string            `json:"status,omitempty"`
+	Content  string            `json:"content,omitempty"`
+	Metadata map[string]string `json:"metadata,omitempty"`
+
+	// raw is the caller's verbatim arguments payload, captured once at the
+	// dispatch entry so this arm can account for exactly the params the caller
+	// supplied. Never marshaled — it has no json tag and json.Unmarshal leaves
+	// unexported fields untouched.
+	raw json.RawMessage
 }
 
 // InterceptAddCriterion claims mutate(create, type:"criterion") and
@@ -63,8 +78,14 @@ func InterceptAddCriterion(ctx context.Context, deps ClientDeps, params kgtools.
 		// Bad args — fall through, server emits canonical error.
 		return false, kgtools.ToolResult{}
 	}
+	a.raw = params.Arguments
 	if a.Operation != "create" || a.Type != "criterion" {
 		return false, kgtools.ToolResult{}
+	}
+
+	// The throwaway mutateArgs carries only raw: the gate reads nothing else off it.
+	if err := accountMutateParams(armCriterionCreate, mutateArgs{raw: a.raw}); err != nil {
+		return true, errorResult(err.Error())
 	}
 
 	gc := deps.GraphCaller()
@@ -128,9 +149,20 @@ func upsertCriterionNode(ctx context.Context, gc GraphCaller, criterionID string
 	if err := validate.DerivedSummary("mutate(create, type=criterion)", "criterion.summary", a.Description+" + command", summary); err != nil {
 		return err
 	}
-	metadata := map[string]string{"type": criterionType}
+	// Caller metadata is seeded FIRST so the derived type/command keys win on a
+	// key collision. Copied, never aliased — see copyCallerMetadata.
+	metadata := copyCallerMetadata(a.Metadata)
+	if metadata == nil {
+		metadata = map[string]string{}
+	}
+	metadata["type"] = criterionType
 	if a.Command != "" {
 		metadata["command"] = a.Command
+	}
+	// Lint the value about to be STORED, not the `command` param: the caller
+	// metadata seeded above can carry a command the param never held.
+	if err := validate.RunSelectorGuard("mutate(create, type=criterion)", "criterion.command", metadata["command"]); err != nil {
+		return err
 	}
 	upsertArgs, err := json.Marshal(struct {
 		Operation   string            `json:"operation"`
@@ -139,11 +171,14 @@ func upsertCriterionNode(ctx context.Context, gc GraphCaller, criterionID string
 		Name        string            `json:"name"`
 		Description string            `json:"description"`
 		Summary     string            `json:"summary"`
+		Status      string            `json:"status,omitempty"`
+		Content     string            `json:"content,omitempty"`
 		Source      string            `json:"source"`
 		Metadata    map[string]string `json:"metadata"`
 	}{
 		Operation: "upsert", Type: "criterion", ID: criterionID,
 		Name: a.Description, Description: a.Description, Summary: summary,
+		Status: a.Status, Content: a.Content,
 		Source: "llm:claude", Metadata: metadata,
 	})
 	if err != nil {
@@ -186,22 +221,16 @@ func callMutateLink(ctx context.Context, gc GraphCaller, from, to, relationship 
 	return nil
 }
 
-// extractText pulls the concatenated text content from a tool result.
-// Used by error-propagation paths above. Defined elsewhere in the
-// package (parity test file); for the build path we rely on the test
-// helper to satisfy the symbol. Add a no-op stub guard so production
-// builds don't fail when the test helper isn't linked.
-//
-// Implementation note: this is a thin alias that mirrors
-// toolResultText in cmd/knowledge/internal/projects/render/wire_fetch.go.
-// Defined here as a closure-style helper since extractText (from the
-// parity test file) is _test.go-tagged and cannot link from a non-test
-// build.
-//
-// To keep both production and test symbols cleanly resolved, this file
-// re-uses the existing in-package helper extractWireText defined in
-// intercept_query_list_projects.go (also a non-test file). Calling
-// it directly avoids any test/non-test cycling.
+// extractText concatenates every text content block of a tool result.
+// Used by the error-propagation paths above and by the in-package test
+// suites. Mirrors toolResultText in
+// cmd/knowledge/internal/projects/render/wire_fetch.go.
 func extractText(r kgtools.ToolResult) string {
-	return extractWireText(r)
+	var sb strings.Builder
+	for _, c := range r.Content {
+		if c.Type == "text" {
+			sb.WriteString(c.Text)
+		}
+	}
+	return sb.String()
 }

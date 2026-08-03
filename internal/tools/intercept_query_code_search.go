@@ -86,6 +86,9 @@ func InterceptQueryCodeSearch(ctx context.Context, deps ClientDeps, params kgtoo
 	if len(queries) == 0 {
 		return false, kgtools.ToolResult{} // no query → not the search shape.
 	}
+	if err := accountQueryParams(armCodeSearch, params.Arguments); err != nil {
+		return true, errorResult(err.Error())
+	}
 	gc := deps.GraphCaller()
 	if gc == nil {
 		return true, errorResult("code search: graph client unavailable")
@@ -369,7 +372,7 @@ func searchOneCodeQuery(ctx context.Context, cdeps codeSearchDeps, target *knowl
 // the Repo field). path_prefix is applied post-hydrate, matching the server arm.
 // SEGMENT-POOL KEY SYMMETRY. The pipeline SHIPS segments under the
 // OVERLAY-QUALIFIED graph name — worker_embed.go passes key.GraphName verbatim to
-// AddAndShip/AddAndShipFields, and that name is "repo@branch" whenever the gap
+// the segment write entry points, and that name is "repo@branch" whenever the gap
 // scan read from a branch overlay (the same reason pipeline/rpc.go splits it back
 // apart on writeback). Reading under the BARE repo alone therefore opens a pool
 // nothing has filled since the last default-branch collect, and re-collecting can

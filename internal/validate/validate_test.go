@@ -8,8 +8,7 @@ import (
 	"unicode/utf8"
 )
 
-// TestSummary covers the contract of Summary (ticket
-// dfd1f4e2a0777c6711e363f2ec3edefc): empty / whitespace-only /
+// TestSummary covers the contract of Summary: empty / whitespace-only /
 // over-cap inputs return a structured error naming the calling tool
 // and field path; valid inputs return nil. The 500-char cap is
 // enforced against the trimmed length.
@@ -89,12 +88,11 @@ func TestSummary_FieldPathThreaded(t *testing.T) {
 	}
 }
 
-// TestStepDescription covers the contract of StepDescription (ticket
-// caecceee11feb1a699159b26dccb487d fix #5): empty / whitespace-only /
-// 1-character inputs return a structured error naming the calling tool
-// and the field path; valid inputs (>= MinStepDescriptionLen=2 chars
-// after trimming) return nil. The 2-char floor matches the ticket's
-// "single-character or empty descriptions" wording exactly.
+// TestStepDescription covers the contract of StepDescription: empty /
+// whitespace-only / 1-character inputs return a structured error naming the
+// calling tool and the field path; valid inputs (>= MinStepDescriptionLen=2
+// chars after trimming) return nil. The 2-char floor is what rejects
+// single-character and empty descriptions.
 func TestStepDescription(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -347,5 +345,100 @@ func TestClampSummary_WordBoundary(t *testing.T) {
 	}
 	if !strings.HasPrefix(strings.TrimSpace(in), clamped) {
 		t.Errorf("clamped value must be a prefix of the trimmed input: %q", clamped)
+	}
+}
+
+// TestRunSelectorGuard pins the command-shape rule that closes the
+// selector-matched-nothing vacuity class. The two arms are asymmetric on
+// purpose: -run has runner-line markers to assert against, -list emits no marker
+// at all and can only be checked by counting.
+//
+// list_takes_precedence_over_run is the interaction catcher. A command carrying
+// BOTH flags LISTS and never runs, so an implementation that checked -run
+// independently would demand a PASS line the runner cannot emit and reject a
+// command that is already sound.
+func TestRunSelectorGuard(t *testing.T) {
+	const listWithCount = `N=$(go test ./internal/validate/ -list '^TestSummary$' | grep -c '^Test'); ` +
+		`test -n "$N" && test "$N" -eq 1`
+	tests := []struct {
+		name    string
+		command string
+		wantErr string // substring expected in the error, or "" for nil
+	}{
+		{
+			name:    "bare_go_test_run_is_rejected",
+			command: "go test ./internal/recipe/ -run TestSomething",
+			wantErr: "asserts nothing about WHETHER THE SELECTOR MATCHED",
+		},
+		{
+			name: "pass_line_assertion_is_accepted",
+			command: "go test ./internal/recipe/ -run '^TestSomething$' -v > /tmp/x.log 2>&1; " +
+				"grep -q '^--- PASS: TestSomething ' /tmp/x.log",
+		},
+		{
+			name: "fail_line_assertion_is_accepted",
+			command: "go test ./internal/recipe/ -run '^TestSomething$' -v > /tmp/x.log 2>&1; " +
+				"grep -q '^--- FAIL: TestSomething ' /tmp/x.log",
+		},
+		{
+			name: "run_line_assertion_is_accepted",
+			command: "go test ./internal/recipe/ -run '^TestSomething$' -v 2>&1 | " +
+				"grep -q '=== RUN   TestSomething'",
+		},
+		{
+			name:    "go_test_without_run_is_untouched",
+			command: "go test ./internal/validate/ -count=1",
+		},
+		{
+			// The flag token alone is not the trigger — only a `go test` carrying it.
+			name:    "run_flag_without_go_test_is_untouched",
+			command: "manual: re-run the collector with -run once the daemon is up",
+		},
+		{
+			name:    "empty_command_is_untouched",
+			command: "",
+		},
+		{
+			name:    "error_names_the_field_path_and_quotes_the_command",
+			command: "go test ./internal/recipe/ -run TestSomething",
+			wantErr: "phases[0].steps[1].criteria[2].command",
+		},
+		{
+			name:    "bare_go_test_list_is_rejected",
+			command: "go test ./internal/validate/ -list '^TestSummary$'",
+			wantErr: "asserts nothing about HOW MANY matched",
+		},
+		{
+			name:    "list_with_a_count_comparison_is_accepted",
+			command: listWithCount,
+		},
+		{
+			name: "list_takes_precedence_over_run",
+			command: `N=$(go test -tags=integration -run TestLeakSingleCycle -list '.*' ./test/integration/ ` +
+				`| grep -c '^Test'); test -n "$N" && test "$N" -eq 1`,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := RunSelectorGuard("create_plan", "phases[0].steps[1].criteria[2].command", tt.command)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("expected acceptance, got error: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("expected a rejection containing %q, got nil", tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Errorf("error %q does not contain %q", err.Error(), tt.wantErr)
+			}
+			if !strings.Contains(err.Error(), "create_plan") {
+				t.Errorf("error must name the calling tool: %q", err.Error())
+			}
+			if !strings.Contains(err.Error(), tt.command) {
+				t.Errorf("error must quote the offending command: %q", err.Error())
+			}
+		})
 	}
 }

@@ -111,8 +111,11 @@ func (d graphTypeTestDeps) SegmentManager() SegmentSearcher              { retur
 func (d graphTypeTestDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
 func (d graphTypeTestDeps) SegmentShipper() SegmentShipper               { return nil }
 func (d graphTypeTestDeps) SegmentPruner() SegmentPruner                 { return nil }
-func (d graphTypeTestDeps) SegmentCoverage() SegmentCoverageReader       { return nil }
-func (d graphTypeTestDeps) PipelineScanner() PipelineScanner             { return nil }
+
+func (d graphTypeTestDeps) SegmentCacheDropper() SegmentCacheDropper { return nil }
+func (d graphTypeTestDeps) SegmentDeleter() SegmentDeleter           { return nil }
+func (d graphTypeTestDeps) SegmentCoverage() SegmentCoverageReader   { return nil }
+func (d graphTypeTestDeps) PipelineScanner() PipelineScanner         { return nil }
 
 func (d graphTypeTestDeps) ClearHealLatch(kgtypes.GraphType, string) {}
 func (d graphTypeTestDeps) ReflectionForcer() ReflectionForcer       { return nil }

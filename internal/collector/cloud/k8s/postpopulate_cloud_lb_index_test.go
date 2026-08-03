@@ -107,10 +107,10 @@ func TestMergeELBDNSNodes_LowercasesAndSkipsMissingDNS(t *testing.T) {
 }
 
 // Note: the helpers used to defensively re-filter by resource_type because
-// the metadata predicates were silently unenforced (Phase 2 finding
-// 4e6a2d84). That bug is fixed at the server's query-executor metadata
-// predicate, so the merge helpers now trust their input. The integration tests below cover
-// end-to-end correctness via a real store + Q.Meta query.
+// the metadata predicates were silently unenforced. That bug is fixed at the
+// server's query-executor metadata predicate, so the merge helpers now trust
+// their input. The integration tests below cover end-to-end correctness via a
+// real store + Q.Meta query.
 
 // --- Integration tests against a real store with seeded cloud graphs. ------
 

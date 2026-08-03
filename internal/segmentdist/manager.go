@@ -102,11 +102,11 @@ type distManager[Q, S any] struct {
 	// a drift-prone local file. Guarded by shipMu. Serves TWO purposes: ship-new
 	// DIFF suppression (skip re-uploading the seeded corpus), and the ROLE-A
 	// authoritative replace-prune used by the deterministic rebuild
-	// (FlushDeterministic), whose Export() IS the complete new corpus.
+	// (FinalizeRebuild), whose Export() IS the complete new corpus.
 	//
 	// locallyShipped is the set of ids THIS PROCESS shipped via shipNew — seeded
 	// EMPTY and never populated from the server. It is the ROLE-B prune-eligible
-	// set: the embed/tail ship path (AddAndShip/AddAndShipFields/Flush) reconciles
+	// set: the embed/tail ship path (ReEmitDirtyBuckets/Flush) reconciles
 	// merges against locallyShipped so a fresh process (locallyShipped empty after
 	// restart) can NEVER prune the prior server corpus it did not itself ship —
 	// only this-process merged-away ids. This per-role split is the fix for the
@@ -141,8 +141,17 @@ type distManager[Q, S any] struct {
 	// auto-re-arms on a resident rise.
 	coverageSkipStreak int
 	lastSkipResident   int
-	shippedIDs         map[searchengine.SegmentID]struct{}
-	locallyShipped     map[searchengine.SegmentID]struct{}
+	// completedSwaps counts the manifest swaps that actually LANDED — incremented
+	// beside the publishPending clear, on the one path where PublishManifest
+	// returned success. It exists because a nil error does NOT mean a publish
+	// happened: publishResident returns (nil, nil) on the coverage-gate skip and on
+	// the agent 409, so a caller that needs to know a swap COMPLETED (the rebuild
+	// driver, which advances a durable watermark only then) cannot read the error.
+	// Reading the counter across a call and comparing is that signal. Guarded by
+	// shipMu, like the publishPending bit it is the completion counterpart of.
+	completedSwaps uint64
+	shippedIDs     map[searchengine.SegmentID]struct{}
+	locallyShipped map[searchengine.SegmentID]struct{}
 
 	// onCoverageSuppressed is the nil-safe hook markCoverageSkip fires ONCE per
 	// suppression episode, on the streak's transition into suppression — the point
@@ -154,6 +163,27 @@ type distManager[Q, S any] struct {
 	// and only READ afterwards — so unlike the streak fields above it needs no
 	// lock, and it is deliberately invoked OUTSIDE shipMu.
 	onCoverageSuppressed func()
+
+	// onManifestPublished records the fingerprint of a manifest swap that LANDED, so
+	// the off-hot-path completeness reconcile has a cheap local number to compare
+	// len(cache.Keys()) against without reading the server every tick
+	// (manager_completeness.go). Fired from publishResident — the ONE function that
+	// completes a swap — immediately beside the completedSwaps increment, so the
+	// record and the counter can never disagree about what landed.
+	//
+	// The Manager wires it at construction (manager_factory.go); it is nil for a
+	// directly-constructed test distManager, hence the nil check at the call site.
+	// Same assign-once-then-read-only lifetime as onCoverageSuppressed, so it needs
+	// no lock.
+	onManifestPublished func(ids []searchengine.SegmentID)
+
+	// tombstoneSeed supplies the ids every Import must mark dead in the segments it
+	// imports, so a blob shipped before a delete cannot resurrect the removed node.
+	// It is a SUPPLIER rather than a stored slice because the owner's set changes as
+	// deletes are learned and re-emitted, and an engine holding its own copy would
+	// drift. nil-safe: a nil hook means no seeding, which is the correct behavior
+	// for the test engines that construct a distManager directly.
+	tombstoneSeed func() []searchengine.ExternalID
 
 	// resident tracks the segments currently imported into the engine + an
 	// approximate resident-byte total (sum of imported blob byte lengths). Guarded
