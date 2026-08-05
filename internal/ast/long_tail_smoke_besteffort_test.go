@@ -144,19 +144,6 @@ let beta = 2
 	}
 }
 
-func TestLongTail_PHP_FunctionDef(t *testing.T) {
-	target := `<?php
-function alpha() { return 1; }
-function beta() { return 2; }
-`
-	matches := runLongTailWalkerOrSkip(t, phpLangConfig,
-		"function $NAME() { return $E; }", target,
-		"function decl pattern under <?php tag")
-	if len(matches) < 1 {
-		t.Skipf("PHP smoke: 0 matches; wrapper iteration did not converge")
-	}
-}
-
 func TestLongTail_Scala_DefMethod(t *testing.T) {
 	target := `object M {
   def alpha(): Int = 1

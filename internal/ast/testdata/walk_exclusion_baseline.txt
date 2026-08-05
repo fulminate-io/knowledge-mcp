@@ -1,0 +1,218 @@
+# ast walk-exclusion census
+# rules derived from cmd/knowledge/internal/collector/parser/indexer_discover.go and cmd/knowledge/internal/collector/treesitter/language.go
+# discovery=git   -> discoverWithGit: git ls-files filtered by isIndexable
+# discovery=nongit -> discoverWithWalk: filesystem walk pruned by skipDirs, then isIndexable
+maxfilesize=512000
+skip_extensions=2
+skip_files=22
+skip_path_components=9
+skip_dirs=36
+ext_map=52
+
+repo=c-redis discovery=git
+candidates=1746
+included=340
+rule=skip_extension count=27
+sample=skip_extension .github/ISSUE_TEMPLATE/bug_report.md
+sample=skip_extension .github/ISSUE_TEMPLATE/crash_report.md
+sample=skip_extension .github/ISSUE_TEMPLATE/feature_request.md
+rule=skip_lockfile count=0
+rule=skip_dts count=0
+rule=skip_generated_go count=0
+rule=skip_path_component count=675
+sample=skip_path_component deps/Makefile
+sample=skip_path_component deps/fast_float/Makefile
+sample=skip_path_component deps/fast_float/fast_float.h
+rule=skip_unknown_lang count=703
+sample=skip_unknown_lang .codespell/.codespellrc
+sample=skip_unknown_lang .codespell/requirements.txt
+sample=skip_unknown_lang .codespell/wordlist.txt
+rule=skip_too_large count=1
+sample=skip_too_large src/module.c
+unclassified_section=0
+
+langcheck=c-redis language=c tracked=746 included=263 skip_path_component=482 skip_too_large=1
+
+repo=c-redis discovery=nongit
+candidates=1775
+included=340
+rule=skip_dir count=718
+sample=skip_dir .git/HEAD
+sample=skip_dir .git/config
+sample=skip_dir .git/description
+rule=skip_extension count=16
+sample=skip_extension .github/ISSUE_TEMPLATE/bug_report.md
+sample=skip_extension .github/ISSUE_TEMPLATE/crash_report.md
+sample=skip_extension .github/ISSUE_TEMPLATE/feature_request.md
+rule=skip_lockfile count=0
+rule=skip_dts count=0
+rule=skip_generated_go count=0
+rule=skip_path_component count=0
+rule=skip_unknown_lang count=700
+sample=skip_unknown_lang .codespell/.codespellrc
+sample=skip_unknown_lang .codespell/requirements.txt
+sample=skip_unknown_lang .codespell/wordlist.txt
+rule=skip_too_large count=1
+sample=skip_too_large src/module.c
+unclassified_section=0
+
+repo=go-kubernetes discovery=git
+candidates=28339
+included=12939
+rule=skip_extension count=568
+sample=skip_extension .github/PULL_REQUEST_TEMPLATE.md
+sample=skip_extension .github/SECURITY.md
+sample=skip_extension CHANGELOG.md
+rule=skip_lockfile count=36
+sample=skip_lockfile go.sum
+sample=skip_lockfile hack/tools/go.sum
+sample=skip_lockfile hack/tools/golangci-lint/go.sum
+rule=skip_dts count=0
+rule=skip_generated_go count=364
+sample=skip_generated_go pkg/kubelet/pluginmanager/pluginwatcher/example_plugin_apis/v1beta1/api.pb.go
+sample=skip_generated_go pkg/kubelet/pluginmanager/pluginwatcher/example_plugin_apis/v1beta1/api_grpc.pb.go
+sample=skip_generated_go pkg/kubelet/pluginmanager/pluginwatcher/example_plugin_apis/v1beta2/api.pb.go
+rule=skip_path_component count=13353
+sample=skip_path_component LICENSES/third_party/forked/golang/LICENSE
+sample=skip_path_component LICENSES/third_party/forked/gonum/graph/LICENSE
+sample=skip_path_component LICENSES/third_party/forked/gotestsum/LICENSE
+rule=skip_unknown_lang count=1077
+sample=skip_unknown_lang .generated_files
+sample=skip_unknown_lang .gitattributes
+sample=skip_unknown_lang .github/OWNERS
+rule=skip_too_large count=2
+sample=skip_too_large pkg/apis/core/v1/zz_generated.conversion.go
+sample=skip_too_large pkg/apis/core/validation/validation_test.go
+unclassified_section=0
+
+repo=go-kubernetes discovery=nongit
+candidates=28363
+included=12913
+rule=skip_dir count=13811
+sample=skip_dir .git/HEAD
+sample=skip_dir .git/config
+sample=skip_dir .git/description
+rule=skip_extension count=288
+sample=skip_extension .github/PULL_REQUEST_TEMPLATE.md
+sample=skip_extension .github/SECURITY.md
+sample=skip_extension CHANGELOG/CHANGELOG-1.10.md
+rule=skip_lockfile count=36
+sample=skip_lockfile go.sum
+sample=skip_lockfile hack/tools/go.sum
+sample=skip_lockfile hack/tools/golangci-lint/go.sum
+rule=skip_dts count=0
+rule=skip_generated_go count=245
+sample=skip_generated_go pkg/kubelet/pluginmanager/pluginwatcher/example_plugin_apis/v1beta1/api.pb.go
+sample=skip_generated_go pkg/kubelet/pluginmanager/pluginwatcher/example_plugin_apis/v1beta1/api_grpc.pb.go
+sample=skip_generated_go pkg/kubelet/pluginmanager/pluginwatcher/example_plugin_apis/v1beta2/api.pb.go
+rule=skip_path_component count=0
+rule=skip_unknown_lang count=1068
+sample=skip_unknown_lang .generated_files
+sample=skip_unknown_lang .gitattributes
+sample=skip_unknown_lang .github/OWNERS
+rule=skip_too_large count=2
+sample=skip_too_large pkg/apis/core/v1/zz_generated.conversion.go
+sample=skip_too_large pkg/apis/core/validation/validation_test.go
+unclassified_section=0
+
+repo=js-react discovery=git
+candidates=6834
+included=4549
+rule=skip_extension count=1872
+sample=skip_extension .claude/instructions.md
+sample=skip_extension .claude/skills/extract-errors/SKILL.md
+sample=skip_extension .claude/skills/feature-flags/SKILL.md
+rule=skip_lockfile count=45
+sample=skip_lockfile compiler/apps/playground/yarn.lock
+sample=skip_lockfile compiler/packages/react-forgive/client/yarn.lock
+sample=skip_lockfile compiler/packages/react-forgive/server/yarn.lock
+rule=skip_dts count=18
+sample=skip_dts compiler/apps/playground/lib/types.d.ts
+sample=skip_dts compiler/packages/babel-plugin-react-compiler/src/Utils/types.d.ts
+sample=skip_dts compiler/packages/eslint-plugin-react-compiler/src/types/hermes-eslint.d.ts
+rule=skip_generated_go count=0
+rule=skip_path_component count=0
+rule=skip_unknown_lang count=350
+sample=skip_unknown_lang .claude/settings.json
+sample=skip_unknown_lang .codesandbox/ci.json
+sample=skip_unknown_lang .editorconfig
+rule=skip_too_large count=0
+unclassified_section=0
+
+repo=js-react discovery=nongit
+candidates=6863
+included=4549
+rule=skip_dir count=30
+sample=skip_dir .git/HEAD
+sample=skip_dir .git/config
+sample=skip_dir .git/description
+rule=skip_extension count=1872
+sample=skip_extension .claude/instructions.md
+sample=skip_extension .claude/skills/extract-errors/SKILL.md
+sample=skip_extension .claude/skills/feature-flags/SKILL.md
+rule=skip_lockfile count=45
+sample=skip_lockfile compiler/apps/playground/yarn.lock
+sample=skip_lockfile compiler/packages/react-forgive/client/yarn.lock
+sample=skip_lockfile compiler/packages/react-forgive/server/yarn.lock
+rule=skip_dts count=18
+sample=skip_dts compiler/apps/playground/lib/types.d.ts
+sample=skip_dts compiler/packages/babel-plugin-react-compiler/src/Utils/types.d.ts
+sample=skip_dts compiler/packages/eslint-plugin-react-compiler/src/types/hermes-eslint.d.ts
+rule=skip_generated_go count=0
+rule=skip_path_component count=0
+rule=skip_unknown_lang count=349
+sample=skip_unknown_lang .claude/settings.json
+sample=skip_unknown_lang .codesandbox/ci.json
+sample=skip_unknown_lang .editorconfig
+rule=skip_too_large count=0
+unclassified_section=0
+
+repo=cs-roslyn discovery=git
+candidates=20610
+included=14061
+rule=skip_extension count=335
+sample=skip_extension .github/ISSUE_TEMPLATE/analyzer-suggestion.md
+sample=skip_extension .github/ISSUE_TEMPLATE/api-suggestion.md
+sample=skip_extension .github/ISSUE_TEMPLATE/bug-report.md
+rule=skip_lockfile count=0
+rule=skip_dts count=0
+rule=skip_generated_go count=0
+rule=skip_path_component count=0
+rule=skip_unknown_lang count=6159
+sample=skip_unknown_lang .devcontainer/devcontainer.json
+sample=skip_unknown_lang .devcontainer/devinit.json
+sample=skip_unknown_lang .editorconfig
+rule=skip_too_large count=55
+sample=skip_too_large src/Compilers/CSharp/Portable/Binder/Binder_Expressions.cs
+sample=skip_too_large src/Compilers/CSharp/Portable/FlowAnalysis/NullableWalker.cs
+sample=skip_too_large src/Compilers/CSharp/Portable/Generated/BoundNodes.xml.Generated.cs
+unclassified_section=0
+
+repo=cs-roslyn discovery=nongit
+candidates=20639
+included=14061
+rule=skip_dir count=43
+sample=skip_dir .git/HEAD
+sample=skip_dir .git/config
+sample=skip_dir .git/description
+rule=skip_extension count=335
+sample=skip_extension .github/ISSUE_TEMPLATE/analyzer-suggestion.md
+sample=skip_extension .github/ISSUE_TEMPLATE/api-suggestion.md
+sample=skip_extension .github/ISSUE_TEMPLATE/bug-report.md
+rule=skip_lockfile count=0
+rule=skip_dts count=0
+rule=skip_generated_go count=0
+rule=skip_path_component count=0
+rule=skip_unknown_lang count=6145
+sample=skip_unknown_lang .devcontainer/devcontainer.json
+sample=skip_unknown_lang .devcontainer/devinit.json
+sample=skip_unknown_lang .editorconfig
+rule=skip_too_large count=55
+sample=skip_too_large src/Compilers/CSharp/Portable/Binder/Binder_Expressions.cs
+sample=skip_too_large src/Compilers/CSharp/Portable/FlowAnalysis/NullableWalker.cs
+sample=skip_too_large src/Compilers/CSharp/Portable/Generated/BoundNodes.xml.Generated.cs
+unclassified_section=0
+
+selftest=ok residue_counter_delta=1
+unclassified=0
+verdict=ok

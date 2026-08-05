@@ -1,0 +1,43 @@
+lang=bash repo=bash-ohmyzsh prefix=lib/ pattern="$N() { $$$B; }" shape=multi-line matches=11 VIOLATION "lib/directories.zsh: -function d () {"
+lang=bash repo=bash-ohmyzsh prefix=lib/ pattern="echo $X" shape=single-line matches=10 OK
+lang=c repo=c-redis prefix=src/ pattern="if ($C) { $$$B; }" shape=multi-line matches=5708 VIOLATION "src/adlist.c: -        if (list->tail == old_node) {"
+lang=c repo=c-redis prefix=src/ pattern="return $X;" shape=single-line matches=5924 VIOLATION "src/evict.c: -    if (!server.maxmemory) return  0; /* No limit. */"
+lang=cpp repo=cpp-json prefix=include/ pattern="if ($C) { $$$B; }" shape=multi-line matches=514 OK
+lang=cpp repo=cpp-json prefix=include/ pattern="return $X;" shape=single-line matches=1024 OK
+lang=csharp repo=cs-roslyn prefix=src/Compilers/Core/Portable/Syntax/ pattern="$A = $B;" shape=multi-line matches=7 VIOLATION "src/Compilers/Core/Portable/Syntax/CommonSyntaxNodeRemover.cs: -            nextTokenIsSeparator ="
+lang=csharp repo=cs-roslyn prefix=src/Compilers/Core/Portable/Syntax/ pattern="$A = $B;" shape=single-line matches=540 VIOLATION "src/Compilers/Core/Portable/Syntax/ChildSyntaxList.cs: -                        n += child.SlotCount;"
+lang=elixir repo=ex-phoenix prefix=lib/ pattern="$F($X)" shape=single-line matches=3537 VIOLATION "lib/mix/phoenix/scope.ex: -  @moduledoc false"
+lang=elixir repo=ex-phoenix prefix=lib/ pattern="def $N($$$P) do\n  $$$B\nend" shape=multi-line matches=432 VIOLATION "lib/mix/tasks/compile.phoenix.ex: -  def run(_args) do"
+lang=elm repo=elm-compiler prefix=reactor/src/ pattern="$F $X" shape=single-line SKIP no pattern compiles: the reserved placeholder prefix __META_AST_ is not a legal Elm identifier (Elm identifiers may not begin with an underscore), so every substituted pattern parses as an anything-pattern underscore under both context wrappers
+lang=elm repo=elm-compiler prefix=reactor/src/ pattern="let $N = $E" shape=multi-line SKIP no pattern compiles: the reserved placeholder prefix __META_AST_ is not a legal Elm identifier (Elm identifiers may not begin with an underscore), so every substituted pattern parses as an anything-pattern underscore under both context wrappers
+lang=go repo=go-kubernetes prefix=pkg/scheduler/ pattern="$F($X)" shape=single-line matches=14695 OK
+lang=go repo=go-kubernetes prefix=pkg/scheduler/ pattern="if $C { $$$B }" shape=multi-line matches=3519 VIOLATION "pkg/scheduler/apis/config/types.go: -\tif p == nil {"
+lang=groovy repo=groovy-gradle prefix=subprojects/core/src/integTest/groovy/org/gradle/api/tasks/ pattern="$F($X)" shape=single-line matches=3254 OK
+lang=groovy repo=groovy-gradle prefix=subprojects/core/src/integTest/groovy/org/gradle/api/tasks/ pattern="if ($C) { $$$B }" shape=multi-line matches=34 VIOLATION "subprojects/core/src/integTest/groovy/org/gradle/api/tasks/LocalStateFixture.groovy: -        if (useRuntimeApi) {"
+lang=java repo=java-spring prefix=core/spring-boot/src/main/java/org/springframework/boot/context/ pattern="$F($X);" shape=single-line matches=43 OK
+lang=java repo=java-spring prefix=core/spring-boot/src/main/java/org/springframework/boot/context/ pattern="if ($C) { $$$B; }" shape=multi-line matches=641 VIOLATION "core/spring-boot/src/main/java/org/springframework/boot/context/ContextIdApplicationContextInitializer.java: -\t\tif (parent != null && parent.containsBean(ContextId.class.getName())) {"
+lang=javascript repo=js-react prefix=packages/react/src/ pattern="$F($X)" shape=single-line matches=2871 OK
+lang=javascript repo=js-react prefix=packages/react/src/ pattern="if ($C) { $$$B }" shape=multi-line matches=176 VIOLATION "packages/react/src/__tests__/ReactChildren-test.js: -    if (__DEV__) {"
+lang=kotlin repo=kt-okhttp prefix=okhttp/src/commonJvmAndroid/kotlin/ pattern="$F($X)" shape=single-line matches=1961 OK
+lang=kotlin repo=kt-okhttp prefix=okhttp/src/commonJvmAndroid/kotlin/ pattern="if ($C) { $$$B }" shape=multi-line matches=615 VIOLATION "okhttp/src/commonJvmAndroid/kotlin/okhttp3/Cache.kt: -    if (!entry.matches(request, response)) {"
+lang=lua repo=lua-openresty prefix=t/lib/ pattern="$F($X)" shape=single-line matches=79 OK
+lang=lua repo=lua-openresty prefix=t/lib/ pattern="if $C then\n$$$B\nend" shape=multi-line matches=30 VIOLATION "t/lib/CRC32.lua: -\t    calc = calc + val"
+lang=ocaml repo=ocaml-dune prefix=src/dune_lang/ pattern="$F $X" shape=single-line matches=2375 OK
+lang=ocaml repo=ocaml-dune prefix=src/dune_lang/ pattern="let $N = $E" shape=multi-line matches=371 VIOLATION "src/dune_lang/alias.ml: -let decode ="
+lang=php repo=php-laravel prefix=src/Illuminate/Support/ pattern="if ($C) { $$$B; }" shape=multi-line matches=411 VIOLATION "src/Illuminate/Support/BinaryCodec.php: -        if (blank($value)) {"
+lang=php repo=php-laravel prefix=src/Illuminate/Support/ pattern="return $X;" shape=single-line matches=959 OK
+lang=python repo=py-django prefix=django/core/ pattern="$F($X)" shape=single-line matches=1946 OK
+lang=python repo=py-django prefix=django/core/ pattern="def $N():\n    $$$B" shape=multi-line matches=20 OK
+lang=ruby repo=rb-rails prefix=activesupport/lib/ pattern="$F($X)" shape=single-line matches=1688 VIOLATION "activesupport/lib/active_support.rb: -require \"securerandom\""
+lang=ruby repo=rb-rails prefix=activesupport/lib/ pattern="def $N\n  $$$B\nend" shape=multi-line matches=2080 VIOLATION "activesupport/lib/active_support/concurrency/null_lock.rb: -        yield"
+lang=rust repo=rust-tokio prefix=tokio/src/ pattern="$F($X)" shape=single-line matches=5541 OK
+lang=rust repo=rust-tokio prefix=tokio/src/ pattern="if $C { $$$B }" shape=multi-line matches=894 VIOLATION "tokio/src/fs/dir_builder.rs: -            if let Some(mode) = self.mode {"
+lang=scala repo=scala-akka prefix=akka-actor/src/main/ pattern="$F($X)" shape=single-line matches=4732 OK
+lang=scala repo=scala-akka prefix=akka-actor/src/main/ pattern="if ($C) { $$$B }" shape=multi-line matches=1156 VIOLATION "akka-actor/src/main/scala/akka/actor/AbstractActor.scala: -      if (receiveTimeout.isFinite) {"
+lang=swift repo=swift-vapor prefix=Sources/ pattern="$F($X)" shape=single-line matches=2622 VIOLATION "Sources/Development/configure.swift: -    func get(_ key: String) -> String? { self.storage[key] }"
+lang=swift repo=swift-vapor prefix=Sources/ pattern="if $C { $$$B }" shape=multi-line matches=337 VIOLATION "Sources/Development/configure.swift: -    if app.environment == .tls {"
+lang=tsx repo=js-react prefix=fixtures/flight-parcel/src/ pattern="$F($X)" shape=single-line matches=33 OK
+lang=tsx repo=js-react prefix=fixtures/flight-parcel/src/ pattern="if ($C) { $$$B }" shape=multi-line matches=5 VIOLATION "fixtures/flight-parcel/src/TodoDetail.tsx: -  if (!todo) {"
+lang=typescript repo=ts-vscode prefix=src/vs/base/common/ pattern="$F($X)" shape=single-line matches=3069 VIOLATION "src/vs/base/common/observableInternal/experimental/reducer.ts: -\t\t\t\toptions.disposeFinal?.(prevValue!);"
+lang=typescript repo=ts-vscode prefix=src/vs/base/common/ pattern="interface $I { $N: $T; }" shape=multi-line matches=15 VIOLATION "src/vs/base/common/async.ts: -export interface ITaskSequentializerWithRunningTask {"
+lang=typescript repo=ts-vscode prefix=src/vs/base/common/ pattern="interface $I { $N?: $T; }" shape=multi-line matches=15 VIOLATION "src/vs/base/common/async.ts: -export interface ITaskSequentializerWithRunningTask {"

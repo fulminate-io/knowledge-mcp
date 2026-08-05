@@ -6,9 +6,11 @@
 // focused on the public surface (Match, RawMatch, WalkStats).
 //
 // V2 NOTE: only the per-file matchFile body changed between v1 and v2.
-// runWorkers / processFile / mergeMatches / withMatchRecover are
-// preserved verbatim from the closed-set engine. The per-file matcher
-// now drives matchTree + evalWhere instead of cursor.Exec.
+// runWorkers and withMatchRecover are preserved verbatim from the closed-set
+// engine; processFile no longer is — its result cap was removed, so it carries
+// every match into the caller's chosen sink: mergeMatches (count.go) for
+// match/replace, or the count tally (recordLightCountTally, count.go) when
+// runWorkerArgs.tally is set. The matcher drives matchTree + evalWhere.
 
 package ast
 
@@ -56,9 +58,19 @@ type runWorkerArgs struct {
 	repoDir       string
 	lang          treesitter.Language
 	patternSource string
-	where         *WhereNode
-	files         []string
-	limit         int
+	// pinContext rides along with the source so every worker compiles the
+	// SAME variant set the caller did — an unpinned recompile would widen the
+	// union behind the caller's narrowing.
+	pinContext string
+	where      *WhereNode
+	files      []string
+	// tally, when non-nil, switches the walk to count mode: processFile records
+	// each file's counts into it and retains no matches (count.go).
+	tally *countTally
+	// emitParseHint, set only on the replace path, asks matchFile to record a
+	// per-matched-file parse hint {clean, size, digest} so ApplyReplace can skip
+	// the pre-edit re-parse of a file the match already parsed clean.
+	emitParseHint bool
 }
 
 // runWorkers fans out file processing across NumCPU workers. Each worker
@@ -66,12 +78,14 @@ type runWorkerArgs struct {
 // re-compiled from a.patternSource) plus its own sub-pattern compile cache
 // — nothing tree-sitter is shared between goroutines, since go-tree-sitter
 // Trees (pattern tree, sub-pattern trees) are not safe for concurrent use.
-// Returns the aggregated RawMatch slice plus per-call scanned / skipped
-// counters and the first per-worker error encountered (worker compile and
-// where-tree evaluation errors propagate; parse errors silently skip).
-func runWorkers(ctx context.Context, a runWorkerArgs) ([]RawMatch, int, int, error) {
+// Returns the aggregated RawMatch slice plus the per-call walkCounters (scan,
+// per-cause skip and degraded-parse tallies) and the first per-worker error
+// encountered (worker compile and where-tree evaluation errors propagate;
+// parse errors silently skip).
+func runWorkers(ctx context.Context, a runWorkerArgs) ([]RawMatch, map[string]fileParseHint, *walkCounters, error) {
+	counters := &walkCounters{}
 	if len(a.files) == 0 {
-		return nil, 0, 0, nil
+		return nil, nil, counters, nil
 	}
 	workers := min(runtime.NumCPU(), len(a.files))
 	if workers <= 0 {
@@ -93,12 +107,12 @@ func runWorkers(ctx context.Context, a runWorkerArgs) ([]RawMatch, int, int, err
 	var (
 		mu       sync.Mutex
 		results  []RawMatch
-		scanned  atomic.Int64
-		skipped  atomic.Int64
-		capLimit atomic.Bool
 		firstErr atomic.Pointer[errBox]
 		wg       sync.WaitGroup
 	)
+	// cleanHints is allocated only on the replace path (emitParseHint); every
+	// worker records its matched files into it under mu, alongside results.
+	cleanHints := newCleanHintSink(a.emitParseHint)
 
 	for range workers {
 		wg.Go(withMatchRecover("Match.worker", func() {
@@ -107,42 +121,44 @@ func runWorkers(ctx context.Context, a runWorkerArgs) ([]RawMatch, int, int, err
 
 			// Per-worker compiled pattern + sub-pattern cache. Mirrors the
 			// per-worker parser above: each worker owns its own pattern
-			// *Tree, rootQuery, and sub-pattern trees so no tree-sitter
+			// *Trees, rootQueries, and sub-pattern trees so no tree-sitter
 			// state is walked concurrently across goroutines. The extra
 			// Parse+Compile is one small, amortized cost per worker (not
-			// per file); the caller already validated the source compiles.
+			// per file) — one short parse per registered wrapper rather
+			// than one per pattern; the caller already validated the
+			// source compiles.
 			pat, perr := Parse(a.patternSource)
 			if perr != nil {
 				firstErr.CompareAndSwap(nil, &errBox{err: fmt.Errorf("ast/match: worker re-parse pattern: %w", perr)})
 				return
 			}
-			cp, cerr := Compile(pat, a.lang)
+			cp, cerr := Compile(pat, a.lang, a.pinContext)
 			if cerr != nil {
 				firstErr.CompareAndSwap(nil, &errBox{err: fmt.Errorf("ast/match: worker compile pattern: %w", cerr)})
 				return
 			}
 			defer cp.Close()
-			cache := map[string]*PatternTree{}
+			cache := map[string][]patternVariant{}
 			cacheMu := &sync.Mutex{}
 			defer closeSubPatternCache(cache, cacheMu)
 
 			for relPath := range fileCh {
 				processFile(ctx, processArgs{
-					repoDir:  a.repoDir,
-					lang:     a.lang,
-					cp:       cp,
-					where:    a.where,
-					cache:    cache,
-					cacheMu:  cacheMu,
-					tsp:      tsp,
-					relPath:  relPath,
-					limit:    a.limit,
-					mu:       &mu,
-					results:  &results,
-					scanned:  &scanned,
-					skipped:  &skipped,
-					capLimit: &capLimit,
-					firstErr: &firstErr,
+					repoDir:       a.repoDir,
+					lang:          a.lang,
+					cp:            cp,
+					where:         a.where,
+					cache:         cache,
+					cacheMu:       cacheMu,
+					tsp:           tsp,
+					relPath:       relPath,
+					mu:            &mu,
+					results:       &results,
+					counters:      counters,
+					firstErr:      &firstErr,
+					tally:         a.tally,
+					emitParseHint: a.emitParseHint,
+					cleanHints:    cleanHints,
 				})
 			}
 		}))
@@ -154,7 +170,7 @@ func runWorkers(ctx context.Context, a runWorkerArgs) ([]RawMatch, int, int, err
 	if box := firstErr.Load(); box != nil {
 		err = box.err
 	}
-	return results, int(scanned.Load()), int(skipped.Load()), err
+	return results, cleanHints, counters, err
 }
 
 // errBox lets us atomically store an error pointer (atomic.Pointer needs a
@@ -172,36 +188,54 @@ type processArgs struct {
 	lang     treesitter.Language
 	cp       *CompiledPattern
 	where    *WhereNode
-	cache    map[string]*PatternTree
+	cache    map[string][]patternVariant
 	cacheMu  *sync.Mutex
 	tsp      *treesitter.Parser
 	relPath  string
-	limit    int
 	mu       *sync.Mutex
 	results  *[]RawMatch
-	scanned  *atomic.Int64
-	skipped  *atomic.Int64
-	capLimit *atomic.Bool
+	counters *walkCounters
 	firstErr *atomic.Pointer[errBox]
+	// tally is the count-mode sink (count.go). When non-nil processFile records
+	// into it instead of appending to results; nil is the match/replace path.
+	tally *countTally
+	// emitParseHint + cleanHints are the replace-path parse-hint sink. When
+	// emitParseHint is set, matchFile records a {clean, size, digest} hint for
+	// each matched file and processFile merges it into cleanHints under mu.
+	// cleanHints is nil (and untouched) on the match/count read paths.
+	emitParseHint bool
+	cleanHints    map[string]fileParseHint
 }
 
 // processFile parses one file, applies the v2 walker + where-tree, and
-// merges the results into the shared slice under mu. Honors the cap-limit
-// short-circuit so workers stop doing real work once limit is hit
-// (channel still drains).
+// merges the results into the shared slice under mu. Every file handed to it
+// is processed: the only early return is context cancellation, which is not a
+// cap. An earlier result-cap short-circuit used to abort the remaining files
+// once the walk had accumulated enough matches; it truncated FilesScanned as
+// well as the results, so the walk under-reported its own coverage. It has
+// been removed.
+//
+// This is also where the walk's accounting happens: a declined file is
+// attributed to the counter for its cause, and a parsed one is recorded with
+// whether its tree carried ERROR nodes, so a caller can tell a clean result
+// from one read off a tree tree-sitter had to recover.
 func processFile(ctx context.Context, a processArgs) {
 	if ctx.Err() != nil {
 		return
 	}
-	if a.capLimit.Load() {
-		return
-	}
 	file := matchFile(ctx, a)
-	if file.skipped {
-		a.skipped.Add(1)
+	if file.reason != skipNone {
+		a.counters.recordSkip(file.reason)
 		return
 	}
-	a.scanned.Add(1)
+	// Count mode records the parsed file (with its light-match count feeding
+	// MatchesFromDegradedTrees exactly as len(matches) would) and the per-file
+	// tally, retaining no RawMatch (count.go).
+	if a.tally != nil {
+		processCountFile(a, file)
+		return
+	}
+	a.counters.recordParsed(file.degraded, len(file.matches))
 	if file.err != nil {
 		// Prefer the first observed error so the caller surfaces a
 		// stable, well-defined failure cause.
@@ -212,31 +246,31 @@ func processFile(ctx context.Context, a processArgs) {
 		return
 	}
 	mergeMatches(a, file.matches)
+	if file.hint != nil {
+		recordCleanHint(a, file.hint)
+	}
 }
 
-// mergeMatches appends file matches under mu, applying the global limit
-// cap and toggling capLimit when reached.
-func mergeMatches(a processArgs, matches []RawMatch) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if len(*a.results)+len(matches) >= a.limit {
-		take := a.limit - len(*a.results)
-		if take > 0 {
-			*a.results = append(*a.results, matches[:take]...)
-		}
-		a.capLimit.Store(true)
+// newCleanHintSink allocates the replace-path parse-hint map, or returns nil on
+// the match/count paths where emitParseHint is false and no hint is collected.
+func newCleanHintSink(emit bool) map[string]fileParseHint {
+	if !emit {
+		return nil
+	}
+	return map[string]fileParseHint{}
+}
+
+// recordCleanHint merges one matched file's parse hint into the shared
+// cleanHints map under mu (the same mutex mergeMatches holds). It is reached
+// only on the replace path, where runWorkers allocated cleanHints; the nil-map
+// guard is defensive, not an expected branch.
+func recordCleanHint(a processArgs, hint *fileParseHint) {
+	if a.cleanHints == nil {
 		return
 	}
-	*a.results = append(*a.results, matches...)
-}
-
-// fileResult is the per-file outcome from matchFile: either a slice of
-// RawMatch (success) or skipped=true (logged + drop) or err (where-tree
-// evaluation failure; surfaced upward).
-type fileResult struct {
-	matches []RawMatch
-	skipped bool
-	err     error
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.cleanHints[a.relPath] = *hint
 }
 
 // matchFile reads + parses one file, walks its AST top-down, and at every
@@ -244,24 +278,35 @@ type fileResult struct {
 // Successful structural matches are filtered through the where-tree
 // (when set) before being emitted as RawMatch. Tree close happens via
 // defer — preserved CGO discipline.
+//
+// Each of the two decline paths returns the TYPED cause rather than a bare
+// skipped flag, so the walk can report which rule cost it a file instead of
+// one undifferentiated total.
 func matchFile(ctx context.Context, a processArgs) fileResult {
 	absPath := filepath.Join(a.repoDir, a.relPath)
 	src, err := os.ReadFile(absPath)
 	if err != nil {
 		slog.Warn("ast match: skip file", "path", a.relPath, "error", err, "reason", "read")
-		return fileResult{skipped: true}
+		return fileResult{reason: skipRead}
 	}
 
 	tree, err := a.tsp.Parse(ctx, src, a.lang)
 	if err != nil {
-		reason := "parse"
+		// NO-E2E-FIXTURE: nothing can drive this branch from a fixture — tree-sitter error-recovers malformed input into a tree with ERROR nodes instead of failing, and the binding's other nil-tree causes (cancelled context, no language set) are both unreachable from here. It is wired and proven at the cause-to-counter seam instead, and kept because files_skipped is defined as the sum of its causes.
+		reason, logReason := skipParseError, "parse"
 		if errors.Is(err, treesitter.ErrParseTimeout) {
-			reason = "parse_timeout"
+			// NO-E2E-FIXTURE: driving this needs a 30-second wall-clock parse overrun, and the limit is an unexported const in the parser wrapper with no setter and no test hook. Proven at the cause-to-counter seam like the branch above.
+			reason, logReason = skipParseLimit, "parse_timeout"
 		}
-		slog.Warn("ast match: skip file", "path", a.relPath, "error", err, "reason", reason)
-		return fileResult{skipped: true}
+		slog.Warn("ast match: skip file", "path", a.relPath, "error", err, "reason", logReason)
+		return fileResult{reason: reason}
 	}
 	defer tree.Close()
+
+	// HasError is an O(1) flag read on a root the walk already holds — a bit
+	// tree-sitter maintains during parsing, not a traversal — so the degraded
+	// signal costs the walk nothing per file.
+	degraded := tree.RootNode().HasError()
 
 	outerScope := newOuterScope(a.lang, a.cache, a.cacheMu)
 
@@ -274,11 +319,29 @@ func matchFile(ctx context.Context, a processArgs) fileResult {
 		caps:       newCaptures(),
 		nodes:      make(map[string]*sitter.Node),
 	}
+	// Count mode runs the body-free light walk: it counts the SAME deduped
+	// matches collectMatches would return but retains only {span, kind} per
+	// match, never a RawMatch (count.go).
+	if a.tally != nil {
+		lms, err := mc.collectCounts(ctx, tree.RootNode())
+		if err != nil {
+			return fileResult{degraded: degraded, err: err}
+		}
+		return fileResult{lightMatches: lms, degraded: degraded}
+	}
 	matches, err := mc.collectMatches(ctx, tree.RootNode())
 	if err != nil {
-		return fileResult{err: err}
+		return fileResult{degraded: degraded, err: err}
 	}
-	return fileResult{matches: matches}
+	res := fileResult{matches: matches, degraded: degraded}
+	// Replace-path parse hint: only matched files reach ApplyReplace's baseline,
+	// so only they need a hint. The digest is over the SAME src bytes the splice
+	// will read (readMatchedSources re-reads the file, and the guard re-checks
+	// size+digest), so a match certifies the spliced bytes were parsed clean.
+	if a.emitParseHint && len(matches) > 0 {
+		res.hint = &fileParseHint{clean: !degraded, size: len(src), digest: fnv64a(src)}
+	}
+	return res
 }
 
 // matchContext holds per-file match state. Extracted from matchFile to keep
@@ -293,13 +356,34 @@ type matchContext struct {
 	nodes      map[string]*sitter.Node
 }
 
-// tryMatch attempts a structural match at node n, returning the RawMatch
-// on success. Reuses caps/nodes across non-matching candidates;
-// allocates fresh ones on match (withMatchCaptures retains references).
-func (mc *matchContext) tryMatch(ctx context.Context, n *sitter.Node) (RawMatch, bool, error) {
+// tryMatch attempts a structural match of one variant at node n, returning the
+// RawMatch on success. mc.caps/mc.nodes are REUSED across every candidate —
+// matching and non-matching alike — reset at the top of each call. Reuse is
+// safe on the success path because toRawMatch fully COPIES every field out
+// (copyAligns/copyDropped/copyComments make fresh slices, and each Capture's
+// Children were built by bindSeq as a fresh per-match slice), and the eval
+// scope withMatchCaptures builds never escapes tryMatch — evalWhere completes
+// synchronously before the return. So the next candidate's reset() cannot
+// corrupt a RawMatch already handed back.
+func (mc *matchContext) tryMatch(ctx context.Context, n *sitter.Node, v *compiledVariant) (RawMatch, bool, error) {
 	mc.caps.reset()
 	clearNodeMap(mc.nodes)
-	if !matchTreeWithNodes(mc.cp.Tree, n, mc.src, mc.caps, mc.nodes) {
+	// where==nil is the dominant placeholder-rooted path. It never consults the
+	// nodes map or the synthetic $match capture, so matchTreeWithNodes' extra
+	// work — the $match nodeToCapture Content copy and the findNodeBySpan
+	// nodes-population loop (where_subpattern.go) — is pure dead allocation here.
+	// Delegate to matchTree (walker.go), the same structural match
+	// matchTreeWithNodes itself wraps; only the where!=nil path, whose evalWhere
+	// resolves captures through nodes/$match, keeps the fuller call. The
+	// separate evalSubPattern site (where_subpattern.go) has its own l.Where==nil
+	// dead-work but is off this hot path and left as-is by scope.
+	var matched bool
+	if mc.where != nil {
+		matched = matchTreeWithNodes(v.Tree, n, mc.src, mc.caps, mc.nodes)
+	} else {
+		matched = matchTree(v.Tree, n, mc.src, mc.caps)
+	}
+	if !matched {
 		return RawMatch{}, false, nil
 	}
 	if mc.where != nil {
@@ -312,27 +396,53 @@ func (mc *matchContext) tryMatch(ctx context.Context, n *sitter.Node) (RawMatch,
 			return RawMatch{}, false, nil
 		}
 	}
-	rm := toRawMatch(n, mc.relPath, mc.caps, mc.src)
-	mc.caps = newCaptures()
-	mc.nodes = make(map[string]*sitter.Node)
+	rm := toRawMatch(n, mc.relPath, mc.caps, mc.src, v)
 	return rm, true, nil
 }
 
-// collectMatches finds candidate nodes and runs tryMatch on each. Uses
-// the tree-sitter query cursor when a rootQuery is compiled (skips
-// irrelevant subtrees in C), otherwise falls back to walkAll.
+// collectMatches runs every compiled variant against ONE parse of the file and
+// returns the deduped result set.
+//
+// Query-driven variants (those whose root kind compiled to a tree-sitter
+// query) each get their own cursor over the same tree, which preserves the
+// C-side per-type indexing the query exists for. Every walk-driven variant
+// shares ONE walkAll: the file walk stays O(files), never O(files x variants).
 func (mc *matchContext) collectMatches(ctx context.Context, root *sitter.Node) ([]RawMatch, error) {
-	if mc.cp.rootQuery != nil {
-		return mc.collectViaQuery(ctx, root)
+	var (
+		out      []RawMatch
+		seen     = map[byteRange]dedupeSlot{}
+		walkDone bool
+	)
+	for i := range mc.cp.Variants {
+		v := &mc.cp.Variants[i]
+		var (
+			found []variantMatch
+			err   error
+		)
+		switch {
+		case v.rootQuery != nil:
+			found, err = mc.collectViaQuery(ctx, root, v, i)
+		case walkDone:
+			continue
+		default:
+			walkDone = true
+			found, err = mc.collectViaWalk(ctx, root)
+		}
+		if err != nil {
+			return nil, err
+		}
+		for _, vm := range found {
+			absorbMatch(&out, seen, vm)
+		}
 	}
-	return mc.collectViaWalk(ctx, root)
+	return out, nil
 }
 
-func (mc *matchContext) collectViaQuery(ctx context.Context, root *sitter.Node) ([]RawMatch, error) {
+func (mc *matchContext) collectViaQuery(ctx context.Context, root *sitter.Node, v *compiledVariant, idx int) ([]variantMatch, error) {
 	qc := sitter.NewQueryCursor()
 	defer qc.Close()
-	qc.Exec(mc.cp.rootQuery, root)
-	var matches []RawMatch
+	qc.Exec(v.rootQuery, root)
+	var matches []variantMatch
 	for {
 		m, ok := qc.NextMatch()
 		if !ok {
@@ -340,61 +450,49 @@ func (mc *matchContext) collectViaQuery(ctx context.Context, root *sitter.Node) 
 		}
 		for _, c := range m.Captures {
 			n := c.Node
-			if mc.cp.rootDescended {
+			if v.rootDescended {
 				n = effectiveTargetNode(n)
 			}
-			rm, matched, err := mc.tryMatch(ctx, n)
+			rm, matched, err := mc.tryMatch(ctx, n, v)
 			if err != nil {
 				return nil, err
 			}
 			if matched {
-				matches = append(matches, rm)
+				matches = append(matches, variantMatch{match: rm, variant: idx})
 			}
 		}
 	}
 	return matches, nil
 }
 
-func (mc *matchContext) collectViaWalk(ctx context.Context, root *sitter.Node) ([]RawMatch, error) {
+// collectViaWalk runs the single shared walk for every walk-driven variant. At
+// each node the variants are tried in candidate order and the first match wins:
+// a second variant matching the same node would produce the same outer span and
+// be collapsed by the dedupe anyway.
+func (mc *matchContext) collectViaWalk(ctx context.Context, root *sitter.Node) ([]variantMatch, error) {
 	var (
-		matches []RawMatch
+		matches []variantMatch
 		walkErr error
 	)
 	walkAll(root, func(n *sitter.Node) {
 		if walkErr != nil {
 			return
 		}
-		rm, matched, err := mc.tryMatch(ctx, n)
-		if err != nil {
-			walkErr = err
-			return
-		}
-		if matched {
-			matches = append(matches, rm)
+		for i := range mc.cp.Variants {
+			v := &mc.cp.Variants[i]
+			if v.rootQuery != nil {
+				continue
+			}
+			rm, matched, err := mc.tryMatch(ctx, n, v)
+			if err != nil {
+				walkErr = err
+				return
+			}
+			if matched {
+				matches = append(matches, variantMatch{match: rm, variant: i})
+				return
+			}
 		}
 	})
 	return matches, walkErr
-}
-
-// toRawMatch builds the per-match RawMatch from a successful structural
-// match. The "match" capture key is reserved for the outer-node binding;
-// individual placeholder captures already live in caps.byName. The
-// internal "$match" key (synthesized by matchTreeWithNodes for where-tree
-// resolution) is filtered out — the bare "match" key is the user-facing
-// surface, $match is engine-internal scope plumbing.
-func toRawMatch(outer *sitter.Node, relPath string, caps *Captures, src []byte) RawMatch {
-	rm := RawMatch{
-		FilePath:  relPath,
-		StartLine: int(outer.StartPoint().Row) + 1,
-		EndLine:   int(outer.EndPoint().Row) + 1,
-		Captures:  make(map[string]Capture, len(caps.byName)+1),
-	}
-	rm.Captures["match"] = nodeToCapture(outer, src)
-	for name, cap := range caps.byName {
-		if name == "$match" {
-			continue
-		}
-		rm.Captures[name] = cap
-	}
-	return rm
 }

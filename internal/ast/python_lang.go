@@ -22,6 +22,8 @@
 package ast
 
 import (
+	"strings"
+
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/treesitter"
 )
 
@@ -30,11 +32,27 @@ var pythonLangConfig = LangConfig{
 	Lang:     treesitter.LangPython,
 	Reserved: "__META_AST_",
 	Wrappers: []ContextWrapper{
-		{Name: "decl", Prefix: "", Suffix: "\n"},
-		{Name: "stmt", Prefix: "def __meta_ast_wrapper__():\n    ", Suffix: "\n"},
-		{Name: "expr", Prefix: "__meta_ast_value__ = ", Suffix: "\n"},
+		{Name: "decl", Context: contextDecl, Prefix: "", Suffix: "\n"},
+		{Name: "stmt", Context: contextStmt, Prefix: "def __meta_ast_wrapper__():\n    ", Suffix: "\n"},
+		{Name: "expr", Context: contextExpr, Prefix: "__meta_ast_value__ = ", Suffix: "\n"},
 	},
-	IdentRule: isPythonIdent,
+	CommentKinds: []string{"comment"},
+	IdentRule:    isPythonIdent,
+	IsTestFile:   isPythonTestFile,
+}
+
+// isPythonTestFile reports whether a repo-relative path is Python test source.
+// The rule is FILENAME-ONLY — unittest discovery and pytest's default
+// `python_files` both key on the test_*.py / *_test.py spellings — and
+// deliberately does NOT treat a tests/ or test/ directory as test source.
+// Measured on py-django: 617 files carry the filename convention, while a
+// directory rule would additionally swallow django/test/ (client.py, runner.py,
+// selenium.py …), which is Django's SHIPPED testing library rather than its test
+// suite. Hiding shipped source behind include_tests:false is the more expensive
+// error, so the directory leg is left out.
+func isPythonTestFile(rel string) bool {
+	base := pathBase(rel)
+	return strings.HasPrefix(base, "test_") || strings.HasSuffix(base, "_test.py")
 }
 
 // isPythonIdent reports whether s is a valid ASCII Python identifier (the

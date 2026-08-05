@@ -21,13 +21,25 @@ import (
 
 // replaceResultShape decodes the LLM-facing replace result wire shape.
 type replaceResultShape struct {
-	Applied         bool              `json:"applied"`
-	DryRun          bool              `json:"dry_run"`
-	FilesTouched    int               `json:"files_touched"`
-	MatchesReplaced int               `json:"matches_replaced"`
-	RefusedFiles    []string          `json:"refused_files"`
-	RejectedFiles   []string          `json:"rejected_files"`
-	Diffs           map[string]string `json:"diffs"`
+	Applied                  bool                `json:"applied"`
+	DryRun                   bool                `json:"dry_run"`
+	FilesMatched             int                 `json:"files_matched"`
+	FilesChanged             int                 `json:"files_changed"`
+	MatchesReplaced          int                 `json:"matches_replaced"`
+	MatchesChanged           int                 `json:"matches_changed"`
+	RefusedFiles             []string            `json:"refused_files"`
+	RejectedFiles            []string            `json:"rejected_files"`
+	PreexistingParseFailures []parseFailureShape `json:"preexisting_parse_failures"`
+	Diffs                    map[string]string   `json:"diffs"`
+}
+
+// parseFailureShape decodes one pre-existing-failure entry. It is STRUCTURED on
+// the wire, not a bare path — decoding it as such is what proves the location
+// survives the handler.
+type parseFailureShape struct {
+	Path   string `json:"path"`
+	Line   int    `json:"line"`
+	Column int    `json:"column"`
 }
 
 // TestAstSchema_ReplaceOperation pins that the operation enum
@@ -113,7 +125,7 @@ func TestAstReplace_DryRunPointerSemantics(t *testing.T) {
 		require.NoError(t, json.Unmarshal([]byte(body), &out))
 		assert.True(t, out.Applied, "dry_run:false must apply")
 		assert.False(t, out.DryRun)
-		assert.Equal(t, 1, out.FilesTouched)
+		assert.Equal(t, 1, out.FilesMatched)
 
 		onDisk, err := os.ReadFile(filepath.Join(repoDir, "main.go"))
 		require.NoError(t, err)
@@ -167,7 +179,7 @@ func TestAstReplace_EmptyReplacement_Deletes(t *testing.T) {
 		var out replaceResultShape
 		require.NoError(t, json.Unmarshal([]byte(body), &out))
 		assert.True(t, out.Applied, "dry_run:false must apply the deletion")
-		assert.Equal(t, 1, out.FilesTouched)
+		assert.Equal(t, 1, out.FilesMatched)
 
 		onDisk, err := os.ReadFile(filepath.Join(repoDir, "main.go"))
 		require.NoError(t, err)
@@ -240,7 +252,7 @@ func TestHandleAstReplace_OverlapRefused(t *testing.T) {
 	var out replaceResultShape
 	require.NoError(t, json.Unmarshal([]byte(body), &out))
 	assert.Contains(t, out.RefusedFiles, "main.go", "nested matches must refuse the file")
-	assert.Equal(t, 0, out.FilesTouched, "a refused file is not touched")
+	assert.Equal(t, 0, out.FilesMatched, "a refused file is not touched")
 
 	after, err := os.ReadFile(filepath.Join(repoDir, "main.go"))
 	require.NoError(t, err)
@@ -269,7 +281,7 @@ func TestHandleAstReplace_LiteralDollarEscape(t *testing.T) {
 
 	var out replaceResultShape
 	require.NoError(t, json.Unmarshal([]byte(body), &out))
-	require.Equal(t, 1, out.FilesTouched)
+	require.Equal(t, 1, out.FilesMatched)
 
 	onDisk, err := os.ReadFile(filepath.Join(repoDir, "main.go"))
 	require.NoError(t, err)

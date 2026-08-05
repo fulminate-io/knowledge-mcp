@@ -180,13 +180,13 @@ func (m *distManager[Q, S]) publishResident(
 		// blob heals on a later pass once its PUT succeeds and it re-enters the
 		// resident→published set.
 		if incomplete, ok := errors.AsType[*manifestIncompleteError](err); ok {
-			// 409: the agent reported a referenced blob not yet present. The ship
-			// landed but the manifest did not — set the retry bit so a later tick
-			// re-publishes once the missing blob heals.
-			m.setPublishPending()
-			slog.Warn("segmentdist: publish SKIPPED (agent reported missing blob(s) — manifest+blobs left intact)",
-				"graph", m.target.GetGraph(), "name", m.target.GetName(), "repo", m.target.GetRepo(),
-				"format", m.format, "missing", incomplete.Missing)
+			// 409: the agent HEAD-verify reported a referenced blob genuinely absent
+			// server-side. The ship stamped the ids but the manifest did not land —
+			// markIncompletePublish UN-STAMPS the missing ids so the next ship diff
+			// re-uploads them (without this the diff skips them forever and the 409
+			// wedges permanently), arms the retry bit, and escalates to a loud WARN if
+			// the re-upload is not converging.
+			m.markIncompletePublish(incomplete.Missing)
 			return nil, nil
 		}
 		// Transport error on PublishManifest — the ship landed but the publish did
@@ -222,6 +222,9 @@ func (m *distManager[Q, S]) publishResident(
 	m.publishPending = false
 	m.coverageSkipStreak = 0
 	m.lastSkipResident = 0
+	// The swap landed, so any prior agent-409 incomplete streak converged — reset it
+	// so a future 409 re-arms fresh and escalates only on a NEW persistent episode.
+	m.incompletePublishStreak = 0
 	// The swap LANDED. This is the only site that increments, so a caller comparing
 	// the counter across a call learns whether a manifest swap actually happened —
 	// which the nil error it also gets on every skip cannot tell it.

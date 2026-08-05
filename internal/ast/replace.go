@@ -10,13 +10,24 @@
 //  1. interpolateTemplate — scans a replacement template with the SAME
 //     lexPlaceholder the matcher uses, substituting $NAME -> caps[NAME].Text,
 //     $$$NAME -> the verbatim sequence span, $$ -> a literal '$'. Wildcards
-//     ($_ / $$$_) are non-referenceable (usage error).
+//     ($_ / $$$_) are non-referenceable (usage error). It renders TEMPLATE
+//     text and knows nothing about the source; spliceFromSource calls it for
+//     the part of a replacement the caller actually rewrote.
+//  1a. spliceFromSource (splice.go) — builds each match's replacement
+//     SOURCE-ANCHORED: everything inside the matched span the template did not
+//     explicitly rewrite is copied from the file's own bytes, so inter-token
+//     whitespace, line structure, indentation and unnamed anonymous tokens
+//     survive and an identity template is a byte-identical no-op.
 //  2. buildFileEdits — groups matches by file, sorts each file's edits
 //     DESCENDING by start byte (apply right-to-left so offsets stay valid),
 //     and REFUSES-AND-REPORTS any file with overlapping/nested matches.
-//  3. applyEditsToSource — right-to-left byte splice + re-parse gate
-//     (RootNode().HasError() -> reject the file, mirroring compilePattern).
-//  4. ApplyReplace + atomicWriteString — the public entry the handler calls:
+//  3. baselineParseFailures (replace_baseline.go) — parses every candidate
+//     file's ORIGINAL bytes first. A file that already carries a grammar error
+//     is reported with the error's location and never spliced, so the gate
+//     below can only ever fire on breakage the edit caused.
+//  4. applyEditsToSource — right-to-left byte splice + re-parse gate
+//     (parseErrorSite -> reject the file, mirroring compilePattern).
+//  5. ApplyReplace + atomicWriteString — the public entry the handler calls:
 //     dry-run by default (diffs only), opt-in atomic write on apply.
 //
 // 100% CLIENT-SIDE: it edits the working tree. The server has no
@@ -27,11 +38,13 @@
 package ast
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"sort"
 	"strings"
 
@@ -114,7 +127,12 @@ type fileEdit struct {
 // buildFileEdits turns []RawMatch into per-file edit lists, sorted DESCENDING
 // by Start so the right-to-left splice keeps earlier byte offsets valid. The
 // outer matched span (m.Captures["match"], set by toRawMatch) is the range to
-// replace; the interpolated template is the replacement.
+// replace; spliceFromSource builds the replacement, taking every byte the
+// template did not rewrite from that file's own source.
+//
+// srcByFile maps each matched file's repo-relative path to its bytes. A path
+// with no entry still yields an edit — spliceFromSource falls back to a bare
+// interpolateTemplate when it has no source to anchor against.
 //
 // Return shape:
 //   - edits: file path -> DESC-sorted edits (overlapping files excluded).
@@ -122,14 +140,14 @@ type fileEdit struct {
 //     reported, never guessed (U3 refuse-and-report).
 //   - error: ONLY a malformed template (interpolateTemplate usage error)
 //     fails the whole op; per-file overlap is reported, not errored.
-func buildFileEdits(matches []RawMatch, template string) (map[string][]fileEdit, []string, error) {
+func buildFileEdits(matches []RawMatch, template string, srcByFile map[string][]byte) (map[string][]fileEdit, []string, error) {
 	byFile := make(map[string][]fileEdit)
 	for _, m := range matches {
-		outer, ok := m.Captures["match"]
+		outer, ok := m.Captures[outerCaptureName]
 		if !ok {
 			return nil, nil, fmt.Errorf("internal: match in %s has no outer 'match' capture", m.FilePath)
 		}
-		repl, err := interpolateTemplate(template, m.Captures)
+		repl, err := spliceFromSource(m, template, srcByFile[m.FilePath])
 		if err != nil {
 			return nil, nil, err
 		}
@@ -169,69 +187,164 @@ func hasOverlap(edits []fileEdit) bool {
 	return false
 }
 
-// applyEditsToSource splices DESC-sorted edits into src right-to-left, then
+// changedEditCount reports how many of a file's edits actually move bytes, by
+// comparing each replacement against the source span it replaces.
+//
+// Every edit's [Start, End) addresses the ORIGINAL source — that is what the
+// right-to-left splice order preserves — so src here is the pre-edit bytes.
+// The ranges were already proven in-bounds by applyEditsToSource, which runs
+// against the same bytes before this is called; the length guard is a
+// defensive floor, not an expected branch.
+func changedEditCount(src []byte, edits []fileEdit) int {
+	n := 0
+	for _, e := range edits {
+		if e.Start > e.End || int(e.End) > len(src) {
+			continue
+		}
+		if !bytes.Equal(src[e.Start:e.End], []byte(e.Replacement)) {
+			n++
+		}
+	}
+	return n
+}
+
+// spliceEdits assembles the rewritten bytes for one file in a SINGLE forward
+// pass over an exactly pre-sized output: each inter-edit source run and each
+// replacement is copied exactly once. It runs NO re-parse — assembly only, so
+// the identical loop backs both the apply path (behind the gate
+// applyEditsToSource runs) and the allocation benchmark that measures it.
+//
+// edits MUST be DESC-sorted by Start (the invariant buildFileEdits
+// establishes). Bounds are validated against the immutable src (there is no
+// mutating buffer to measure against here) in the same pre-pass that sums the
+// exact output size. The forward walk then consumes the edits in ASCENDING
+// source order (reverse index), which is why it slices src[prev:e.Start]: that
+// PANICS on an out-of-order or overlapping edit, so a monotonicity guard turns
+// the violation into an error. Adjacent-touching edits (e.Start == prev) are
+// legal — hasOverlap permits them — so the guard is strict `<`, never `<=`.
+func spliceEdits(src []byte, edits []fileEdit) ([]byte, error) {
+	total := len(src)
+	for _, e := range edits {
+		// Bound check against the immutable input — buildFileEdits derives
+		// offsets from the matcher's own byte ranges, but a corrupt input must
+		// not panic.
+		if e.Start > e.End || int(e.End) > len(src) {
+			return nil, fmt.Errorf("edit range [%d,%d) out of bounds for %d-byte source", e.Start, e.End, len(src))
+		}
+		total += len(e.Replacement) - int(e.End-e.Start)
+	}
+	if total < 0 {
+		total = 0
+	}
+
+	out := make([]byte, 0, total)
+	prev := 0
+	for _, v := range slices.Backward(edits) {
+		e := v
+		if int(e.Start) < prev {
+			return nil, fmt.Errorf("edit range [%d,%d) is out of order or overlaps an earlier edit ending at %d", e.Start, e.End, prev)
+		}
+		out = append(out, src[prev:e.Start]...)
+		out = append(out, e.Replacement...)
+		prev = int(e.End)
+	}
+	out = append(out, src[prev:]...)
+	return out, nil
+}
+
+// applyEditsToSource assembles the rewritten bytes via spliceEdits, then
 // re-parses the result and REJECTS it if the rewrite introduced a syntax
-// error (RootNode().HasError() — the same gate compilePattern applies at
-// engine.go:130-145). The right-to-left order means every later (lower-offset)
-// edit's byte range stays valid against the not-yet-mutated prefix.
+// error (the same gate compilePattern applies at engine.go:130-145).
+//
+// The re-parse goes through parseErrorSite (replace_baseline.go), the same
+// call the PRE-EDIT baseline makes. A rejection here therefore means the edit
+// broke a file the baseline certified clean, and nothing else: files that were
+// already ungrammatical never reach this function.
 //
 // edits MUST be DESC-sorted by Start (the invariant buildFileEdits
 // establishes). On a re-parse failure newSrc is dropped and an error is
 // returned; the caller maps it to a per-file rejection.
 func applyEditsToSource(ctx context.Context, src []byte, edits []fileEdit, lang treesitter.Language) ([]byte, error) {
-	out := append([]byte{}, src...)
-	for _, e := range edits {
-		// Defensive bound check — buildFileEdits derives offsets from the
-		// matcher's own byte ranges, but a corrupt input must not panic.
-		if e.Start > e.End || int(e.End) > len(out) {
-			return nil, fmt.Errorf("edit range [%d,%d) out of bounds for %d-byte source", e.Start, e.End, len(out))
-		}
-		out = append(append(append([]byte{}, out[:e.Start]...), []byte(e.Replacement)...), out[e.End:]...)
+	out, err := spliceEdits(src, edits)
+	if err != nil {
+		return nil, err
 	}
 
-	parser := treesitter.NewParser()
-	defer parser.Close()
-	tree, perr := parser.Parse(ctx, out, lang)
+	line, _, hasError, perr := parseErrorSite(ctx, out, lang)
 	if perr != nil {
 		return nil, fmt.Errorf("rewritten source failed re-parse (%w); edit rejected", perr)
 	}
-	defer tree.Close()
-	root := tree.RootNode()
-	if root == nil || root.HasError() {
-		return nil, fmt.Errorf("rewritten source failed re-parse (HasError); edit rejected")
+	if hasError {
+		return nil, fmt.Errorf("rewritten source failed re-parse (grammar error at line %d); edit rejected", line)
 	}
 	return out, nil
 }
 
 // ReplaceResult is the LLM-facing outcome of an ApplyReplace run.
 type ReplaceResult struct {
-	// FilesTouched is the count of files that were (dry-run) or would be
-	// (apply) rewritten — i.e. files with applied edits.
-	FilesTouched int `json:"files_touched"`
-	// MatchesReplaced is the total number of spliced edits across all touched
+	// FilesMatched is the count of files that produced at least one edit and
+	// passed the gate. It says nothing about whether the bytes moved.
+	FilesMatched int `json:"files_matched"`
+	// FilesChanged is the subset of FilesMatched whose bytes actually differ.
+	// An identity template splices byte-identically, so it matches files and
+	// changes none — the distinction FilesMatched alone cannot carry.
+	FilesChanged int `json:"files_changed"`
+	// MatchesReplaced is the total number of spliced edits across all matched
 	// files.
 	MatchesReplaced int `json:"matches_replaced"`
+	// MatchesChanged is the subset of MatchesReplaced that were not
+	// byte-identical, measured per splice rather than inferred from the
+	// whole-file diff (which cannot attribute a change to one splice among
+	// several in the same file).
+	MatchesChanged int `json:"matches_changed"`
 	// RefusedFiles carry overlapping/nested matches and were dropped whole.
 	RefusedFiles []string `json:"refused_files,omitempty"`
-	// RejectedFiles failed the re-parse gate after splicing and were never
-	// written.
+	// RejectedFiles parsed CLEAN before the edit and failed the re-parse gate
+	// after splicing — i.e. the edit broke them. They were never written. A
+	// file that was already ungrammatical is reported in
+	// PreexistingParseFailures instead and never reaches the gate.
 	RejectedFiles []string `json:"rejected_files,omitempty"`
+	// PreexistingParseFailures name the files whose ORIGINAL source already
+	// carried a grammar error, with the site of that error. They were never
+	// spliced and never written: nothing can be concluded about an edit to a
+	// file that did not parse before the edit.
+	PreexistingParseFailures []ParseFailure `json:"preexisting_parse_failures,omitempty"`
 	// Diffs maps each touched file's repo-relative path to its unified diff.
 	Diffs map[string]string `json:"diffs,omitempty"`
 	// Applied is false for a dry run, true when edits were written to disk.
 	Applied bool `json:"applied"`
 }
 
-// ApplyReplace is the public entry the handler calls. It builds per-file edits
-// from matches, re-parses each rewritten file behind the HasError gate, and —
-// when !dryRun — writes the survivors atomically. Dry-run is the default
-// caller contract: it populates Diffs without touching disk.
+// ApplyReplace is the public entry the handler calls. It reads every matched
+// file, builds per-file edits from matches, takes a pre-edit parse baseline
+// over the whole candidate set, re-parses each rewritten file behind the same
+// gate, and — when !dryRun — writes the survivors atomically. Dry-run is the
+// default caller contract: it populates Diffs without touching disk.
+//
+// cleanHint carries the match-time parse hints (WalkStats.CleanHint) so the
+// baseline can skip re-parsing a file the match already parsed clean, guarded by
+// a size+fnv64a digest check against the bytes about to be spliced (a file
+// mutated between match and replace mismatches and is re-parsed). A nil hint —
+// every non-handler caller passes nil — re-parses every file, exactly the
+// pre-hint behavior. The digest is over the T2 bytes actually spliced, so a
+// match means the certified-clean bytes ARE the spliced bytes: no
+// destroy-before-persist gap.
+//
+// The read happens up front because the replacement itself is source-anchored:
+// spliceFromSource needs each match's own file bytes to copy the parts the
+// template left alone. Each file is still read exactly once — the same bytes
+// feed the splice and the apply.
 //
 // File I/O is serial: the CPU-heavy match already ran NumCPU-parallel in
 // ast.Match; the post-match apply is bounded per-file I/O with no in-tree
 // per-file-write parallel analog. Writes are atomic per-file (tmp + rename).
-func ApplyReplace(ctx context.Context, repoDir string, lang treesitter.Language, matches []RawMatch, template string, dryRun bool) (ReplaceResult, error) {
-	byFile, refused, err := buildFileEdits(matches, template)
+func ApplyReplace(ctx context.Context, repoDir string, lang treesitter.Language, matches []RawMatch, template string, dryRun bool, cleanHint map[string]fileParseHint) (ReplaceResult, error) {
+	srcByFile, err := readMatchedSources(repoDir, matches)
+	if err != nil {
+		return ReplaceResult{}, err
+	}
+
+	byFile, refused, err := buildFileEdits(matches, template, srcByFile)
 	if err != nil {
 		return ReplaceResult{}, err
 	}
@@ -249,13 +362,23 @@ func ApplyReplace(ctx context.Context, repoDir string, lang treesitter.Language,
 	}
 	sort.Strings(paths)
 
+	// The PRE-EDIT baseline runs over the whole candidate set before any
+	// splice, so a file that was already ungrammatical is excluded before its
+	// own write is reached and the report is fully classified even if the loop
+	// below stops early.
+	res.PreexistingParseFailures, _ = baselineParseFailures(ctx, paths, srcByFile, lang, cleanHint)
+	alreadyBroken := make(map[string]struct{}, len(res.PreexistingParseFailures))
+	for _, f := range res.PreexistingParseFailures {
+		alreadyBroken[f.Path] = struct{}{}
+	}
+
 	for _, relPath := range paths {
+		if _, broken := alreadyBroken[relPath]; broken {
+			continue
+		}
 		edits := byFile[relPath]
 		absPath := filepath.Join(repoDir, relPath)
-		oldSrc, readErr := os.ReadFile(absPath) //nolint:gosec // path derived from repoDir + matcher-produced relPath.
-		if readErr != nil {
-			return ReplaceResult{}, fmt.Errorf("read %s: %w", relPath, readErr)
-		}
+		oldSrc := srcByFile[relPath]
 
 		newSrc, applyErr := applyEditsToSource(ctx, oldSrc, edits, lang)
 		if applyErr != nil {
@@ -267,9 +390,14 @@ func ApplyReplace(ctx context.Context, repoDir string, lang treesitter.Language,
 		if diffErr != nil {
 			return ReplaceResult{}, fmt.Errorf("diff %s: %w", relPath, diffErr)
 		}
+		changed := changedEditCount(oldSrc, edits)
 		res.Diffs[relPath] = diff
-		res.FilesTouched++
+		res.FilesMatched++
 		res.MatchesReplaced += len(edits)
+		res.MatchesChanged += changed
+		if changed > 0 {
+			res.FilesChanged++
+		}
 
 		if !dryRun {
 			if writeErr := atomicWriteString(absPath, newSrc); writeErr != nil {
@@ -279,6 +407,28 @@ func ApplyReplace(ctx context.Context, repoDir string, lang treesitter.Language,
 	}
 	sort.Strings(res.RejectedFiles)
 	return res, nil
+}
+
+// readMatchedSources reads each distinct file the match set touches, once,
+// keyed by repo-relative path. A read failure fails the whole op: the splice
+// cannot anchor against bytes it could not load, and silently degrading to a
+// whole-span rewrite would corrupt exactly the file that was hardest to read.
+func readMatchedSources(repoDir string, matches []RawMatch) (map[string][]byte, error) {
+	out := make(map[string][]byte)
+	for _, m := range matches {
+		if m.FilePath == "" {
+			continue
+		}
+		if _, done := out[m.FilePath]; done {
+			continue
+		}
+		src, err := os.ReadFile(filepath.Join(repoDir, m.FilePath)) //nolint:gosec // path derived from repoDir + matcher-produced relPath.
+		if err != nil {
+			return nil, fmt.Errorf("read %s: %w", m.FilePath, err)
+		}
+		out[m.FilePath] = src
+	}
+	return out, nil
 }
 
 // unifiedDiff renders a unified diff between oldSrc and newSrc for relPath

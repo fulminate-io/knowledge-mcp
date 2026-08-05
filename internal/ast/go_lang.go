@@ -10,8 +10,7 @@
 // `$X` to `__META_AST_X__0` (where the trailing index disambiguates
 // repeated occurrences — see engine.go::substitutePlaceholders).
 //
-// Wrapper order (declaration → statement → expression) per ticket
-// validation contract item 3:
+// The three registered wrappers, one per parse context Go can express:
 //
 //   1. Declaration wrapper (`package p\n`) — for top-level forms like
 //      `func Foo() {}` or `type X struct {}`.
@@ -20,16 +19,21 @@
 //   3. Expression wrapper (`package p\nvar _ = ` …) — for bare expressions
 //      like `make([]int, 0)` or `f(x).y`.
 //
-// Declaration is tried first because it accepts the broadest scope of
-// pattern shapes (top-level funcs / types / consts / vars). Statement is
-// next because the most common patterns are inside-body fragments.
-// Expression is last because expressions are the most-permissive grammar
-// — almost anything ambiguous parses as an expression somewhere, and
-// preferring the more-specific contexts reduces false-positive parses.
+// ORDER IS NOT PREFERENCE. Every wrapper that parses without ERROR nodes and
+// HOSTS the fragment contributes a candidate, and the walk matches the union
+// of the distinct candidates — so listing declaration first excludes nothing
+// and prefers nothing. `defer $X.Close()` is grammatical under both the
+// declaration and the statement wrapper and compiles identically under each,
+// which is why its matches are stamped with the context SET [decl, stmt]
+// rather than with whichever entry happens to be registered first. The order
+// survives only as candidate order, which decides which equivalent stamp a
+// dedupe keeps; callers who need one reading narrow with the `context` pin.
 
 package ast
 
 import (
+	"strings"
+
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/treesitter"
 )
 
@@ -38,12 +42,29 @@ var goLangConfig = LangConfig{
 	Lang:     treesitter.LangGo,
 	Reserved: "__META_AST_",
 	Wrappers: []ContextWrapper{
-		{Name: "decl", Prefix: "package _\n", Suffix: ""},
-		{Name: "stmt", Prefix: "package _\nfunc _() {\n", Suffix: "\n}"},
-		{Name: "expr", Prefix: "package _\nvar _ = ", Suffix: ""},
+		{Name: "decl", Context: contextDecl, Prefix: "package _\n", Suffix: ""},
+		{Name: "stmt", Context: contextStmt, Prefix: "package _\nfunc _() {\n", Suffix: "\n}"},
+		{Name: "expr", Context: contextExpr, Prefix: "package _\nvar _ = ", Suffix: ""},
 	},
-	IdentRule: isGoIdent,
+	CommentKinds: []string{"comment"},
+	IdentRule:    isGoIdent,
+	// Go's grammar terminates a statement inside a block with an anonymous
+	// newline, so a multi-line block carries a child a one-line block does
+	// not. Measured across all 21 registered grammars (testdata/
+	// layout_token_census.txt): Go is the only one that surfaces such a
+	// token, and the one-line spelling parses to the same named nodes in the
+	// same order without it — so it distinguishes nothing a caller could have
+	// meant.
+	LayoutTokens: []string{"\n"},
+	IsTestFile:   isGoTestFile,
 }
+
+// isGoTestFile reports whether a repo-relative path is a Go test file. Go's
+// convention is enforced by the toolchain itself — `go test` compiles exactly
+// the _test.go suffix — so it is the least ambiguous of the twelve registered
+// conventions. It lived in match.go as the walk's hardcoded gate until the
+// filter became per-language; the behavior is unchanged.
+func isGoTestFile(rel string) bool { return strings.HasSuffix(rel, "_test.go") }
 
 // isGoIdent reports whether s is a valid ASCII Go identifier (the subset
 // the engine generates for substituted placeholders). Mirrors the deleted

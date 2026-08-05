@@ -1,0 +1,132 @@
+# ast perf baseline — body-free counting and single-pass splice apply.
+#
+# WALL-CLOCK IS NOT A GATED AXIS OF THIS PLAN. Every gate in the plan asserts
+# allocations or retained bytes — properties of the code, not of the machine it
+# ran on. The ns/op figures below are recorded as OBSERVATIONS only. The
+# ticket's before-figure carried a 9.2s reading while the count walk itself
+# re-derives at ~805ms; that gap is GC pressure from holding an ~808MB live set
+# plus response marshaling, not the walk. Removing that live set is plausibly
+# why a wall-clock improvement would appear, but this plan does not claim it and
+# does not gate on it. Never read an ns/op line here as a criterion that was met.
+#
+# The two allocs/op lines are the RUN-PROOF: a `go test -bench` invocation exits
+# 0 when its selector matches nothing and prints no `--- PASS:` line, so the
+# benchmarks' existence is gated structurally (comment-stripped perf_bench_test.go)
+# and the proof they actually ran is that each contributed an allocs/op figure
+# here — a benchmark that never ran produces none.
+#
+# MACHINE STATE: Apple M4 Max (goarch arm64, 16 logical CPUs), darwin. Captured
+# on branch wt-perf. The
+# count corpus is a non-git temp dir, so its walk logs the expected
+# "git ls-files failed, falling back to filesystem walk" per the nongit
+# discovery path — not an error.
+
+BEFORE
+
+HEAD: faa646c56754d650f38c5bb39fd9227a0bc0788d
+
+# Splice shape measured: right-to-left whole-buffer rebuild (the shape Phase 1
+# extracted verbatim from applyEditsToSource into spliceEdits — seed
+# `out := append([]byte{}, src...)` plus a per-edit
+# `append(append(append([]byte{}, out[:Start]...), repl...), out[End:]...)`
+# rebuild). 400 disjoint DESC-sorted edits over a ~4,000-line buffer. Its ~800
+# allocs/op is a KNOWN-POSITIVE control for Phase 2, whose forward-pass rewrite
+# drives allocations to a small constant independent of edit count (<20 at 400).
+BenchmarkSpliceEdits_ManyEdits-16    	 207	  5918850 ns/op	91302948 B/op	   798 allocs/op
+
+# Count-walk shape measured: ast.Match — the full walk that RETAINS every
+# RawMatch across the whole scope. 40 fixed Go files, ~200 matches each,
+# placeholder-rooted `$_`. The ~289k allocs/op reflects that walk-wide
+# retention; it is what Phase 3's body-free count path removes.
+BenchmarkCountWalk_PlaceholderRoot-16	  48	 27840985 ns/op	80661874 B/op	289050 allocs/op
+
+# RETENTION CLAIM the AFTER block is allowed to make, stated precisely: after
+# Phase 3, peak retention on the count path is O(files) PLUS one largest-file
+# transient times NumCPU — NOT a bare "O(files)". The per-file []RawMatch a
+# worker builds still exists while that file is being tallied; what the change
+# removes is the walk-wide accumulation of every file's matches. BEFORE, the
+# count path retains O(matches): every RawMatch across the whole scope is held
+# until the response is built.
+
+AFTER
+
+HEAD: 1a92e43228860496bf524f7918d5573bd0af6db5
+
+# Measured at the Phase 3 HEAD on the same machine (Apple M4 Max, arm64, 16
+# logical CPUs, darwin), branch wt-perf, clean tree. Same wall-clock caveat as
+# the BEFORE block: ns/op is an observation, never a gated axis.
+
+# Splice shape measured: single forward pass with exact pre-size (Phase 2). Same
+# 400 disjoint DESC-sorted edits over the ~4,000-line buffer. Allocations
+# collapsed from ~798 to 1 — a small CONSTANT independent of edit count, which
+# is the gated property (TestSpliceEdits_AllocationsAreIndependentOfEditCount:
+# forward <20, right-to-left reference control >400). ns/op fell ~490x as a
+# by-product, recorded as observation only.
+BenchmarkSpliceEdits_ManyEdits-16    	 97627	    12022 ns/op	  147456 B/op	     1 allocs/op
+
+# Count-walk shape measured: ast.Count — the body-free walk (Phase 3). Same 40
+# fixed Go files, ~200 matches each, placeholder-rooted `$_`.
+# allocs/op AND ns/op are essentially UNCHANGED from BEFORE, and that is
+# CORRECT, not a null result: the count path still BUILDS every per-file
+# RawMatch (the walk is untouched — the scope question ruled count stops
+# RETAINING, not building, since the 805ms/874k-match walk showed the 808MB was
+# retention). The win is PEAK RETENTION, which allocs/op cannot show: it drops
+# from O(matches) to O(files) PLUS one largest-file []RawMatch transient times
+# NumCPU — the per-file slice a worker holds only while tallying that file. That
+# property is proven by TestCount_RetainsNoMatchBodies (Count flat across a 10x
+# match jump at fixed file count; the Match arm scales >5x as the known-positive
+# control). B/op fell ~10% because the walk-wide results-slice append growth is
+# gone.
+BenchmarkCountWalk_PlaceholderRoot-16	  40	 27071501 ns/op	72512273 B/op	289168 allocs/op
+
+# ============================================================================
+# alloc-storm — placeholder-rooted match/count/replace allocation fixes.
+#
+# Four fixes to the placeholder-rooted (rootQuery==nil → collectViaWalk) path,
+# each gated by an AllocsPerRun assertion elsewhere; these benchmark lines are
+# the RUN-PROOF record, never a gate (same convention as the blocks above: a
+# `go test -bench` selector that matches nothing still exits 0). BenchmarkMatchWalk_
+# PlaceholderRoot is the shared record for fix #1 (skip dead $match/nodes on the
+# where==nil path) and fix #3 (drop the per-match fresh newCaptures/nodes alloc).
+# Same machine/caveat as above: ns/op is an observation, allocs/op is the gated
+# property mirrored by the AllocsBounded tests.
+#
+# MACHINE STATE: Apple M4 Max (goarch arm64, 16 logical CPUs), darwin. Captured
+# on branch wt-allocstorm. The count/match corpus is benchCountCorpus — a non-git
+# temp dir, so its walk logs the expected "git ls-files failed, falling back to
+# filesystem walk" per the nongit discovery path — not an error.
+
+BEFORE
+
+HEAD: 32d57a72055b27dad8a0e0f670cb84d0c0301efd
+
+# Match-walk shape measured: ast.Match over benchCountCorpus (40 fixed Go files,
+# ~200 matches each), placeholder-rooted `$_`, where==nil. Every named node
+# matches, so tryMatch runs matchTreeWithNodes for each — the $match nodeToCapture
+# Content copy + findNodeBySpan nodes loop (dead when where==nil, fix #1) plus a
+# fresh newCaptures/nodes map per successful match (fix #3). That is the ~289k
+# allocs/op the two fixes remove.
+BenchmarkMatchWalk_PlaceholderRoot-16	  39	 29240438 ns/op	80658595 B/op	289040 allocs/op
+
+AFTER
+
+HEAD: wt-allocstorm (fix #1 + fix #3 applied)
+
+# Same machine (Apple M4 Max, arm64, 16 logical CPUs, darwin), same corpus and
+# `$_` where==nil pattern. Fix #1 (skip the dead $match/nodes work on where==nil)
+# and fix #3 (drop the per-match fresh newCaptures/nodes alloc) together take the
+# placeholder-root Match path 289040 -> 98276 allocs/op (66%), 80.6MB -> 46.4MB
+# B/op. Attribution between the two is locked by the AllocsBounded gates: fix #1
+# alone lands ~215071 (TestMatch_WhereNil_AllocsBounded ceiling 230000), fix #3
+# takes it the rest of the way (TestMatch_PlaceholderRoot_AllocsBounded ceiling
+# 130000). ns/op is an observation only, never a gated axis.
+BenchmarkMatchWalk_PlaceholderRoot-16	  56	 21030302 ns/op	46446757 B/op	 98276 allocs/op
+
+# Count-walk shape measured: ast.Count over the SAME corpus, placeholder-rooted
+# `$_`. The count light-match path (fix #2) binds a body-free {span, kind} per
+# match instead of a RawMatch, so it neither builds a per-match Captures map nor
+# copies node source. Count drops 289167 -> 24466 allocs/op (92%), 80.6MB ->
+# 8.7MB B/op — the largest fix. Gated TIGHT by TestCount_LightMatch_AllocsBounded
+# (ceiling 30000, just above the post-fix value); correctness held by the
+# Match-oracle parity test TestCount_LightMatchParity.
+BenchmarkCountWalk_PlaceholderRoot-16	  72	 15822735 ns/op	 8735696 B/op	 24466 allocs/op

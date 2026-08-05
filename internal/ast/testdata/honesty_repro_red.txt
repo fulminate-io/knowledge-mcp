@@ -1,0 +1,148 @@
+CORRECT-BEHAVIOR VARIANTS, OBSERVED IN-TREE BEFORE INVERSION
+============================================================
+
+This is NOT a run of the committed tests. The committed reproductions assert
+today's MEASURED BROKEN behavior and all five PASS.
+
+This file records the run that came first. Each of the five assertions was
+authored in its CORRECT-BEHAVIOR form — what the fixed engine must do — and run
+against the unfixed tree, to confirm the failure is the one its defect predicts
+rather than a setup error. Only after this run was each assertion inverted to
+state the observed brokenness and its HONESTY-ANCHOR set to broken.
+
+Every setup and control assertion in the run below PASSED; only the
+defect-bearing assertions failed. That is what distinguishes real red from a
+harness that never exercised the subject. Two are worth naming:
+
+  - In IncludeTestsIsNotSilentlyInertForNonGo the Go control is a require, so
+    it aborts the test before the Ruby legs are read. It passed: Go moves
+    1 -> 2 files across the flag. The Ruby equality is therefore a genuine
+    no-op, not a harness ignoring include_tests.
+  - In UnknownWhereKindErrors rungs 1 and 2 of the control ladder are requires
+    and both passed: the pattern matches unfiltered, and a valid PRESENT kind
+    still matches. The zero under the misspelled kind is therefore caused by
+    the misspelling.
+
+The five observed failures, each the defect's predicted one:
+
+  PreexistingParseFailureIsNotRejected
+      []string{"dirty.go"} should not contain "dirty.go"
+      FilesTouched 1, expected 2 — the pre-existing parse error is charged to
+      an identity edit that changed nothing.
+  SizeCappedFileIsDisclosed
+      FilesScanned+FilesSkipped = 1, expected 2 — the oversize file is neither
+      scanned nor skipped, so it is disclosed nowhere.
+  PackagePrefixRespectsSegmentBoundary
+      got ["pkg/in.go" "pkgextra/sibling.go"], expected ["pkg/in.go"] — the
+      bare prefix test admits a sibling that merely extends the name.
+  IncludeTestsIsNotSilentlyInertForNonGo
+      got ["app.rb" "app_test.rb"], expected ["app.rb"] — include_tests:false
+      does not exclude Ruby's test file.
+  UnknownWhereKindErrors
+      An error is expected but got nil — an unknown kind returns a vacuous
+      zero instead of refusing the call.
+
+Command: cd cmd/knowledge && CGO_ENABLED=1 go test ./internal/ast/ -run '^TestHonesty_' -count=1 -v
+Exit status: 1
+Recorded: 2026-08-04, against the tree at commit 8bcb7142.
+
+The only edit to the captured output is the absolute checkout path in the
+testify Error Trace lines, rewritten to ./ so the artifact carries no
+machine-specific home directory. Nothing else is altered.
+
+------------------------- RAW OUTPUT BEGINS -------------------------
+=== RUN   TestHonesty_PreexistingParseFailureIsNotRejected
+2026/08/04 14:27:15 WARN git ls-files failed, falling back to filesystem walk error="exit status 128"
+    honesty_repro_test.go:153: 
+        	Error Trace:	./cmd/knowledge/internal/ast/honesty_repro_test.go:153
+        	Error:      	[]string{"dirty.go"} should not contain "dirty.go"
+        	Test:       	TestHonesty_PreexistingParseFailureIsNotRejected
+        	Messages:   	an identity splice is byte-identical, so the pre-existing error is not edit-caused
+    honesty_repro_test.go:157: 
+        	Error Trace:	./cmd/knowledge/internal/ast/honesty_repro_test.go:157
+        	Error:      	Not equal: 
+        	            	expected: 2
+        	            	actual  : 1
+        	Test:       	TestHonesty_PreexistingParseFailureIsNotRejected
+        	Messages:   	both files carry a valid identity edit
+--- FAIL: TestHonesty_PreexistingParseFailureIsNotRejected (0.02s)
+=== RUN   TestHonesty_SizeCappedFileIsDisclosed
+2026/08/04 14:27:15 WARN git ls-files failed, falling back to filesystem walk error="exit status 128"
+    honesty_repro_test.go:196: 
+        	Error Trace:	./cmd/knowledge/internal/ast/honesty_repro_test.go:196
+        	Error:      	Not equal: 
+        	            	expected: 2
+        	            	actual  : 1
+        	Test:       	TestHonesty_SizeCappedFileIsDisclosed
+        	Messages:   	every candidate file must be accounted for as scanned or skipped
+--- FAIL: TestHonesty_SizeCappedFileIsDisclosed (0.01s)
+=== RUN   TestHonesty_PackagePrefixRespectsSegmentBoundary
+2026/08/04 14:27:15 WARN git ls-files failed, falling back to filesystem walk error="exit status 128"
+    honesty_repro_test.go:228: 
+        	Error Trace:	./cmd/knowledge/internal/ast/honesty_repro_test.go:228
+        	Error:      	Not equal: 
+        	            	expected: []string{"pkg/in.go"}
+        	            	actual  : []string{"pkg/in.go", "pkgextra/sibling.go"}
+        	            	
+        	            	Diff:
+        	            	--- Expected
+        	            	+++ Actual
+        	            	@@ -1,3 +1,4 @@
+        	            	-([]string) (len=1) {
+        	            	- (string) (len=9) "pkg/in.go"
+        	            	+([]string) (len=2) {
+        	            	+ (string) (len=9) "pkg/in.go",
+        	            	+ (string) (len=19) "pkgextra/sibling.go"
+        	            	 }
+        	Test:       	TestHonesty_PackagePrefixRespectsSegmentBoundary
+        	Messages:   	a directory prefix must not admit a sibling that merely extends its name
+    honesty_repro_test.go:230: 
+        	Error Trace:	./cmd/knowledge/internal/ast/honesty_repro_test.go:230
+        	Error:      	Not equal: 
+        	            	expected: 1
+        	            	actual  : 2
+        	Test:       	TestHonesty_PackagePrefixRespectsSegmentBoundary
+2026/08/04 14:27:15 WARN git ls-files failed, falling back to filesystem walk error="exit status 128"
+--- FAIL: TestHonesty_PackagePrefixRespectsSegmentBoundary (0.02s)
+=== RUN   TestHonesty_IncludeTestsIsNotSilentlyInertForNonGo
+2026/08/04 14:27:15 WARN git ls-files failed, falling back to filesystem walk error="exit status 128"
+2026/08/04 14:27:15 WARN git ls-files failed, falling back to filesystem walk error="exit status 128"
+2026/08/04 14:27:15 WARN git ls-files failed, falling back to filesystem walk error="exit status 128"
+2026/08/04 14:27:15 WARN git ls-files failed, falling back to filesystem walk error="exit status 128"
+    honesty_repro_test.go:283: 
+        	Error Trace:	./cmd/knowledge/internal/ast/honesty_repro_test.go:283
+        	Error:      	Not equal: 
+        	            	expected: []string{"app.rb"}
+        	            	actual  : []string{"app.rb", "app_test.rb"}
+        	            	
+        	            	Diff:
+        	            	--- Expected
+        	            	+++ Actual
+        	            	@@ -1,3 +1,4 @@
+        	            	-([]string) (len=1) {
+        	            	- (string) (len=6) "app.rb"
+        	            	+([]string) (len=2) {
+        	            	+ (string) (len=6) "app.rb",
+        	            	+ (string) (len=11) "app_test.rb"
+        	            	 }
+        	Test:       	TestHonesty_IncludeTestsIsNotSilentlyInertForNonGo
+        	Messages:   	Ruby must honour include_tests:false the way Go does
+    honesty_repro_test.go:287: 
+        	Error Trace:	./cmd/knowledge/internal/ast/honesty_repro_test.go:287
+        	Error:      	Should not be: 2
+        	Test:       	TestHonesty_IncludeTestsIsNotSilentlyInertForNonGo
+        	Messages:   	the flag must move the Ruby walk, not just the Go one
+--- FAIL: TestHonesty_IncludeTestsIsNotSilentlyInertForNonGo (0.05s)
+=== RUN   TestHonesty_UnknownWhereKindErrors
+2026/08/04 14:27:15 WARN git ls-files failed, falling back to filesystem walk error="exit status 128"
+2026/08/04 14:27:15 WARN git ls-files failed, falling back to filesystem walk error="exit status 128"
+2026/08/04 14:27:15 WARN git ls-files failed, falling back to filesystem walk error="exit status 128"
+    honesty_repro_test.go:329: 
+        	Error Trace:	./cmd/knowledge/internal/ast/honesty_repro_test.go:329
+        	Error:      	An error is expected but got nil.
+        	Test:       	TestHonesty_UnknownWhereKindErrors
+        	Messages:   	an unknown where-tree kind must error rather than return a vacuous zero
+--- FAIL: TestHonesty_UnknownWhereKindErrors (0.03s)
+FAIL
+FAIL	github.com/fulminate-io/knowledge/cmd/knowledge/internal/ast	0.766s
+FAIL

@@ -176,3 +176,52 @@ func TestPublishResidentSkipsOnIncomplete(t *testing.T) {
 	require.Nil(t, dropped, "a skipped publish reconciles nothing")
 	require.Equal(t, 1, src.publishCalls, "the publish was attempted (and skipped on the 409)")
 }
+
+// TestPublishResidentUnstampsMissingOn409 is the CONVERGENCE fix: when the
+// agent 409s reporting a referenced blob genuinely absent server-side, publishResident
+// UN-STAMPS the reported-missing ids from BOTH shippedIDs and locallyShipped, so
+// shipAndPublish's ship diff (which skips every already-stamped blob) re-uploads them on
+// the next tick. Before the fix the ids stayed stamped, the diff skipped them forever,
+// and the 409 wedged the manifest permanently.
+func TestPublishResidentUnstampsMissingOn409(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	target := &knowledgev1.GraphSelector{Graph: "code", Repo: "unstamp"}
+	all := []searchengine.SegmentBlob{
+		{ID: "seg-a", Format: "hnsw", DocCount: 3},
+		{ID: "seg-b", Format: "hnsw", DocCount: 4},
+	}
+
+	// The agent reports seg-a absent (the stamped-but-absent blob); seg-b is present.
+	src := &recordingSource{
+		verifiesServerSide: true,
+		publishErr:         &manifestIncompleteError{Missing: []string{"seg-a"}},
+	}
+	dm := newDistManager[mockQuery, mockStats](newMockEngine(), src, newDiskSegmentCache(t.TempDir(), 0), target, "hnsw")
+
+	// Pre-409 bookkeeping: both blobs are stamped as shipped (the ship RPC returned, so
+	// the client believes the server holds them) in BOTH views.
+	for _, id := range []searchengine.SegmentID{"seg-a", "seg-b"} {
+		dm.shippedIDs[id] = struct{}{}
+		dm.locallyShipped[id] = struct{}{}
+	}
+
+	dropped, err := dm.publishResident(ctx, all, dm.locallyShipped)
+	require.NoError(t, err, "a 409 is a logged skip, not a hard error")
+	require.Nil(t, dropped, "a skipped publish reconciles nothing")
+
+	// THE FIX: the reported-missing id is un-stamped from BOTH views so the next ship
+	// diff re-uploads it; the id the agent did NOT report missing is left stamped.
+	require.NotContains(t, dm.shippedIDs, searchengine.SegmentID("seg-a"),
+		"the missing blob is un-stamped from shippedIDs so shipAndPublish's diff re-uploads it")
+	require.NotContains(t, dm.locallyShipped, searchengine.SegmentID("seg-a"),
+		"the missing blob is un-stamped from locallyShipped too (symmetric with shipNew re-stamping both)")
+	require.Contains(t, dm.shippedIDs, searchengine.SegmentID("seg-b"),
+		"a blob the agent did NOT report missing stays stamped — only the missing ids re-upload")
+	require.Contains(t, dm.locallyShipped, searchengine.SegmentID("seg-b"),
+		"the non-missing blob stays in locallyShipped too")
+
+	// The retry bit is armed so a later tick re-attempts ship+publish.
+	require.True(t, dm.publishRetryPending(), "the 409 armed the publish retry")
+}

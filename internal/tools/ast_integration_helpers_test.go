@@ -82,6 +82,7 @@ type matchResultsShape struct {
 			Line int    `json:"line"`
 		} `json:"captures"`
 	} `json:"matches"`
+	Total int `json:"total"`
 	Stats struct {
 		FilesScanned int `json:"files_scanned"`
 		FilesSkipped int `json:"files_skipped"`

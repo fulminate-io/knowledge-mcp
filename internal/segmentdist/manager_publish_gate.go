@@ -16,6 +16,17 @@ import "log/slog"
 // (this auto-re-arms on a resident rise; the breaker latches until a manual op/restart).
 const coverageSkipMaxStreak = 2
 
+// incompletePublishWarnStreak is the consecutive-agent-409 count at which
+// markIncompletePublish escalates its per-cycle transient skip WARN to a LOUD
+// persistent-degradation WARN. Below it a 409 is expected to self-heal: the handler
+// un-stamps the missing ids so the next ship diff re-uploads them, and a healthy heal
+// clears within a cycle or two. At or past it the re-upload is demonstrably not
+// sticking (the agent keeps reporting the same blobs absent), which is a genuine wedge
+// an operator must SEE rather than a best-effort WARN that scrolls past as noise. It is
+// a log-escalation threshold ONLY — it never suppresses the retry (the 409 cause, unlike
+// the coverage-ratio skip, keeps needing to retry until the re-upload lands).
+const incompletePublishWarnStreak = 3
+
 // This file holds the lifecycle-aware publish-gate predicates the embed ship
 // points (ReEmitDirtyBuckets/Flush) consult before running a ship/publish
 // pass. The gate skips a no-progress publish for sub-threshold unsealed batches:
@@ -70,14 +81,60 @@ func (m *distManager[Q, S]) completedSwapCount() uint64 {
 
 // setPublishPending latches the publishPending retry bit under shipMu. Called from
 // publishResident's TRANSIENT non-success outcome points (coverage-read List error,
-// 409 skip, transport error) — causes that must retry indefinitely because they
-// self-clear once the transient condition passes. The coverage-ratio skip does NOT
-// use this; it goes through markCoverageSkip, which bounds the re-arm. The success
-// path clears the bit under the reconcile lock it already holds.
+// transport error) — causes that must retry indefinitely because they self-clear once
+// the transient condition passes. Two non-success causes route elsewhere: the
+// coverage-ratio skip goes through markCoverageSkip (which BOUNDS the re-arm), and the
+// agent-409 incomplete skip goes through markIncompletePublish (which un-stamps the
+// missing ids and escalates the WARN). The success path clears the bit under the
+// reconcile lock it already holds.
 func (m *distManager[Q, S]) setPublishPending() {
 	m.shipMu.Lock()
 	m.publishPending = true
 	m.shipMu.Unlock()
+}
+
+// markIncompletePublish handles the agent-409 (manifestIncompleteError) publish skip:
+// the agent HEAD-verify reported one or more referenced blobs genuinely absent
+// server-side. It does three things under one shipMu acquire:
+//
+//   - UN-STAMPS every missing id from BOTH shippedIDs and locallyShipped. This is the
+//     convergence fix: shipAndPublish's ship diff SKIPS every id already in shippedIDs,
+//     so a stamped-but-absent-server-side blob is otherwise never re-uploaded and the
+//     409 recurs forever (the permanent wedge). Dropping the id from both views —
+//     symmetric with shipNew, which re-stamps both on the re-ship — puts it back in the
+//     next ship diff, so the next tick re-uploads it and the following publish
+//     references a blob the server now holds.
+//   - ARMS the retry bit UNCONDITIONALLY. Unlike markCoverageSkip (which clears the bit
+//     once a cause that cannot self-clear passes its bound), the 409 cause IS supposed
+//     to self-heal via the re-upload above, so the retry must stay armed until it lands.
+//   - COUNTS consecutive 409s and, at incompletePublishWarnStreak, ESCALATES the
+//     per-cycle transient skip WARN to a loud persistent-degradation WARN — the
+//     difference between a 409 healing within a cycle and one whose re-upload is not
+//     sticking. The loud WARN keeps firing every cycle while the wedge persists; a
+//     landed swap resets the streak (publishResident) so a later 409 re-arms fresh.
+//
+// The WARNs are emitted OUTSIDE shipMu (they format the target identity, which needs no
+// lock), mirroring markCoverageSkip's terminal WARN.
+func (m *distManager[Q, S]) markIncompletePublish(missing []string) {
+	m.shipMu.Lock()
+	for _, id := range missing {
+		delete(m.shippedIDs, id)
+		delete(m.locallyShipped, id)
+	}
+	m.publishPending = true
+	m.incompletePublishStreak++
+	streak := m.incompletePublishStreak
+	m.shipMu.Unlock()
+
+	if streak >= incompletePublishWarnStreak {
+		slog.Warn("segmentdist: publish PERSISTENTLY incomplete — re-uploads are not converging, corpus is degrading (agent keeps reporting missing blob(s))",
+			"graph", m.target.GetGraph(), "name", m.target.GetName(), "repo", m.target.GetRepo(),
+			"format", m.format, "missing", missing, "consecutive_skips", streak)
+		return
+	}
+	slog.Warn("segmentdist: publish SKIPPED (agent reported missing blob(s) — un-stamped for re-upload, manifest+blobs left intact)",
+		"graph", m.target.GetGraph(), "name", m.target.GetName(), "repo", m.target.GetRepo(),
+		"format", m.format, "missing", missing, "consecutive_skips", streak)
 }
 
 // markCoverageSkip is the CAUSE-SCOPED, PROGRESS-GATED publish-retry bound for the

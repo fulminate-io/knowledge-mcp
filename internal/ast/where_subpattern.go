@@ -51,30 +51,37 @@ func evalSubPattern(ctx context.Context, l *SubPatternLeaf, scope *evalScope, di
 		return false, nil
 	}
 
-	pt, err := getOrCompileSubPattern(ctx, scope, l.Pattern)
+	variants, err := getOrCompileSubPattern(ctx, scope, l.Pattern)
 	if err != nil {
 		return false, err
 	}
 
 	candidates := candidateNodes(node, dir)
 	for _, c := range candidates {
-		caps := newCaptures()
-		nodes := map[string]*sitter.Node{}
-		if !matchTreeWithNodes(pt, c, scope.src, caps, nodes) {
-			continue
-		}
-		if l.Where == nil {
-			bindAs(scope, l.As, c)
-			return true, nil
-		}
-		sub := scope.pushSubPattern(caps, nodes, scope.src)
-		ok, werr := evalWhere(ctx, l.Where, sub)
-		if werr != nil {
-			return false, werr
-		}
-		if ok {
-			bindAs(scope, l.As, c)
-			return true, nil
+		// Candidate-major: the NEAREST ancestor (or earliest descendant) that
+		// any context expresses wins, exactly as it did when a sub-pattern
+		// compiled to one tree. A where-leaf is a boolean, so there is nothing
+		// to stamp and nothing to dedupe — the first variant that matches ends
+		// the search.
+		for _, pt := range variants {
+			caps := newCaptures()
+			nodes := map[string]*sitter.Node{}
+			if !matchTreeWithNodes(pt.Tree, c, scope.src, caps, nodes) {
+				continue
+			}
+			if l.Where == nil {
+				bindAs(scope, l.As, c)
+				return true, nil
+			}
+			sub := scope.pushSubPattern(caps, nodes, scope.src)
+			ok, werr := evalWhere(ctx, l.Where, sub)
+			if werr != nil {
+				return false, werr
+			}
+			if ok {
+				bindAs(scope, l.As, c)
+				return true, nil
+			}
 		}
 	}
 	return false, nil
@@ -104,16 +111,42 @@ func bindAs(scope *evalScope, name string, node *sitter.Node) {
 	scope.nodeByName[name] = node
 }
 
-// getOrCompileSubPattern returns the cached compile of source, or compiles
-// it under scope.lang and stores in the cache. The cache + mutex are owned
-// by a single match worker; the mutex guards the map against the worker's
-// own depth-first sub-pattern recursion (and the lost-race discard below),
-// not against other goroutines — workers never share a cache.
-func getOrCompileSubPattern(ctx context.Context, scope *evalScope, source string) (*PatternTree, error) {
+// subPatternPinNone is the context pin a where-leaf sub-pattern compiles under:
+// none. THE PIN SCOPES THE OUTER PATTERN ONLY, and passing the caller's pin
+// through here would be a bug rather than a tidy-up — which is why this is a
+// named constant instead of the bare "" a future reader would helpfully thread.
+//
+// A leaf asks a CONTAINMENT question: "does this match contain something shaped
+// like X?" The thing contained sits wherever the TARGET puts it, so its hosting
+// context is a property of the target tree, not of what the caller pinned for
+// their own pattern. The concrete case is this engine's own canonical defect
+// reused as a leaf: "find class members containing a return statement" is
+// context:"member" on the outer pattern with a `return $X;` leaf. Java compiles
+// `return $X;` to a field_declaration under the member context — a field whose
+// type leaf is the literal text "return", matching nothing in real source — and
+// to a return_statement under stmt. Inherit the pin and the leaf compiles to
+// the field_declaration variant alone, so the whole query returns a silent
+// zero: exactly the failure the union exists to eliminate.
+//
+// THE COST, stated rather than hidden: there is no way to pin a leaf's context.
+// That is a missing capability, not a wrong answer.
+const subPatternPinNone = ""
+
+// getOrCompileSubPattern returns the cached compile of source, or compiles it
+// under scope.lang and stores it in the cache. A sub-pattern gets the SAME
+// union treatment as an outer pattern: the same text must mean the same thing
+// in a where-leaf as it does at the top level, or the leaf silently answers a
+// different question from the one the caller asked.
+//
+// The cache + mutex are owned by a single match worker; the mutex guards the
+// map against the worker's own depth-first sub-pattern recursion (and the
+// lost-race discard below), not against other goroutines — workers never share
+// a cache.
+func getOrCompileSubPattern(ctx context.Context, scope *evalScope, source string) ([]patternVariant, error) {
 	scope.cacheMu.Lock()
-	if pt, ok := scope.cache[source]; ok {
+	if variants, ok := scope.cache[source]; ok {
 		scope.cacheMu.Unlock()
-		return pt, nil
+		return variants, nil
 	}
 	scope.cacheMu.Unlock()
 
@@ -125,20 +158,25 @@ func getOrCompileSubPattern(ctx context.Context, scope *evalScope, source string
 	if err != nil {
 		return nil, fmt.Errorf("ast/where: parse sub-pattern %q: %w", source, err)
 	}
-	pt, err := compilePattern(ctx, pat, cfg)
+	variants, narrowed, err := compilePatternVariants(ctx, pat, cfg, subPatternPinNone)
 	if err != nil {
 		return nil, fmt.Errorf("ast/where: compile sub-pattern %q: %w", source, err)
 	}
+	// A sub-pattern keeps only its kept variants; the narrowed member readings
+	// are disclosure material the where-tree path has nowhere to surface, so
+	// their trees are released here rather than cached.
+	closeVariants(narrowed)
 
 	scope.cacheMu.Lock()
 	defer scope.cacheMu.Unlock()
 	if existing, ok := scope.cache[source]; ok {
-		// Lost the race — discard ours, return cached.
-		pt.Close()
+		// Lost the race — discard EVERY tree we built, not just the first,
+		// and return the cached set.
+		closeVariants(variants)
 		return existing, nil
 	}
-	scope.cache[source] = pt
-	return pt, nil
+	scope.cache[source] = variants
+	return variants, nil
 }
 
 // candidateNodes returns the set of nodes to search under for a sub-

@@ -96,22 +96,23 @@ func TestPython_WithStatement(t *testing.T) {
 }
 
 func TestPython_AsyncWithAwait(t *testing.T) {
-	// Phase C validation case from the ticket. The async with statement
-	// is a distinct grammar form (`async_with_statement` doesn't exist in
-	// tree-sitter-python; it's a `with_statement` with an async modifier).
+	// tree-sitter-python has no `async_with_statement`: `async with` is a
+	// with_statement whose first child is the anonymous `async` token. A
+	// pattern without `async` must therefore skip it — and the plain `with`
+	// below is the positive control that keeps that zero honest, so a
+	// pattern that stopped matching anything at all cannot pass this test.
 	target := `async def fetch():
     async with session.get(url) as resp:
         body = await resp.read()
+    with open(path) as fh:
+        data = fh.read()
 `
-	// The pattern intentionally does NOT include `async` so we match the
-	// inner with form. Structurally, tree-sitter-python represents
-	// `async with` as `with_statement` whose first child is `async`.
 	matches := runPythonWalker(t, "with $CTX as $X: $$$BODY", target)
 	if len(matches) != 1 {
-		t.Fatalf("matches = %d, want 1 (the async with should match the with-statement form)", len(matches))
+		t.Fatalf("matches = %d, want 1 (the plain with only; the async with must not match)", len(matches))
 	}
-	if cap := matches[0].captures["X"]; cap.Text != "resp" {
-		t.Errorf("X = %q, want resp", cap.Text)
+	if cap := matches[0].captures["X"]; cap.Text != "fh" {
+		t.Errorf("X = %q, want fh (the async with's `resp` must not be matched)", cap.Text)
 	}
 }
 

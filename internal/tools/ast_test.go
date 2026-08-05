@@ -167,6 +167,25 @@ func TestHandleAstExplain_GoSnippet(t *testing.T) {
 	assert.Contains(t, body, "source_file")
 }
 
+// TestAstExplain_MarksNamedAnonymous pins the named/anonymous marker contract:
+// every explain line carries ` (named)` or ` (anonymous)` from n.IsNamed().
+// A named grammar rule (function_declaration) is tagged named; the anonymous
+// tokens a splice can silently drop — the `func` keyword and the `{` brace —
+// are tagged anonymous. The distinction is the whole point: it tells an author
+// where a rewrite is most likely to lose a token.
+func TestAstExplain_MarksNamedAnonymous(t *testing.T) {
+	deps := astTestDeps{rootDir: t.TempDir()}
+	body, isErr, _ := callAst(t, deps, `{"operation":"explain","language":"go","snippet":"package p\n\nfunc F() error {\n  return nil\n}\n"}`)
+	require.False(t, isErr, "expected non-error result, got: %s", body)
+
+	assert.Contains(t, body, "function_declaration (named)", "a named grammar rule must carry the (named) marker")
+	assert.Contains(t, body, "func (anonymous)", "the func keyword is an anonymous token")
+	assert.Contains(t, body, "{ (anonymous)", "the open brace is an anonymous token")
+	// The markers are the only two labels; an untagged kind line means the
+	// contract regressed.
+	assert.NotContains(t, body, "function_declaration\n", "no explain line may be left untagged")
+}
+
 // TestAstParser_BareDollarRejected pins that the DSL parser rejects bare
 // '$' (errParserBareDollar). Authoring sanity: bare '$' is a malformed
 // placeholder, not a literal token.
@@ -206,6 +225,65 @@ func TestHandleAstListNodeKinds_Unsupported(t *testing.T) {
 	body, isErr, _ := callAst(t, deps, `{"operation":"list_node_kinds","language":"klingon"}`)
 	require.True(t, isErr)
 	assert.Contains(t, body, "unsupported language")
+}
+
+// TestAstListNodeKinds_DenyAnnotation pins that a denied language (yaml) carries
+// match_replace_supported:false plus the informational-only note, while a
+// supported language (go) carries match_replace_supported:true and no note. The
+// go case is the negative control: an unconditional annotation would flag it too
+// and fail here.
+func TestAstListNodeKinds_DenyAnnotation(t *testing.T) {
+	deps := astTestDeps{rootDir: t.TempDir()}
+
+	t.Run("denied_yaml", func(t *testing.T) {
+		body, isErr, _ := callAst(t, deps, `{"operation":"list_node_kinds","language":"yaml"}`)
+		require.False(t, isErr, "list_node_kinds(yaml) should still enumerate kinds: %s", body)
+
+		var out struct {
+			MatchReplaceSupported bool   `json:"match_replace_supported"`
+			Note                  string `json:"note"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(body), &out))
+		assert.False(t, out.MatchReplaceSupported, "yaml is deny-listed → match_replace_supported must be false")
+		assert.Contains(t, out.Note, "deny-listed", "denied language must carry the informational-only note")
+		assert.Contains(t, out.Note, "yaml", "note names the language")
+	})
+
+	t.Run("supported_go_control", func(t *testing.T) {
+		body, isErr, _ := callAst(t, deps, `{"operation":"list_node_kinds","language":"go"}`)
+		require.False(t, isErr, "list_node_kinds(go) failed: %s", body)
+
+		var out struct {
+			MatchReplaceSupported bool   `json:"match_replace_supported"`
+			Note                  string `json:"note"`
+		}
+		require.NoError(t, json.Unmarshal([]byte(body), &out))
+		assert.True(t, out.MatchReplaceSupported, "go is supported → match_replace_supported must be true")
+		assert.Empty(t, out.Note, "a supported language carries no deny note")
+		assert.NotContains(t, body, `"note"`, "the note key must be omitted entirely for a supported language")
+	})
+}
+
+// TestAstExplain_DenyAnnotation pins that explain prepends the deny note for a
+// denied language (yaml) and does NOT for a supported one (go). The go case is
+// the negative control that stops an unconditional prepend from passing.
+func TestAstExplain_DenyAnnotation(t *testing.T) {
+	deps := astTestDeps{rootDir: t.TempDir()}
+
+	t.Run("denied_yaml", func(t *testing.T) {
+		body, isErr, _ := callAst(t, deps, `{"operation":"explain","language":"yaml","snippet":"foo: bar\n"}`)
+		require.False(t, isErr, "explain(yaml) should still parse: %s", body)
+		assert.True(t, strings.HasPrefix(body, "// NOTE:"), "denied language explain must lead with the deny note, got: %s", body)
+		assert.Contains(t, body, "deny-listed")
+		assert.Contains(t, body, "yaml", "note names the language")
+	})
+
+	t.Run("supported_go_control", func(t *testing.T) {
+		body, isErr, _ := callAst(t, deps, `{"operation":"explain","language":"go","snippet":"package p\n"}`)
+		require.False(t, isErr, "explain(go) failed: %s", body)
+		assert.NotContains(t, body, "// NOTE:", "a supported language explain carries no deny note")
+		assert.True(t, strings.HasPrefix(body, "source_file"), "go explain still leads with the parse tree root")
+	})
 }
 
 // TestFlexInt_NumberAndString pins the flex-decode behavior for the

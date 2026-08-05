@@ -1,0 +1,506 @@
+lang=bash shape=decl hosted=decl,stmt
+lang=bash shape=decl wrapper=decl context=decl parsed=yes root=function_definition hosted=yes
+lang=bash shape=decl wrapper=stmt context=stmt parsed=yes root=function_definition hosted=yes
+lang=bash shape=expr hosted=none
+lang=bash shape=member hosted=none
+lang=bash shape=stmt hosted=decl,stmt
+lang=bash shape=stmt wrapper=decl context=decl parsed=yes root=command hosted=yes
+lang=bash shape=stmt wrapper=stmt context=stmt parsed=yes root=command hosted=yes
+lang=bash shape=stmt_block hosted=decl,stmt
+lang=bash shape=stmt_block wrapper=decl context=decl parsed=yes root=if_statement hosted=yes
+lang=bash shape=stmt_block wrapper=stmt context=stmt parsed=yes root=if_statement hosted=yes
+lang=bash shape=stmt_keyword hosted=decl,stmt
+lang=bash shape=stmt_keyword wrapper=decl context=decl parsed=yes root=command hosted=yes
+lang=bash shape=stmt_keyword wrapper=stmt context=stmt parsed=yes root=command hosted=yes
+lang=bash shape=wildcard hosted=decl,stmt
+lang=bash shape=wildcard wrapper=decl context=decl parsed=yes root=word hosted=yes
+lang=bash shape=wildcard wrapper=stmt context=stmt parsed=yes root=word hosted=yes
+lang=c shape=decl hosted=decl,stmt
+lang=c shape=decl wrapper=decl context=decl parsed=yes root=function_definition hosted=yes
+lang=c shape=decl wrapper=expr context=expr parsed=no root=- hosted=no
+lang=c shape=decl wrapper=stmt context=stmt parsed=yes root=function_definition hosted=yes
+lang=c shape=expr hosted=expr
+lang=c shape=expr wrapper=decl context=decl parsed=no root=- hosted=no
+lang=c shape=expr wrapper=expr context=expr parsed=yes root=call_expression hosted=yes
+lang=c shape=expr wrapper=stmt context=stmt parsed=no root=- hosted=no
+lang=c shape=member hosted=decl,stmt
+lang=c shape=member wrapper=decl context=decl parsed=yes root=declaration hosted=yes
+lang=c shape=member wrapper=expr context=expr parsed=no root=- hosted=no
+lang=c shape=member wrapper=stmt context=stmt parsed=yes root=declaration hosted=yes
+lang=c shape=stmt hosted=decl,stmt
+lang=c shape=stmt wrapper=decl context=decl parsed=yes root=expression_statement hosted=yes
+lang=c shape=stmt wrapper=expr context=expr parsed=yes root=declaration hosted=no
+lang=c shape=stmt wrapper=stmt context=stmt parsed=yes root=expression_statement hosted=yes
+lang=c shape=stmt_block hosted=decl,stmt
+lang=c shape=stmt_block wrapper=decl context=decl parsed=yes root=if_statement hosted=yes
+lang=c shape=stmt_block wrapper=expr context=expr parsed=no root=- hosted=no
+lang=c shape=stmt_block wrapper=stmt context=stmt parsed=yes root=if_statement hosted=yes
+lang=c shape=stmt_keyword hosted=decl,stmt
+lang=c shape=stmt_keyword wrapper=decl context=decl parsed=yes root=goto_statement hosted=yes
+lang=c shape=stmt_keyword wrapper=expr context=expr parsed=no root=- hosted=no
+lang=c shape=stmt_keyword wrapper=stmt context=stmt parsed=yes root=goto_statement hosted=yes
+lang=c shape=wildcard hosted=expr
+lang=c shape=wildcard wrapper=decl context=decl parsed=no root=- hosted=no
+lang=c shape=wildcard wrapper=expr context=expr parsed=yes root=identifier hosted=yes
+lang=c shape=wildcard wrapper=stmt context=stmt parsed=no root=- hosted=no
+lang=cpp shape=decl hosted=decl,stmt,member
+lang=cpp shape=decl wrapper=decl context=decl parsed=yes root=function_definition hosted=yes
+lang=cpp shape=decl wrapper=expr context=expr parsed=no root=- hosted=no
+lang=cpp shape=decl wrapper=member context=member parsed=yes root=function_definition hosted=yes
+lang=cpp shape=decl wrapper=stmt context=stmt parsed=yes root=function_definition hosted=yes
+lang=cpp shape=expr hosted=expr
+lang=cpp shape=expr wrapper=decl context=decl parsed=no root=- hosted=no
+lang=cpp shape=expr wrapper=expr context=expr parsed=yes root=call_expression hosted=yes
+lang=cpp shape=expr wrapper=member context=member parsed=no root=- hosted=no
+lang=cpp shape=expr wrapper=stmt context=stmt parsed=no root=- hosted=no
+lang=cpp shape=member hosted=decl,stmt,member
+lang=cpp shape=member wrapper=decl context=decl parsed=yes root=declaration hosted=yes
+lang=cpp shape=member wrapper=expr context=expr parsed=no root=- hosted=no
+lang=cpp shape=member wrapper=member context=member parsed=yes root=field_declaration hosted=yes
+lang=cpp shape=member wrapper=stmt context=stmt parsed=yes root=declaration hosted=yes
+lang=cpp shape=stmt hosted=decl,stmt,member
+lang=cpp shape=stmt wrapper=decl context=decl parsed=yes root=expression_statement hosted=yes
+lang=cpp shape=stmt wrapper=expr context=expr parsed=yes root=declaration hosted=no
+lang=cpp shape=stmt wrapper=member context=member parsed=yes root=declaration hosted=yes
+lang=cpp shape=stmt wrapper=stmt context=stmt parsed=yes root=expression_statement hosted=yes
+lang=cpp shape=stmt_block hosted=none
+lang=cpp shape=stmt_block wrapper=decl context=decl parsed=no root=- hosted=no
+lang=cpp shape=stmt_block wrapper=expr context=expr parsed=no root=- hosted=no
+lang=cpp shape=stmt_block wrapper=member context=member parsed=no root=- hosted=no
+lang=cpp shape=stmt_block wrapper=stmt context=stmt parsed=no root=- hosted=no
+lang=cpp shape=stmt_keyword hosted=decl,stmt,member
+lang=cpp shape=stmt_keyword wrapper=decl context=decl parsed=yes root=goto_statement hosted=yes
+lang=cpp shape=stmt_keyword wrapper=expr context=expr parsed=no root=- hosted=no
+lang=cpp shape=stmt_keyword wrapper=member context=member parsed=yes root=field_declaration hosted=yes
+lang=cpp shape=stmt_keyword wrapper=stmt context=stmt parsed=yes root=goto_statement hosted=yes
+lang=cpp shape=wildcard hosted=expr
+lang=cpp shape=wildcard wrapper=decl context=decl parsed=no root=- hosted=no
+lang=cpp shape=wildcard wrapper=expr context=expr parsed=yes root=identifier hosted=yes
+lang=cpp shape=wildcard wrapper=member context=member parsed=no root=- hosted=no
+lang=cpp shape=wildcard wrapper=stmt context=stmt parsed=no root=- hosted=no
+lang=csharp shape=decl hosted=decl,top
+lang=csharp shape=decl wrapper=decl context=member parsed=yes root=class_declaration hosted=yes
+lang=csharp shape=decl wrapper=expr context=expr parsed=no root=- hosted=no
+lang=csharp shape=decl wrapper=stmt context=stmt parsed=no root=- hosted=no
+lang=csharp shape=decl wrapper=top context=decl parsed=yes root=class_declaration hosted=yes
+lang=csharp shape=expr hosted=expr
+lang=csharp shape=expr wrapper=decl context=member parsed=no root=- hosted=no
+lang=csharp shape=expr wrapper=expr context=expr parsed=yes root=invocation_expression hosted=yes
+lang=csharp shape=expr wrapper=stmt context=stmt parsed=no root=- hosted=no
+lang=csharp shape=expr wrapper=top context=decl parsed=no root=- hosted=no
+lang=csharp shape=member hosted=decl,stmt,top
+lang=csharp shape=member wrapper=decl context=member parsed=yes root=field_declaration hosted=yes
+lang=csharp shape=member wrapper=expr context=expr parsed=no root=- hosted=no
+lang=csharp shape=member wrapper=stmt context=stmt parsed=yes root=local_declaration_statement hosted=yes
+lang=csharp shape=member wrapper=top context=decl parsed=yes root=local_declaration_statement hosted=yes
+lang=csharp shape=stmt hosted=decl,stmt,top
+lang=csharp shape=stmt wrapper=decl context=member parsed=yes root=constructor_declaration hosted=yes
+lang=csharp shape=stmt wrapper=expr context=expr parsed=yes root=local_declaration_statement hosted=no
+lang=csharp shape=stmt wrapper=stmt context=stmt parsed=yes root=expression_statement hosted=yes
+lang=csharp shape=stmt wrapper=top context=decl parsed=yes root=expression_statement hosted=yes
+lang=csharp shape=stmt_block hosted=none
+lang=csharp shape=stmt_block wrapper=decl context=member parsed=no root=- hosted=no
+lang=csharp shape=stmt_block wrapper=expr context=expr parsed=no root=- hosted=no
+lang=csharp shape=stmt_block wrapper=stmt context=stmt parsed=no root=- hosted=no
+lang=csharp shape=stmt_block wrapper=top context=decl parsed=no root=- hosted=no
+lang=csharp shape=stmt_keyword hosted=decl,stmt,top
+lang=csharp shape=stmt_keyword wrapper=decl context=member parsed=yes root=field_declaration hosted=yes
+lang=csharp shape=stmt_keyword wrapper=expr context=expr parsed=no root=- hosted=no
+lang=csharp shape=stmt_keyword wrapper=stmt context=stmt parsed=yes root=return_statement hosted=yes
+lang=csharp shape=stmt_keyword wrapper=top context=decl parsed=yes root=return_statement hosted=yes
+lang=csharp shape=wildcard hosted=expr
+lang=csharp shape=wildcard wrapper=decl context=member parsed=no root=- hosted=no
+lang=csharp shape=wildcard wrapper=expr context=expr parsed=yes root=identifier hosted=yes
+lang=csharp shape=wildcard wrapper=stmt context=stmt parsed=no root=- hosted=no
+lang=csharp shape=wildcard wrapper=top context=decl parsed=no root=- hosted=no
+lang=elixir shape=decl hosted=decl,stmt
+lang=elixir shape=decl wrapper=decl context=decl parsed=yes root=call hosted=yes
+lang=elixir shape=decl wrapper=stmt context=stmt parsed=yes root=call hosted=yes
+lang=elixir shape=expr hosted=decl,stmt
+lang=elixir shape=expr wrapper=decl context=decl parsed=yes root=call hosted=yes
+lang=elixir shape=expr wrapper=stmt context=stmt parsed=yes root=call hosted=yes
+lang=elixir shape=member hosted=none
+lang=elixir shape=stmt hosted=decl,stmt
+lang=elixir shape=stmt wrapper=decl context=decl parsed=yes root=call hosted=yes
+lang=elixir shape=stmt wrapper=stmt context=stmt parsed=yes root=call hosted=yes
+lang=elixir shape=stmt_block hosted=decl,stmt
+lang=elixir shape=stmt_block wrapper=decl context=decl parsed=yes root=call hosted=yes
+lang=elixir shape=stmt_block wrapper=stmt context=stmt parsed=yes root=call hosted=yes
+lang=elixir shape=stmt_keyword hosted=decl,stmt
+lang=elixir shape=stmt_keyword wrapper=decl context=decl parsed=yes root=call hosted=yes
+lang=elixir shape=stmt_keyword wrapper=stmt context=stmt parsed=yes root=call hosted=yes
+lang=elixir shape=wildcard hosted=decl,stmt
+lang=elixir shape=wildcard wrapper=decl context=decl parsed=yes root=identifier hosted=yes
+lang=elixir shape=wildcard wrapper=stmt context=stmt parsed=yes root=identifier hosted=yes
+lang=elm shape=decl hosted=decl
+lang=elm shape=decl wrapper=decl context=decl parsed=yes root=value_declaration hosted=yes
+lang=elm shape=decl wrapper=expr context=expr parsed=no root=- hosted=no
+lang=elm shape=expr hosted=expr
+lang=elm shape=expr wrapper=decl context=decl parsed=no root=- hosted=no
+lang=elm shape=expr wrapper=expr context=expr parsed=yes root=function_call_expr hosted=yes
+lang=elm shape=member hosted=none
+lang=elm shape=stmt hosted=none
+lang=elm shape=stmt_block hosted=none
+lang=elm shape=stmt_keyword hosted=none
+lang=elm shape=wildcard hosted=expr
+lang=elm shape=wildcard wrapper=decl context=decl parsed=no root=- hosted=no
+lang=elm shape=wildcard wrapper=expr context=expr parsed=yes root=lower_case_identifier hosted=yes
+lang=go shape=decl hosted=decl
+lang=go shape=decl wrapper=decl context=decl parsed=yes root=function_declaration hosted=yes
+lang=go shape=decl wrapper=expr context=expr parsed=no root=- hosted=no
+lang=go shape=decl wrapper=stmt context=stmt parsed=no root=- hosted=no
+lang=go shape=expr hosted=stmt,expr
+lang=go shape=expr wrapper=decl context=decl parsed=no root=- hosted=no
+lang=go shape=expr wrapper=expr context=expr parsed=yes root=call_expression hosted=yes
+lang=go shape=expr wrapper=stmt context=stmt parsed=yes root=call_expression hosted=yes
+lang=go shape=member hosted=none
+lang=go shape=member wrapper=decl context=decl parsed=no root=- hosted=no
+lang=go shape=member wrapper=expr context=expr parsed=no root=- hosted=no
+lang=go shape=member wrapper=stmt context=stmt parsed=no root=- hosted=no
+lang=go shape=stmt hosted=stmt,expr
+lang=go shape=stmt wrapper=decl context=decl parsed=no root=- hosted=no
+lang=go shape=stmt wrapper=expr context=expr parsed=yes root=call_expression hosted=yes
+lang=go shape=stmt wrapper=stmt context=stmt parsed=yes root=call_expression hosted=yes
+lang=go shape=stmt_block hosted=stmt
+lang=go shape=stmt_block wrapper=decl context=decl parsed=no root=- hosted=no
+lang=go shape=stmt_block wrapper=expr context=expr parsed=no root=- hosted=no
+lang=go shape=stmt_block wrapper=stmt context=stmt parsed=yes root=if_statement hosted=yes
+lang=go shape=stmt_keyword hosted=decl,stmt
+lang=go shape=stmt_keyword wrapper=decl context=decl parsed=yes root=defer_statement hosted=yes
+lang=go shape=stmt_keyword wrapper=expr context=expr parsed=no root=- hosted=no
+lang=go shape=stmt_keyword wrapper=stmt context=stmt parsed=yes root=defer_statement hosted=yes
+lang=go shape=wildcard hosted=stmt,expr
+lang=go shape=wildcard wrapper=decl context=decl parsed=no root=- hosted=no
+lang=go shape=wildcard wrapper=expr context=expr parsed=yes root=identifier hosted=yes
+lang=go shape=wildcard wrapper=stmt context=stmt parsed=yes root=identifier hosted=yes
+lang=groovy shape=decl hosted=decl,stmt
+lang=groovy shape=decl wrapper=decl context=decl parsed=yes root=function_definition hosted=yes
+lang=groovy shape=decl wrapper=stmt context=stmt parsed=yes root=function_definition hosted=yes
+lang=groovy shape=expr hosted=decl,stmt
+lang=groovy shape=expr wrapper=decl context=decl parsed=yes root=function_call hosted=yes
+lang=groovy shape=expr wrapper=stmt context=stmt parsed=yes root=function_call hosted=yes
+lang=groovy shape=member hosted=decl,stmt
+lang=groovy shape=member wrapper=decl context=decl parsed=yes root=declaration hosted=yes
+lang=groovy shape=member wrapper=stmt context=stmt parsed=yes root=declaration hosted=yes
+lang=groovy shape=stmt hosted=decl,stmt
+lang=groovy shape=stmt wrapper=decl context=decl parsed=yes root=function_call hosted=yes
+lang=groovy shape=stmt wrapper=stmt context=stmt parsed=yes root=function_call hosted=yes
+lang=groovy shape=stmt_block hosted=decl,stmt
+lang=groovy shape=stmt_block wrapper=decl context=decl parsed=yes root=if_statement hosted=yes
+lang=groovy shape=stmt_block wrapper=stmt context=stmt parsed=yes root=if_statement hosted=yes
+lang=groovy shape=stmt_keyword hosted=decl,stmt
+lang=groovy shape=stmt_keyword wrapper=decl context=decl parsed=yes root=return hosted=yes
+lang=groovy shape=stmt_keyword wrapper=stmt context=stmt parsed=yes root=return hosted=yes
+lang=groovy shape=wildcard hosted=decl,stmt
+lang=groovy shape=wildcard wrapper=decl context=decl parsed=yes root=identifier hosted=yes
+lang=groovy shape=wildcard wrapper=stmt context=stmt parsed=yes root=identifier hosted=yes
+lang=java shape=decl hosted=decl,stmt,top
+lang=java shape=decl wrapper=decl context=member parsed=yes root=class_declaration hosted=yes
+lang=java shape=decl wrapper=expr context=expr parsed=no root=- hosted=no
+lang=java shape=decl wrapper=stmt context=stmt parsed=yes root=class_declaration hosted=yes
+lang=java shape=decl wrapper=top context=decl parsed=yes root=class_declaration hosted=yes
+lang=java shape=expr hosted=expr
+lang=java shape=expr wrapper=decl context=member parsed=no root=- hosted=no
+lang=java shape=expr wrapper=expr context=expr parsed=yes root=method_invocation hosted=yes
+lang=java shape=expr wrapper=stmt context=stmt parsed=no root=- hosted=no
+lang=java shape=expr wrapper=top context=decl parsed=no root=- hosted=no
+lang=java shape=member hosted=decl,stmt,top
+lang=java shape=member wrapper=decl context=member parsed=yes root=field_declaration hosted=yes
+lang=java shape=member wrapper=expr context=expr parsed=no root=- hosted=no
+lang=java shape=member wrapper=stmt context=stmt parsed=yes root=local_variable_declaration hosted=yes
+lang=java shape=member wrapper=top context=decl parsed=yes root=local_variable_declaration hosted=yes
+lang=java shape=stmt hosted=stmt,top
+lang=java shape=stmt wrapper=decl context=member parsed=no root=- hosted=no
+lang=java shape=stmt wrapper=expr context=expr parsed=yes root=local_variable_declaration hosted=no
+lang=java shape=stmt wrapper=stmt context=stmt parsed=yes root=expression_statement hosted=yes
+lang=java shape=stmt wrapper=top context=decl parsed=yes root=expression_statement hosted=yes
+lang=java shape=stmt_block hosted=stmt,top
+lang=java shape=stmt_block wrapper=decl context=member parsed=no root=- hosted=no
+lang=java shape=stmt_block wrapper=expr context=expr parsed=no root=- hosted=no
+lang=java shape=stmt_block wrapper=stmt context=stmt parsed=yes root=if_statement hosted=yes
+lang=java shape=stmt_block wrapper=top context=decl parsed=yes root=if_statement hosted=yes
+lang=java shape=stmt_keyword hosted=decl,stmt,top
+lang=java shape=stmt_keyword wrapper=decl context=member parsed=yes root=field_declaration hosted=yes
+lang=java shape=stmt_keyword wrapper=expr context=expr parsed=no root=- hosted=no
+lang=java shape=stmt_keyword wrapper=stmt context=stmt parsed=yes root=return_statement hosted=yes
+lang=java shape=stmt_keyword wrapper=top context=decl parsed=yes root=return_statement hosted=yes
+lang=java shape=wildcard hosted=expr
+lang=java shape=wildcard wrapper=decl context=member parsed=no root=- hosted=no
+lang=java shape=wildcard wrapper=expr context=expr parsed=yes root=identifier hosted=yes
+lang=java shape=wildcard wrapper=stmt context=stmt parsed=no root=- hosted=no
+lang=java shape=wildcard wrapper=top context=decl parsed=no root=- hosted=no
+lang=javascript shape=decl hosted=decl,stmt,expr
+lang=javascript shape=decl wrapper=decl context=decl parsed=yes root=function_declaration hosted=yes
+lang=javascript shape=decl wrapper=expr context=expr parsed=yes root=function_expression hosted=yes
+lang=javascript shape=decl wrapper=member context=member parsed=no root=- hosted=no
+lang=javascript shape=decl wrapper=stmt context=stmt parsed=yes root=function_declaration hosted=yes
+lang=javascript shape=expr hosted=decl,stmt,expr
+lang=javascript shape=expr wrapper=decl context=decl parsed=yes root=call_expression hosted=yes
+lang=javascript shape=expr wrapper=expr context=expr parsed=yes root=call_expression hosted=yes
+lang=javascript shape=expr wrapper=member context=member parsed=no root=- hosted=no
+lang=javascript shape=expr wrapper=stmt context=stmt parsed=yes root=call_expression hosted=yes
+lang=javascript shape=member hosted=member
+lang=javascript shape=member wrapper=decl context=decl parsed=no root=- hosted=no
+lang=javascript shape=member wrapper=expr context=expr parsed=no root=- hosted=no
+lang=javascript shape=member wrapper=member context=member parsed=yes root=field_definition hosted=yes
+lang=javascript shape=member wrapper=stmt context=stmt parsed=no root=- hosted=no
+lang=javascript shape=stmt hosted=decl,stmt
+lang=javascript shape=stmt wrapper=decl context=decl parsed=yes root=expression_statement hosted=yes
+lang=javascript shape=stmt wrapper=expr context=expr parsed=yes root=lexical_declaration hosted=no
+lang=javascript shape=stmt wrapper=member context=member parsed=no root=- hosted=no
+lang=javascript shape=stmt wrapper=stmt context=stmt parsed=yes root=expression_statement hosted=yes
+lang=javascript shape=stmt_block hosted=decl,stmt
+lang=javascript shape=stmt_block wrapper=decl context=decl parsed=yes root=if_statement hosted=yes
+lang=javascript shape=stmt_block wrapper=expr context=expr parsed=no root=- hosted=no
+lang=javascript shape=stmt_block wrapper=member context=member parsed=yes root=method_definition hosted=no reason="member reading dropped by keyword narrowing; leading token is a keyword, not a member name"
+lang=javascript shape=stmt_block wrapper=stmt context=stmt parsed=yes root=if_statement hosted=yes
+lang=javascript shape=stmt_keyword hosted=decl,stmt
+lang=javascript shape=stmt_keyword wrapper=decl context=decl parsed=yes root=return_statement hosted=yes
+lang=javascript shape=stmt_keyword wrapper=expr context=expr parsed=no root=- hosted=no
+lang=javascript shape=stmt_keyword wrapper=member context=member parsed=no root=- hosted=no
+lang=javascript shape=stmt_keyword wrapper=stmt context=stmt parsed=yes root=return_statement hosted=yes
+lang=javascript shape=wildcard hosted=decl,stmt,expr,member
+lang=javascript shape=wildcard wrapper=decl context=decl parsed=yes root=identifier hosted=yes
+lang=javascript shape=wildcard wrapper=expr context=expr parsed=yes root=identifier hosted=yes
+lang=javascript shape=wildcard wrapper=member context=member parsed=yes root=property_identifier hosted=yes
+lang=javascript shape=wildcard wrapper=stmt context=stmt parsed=yes root=identifier hosted=yes
+lang=kotlin shape=decl hosted=decl,stmt
+lang=kotlin shape=decl wrapper=decl context=decl parsed=yes root=function_declaration hosted=yes
+lang=kotlin shape=decl wrapper=stmt context=stmt parsed=yes root=function_declaration hosted=yes
+lang=kotlin shape=expr hosted=decl,stmt
+lang=kotlin shape=expr wrapper=decl context=decl parsed=yes root=call_expression hosted=yes
+lang=kotlin shape=expr wrapper=stmt context=stmt parsed=yes root=call_expression hosted=yes
+lang=kotlin shape=member hosted=decl,stmt
+lang=kotlin shape=member wrapper=decl context=decl parsed=yes root=property_declaration hosted=yes
+lang=kotlin shape=member wrapper=stmt context=stmt parsed=yes root=property_declaration hosted=yes
+lang=kotlin shape=stmt hosted=decl,stmt
+lang=kotlin shape=stmt wrapper=decl context=decl parsed=yes root=call_expression hosted=yes
+lang=kotlin shape=stmt wrapper=stmt context=stmt parsed=yes root=call_expression hosted=yes
+lang=kotlin shape=stmt_block hosted=decl,stmt
+lang=kotlin shape=stmt_block wrapper=decl context=decl parsed=yes root=if_expression hosted=yes
+lang=kotlin shape=stmt_block wrapper=stmt context=stmt parsed=yes root=if_expression hosted=yes
+lang=kotlin shape=stmt_keyword hosted=decl,stmt
+lang=kotlin shape=stmt_keyword wrapper=decl context=decl parsed=yes root=jump_expression hosted=yes
+lang=kotlin shape=stmt_keyword wrapper=stmt context=stmt parsed=yes root=jump_expression hosted=yes
+lang=kotlin shape=wildcard hosted=decl,stmt
+lang=kotlin shape=wildcard wrapper=decl context=decl parsed=yes root=simple_identifier hosted=yes
+lang=kotlin shape=wildcard wrapper=stmt context=stmt parsed=yes root=simple_identifier hosted=yes
+lang=lua shape=decl hosted=decl,stmt
+lang=lua shape=decl wrapper=decl context=decl parsed=yes root=function_statement hosted=yes
+lang=lua shape=decl wrapper=stmt context=stmt parsed=yes root=function_statement hosted=yes
+lang=lua shape=expr hosted=decl,stmt
+lang=lua shape=expr wrapper=decl context=decl parsed=yes root=function_call hosted=yes
+lang=lua shape=expr wrapper=stmt context=stmt parsed=yes root=function_call hosted=yes
+lang=lua shape=member hosted=none
+lang=lua shape=stmt hosted=decl,stmt
+lang=lua shape=stmt wrapper=decl context=decl parsed=yes root=function_call hosted=yes
+lang=lua shape=stmt wrapper=stmt context=stmt parsed=yes root=function_call hosted=yes
+lang=lua shape=stmt_block hosted=decl,stmt
+lang=lua shape=stmt_block wrapper=decl context=decl parsed=yes root=if_statement hosted=yes
+lang=lua shape=stmt_block wrapper=stmt context=stmt parsed=yes root=if_statement hosted=yes
+lang=lua shape=stmt_keyword hosted=decl,stmt
+lang=lua shape=stmt_keyword wrapper=decl context=decl parsed=yes root=module_return_statement hosted=yes
+lang=lua shape=stmt_keyword wrapper=stmt context=stmt parsed=yes root=return_statement hosted=yes
+lang=lua shape=wildcard hosted=decl,stmt
+lang=lua shape=wildcard wrapper=decl context=decl parsed=yes root=identifier hosted=yes
+lang=lua shape=wildcard wrapper=stmt context=stmt parsed=yes root=identifier hosted=yes
+lang=ocaml shape=decl hosted=decl
+lang=ocaml shape=decl wrapper=decl context=decl parsed=yes root=value_definition hosted=yes
+lang=ocaml shape=decl wrapper=expr context=expr parsed=no root=- hosted=no
+lang=ocaml shape=expr hosted=decl,expr
+lang=ocaml shape=expr wrapper=decl context=decl parsed=yes root=application_expression hosted=yes
+lang=ocaml shape=expr wrapper=expr context=expr parsed=yes root=application_expression hosted=yes
+lang=ocaml shape=member hosted=none
+lang=ocaml shape=stmt hosted=none
+lang=ocaml shape=stmt_block hosted=none
+lang=ocaml shape=stmt_keyword hosted=none
+lang=ocaml shape=wildcard hosted=decl,expr
+lang=ocaml shape=wildcard wrapper=decl context=decl parsed=yes root=value_name hosted=yes
+lang=ocaml shape=wildcard wrapper=expr context=expr parsed=yes root=value_name hosted=yes
+lang=python shape=decl hosted=decl,stmt
+lang=python shape=decl wrapper=decl context=decl parsed=yes root=function_definition hosted=yes
+lang=python shape=decl wrapper=expr context=expr parsed=no root=- hosted=no
+lang=python shape=decl wrapper=stmt context=stmt parsed=yes root=function_definition hosted=yes
+lang=python shape=expr hosted=decl,stmt,expr
+lang=python shape=expr wrapper=decl context=decl parsed=yes root=call hosted=yes
+lang=python shape=expr wrapper=expr context=expr parsed=yes root=call hosted=yes
+lang=python shape=expr wrapper=stmt context=stmt parsed=yes root=call hosted=yes
+lang=python shape=member hosted=decl,stmt,expr
+lang=python shape=member wrapper=decl context=decl parsed=yes root=assignment hosted=yes
+lang=python shape=member wrapper=expr context=expr parsed=yes root=assignment hosted=yes
+lang=python shape=member wrapper=stmt context=stmt parsed=yes root=assignment hosted=yes
+lang=python shape=stmt hosted=decl,stmt,expr
+lang=python shape=stmt wrapper=decl context=decl parsed=yes root=call hosted=yes
+lang=python shape=stmt wrapper=expr context=expr parsed=yes root=call hosted=yes
+lang=python shape=stmt wrapper=stmt context=stmt parsed=yes root=call hosted=yes
+lang=python shape=stmt_block hosted=decl,stmt
+lang=python shape=stmt_block wrapper=decl context=decl parsed=yes root=if_statement hosted=yes
+lang=python shape=stmt_block wrapper=expr context=expr parsed=no root=- hosted=no
+lang=python shape=stmt_block wrapper=stmt context=stmt parsed=yes root=block hosted=yes
+lang=python shape=stmt_keyword hosted=decl,stmt
+lang=python shape=stmt_keyword wrapper=decl context=decl parsed=yes root=return_statement hosted=yes
+lang=python shape=stmt_keyword wrapper=expr context=expr parsed=no root=- hosted=no
+lang=python shape=stmt_keyword wrapper=stmt context=stmt parsed=yes root=return_statement hosted=yes
+lang=python shape=wildcard hosted=decl,stmt,expr
+lang=python shape=wildcard wrapper=decl context=decl parsed=yes root=identifier hosted=yes
+lang=python shape=wildcard wrapper=expr context=expr parsed=yes root=identifier hosted=yes
+lang=python shape=wildcard wrapper=stmt context=stmt parsed=yes root=identifier hosted=yes
+lang=ruby shape=decl hosted=decl,stmt
+lang=ruby shape=decl wrapper=decl context=decl parsed=yes root=method hosted=yes
+lang=ruby shape=decl wrapper=stmt context=stmt parsed=yes root=method hosted=yes
+lang=ruby shape=expr hosted=decl,stmt
+lang=ruby shape=expr wrapper=decl context=decl parsed=yes root=call hosted=yes
+lang=ruby shape=expr wrapper=stmt context=stmt parsed=yes root=call hosted=yes
+lang=ruby shape=member hosted=none
+lang=ruby shape=stmt hosted=decl,stmt
+lang=ruby shape=stmt wrapper=decl context=decl parsed=yes root=call hosted=yes
+lang=ruby shape=stmt wrapper=stmt context=stmt parsed=yes root=call hosted=yes
+lang=ruby shape=stmt_block hosted=decl,stmt
+lang=ruby shape=stmt_block wrapper=decl context=decl parsed=yes root=if hosted=yes
+lang=ruby shape=stmt_block wrapper=stmt context=stmt parsed=yes root=if hosted=yes
+lang=ruby shape=stmt_keyword hosted=decl,stmt
+lang=ruby shape=stmt_keyword wrapper=decl context=decl parsed=yes root=return hosted=yes
+lang=ruby shape=stmt_keyword wrapper=stmt context=stmt parsed=yes root=return hosted=yes
+lang=ruby shape=wildcard hosted=decl,stmt
+lang=ruby shape=wildcard wrapper=decl context=decl parsed=yes root=identifier hosted=yes
+lang=ruby shape=wildcard wrapper=stmt context=stmt parsed=yes root=identifier hosted=yes
+lang=rust shape=decl hosted=decl,stmt
+lang=rust shape=decl wrapper=decl context=decl parsed=yes root=function_item hosted=yes
+lang=rust shape=decl wrapper=expr context=expr parsed=no root=- hosted=no
+lang=rust shape=decl wrapper=stmt context=stmt parsed=yes root=function_item hosted=yes
+lang=rust shape=expr hosted=stmt,expr
+lang=rust shape=expr wrapper=decl context=decl parsed=no root=- hosted=no
+lang=rust shape=expr wrapper=expr context=expr parsed=yes root=call_expression hosted=yes
+lang=rust shape=expr wrapper=stmt context=stmt parsed=yes root=call_expression hosted=yes
+lang=rust shape=member hosted=none
+lang=rust shape=member wrapper=decl context=decl parsed=no root=- hosted=no
+lang=rust shape=member wrapper=expr context=expr parsed=no root=- hosted=no
+lang=rust shape=member wrapper=stmt context=stmt parsed=no root=- hosted=no
+lang=rust shape=stmt hosted=decl,stmt,expr
+lang=rust shape=stmt wrapper=decl context=decl parsed=yes root=expression_statement hosted=yes
+lang=rust shape=stmt wrapper=expr context=expr parsed=yes root=call_expression hosted=yes
+lang=rust shape=stmt wrapper=stmt context=stmt parsed=yes root=expression_statement hosted=yes
+lang=rust shape=stmt_block hosted=decl,stmt,expr
+lang=rust shape=stmt_block wrapper=decl context=decl parsed=yes root=if_expression hosted=yes
+lang=rust shape=stmt_block wrapper=expr context=expr parsed=yes root=if_expression hosted=yes
+lang=rust shape=stmt_block wrapper=stmt context=stmt parsed=yes root=if_expression hosted=yes
+lang=rust shape=stmt_keyword hosted=decl,stmt
+lang=rust shape=stmt_keyword wrapper=decl context=decl parsed=yes root=let_declaration hosted=yes
+lang=rust shape=stmt_keyword wrapper=expr context=expr parsed=no root=- hosted=no
+lang=rust shape=stmt_keyword wrapper=stmt context=stmt parsed=yes root=let_declaration hosted=yes
+lang=rust shape=wildcard hosted=stmt,expr
+lang=rust shape=wildcard wrapper=decl context=decl parsed=no root=- hosted=no
+lang=rust shape=wildcard wrapper=expr context=expr parsed=yes root=identifier hosted=yes
+lang=rust shape=wildcard wrapper=stmt context=stmt parsed=yes root=identifier hosted=yes
+lang=scala shape=decl hosted=decl,stmt
+lang=scala shape=decl wrapper=decl context=decl parsed=yes root=class_definition hosted=yes
+lang=scala shape=decl wrapper=stmt context=stmt parsed=yes root=class_definition hosted=yes
+lang=scala shape=expr hosted=decl,stmt
+lang=scala shape=expr wrapper=decl context=decl parsed=yes root=call_expression hosted=yes
+lang=scala shape=expr wrapper=stmt context=stmt parsed=yes root=call_expression hosted=yes
+lang=scala shape=member hosted=decl,stmt
+lang=scala shape=member wrapper=decl context=decl parsed=yes root=function_definition hosted=yes
+lang=scala shape=member wrapper=stmt context=stmt parsed=yes root=function_definition hosted=yes
+lang=scala shape=stmt hosted=decl,stmt
+lang=scala shape=stmt wrapper=decl context=decl parsed=yes root=call_expression hosted=yes
+lang=scala shape=stmt wrapper=stmt context=stmt parsed=yes root=call_expression hosted=yes
+lang=scala shape=stmt_block hosted=decl,stmt
+lang=scala shape=stmt_block wrapper=decl context=decl parsed=yes root=if_expression hosted=yes
+lang=scala shape=stmt_block wrapper=stmt context=stmt parsed=yes root=if_expression hosted=yes
+lang=scala shape=stmt_keyword hosted=decl,stmt
+lang=scala shape=stmt_keyword wrapper=decl context=decl parsed=yes root=val_definition hosted=yes
+lang=scala shape=stmt_keyword wrapper=stmt context=stmt parsed=yes root=val_definition hosted=yes
+lang=scala shape=wildcard hosted=decl,stmt
+lang=scala shape=wildcard wrapper=decl context=decl parsed=yes root=identifier hosted=yes
+lang=scala shape=wildcard wrapper=stmt context=stmt parsed=yes root=identifier hosted=yes
+lang=swift shape=decl hosted=decl,stmt
+lang=swift shape=decl wrapper=decl context=decl parsed=yes root=function_declaration hosted=yes
+lang=swift shape=decl wrapper=stmt context=stmt parsed=yes root=function_declaration hosted=yes
+lang=swift shape=expr hosted=decl,stmt
+lang=swift shape=expr wrapper=decl context=decl parsed=yes root=call_expression hosted=yes
+lang=swift shape=expr wrapper=stmt context=stmt parsed=yes root=call_expression hosted=yes
+lang=swift shape=member hosted=decl,stmt
+lang=swift shape=member wrapper=decl context=decl parsed=yes root=property_declaration hosted=yes
+lang=swift shape=member wrapper=stmt context=stmt parsed=yes root=property_declaration hosted=yes
+lang=swift shape=stmt hosted=decl,stmt
+lang=swift shape=stmt wrapper=decl context=decl parsed=yes root=call_expression hosted=yes
+lang=swift shape=stmt wrapper=stmt context=stmt parsed=yes root=call_expression hosted=yes
+lang=swift shape=stmt_block hosted=decl,stmt
+lang=swift shape=stmt_block wrapper=decl context=decl parsed=yes root=if_statement hosted=yes
+lang=swift shape=stmt_block wrapper=stmt context=stmt parsed=yes root=if_statement hosted=yes
+lang=swift shape=stmt_keyword hosted=stmt
+lang=swift shape=stmt_keyword wrapper=decl context=decl parsed=no root=- hosted=no
+lang=swift shape=stmt_keyword wrapper=stmt context=stmt parsed=yes root=control_transfer_statement hosted=yes
+lang=swift shape=wildcard hosted=decl,stmt
+lang=swift shape=wildcard wrapper=decl context=decl parsed=yes root=simple_identifier hosted=yes
+lang=swift shape=wildcard wrapper=stmt context=stmt parsed=yes root=simple_identifier hosted=yes
+lang=tsx shape=decl hosted=decl,stmt,expr
+lang=tsx shape=decl wrapper=decl context=decl parsed=yes root=function_declaration hosted=yes
+lang=tsx shape=decl wrapper=expr context=expr parsed=yes root=function_expression hosted=yes
+lang=tsx shape=decl wrapper=member context=member parsed=no root=- hosted=no
+lang=tsx shape=decl wrapper=stmt context=stmt parsed=yes root=function_declaration hosted=yes
+lang=tsx shape=expr hosted=decl,stmt,expr,member
+lang=tsx shape=expr wrapper=decl context=decl parsed=yes root=call_expression hosted=yes
+lang=tsx shape=expr wrapper=expr context=expr parsed=yes root=call_expression hosted=yes
+lang=tsx shape=expr wrapper=member context=member parsed=yes root=method_signature hosted=yes
+lang=tsx shape=expr wrapper=stmt context=stmt parsed=yes root=call_expression hosted=yes
+lang=tsx shape=member hosted=member
+lang=tsx shape=member wrapper=decl context=decl parsed=no root=- hosted=no
+lang=tsx shape=member wrapper=expr context=expr parsed=no root=- hosted=no
+lang=tsx shape=member wrapper=member context=member parsed=yes root=public_field_definition hosted=yes
+lang=tsx shape=member wrapper=stmt context=stmt parsed=no root=- hosted=no
+lang=tsx shape=stmt hosted=decl,stmt,member
+lang=tsx shape=stmt wrapper=decl context=decl parsed=yes root=expression_statement hosted=yes
+lang=tsx shape=stmt wrapper=expr context=expr parsed=yes root=lexical_declaration hosted=no
+lang=tsx shape=stmt wrapper=member context=member parsed=yes root=method_signature hosted=yes
+lang=tsx shape=stmt wrapper=stmt context=stmt parsed=yes root=expression_statement hosted=yes
+lang=tsx shape=stmt_block hosted=decl,stmt
+lang=tsx shape=stmt_block wrapper=decl context=decl parsed=yes root=if_statement hosted=yes
+lang=tsx shape=stmt_block wrapper=expr context=expr parsed=no root=- hosted=no
+lang=tsx shape=stmt_block wrapper=member context=member parsed=yes root=method_definition hosted=no reason="member reading dropped by keyword narrowing; leading token is a keyword, not a member name"
+lang=tsx shape=stmt_block wrapper=stmt context=stmt parsed=yes root=if_statement hosted=yes
+lang=tsx shape=stmt_keyword hosted=decl,stmt
+lang=tsx shape=stmt_keyword wrapper=decl context=decl parsed=yes root=return_statement hosted=yes
+lang=tsx shape=stmt_keyword wrapper=expr context=expr parsed=no root=- hosted=no
+lang=tsx shape=stmt_keyword wrapper=member context=member parsed=no root=- hosted=no
+lang=tsx shape=stmt_keyword wrapper=stmt context=stmt parsed=yes root=return_statement hosted=yes
+lang=tsx shape=wildcard hosted=decl,stmt,expr,member
+lang=tsx shape=wildcard wrapper=decl context=decl parsed=yes root=identifier hosted=yes
+lang=tsx shape=wildcard wrapper=expr context=expr parsed=yes root=identifier hosted=yes
+lang=tsx shape=wildcard wrapper=member context=member parsed=yes root=property_identifier hosted=yes
+lang=tsx shape=wildcard wrapper=stmt context=stmt parsed=yes root=identifier hosted=yes
+lang=typescript shape=decl hosted=decl,stmt,expr
+lang=typescript shape=decl wrapper=decl context=decl parsed=yes root=function_declaration hosted=yes
+lang=typescript shape=decl wrapper=expr context=expr parsed=yes root=function_expression hosted=yes
+lang=typescript shape=decl wrapper=member context=member parsed=no root=- hosted=no
+lang=typescript shape=decl wrapper=stmt context=stmt parsed=yes root=function_declaration hosted=yes
+lang=typescript shape=expr hosted=decl,stmt,expr,member
+lang=typescript shape=expr wrapper=decl context=decl parsed=yes root=call_expression hosted=yes
+lang=typescript shape=expr wrapper=expr context=expr parsed=yes root=call_expression hosted=yes
+lang=typescript shape=expr wrapper=member context=member parsed=yes root=method_signature hosted=yes
+lang=typescript shape=expr wrapper=stmt context=stmt parsed=yes root=call_expression hosted=yes
+lang=typescript shape=member hosted=member
+lang=typescript shape=member wrapper=decl context=decl parsed=no root=- hosted=no
+lang=typescript shape=member wrapper=expr context=expr parsed=no root=- hosted=no
+lang=typescript shape=member wrapper=member context=member parsed=yes root=public_field_definition hosted=yes
+lang=typescript shape=member wrapper=stmt context=stmt parsed=no root=- hosted=no
+lang=typescript shape=stmt hosted=decl,stmt,member
+lang=typescript shape=stmt wrapper=decl context=decl parsed=yes root=expression_statement hosted=yes
+lang=typescript shape=stmt wrapper=expr context=expr parsed=yes root=lexical_declaration hosted=no
+lang=typescript shape=stmt wrapper=member context=member parsed=yes root=method_signature hosted=yes
+lang=typescript shape=stmt wrapper=stmt context=stmt parsed=yes root=expression_statement hosted=yes
+lang=typescript shape=stmt_block hosted=decl,stmt
+lang=typescript shape=stmt_block wrapper=decl context=decl parsed=yes root=if_statement hosted=yes
+lang=typescript shape=stmt_block wrapper=expr context=expr parsed=no root=- hosted=no
+lang=typescript shape=stmt_block wrapper=member context=member parsed=yes root=method_definition hosted=no reason="member reading dropped by keyword narrowing; leading token is a keyword, not a member name"
+lang=typescript shape=stmt_block wrapper=stmt context=stmt parsed=yes root=if_statement hosted=yes
+lang=typescript shape=stmt_keyword hosted=decl,stmt
+lang=typescript shape=stmt_keyword wrapper=decl context=decl parsed=yes root=return_statement hosted=yes
+lang=typescript shape=stmt_keyword wrapper=expr context=expr parsed=no root=- hosted=no
+lang=typescript shape=stmt_keyword wrapper=member context=member parsed=no root=- hosted=no
+lang=typescript shape=stmt_keyword wrapper=stmt context=stmt parsed=yes root=return_statement hosted=yes
+lang=typescript shape=wildcard hosted=decl,stmt,expr,member
+lang=typescript shape=wildcard wrapper=decl context=decl parsed=yes root=identifier hosted=yes
+lang=typescript shape=wildcard wrapper=expr context=expr parsed=yes root=identifier hosted=yes
+lang=typescript shape=wildcard wrapper=member context=member parsed=yes root=property_identifier hosted=yes
+lang=typescript shape=wildcard wrapper=stmt context=stmt parsed=yes root=identifier hosted=yes

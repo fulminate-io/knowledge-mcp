@@ -260,6 +260,30 @@ You do not: architectural calls, scope calls, contract interpretation, restructu
     (inject the construct and confirm the gate FIRES).
   </both-directions-litmus>
 
+  <real-artifacts-not-imagined-inputs>
+    Validate every check against the artifacts and STATE SEQUENCES it will
+    actually meet — never against probe values you invented. Three concrete
+    obligations, each bought with a shipped defect:
+    - The clean set for any negative gate must include every value your own plan
+      MANDATES that superficially resembles the dirty shape (a "no trailing
+      delimiter" gate probed only with values you imagined will flag the
+      mandated `"x()"`). Probing with invented inputs validates your imagination,
+      not the gate.
+    - Probe against the formatter's output, not your draft text: code formatters
+      rewrite what you typed (e.g. struct-literal key alignment pads a
+      single-space `key: value` into `key:   value`), so any source-grep uses
+      whitespace classes, and the probe runs on FORMATTED source.
+    - Simulate the criterion across the plan's phase sequence, not at one
+      instant. A gate can be coherent at every single point and contradictory
+      over time — an expectation source one phase must edit while another gate
+      asserts it never changes, a diff base that a mid-plan commit silently
+      advances, a count that a later phase's own mandated work moves. Walk each
+      criterion through every phase's end state before locking it.
+    Whenever a phase's artifacts land mid-plan, re-run every criterion that
+    reads them: a check that passed review as a design routinely fails against
+    the real file.
+  </real-artifacts-not-imagined-inputs>
+
   <absence-gates-need-a-survivor-list>
     A criterion asserting something is GONE must be authored with the closed,
     named list of legitimate survivors (absence-assertions in tests, the dropping

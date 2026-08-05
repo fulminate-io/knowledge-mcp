@@ -1,0 +1,47 @@
+lang=bash comment_kinds=comment
+lang=bash kind=comment extra=yes named=yes class=comment
+lang=c comment_kinds=comment
+lang=c kind=comment extra=yes named=yes class=comment
+lang=cpp comment_kinds=comment
+lang=cpp kind=comment extra=yes named=yes class=comment
+lang=csharp comment_kinds=comment
+lang=csharp kind=comment extra=yes named=yes class=comment
+lang=elixir comment_kinds=comment
+lang=elixir kind=comment extra=yes named=yes class=comment
+lang=elm comment_kinds=block_comment,line_comment
+lang=elm kind=block_comment extra=yes named=yes class=comment
+lang=elm kind=line_comment extra=yes named=yes class=comment
+lang=go comment_kinds=comment
+lang=go kind=comment extra=yes named=yes class=comment
+lang=groovy comment_kinds=comment,groovy_doc
+lang=groovy kind=comment extra=yes named=yes class=comment
+lang=groovy kind=groovy_doc extra=yes named=yes class=comment
+lang=java comment_kinds=block_comment,line_comment
+lang=java kind=block_comment extra=yes named=yes class=comment
+lang=java kind=line_comment extra=yes named=yes class=comment
+lang=javascript comment_kinds=comment
+lang=javascript kind=comment extra=yes named=yes class=comment
+lang=kotlin comment_kinds=line_comment,multiline_comment
+lang=kotlin kind=line_comment extra=yes named=yes class=comment
+lang=kotlin kind=multiline_comment extra=yes named=yes class=comment
+lang=lua comment_kinds=comment
+lang=lua kind=comment extra=yes named=yes class=comment
+lang=ocaml comment_kinds=comment
+lang=ocaml kind=comment extra=yes named=yes class=comment
+lang=python comment_kinds=comment
+lang=python kind=comment extra=yes named=yes class=comment
+lang=ruby comment_kinds=comment
+lang=ruby kind=comment extra=yes named=yes class=comment
+lang=rust comment_kinds=block_comment,line_comment
+lang=rust kind=block_comment extra=yes named=yes class=comment
+lang=rust kind=line_comment extra=yes named=yes class=comment
+lang=scala comment_kinds=block_comment,comment
+lang=scala kind=block_comment extra=yes named=yes class=comment
+lang=scala kind=comment extra=yes named=yes class=comment
+lang=swift comment_kinds=comment,multiline_comment
+lang=swift kind=comment extra=yes named=yes class=comment
+lang=swift kind=multiline_comment extra=yes named=yes class=comment
+lang=tsx comment_kinds=comment
+lang=tsx kind=comment extra=yes named=yes class=comment
+lang=typescript comment_kinds=comment
+lang=typescript kind=comment extra=yes named=yes class=comment

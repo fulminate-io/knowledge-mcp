@@ -1,0 +1,20 @@
+lang=bash layout=no token=- why=the multi-line spelling surfaces no anonymous whitespace-only child the one-line spelling lacks
+lang=c layout=no token=- why=the multi-line spelling surfaces no anonymous whitespace-only child the one-line spelling lacks
+lang=cpp layout=no token=- why=the multi-line spelling surfaces no anonymous whitespace-only child the one-line spelling lacks
+lang=csharp layout=no token=- why=the multi-line spelling surfaces no anonymous whitespace-only child the one-line spelling lacks
+lang=elixir layout=no token=- why=the multi-line spelling surfaces no anonymous whitespace-only child the one-line spelling lacks
+lang=elm layout=no token=- why=the multi-line spelling surfaces no anonymous whitespace-only child the one-line spelling lacks
+lang=go layout=yes token="\n" why=the one-line spelling parses to the same 15 named nodes in the same order, minus this child, so the token distinguishes nothing a caller could have meant
+lang=groovy layout=no token=- why=the multi-line spelling surfaces no anonymous whitespace-only child the one-line spelling lacks
+lang=java layout=no token=- why=the multi-line spelling surfaces no anonymous whitespace-only child the one-line spelling lacks
+lang=javascript layout=no token=- why=the multi-line spelling surfaces no anonymous whitespace-only child the one-line spelling lacks
+lang=kotlin layout=no token=- why=the multi-line spelling surfaces no anonymous whitespace-only child the one-line spelling lacks
+lang=lua layout=no token=- why=the multi-line spelling surfaces no anonymous whitespace-only child the one-line spelling lacks
+lang=ocaml layout=no token=- why=the multi-line spelling surfaces no anonymous whitespace-only child the one-line spelling lacks
+lang=python layout=no token=- why=the multi-line spelling surfaces no anonymous whitespace-only child the one-line spelling lacks
+lang=ruby layout=no token=- why=the multi-line spelling surfaces no anonymous whitespace-only child the one-line spelling lacks
+lang=rust layout=no token=- why=the multi-line spelling surfaces no anonymous whitespace-only child the one-line spelling lacks
+lang=scala layout=no token=- why=the multi-line spelling surfaces no anonymous whitespace-only child the one-line spelling lacks
+lang=swift layout=no token=- why=the multi-line spelling surfaces no anonymous whitespace-only child the one-line spelling lacks
+lang=tsx layout=no token=- why=the multi-line spelling surfaces no anonymous whitespace-only child the one-line spelling lacks
+lang=typescript layout=no token=- why=the multi-line spelling surfaces no anonymous whitespace-only child the one-line spelling lacks

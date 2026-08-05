@@ -46,8 +46,10 @@ Code search covers 30+ languages with tree-sitter chunking and a binary
 HNSW index, plus structural AST search for the shapes regex can't
 express — every `defer x.Close()`, every goroutine without a recover,
 every public function returning an error, every framework-specific
-call site. The AST DSL works the same way across every language it
-parses; patterns in one language port without rewriting.
+call site. The AST DSL is one grammar for the languages it supports — a
+few config/markup grammars (and PHP, whose `$` variables collide with the
+placeholder sigil) are out of scope; elsewhere patterns port across
+languages without rewriting.
 
 ```jsonc
 search({ "queries": ["retry backoff", "circuit breaker"], "repo": "all" })

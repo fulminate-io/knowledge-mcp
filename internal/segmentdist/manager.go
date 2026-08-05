@@ -141,6 +141,16 @@ type distManager[Q, S any] struct {
 	// auto-re-arms on a resident rise.
 	coverageSkipStreak int
 	lastSkipResident   int
+	// incompletePublishStreak counts CONSECUTIVE agent-409 (manifestIncompleteError)
+	// publish skips for this engine, reset to 0 on a landed swap. Unlike the
+	// coverage-skip streak it does NOT bound the retry re-arm — the 409 cause is meant
+	// to self-heal, because markIncompletePublish un-stamps the missing ids so the next
+	// ship diff RE-UPLOADS them. Its sole job is to distinguish a transient 409 (heals
+	// within a cycle) from a PERSISTENT one (the re-upload is not sticking): once the
+	// streak reaches incompletePublishWarnStreak, markIncompletePublish escalates the
+	// per-cycle transient WARN to a loud degradation WARN. Guarded by shipMu; cleared on
+	// a successful PublishManifest alongside publishPending and the coverage-skip fields.
+	incompletePublishStreak int
 	// completedSwaps counts the manifest swaps that actually LANDED — incremented
 	// beside the publishPending clear, on the one path where PublishManifest
 	// returned success. It exists because a nil error does NOT mean a publish

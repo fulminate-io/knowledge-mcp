@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package ast provides structural code search over tree-sitter ASTs via a
-// placeholder-template DSL and a JSON boolean where-tree, working uniformly
-// across every language registered in the codegraph treesitter package.
+// placeholder-template DSL and a JSON boolean where-tree. Most registered
+// languages are supported; a deny set (config/markup grammars, plus PHP for a
+// placeholder-sigil collision) is refused by match/count/replace and annotated
+// at runtime by list_node_kinds/explain.
 //
 // dsl.go — v2 placeholder-template parser. Parse converts a user-facing
 // pattern string into a Pattern carrying the raw source plus a slice of
@@ -16,7 +18,8 @@
 //   - `$$$_`           — sequence wildcard, no capture name.
 //   - `$$$X`           — sequence placeholder, capture name X.
 //   - bare `$`         — error (errParserBareDollar).
-//   - `$$<not $>`      — error (errParserDoubleDollar).
+//   - `$$<not $>`      — literal `$` escape; emits a single `$`, binds no
+//     capture (KindLiteralDollar). Mirrors the replacement-side `$$` escape.
 //   - `$$$<not ident>` — error (errParserTripleDollar).
 //   - `$$$$`           — error (`$$$` followed by `$`, errParserTripleDollar).
 //   - tree_sitter_query: prefix — error (errParserTreeSitterPrefix); the
@@ -47,6 +50,11 @@ const (
 	KindSeq
 	// KindSeqWild matches zero or more sibling nodes without binding ($$$_).
 	KindSeqWild
+	// KindLiteralDollar is the `$$` escape: it contributes a single literal
+	// `$` to the pattern and binds no capture. It never reaches the walker —
+	// substitutePlaceholders collapses it in place without emitting a
+	// substitution.
+	KindLiteralDollar
 )
 
 // String renders the placeholder kind for diagnostics.
@@ -60,6 +68,8 @@ func (k PlaceholderKind) String() string {
 		return "seq"
 	case KindSeqWild:
 		return "seq_wild"
+	case KindLiteralDollar:
+		return "literal_dollar"
 	default:
 		return "unknown"
 	}
@@ -102,10 +112,6 @@ var (
 	// errParserBareDollar is returned for a stray `$` not followed by an
 	// identifier or `_`.
 	errParserBareDollar = errors.New("ast/dsl: bare $ — expected $X / $_ / $$$X / $$$_")
-
-	// errParserDoubleDollar is returned for `$$<not $>` — `$$` is not a
-	// valid placeholder prefix.
-	errParserDoubleDollar = errors.New("ast/dsl: bare $$ — expected $$$X / $$$_ for sequence captures")
 
 	// errParserTripleDollar is returned for `$$$<not identifier and not _>`
 	// (covers `$$$$` since the trailing `$` is neither letter nor `_`).
@@ -192,9 +198,15 @@ func lexPlaceholder(source string, start int) (Placeholder, int, error) {
 		}, end, nil
 
 	case 2:
-		// `$$<not $>` is invalid. (Three or four dollars are handled in
-		// case 3 / case 4 below.)
-		return Placeholder{}, 0, errParserDoubleDollar
+		// `$$<not $>` is the literal-`$` escape: it emits a single `$` and
+		// binds no capture. Exact mirror of interpolateTemplate's `dollars == 2`
+		// branch (replace.go). Three or four dollars are handled in case 3 /
+		// case 4 below.
+		return Placeholder{
+			Kind:        KindLiteralDollar,
+			OffsetStart: start,
+			OffsetEnd:   start + 2,
+		}, start + 2, nil
 
 	case 3:
 		// `$$$X` or `$$$_`.

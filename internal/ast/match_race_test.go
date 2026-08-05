@@ -2,8 +2,8 @@
 
 // match_race_test.go — concurrency regression test for the ast worker
 // pool. Before the per-worker-compile fix, every worker goroutine shared
-// ONE compiled pattern tree (cp.Tree), ONE sub-pattern cache
-// (map[string]*PatternTree + its mutex), and cp.rootQuery, and walked the
+// ONE compiled pattern tree, ONE sub-pattern cache (a map from sub-pattern
+// source to its compile, plus the mutex), and the root query, and walked the
 // shared pattern tree concurrently via go-tree-sitter NamedChild ->
 // (*Tree).cachedNode (an unsynchronized per-Tree map) -> fatal
 // "concurrent map read and map write".
@@ -23,8 +23,8 @@
 //	go test -race -run TestMatch_ConcurrentSubPattern_NoRace ./cmd/knowledge/internal/ast/
 //
 // to exercise it. Pre-fix it reports a DATA RACE whose stack names
-// go-tree-sitter cachedNode / NamedChild and ast.namedChildren; post-fix
-// it passes clean.
+// go-tree-sitter cachedNode / NamedChild and the walker's child-list
+// helper (ast.allChildren); post-fix it passes clean.
 
 package ast
 
@@ -69,7 +69,7 @@ func TestMatch_ConcurrentSubPattern_NoRace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Parse: %v", err)
 	}
-	cp, err := Compile(pat, treesitter.LangGo)
+	cp, err := Compile(pat, treesitter.LangGo, "")
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
 	}
@@ -98,7 +98,7 @@ func TestMatch_ConcurrentSubPattern_NoRace(t *testing.T) {
 	// multiply the chance two workers hit cachedNode concurrently. Each
 	// call re-runs the full NumCPU worker pool over the shared pattern.
 	for iter := range 30 {
-		raws, _, err := Match(context.Background(), dir, treesitter.LangGo, cp, where, Scope{Limit: 100000})
+		raws, _, err := Match(context.Background(), dir, treesitter.LangGo, cp, where, Scope{})
 		if err != nil {
 			t.Fatalf("Match (iter %d): %v", iter, err)
 		}

@@ -169,11 +169,13 @@ func TestLookup_UnknownFileReturnsFalse(t *testing.T) {
 	}
 }
 
-// TestZeroScanHint pins the wrong-root hint format: it names the walked
+// TestZeroScanHint pins the wrong-root hint format for the case that IS a wrong
+// root — no prefixes supplied and nothing declined: it names the walked
 // directory, the language, and carries the "wrong root" signal so the LLM can
-// tell a zero-files-scanned walk from a scanned-but-no-match one.
+// tell a zero-files-scanned walk from a scanned-but-no-match one. The other two
+// causes are pinned by TestZeroScanHint_NamesTheActualCause.
 func TestZeroScanHint(t *testing.T) {
-	got := ZeroScanHint("/tmp/foo", "go")
+	got := ZeroScanHint("/tmp/foo", "go", Scope{}, WalkStats{})
 	want := "walked /tmp/foo: no go files found — wrong root? pass repo:<name|/abs/path> or check --root"
 	if got != want {
 		t.Errorf("ZeroScanHint = %q, want %q", got, want)

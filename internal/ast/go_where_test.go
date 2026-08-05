@@ -20,60 +20,12 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/treesitter"
 )
 
-// whereCase configures one where-tree assertion.
-func runWhere(t *testing.T, pattern, target, whereJSON string) (matches int, finalErr error) {
+// runWhere evaluates one where-tree over a Go target. The Go-fixed spelling of
+// runGuardWhere (regression_guards_test.go), which carries the walk itself so
+// the JVM-grammar guard rows can reach it with another LangConfig.
+func runWhere(t *testing.T, pattern, target, whereJSON string) (int, error) {
 	t.Helper()
-	pt, err := compilePattern(context.Background(), mustParse(t, pattern), goLangConfig)
-	if err != nil {
-		t.Fatalf("compilePattern: %v", err)
-	}
-	defer pt.Close()
-
-	parser := treesitter.NewParser()
-	defer parser.Close()
-	tree, err := parser.Parse(context.Background(), []byte(target), treesitter.LangGo)
-	if err != nil {
-		t.Fatalf("parse target: %v", err)
-	}
-	defer tree.Close()
-
-	where, err := ParseWhere([]byte(whereJSON))
-	if err != nil {
-		t.Fatalf("ParseWhere: %v", err)
-	}
-
-	cache := map[string]*PatternTree{}
-	mu := &sync.Mutex{}
-	defer func() {
-		mu.Lock()
-		defer mu.Unlock()
-		for _, p := range cache {
-			p.Close()
-		}
-	}()
-
-	outerScope := newOuterScope(treesitter.LangGo, cache, mu)
-	src := []byte(target)
-
-	walkAll(tree.RootNode(), func(n *sitter.Node) {
-		caps := newCaptures()
-		nodes := map[string]*sitter.Node{}
-		if !matchTreeWithNodes(pt, n, src, caps, nodes) {
-			return
-		}
-		scope := outerScope.withMatchCaptures(caps, nodes, src)
-		ok, err := evalWhere(context.Background(), where, scope)
-		if err != nil {
-			if finalErr == nil {
-				finalErr = err
-			}
-			return
-		}
-		if ok {
-			matches++
-		}
-	})
-	return matches, finalErr
+	return runGuardWhere(t, goLangConfig, pattern, target, whereJSON)
 }
 
 func TestWhere_KindLeafSingle(t *testing.T) {
@@ -205,7 +157,7 @@ func TestWhere_RegexCompileOncePerWhereNode(t *testing.T) {
 	// Verify the sync.Once cache: invoke evalMatches twice on the same
 	// MatchesLeaf and ensure compileOnce fires only once.
 	leaf := &MatchesLeaf{Of: "X", Regex: "^x$"}
-	cache := map[string]*PatternTree{}
+	cache := map[string][]patternVariant{}
 	mu := &sync.Mutex{}
 	scope := newOuterScope(treesitter.LangGo, cache, mu)
 	caps := newCaptures()
@@ -329,7 +281,7 @@ func TestWhere_MatchBindingMatchesRegex(t *testing.T) {
 
 func TestWhere_NilWhereIsAlwaysTrue(t *testing.T) {
 	target := "package main\nfunc f() { x.Close() }"
-	cache := map[string]*PatternTree{}
+	cache := map[string][]patternVariant{}
 	mu := &sync.Mutex{}
 	scope := newOuterScope(treesitter.LangGo, cache, mu)
 	scope = scope.withMatchCaptures(newCaptures(), map[string]*sitter.Node{}, []byte(target))

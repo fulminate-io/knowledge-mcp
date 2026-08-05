@@ -8,7 +8,6 @@ package tools
 
 import (
 	"context"
-	"sort"
 	"strings"
 	"time"
 
@@ -39,7 +38,7 @@ func handleAstReplace(ctx context.Context, deps ClientDeps, a astArgs) kgtools.T
 		return errorResult(`operation=replace requires replacement (pass replacement:"" to DELETE matched ranges)`)
 	}
 
-	patterns, perr := buildAstPatterns(a)
+	patterns, patternErrs, perr := buildAstPatterns(a)
 	if perr != nil {
 		return errorResult("parse pattern: " + perr.Error())
 	}
@@ -49,32 +48,79 @@ func handleAstReplace(ctx context.Context, deps ClientDeps, a astArgs) kgtools.T
 		return errorResult("parse where: " + werr.Error())
 	}
 
+	// The same refusal as on the read paths, and this is where it pays: a
+	// where-tree that can never match makes a replace report zero rewrites with
+	// no error, which reads as a migration that had nothing left to do.
+	if kerr := ast.ValidateWhereKinds(where, lang); kerr != nil {
+		return errorResult(kerr.Error())
+	}
+
+	if perr := validateContextPin(a.Context, lang); perr != nil {
+		return errorResult(perr.Error())
+	}
+
+	// The refusal matters most on this path: include_tests is a blast-radius
+	// control, and a control that is accepted but inert widens a WRITE.
+	if terr := validateIncludeTests(a, lang); terr != nil {
+		return errorResult(terr.Error())
+	}
+
 	repoDir, derr := resolveRepoDir(ctx, deps, a.Repo)
 	if derr != nil {
 		return errorResult(derr.Error())
 	}
 
 	scope := scopeFromArgs(a)
-	raws, _, merr := matchAll(ctx, lang, patterns, where, repoDir, scope)
+	// Ask the match walk to record a per-matched-file parse hint {clean, size,
+	// digest} so ApplyReplace's pre-edit baseline can skip re-parsing files the
+	// match already parsed clean. Only the replace path requests it — the read
+	// paths leave EmitParseHint false and pay no digest.
+	scope.EmitParseHint = true
+	raws, compiled, narrowed, walk, patternErrs, merr := matchAll(ctx, a, lang, patterns, patternErrs, where, repoDir, scope)
 	if merr != nil {
 		return errorResult("match: " + merr.Error())
 	}
 
 	dryRun := a.DryRun == nil || bool(*a.DryRun)
-	res, rerr := ast.ApplyReplace(ctx, repoDir, lang, raws, *a.Replacement, dryRun)
+	res, rerr := ast.ApplyReplace(ctx, repoDir, lang, raws, *a.Replacement, dryRun, walk.CleanHint)
 	if rerr != nil {
 		return errorResult("replace: " + rerr.Error())
 	}
 
-	return jsonResult(map[string]any{
-		"applied":          res.Applied,
-		"dry_run":          dryRun,
-		"files_touched":    res.FilesTouched,
-		"matches_replaced": res.MatchesReplaced,
-		"refused_files":    res.RefusedFiles,
-		"rejected_files":   res.RejectedFiles,
-		"diffs":            res.Diffs,
-	})
+	// compiled travels with the write path too: a rewrite driven by a pattern
+	// that compiled to the wrong construct is the failure this disclosure
+	// exists to catch, and it is the one where seeing it late costs the most.
+	//
+	// The four counters are reported apart because they answer different
+	// questions: files_matched / matches_replaced are what the pattern reached,
+	// files_changed / matches_changed are what actually moved. An identity
+	// template makes the second pair zero while the first stays non-zero.
+	// preexisting_parse_failures names files that were already ungrammatical —
+	// declined rather than rejected, so rejected_files means only what the edit
+	// broke.
+	//
+	// pattern_errors matters most on this path for the same reason the kind
+	// refusal does: a rewrite driven by three of four sibling forms, reported as
+	// though all four ran, is a migration certified complete over a quarter of
+	// its intended blast radius.
+	out := map[string]any{
+		"applied":                    res.Applied,
+		"compiled":                   compiled,
+		"narrowed":                   narrowed,
+		"dry_run":                    dryRun,
+		"files_matched":              res.FilesMatched,
+		"files_changed":              res.FilesChanged,
+		"matches_replaced":           res.MatchesReplaced,
+		"matches_changed":            res.MatchesChanged,
+		"refused_files":              res.RefusedFiles,
+		"rejected_files":             res.RejectedFiles,
+		"preexisting_parse_failures": res.PreexistingParseFailures,
+		"diffs":                      res.Diffs,
+	}
+	if len(patternErrs) > 0 {
+		out["pattern_errors"] = patternErrs
+	}
+	return jsonResult(out)
 }
 
 // handleAstExplain parses a snippet and emits an indented node-kind tree.
@@ -100,6 +146,13 @@ func handleAstExplain(ctx context.Context, a astArgs) kgtools.ToolResult {
 	defer tree.Close()
 
 	var b strings.Builder
+	// A denied language still parses — explain is informational — but match and
+	// replace refuse it, so prepend a note making clear this parse view cannot
+	// drive a rewrite. Supported languages get no note (the tree speaks for
+	// itself).
+	if ast.IsDeniedLanguage(lang) {
+		b.WriteString("// NOTE: " + a.Language + " is deny-listed for ast match/replace; this parse view is informational only.\n")
+	}
 	walkNodeKinds(tree.RootNode(), 0, &b)
 	return textResult(b.String())
 }
@@ -108,6 +161,15 @@ func handleAstExplain(ctx context.Context, a astArgs) kgtools.ToolResult {
 // by depth. Includes every named-and-anonymous child so the LLM sees the
 // full structure (callers explicitly asked for "explain" — punctuation
 // included is more useful than a filtered tree for this debug op).
+//
+// Each line is tagged ` (named)` or ` (anonymous)` from n.IsNamed(). The
+// distinction is load-bearing for authoring a replace: an anonymous token
+// (punctuation, a keyword like `func`, a brace) is exactly the kind of node a
+// byte-range splice can silently drop or inject, so surfacing which nodes are
+// anonymous tells an author where a rewrite is most likely to lose a token.
+// The tag is additive — it never changes WHICH nodes are printed (anonymous
+// tokens still appear), only labels them, so existing substring assertions
+// against a bare kind name (e.g. "function_declaration") stay green.
 func walkNodeKinds(n *sitter.Node, depth int, b *strings.Builder) {
 	if n == nil {
 		return
@@ -116,51 +178,45 @@ func walkNodeKinds(n *sitter.Node, depth int, b *strings.Builder) {
 		b.WriteString("  ")
 	}
 	b.WriteString(n.Type())
+	if n.IsNamed() {
+		b.WriteString(" (named)")
+	} else {
+		b.WriteString(" (anonymous)")
+	}
 	b.WriteByte('\n')
 	for i := range int(n.ChildCount()) {
 		walkNodeKinds(n.Child(i), depth+1, b)
 	}
 }
 
-// handleAstListNodeKinds enumerates the tree-sitter node-kind vocabulary
-// for a language by walking grammar.SymbolCount() / SymbolName() and
-// filtering to SymbolTypeRegular (drops anonymous tokens like '+', '{').
-//
-// API verification: smacker exposes both SymbolCount() uint32 and
-// SymbolName(s Symbol) string on *sitter.Language; bindings.go:362,372
-// at $GOMODCACHE/github.com/smacker/go-tree-sitter@<sha>/bindings.go.
+// handleAstListNodeKinds prints the tree-sitter node-kind vocabulary for a
+// language. The enumeration itself lives in the ast package as NodeKinds, which
+// the where-tree kind validator reads too: one enumeration means a name this op
+// prints can never be a name that validator rejects.
 func handleAstListNodeKinds(a astArgs) kgtools.ToolResult {
 	lang := treesitter.Language(a.Language)
-	grammar, ok := treesitter.LanguageGrammar(lang)
-	if !ok || grammar == nil {
+	kinds, ok := ast.NodeKinds(lang)
+	if !ok {
 		return errorResult("unsupported language: " + a.Language)
 	}
 
-	count := int(grammar.SymbolCount())
-	seen := make(map[string]struct{}, count)
-	kinds := make([]string, 0, count)
-	for i := range count {
-		s := sitter.Symbol(uint16(i))
-		if grammar.SymbolType(s) != sitter.SymbolTypeRegular {
-			continue
-		}
-		name := grammar.SymbolName(s)
-		if name == "" {
-			continue
-		}
-		if _, dup := seen[name]; dup {
-			continue
-		}
-		seen[name] = struct{}{}
-		kinds = append(kinds, name)
-	}
-	sort.Strings(kinds)
-
-	return jsonResult(map[string]any{
+	out := map[string]any{
 		"language":    a.Language,
 		"node_kinds":  kinds,
 		"source":      "dynamic",
 		"count":       len(kinds),
 		"resolved_at": time.Now().UTC().Format(time.RFC3339),
-	})
+	}
+	// The enumeration is grammar-driven, so a denied language still lists its
+	// node kinds honestly — but match/replace refuse the language, so those
+	// kinds are informational only: none can appear in a pattern or a
+	// where-kind leaf. match_replace_supported carries that fact on every
+	// response; the note explains it only where it is false.
+	if ast.IsDeniedLanguage(lang) {
+		out["match_replace_supported"] = false
+		out["note"] = a.Language + " is deny-listed for ast match/replace; these node kinds are informational only and cannot be used in a pattern or where-kind leaf"
+	} else {
+		out["match_replace_supported"] = true
+	}
+	return jsonResult(out)
 }

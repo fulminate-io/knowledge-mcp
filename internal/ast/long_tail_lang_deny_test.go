@@ -1,11 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// long_tail_lang_deny_test.go — covers that each of the 11
-// explicitly denied config/markup languages, when passed to Compile, returns
-// an error containing the canonical "pattern matching not supported for
-// language" prefix and the language name. No registration, no LangConfig —
-// the deny set in lang_config.go short-circuits Compile before registry
-// lookup.
+// long_tail_lang_deny_test.go — covers that each of the 12
+// explicitly denied languages, when passed to Compile, returns an error
+// containing the canonical "pattern matching not supported for language"
+// prefix and the language name. No registration, no LangConfig — the deny set
+// in lang_config.go short-circuits Compile before registry lookup. Eleven are
+// config/markup grammars; php is denied for a sigil collision (a PHP variable
+// uses the same `$` the pattern DSL reserves), asserted below.
 
 package ast
 
@@ -32,13 +33,14 @@ func TestLongTail_DeniedLanguages_CompileReturnsExplicitError(t *testing.T) {
 		{"markdown", treesitter.LangMarkdown},
 		{"protobuf", treesitter.LangProtobuf},
 		{"hcl", treesitter.LangHCL},
+		{"php", treesitter.LangPHP},
 	}
 
 	pat := Pattern{Source: "$X"}
 
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			cp, err := Compile(pat, tc.lang)
+			cp, err := Compile(pat, tc.lang, "")
 			if cp != nil {
 				cp.Close()
 				t.Fatalf("Compile(%q) returned non-nil CompiledPattern; want error", tc.lang)
@@ -52,6 +54,11 @@ func TestLongTail_DeniedLanguages_CompileReturnsExplicitError(t *testing.T) {
 			}
 			if !strings.Contains(msg, string(tc.lang)) {
 				t.Errorf("Compile(%q) error = %q; missing language name in message", tc.lang, msg)
+			}
+			// PHP is denied for the sigil collision, not the markup rationale.
+			// Pin the reason by a test, not just by source.
+			if tc.lang == treesitter.LangPHP && !strings.Contains(msg, "sigil") {
+				t.Errorf("Compile(php) error = %q; PHP deny reason must name the sigil collision", msg)
 			}
 		})
 	}
@@ -74,10 +81,13 @@ func TestLongTail_DeniedLanguages_NoLangConfigRegistered(t *testing.T) {
 		treesitter.LangMarkdown,
 		treesitter.LangProtobuf,
 		treesitter.LangHCL,
+		treesitter.LangPHP,
 	}
 	for _, lang := range denied {
-		if _, ok := langConfigFor(lang); ok {
-			t.Errorf("langConfigFor(%q) returned ok=true; denied languages must NOT be registered", lang)
-		}
+		t.Run(string(lang), func(t *testing.T) {
+			if _, ok := langConfigFor(lang); ok {
+				t.Errorf("langConfigFor(%q) returned ok=true; denied languages must NOT be registered", lang)
+			}
+		})
 	}
 }

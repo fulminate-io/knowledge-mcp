@@ -77,18 +77,27 @@ var skipPathComponents = []string{
 // DiscoverFiles returns relative paths of all indexable source files in repoDir.
 // Uses `git ls-files` to respect .gitignore (nested .gitignore files, negation patterns, etc.).
 // Falls back to filesystem walk if the directory is not a git repo.
+//
+// It is the discard-the-report form of DiscoverFilesReporting: callers that only
+// need the included set keep this signature, and every file the walk declines is
+// dropped silently exactly as before. Callers that must disclose WHY a file is
+// absent take the reporting form instead.
 func DiscoverFiles(ctx context.Context, repoDir string) ([]string, error) {
-	files, err := discoverWithGit(ctx, repoDir)
-	if err != nil {
-		slog.Warn("git ls-files failed, falling back to filesystem walk", "error", err)
-		return discoverWithWalk(repoDir)
-	}
-	return files, nil
+	files, _, err := DiscoverFilesReporting(ctx, repoDir, DiscoveryOptions{})
+	return files, err
 }
 
 // discoverWithGit uses `git ls-files` to get tracked files, respecting .gitignore.
-func discoverWithGit(ctx context.Context, repoDir string) ([]string, error) {
-	cmd := exec.CommandContext(ctx, "git", "ls-files", "--cached", "--others", "--exclude-standard")
+// Every candidate the rule chain declines is recorded on rep under the rule that
+// declined it; opts.LiftExclusions bypasses the chain entirely.
+//
+// opts.PackagePrefixes ride along as git pathspecs rather than being filtered
+// out afterward, so a narrow scope stops paying to enumerate the whole tree —
+// on a 20k-file repo that enumeration, not the matching, is what a single-file
+// query spends its time on.
+func discoverWithGit(ctx context.Context, repoDir string, opts DiscoveryOptions, rep *DiscoveryReport) ([]string, error) {
+	args := append([]string{"ls-files", "--cached", "--others", "--exclude-standard"}, pathspecsFor(opts.PackagePrefixes)...)
+	cmd := exec.CommandContext(ctx, "git", args...)
 	cmd.Dir = repoDir
 	out, err := cmd.Output()
 	if err != nil {
@@ -99,8 +108,11 @@ func discoverWithGit(ctx context.Context, repoDir string) ([]string, error) {
 	scanner := bufio.NewScanner(strings.NewReader(string(out)))
 	for scanner.Scan() {
 		rel := scanner.Text()
-		if !isIndexable(repoDir, rel) {
-			continue
+		if !opts.LiftExclusions {
+			if ok, rule := isIndexable(repoDir, rel); !ok {
+				rep.record(rule, rel)
+				continue
+			}
 		}
 		files = append(files, rel)
 	}
@@ -124,14 +136,29 @@ var skipDirs = map[string]bool{
 	"generated": true, ".generated": true,
 }
 
-func discoverWithWalk(repoDir string) ([]string, error) {
+// discoverWithWalk is the non-git fallback. Directories in skipDirs are pruned
+// before anything under them is enumerated, so a pruned subtree is recorded on
+// rep as ONE skip_dir entry naming the directory rather than one per file
+// beneath it — counting the files would mean walking the very subtrees the prune
+// exists to avoid. opts.LiftExclusions descends into them and applies no rule.
+//
+// opts.PackagePrefixes prune the same way, and are the walk-side counterpart of
+// the git pathspecs: a directory no prefix can reach is skipped whole.
+func discoverWithWalk(repoDir string, opts DiscoveryOptions, rep *DiscoveryReport) ([]string, error) {
 	var files []string
 	err := filepath.WalkDir(repoDir, func(path string, d os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if d.IsDir() {
-			if skipDirs[d.Name()] {
+			// Out-of-scope subtrees are pruned FIRST and silently: a directory
+			// the caller's prefixes cannot reach was never a candidate, so it is
+			// neither walked nor charged to an exclusion rule.
+			if !dirCanContainPrefix(relOrPath(repoDir, path), opts.PackagePrefixes) {
+				return filepath.SkipDir
+			}
+			if skipDirs[d.Name()] && !opts.LiftExclusions {
+				rep.record(RuleDir, relOrPath(repoDir, path))
 				return filepath.SkipDir
 			}
 			return nil
@@ -142,8 +169,16 @@ func discoverWithWalk(repoDir string) ([]string, error) {
 			slog.Warn("discover: relative path error, skipping", "path", path, "error", relErr)
 			return nil // relative path error is non-fatal, skip file
 		}
-		if !isIndexable(repoDir, rel) {
+		// Same rule for a file the prune could not catch — a prefix naming one
+		// file leaves its siblings in a directory the walk must still enter.
+		if !MatchesPathPrefixes(rel, opts.PackagePrefixes) {
 			return nil
+		}
+		if !opts.LiftExclusions {
+			if ok, rule := isIndexable(repoDir, rel); !ok {
+				rep.record(rule, rel)
+				return nil
+			}
 		}
 		files = append(files, rel)
 		return nil
@@ -151,49 +186,68 @@ func discoverWithWalk(repoDir string) ([]string, error) {
 	return files, err
 }
 
-// isIndexable checks if a file should be included in the code graph.
-func isIndexable(repoDir, rel string) bool {
+// relOrPath renders a walked absolute path repo-relative for reporting, falling
+// back to the absolute path when it cannot be relativized.
+func relOrPath(repoDir, path string) string {
+	if rel, err := filepath.Rel(repoDir, path); err == nil {
+		return rel
+	}
+	return path
+}
+
+// isIndexable checks if a file should be included in the code graph. It returns
+// the name of the rule that declined the file alongside the verdict — empty when
+// the file is indexable — so a caller can attribute an absence to the rule that
+// caused it rather than reporting it as "no match". The rule names are the
+// vocabulary the walk-exclusion census is keyed on; the test order below is
+// first-match-wins and is itself load-bearing, since a vendored file over the
+// size cap is a skip_path_component and never a skip_too_large.
+func isIndexable(repoDir, rel string) (bool, string) {
 	name := filepath.Base(rel)
 	ext := filepath.Ext(name)
 
 	// Skip markdown — documentation, not code.
 	if skipExtensions[ext] {
-		return false
+		return false, RuleExtension
 	}
 
 	// Skip lock files — dependency resolution data, not code.
 	if skipFiles[name] {
-		return false
+		return false, RuleLockfile
 	}
 
 	// Skip TypeScript declaration files — type signatures only, no implementation.
 	if strings.HasSuffix(name, ".d.ts") || strings.HasSuffix(name, ".d.mts") || strings.HasSuffix(name, ".d.cts") {
-		return false
+		return false, RuleDTS
 	}
 
 	// Skip generated Go files.
 	if strings.HasSuffix(name, ".pb.go") || strings.HasSuffix(name, "_generated.go") || strings.HasSuffix(name, "_gen.go") {
-		return false
+		return false, RuleGeneratedGo
 	}
 
 	// Skip files in third-party/vendored/generated directories.
 	// git ls-files doesn't use skipDirs, so we check path components here.
 	for _, dir := range skipPathComponents {
 		if strings.Contains(rel, "/"+dir+"/") || strings.HasPrefix(rel, dir+"/") {
-			return false
+			return false, RulePathComponent
 		}
 	}
 
 	// Skip unsupported languages.
 	if treesitter.DetectLanguage(name) == treesitter.LangUnknown {
-		return false
+		return false, RuleUnknownLang
 	}
 
-	// Skip large files.
+	// Skip large files. A path that fails to stat at all (listed by git but
+	// since removed, or unreadable) is declined here too and charged to the same
+	// rule: the size cap is the only bucket the exclusion vocabulary carries for
+	// this branch, so the count is honest about the file being declined and
+	// approximate about which of the two conditions declined it.
 	info, err := os.Stat(filepath.Join(repoDir, rel))
 	if err != nil || info.Size() > maxFileSize {
-		return false
+		return false, RuleTooLarge
 	}
 
-	return true
+	return true, ""
 }

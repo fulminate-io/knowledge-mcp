@@ -124,6 +124,24 @@ This package uses CGO via smacker/go-tree-sitter. The tree-sitter `Parser` is NO
 
 Always use `defer .Close()` on Parser, Tree, Query, and QueryCursor objects (smacker issue #181).
 
+**One `Chunker` per goroutine is necessary but not sufficient for Lua.** The
+vendored Lua grammar's external scanner allocates no per-parser payload and
+keeps its lexer state in file-scope C variables shared by the whole process, so
+concurrent Lua parses corrupt each other and return structurally different
+trees for identical input — silently, with no error, and invisibly to Go's race
+detector. `Parser.Parse` therefore serializes Lua parses behind `luaParseMu`
+(`parser.go`); every other language is unaffected and still parses in parallel.
+This lock is permanent, not a stopgap. Upstream tree-sitter-lua fixed the
+scanner at v0.3.0 (per-payload state, still ABI-compatible with the vendored
+core), but no Go binding ships the fixed scanner — smacker/go-tree-sitter is
+unmaintained at exactly our pin, and the maintained official binding cannot
+co-link with it — so the lock stays until the grammars are re-vendored
+wholesale. `scripts/lua_scanner_state_check.sh` is the watchdog that fires if
+the vendored scanner ever stops holding file-scope state.
+`parser_lua_concurrency_test.go` is the regression guard at both the parse and
+the `ChunkFile` layer. Adding a new language needs no such treatment unless its
+grammar's scanner likewise holds mutable state at file scope.
+
 ## Files
 
 | File                    | Purpose                                                                        |

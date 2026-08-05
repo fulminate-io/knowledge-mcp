@@ -141,18 +141,49 @@
     <param name="dry_run">replace only; default TRUE (preview), false applies</param>
     <param name="snippet">source text (explain only)</param>
     <param name="repo">code graph name (defaults to active when one is loaded)</param>
-    <param name="package_prefixes">restrict the walk to repo-relative path prefixes</param>
-    <param name="include_tests">include _test files (default false; vendor/testdata/etc. always skipped)</param>
-    <param name="limit">cap on match results (default 100)</param>
+    <param name="package_prefixes">restrict the walk to repo-relative path prefixes, matched at PATH-SEGMENT boundaries ("a/b" admits a/b and a/b/**, never the sibling a/bc); a prefix may name a single file</param>
+    <param name="include_tests">include the LANGUAGE'S OWN test files (default false). A language with no unambiguous filename convention (Rust, C) registers no predicate and an explicit include_tests for it is a hard error naming the language, never a silent no-op</param>
+    <param name="lift_exclusions">walk the files discovery would otherwise decline (see the exclusions block)</param>
+    <param name="limit">bounds how many matches `match` RENDERS (default 100); count/replace NEVER cap the walk</param>
   </params>
 
   <safety op="replace">
-    `dry_run` defaults TRUE — preview unified diffs + blast-radius (files_touched,
-    matches_replaced), write nothing. Apply writes each file atomically (temp + rename).
-    Re-parse gate: a rewrite that no longer parses is REJECTED (rejected_files), never
-    written. Overlapping/nested matches in one file REFUSE that file whole (refused_files).
-    Single pass — no iterate-to-fixpoint; verbatim byte-range splice (no re-indentation).
+    `dry_run` defaults TRUE — preview unified diffs + blast-radius (files_matched,
+    files_changed, matches_replaced, matches_changed), write nothing. Apply writes each
+    file atomically (temp + rename). Matched is not changed: matched counts what the
+    pattern hit and spliced, changed counts what actually moved bytes, so an identity
+    template reports many matched and zero changed. Pre-edit parse baseline: a file whose
+    ORIGINAL source was already ungrammatical lands in preexisting_parse_failures
+    ({path, line, column}), never spliced — so rejected_files means only that YOUR edit
+    broke a file that parsed clean. Re-parse gate: a rewrite that no longer parses is
+    REJECTED (rejected_files), never written. Overlapping/nested matches in one file
+    REFUSE that file whole (refused_files). Single pass — no iterate-to-fixpoint;
+    verbatim byte-range splice (no re-indentation).
   </safety>
+
+  <exclusions note="what the walk declined, and why a zero is readable">
+    Discovery declines files by eight named rules before the walk sees them: unsupported
+    extension, lockfiles, .d.ts declarations, generated Go, vendored/third-party/generated
+    path components, files in no language ast parses, files over the 500KB size cap, and
+    pruned directory names. Two are discovery-path-dependent — the pruned-directory rule
+    fires only on the non-git fallback walk, and on that walk the path-component rule
+    reads zero because pruning pre-empts it — so a rule reading zero is NOT evidence it
+    never ran. The response is the authority, not any in-tree list: `stats.excluded_by_rule`
+    (exact counts), `stats.excluded_samples` (bounded name samples), `stats.excluded_truncated`
+    (sample list was capped) and `stats.discovery_path` (which path ran, `+lifted` when
+    exclusions were lifted). `files_skipped` splits by cause into `skipped_read`,
+    `skipped_parse_error` and `skipped_parse_limit`; `files_with_parse_errors` and
+    `matches_from_degraded_trees` disclose matches taken off a partially-parsed tree.
+  </exclusions>
+
+  <loudness note="calls that could never have matched say so">
+    An unknown where-tree `kind` is refused BEFORE the walk with a near-miss suggestion
+    from that language's node-kind vocabulary, rather than walking to a vacuous zero.
+    In a `patterns[]` alternation, a member that fails to compile is reported in
+    `pattern_errors` ({index, pattern, error}, omitted when empty, present on match /
+    count / replace) while the compiling members still run; the singular `pattern` form
+    still fails hard.
+  </loudness>
 
   <when-to-use>
     Counting "every place that does X structurally" · auditing anti-patterns at

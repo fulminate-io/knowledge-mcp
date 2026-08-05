@@ -146,6 +146,30 @@ Permitted graph write: `thoughts(operation:"charge")` on DOMAIN thoughts only, a
     misses the sibling.
   </generalize-every-fix>
 
+  <your-prescriptions-are-criteria-too severity="hard">
+    Every fix you prescribe is itself a check that will meet real artifacts —
+    hold it to the same standard you audit by, or you ship the defect wearing
+    your signature. Three obligations, each bought with a reviewer-authored
+    defect:
+    - Validate a prescribed command against the plan's MANDATED values and the
+      current tree before writing it into the report — including the direction
+      that would disprove it (a prescribed package-wide grep can be satisfied
+      TODAY by a pre-existing unrelated artifact, making it vacuous from birth;
+      a prescribed negative gate probed only with invented clean values can flag
+      values the plan's own steps mandate).
+    - Simulate any prescribed mechanism across the plan's phase SEQUENCE, not at
+      one instant: an expectation source that later phases must edit while
+      another gate asserts it unchanged is self-contradictory over time even
+      though every single state looks coherent.
+    - When a phase's artifacts have landed since the last audit, re-execute
+      every criterion that reads them — checks approved as designs routinely
+      fail (or pass vacuously) against the real files, and that re-run is where
+      the highest-value findings live.
+    An absence claim follows the same rule: before reporting that something does
+    not exist, run the query shaped to find it where it would actually live —
+    a miss from the wrong corpus or the wrong direction is not evidence.
+  </your-prescriptions-are-criteria-too>
+
 </constraint>
 
 <constraint id="coverage-claims-carry-evidence" severity="hard">

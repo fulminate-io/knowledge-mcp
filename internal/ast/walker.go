@@ -4,23 +4,46 @@
 //
 // matchTree(pat, target, src, caps) recursively compares a compiled
 // PatternTree against a target tree-sitter node, dispatching by case:
-// kind-equality, named-field children, single-node placeholder bind,
+// kind-equality, child-list alignment, single-node placeholder bind,
 // sequence-placeholder greedy bind, and wildcard. No tree-sitter queries
 // at runtime — every match decision is a Go-side AST walk.
+//
+// The child-list alignment compares ALL children, anonymous tokens included,
+// so operators, modifiers and declaration keywords constrain a match in both
+// directions. Two classes of child are exempt, and the two are dropped in
+// different places on purpose. A grammar's declared PURE-LAYOUT tokens
+// (LangConfig.LayoutTokens) — Go's intra-block newline terminator is the only
+// one the census found — are dropped from BOTH child lists by allChildren, so a
+// pattern constrains what the source SAYS and not how it was spelled across
+// lines. A grammar's declared COMMENT kinds (LangConfig.CommentKinds) are
+// skipped on the ordinary alignment path only: matchSiblings advances past a
+// target-side comment a comment-free pattern did not ask for and records its
+// source span so the splice can preserve it, while a SEQUENCE shadow still
+// consumes comments verbatim into its capture — which is what keeps a $$$ body
+// re-interpolating as valid source. The comment skip is a TARGET-side act only:
+// a comment written into a pattern is deliberate and is compared as an ordinary
+// node. Three records come out of a successful match: the named Captures, the
+// literal-token alignment, and the skipped-comment spans — all in alignment.go.
 //
 // Sequence-placeholder semantics:
 //
 //   - A pattern subtree shaped as "linear chain of single-named-child nodes
-//     ending at a substituted seq-placeholder identifier" is treated as a
-//     SEQ SHADOW at its parent level. The shadow consumes 0..N consecutive
-//     target siblings (greedy match with backtracking when followed by
-//     more pattern siblings).
+//     ending at a substituted seq-placeholder identifier" is a candidate SEQ
+//     SHADOW at its parent level. Whether the chain's top node is promoted to
+//     that shadow — so the placeholder consumes the node's TARGET SIBLINGS —
+//     or matched as an ordinary node so the sequence resolves among its own
+//     children is decided in seq_shadow.go, from the kind of the target sibling
+//     it faces and the grammar's field name for that child. The shadow consumes
+//     0..N consecutive target siblings (greedy match with backtracking when
+//     followed by more pattern siblings).
 //
 //   - The shadow's collected target siblings populate the seq capture's
 //     .text (verbatim source slice from start_byte of first matched
 //     sibling to end_byte of last matched sibling) and .children (per-
 //     sibling Capture views). Empty match (zero siblings) yields .text=""
-//     and .children=[].
+//     and .children=[]. Container delimiters are never in either: the
+//     container is matched as a node, so its parens or braces align against
+//     the pattern's own.
 //
 // Wrapper-stripping (Q3): matchTree starts at PatternTree.Root, which
 // compilePattern set to the smallest descendant fully covering the user's
@@ -30,27 +53,44 @@
 package ast
 
 import (
+	"slices"
+
 	sitter "github.com/smacker/go-tree-sitter"
 )
 
 // Captures is the per-match name → Capture binding accumulator. Sequence
 // captures populate Children + StartByte + EndByte; single captures leave
-// Children nil.
+// Children nil. aligns is the ordered literal-token alignment record for the
+// same match attempt and dropped holds the pattern spans its promotions threw
+// away — see alignment.go.
 type Captures struct {
-	byName map[string]Capture
+	byName   map[string]Capture
+	aligns   []TokenAlign
+	dropped  []byteRange
+	comments []byteRange
 }
 
 // newCaptures returns an empty Captures binding accumulator.
 func newCaptures() *Captures {
-	return &Captures{byName: make(map[string]Capture)}
+	return &Captures{
+		byName:   make(map[string]Capture),
+		aligns:   make([]TokenAlign, 0, alignInitialCap),
+		dropped:  make([]byteRange, 0, dropInitialCap),
+		comments: make([]byteRange, 0, commentInitialCap),
+	}
 }
 
 // reset clears all bindings so the Captures can be reused for a new
-// match attempt without allocating a new map.
+// match attempt without allocating a new map. Both pattern-side accumulators
+// are truncated rather than dropped: reset runs once per candidate node, and
+// either record leaked from a rejected candidate would corrupt the next match.
 func (c *Captures) reset() {
 	for k := range c.byName {
 		delete(c.byName, k)
 	}
+	c.aligns = c.aligns[:0]
+	c.dropped = c.dropped[:0]
+	c.comments = c.comments[:0]
 }
 
 // clearNodeMap removes all entries from a node map for reuse.
@@ -75,6 +115,15 @@ func (c *Captures) bindNode(name string, n *sitter.Node, src []byte) {
 // bindSeq records a sequence capture: name → Capture with Children
 // populated, Text spanning [first.StartByte, last.EndByte). Empty seq
 // (no siblings) records {Text: "", Children: []}.
+//
+// THE SEPARATOR RULE. A seq shadow consumes whole sibling spans, anonymous
+// tokens included — it has to, because the pattern siblings that follow it
+// align against the target's own anonymous tokens. So the commas between
+// parameters and the semicolons between statements arrive here. Text KEEPS
+// them: it is the verbatim source span, which is what makes a seq capture
+// re-interpolate as valid source. Children DROPS them: it carries semantic
+// siblings only, so a two-parameter capture reads as two parameters rather
+// than two parameters and a comma.
 func (c *Captures) bindSeq(name string, siblings []*sitter.Node, src []byte) {
 	if name == "" {
 		return
@@ -90,6 +139,9 @@ func (c *Captures) bindSeq(name string, siblings []*sitter.Node, src []byte) {
 		cap.Line = int(first.StartPoint().Row) + 1
 		cap.Text = string(src[first.StartByte():last.EndByte()])
 		for _, s := range siblings {
+			if !s.IsNamed() {
+				continue
+			}
 			cap.Children = append(cap.Children, nodeToCapture(s, src))
 		}
 		// Sequence captures don't carry a Kind — the children carry kinds.
@@ -161,14 +213,24 @@ func effectiveTargetNode(t *sitter.Node) *sitter.Node {
 //  1. If P's byte range hits a single-node placeholder, bind T (when not a
 //     wildcard) and return true — wildcards match anything.
 //  2. Otherwise P.Type() must equal T.Type().
-//  3. Iterate named children of P and T together with seq-shadow handling.
+//  3. When both are childless tokens, their source text must match.
+//  4. Otherwise iterate all children of P and T together with seq-shadow
+//     handling.
 //
-// inherent to the sibling-alignment logic.
-//
-//nolint:gocognit // four-case dispatch over a small grammar; complexity is
+//nolint:gocognit // four-case dispatch over a small grammar; the complexity is inherent to the sibling-alignment logic
 func matchNode(pt *PatternTree, p, t *sitter.Node, patSrc, src []byte, caps *Captures) bool {
 	pOrig := p
-	p = effectivePatternNode(p)
+	// The wrapper-strip is refused for a subtree that chains down to a
+	// sequence placeholder. Those chains are frequently zero-width — Python's
+	// block, Ruby's body_statement and Go's expression_statement each share
+	// their leaf's byte range exactly — so descending would collapse the very
+	// container the sequence has to resolve INSIDE, hand the placeholder a
+	// single node, and bind a whole multi-statement body as one element.
+	// matchChildren reaches the same leaf one level down, where the chain is a
+	// sibling position and seq_shadow.go can read the grammar's field name.
+	if _, hostsSeq := findSeqChain(pt, p); !hostsSeq {
+		p = effectivePatternNode(p)
+	}
 	if ph, ok := lookupPlaceholder(pt, p); ok {
 		switch ph.Kind {
 		case KindNode:
@@ -177,11 +239,11 @@ func matchNode(pt *PatternTree, p, t *sitter.Node, patSrc, src []byte, caps *Cap
 		case KindNodeWild:
 			return true
 		case KindSeq, KindSeqWild:
-			// Seq placeholders should be handled at the parent's child-
-			// iteration level. If we reach this case the pattern's outer
-			// shape is a bare seq placeholder, which we treat as a single
-			// node here (degenerate — bind the whole target as a single-
-			// element sequence).
+			// Sequence placeholders are handled at the parent's child-
+			// iteration level, so the only way to arrive here is a pattern
+			// whose entire outer shape is a bare seq placeholder. There are no
+			// siblings to consume at the root, so the target binds as a
+			// single-element sequence.
 			caps.bindSeq(ph.Name, []*sitter.Node{effectiveTargetNode(t)}, src)
 			return true
 		}
@@ -200,40 +262,119 @@ func matchNode(pt *PatternTree, p, t *sitter.Node, patSrc, src []byte, caps *Cap
 	if p.Type() != t.Type() {
 		return false
 	}
-	// Leaf nodes (no named children) carry meaning in their text — type
-	// names, keywords, literals. Compare verbatim. tree-sitter still walks
-	// punctuation and operator tokens as anonymous children of the parent,
-	// so leaf-text comparison only matters for structurally-meaningful
-	// leaves where the named child count is zero.
-	if p.NamedChildCount() == 0 && t.NamedChildCount() == 0 {
+	// TOKEN EQUALITY IS DECIDED HERE AND NOWHERE ELSE. A node with no
+	// children of ANY kind is a token, and two tokens match when their source
+	// text matches — that covers identifiers, type names, keywords and
+	// literals alike. The gate counts ALL children because that is what
+	// "leaf" means: a node holding only anonymous children is not a token, it
+	// is a node whose children the matcher compares one by one. A Java
+	// `modifiers` node of bare keywords and the same node carrying an
+	// annotation are then treated identically, instead of the first being
+	// text-compared and the second waved through.
+	if p.ChildCount() == 0 && t.ChildCount() == 0 {
 		if p.Content(patSrc) != t.Content(src) {
 			return false
 		}
+		caps.recordAlign(p, t)
+		return true
 	}
 	return matchChildren(pt, p, t, patSrc, src, caps)
 }
 
-// matchChildren walks the named children of p and t, handling seq-shadow
-// children with greedy backtracking when followed by more pattern
-// siblings.
+// matchChildren walks ALL children of p and t — anonymous tokens included —
+// handling seq-shadow children with greedy backtracking when followed by more
+// pattern siblings. Comparing anonymous tokens is what makes a pattern
+// constrain in both directions: an operator, modifier or declaration keyword
+// in the PATTERN excludes targets that lack it, and the same token in the
+// SOURCE excludes patterns that do not carry it.
+//
+// One exception is applied HERE: the grammar's declared pure-layout tokens,
+// dropped by allChildren from BOTH lists before alignment. Both sides matter
+// equally: a one-line pattern must reach a multi-line body, and a multi-line
+// pattern must reach a one-line body. Applying the drop in the single call both
+// sides go through is what makes the two lists provably comparable — a skip
+// applied on one side only would fix one direction and corrupt the other. The
+// OTHER exception, declared comment kinds, is NOT applied here: it is a
+// target-side-only skip that matchSiblings performs on its ordinary path, so a
+// sequence shadow still consumes comments verbatim from the raw target list.
 func matchChildren(pt *PatternTree, p, t *sitter.Node, patSrc, src []byte, caps *Captures) bool {
-	pChildren := namedChildren(p)
-	tChildren := namedChildren(t)
-	return matchSiblings(pt, pChildren, tChildren, patSrc, src, caps)
+	layout := pt.LangCfg.LayoutTokens
+	return matchSiblings(pt, p, allChildren(p, patSrc, layout), 0, allChildren(t, src, layout), patSrc, src, caps)
 }
 
-// matchSiblings aligns ordered named children of pattern and target.
-// Each iteration consumes one pattern child and zero-or-more target
-// children (the latter only for seq-shadow positions).
-func matchSiblings(pt *PatternTree, pChildren, tChildren []*sitter.Node, patSrc, src []byte, caps *Captures) bool {
+// matchSiblings aligns the ordered children of pattern and target. pChildren
+// is the not-yet-consumed tail of pParent's child list and pIdx is the index of
+// pChildren[0] among ALL of pParent's children — the coordinates a sequence
+// position needs to ask the grammar for its field name. Each iteration consumes
+// one pattern child and zero-or-more target children (the latter only for
+// seq-shadow positions).
+//
+// A promotable sequence position that fails to align falls back to the ordinary
+// node match below; the reverse fallback deliberately does not exist. Both
+// directions are argued in seq_shadow.go.
+func matchSiblings(
+	pt *PatternTree,
+	pParent *sitter.Node,
+	pChildren []*sitter.Node,
+	pIdx int,
+	tChildren []*sitter.Node,
+	patSrc, src []byte,
+	caps *Captures,
+) bool {
+	comments := pt.LangCfg.CommentKinds
 	if len(pChildren) == 0 {
-		return len(tChildren) == 0
+		// The pattern is exhausted. It still matches when every remaining target
+		// child is an ignorable comment — this is what admits a TRAILING comment
+		// inside a literal body. Verify before recording so a doomed tail leaks
+		// no span into a caps a later sibling might still be reusing.
+		for _, tc := range tChildren {
+			if len(comments) == 0 || !isIgnorableComment(tc, comments) {
+				return false
+			}
+		}
+		for _, tc := range tChildren {
+			caps.recordComment(tc)
+		}
+		return true
 	}
 	pHead := pChildren[0]
 	pRest := pChildren[1:]
 
-	if shadow, ok := findSeqShadow(pt, pHead); ok {
-		return matchSeqShadow(pt, shadow, pRest, tChildren, patSrc, src, caps)
+	var tHead *sitter.Node
+	if len(tChildren) > 0 {
+		tHead = tChildren[0]
+	}
+	// The seq-chain test runs FIRST and against the RAW target head: chain.promotes
+	// reads tHead's kind to decide promotion and matchSeqShadow consumes from the
+	// raw list, so the comment skip below must not have touched it yet. A sequence
+	// shadow that faces a leading comment therefore still spans it verbatim.
+	if chain, ok := findSeqChain(pt, pHead); ok && chain.promotes(pParent, pIdx, tHead) {
+		if matchSeqShadow(pt, chain.ph, pParent, pRest, pIdx+1, tChildren, patSrc, src, caps) {
+			// The promotion succeeded, so pHead's own tokens — everything in
+			// its span outside the placeholder leaf — were never compared
+			// against anything and earn no alignment entry. Record them, so the
+			// splice can tell a template token repeating one of them from a
+			// token the caller wrote. Recorded only on success: a try that
+			// fails here falls through to the ordinary-node reading below, and
+			// a span from an abandoned try would license a deletion.
+			caps.recordDropped(pHead, chain)
+			return true
+		}
+		if chain.depth == 0 {
+			// The pattern child IS the placeholder leaf — there is no
+			// ordinary-node reading of it to fall back to.
+			return false
+		}
+	}
+	// ORDINARY PATH ONLY, reached once the sequence branch has declined: advance
+	// past leading target-side comments a comment-free pattern did not ask for,
+	// recording each source span so the splice preserves it. A MEANINGFUL extra —
+	// a #region, a heredoc body — is not in CommentKinds and so is not skipped
+	// here; it still constrains the alignment, which is the whole point of the
+	// declared list over a blanket IsExtra predicate.
+	for len(comments) > 0 && len(tChildren) > 0 && isIgnorableComment(tChildren[0], comments) {
+		caps.recordComment(tChildren[0])
+		tChildren = tChildren[1:]
 	}
 	if len(tChildren) == 0 {
 		return false
@@ -241,107 +382,7 @@ func matchSiblings(pt *PatternTree, pChildren, tChildren []*sitter.Node, patSrc,
 	if !matchNode(pt, pHead, tChildren[0], patSrc, src, caps) {
 		return false
 	}
-	return matchSiblings(pt, pRest, tChildren[1:], patSrc, src, caps)
-}
-
-// matchSeqShadow greedy-matches 0..len(tChildren) target siblings to the
-// seq-shadow placeholder, then recurses on the rest of the pattern. Tries
-// the largest k first (greedy) and backs off until either the rest of the
-// pattern matches or k reaches -1 (no valid alignment).
-func matchSeqShadow(pt *PatternTree, ph Placeholder, pRest []*sitter.Node, tChildren []*sitter.Node, patSrc, src []byte, caps *Captures) bool {
-	// Greedy: try consuming as many target children as possible first,
-	// then back off. Must leave at least len(pRest) target children to
-	// satisfy the rest of the pattern (since each non-seq pattern child
-	// consumes at least one target child; if any of pRest is itself a
-	// seq-shadow it can consume zero, but the simple lower bound is
-	// "at most len(pRest) is reserved").
-	maxK := len(tChildren)
-	for k := maxK; k >= 0; k-- {
-		consumed := tChildren[:k]
-		// Snapshot caps in case we need to roll back the seq capture
-		// after a failed pRest match.
-		saved := saveBinding(caps, ph.Name)
-		caps.bindSeq(ph.Name, consumed, src)
-		if matchSiblings(pt, pRest, tChildren[k:], patSrc, src, caps) {
-			return true
-		}
-		restoreBinding(caps, ph.Name, saved)
-	}
-	return false
-}
-
-// bindingSnapshot records a Capture under a name plus a "did this binding
-// exist before the try" flag. Used by matchSeqShadow to roll back a
-// failed try without leaking the speculative seq capture.
-type bindingSnapshot struct {
-	cap   Capture
-	exist bool
-}
-
-// saveBinding snapshots a capture entry so a failed try can roll it back.
-func saveBinding(caps *Captures, name string) bindingSnapshot {
-	if caps == nil || name == "" {
-		return bindingSnapshot{}
-	}
-	prev, ok := caps.byName[name]
-	return bindingSnapshot{cap: prev, exist: ok}
-}
-
-// restoreBinding reverts the named entry to its pre-try value (or deletes
-// it when the pre-try value didn't exist).
-func restoreBinding(caps *Captures, name string, saved bindingSnapshot) {
-	if caps == nil || name == "" {
-		return
-	}
-	if !saved.exist {
-		delete(caps.byName, name)
-		return
-	}
-	caps.byName[name] = saved.cap
-}
-
-// seqShadowMaxDepth caps how far findSeqShadow descends through single-
-// named-child wrappers to find a seq-placeholder leaf. The cap exists to
-// prevent the heuristic from "shadowing" structural container nodes that
-// happen to chain to a seq placeholder at deeper levels — e.g.,
-// function_declaration's `parameters` child (parameter_list →
-// parameter_declaration → placeholder, depth 2) should NOT shadow at
-// function_declaration's level because parameter_list is structurally a
-// container of parameters, not a seq slot itself. Depth 1 covers the
-// "(parameter_declaration containing placeholder)" pattern at
-// parameter_list level (1 step from parameter_declaration to the leaf
-// placeholder identifier) and the "expression_statement containing
-// placeholder" inside a block (1 step). It explicitly does NOT cover the
-// 2-step descent from function_declaration's parameter_list child to the
-// placeholder — that would over-shadow.
-const seqShadowMaxDepth = 1
-
-// findSeqShadow returns the seq placeholder hosted by the subtree rooted
-// at p when the subtree is a short linear chain (≤ seqShadowMaxDepth
-// single-named-child wrappers) ending at a seq-placeholder identifier.
-// Otherwise returns ok=false and the caller treats p as a normal pattern
-// node.
-//
-// The shallow-chain test prevents over-shadowing: at function_declaration
-// level we iterate [name, parameters, body] — parameters chains through
-// parameter_list → parameter_declaration → placeholder (depth 2), which
-// is rejected here. At parameter_list level we iterate
-// [parameter_declaration] — depth 1, which IS recognized.
-func findSeqShadow(pt *PatternTree, p *sitter.Node) (Placeholder, bool) {
-	cur := p
-	for depth := 0; cur != nil && depth <= seqShadowMaxDepth; depth++ {
-		if ph, ok := lookupPlaceholder(pt, cur); ok {
-			if ph.Kind == KindSeq || ph.Kind == KindSeqWild {
-				return ph, true
-			}
-			return Placeholder{}, false
-		}
-		if cur.NamedChildCount() != 1 {
-			return Placeholder{}, false
-		}
-		cur = cur.NamedChild(0)
-	}
-	return Placeholder{}, false
+	return matchSiblings(pt, pParent, pRest, pIdx+1, tChildren[1:], patSrc, src, caps)
 }
 
 // lookupPlaceholder returns the Placeholder bound to p's byte range in pt.
@@ -364,22 +405,63 @@ func lookupPlaceholder(pt *PatternTree, p *sitter.Node) (Placeholder, bool) {
 	return ph, ok
 }
 
-// namedChildren returns n's named children as a slice. Anonymous
-// punctuation (parens, commas, braces) is dropped — structural matching
-// operates on named-child shape only.
-func namedChildren(n *sitter.Node) []*sitter.Node {
+// allChildren returns every child of n as a slice — named children AND the
+// anonymous tokens between them (parens, commas, braces, operators, modifier
+// and declaration keywords). The matcher compares them all, so an anonymous
+// token is as load-bearing as a named child.
+//
+// The exception is layout: a child matching one of the grammar's declared
+// LayoutTokens is dropped, because it records how the source was spelled
+// rather than what it says. src is the byte source n was parsed from — the
+// pattern's SubstitutedSource on the pattern side, the target file's bytes on
+// the target side. Almost every grammar declares no layout token at all and
+// pays one length check for the whole list.
+func allChildren(n *sitter.Node, src []byte, layout []string) []*sitter.Node {
 	if n == nil {
 		return nil
 	}
-	count := int(n.NamedChildCount())
+	count := int(n.ChildCount())
 	if count == 0 {
 		return nil
 	}
 	out := make([]*sitter.Node, 0, count)
 	for i := range count {
-		out = append(out, n.NamedChild(i))
+		c := n.Child(i)
+		if len(layout) > 0 && isLayoutToken(c, src, layout) {
+			continue
+		}
+		out = append(out, c)
 	}
 	return out
+}
+
+// isLayoutToken reports whether c is an anonymous token whose source text the
+// grammar declared as pure layout. Named nodes and interior nodes can never
+// qualify: layout is a property of a terminal the parse surfaced, and a node
+// with children carries whatever its children carry.
+func isLayoutToken(c *sitter.Node, src []byte, layout []string) bool {
+	if c == nil || c.IsNamed() || c.ChildCount() != 0 {
+		return false
+	}
+	return slices.Contains(layout, c.Content(src))
+}
+
+// isIgnorableComment reports whether c is one of the grammar's declared comment
+// kinds — the ordinary-path mirror of isLayoutToken, and the difference is the
+// point. isLayoutToken requires !c.IsNamed() because layout is a property of an
+// anonymous terminal; isIgnorableComment requires c.IsNamed() because every
+// comment kind in every one of the 21 grammars is a NAMED node, which is exactly
+// why LayoutTokens structurally cannot reach them. The kind is compared against
+// the DECLARED LIST, never the source text and NEVER c.IsExtra(): IsExtra is
+// true for meaningful extras too (heredoc bodies, preprocessor regions), and
+// skipping those would corrupt a match — the declared list is what separates a
+// comment from meaning. The guards are ordered cheapest-first so a non-comment
+// child pays only the length check and IsNamed() before the slices.Contains.
+func isIgnorableComment(c *sitter.Node, comments []string) bool {
+	if len(comments) == 0 || c == nil || !c.IsNamed() {
+		return false
+	}
+	return slices.Contains(comments, c.Type())
 }
 
 // nodeToCapture builds a Capture from a single tree-sitter node: text,

@@ -116,7 +116,7 @@ func TestCompile_NilSafePatternTreeClose(t *testing.T) {
 }
 
 func TestCompile_LangNotRegistered(t *testing.T) {
-	_, err := Compile(mustParse(t, "$X"), treesitter.Language("notalang"))
+	_, err := Compile(mustParse(t, "$X"), treesitter.Language("notalang"), "")
 	if err == nil {
 		t.Fatal("expected error for unregistered language")
 	}

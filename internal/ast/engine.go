@@ -11,20 +11,22 @@
 //     identifier (e.g. `$X` → `__META_AST_X`) chosen from cfg.Reserved.
 //     Sequence placeholders use a `SEQ_` infix; wildcards a `WILD_`/`SEQWILD_`
 //     infix plus a per-occurrence index so multiple wildcards never collide.
-//  2. Try each cfg.Wrappers entry in order. The substituted source is
-//     spliced between Prefix and Suffix and parsed via
-//     treesitter.Parser.Parse. The first wrapper that yields a tree without
-//     ERROR nodes wins.
-//  3. Walk the resulting tree to find the smallest node that fully covers
-//     the substituted-source byte range — that's the EffectiveRoot, the
-//     starting point the runtime walker uses against target nodes. Index
-//     every reserved-prefix identifier descendant by (start_byte, end_byte)
-//     so the walker can recognize placeholder positions during traversal.
+//  2. Try EVERY cfg.Wrappers entry. The substituted source is spliced
+//     between Prefix and Suffix and parsed via treesitter.Parser.Parse, and
+//     each wrapper whose parse carries no ERROR node and which HOSTS the
+//     fragment contributes a candidate variant. The union of the distinct
+//     candidates is what the walk matches — see engine_variants.go for the
+//     three hosting rules and the dedupe.
+//  3. Walk each surviving tree to find the node that hosts the substituted-
+//     source byte range — that's the EffectiveRoot, the starting point the
+//     runtime walker uses against target nodes. Index every reserved-prefix
+//     identifier descendant by (start_byte, end_byte) so the walker can
+//     recognize placeholder positions during traversal.
 //
 // Tree-sitter Close discipline: the parser
-// is closed via defer; the parsed Tree is owned by the returned PatternTree
-// and released via PatternTree.Close. Failed wrapper attempts close their
-// trees inline.
+// is closed via defer; each parsed Tree is owned by its PatternTree and
+// released via PatternTree.Close. Rejected and deduped-away wrapper attempts
+// close their trees inline.
 
 package ast
 
@@ -35,8 +37,6 @@ import (
 	"strings"
 
 	sitter "github.com/smacker/go-tree-sitter"
-
-	"github.com/fulminate-io/knowledge-mcp/internal/collector/treesitter"
 )
 
 // byteRange is a half-open [Start, End) range used to key placeholder
@@ -86,6 +86,11 @@ type PatternTree struct {
 	// downstream code (sub-pattern recursion in B.4) can reach the
 	// reserved prefix without re-resolving.
 	LangCfg LangConfig
+
+	// hasSeq is true when at least one placeholder is a sequence. The walker
+	// consults it before every chain probe, so a pattern with no $$$ pays
+	// nothing for the sequence machinery on its hot path.
+	hasSeq bool
 }
 
 // Close releases the underlying tree-sitter tree. Nil-safe.
@@ -100,64 +105,29 @@ func (pt *PatternTree) Close() {
 	pt.Root = nil
 }
 
-// errCompileNoWrapper is returned when no wrapper produces an ERROR-free
-// parse. The error message lists every wrapper attempted plus the ERROR-
-// node summary from the most-promising wrapper (the one that produced the
-// fewest ERROR descendants).
-var errCompileNoWrapper = errors.New("ast/engine: pattern did not parse under any context wrapper")
+// errCompileNoWrapper is returned when no wrapper yields a candidate. The
+// error message lists every wrapper attempted and, for each, the specific
+// reason it contributed none: a parse error carrying its ERROR-node summary, a
+// parse that did not host the fragment, or exclusion by a context pin.
+var errCompileNoWrapper = errors.New("ast/engine: pattern did not compile under any context wrapper")
 
-// compilePattern is the v2 pattern compiler. Substitutes placeholders, then
-// tries each wrapper until one parses without ERROR nodes; on success
-// returns a PatternTree the walker can match against target nodes. On
-// failure returns an error that names every wrapper attempted.
+// compilePattern compiles a pattern and returns its FIRST candidate — the
+// hosting wrapper earliest in cfg.Wrappers order. It is the single-tree view of
+// compilePatternVariants, kept for callers that reason about one tree; the
+// match and where-tree paths take the whole variant set. The discarded
+// candidates are closed here, so the returned PatternTree is the only tree the
+// caller owns.
 func compilePattern(ctx context.Context, pat Pattern, cfg LangConfig) (*PatternTree, error) {
-	if pat.Source == "" {
-		return nil, errParseEmpty
+	variants, narrowed, err := compilePatternVariants(ctx, pat, cfg, "")
+	if err != nil {
+		return nil, err
 	}
-	if len(cfg.Wrappers) == 0 {
-		return nil, fmt.Errorf("ast/engine: LangConfig for %q has no wrappers", cfg.Lang)
-	}
-
-	subst, placeholderRanges := substitutePlaceholders(pat, cfg)
-
-	parser := treesitter.NewParser()
-	defer parser.Close()
-
-	var (
-		bestErr      error
-		attempted    []string
-		errorSummary string
-	)
-	for _, w := range cfg.Wrappers {
-		attempted = append(attempted, w.Name)
-		full := w.Prefix + subst + w.Suffix
-		tree, err := parser.Parse(ctx, []byte(full), cfg.Lang)
-		if err != nil {
-			if bestErr == nil {
-				bestErr = err
-			}
-			continue
-		}
-		root := tree.RootNode()
-		if root == nil || root.HasError() {
-			if errorSummary == "" && root != nil {
-				errorSummary = root.String()
-			}
-			tree.Close()
-			continue
-		}
-		// Successful parse. Build the PatternTree.
-		pt, perr := buildPatternTree(tree, full, w, subst, placeholderRanges, cfg)
-		if perr != nil {
-			tree.Close()
-			return nil, perr
-		}
-		return pt, nil
-	}
-	if bestErr != nil {
-		return nil, fmt.Errorf("%w (tried %s; first parse error: %v)", errCompileNoWrapper, strings.Join(attempted, ","), bestErr)
-	}
-	return nil, fmt.Errorf("%w (tried %s; ERROR-node summary: %s)", errCompileNoWrapper, strings.Join(attempted, ","), errorSummary)
+	// The single-tree view keeps only the first candidate; both the other
+	// candidates and any narrowed member variant are trees this caller must
+	// release, or they leak.
+	closeVariants(narrowed)
+	closeVariants(variants[1:])
+	return variants[0].Tree, nil
 }
 
 // substitution describes one placeholder replacement applied to pat.Source.
@@ -211,6 +181,15 @@ func substitutePlaceholders(pat Pattern, cfg LangConfig) (string, []substitution
 
 		var replacement string
 		switch ph.Kind {
+		case KindLiteralDollar:
+			// The `$$` escape: emit one literal `$` for the placeholder's
+			// byte range and bind NO capture. It appends no substitution, so
+			// the literal never reaches indexPlaceholders / the walker (whose
+			// Kind-switches assume only capture kinds). `continue` skips the
+			// post-switch subs append.
+			b.WriteByte('$')
+			cursor = ph.OffsetEnd
+			continue
 		case KindNode:
 			occ := nameOccur[ph.Name]
 			nameOccur[ph.Name] = occ + 1
@@ -240,36 +219,42 @@ func substitutePlaceholders(pat Pattern, cfg LangConfig) (string, []substitution
 	return b.String(), subs
 }
 
-// buildPatternTree walks the parsed tree, locates the EffectiveRoot (the
-// smallest node fully covering the substituted user-source range within
-// SubstitutedSource), and indexes every reserved-prefix identifier by
-// (start_byte, end_byte) so the runtime walker can recognize placeholder
-// positions in the PatternTree.
+// buildPatternTree indexes every reserved-prefix identifier in the parsed tree
+// by (start_byte, end_byte) so the runtime walker can recognize placeholder
+// positions, and assembles the PatternTree around the EffectiveRoot.
+//
+// The effective root and its depth are supplied by the caller rather than
+// derived here: hosting rule 2 roots a pattern at an ABSORBED child, which is
+// one level below the smallest node covering the fragment, so the covering node
+// is not always the answer.
 func buildPatternTree(
 	tree *sitter.Tree,
 	full string,
 	w ContextWrapper,
-	subst string,
 	subs []substitution,
 	cfg LangConfig,
+	effective *sitter.Node,
+	depth int,
 ) (*PatternTree, error) {
 	root := tree.RootNode()
 	if root == nil {
 		return nil, fmt.Errorf("ast/engine: parsed tree has nil root")
 	}
-
-	prefixLen := uint32(len(w.Prefix))
-	userStart := prefixLen
-	userEnd := prefixLen + uint32(len(subst))
-
-	effective, depth := smallestNodeCovering(root, userStart, userEnd, 0)
 	if effective == nil {
-		// Should not happen — the wrapper would not have parsed cleanly.
-		effective = root
-		depth = 0
+		return nil, fmt.Errorf("ast/engine: buildPatternTree called with no effective root")
 	}
 
+	prefixLen := uint32(len(w.Prefix))
+
 	placeholders := indexPlaceholders(root, []byte(full), subs, cfg)
+
+	hasSeq := false
+	for _, ph := range placeholders {
+		if ph.Kind == KindSeq || ph.Kind == KindSeqWild {
+			hasSeq = true
+			break
+		}
+	}
 
 	return &PatternTree{
 		Tree:              tree,
@@ -279,6 +264,7 @@ func buildPatternTree(
 		SubstitutedSource: full,
 		PrefixLen:         int(prefixLen),
 		LangCfg:           cfg,
+		hasSeq:            hasSeq,
 	}, nil
 }
 

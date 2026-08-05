@@ -89,8 +89,9 @@ func TestParse_ErrorCases(t *testing.T) {
 		{name: "whitespace-only", source: "   ", wantErr: errParseEmpty},
 		{name: "bare $", source: "$", wantErr: errParserBareDollar},
 		{name: "bare $ followed by punct", source: "$.foo", wantErr: errParserBareDollar},
-		{name: "double dollar alone", source: "$$", wantErr: errParserDoubleDollar},
-		{name: "double dollar followed by punct", source: "$$.foo", wantErr: errParserDoubleDollar},
+		// `$$` is no longer an error — it is the literal-`$` escape
+		// (KindLiteralDollar). Its positive coverage lives in
+		// TestDSL_LiteralDollarEscape.
 		{name: "triple dollar alone", source: "$$$", wantErr: errParserTripleDollar},
 		{name: "triple dollar followed by punct", source: "$$$.foo", wantErr: errParserTripleDollar},
 		{name: "quad dollar (triple followed by $)", source: "$$$$", wantErr: errParserTripleDollar},

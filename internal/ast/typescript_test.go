@@ -174,21 +174,18 @@ const c = bare;
 }
 
 func TestTypeScript_FunctionDeclaration(t *testing.T) {
-	// All function_declaration forms structurally share the same named-child
-	// shape (identifier, formal_parameters, statement_block); the `async`
-	// keyword is an ANONYMOUS child and is dropped by namedChildren during
-	// the walk. The pattern `function $NAME(...) { ... }` therefore matches
-	// every function_declaration, async or not. This is consistent with the
-	// engine's "structural match on named-children only" design — keyword-
-	// modifier discrimination would require an extra constraint layer the
-	// v2 engine deliberately doesn't carry.
+	// `async` is an anonymous token of function_declaration, and the matcher
+	// compares anonymous tokens in both directions: a pattern that does not
+	// carry `async` must not match a declaration that does. The two async
+	// declarations below are the discriminated-against set; syncFn is the
+	// only structural peer of the pattern.
 	target := `async function fetchOne(id) { return id; }
 async function fetchTwo(a, b) { return a + b; }
 function syncFn(x) { return x; }
 `
 	matches := runTSWalker(t, "function $NAME($$$ARGS) { $$$BODY }", target)
-	if len(matches) != 3 {
-		t.Fatalf("matches = %d, want 3 (every function_declaration shares the named-child shape)", len(matches))
+	if len(matches) != 1 {
+		t.Fatalf("matches = %d, want 1 (an async-free pattern must not match the two async declarations)", len(matches))
 	}
 	gotNames := map[string]bool{}
 	for _, m := range matches {
@@ -196,18 +193,20 @@ function syncFn(x) { return x; }
 			gotNames[cap.Text] = true
 		}
 	}
-	for _, want := range []string{"fetchOne", "fetchTwo", "syncFn"} {
-		if !gotNames[want] {
-			t.Errorf("NAME missing %q (got %v)", want, gotNames)
-		}
+	if !gotNames["syncFn"] {
+		t.Errorf("NAME = %v, want exactly syncFn", gotNames)
 	}
 }
 
 func TestTypeScript_TypeAlias(t *testing.T) {
+	// The trailing semicolon is load-bearing: it is an anonymous child of
+	// type_alias_declaration, so a pattern that omits it does not match a
+	// declaration that carries one. Both targets below are terminated, so the
+	// pattern is too.
 	target := `type Id = string;
 type User = { name: string; id: number };
 `
-	matches := runTSWalker(t, "type $NAME = $TYPE", target)
+	matches := runTSWalker(t, "type $NAME = $TYPE;", target)
 	if len(matches) != 2 {
 		t.Fatalf("matches = %d, want 2", len(matches))
 	}

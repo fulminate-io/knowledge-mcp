@@ -46,12 +46,11 @@ func runRustWalker(t *testing.T, pattern, target string) []walkerMatch {
 }
 
 func TestRust_FunctionDeclaration(t *testing.T) {
-	// Pattern omits the explicit `-> $RET` slot because Rust's parameter
-	// chain is depth-1 (parameters → type_identifier=SEQ), which combined
-	// with seqShadowMaxDepth=1 in walker.go causes the seq-shadow to fire
-	// at function_item level rather than parameters level. Bare
-	// `fn $NAME($$$ARGS) { $$$BODY }` works because the no-return-type
-	// shape doesn't expose the over-greedy consumption.
+	// The pattern omits the `-> $RET` slot, so it matches the NO-RETURN-TYPE
+	// shape and only that one: the `->` token the target carries and the
+	// pattern does not excludes `add` and `one` the same way any other
+	// unmatched anonymous token would. Spelling the return type instead —
+	// `fn $NAME($$$ARGS) -> $RET { $$$BODY }` — matches exactly the other two.
 	target := `fn add(a: i32, b: i32) -> i32 { a + b }
 fn empty() {}
 fn one(x: u8) -> u8 { x }

@@ -30,7 +30,7 @@ const helpOverview = `# Knowledge Graph — Tool Reference (first-class tools + 
 | mutate   | Create, update, link knowledge nodes                                 |
 | delete   | Remove nodes by ID or prune by age                                   |
 | manage   | Server ops: status, clear_llm_failures, branches, prune, rebuild_cache, rebuild_segments |
-| ast      | Structural code search: tree-sitter pattern DSL, 31 languages        |
+| ast      | Structural code search: tree-sitter pattern DSL, most indexed langs  |
 
 ## Sync tool (requires sync license scope)
 

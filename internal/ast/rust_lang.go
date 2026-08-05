@@ -29,11 +29,21 @@ var rustLangConfig = LangConfig{
 	Lang:     treesitter.LangRust,
 	Reserved: "__META_AST_",
 	Wrappers: []ContextWrapper{
-		{Name: "decl", Prefix: "", Suffix: "\n"},
-		{Name: "stmt", Prefix: "fn __meta_wrapper__() {\n", Suffix: "\n}\n"},
-		{Name: "expr", Prefix: "fn __meta_wrapper__() {\n    let _ = ", Suffix: ";\n}\n"},
+		{Name: "decl", Context: contextDecl, Prefix: "", Suffix: "\n"},
+		{Name: "stmt", Context: contextStmt, Prefix: "fn __meta_wrapper__() {\n", Suffix: "\n}\n"},
+		{Name: "expr", Context: contextExpr, Prefix: "fn __meta_wrapper__() {\n    let _ = ", Suffix: ";\n}\n"},
 	},
-	IdentRule: isRustIdent,
+	CommentKinds: []string{"block_comment", "line_comment"},
+	IdentRule:    isRustIdent,
+	// IsTestFile is NIL for Rust, and that is a decision rather than an
+	// omission. Rust marks unit tests with an in-FILE `#[cfg(test)] mod tests`
+	// block, so the test code sits inside ordinary source files and no filename
+	// can separate it — measured on rust-tokio, 34 files carry `mod tests` and
+	// they are the same .rs files that carry the implementation. Cargo's tests/
+	// directory does hold integration tests, but a predicate covering only that
+	// would report "this walk excluded Rust's tests" while leaving every unit
+	// test in place, which is a worse claim than declining to make one. A caller
+	// who asks for include_tests on Rust gets a hard error naming the language.
 }
 
 // isRustIdent reports whether s is a valid ASCII Rust identifier (the

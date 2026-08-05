@@ -312,6 +312,12 @@ type fakeSegmentSource struct {
 	// publishErr, when set, fails PublishManifest with it (the publishPending
 	// retry probe). publishCalls still counts the attempt.
 	publishErr error
+	// verifyPublishCompleteness models the agent manifest/publish HEAD-verify: when
+	// true, PublishManifest 409s (manifestIncompleteError) on any digest whose id the
+	// server store does not currently hold — exactly as gcsSegmentSource surfaces the
+	// agent's genuine-absence 409. Off by default so the existing publish tests (which
+	// never stage an absent referenced blob) keep their unconditional publish.
+	verifyPublishCompleteness bool
 }
 
 var _ segmentSource = (*fakeSegmentSource)(nil)
@@ -404,6 +410,11 @@ func (s *fakeSegmentSource) PublishManifest(format string, digests []segmentDige
 	ids := make([]searchengine.SegmentID, len(digests))
 	for i, d := range digests {
 		ids[i] = d.ID
+	}
+	if s.verifyPublishCompleteness {
+		if missing := s.server.missingOf(s.target, ids); len(missing) > 0 {
+			return 0, &manifestIncompleteError{Missing: missing}
+		}
 	}
 	return s.server.publish(s.target, s.writerID, format, ids), nil
 }

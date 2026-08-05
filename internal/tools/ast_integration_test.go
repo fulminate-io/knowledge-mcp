@@ -240,6 +240,10 @@ func TestAstIntegration_EmptyResultHint(t *testing.T) {
 	require.NoError(t, json.Unmarshal([]byte(body), &out))
 	assert.Empty(t, out.Matches, "pattern must produce zero matches")
 	assert.NotEmpty(t, out.Hint, "Hint field must be populated when matches is empty")
-	assert.Contains(t, out.Hint, "broader scope")
-	assert.Contains(t, out.Hint, "simplify")
+	// The hint names causes a caller can act on. It used to open by blaming
+	// the scope, which is the least likely cause of a zero and the one the
+	// result cannot help diagnose; it now points at what the pattern compiled
+	// to and at the pin that selects a different variant.
+	assert.Contains(t, out.Hint, "compiled")
+	assert.Contains(t, out.Hint, "context")
 }

@@ -101,10 +101,10 @@ const dbl = (y) => y * 2;
 }
 
 func TestJavaScript_AwaitExpression(t *testing.T) {
-	// `await $X` matches await expressions only — not bare calls. Use this
-	// instead of trying to discriminate `async function` from `function`,
-	// since the `async` keyword is an anonymous child of function_declaration
-	// and the engine only matches on named-child structure.
+	// `await $X` matches await expressions only — not the bare call on the
+	// third line. This is a kind-discrimination case (await_expression vs
+	// call_expression); async-keyword discrimination is asserted separately
+	// in TestAnonTokenDiscrimination.
 	target := `async function fetch() {
   const a = await get(1);
   const b = await get(2);

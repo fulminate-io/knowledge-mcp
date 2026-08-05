@@ -4,8 +4,10 @@ package tools
 
 const helpAst = `# ast — Structural code search-and-replace via tree-sitter
 
-Pattern-match (and optionally REWRITE) against parsed syntax trees in any of
-the 31 indexed languages. Use ast when the question is about CODE SHAPE rather
+Pattern-match (and optionally REWRITE) against parsed syntax trees in most
+indexed languages — a deny set (config/markup grammars, plus PHP for a
+placeholder-sigil collision) is refused by match/count/replace and surfaced at
+runtime by list_node_kinds/explain. Use ast when the question is about CODE SHAPE rather
 than text — "every defer that calls Close()", "all goroutines spawned inside
 loops", "function decls returning error", "calls to sync.Once.Do with a closure
 body". Tree-sitter sees through whitespace, comments, and incidental token
@@ -33,9 +35,15 @@ through one bulk query(file_symbols) call rather than N+1.
                      preview unified diffs without touching disk. See the
                      '## operation:replace' section below.
   explain          — Parse a single snippet and emit the indented node-kind
-                     tree. Pure debug aid; does not touch the code graph.
+                     tree, each node marked NAMED or ANONYMOUS — a token with
+                     no named wrapper above it is the per-token replace-hazard
+                     tell. Pure debug aid; does not touch the code graph. For a
+                     deny-listed language it still parses but annotates
+                     match/replace as unsupported.
   list_node_kinds  — Enumerate the tree-sitter node-kind vocabulary for a
-                     language. Use when authoring a 'kind' leaf.
+                     language. Use when authoring a 'kind' leaf. For a
+                     deny-listed language it answers but annotates match/replace
+                     as unsupported.
 
 ## Placeholder DSL — four forms
 
@@ -44,9 +52,13 @@ through one bulk query(file_symbols) call rather than N+1.
   $$$X   — capture a sequence of zero-or-more siblings, bind to X
   $$$_   — wildcard sequence (no capture)
 
+  $$     — escape: a literal '$' in the PATTERN (not a placeholder). Lets a
+           pattern match a JS/TS template-literal interpolation like ${expr} —
+           write $${expr}. Mirrors the replacement-template $$ escape.
+
 Identifier rule: ASCII letters, digits, underscore; must not start with a
-digit. Bare '$', '$$', and '$$$' (without a following identifier or '_')
-are parser errors.
+digit. Bare '$' and '$$$' (without a following identifier or '_') are parser
+errors; '$$' is the literal-'$' escape above, not an error.
 
 ## Capture references in where-tree leaves
 
@@ -160,18 +172,30 @@ its captures into a 'replacement' template written in the SAME $X grammar:
 Safety model (the replacement is never a blind text edit):
 
   - dry_run defaults TRUE. A dry run returns unified diffs + a blast-radius
-    summary (files_touched, matches_replaced) and writes NOTHING. Set
-    dry_run:false to apply.
+    summary (files_matched, files_changed, matches_replaced, matches_changed)
+    and writes NOTHING. Set dry_run:false to apply.
   - Apply mode writes each file atomically (temp + rename).
+  - Matched is not changed: files_matched / matches_replaced count what the
+    pattern hit and spliced, files_changed / matches_changed count what
+    actually moved bytes. An identity template matches everything and changes
+    nothing, and only the second of each pair can say so.
+  - Pre-edit parse baseline: a file whose ORIGINAL source already carried a
+    grammar error is reported in preexisting_parse_failures as
+    {path, line, column}, never spliced and never written. It is deliberately
+    NOT in rejected_files — nothing can be concluded about an edit to a file
+    that did not parse before the edit.
   - Re-parse gate: after splicing, the rewritten file is re-parsed. If it no
     longer parses cleanly the file is REJECTED (listed in rejected_files) and
-    never written — a broken edit cannot land.
+    never written — a broken edit cannot land. rejected_files therefore means
+    only that YOUR edit broke a file which parsed clean before it.
   - Overlap refuse-and-report: if two matches in one file have intersecting or
     nested byte ranges, that whole file is REFUSED (listed in refused_files)
     and left untouched — the tool does not guess which edit wins.
   - Single pass: each match is replaced once; there is no iterate-to-fixpoint.
-  - The replacement is a verbatim textual splice of the matched byte range
-    (no re-indentation of multi-line replacements).
+  - Source-anchored splice: bytes inside the matched span the template did NOT
+    rewrite are copied from the file's own source, so inter-token whitespace,
+    line structure and indentation survive and an identity template is a
+    byte-identical no-op.
 
 Worked example — preview rewriting every defer Close() to safeClose():
   ast({ "operation": "replace", "language": "go",
@@ -264,14 +288,37 @@ annotations.
   dry_run          — replace only; default TRUE (preview diffs, no write); false applies
   snippet          — source text (explain only, required)
   repo             — code graph name (defaults to active when one is loaded)
-  package_prefixes — restrict the walk to repo-relative path prefixes
-  include_tests    — include _test.go-style files (default false)
-  limit            — cap on RawMatch results (default 100)
+  package_prefixes — restrict the walk to repo-relative path prefixes, matched
+                     at PATH-SEGMENT boundaries ("a/b" admits a/b and anything
+                     under a/b/, never the sibling a/bc); a prefix may name a
+                     single file
+  include_tests    — include the language's own test files (default false)
+  lift_exclusions  — walk the files discovery would otherwise decline
+  limit            — response-size bound on what match RENDERS (default 100);
+                     count and replace traverse the full scope and ignore it
 
-Note on scope filters: parser.DiscoverFiles hard-skips testdata/, vendor/,
-node_modules/, .git/, dist/, build/, etc. regardless of include_tests. The
-flag governs only whether _test.go-style files in normal package directories
-are walked.
+Note on include_tests: the filter consults the LANGUAGE'S OWN test-file
+convention, so it means the same thing in Ruby as in Go rather than meaning
+_test.go everywhere. A language with no unambiguous filename convention
+(Rust marks tests with an in-file "mod tests"; C has none) registers no
+predicate, and passing include_tests explicitly for one of those is a HARD
+ERROR naming the language and listing the ones that do support it — better
+than accepting a blast-radius control that would silently do nothing.
+Omitting the flag is never an error.
+
+Note on walk exclusions: discovery declines files by eight named rules before
+the walk sees them — unsupported extension, lockfiles, .d.ts declarations,
+generated Go, vendored/third-party/generated path components, files in no
+language ast parses, files over the 500KB size cap, and pruned directory
+names. Two are discovery-path-dependent: the pruned-directory rule fires only
+on the non-git fallback walk, and on that walk the path-component rule reads
+zero because pruning pre-empts it. A rule reading zero is therefore not
+evidence it never ran, and stats.discovery_path names the path that executed.
+The authority for what a run actually excluded is the response's own report —
+stats.excluded_by_rule (exact counts), stats.excluded_samples (bounded name
+samples) and stats.excluded_truncated (per-rule, sample list was capped) —
+not any in-tree list. include_tests does not lift these rules;
+lift_exclusions does.
 
 ## When ast beats search/grep
 
@@ -290,13 +337,39 @@ edge_types: ["calls"]) is still the right tool — that's edge data, not shape.
 
 ## Output
 
-  match → { matches: [...], stats: {files_scanned, files_skipped, duration_ms},
-            hint: "..." (only when matches is empty) }
-  count → { total, by_file, files_scanned, files_skipped, duration_ms }
-  replace → { applied, dry_run, files_touched, matches_replaced,
-              refused_files, rejected_files, diffs (relPath → unified diff) }
+  match → { matches: [...], stats: {...}, hint: "..." (only when matches is
+            empty) }
+  count → { total, by_file, stats fields rendered inline }
+  replace → { applied, dry_run, files_matched, files_changed,
+              matches_replaced, matches_changed, refused_files,
+              rejected_files, preexisting_parse_failures,
+              diffs (relPath → unified diff) }
   explain → indented node-kind tree (text)
   list_node_kinds → array of node-kind strings
+
+The walk stats on match and count carry more than a scanned/skipped pair:
+files_skipped is split by cause into skipped_read (unreadable),
+skipped_parse_error (the parser returned an error) and skipped_parse_limit
+(a parser bound was exceeded), because one conflated counter cannot tell a
+permissions problem from a grammar one. files_with_parse_errors and
+matches_from_degraded_trees exist because tree-sitter answers a file it
+cannot fully parse with a PARTIAL tree rather than an error, so a match can
+come off a damaged tree and you should be able to see that it did. The
+exclusion report (excluded_by_rule, excluded_samples, excluded_truncated,
+discovery_path) rides along on both ops.
+
+pattern_errors appears on match, count and replace whenever a patterns[]
+alternation member could not be used: {index, pattern, error} per failed
+member, carrying the index YOU wrote, so a partial result reads as partial
+rather than as a silently narrower one. It is omitted entirely when every
+member was usable, and the singular 'pattern' form still fails hard on a
+bad pattern.
+
+Compile-time loudness: an unknown where-tree 'kind' is refused BEFORE the
+walk with a near-miss suggestion from that language's own node-kind
+vocabulary (the vocabulary list_node_kinds prints); an anonymous token is
+told it is one rather than offered a spelling. A where-tree that could never
+have matched says so instead of answering a confident zero.
 
 When matches is empty, the hint suggests broadening scope, simplifying the
 pattern, or dropping to operation:"count" to confirm the walk produced no

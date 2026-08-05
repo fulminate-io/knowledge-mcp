@@ -1,0 +1,41 @@
+lang=bash repo=bash-ohmyzsh prefix=lib/ pattern="echo $X" shape=single-line SKIP no file spliced, so nothing round-tripped and the cell measured nothing; spliced=0/5 spliced_matches=0 preexisting=5 (every candidate was refused for overlapping matches, rejected as broken by the edit, or already ungrammatical before it; the underlying grammar gaps are tracked separately)
+lang=bash repo=bash-ohmyzsh prefix=lib/ pattern="function $N() {\n  $$$B\n}" shape=multi-line matches=29 OK spliced=3/12 spliced_matches=4 refused=1 preexisting=8
+lang=c repo=c-redis prefix=src/ pattern="if ($C) { $$$B; }" shape=multi-line matches=5709 OK spliced=37/119 spliced_matches=183 refused=76 preexisting=6
+lang=c repo=c-redis prefix=src/ pattern="return $X;" shape=single-line matches=5924 OK spliced=100/135 spliced_matches=3207 preexisting=35
+lang=cpp repo=cpp-json prefix=tests/src/ pattern="if ($C) { $$$B; }" shape=multi-line matches=131 OK spliced=1/29 spliced_matches=1 preexisting=28
+lang=cpp repo=cpp-json prefix=tests/src/ pattern="return $X;" shape=single-line matches=371 OK spliced=7/35 spliced_matches=8 preexisting=28
+lang=csharp repo=cs-roslyn prefix=src/Compilers/Core/Portable/Syntax/ pattern="$A = $B;" shape=multi-line matches=7 OK
+lang=csharp repo=cs-roslyn prefix=src/Compilers/Core/Portable/Syntax/ pattern="$A = $B;" shape=single-line matches=488 OK spliced=62/63 spliced_matches=471 preexisting=1
+lang=elixir repo=ex-phoenix prefix=lib/ pattern="$F($X)" shape=single-line matches=2830 OK spliced=39/74 spliced_matches=588 refused=35
+lang=elixir repo=ex-phoenix prefix=lib/ pattern="def $N($$$P) do\n  $$$B\nend" shape=multi-line matches=432 OK spliced=65/66 spliced_matches=417 refused=1
+lang=elm repo=elm-compiler prefix=reactor/src/ pattern="$F $X" shape=single-line matches=254 OK spliced=3/7 spliced_matches=18 refused=4
+lang=elm repo=elm-compiler prefix=reactor/src/ pattern="$N $P = $E" shape=multi-line matches=33 OK
+lang=go repo=go-kubernetes prefix=pkg/scheduler/ pattern="$F($X)" shape=single-line matches=14695 OK spliced=88/193 spliced_matches=1389 refused=105
+lang=go repo=go-kubernetes prefix=pkg/scheduler/ pattern="if $C { $$$B }" shape=multi-line matches=3519 OK spliced=103/175 spliced_matches=919 refused=72
+lang=groovy repo=groovy-gradle prefix=subprojects/core/src/integTest/groovy/org/gradle/api/tasks/ pattern="$F($X)" shape=single-line matches=3254 OK spliced=7/91 spliced_matches=19 refused=40 preexisting=44
+lang=groovy repo=groovy-gradle prefix=subprojects/core/src/integTest/groovy/org/gradle/api/tasks/ pattern="if ($C) { $$$B }" shape=multi-line SKIP no file spliced, so nothing round-tripped and the cell measured nothing; spliced=0/11 spliced_matches=0 preexisting=11 (every candidate was refused for overlapping matches, rejected as broken by the edit, or already ungrammatical before it; the underlying grammar gaps are tracked separately)
+lang=java repo=java-spring prefix=core/spring-boot/src/main/java/org/springframework/boot/context/ pattern="$F($X);" shape=single-line matches=43 OK
+lang=java repo=java-spring prefix=core/spring-boot/src/main/java/org/springframework/boot/context/ pattern="if ($C) { $$$B; }" shape=multi-line matches=641 OK spliced=72/101 spliced_matches=272 refused=28 preexisting=1
+lang=javascript repo=js-react prefix=packages/react/src/ pattern="$F($X)" shape=single-line matches=2871 OK spliced=4/36 spliced_matches=49 refused=25 preexisting=7
+lang=javascript repo=js-react prefix=packages/react/src/ pattern="if ($C) { $$$B }" shape=multi-line matches=176 OK spliced=12/31 spliced_matches=36 refused=11 preexisting=8
+lang=kotlin repo=kt-okhttp prefix=okhttp/src/commonJvmAndroid/kotlin/ pattern="$F($X)" shape=single-line matches=1961 OK spliced=59/104 spliced_matches=571 refused=36 preexisting=9
+lang=kotlin repo=kt-okhttp prefix=okhttp/src/commonJvmAndroid/kotlin/ pattern="if ($C) { $$$B }" shape=multi-line matches=614 OK spliced=42/75 spliced_matches=185 refused=27 preexisting=6
+lang=lua repo=lua-openresty prefix=t/lib/ pattern="$F($X)" shape=single-line matches=108 OK spliced=1/4 spliced_matches=18 refused=2 preexisting=1
+lang=lua repo=lua-openresty prefix=t/lib/ pattern="if $C then\n$$$B\nend" shape=multi-line matches=69 OK spliced=1/4 spliced_matches=5 refused=3
+lang=ocaml repo=ocaml-dune prefix=src/dune_lang/ pattern="$F $X" shape=single-line matches=2375 OK spliced=18/74 spliced_matches=92 refused=49 preexisting=7
+lang=ocaml repo=ocaml-dune prefix=src/dune_lang/ pattern="let $N = $E" shape=multi-line matches=369 OK spliced=46/66 spliced_matches=133 refused=20
+lang=python repo=py-django prefix=django/core/ pattern="$F($X)" shape=single-line matches=1946 OK spliced=38/89 spliced_matches=272 refused=51
+lang=python repo=py-django prefix=django/core/ pattern="def $N():\n    $$$B" shape=multi-line matches=20 OK spliced=11/12 spliced_matches=17 refused=1
+lang=ruby repo=rb-rails prefix=activesupport/lib/ pattern="$F($X)" shape=single-line matches=697 OK spliced=118/132 spliced_matches=491 refused=14
+lang=ruby repo=rb-rails prefix=activesupport/lib/ pattern="def $N\n  $$$B\nend" shape=multi-line matches=2080 OK
+lang=rust repo=rust-tokio prefix=tokio/src/ pattern="$F($X)" shape=single-line matches=5541 OK spliced=97/294 spliced_matches=621 refused=197
+lang=rust repo=rust-tokio prefix=tokio/src/ pattern="if $C { $$$B }" shape=multi-line matches=659 OK spliced=118/151 spliced_matches=310 refused=33
+lang=scala repo=scala-akka prefix=akka-actor/src/main/ pattern="$F($X)" shape=single-line matches=4732 OK spliced=60/173 spliced_matches=425 refused=113
+lang=scala repo=scala-akka prefix=akka-actor/src/main/ pattern="if ($C) { $$$B }" shape=multi-line matches=198 OK spliced=55/67 spliced_matches=137 refused=10 preexisting=2
+lang=swift repo=swift-vapor prefix=Sources/ pattern="$F($X)" shape=single-line matches=2269 OK spliced=121/203 spliced_matches=788 refused=76 preexisting=6
+lang=swift repo=swift-vapor prefix=Sources/ pattern="if $C { $$$B }" shape=multi-line matches=128 OK spliced=43/54 spliced_matches=85 refused=4 preexisting=7
+lang=tsx repo=js-react prefix=fixtures/flight-parcel/src/ pattern="$F($X)" shape=single-line matches=33 OK spliced=2/4 spliced_matches=3 refused=2
+lang=tsx repo=js-react prefix=fixtures/flight-parcel/src/ pattern="if ($C) { $$$B }" shape=multi-line matches=5 OK
+lang=typescript repo=ts-vscode prefix=src/vs/base/common/ pattern="$F($X)" shape=single-line matches=3061 OK spliced=77/124 spliced_matches=789 refused=47
+lang=typescript repo=ts-vscode prefix=src/vs/base/common/ pattern="interface $I { $N: $T; }" shape=multi-line matches=10 OK
+lang=typescript repo=ts-vscode prefix=src/vs/base/common/ pattern="interface $I { $N?: $T; }" shape=multi-line matches=2 OK

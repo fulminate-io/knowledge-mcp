@@ -47,13 +47,13 @@ func B() {
 	})
 
 	pat, _ := Parse("defer $X.Close()")
-	cp, err := Compile(pat, treesitter.LangGo)
+	cp, err := Compile(pat, treesitter.LangGo, "")
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
 	}
 	defer cp.Close()
 
-	raws, walk, err := Match(context.Background(), dir, treesitter.LangGo, cp, nil, Scope{Limit: 100})
+	raws, walk, err := Match(context.Background(), dir, treesitter.LangGo, cp, nil, Scope{})
 	if err != nil {
 		t.Fatalf("Match: %v", err)
 	}
@@ -76,13 +76,13 @@ func D() string { return "no" }
 	})
 
 	pat, _ := Parse("func $NAME($$$ARGS) error { return $ERR }")
-	cp, err := Compile(pat, treesitter.LangGo)
+	cp, err := Compile(pat, treesitter.LangGo, "")
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
 	}
 	defer cp.Close()
 
-	raws, _, err := Match(context.Background(), dir, treesitter.LangGo, cp, nil, Scope{Limit: 100})
+	raws, _, err := Match(context.Background(), dir, treesitter.LangGo, cp, nil, Scope{})
 	if err != nil {
 		t.Fatalf("Match: %v", err)
 	}
@@ -114,7 +114,7 @@ func _private() error { return nil }
 	})
 
 	pat, _ := Parse("func $NAME() error { return $ERR }")
-	cp, err := Compile(pat, treesitter.LangGo)
+	cp, err := Compile(pat, treesitter.LangGo, "")
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
 	}
@@ -123,7 +123,7 @@ func _private() error { return nil }
 	// Where-tree: not matches X starting with _.
 	where, _ := ParseWhere([]byte(`{"not": {"matches": {"of": "NAME", "regex": "^_"}}}`))
 
-	raws, _, err := Match(context.Background(), dir, treesitter.LangGo, cp, where, Scope{Limit: 100})
+	raws, _, err := Match(context.Background(), dir, treesitter.LangGo, cp, where, Scope{})
 	if err != nil {
 		t.Fatalf("Match: %v", err)
 	}
@@ -146,14 +146,14 @@ func F2() { y.Close() }
 	})
 
 	pat, _ := Parse("$X.Close()")
-	cp, err := Compile(pat, treesitter.LangGo)
+	cp, err := Compile(pat, treesitter.LangGo, "")
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
 	}
 	defer cp.Close()
 
 	raws, _, err := Match(context.Background(), dir, treesitter.LangGo, cp, nil,
-		Scope{PackagePrefixes: []string{"a/"}, Limit: 100})
+		Scope{PackagePrefixes: []string{"a/"}})
 	if err != nil {
 		t.Fatalf("Match: %v", err)
 	}
@@ -176,14 +176,14 @@ func TestF(_ *T) { y.Close() }
 	})
 
 	pat, _ := Parse("$X.Close()")
-	cp, err := Compile(pat, treesitter.LangGo)
+	cp, err := Compile(pat, treesitter.LangGo, "")
 	if err != nil {
 		t.Fatalf("Compile: %v", err)
 	}
 	defer cp.Close()
 
 	// IncludeTests=false (default): only main.go counts.
-	raws, _, err := Match(context.Background(), dir, treesitter.LangGo, cp, nil, Scope{Limit: 100})
+	raws, _, err := Match(context.Background(), dir, treesitter.LangGo, cp, nil, Scope{})
 	if err != nil {
 		t.Fatalf("Match: %v", err)
 	}
@@ -192,7 +192,7 @@ func TestF(_ *T) { y.Close() }
 	}
 
 	// IncludeTests=true: both files.
-	raws2, _, err := Match(context.Background(), dir, treesitter.LangGo, cp, nil, Scope{IncludeTests: true, Limit: 100})
+	raws2, _, err := Match(context.Background(), dir, treesitter.LangGo, cp, nil, Scope{IncludeTests: true})
 	if err != nil {
 		t.Fatalf("Match: %v", err)
 	}
@@ -208,12 +208,12 @@ func F() { x.Close() }
 `,
 	})
 	pat, _ := Parse("$X.Close()")
-	cp, _ := Compile(pat, treesitter.LangGo)
+	cp, _ := Compile(pat, treesitter.LangGo, "")
 	defer cp.Close()
 
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	_, _, err := Match(ctx, dir, treesitter.LangGo, cp, nil, Scope{Limit: 100})
+	_, _, err := Match(ctx, dir, treesitter.LangGo, cp, nil, Scope{})
 	if err == nil {
 		t.Error("expected ctx.Err() propagation")
 	}

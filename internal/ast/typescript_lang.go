@@ -11,14 +11,27 @@
 // are intentionally avoided because `$` is also the placeholder marker in
 // the user-facing DSL).
 //
-// Wrapper order (declaration → statement → expression). Declaration is
-// tried first because TS module-level forms (function declarations,
-// classes, interfaces, type aliases, imports) parse cleanly as bare top-
-// level fragments. Statement wraps inside a function so patterns like
-// `for ($X of $Y) { $$$BODY }` parse as a `for_in_statement`. Expression
-// wraps as a const assignment so bare expressions like
-// `($$$ARGS) => $BODY` (arrow function expression) parse as an
-// `arrow_function`.
+// Wrapper order (declaration → statement → expression → member).
+// Declaration is listed first because TS module-level forms (function
+// declarations, classes, interfaces, type aliases, imports) parse cleanly
+// as bare top-level fragments. Statement wraps inside a function so
+// patterns like `for ($X of $Y) { $$$BODY }` parse as a
+// `for_in_statement`. Expression wraps as a const assignment so bare
+// expressions like `($$$ARGS) => $BODY` (arrow function expression) parse
+// as an `arrow_function`. Member wraps in a class body, which is the only
+// context that accepts class-only spellings such as
+// `private readonly $N: $T;` — without it no TS class member is
+// expressible at all.
+//
+// The order no longer decides which wrapper a pattern compiles under —
+// compilation unions every wrapper that HOSTS the pattern — but it does
+// decide candidate order, and member is listed last so the primary stamp
+// on every pre-existing pattern stays where it was.
+//
+// Class members reach the compiler's trailing-separator absorption rule:
+// tree-sitter-typescript keeps a member's `;` in the class_body list
+// rather than inside the member node, so the hosting root ends one token
+// short of what the caller wrote.
 
 package ast
 
@@ -31,11 +44,14 @@ var tsLangConfig = LangConfig{
 	Lang:     treesitter.LangTypeScript,
 	Reserved: "__META_AST_",
 	Wrappers: []ContextWrapper{
-		{Name: "decl", Prefix: "", Suffix: "\n"},
-		{Name: "stmt", Prefix: "function __metaWrapper__() {\n", Suffix: "\n}\n"},
-		{Name: "expr", Prefix: "const __metaValue__ = ", Suffix: ";\n"},
+		{Name: "decl", Context: contextDecl, Prefix: "", Suffix: "\n"},
+		{Name: "stmt", Context: contextStmt, Prefix: "function __metaWrapper__() {\n", Suffix: "\n}\n"},
+		{Name: "expr", Context: contextExpr, Prefix: "const __metaValue__ = ", Suffix: ";\n"},
+		{Name: "member", Context: contextMember, Prefix: "class __MetaWrapper__ {\n", Suffix: "\n}\n"},
 	},
-	IdentRule: isJSIdent,
+	CommentKinds: []string{"comment"},
+	IdentRule:    isJSIdent,
+	IsTestFile:   isJSTestFile,
 }
 
 // tsxLangConfig is the registered LangConfig for the JSX-capable TypeScript
@@ -50,11 +66,14 @@ var tsxLangConfig = LangConfig{
 	Lang:     treesitter.LangTSX,
 	Reserved: "__META_AST_",
 	Wrappers: []ContextWrapper{
-		{Name: "decl", Prefix: "", Suffix: "\n"},
-		{Name: "stmt", Prefix: "function __metaWrapper__() {\n", Suffix: "\n}\n"},
-		{Name: "expr", Prefix: "const __metaValue__ = ", Suffix: ";\n"},
+		{Name: "decl", Context: contextDecl, Prefix: "", Suffix: "\n"},
+		{Name: "stmt", Context: contextStmt, Prefix: "function __metaWrapper__() {\n", Suffix: "\n}\n"},
+		{Name: "expr", Context: contextExpr, Prefix: "const __metaValue__ = ", Suffix: ";\n"},
+		{Name: "member", Context: contextMember, Prefix: "class __MetaWrapper__ {\n", Suffix: "\n}\n"},
 	},
-	IdentRule: isJSIdent,
+	CommentKinds: []string{"comment"},
+	IdentRule:    isJSIdent,
+	IsTestFile:   isJSTestFile,
 }
 
 // isJSIdent reports whether s is a valid ASCII JavaScript / TypeScript

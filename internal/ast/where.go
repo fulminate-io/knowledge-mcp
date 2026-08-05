@@ -144,12 +144,13 @@ type SubPatternLeaf struct {
 // match's bindings; parent points at the surrounding evaluation (nil for
 // the outermost). cache is the per-WORKER sub-pattern compile cache (owned
 // by the one match worker that built this scope); it is shared across the
-// scope chain within that worker.
+// scope chain within that worker. Its value is the sub-pattern's full variant
+// set, because a sub-pattern compiles to the same union as an outer pattern.
 type evalScope struct {
 	captures *Captures
 	parent   *evalScope
 	depth    int
-	cache    map[string]*PatternTree
+	cache    map[string][]patternVariant
 	cacheMu  *sync.Mutex
 	lang     treesitter.Language
 	src      []byte
@@ -161,7 +162,7 @@ type evalScope struct {
 // newOuterScope builds the outermost evalScope. cache + cacheMu are owned
 // by a single match worker (one per worker goroutine); the worker passes
 // them in and closes the cache at its exit.
-func newOuterScope(lang treesitter.Language, cache map[string]*PatternTree, cacheMu *sync.Mutex) *evalScope {
+func newOuterScope(lang treesitter.Language, cache map[string][]patternVariant, cacheMu *sync.Mutex) *evalScope {
 	return &evalScope{
 		captures:   newCaptures(),
 		cache:      cache,
