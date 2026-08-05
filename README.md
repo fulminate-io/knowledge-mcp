@@ -106,9 +106,9 @@ CLI on `$PATH`, then falls back to `ANTHROPIC_API_KEY`,
 
 > [!WARNING]
 > **First-time indexing of a large repo can quickly use up a Claude or
-> Codex subscription's session quota.** The initial pass summarizes
-> every node — for a big repo that is thousands of LLM calls — and when
-> the auto-detected provider is your logged-in `claude` or `codex` CLI,
+> Codex subscription's session quota if one of them is your configured summarizer.** 
+> The initial pass summarizes every node — for a big repo that is thousands 
+> of LLM calls — and when the provider is your logged-in `claude` or `codex` CLI,
 > every one of them draws on your subscription. Take caution on a large
 > first index, or point the summarizer at an API provider for it: add a
 > `[summarizer]` section to `~/.knowledge/config` with `provider =
