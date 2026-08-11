@@ -1,0 +1,11 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.fulminate-io/knowledge-mcp",
+  "description": "Persistent memory graph for coding agents: hypotheses, evidence, and decisions survive sessions.",
+  "repository": {
+    "url": "https://github.com/fulminate-io/knowledge-mcp",
+    "source": "github"
+  },
+  "version": "0.6.4",
+  "websiteUrl": "https://fulminate.io/docs"
+}
