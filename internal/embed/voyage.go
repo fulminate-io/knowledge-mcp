@@ -26,9 +26,11 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/llm"
@@ -65,8 +67,28 @@ func NewVoyageBinaryEmbedder(apiKey string) BinaryEmbedder {
 // Compile-time assertion: *voyageEmbedder satisfies BinaryEmbedder.
 var _ BinaryEmbedder = (*voyageEmbedder)(nil)
 
-// embedBatchSize is the max texts per Voyage API call.
-const embedBatchSize = 128
+// Voyage enforces two independent caps per embeddings call: a max item count,
+// and a max TOTAL token count across the batch, counted by its own tokenizer
+// after per-item truncation. Exceeding the total fails the whole call with
+// TOO_MANY_TOKENS_IN_BATCH, so packing by item count alone lets a batch of
+// large texts fail every text in it. Packs are therefore also bounded by an
+// estimated token budget. The estimate is deliberately conservative (few
+// characters per token): estimator error can only shrink a pack, never
+// overfill one.
+const (
+	// embedBatchSize is the max texts per Voyage API call.
+	embedBatchSize = 128
+	// batchTokenBudget bounds the estimated token total per call; the real
+	// cap is 120k, and the gap is headroom for estimator error.
+	batchTokenBudget = 100_000
+	// charsPerToken is the conservative divisor for the token estimate.
+	charsPerToken = 3
+)
+
+// estimateTokens conservatively estimates the Voyage token count of one text.
+func estimateTokens(text string) int {
+	return len(text)/charsPerToken + 1
+}
 
 type voyageEmbedRequest struct {
 	Input      []string `json:"input"`
@@ -94,25 +116,71 @@ func (e *voyageEmbedder) EmbedBinary(ctx context.Context, text string) ([]byte, 
 	return results[0], nil
 }
 
-// EmbedBinaryBatch generates binary embeddings for multiple texts in one API call.
-// Handles batching internally if len(texts) > embedBatchSize.
+// EmbedBinaryBatch generates binary embeddings for multiple texts, splitting
+// them into API calls that respect both of Voyage's per-call caps: item count
+// and total batch tokens. A text whose own estimate exceeds the budget is sent
+// alone — Voyage truncates each item to its context limit before counting, so
+// a single text cannot overflow the batch cap. Results preserve input order.
 func (e *voyageEmbedder) EmbedBinaryBatch(ctx context.Context, texts []string) ([][]byte, error) {
 	if len(texts) == 0 {
 		return nil, nil
 	}
 
 	var allResults [][]byte
-	for i := 0; i < len(texts); i += embedBatchSize {
-		end := min(i+embedBatchSize, len(texts))
-		batch := texts[i:end]
+	batchNo := 0
+	start := 0
+	for start < len(texts) {
+		end := start + 1
+		budget := estimateTokens(texts[start])
+		for end < len(texts) && end-start < embedBatchSize {
+			t := estimateTokens(texts[end])
+			if budget+t > batchTokenBudget {
+				break
+			}
+			budget += t
+			end++
+		}
 
-		results, err := e.callVoyageBatch(ctx, batch)
+		results, err := e.embedPackBisecting(ctx, texts[start:end])
 		if err != nil {
-			return nil, fmt.Errorf("batch %d: %w", i/embedBatchSize, err)
+			return nil, fmt.Errorf("batch %d: %w", batchNo, err)
 		}
 		allResults = append(allResults, results...)
+		start = end
+		batchNo++
 	}
 	return allResults, nil
+}
+
+// embedPackBisecting posts one pack and, when Voyage rejects it for total
+// batch tokens anyway (the estimator undercounted), splits the pack in half
+// and retries each side rather than failing every text in it. The recursion
+// terminates because a single text cannot overflow the batch cap (per-item
+// truncation happens before the count); any other error propagates unchanged.
+func (e *voyageEmbedder) embedPackBisecting(ctx context.Context, texts []string) ([][]byte, error) {
+	results, err := e.callVoyageBatch(ctx, texts)
+	if err == nil || len(texts) < 2 || !isBatchTokenOverflow(err) {
+		return results, err
+	}
+
+	mid := len(texts) / 2
+	left, err := e.embedPackBisecting(ctx, texts[:mid])
+	if err != nil {
+		return nil, err
+	}
+	right, err := e.embedPackBisecting(ctx, texts[mid:])
+	if err != nil {
+		return nil, err
+	}
+	return append(left, right...), nil
+}
+
+// isBatchTokenOverflow recognizes Voyage's whole-batch token-cap rejection,
+// the one 400 whose correct handling is splitting the batch, not failing it.
+func isBatchTokenOverflow(err error) bool {
+	var llmErr *llm.LLMError
+	return errors.As(err, &llmErr) && llmErr.Cause != nil &&
+		strings.Contains(llmErr.Cause.Error(), "TOO_MANY_TOKENS_IN_BATCH")
 }
 
 // callVoyageBatch posts one batch of texts to the Voyage embeddings API.
