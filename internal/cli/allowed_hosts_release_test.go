@@ -17,14 +17,19 @@ func TestCloudEndpoint_Release(t *testing.T) {
 }
 
 // TestAllowedAuthHosts_Release asserts the production AuthKit allowlist.
-// Exactly one host: auth.fulminate.io. No staging, no localhost, no
-// arbitrary entries — discovery refuses every other host.
+// Exactly the two Fulminate-controlled WorkOS custom domains:
+// signin.fulminate.io (the authorization server prod publishes — its
+// absence made every v0.6.3 binary refuse prod login) and
+// auth.fulminate.io (the WorkOS custom API domain). No staging, no
+// localhost, no arbitrary entries — discovery refuses every other host.
 func TestAllowedAuthHosts_Release(t *testing.T) {
 	got := AllowedAuthHosts()
-	if len(got) != 1 {
-		t.Fatalf("release AllowedAuthHosts size = %d, want 1: %v", len(got), got)
+	if len(got) != 2 {
+		t.Fatalf("release AllowedAuthHosts size = %d, want 2: %v", len(got), got)
 	}
-	if _, ok := got["auth.fulminate.io"]; !ok {
-		t.Errorf("release AllowedAuthHosts missing auth.fulminate.io: %v", got)
+	for _, host := range []string{"signin.fulminate.io", "auth.fulminate.io"} {
+		if _, ok := got[host]; !ok {
+			t.Errorf("release AllowedAuthHosts missing %s: %v", host, got)
+		}
 	}
 }

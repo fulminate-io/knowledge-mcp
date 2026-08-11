@@ -15,8 +15,15 @@ const CloudEndpoint = "https://fulminate.io"
 // hosts the CLI will trust as authorization servers. Discovered via
 // RFC 9728 protected-resource metadata at CloudEndpoint; refused if
 // the discovered host is not in this map. Production tenant only.
+// Both entries are Fulminate-controlled WorkOS custom domains:
+// signin.fulminate.io is the AuthKit domain prod actually publishes as
+// its authorization server (token issuer); auth.fulminate.io is the
+// WorkOS custom API domain, kept in case WorkOS metadata switches to
+// it. Pinning only auth.fulminate.io made every v0.6.3 release binary
+// refuse prod login outright — caught live on launch day.
 var allowedAuthHosts = map[string]struct{}{
-	"auth.fulminate.io": {},
+	"signin.fulminate.io": {},
+	"auth.fulminate.io":   {},
 }
 
 // AllowedAuthHosts returns a copy of the AuthKit allowlist so callers
