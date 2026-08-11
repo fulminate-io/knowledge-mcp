@@ -3,80 +3,75 @@
 package hivemonitor
 
 import (
+	"bytes"
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
-	"runtime"
-	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
 
-// injectProcessEnv wires the GOOS-appropriate env seam so ProcessEnvValue
-// returns env for pid, host-independently: the darwin arm via a synthetic
-// `ps eww` fixture, the linux arm via a temp procRoot/<pid>/environ file.
-func injectProcessEnv(t *testing.T, pid int, env map[string]string) {
-	t.Helper()
-	switch runtime.GOOS {
-	case "darwin":
-		origExec := execRunner
-		t.Cleanup(func() { execRunner = origExec })
-		var b []byte
-		b = append(b, []byte("  PID   TT  STAT      TIME COMMAND\n")...)
-		b = append(b, []byte(strconv.Itoa(pid)+"   ??  Ss     0:01.00 /bin/claude")...)
-		for k, v := range env {
-			b = append(b, []byte(" "+k+"="+v)...)
-		}
-		b = append(b, '\n')
-		execRunner = func(_ context.Context, _ string, _ ...string) ([]byte, error) { return b, nil }
-	default: // linux + others read /proc
-		root := t.TempDir()
-		origRoot := procRoot
-		t.Cleanup(func() { procRoot = origRoot })
-		procRoot = root
-		pidDir := filepath.Join(root, strconv.Itoa(pid))
-		if err := os.MkdirAll(pidDir, 0o750); err != nil {
-			t.Fatal(err)
-		}
-		var environ []byte
-		for k, v := range env {
-			environ = append(environ, []byte(k+"="+v+"\x00")...)
-		}
-		if err := os.WriteFile(filepath.Join(pidDir, "environ"), environ, 0o600); err != nil {
-			t.Fatal(err)
-		}
-	}
-}
+// The cwd every fixture in this file binds against, and its project-dir
+// encoding spelled out independently of the encoder under test.
+const (
+	testCwd            = "/Users/jonathan/code/knowledge"
+	testEncodedProject = "-Users-jonathan-code-knowledge"
+)
 
-// TestResolveTranscript_ClaudeEnvToFile verifies the CLAUDE env→file resolution:
-// given a temp HOME with ~/.claude/projects/<encoded-cwd>/<sid>.jsonl on disk
-// and a fake process-env reader returning CLAUDE_CODE_SESSION_ID, the resolver
-// returns the EXACT path. It fails when either the env var or the file is absent.
-func TestResolveTranscript_ClaudeEnvToFile(t *testing.T) {
+// stubHome points the resolver's home seam at a temp dir for the test's
+// duration, returning it.
+func stubHome(t *testing.T) string {
+	t.Helper()
 	home := t.TempDir()
 	origHome := homeDir
 	t.Cleanup(func() { homeDir = origHome })
 	homeDir = func() (string, error) { return home, nil }
+	return home
+}
 
-	const (
-		cwd = "/Users/jonathan/code/knowledge"
-		sid = "50fc2d24-aaaa-bbbb-cccc-ddddeeeeffff"
-		pid = 31337
-	)
-	// On-disk transcript at the deterministic path.
-	projDir := filepath.Join(home, ".claude", "projects", "-Users-jonathan-code-knowledge")
-	if err := os.MkdirAll(projDir, 0o750); err != nil {
+// stubNoOpenRollout makes the deterministic codex PID→open-rollout probe find
+// nothing, so a test never shells out to the real lsof.
+func stubNoOpenRollout(t *testing.T) {
+	t.Helper()
+	origExec := execRunner
+	t.Cleanup(func() { execRunner = origExec })
+	execRunner = func(context.Context, string, ...string) ([]byte, error) { return nil, nil }
+}
+
+// writeClaudeTranscript writes <home>/.claude/projects/<encoded-cwd>/<sid>.jsonl
+// with one conversation line, stamps its mtime, and returns the path.
+func writeClaudeTranscript(t *testing.T, home, sid string, mtime time.Time) string {
+	t.Helper()
+	dir := filepath.Join(home, ".claude", "projects", testEncodedProject)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		t.Fatal(err)
 	}
-	wantPath := filepath.Join(projDir, sid+".jsonl")
-	if err := os.WriteFile(wantPath, []byte(`{"type":"user"}`+"\n"), 0o600); err != nil {
+	path := filepath.Join(dir, sid+".jsonl")
+	if err := os.WriteFile(path, []byte(`{"type":"user"}`+"\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.Chtimes(path, mtime, mtime); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
 
-	snap := SessionSnapshot{ID: "s1", Cwd: cwd, PID: pid, Comm: "claude"}
+// TestResolveTranscript_ClaudeFileScanIgnoresComm pins the identity contract: a
+// peer whose command name is a rewritten process title naming neither CLI still
+// resolves, because the binding comes from the transcript store on disk and the
+// harness session id is the file's stem. No process env is consulted.
+func TestResolveTranscript_ClaudeFileScanIgnoresComm(t *testing.T) {
+	home := stubHome(t)
+	stubNoOpenRollout(t)
 
-	// Happy path: env present + file present → exact path.
-	injectProcessEnv(t, pid, map[string]string{"CLAUDE_CODE_SESSION_ID": sid})
+	const sid = "50fc2d24-aaaa-bbbb-cccc-ddddeeeeffff"
+	wantPath := writeClaudeTranscript(t, home, sid, time.Now())
+
+	// A rewritten process title: the command name names neither claude nor codex.
+	snap := SessionSnapshot{ID: "s1", Cwd: testCwd, PID: 31337, Comm: "2.1.220"}
+
 	h, err := ResolveTranscript(context.Background(), snap)
 	if err != nil {
 		t.Fatalf("ResolveTranscript: %v", err)
@@ -84,20 +79,146 @@ func TestResolveTranscript_ClaudeEnvToFile(t *testing.T) {
 	if !h.Resolved() || h.Path != wantPath {
 		t.Fatalf("resolved path = %q (resolved=%v), want %q", h.Path, h.Resolved(), wantPath)
 	}
+	if h.HarnessSessionID != sid {
+		t.Errorf("HarnessSessionID = %q, want the filename stem %q", h.HarnessSessionID, sid)
+	}
 	if h.Format != FormatClaude {
 		t.Errorf("format = %q, want claude", h.Format)
 	}
 
-	// FAILS when env absent: no CLAUDE_CODE_SESSION_ID → unresolved.
-	injectProcessEnv(t, pid, map[string]string{"PATH": "/usr/bin"})
-	if h, _ := ResolveTranscript(context.Background(), snap); h.Resolved() {
-		t.Fatalf("env absent must yield unresolved handle, got %q", h.Path)
+	// The literal command name resolves identically — comm is a hint, not a gate.
+	named := SessionSnapshot{ID: "s2", Cwd: testCwd, PID: 31337, Comm: "claude"}
+	if h, err := ResolveTranscript(context.Background(), named); err != nil || h.Path != wantPath {
+		t.Fatalf("comm %q resolved %q (err %v), want %q", named.Comm, h.Path, err, wantPath)
+	}
+}
+
+// TestResolveTranscript_ClaudeNoProjectDir verifies the unresolved contract: a
+// missing project dir and an empty one both yield a zero handle and a NIL error,
+// never a failure — the monitor treats unresolved as "skip this tick". The
+// known-positive control is the final leg: the same cwd resolves once a
+// transcript exists, so the zeros above measure absence rather than a dead scan.
+func TestResolveTranscript_ClaudeNoProjectDir(t *testing.T) {
+	home := stubHome(t)
+	stubNoOpenRollout(t)
+
+	snap := SessionSnapshot{ID: "s1", Cwd: testCwd, PID: 31337, Comm: "2.1.220"}
+
+	// No project dir at all.
+	h, err := ResolveTranscript(context.Background(), snap)
+	if err != nil {
+		t.Fatalf("missing project dir must be a nil error, got %v", err)
+	}
+	if h.Resolved() {
+		t.Fatalf("missing project dir must be unresolved, got %q", h.Path)
 	}
 
-	// FAILS when file absent: env present but transcript not on disk → unresolved.
-	injectProcessEnv(t, pid, map[string]string{"CLAUDE_CODE_SESSION_ID": "no-such-session-id"})
-	if h, _ := ResolveTranscript(context.Background(), snap); h.Resolved() {
-		t.Fatalf("file absent must yield unresolved handle, got %q", h.Path)
+	// Project dir present but empty.
+	dir := filepath.Join(home, ".claude", "projects", testEncodedProject)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
+		t.Fatal(err)
+	}
+	h, err = ResolveTranscript(context.Background(), snap)
+	if err != nil {
+		t.Fatalf("empty project dir must be a nil error, got %v", err)
+	}
+	if h.Resolved() {
+		t.Fatalf("empty project dir must be unresolved, got %q", h.Path)
+	}
+
+	// KNOWN POSITIVE: the same snapshot resolves once a transcript lands, proving
+	// the unresolved results above are absence and not a scan pointed at nothing.
+	wantPath := writeClaudeTranscript(t, home, "now-there-is-one", time.Now())
+	if h, err := ResolveTranscript(context.Background(), snap); err != nil || h.Path != wantPath {
+		t.Fatalf("after writing a transcript: resolved %q (err %v), want %q", h.Path, err, wantPath)
+	}
+}
+
+// captureWarnings redirects the default logger into a buffer for the test's
+// duration so the resolver's diagnostic warn can be asserted.
+func captureWarnings(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	orig := slog.Default()
+	t.Cleanup(func() { slog.SetDefault(orig) })
+	slog.SetDefault(slog.New(slog.NewTextHandler(&buf, &slog.HandlerOptions{Level: slog.LevelWarn})))
+	return &buf
+}
+
+// TestResolveTranscript_ClaudeNewestWins verifies that among several session
+// transcripts for one cwd — the normal state of a project dir, which accumulates
+// every past session — the newest by mtime is bound, since the live session is
+// the one appended each turn, and that the best-effort choice is warn-logged
+// naming every candidate and the chosen one. A single candidate is an unambiguous
+// binding and must NOT warn, which is what makes the warn assertion meaningful.
+func TestResolveTranscript_ClaudeNewestWins(t *testing.T) {
+	home := stubHome(t)
+	stubNoOpenRollout(t)
+	logs := captureWarnings(t)
+
+	now := time.Now()
+	oldest := writeClaudeTranscript(t, home, "sess-oldest", now.Add(-2*time.Hour))
+
+	// One candidate: unambiguous, no warn.
+	if h, err := ResolveTranscript(context.Background(), SessionSnapshot{ID: "s0", Cwd: testCwd, PID: 31337, Comm: "2.1.220"}); err != nil || h.Path != oldest {
+		t.Fatalf("single candidate resolved %q (err %v), want %q", h.Path, err, oldest)
+	}
+	if logs.Len() != 0 {
+		t.Fatalf("single candidate must not warn, logged: %s", logs.String())
+	}
+
+	older := writeClaudeTranscript(t, home, "sess-older", now.Add(-1*time.Hour))
+	newest := writeClaudeTranscript(t, home, "sess-newest", now)
+
+	snap := SessionSnapshot{ID: "s1", Cwd: testCwd, PID: 31337, Comm: "2.1.220"}
+	h, err := ResolveTranscript(context.Background(), snap)
+	if err != nil {
+		t.Fatalf("ResolveTranscript: %v", err)
+	}
+	if h.Path != newest {
+		t.Fatalf("resolved %q, want newest-by-mtime %q (not %q / %q)", h.Path, newest, older, oldest)
+	}
+	if h.HarnessSessionID != "sess-newest" {
+		t.Errorf("HarnessSessionID = %q, want sess-newest", h.HarnessSessionID)
+	}
+
+	// The warn names every candidate and the chosen one.
+	logged := logs.String()
+	if !strings.Contains(logged, "multiple claude transcripts") {
+		t.Fatalf("expected a multiple-candidate warn, logged: %s", logged)
+	}
+	for _, p := range []string{oldest, older, newest} {
+		if !strings.Contains(logged, p) {
+			t.Errorf("warn omits candidate %q; logged: %s", p, logged)
+		}
+	}
+	if !strings.Contains(logged, "chosen="+newest) {
+		t.Errorf("warn omits chosen=%q; logged: %s", newest, logged)
+	}
+}
+
+// TestResolveTranscript_CodexCommStaysCodex verifies the routing hint still
+// holds in the one direction it is trusted: a codex-naming comm resolves against
+// the codex rollout store even when a claude transcript for the SAME cwd sits on
+// disk and would otherwise have been the newer, winning candidate.
+func TestResolveTranscript_CodexCommStaysCodex(t *testing.T) {
+	home := stubHome(t)
+	stubNoOpenRollout(t)
+
+	now := time.Now()
+	rollout := writeCodexRollout(t, home, "2026/06/08", "rollout-2026-06-08T09-00-00-bbbb.jsonl",
+		testCwd, now.Add(-1*time.Hour))
+	// A NEWER claude transcript for the same cwd — the codex peer must not bind it.
+	claudePath := writeClaudeTranscript(t, home, "sess-claude", now)
+
+	snap := SessionSnapshot{ID: "cx1", Cwd: testCwd, PID: 7, Comm: "codex"}
+	h, err := ResolveTranscript(context.Background(), snap)
+	if err != nil {
+		t.Fatalf("ResolveTranscript codex: %v", err)
+	}
+	if h.Format != FormatCodex || h.Path != rollout {
+		t.Fatalf("codex comm resolved %q (format %q), want the rollout %q — never the claude transcript %q",
+			h.Path, h.Format, rollout, claudePath)
 	}
 }
 

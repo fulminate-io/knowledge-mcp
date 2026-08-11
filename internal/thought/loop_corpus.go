@@ -168,9 +168,17 @@ func (p *PropagationLoop) refreshCorpusCache(ctx context.Context) {
 		}
 		return
 	}
-	// Staleness bound (criterion c): horizon age = now − pinned H. A large/growing
-	// horizon_age means the primary heartbeat has stalled (publisher down) — the
-	// T3a production-RED signal; alert on a threshold in ops.
+	// Staleness bound: horizon age = now − pinned H. It measures FRESHNESS OF THE
+	// MERGED SNAPSHOT, not the liveness of any publisher — the horizon is computed
+	// by the very request that returns it, so there is nothing standing whose stall
+	// this number could reveal.
+	//
+	// Read it against the drain shape, which the `cold` and `pages` fields below
+	// disclose. H is PINNED at page 1 and reused for every later page (see
+	// drainCorpusDelta), and the age is measured against that pinned H at merge
+	// time. So a warm SINGLE-PAGE tick reads about epsilon plus one round trip,
+	// while a cold MULTI-PAGE drain reads epsilon plus the drain's own wall-clock
+	// duration. A large value on a multi-page cold drain is expected, not a fault.
 	horizonAgeMs := (time.Now().UnixNano() - final.GetSafeHorizon()) / int64(time.Millisecond)
 	slog.Info("thought: corpus delta merged",
 		"horizon_age_ms", horizonAgeMs, "delta_items", items, "pages", pages, "cold", cold)

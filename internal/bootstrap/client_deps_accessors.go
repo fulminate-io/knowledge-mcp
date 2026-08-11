@@ -97,10 +97,11 @@ func (c *client) ResetPipelineFailedCounters() {
 }
 
 // WakePipeline nudges every LLM-pipeline collector to re-scan promptly.
-// Satisfies the optional tools.pipelineWaker interface the collect intercept
-// calls after a successful collect, so a freshly-collected graph that had
+// Two callers: the collect intercept (via the optional tools.pipelineWaker
+// interface) after a successful collect, so a freshly-collected graph that had
 // idle-backed-off its scan cadence discovers the new nodes within one base tick
-// instead of waiting out the hour-long idle ceiling.
+// instead of waiting out the hour-long idle ceiling; and the activity hook
+// (client_freshness.go) when the account watermark moved.
 func (c *client) WakePipeline() {
 	if c.pipeline != nil {
 		c.pipeline.WakeAll()

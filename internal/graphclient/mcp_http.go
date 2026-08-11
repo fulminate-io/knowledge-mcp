@@ -4,8 +4,6 @@ package graphclient
 
 import (
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,6 +15,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/session"
 
@@ -70,6 +69,24 @@ type HTTPServer struct {
 	// idleTTL is the per-session idle window the reaper enforces (Phase 3).
 	// Zero disables the reaper (used by tests that drive sessions directly).
 	idleTTL time.Duration
+
+	// harnessRetry is how long harnessSessionID waits after an unresolved
+	// resolution attempt before attempting again.
+	//
+	// NOTE THE ZERO, which does NOT mean what idleTTL's zero means above: this is
+	// a wait, so a zero harnessRetry RETRIES ON EVERY CALL rather than disabling
+	// anything. Tests set it directly — zero drives the retry arm, a large value
+	// drives the no-retry arm — which is why it is a field rather than a constant.
+	harnessRetry time.Duration
+
+	// hiveSessions is the daemon's shared claim Registry — the SAME instance the
+	// hive tool intercept marks hive-active and the loop controller reconciles
+	// against. The HTTPServer owns the two lifecycle edges the Registry cannot
+	// see for itself: a session opening (the trigger for post-restart
+	// re-detection) and a session being torn down (which ends any hive session it
+	// was running). nil in tests and degraded fixtures; every method used here is
+	// nil-safe.
+	hiveSessions *hivemonitor.Registry
 }
 
 // NewHTTPServer builds an HTTPServer wrapping the given MCPClient (the
@@ -83,7 +100,13 @@ type HTTPServer struct {
 // gets no such header. It is collapsed into an O(1) set once here. An
 // empty/nil slice disables cross-origin reflection (e.g. tests that don't
 // exercise CORS).
-func NewHTTPServer(mc *MCPClient, port int, allowedOrigins []string) *HTTPServer {
+//
+// hiveSessions is the daemon's shared claim Registry, which this server notifies
+// on session open and ends hive sessions on at teardown. It is a constructor
+// parameter rather than a post-construction setter so the compiler — not a
+// runtime nil — makes every call site consider it. nil is legal (tests, degraded
+// fixtures): the Registry methods are nil-safe.
+func NewHTTPServer(mc *MCPClient, port int, allowedOrigins []string, hiveSessions *hivemonitor.Registry) *HTTPServer {
 	originSet := make(map[string]struct{}, len(allowedOrigins))
 	for _, o := range allowedOrigins {
 		if o != "" {
@@ -96,7 +119,9 @@ func NewHTTPServer(mc *MCPClient, port int, allowedOrigins []string) *HTTPServer
 		version:        mc.cfg.Version,
 		sessions:       make(map[string]*httpSession),
 		idleTTL:        defaultSessionIdleTTL,
+		harnessRetry:   defaultHarnessResolveRetry,
 		allowedOrigins: originSet,
+		hiveSessions:   hiveSessions,
 	}
 }
 
@@ -266,8 +291,17 @@ func (h *HTTPServer) handlePOST(w http.ResponseWriter, r *http.Request) {
 	// this session's repo, and the *httpSession itself so dispatchToolCall
 	// registers its cancel slot at session scope. An empty cwd is a no-op
 	// carrier (the session falls back to --root).
+	//
+	// The third stamp carries the HARNESS session-id — the identity the cloud
+	// keys a hive member on, resolved by the daemon from the agent's on-disk
+	// transcript and never supplied by the agent. Resolution happens here, once
+	// per session behind the cache, because the session (and the pid/comm/cwd the
+	// resolution needs) lives here while the outbound interceptor that carries it
+	// has only a context. An empty value is a no-op carrier, exactly like the cwd
+	// stamp beside it.
 	ctx := session.ContextWithSessionID(r.Context(), sess.id)
 	ctx = session.ContextWithWorkspaceCwd(ctx, sess.cwd)
+	ctx = session.ContextWithHarnessSessionID(ctx, h.harnessSessionID(r.Context(), sess))
 	ctx = contextWithHTTPSession(ctx, sess)
 
 	resp := h.mc.handleMCPRequestCtx(ctx, req)
@@ -326,101 +360,6 @@ func (h *HTTPServer) handleGET(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// handleDELETE serves the streamable-HTTP DELETE /mcp leg: a client may end
-// its session by sending DELETE with its Mcp-Session-Id. It drops the
-// session's client-side state (cwd cache + cancel registry) and returns 204
-// No Content. An unknown/absent id returns 404 (per the unknown-session spec
-// posture) — a no-op delete still surfaces the miss legibly. This removes only
-// the CLIENT-SIDE entry; the daemon holds no server-side per-session state.
-func (h *HTTPServer) handleDELETE(w http.ResponseWriter, r *http.Request) {
-	sess, ok := h.validSession(r)
-	if !ok {
-		http.Error(w, "unknown or expired session", http.StatusNotFound)
-		return
-	}
-	h.deleteSession(sess.id)
-	w.WriteHeader(http.StatusNoContent)
-}
-
-// handleHTTPInitialize answers the HTTP `initialize` request: it echoes the
-// client's requested protocolVersion when supported (else defaults to
-// defaultHTTPProtocolVersion), mints a fresh session id, resolves the peer
-// process's workspace cwd from the connection's ephemeral port, stores the
-// per-session state in h.sessions keyed by the minted id, and sets the id on
-// the response via the Mcp-Session-Id header. The JSON-RPC result mirrors the
-// fallback handleInitialize shape (mcp_client.go) but with the echoed protocol
-// and the HTTP session header. The fallback handleInitialize arm stays on
-// 2024-11-05.
-//
-// Peer-cwd resolution is best-effort: a failure (lsof unavailable, race on a
-// torn-down ephemeral socket) logs a warning and stores an empty cwd. An empty
-// cwd makes the session fall back to deps.RootDir() for repo resolution (the
-// pre-B behavior), so a resolution miss degrades rather than breaking the
-// session.
-func (h *HTTPServer) handleHTTPInitialize(w http.ResponseWriter, r *http.Request, req kgtools.JSONRPCRequest) *kgtools.JSONRPCResponse {
-	protocol := negotiateProtocol(req.Params)
-
-	sid, err := mintSessionID()
-	if err != nil {
-		return &kgtools.JSONRPCResponse{
-			JSONRPC: "2.0",
-			ID:      req.ID,
-			Error:   &kgtools.RPCError{Code: -32603, Message: "failed to mint session id: " + err.Error()},
-		}
-	}
-
-	cwd, pid, comm := h.resolvePeerCwdForRequest(r)
-	h.ensureSession(sid, cwd, pid, comm)
-
-	w.Header().Set(mcpSessionHeader, sid)
-
-	return &kgtools.JSONRPCResponse{
-		JSONRPC: "2.0",
-		ID:      req.ID,
-		Result: map[string]any{
-			"protocolVersion": protocol,
-			"capabilities":    map[string]any{"tools": map[string]any{}},
-			"serverInfo":      map[string]any{"name": "knowledge", "version": h.version},
-		},
-	}
-}
-
-// resolvePeerCwdForRequest extracts the client's ephemeral port from the
-// request's RemoteAddr and resolves the owning process's cwd, PID, and comm via
-// resolvePeerCwd. Returns ("", 0, "") (logged) on any failure so the caller
-// stores a session that falls back to deps.RootDir() for repo resolution; the
-// pid + comm are retained for the hive daemon monitor's transcript binding.
-func (h *HTTPServer) resolvePeerCwdForRequest(r *http.Request) (cwd string, pid int, comm string) {
-	_, portStr, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		slog.Warn("knowledge serve: cannot parse RemoteAddr for peer-cwd resolution", "remoteAddr", r.RemoteAddr, "error", err)
-		return "", 0, ""
-	}
-	ephemeralPort, err := strconv.Atoi(portStr)
-	if err != nil {
-		slog.Warn("knowledge serve: non-numeric ephemeral port in RemoteAddr", "remoteAddr", r.RemoteAddr, "error", err)
-		return "", 0, ""
-	}
-	cwd, pid, comm, err = resolvePeerCwd(r.Context(), h.port, ephemeralPort)
-	if err != nil {
-		slog.Warn("knowledge serve: peer-cwd resolution failed; session will fall back to --root", "ephemeralPort", ephemeralPort, "error", err)
-		return "", 0, ""
-	}
-	slog.Info("knowledge serve: resolved session workspace", "ephemeralPort", ephemeralPort, "cwd", cwd, "pid", pid, "comm", comm)
-	return cwd, pid, comm
-}
-
-// validSession looks up the request's Mcp-Session-Id header in the session
-// map and returns the session plus whether it exists. A missing/unknown id
-// (including before any session is minted) returns (nil, false).
-func (h *HTTPServer) validSession(r *http.Request) (*httpSession, bool) {
-	id := r.Header.Get(mcpSessionHeader)
-	if id == "" {
-		return nil, false
-	}
-	return h.lookupSession(id)
-}
-
 // cancelRequestID extracts the JSON-encoded requestId from a
 // notifications/cancelled params payload, matching the encoding
 // httpSession.cancelMatching compares against (string(json.RawMessage)).
@@ -433,34 +372,6 @@ func cancelRequestID(rawParams json.RawMessage) string {
 		_ = json.Unmarshal(rawParams, &p)
 	}
 	return string(p.RequestID)
-}
-
-// negotiateProtocol reads the client's requested protocolVersion from the
-// initialize params and returns it when supported, else the default.
-func negotiateProtocol(params json.RawMessage) string {
-	var p struct {
-		ProtocolVersion string `json:"protocolVersion"`
-	}
-	if len(params) > 0 {
-		_ = json.Unmarshal(params, &p)
-	}
-	switch p.ProtocolVersion {
-	case defaultHTTPProtocolVersion, altHTTPProtocolVersion:
-		return p.ProtocolVersion
-	default:
-		return defaultHTTPProtocolVersion
-	}
-}
-
-// mintSessionID returns a fresh 16-byte crypto/rand session id as hex.
-// There is no shared id generator on the client transport path, so a small
-// inline crypto/rand read is the right call here.
-func mintSessionID() (string, error) {
-	var buf [16]byte
-	if _, err := rand.Read(buf[:]); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(buf[:]), nil
 }
 
 // writeJSONRPC marshals a JSON-RPC response and writes it as

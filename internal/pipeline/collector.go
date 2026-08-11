@@ -126,12 +126,20 @@ type collector struct {
 	// (the pre-two-phase behavior), so the existing collector state-machine tests
 	// stay valid.
 	genSnapshot func(key graphKey) (summary, embed uint64, ok bool)
+
+	// collectInFlight reports whether a collect into THIS collector's graph is
+	// running. Built per-(gt,name) by RegisterGraph from a bootstrap-supplied
+	// hook, so the collector carries NO dependency on the collect machinery — the
+	// same consumer-side decoupling flush and healIfSegmentless use above. nil
+	// (test fakes / no runtime wired) reads as "no collect in flight", so the gate
+	// is inert by default.
+	collectInFlight func() bool
 }
 
 // newCollector constructs a collector. The actual goroutine launch is
 // done by Pipeline.RegisterGraph so the WaitGroup accounting stays
 // centralized.
-func newCollector(gt kgtypes.GraphType, name string, cfg Config, summaryCh chan<- SummaryWork, embedCh chan<- EmbedWork, metrics *metricsState, client WireClient, baseTick, idleTick time.Duration, flush func(ctx context.Context) error, healIfSegmentless func(ctx context.Context) error, summaryEnabled, embedEnabled bool, genSnapshot func(key graphKey) (summary, embed uint64, ok bool)) *collector {
+func newCollector(gt kgtypes.GraphType, name string, cfg Config, summaryCh chan<- SummaryWork, embedCh chan<- EmbedWork, metrics *metricsState, client WireClient, baseTick, idleTick time.Duration, flush func(ctx context.Context) error, healIfSegmentless func(ctx context.Context) error, summaryEnabled, embedEnabled bool, genSnapshot func(key graphKey) (summary, embed uint64, ok bool), collectInFlight func() bool) *collector {
 	return &collector{
 		gt:                gt,
 		name:              name,
@@ -149,6 +157,7 @@ func newCollector(gt kgtypes.GraphType, name string, cfg Config, summaryCh chan<
 		summaryWake:       make(chan struct{}, 1),
 		embedWake:         make(chan struct{}, 1),
 		genSnapshot:       genSnapshot,
+		collectInFlight:   collectInFlight,
 	}
 }
 
@@ -259,7 +268,7 @@ func (c *collector) runEmbedLoop(ctx context.Context) {
 // runLoop is the shared stoplight discovery cycle for one axis. Each iteration:
 // drain releases, then — unless a prior batch is still in flight (#2) — scan,
 // prune, and push every new item, sleeping the current interval before
-// repeating. Three throttles keep remote (logged-in) scan volume bounded:
+// repeating. Four throttles keep remote (logged-in) scan volume bounded:
 //
 //	#1 idle-backoff   — an empty scan grows the sleep geometrically from baseTick
 //	                    toward idleTick; any work snaps it back to baseTick.
@@ -267,6 +276,8 @@ func (c *collector) runEmbedLoop(ctx context.Context) {
 //	                    draining) until the batch clears or maxDrainSkips forces one.
 //	#3 scan backoff   — a scan ERROR (e.g. a remote 429) backs off on the axis's
 //	                    own errBackoff instead of retrying at the base cadence.
+//	#4 collect-gate   — while a collect into this graph is in flight, skip the scan
+//	                    entirely; the rows it would enrich are still landing.
 //
 // Exits on ctx.Done.
 func (c *collector) runLoop(ctx context.Context, ax loopAxis) {
@@ -294,6 +305,12 @@ func (c *collector) runLoop(ctx context.Context, ax loopAxis) {
 	// LOCAL, not a struct field; only the embed loop arms it (summary byWake is
 	// ignored).
 	healArmed := false
+	// gatedSince latches the start of a GATED RUN and is zero whenever the
+	// collect-gate is down. LOCAL, like pendingSinceFlush and healArmed above and
+	// for the same reason — it is per-loop state, not per-collector state.
+	// noteGateTransition consumes and returns it so the gate's two markers fire on
+	// the run's EDGES rather than on every skipped iteration.
+	var gatedSince time.Time
 
 	for {
 		drainReleases(release, inFlight)
@@ -309,6 +326,33 @@ func (c *collector) runLoop(ctx context.Context, ax loopAxis) {
 			continue
 		}
 		skipped = 0
+
+		// #4 collect-gate: a collect into this graph is in flight, so the freshly
+		// uploaded rows are still landing and the collect's own finalize has not
+		// run. Scanning now is what puts this loop's writeback in the way of that
+		// finalize. Skip the scan entirely until the collect completes.
+		//
+		// DELIBERATELY NO FORCE-THROUGH CAP, unlike the drain-gate above. Forcing a
+		// scan through mid-collect would reinstate the very contention this gate
+		// removes, so the asymmetry is the point and not an oversight. The defense
+		// against a stuck gate lives on the other side instead: the collect
+		// runtime lowers the gate when a run ends by ANY route — success, error or
+		// recovered panic — and ignores an entry that has been held beyond its
+		// max-hold bound, which covers a collect that never ends at all.
+		//
+		// sleepFor, NOT sleepForWake: a wake delivered while the gate is up must
+		// stay queued on the buffered channel for the first ungated iteration to
+		// consume. Draining it here would trade a whole collect's worth of
+		// enrichment for nothing. The cost of not consuming it is one base tick of
+		// extra latency after the gate clears.
+		gated := c.collectInFlight != nil && c.collectInFlight()
+		gatedSince = c.noteGateTransition(ax, gated, gatedSince)
+		if gated {
+			if !c.sleepFor(ctx, base) {
+				return
+			}
+			continue
+		}
 
 		items, err := c.discover(ctx, ax.axis, ax.lastGen)
 		if err != nil {
@@ -329,14 +373,8 @@ func (c *collector) runLoop(ctx context.Context, ax loopAxis) {
 		ax.backoff.ok()
 
 		pruneInFlightItems(inFlight, items)
-		for _, item := range items {
-			if _, dup := inFlight[item.GetNodeId()]; dup {
-				continue
-			}
-			if !ax.push(ctx, item, release) {
-				return
-			}
-			inFlight[item.GetNodeId()] = struct{}{}
+		if !c.pushNewItems(ctx, ax, items, inFlight, release) {
+			return
 		}
 
 		// Quiescence flush: on the embed axis, force-seal this graph's
@@ -386,6 +424,40 @@ func (c *collector) runLoop(ctx context.Context, ax loopAxis) {
 	}
 }
 
+// noteGateTransition emits the collect-gate's two EDGE markers and returns the
+// next value of the caller's gatedSince latch — the same shape as
+// maybeQuiescenceFlush and maybeHealCheck below, and for the same reason: the
+// latch is per-loop local state, so the edge logic belongs beside it rather than
+// inline in the loop.
+//
+// EDGE-TRIGGERED, NOT PER-ITERATION, AND THAT IS THE WHOLE DESIGN. The gate skips
+// once per base tick for the entire length of a collect, so an unconditional line
+// here would emit dozens per collect per axis — which is exactly why the
+// neighboring drain-gate logs nothing at all. Two lines per gated run is the
+// whole budget: enough to show the gate engaged and released, cheap enough to
+// leave on at Debug alongside the other per-cycle lines in this file.
+//
+// BOTH MESSAGE STRINGS ARE LOCKED. Without them the gate is silent — it skips the
+// scan and continues, so nothing shows whether it held, released, or wedged shut.
+// They are what an operator greps out of the daemon log to tell those three apart,
+// and what this package's own gate tests assert on verbatim; rewording either
+// breaks that evidence trail with no other symptom. Each is written unbroken on
+// one line.
+func (c *collector) noteGateTransition(ax loopAxis, gated bool, gatedSince time.Time) time.Time {
+	switch {
+	case gated && gatedSince.IsZero():
+		slog.Debug("pipeline.collector: gap scan gated by in-flight collect",
+			"graph_type", c.gt, "name", c.name, "axis", ax.axis)
+		return time.Now()
+	case !gated && !gatedSince.IsZero():
+		slog.Debug("pipeline.collector: gap scan resumed after collect",
+			"graph_type", c.gt, "name", c.name, "axis", ax.axis,
+			"gated_for", time.Since(gatedSince).Round(time.Millisecond))
+		return time.Time{}
+	}
+	return gatedSince
+}
+
 // maybeQuiescenceFlush implements the embed-axis quiescence edge-latch.
 // It returns the next pendingSinceFlush latch value. While the gap has items or
 // in-flight work it latches true. On the drain-complete edge — empty scan AND
@@ -410,90 +482,4 @@ func (c *collector) maybeQuiescenceFlush(ctx context.Context, ax loopAxis, items
 			"graph_type", c.gt, "name", c.name, "error", err)
 	}
 	return false
-}
-
-// nextIdleInterval doubles cur toward (and capped at) max — the idle-backoff
-// growth step. Guards against int64 overflow on the doubling.
-func nextIdleInterval(cur, max time.Duration) time.Duration {
-	next := cur * 2
-	if next <= 0 || next > max {
-		next = max
-	}
-	return next
-}
-
-// drainReleases empties the release channel non-blocking, removing each
-// released ID from the in-flight set. Called at the start of every cycle
-// so the next discovery query sees an accurate in-flight picture.
-func drainReleases(release <-chan string, inFlight map[string]struct{}) {
-	for {
-		select {
-		case id := <-release:
-			delete(inFlight, id)
-		default:
-			return
-		}
-	}
-}
-
-// pruneInFlightItems intersects inFlight with the just-discovered eligible
-// set: any ID no longer eligible is removed from in-flight. Defense in
-// depth against missed releases (e.g., worker panic before release write):
-// once Summary is populated or a marker lands, the scan no longer returns
-// the ID, so it falls out of in-flight here even if the release was
-// dropped.
-func pruneInFlightItems(inFlight map[string]struct{}, eligible []*knowledgev1.PipelineScanItem) {
-	if len(inFlight) == 0 {
-		return
-	}
-	eligibleSet := make(map[string]struct{}, len(eligible))
-	for _, it := range eligible {
-		eligibleSet[it.GetNodeId()] = struct{}{}
-	}
-	for id := range inFlight {
-		if _, still := eligibleSet[id]; !still {
-			delete(inFlight, id)
-		}
-	}
-}
-
-// sleepFor waits d (falling back to Config.TickOrDefault for a non-positive d)
-// or returns false on ctx cancel. The shared loop computes d per cycle from the
-// idle-backoff / drain-gate / scan-backoff state.
-func (c *collector) sleepFor(ctx context.Context, d time.Duration) bool {
-	if d <= 0 {
-		d = c.cfg.TickOrDefault()
-	}
-	select {
-	case <-ctx.Done():
-		return false
-	case <-time.After(d):
-		return true
-	}
-}
-
-// sleepForWake is sleepFor plus an early-return on a wake signal — the idle sleep
-// uses it so Pipeline.WakeAll (fired by a collect) cuts a long backed-off
-// interval short. A nil wake channel blocks forever on that arm (so the timer /
-// ctx still govern), keeping test fakes and wake-less paths unaffected.
-//
-// Returns (alive, byWake): alive is false ONLY on ctx cancel (the caller exits
-// the loop); byWake is true ONLY when the <-wake arm fired (a collect-wake), and
-// false on a plain timer expiry. The embed loop reads byWake to ARM the
-// auto-heal check — a collect-wake (not an idle timer tick) is what makes the
-// heal fire once per collect.
-func (c *collector) sleepForWake(ctx context.Context, d time.Duration, wake <-chan struct{}) (alive, byWake bool) {
-	if d <= 0 {
-		d = c.cfg.TickOrDefault()
-	}
-	t := time.NewTimer(d)
-	defer t.Stop()
-	select {
-	case <-ctx.Done():
-		return false, false
-	case <-t.C:
-		return true, false
-	case <-wake:
-		return true, true
-	}
 }

@@ -37,7 +37,7 @@ func TestCollectWaitOrDetach_EarlyReturn(t *testing.T) {
 
 	done := make(chan kgtools.ToolResult, 1)
 	go func() {
-		done <- collectWaitOrDetach(rt, "code\x00/repo", "code /repo", detachSuccessText, func() error {
+		done <- collectWaitOrDetach(rt, "code\x00/repo", "code /repo", "", detachSuccessText, func() error {
 			<-release
 			return nil
 		})
@@ -58,7 +58,7 @@ func TestCollectWaitOrDetach_EarlyReturn(t *testing.T) {
 func TestCollectWaitOrDetach_SubThresholdByteIdentical(t *testing.T) {
 	rt := NewCollectRuntime()
 	rt.detachAfter = time.Hour // completion always wins the race
-	res := collectWaitOrDetach(rt, "code\x00/repo", "code /repo", detachSuccessText, func() error { return nil })
+	res := collectWaitOrDetach(rt, "code\x00/repo", "code /repo", "", detachSuccessText, func() error { return nil })
 	assert.False(t, res.IsError)
 	assert.Equal(t, detachSuccessText, resultText(res))
 }
@@ -68,7 +68,7 @@ func TestCollectWaitOrDetach_SubThresholdByteIdentical(t *testing.T) {
 func TestCollectWaitOrDetach_ErrorPassthrough(t *testing.T) {
 	rt := NewCollectRuntime()
 	rt.detachAfter = time.Hour
-	res := collectWaitOrDetach(rt, "code\x00/repo", "code /repo", detachSuccessText, func() error {
+	res := collectWaitOrDetach(rt, "code\x00/repo", "code /repo", "", detachSuccessText, func() error {
 		return errors.New("collect code: boom")
 	})
 	assert.True(t, res.IsError)
@@ -87,7 +87,7 @@ func TestCollectWaitOrDetach_CoalesceMessage(t *testing.T) {
 	// it settles after release closes at test end.
 	firstDone := make(chan kgtools.ToolResult, 1)
 	go func() {
-		firstDone <- collectWaitOrDetach(rt, "code\x00/repo", "code /repo", detachSuccessText, func() error {
+		firstDone <- collectWaitOrDetach(rt, "code\x00/repo", "code /repo", "", detachSuccessText, func() error {
 			<-release
 			return nil
 		})
@@ -97,7 +97,7 @@ func TestCollectWaitOrDetach_CoalesceMessage(t *testing.T) {
 		return len(snap) == 1 && snap[0].State == "running"
 	}, 2*time.Second, 5*time.Millisecond, "first run should register as running")
 
-	res := collectWaitOrDetach(rt, "code\x00/repo", "code /repo", detachSuccessText, func() error { return nil })
+	res := collectWaitOrDetach(rt, "code\x00/repo", "code /repo", "", detachSuccessText, func() error { return nil })
 	body := resultText(res)
 	assert.Contains(t, body, "already running")
 	assert.Contains(t, body, "not starting a duplicate")

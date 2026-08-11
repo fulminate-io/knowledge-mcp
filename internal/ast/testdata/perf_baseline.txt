@@ -130,3 +130,53 @@ BenchmarkMatchWalk_PlaceholderRoot-16	  56	 21030302 ns/op	46446757 B/op	 98276 
 # (ceiling 30000, just above the post-fix value); correctness held by the
 # Match-oracle parity test TestCount_LightMatchParity.
 BenchmarkCountWalk_PlaceholderRoot-16	  72	 15822735 ns/op	 8735696 B/op	 24466 allocs/op
+
+# ============================================================================
+# JSX layout whitespace — concrete-rooted JSX match walk.
+#
+# PRE-FIX BASELINE, taken BEFORE the token-comparison change, and taken then
+# because measuring afterwards would bake the trim's own cost into the ceiling
+# meant to detect it.
+#
+# WHICH ARM IT BOUNDS, and why that is NOT the arm it was recorded from. This row
+# was measured from BenchmarkMatchWalk_JSXConcreteRoot, whose pattern matches the
+# corpus once the defect is fixed. The GATED arm is BenchmarkMatchWalk_JSXNoMatch,
+# whose pattern matches nothing in either state. The distinction is the whole
+# reason that second benchmark exists: pre-fix this corpus produced ZERO matches
+# (nothing matching WAS the defect), so gating the matching arm against this row
+# would compare thousands of materialised matches against none and go red exactly
+# because the fix worked — measured 89459 against a 35137 ceiling. A before/after
+# allocation ceiling is only valid when both runs do the same work, and a fix
+# whose purpose is to make an empty result set non-empty changes the work. The
+# no-match arm produces zero matches on both sides, so the two differ only by the
+# trim: measured 32480 against this row's 29281, about +11%, which is the extra
+# per-candidate descent the trim unlocks rather than the trim allocating.
+# BenchmarkMatchWalk_JSXConcreteRoot remains INFORMATIONAL and is never a gate.
+#
+# EXACTLY ONE LINE IN THIS FILE MAY CARRY THE BASELINE LABEL — the token on the
+# data row below, spelled here only there because the gate counts raw
+# occurrences and prose quoting it would inflate the count. This file's
+# convention is to APPEND readings — three benchmarks above appear two or three
+# times each for that reason — so the ceiling gate identifies its baseline by a
+# unique token rather than by position, and asserts exactly one such line exists.
+# A second labelled row fails that gate loudly, by design: an extraction that
+# silently took the newest row would compare the post-fix number against itself
+# and pass an arbitrarily large regression. A post-fix reading recorded for the
+# record must carry a DIFFERENT label.
+#
+# Corpus: benchJSXCorpus — 40 synthetic .tsx files, each with 40 multi-line JSX
+# children under one parent element. Pattern `<CodeBlock code={$C} />`
+# (concrete-rooted, so it reaches the childless-token comparison; the
+# placeholder-rooted benchmarks above return at the node-wildcard arm and cannot).
+#
+# MACHINE STATE: Apple M4 Max (goarch arm64, 16 logical CPUs), darwin, branch
+# main, clean tree. The corpus is a non-git temp dir, so its walk logs the
+# expected "git ls-files failed, falling back to filesystem walk" per the nongit
+# discovery path — not an error. ns/op is an observation only, never a gated
+# axis; allocs/op is the gated property.
+
+BEFORE
+
+HEAD: 5a12ead84cfa35eb9c108506d41be88880c35df9
+
+BenchmarkMatchWalk_JSXConcreteRoot-16  JSX-BASELINE  80	  15010630 ns/op	 2076612 B/op	   29281 allocs/op

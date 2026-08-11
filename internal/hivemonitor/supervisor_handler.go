@@ -61,8 +61,8 @@ type SupervisorHandler struct {
 }
 
 // NewSupervisorHandler builds the handler from its four seams. Production wires
-// hive=c.router, ban=c.banSet, resume=monitor.ResumeRenew's receiver, judge=the
-// llmproviders.Supervisor; tests inject fakes.
+// hive=the daemon's stamping hive caller, ban=c.banSet, resume=monitor.ResumeRenew's
+// receiver, judge=the llmproviders.Supervisor; tests inject fakes.
 func NewSupervisorHandler(hive HiveCaller, ban banner, resume resumer, judge Judge) *SupervisorHandler {
 	return &SupervisorHandler{hive: hive, ban: ban, resume: resume, judge: judge}
 }

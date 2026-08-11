@@ -4,7 +4,9 @@
 // the cloud work-queue over the Hive RPC. It mirrors the minimal claim-by-name
 // shape of InterceptAssemble: gate on the tool name, parse the op + args,
 // enforce the client-side session BAN (refuse a banned worker's calls before
-// they leave the machine), build a knowledgev1.HiveRequest, forward via the
+// they leave the machine), refuse a session whose HARNESS transcript has not
+// resolved (the identity the cloud keys the member on), build a
+// knowledgev1.HiveRequest, forward via the
 // GraphCaller's Hive seam, record the claim in the daemon's Registry, and render
 // the response. Non-hive calls return (false, _) so the chain continues.
 //
@@ -69,11 +71,36 @@ var agentHiveOps = map[string]knowledgev1.HiveOp{
 // result). When the call is not `hive`, returns (false, _) so the chain
 // continues.
 //
-// ctx carries the MCP session-id (session.SessionIDFromContext) so a successful
-// claim Binds the (session, hive, msg_id) into the client-side claim Registry —
+// ctx carries TWO identities, and they are not interchangeable. The HARNESS
+// session-id (session.HarnessSessionIDFromContext) is the daemon-resolved
+// identity the cloud keys a hive member on; an agent op arriving without one
+// cannot be served — the member row would be keyed on an identity that does not
+// exist yet — so it is refused PRE-FLIGHT with an error naming that cause, which
+// is local, transient and self-healing. Placement of that guard is the contract:
+// AFTER the ban gate, so an evicted worker still gets the more specific eviction
+// message, and BEFORE the RPC, so nothing leaves the machine. It covers AGENT
+// ops only, which is why it lives here rather than in the outbound interceptor:
+// the daemon ops (renew/evict/ack-on-behalf) are issued by hivemonitor on a
+// context carrying no harness id and name their target through the request's
+// member_session field instead.
+//
+// The MCP session-id (session.SessionIDFromContext) is the
+// LOCAL identity: a successful claim Binds the (session, hive, msg_id) into the
+// client-side claim Registry —
 // the binding the daemon Monitor renews while the worker works — and a
 // successful ack/fail Clears it. The Registry is nil in degraded/test fixtures;
-// its methods are nil-safe so the Bind/Clear are unconditional no-ops there.
+// its methods are nil-safe, so every Registry write below — the Bind/Clear and
+// the hive-active mark — is an unconditional no-op there.
+//
+// A successful call also marks the calling MCP session HIVE-ACTIVE in that same
+// Registry. That is the begin seam of the hive-session lifecycle: the daemon's
+// hive loops (the lease Monitor and the peer machine-down reaper) run only while
+// at least one session on this daemon is so marked, and stop when the last one
+// ends, so a daemon that never joins a hive issues none of their periodic
+// traffic. A hive call that arrives while a teardown-driven stop is in flight can
+// block inside MarkHiveActive → the loop controller's reconcile for up to two
+// bounded Stop deadlines (~6s), because the controller serializes start and stop
+// on one mutex; the same budget is disclosed on the DELETE /mcp teardown seam.
 func InterceptHive(ctx context.Context, deps ClientDeps, params kgtools.CallToolParams) (bool, kgtools.ToolResult) {
 	if params.Name != "hive" {
 		return false, kgtools.ToolResult{}
@@ -117,20 +144,14 @@ func InterceptHive(ctx context.Context, deps ClientDeps, params kgtools.CallTool
 
 	sid := session.SessionIDFromContext(ctx)
 
-	// BAN GATE (client-side, before the cloud RPC): the daemon refuses a banned
-	// worker's hive calls before they leave the machine, so a degenerate/rogue
-	// LLM cannot escape. The ban key is the HARNESS session-id (env/OS-sourced,
-	// LLM-unfakeable); the request only carries the Mcp-Session-Id, so the gate
-	// Resolves it to the harness id via the monitor-maintained map. A resolved +
-	// banned harness id is refused here; an UNRESOLVED session fails OPEN (the
-	// monitor has not bound it yet, so it cannot have been evicted). Keying on
-	// the harness id (not the Mcp-Session-Id) gives reconnect stability: a fresh
-	// Mcp-Session-Id re-resolves to the same banned harness id.
-	if ban := deps.BanSet(); ban != nil {
-		if harness, ok := ban.Resolve(sid); ok && ban.IsBanned(harness) {
-			return true, kgtools.ErrorResult(
-				"hive: this worker session has been evicted from the hive — a new human-initiated session is required to rejoin")
-		}
+	if res, refused := refuseBannedSession(deps, sid); refused {
+		return true, res
+	}
+
+	// HARNESS PRE-FLIGHT (see the placement contract in the doc comment above).
+	if session.HarnessSessionIDFromContext(ctx) == "" {
+		return true, kgtools.ErrorResult(
+			"hive: this session's harness transcript has not resolved yet — the daemon identifies a hive member by its harness session-id, read from the agent's on-disk transcript; retry after the agent has written its first turn")
 	}
 
 	req := &knowledgev1.HiveRequest{
@@ -155,12 +176,24 @@ func InterceptHive(ctx context.Context, deps ClientDeps, params kgtools.CallTool
 		return true, kgtools.ErrorResult(fmt.Sprintf("hive %s: %v", args.Op, err))
 	}
 
-	// Record the claim-lifecycle transition into the client-side claim
-	// Registry, keyed on the unfakeable MCP session-id from ctx. The daemon
-	// Monitor reads these bindings each tick to renew the cloud lease for live
-	// claims; ack/fail drops the binding so the Monitor stops renewing. nil
-	// Registry / nil-safe methods make this a no-op in degraded/test fixtures.
+	// The client-side claim Registry, keyed on the unfakeable MCP session-id from
+	// ctx. nil Registry / nil-safe methods make every write below a no-op in
+	// degraded/test fixtures.
 	reg := deps.ClaimRegistry()
+
+	// This session is participating in a hive on this daemon — mark it so the
+	// daemon's hive loops run. Placement is the contract: AFTER the RPC succeeded,
+	// so a failed hive call never starts the loops, and AFTER the ban gate above,
+	// so an evicted session cannot re-activate them by continuing to call hive.
+	// All five agent ops mark, not just register/send: a worker's loop repeats
+	// claim rather than re-registering, so claim/ack/fail are the path by which a
+	// worker that was mid-task recovers its heartbeat after a daemon restart.
+	// Repeat marks are idempotent and an empty sid is a no-op.
+	reg.MarkHiveActive(sid)
+
+	// Record the claim-lifecycle transition. The daemon Monitor reads these
+	// bindings each tick to renew the cloud lease for live claims; ack/fail drops
+	// the binding so the Monitor stops renewing.
 	switch op {
 	case knowledgev1.HiveOp_HIVE_OP_CLAIM:
 		// A claim only binds when it actually claimed a node (an empty claim
@@ -175,6 +208,30 @@ func InterceptHive(ctx context.Context, deps ClientDeps, params kgtools.CallTool
 	}
 
 	return true, kgtools.TextResult(renderHiveResponse(args.Op, resp))
+}
+
+// refuseBannedSession is the BAN GATE (client-side, before the cloud RPC): the
+// daemon refuses a banned worker's hive calls before they leave the machine, so
+// a degenerate/rogue LLM cannot escape. The ban key is the HARNESS session-id
+// (env/OS-sourced, LLM-unfakeable); the request only carries the Mcp-Session-Id,
+// so the gate Resolves it to the harness id via the monitor-maintained map. A
+// resolved + banned harness id is refused; an UNRESOLVED session fails OPEN (the
+// monitor has not bound it yet, so it cannot have been evicted). Keying on the
+// harness id (not the Mcp-Session-Id) gives reconnect stability: a fresh
+// Mcp-Session-Id re-resolves to the same banned harness id.
+//
+// It reports whether the call was refused; the result is meaningful only then.
+func refuseBannedSession(deps ClientDeps, sid string) (kgtools.ToolResult, bool) {
+	ban := deps.BanSet()
+	if ban == nil {
+		return kgtools.ToolResult{}, false
+	}
+	harness, ok := ban.Resolve(sid)
+	if !ok || !ban.IsBanned(harness) {
+		return kgtools.ToolResult{}, false
+	}
+	return kgtools.ErrorResult(
+		"hive: this worker session has been evicted from the hive — a new human-initiated session is required to rejoin"), true
 }
 
 // validateHiveTo rejects a `to` value that is not '@queue' or '@<role>'. A '*'

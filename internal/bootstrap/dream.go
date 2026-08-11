@@ -56,9 +56,21 @@ import (
 // dispatch entry point, plus the HTTP daemon's per-session values (session id,
 // workspace cwd). It is threaded into EVERY intercept — each issues its RPCs on
 // it, so canceling the tool call stops the work it started.
+//
+// Being the single funnel for both entry points, this is also where the client
+// samples account activity: after the chain runs it checks the response
+// watermark and, on movement, wakes the LLM pipeline (see client_freshness.go).
+// That is what makes pipeline freshness activity-driven instead of periodic.
 func (c *client) runInterceptChain(ctx context.Context, params kgtools.CallToolParams) (kgtools.CallToolParams, bool, kgtools.ToolResult) {
 	start := time.Now()
 	rewritten, handled, res := c.runInterceptChainInner(ctx, params)
+	// Watermark-triggered pipeline freshness: this call's RPCs (if any) have
+	// already returned, so their responses' account watermark is observable now.
+	// Runs on BOTH the handled and the fall-through path — a read that changed
+	// nothing still tells us whether SOMETHING in the account moved. A call that
+	// falls through issues its RPC AFTER this point, so its watermark is seen by
+	// the next call; that one-call lag is the price of a single hook site.
+	c.checkPipelineFreshness(ctx)
 	if handled {
 		// Always-on latency footer for client-side intercepts so LLM
 		// callers see consistent timing alongside server-side tool

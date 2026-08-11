@@ -1,0 +1,134 @@
+RED-FIRST CAPTURE — the typed mutate(update) auto-summary derives from PRE-merge metadata.
+
+commit:  31df69afbb24c739e2aa6bcb59eae17fa420b148
+date:    2026-08-11
+command: cd cmd/knowledge && CGO_ENABLED=1 go test ./internal/tools/ \
+             -run '^TestTypedUpdate_PostMergeMetadataDrivesSummary$' -count=1 -v
+         (piped through a two-expression sed making in-repo paths repo-relative
+          and redacting any remaining absolute home path)
+
+WHAT IS RED: all five subtests fail against the unfixed tree — each derived
+summary embeds the value the update is REPLACING, because the deriver reads the
+node's stored metadata instead of the merged map the same call is about to store.
+
+=== RUN   TestTypedUpdate_PostMergeMetadataDrivesSummary
+=== RUN   TestTypedUpdate_PostMergeMetadataDrivesSummary/criterion_command_via_metadata_map
+    intercept_mutate_update_postmerge_test.go:91: 
+        	Error Trace:	cmd/knowledge/internal/tools/intercept_mutate_update_postmerge_test.go:91
+        	Error:      	Not equal: 
+        	            	expected: "automated criterion: the suite is green (go build ./new/...)"
+        	            	actual  : "automated criterion: the suite is green (go build ./old/...)"
+        	            	
+        	            	Diff:
+        	            	--- Expected
+        	            	+++ Actual
+        	            	@@ -1 +1 @@
+        	            	-automated criterion: the suite is green (go build ./new/...)
+        	            	+automated criterion: the suite is green (go build ./old/...)
+        	Test:       	TestTypedUpdate_PostMergeMetadataDrivesSummary/criterion_command_via_metadata_map
+        	Messages:   	the summary must be derived from the metadata this call stores, not the pre-merge value
+=== RUN   TestTypedUpdate_PostMergeMetadataDrivesSummary/criterion_type_via_metadata_map
+    intercept_mutate_update_postmerge_test.go:91: 
+        	Error Trace:	cmd/knowledge/internal/tools/intercept_mutate_update_postmerge_test.go:91
+        	Error:      	Not equal: 
+        	            	expected: "automated criterion: the suite is green (go build ./x/...)"
+        	            	actual  : "manual criterion: the suite is green (go build ./x/...)"
+        	            	
+        	            	Diff:
+        	            	--- Expected
+        	            	+++ Actual
+        	            	@@ -1 +1 @@
+        	            	-automated criterion: the suite is green (go build ./x/...)
+        	            	+manual criterion: the suite is green (go build ./x/...)
+        	Test:       	TestTypedUpdate_PostMergeMetadataDrivesSummary/criterion_type_via_metadata_map
+        	Messages:   	the summary must be derived from the metadata this call stores, not the pre-merge value
+=== RUN   TestTypedUpdate_PostMergeMetadataDrivesSummary/rule_scope_via_metadata_map
+    intercept_mutate_update_postmerge_test.go:91: 
+        	Error Trace:	cmd/knowledge/internal/tools/intercept_mutate_update_postmerge_test.go:91
+        	Error:      	Not equal: 
+        	            	expected: "Rule: no naked goroutines (scope: *.ts)"
+        	            	actual  : "Rule: no naked goroutines (scope: *.go)"
+        	            	
+        	            	Diff:
+        	            	--- Expected
+        	            	+++ Actual
+        	            	@@ -1 +1 @@
+        	            	-Rule: no naked goroutines (scope: *.ts)
+        	            	+Rule: no naked goroutines (scope: *.go)
+        	Test:       	TestTypedUpdate_PostMergeMetadataDrivesSummary/rule_scope_via_metadata_map
+        	Messages:   	the summary must be derived from the metadata this call stores, not the pre-merge value
+=== RUN   TestTypedUpdate_PostMergeMetadataDrivesSummary/finding_evidence_via_metadata_map
+    intercept_mutate_update_postmerge_test.go:91: 
+        	Error Trace:	cmd/knowledge/internal/tools/intercept_mutate_update_postmerge_test.go:91
+        	Error:      	Not equal: 
+        	            	expected: "leak in handler. Evidence: store.go:99"
+        	            	actual  : "leak in handler. Evidence: store.go:42"
+        	            	
+        	            	Diff:
+        	            	--- Expected
+        	            	+++ Actual
+        	            	@@ -1 +1 @@
+        	            	-leak in handler. Evidence: store.go:99
+        	            	+leak in handler. Evidence: store.go:42
+        	Test:       	TestTypedUpdate_PostMergeMetadataDrivesSummary/finding_evidence_via_metadata_map
+        	Messages:   	the summary must be derived from the metadata this call stores, not the pre-merge value
+=== RUN   TestTypedUpdate_PostMergeMetadataDrivesSummary/explicit_metadata_clear_drops_the_derived_suffix
+    intercept_mutate_update_postmerge_test.go:91: 
+        	Error Trace:	cmd/knowledge/internal/tools/intercept_mutate_update_postmerge_test.go:91
+        	Error:      	Not equal: 
+        	            	expected: "Rule: no naked goroutines"
+        	            	actual  : "Rule: no naked goroutines (scope: *.go)"
+        	            	
+        	            	Diff:
+        	            	--- Expected
+        	            	+++ Actual
+        	            	@@ -1 +1 @@
+        	            	-Rule: no naked goroutines
+        	            	+Rule: no naked goroutines (scope: *.go)
+        	Test:       	TestTypedUpdate_PostMergeMetadataDrivesSummary/explicit_metadata_clear_drops_the_derived_suffix
+        	Messages:   	the summary must be derived from the metadata this call stores, not the pre-merge value
+--- FAIL: TestTypedUpdate_PostMergeMetadataDrivesSummary (0.00s)
+    --- FAIL: TestTypedUpdate_PostMergeMetadataDrivesSummary/criterion_command_via_metadata_map (0.00s)
+    --- FAIL: TestTypedUpdate_PostMergeMetadataDrivesSummary/criterion_type_via_metadata_map (0.00s)
+    --- FAIL: TestTypedUpdate_PostMergeMetadataDrivesSummary/rule_scope_via_metadata_map (0.00s)
+    --- FAIL: TestTypedUpdate_PostMergeMetadataDrivesSummary/finding_evidence_via_metadata_map (0.00s)
+    --- FAIL: TestTypedUpdate_PostMergeMetadataDrivesSummary/explicit_metadata_clear_drops_the_derived_suffix (0.00s)
+FAIL
+FAIL	github.com/fulminate-io/knowledge/cmd/knowledge/internal/tools	1.019s
+FAIL
+
+================================================================================
+RED-FIRST CAPTURE — TestTypedUpdate_DerivedSummaryLengthGuard, against the
+PRE-GATE tree (the post-merge derive correction has already landed).
+
+date:    2026-08-11
+command: cd cmd/knowledge && CGO_ENABLED=1 go test ./internal/tools/ \
+             -run '^TestTypedUpdate_DerivedSummaryLengthGuard$' -count=1 -v
+         (same two-expression sed redaction as the capture above)
+
+WHAT IS RED: exactly ONE subtest — oversized_derived_summary_rejects_with_zero_forwards.
+Without the gate the 573-rune derived summary is forwarded and the update
+SUCCEEDS, so the assertion on the rejection is what fails. The other four are
+characterization guards and pass both before and after the gate.
+================================================================================
+
+=== RUN   TestTypedUpdate_DerivedSummaryLengthGuard
+=== RUN   TestTypedUpdate_DerivedSummaryLengthGuard/oversized_derived_summary_rejects_with_zero_forwards
+    intercept_mutate_update_postmerge_test.go:189: 
+        	Error Trace:	cmd/knowledge/internal/tools/intercept_mutate_update_postmerge_test.go:189
+        	Error:      	Should be true
+        	Test:       	TestTypedUpdate_DerivedSummaryLengthGuard/oversized_derived_summary_rejects_with_zero_forwards
+        	Messages:   	an over-cap DERIVED summary must reject: mutate(update): updated c1 [graph: knowledge/default]
+=== RUN   TestTypedUpdate_DerivedSummaryLengthGuard/explicit_oversized_caller_summary_still_lands
+=== RUN   TestTypedUpdate_DerivedSummaryLengthGuard/derived_summary_exactly_at_the_cap_is_accepted
+=== RUN   TestTypedUpdate_DerivedSummaryLengthGuard/an_over-cap_finding_derivation_is_not_gated
+=== RUN   TestTypedUpdate_DerivedSummaryLengthGuard/a_long_in-range_param-route_command_is_accepted
+--- FAIL: TestTypedUpdate_DerivedSummaryLengthGuard (0.00s)
+    --- FAIL: TestTypedUpdate_DerivedSummaryLengthGuard/oversized_derived_summary_rejects_with_zero_forwards (0.00s)
+    --- PASS: TestTypedUpdate_DerivedSummaryLengthGuard/explicit_oversized_caller_summary_still_lands (0.00s)
+    --- PASS: TestTypedUpdate_DerivedSummaryLengthGuard/derived_summary_exactly_at_the_cap_is_accepted (0.00s)
+    --- PASS: TestTypedUpdate_DerivedSummaryLengthGuard/an_over-cap_finding_derivation_is_not_gated (0.00s)
+    --- PASS: TestTypedUpdate_DerivedSummaryLengthGuard/a_long_in-range_param-route_command_is_accepted (0.00s)
+FAIL
+FAIL	github.com/fulminate-io/knowledge/cmd/knowledge/internal/tools	0.938s
+FAIL

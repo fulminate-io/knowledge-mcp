@@ -214,6 +214,62 @@ func ZeroScanHint(walkedRoot, language string, scope Scope, stats WalkStats) str
 	return fmt.Sprintf("walked %s: no %s files found — wrong root? pass repo:<name|/abs/path> or check --root", walkedRoot, language)
 }
 
+// DegradedZeroHint is the LLM-facing guidance text emitted when a zero result
+// was computed over a corpus that did not fully parse. It is the third member of
+// this file's zero-result family, and it follows the same discipline as
+// ZeroScanHint: name the CAUSE, and read it off the report the walk already
+// produced rather than re-walking.
+//
+// WHAT IT IS FOR. A zero and a zero over a broken parse are different answers
+// that look identical. tree-sitter error-recovers a file it cannot fully parse
+// and the walk reports it in FilesWithParseErrors rather than skipping it, so a
+// construct sitting inside a recovered region can be absent from the tree
+// entirely — and the caller reads "0" as "not there". The counter alone does not
+// say this; a caller has to know what error recovery implies to read it. The
+// warning says it.
+//
+// THE RULE: the result is zero AND FilesWithParseErrors is greater than zero. It
+// deliberately does NOT consult MatchesFromDegradedTrees, which is definitionally
+// zero on a zero result — keying on it would make the warning unreachable.
+//
+// IT NAMES THE COMPILED ROOT KINDS because that is what makes the warning
+// actionable rather than merely alarming: knowing the pattern compiled to, say, a
+// self-closing element lets the caller judge whether a degraded file could
+// plausibly have held one. That is the useful half of narrowing by construct
+// family, delivered as information the caller can act on instead of as a filter
+// applied to data already known to be unreliable.
+//
+// It CARRIES the scanned-but-no-match guidance rather than replacing it: the
+// ordinary causes of a zero are still live, and a caller that reads the
+// degradation warning still needs the pin-a-context and check-your-prefixes
+// advice. Both call sites emit this one text so the two cannot drift.
+//
+// Kept as ONE UNBROKEN LINE, for the reason emptyResultHint records above.
+func DegradedZeroHint(stats WalkStats, compiled []CompiledVariant) string {
+	return fmt.Sprintf("zero results over a corpus that did not fully parse — %d of %d scanned file(s) carried parse errors and were read off error-recovered trees, so this zero is NOT evidence of absence: a construct inside a recovered region can be missing from the tree the matcher walked. This pattern compiled to root kind(s) %s — if a degraded file could plausibly hold that construct, re-run scoped to it with package_prefixes before concluding the code is not there. Beyond degradation: %s",
+		stats.FilesWithParseErrors, stats.FilesScanned, compiledRootKinds(compiled), emptyResultHint)
+}
+
+// compiledRootKinds renders the distinct root kinds a pattern compiled to, in
+// variant order. A placeholder-rooted pattern has no root kind at all, and says
+// so rather than rendering an empty list: "no root kind" is the fact that
+// explains why such a pattern cannot be reasoned about by construct family.
+func compiledRootKinds(compiled []CompiledVariant) string {
+	seen := map[string]bool{}
+	kinds := make([]string, 0, len(compiled))
+	for _, v := range compiled {
+		if v.RootKind == "" || seen[v.RootKind] {
+			continue
+		}
+		seen[v.RootKind] = true
+		kinds = append(kinds, v.RootKind)
+	}
+	if len(kinds) == 0 {
+		return "no specific kind (placeholder root, so it matches any construct)"
+	}
+	return strings.Join(kinds, ", ")
+}
+
 // excludedOfLanguage finds a discovery rule that declined at least one file of
 // the requested language, returning the rule name, one sample path and the
 // rule's total count. It reads the samples rather than only the counts, because

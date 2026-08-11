@@ -234,7 +234,10 @@ func buildCycleFinding(g *foundation.GonumGraph, cyc []graph.Node) (foundation.F
 			primary = m
 		}
 	}
-	evidence := make([]string, 0, length+1)
+	// Cap on length alone; the primary-evidence append grows for free. Computing
+	// the size as length+1 would be an addition the allocator sees, which can
+	// overflow int (CWE-190), and a bare length cannot.
+	evidence := make([]string, 0, length)
 	evidence = append(evidence, primary)
 	for _, m := range memberIDs {
 		if m != primary {

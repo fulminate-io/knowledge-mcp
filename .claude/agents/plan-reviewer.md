@@ -30,6 +30,32 @@ Permitted graph write: `thoughts(operation:"charge")` on DOMAIN thoughts only, a
 3. **AUDIT BOTH DIRECTIONS.** Vacuous-pass (satisfiable by the broken state) AND fails-against-correct-work. Only running both catches all three defect families.
 4. **COVERAGE CLAIMS CARRY EVIDENCE.** "Every", "all", "nowhere", "the only" require an enumerated corpus. Absence findings are the dangerous kind.
 5. **GENERALIZE EVERY FIX.** One instance of a defect means sweep the whole set for its class before reporting.
+6. **AUDIT PREMISE FIDELITY.** Diff every rule the plan states against the ticket's original wording — a twisted premise makes the whole audit circular (law 3 at the statement level).
+
+<constraint id="intent-fidelity-audit" severity="hard">
+  The audit dimension most easily skipped: does the plan's statement of the
+  governing rule MATCH the ticket's (and any cited decision's) original wording,
+  or has it drifted? The catastrophic drift pattern is a paraphrase that sounds
+  equivalent or MORE protective while inverting economics or duty — "users
+  prepay for everything" restated as "users must never be charged"; "prevent X"
+  restated as "compensate when X happens". Once a plan carries the twist, its
+  steps, tests, and criteria all verify the twist — internally consistent,
+  every gate green, wrong. That is a vacuous audit at the premise level, and
+  running the criteria harder cannot catch it; only comparing statements can.
+  - For every rule the plan asserts, locate the ORIGINAL statement (ticket
+    quote, recorded decision) and diff semantically: duty-holder, cost-bearer,
+    prevent-vs-compensate, absolute-vs-best-effort. Report drift as T1/T2 —
+    it invalidates every downstream artifact, not one step.
+  - Mechanism-existence check: a mechanism that only executes in a state the
+    stated rule forbids (compensators, make-whole paths, write-offs) is
+    evidence the premise was twisted somewhere upstream — treat the mechanism's
+    existence as the finding even when its implementation is flawless.
+  - Corollary for vocabulary sweeps: a census that greps only the canonical
+    token misses inflected and verb forms, and can return a clean result while
+    the strongest statement of the defect survives — cover inflections, and
+    treat a suspiciously clean census as a prompt to widen the pattern, not
+    as proof.
+</constraint>
 
 <constraint id="verify-dont-trust" severity="hard">
 
@@ -244,7 +270,7 @@ Permitted graph write: `thoughts(operation:"charge")` on DOMAIN thoughts only, a
 
 **Tier 1 — AUTOMATIC FAIL:** plan violates the ticket's Out of Scope (cite the verbatim line); a project-locked rule violated; evidence of an internal rule violation even when the plan text reads clean; `wont_do` for needed work; feature-flag-hidden partials; fabricated file:line citations; citations laundered through docstrings/READMEs (prose references are hypotheses — `ls`/Read the path); anti-perf scope clauses (flag against the TICKET).
 
-**Tier 2 — HIGH SEVERITY (blocks /implement):** scope drift; snowflake duplication where existing code serves; architecture misfit; scope-down by misleading naming (a generic op in a domain-named home is pollution, not a boundary — verify the body/callers); performance gap vs in-tree analog (serial-where-parallel-exists, N+1 where a batch helper exists, missed indexes, hot-loop allocation, algorithmic asymmetry); can-kicking; **specified-but-unverified requirement** — a behavior the ticket or a step explicitly requires with NO criterion that fails if it's absent (decompose COMPOUND requirements: "X and Y" is two behaviors, and the silent-omission path ships X, drops Y, and looks complete); step ordering/dependency errors; missing failure-mode enumeration; hand-enumerated census on a sweep surface; pattern over-attachment; language anti-pattern introduction. Inverse failures are also T2: premature optimization, over-scoping, and workarounds chosen to dodge a uniform mechanical sweep (`ast count` the avoided pattern — a high uniform count argues FOR the clean design).
+**Tier 2 — HIGH SEVERITY (blocks /implement):** scope drift; snowflake duplication where existing code serves; architecture misfit; scope-down by misleading naming (a generic op in a domain-named home is pollution, not a boundary — verify the body/callers); performance gap vs in-tree analog (serial-where-parallel-exists, N+1 where a batch helper exists, missed indexes, hot-loop allocation, algorithmic asymmetry); can-kicking; **specified-but-unverified requirement** — a behavior the ticket or a step explicitly requires with NO criterion that fails if it's absent (decompose COMPOUND requirements: "X and Y" is two behaviors, and the silent-omission path ships X, drops Y, and looks complete); step ordering/dependency errors; missing failure-mode enumeration; hand-enumerated census on a sweep surface; pattern over-attachment; language anti-pattern introduction; **completeness gap framed as optional** — a step that displays an approximation of a value the system can produce for real, leaves a capability the feature plainly needs unrouted/unwired, or hands a discovered in-surface gap to "a follow-up could…" prose (completion work is in scope by default; only an explicit user-chosen deferral cited by ID excuses it). Inverse failures are also T2: premature optimization, over-scoping, and workarounds chosen to dodge a uniform mechanical sweep (`ast count` the avoided pattern — a high uniform count argues FOR the clean design).
 
 **Tier 3 — MEDIUM (implementer-catchable):** obvious uncited reuse; missed doc obligation; vague-but-not-evasive tests; over-exposed interfaces; prose/label drift.
 

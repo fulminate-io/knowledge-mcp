@@ -114,7 +114,12 @@ func replaceBucketGroups[Q, S any](
 		slices.Sort(constituentsByBucket[b])
 	}
 
-	dirty := make(map[int]bool, len(docsByBucket)+len(supByBucket))
+	// Sized from one of the two sources rather than their sum: a map size is a
+	// hint the runtime grows past for free, while the sum is an addition the
+	// allocator sees and could overflow int for pathologically large inputs
+	// (CWE-190). The two key sets overlap heavily in practice, so the sum was
+	// over-hinting anyway.
+	dirty := make(map[int]bool, len(docsByBucket))
 	for b := range docsByBucket {
 		dirty[b] = true
 	}
@@ -276,7 +281,11 @@ func retiring(tails, published []searchengine.SegmentID, uncovered map[searcheng
 // An id in neither set was offered to no partition and is still meant to be found, so
 // the tail holding it is its last searchable home.
 func coveredSet(ids, tombstoned []searchengine.ExternalID) map[searchengine.ExternalID]bool {
-	covered := make(map[searchengine.ExternalID]bool, len(ids)+len(tombstoned))
+	// Sized from one of the two inputs rather than their sum, for the same reason
+	// the dirty set above is: a map size is a hint the runtime grows past for
+	// free, while the sum is an addition the allocator sees and could overflow
+	// int (CWE-190).
+	covered := make(map[searchengine.ExternalID]bool, len(ids))
 	for _, id := range ids {
 		covered[id] = true
 	}

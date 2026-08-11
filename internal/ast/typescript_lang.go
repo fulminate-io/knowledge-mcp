@@ -74,6 +74,11 @@ var tsxLangConfig = LangConfig{
 	CommentKinds: []string{"comment"},
 	IdentRule:    isJSIdent,
 	IsTestFile:   isJSTestFile,
+	// The JSX half of the grammar absorbs newline-bearing inter-child
+	// whitespace into the following node's leading anonymous token, which is
+	// the one field where tsx does NOT mirror tsLangConfig: plain typescript
+	// has no JSX and nothing to absorb.
+	TrimsAnonTokenWhitespace: true,
 }
 
 // isJSIdent reports whether s is a valid ASCII JavaScript / TypeScript

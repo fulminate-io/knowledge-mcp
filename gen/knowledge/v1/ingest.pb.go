@@ -231,7 +231,9 @@ func (x *CollectChunkRequest) GetClientContext() *ClientContext {
 }
 
 type CollectChunkResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// account-scoped freshness watermark; see engine.proto ExecuteResponse.freshness_gen for the full contract.
+	FreshnessGen  uint64 `protobuf:"varint,1,opt,name=freshness_gen,json=freshnessGen,proto3" json:"freshness_gen,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -264,6 +266,13 @@ func (x *CollectChunkResponse) ProtoReflect() protoreflect.Message {
 // Deprecated: Use CollectChunkResponse.ProtoReflect.Descriptor instead.
 func (*CollectChunkResponse) Descriptor() ([]byte, []int) {
 	return file_knowledge_v1_ingest_proto_rawDescGZIP(), []int{1}
+}
+
+func (x *CollectChunkResponse) GetFreshnessGen() uint64 {
+	if x != nil {
+		return x.FreshnessGen
+	}
+	return 0
 }
 
 // FinalizeRequest ends a collection. epoch matches the CollectChunk epoch;
@@ -370,8 +379,10 @@ func (x *FinalizeRequest) GetClientContext() *ClientContext {
 // still returns an id — it simply reports done immediately — so a client never
 // branches on which kind of server it is talking to.
 type FinalizeResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	FinalizeId    string                 `protobuf:"bytes,1,opt,name=finalize_id,json=finalizeId,proto3" json:"finalize_id,omitempty"`
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	FinalizeId string                 `protobuf:"bytes,1,opt,name=finalize_id,json=finalizeId,proto3" json:"finalize_id,omitempty"`
+	// account-scoped freshness watermark; see engine.proto ExecuteResponse.freshness_gen for the full contract.
+	FreshnessGen  uint64 `protobuf:"varint,2,opt,name=freshness_gen,json=freshnessGen,proto3" json:"freshness_gen,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -411,6 +422,13 @@ func (x *FinalizeResponse) GetFinalizeId() string {
 		return x.FinalizeId
 	}
 	return ""
+}
+
+func (x *FinalizeResponse) GetFreshnessGen() uint64 {
+	if x != nil {
+		return x.FreshnessGen
+	}
+	return 0
 }
 
 // FinalizeStatusRequest asks after a previously returned finalize_id.
@@ -471,7 +489,9 @@ type FinalizeStatusResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	State FinalizeState          `protobuf:"varint,1,opt,name=state,proto3,enum=knowledge.v1.FinalizeState" json:"state,omitempty"`
 	// error is set only when state is FINALIZE_STATE_FAILED.
-	Error         string `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`
+	Error string `protobuf:"bytes,2,opt,name=error,proto3" json:"error,omitempty"`
+	// account-scoped freshness watermark; see engine.proto ExecuteResponse.freshness_gen for the full contract.
+	FreshnessGen  uint64 `protobuf:"varint,3,opt,name=freshness_gen,json=freshnessGen,proto3" json:"freshness_gen,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -518,6 +538,13 @@ func (x *FinalizeStatusResponse) GetError() string {
 		return x.Error
 	}
 	return ""
+}
+
+func (x *FinalizeStatusResponse) GetFreshnessGen() uint64 {
+	if x != nil {
+		return x.FreshnessGen
+	}
+	return 0
 }
 
 // BatchEdge mirrors store.BatchEdge (pkg/store/db_types.go:11-26) AND the
@@ -717,8 +744,10 @@ func (x *FetchCloudSubgraphRequest) GetClientContext() *ClientContext {
 // BFS dep-checker walks proxy edges transparently and needs proxies
 // in-slice).
 type FetchCloudSubgraphResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Slices        []*CloudSubgraphSlice  `protobuf:"bytes,1,rep,name=slices,proto3" json:"slices,omitempty"`
+	state  protoimpl.MessageState `protogen:"open.v1"`
+	Slices []*CloudSubgraphSlice  `protobuf:"bytes,1,rep,name=slices,proto3" json:"slices,omitempty"`
+	// account-scoped freshness watermark; see engine.proto ExecuteResponse.freshness_gen for the full contract.
+	FreshnessGen  uint64 `protobuf:"varint,2,opt,name=freshness_gen,json=freshnessGen,proto3" json:"freshness_gen,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -758,6 +787,13 @@ func (x *FetchCloudSubgraphResponse) GetSlices() []*CloudSubgraphSlice {
 		return x.Slices
 	}
 	return nil
+}
+
+func (x *FetchCloudSubgraphResponse) GetFreshnessGen() uint64 {
+	if x != nil {
+		return x.FreshnessGen
+	}
+	return 0
 }
 
 type CloudSubgraphSlice struct {
@@ -839,8 +875,9 @@ const file_knowledge_v1_ingest_proto_rawDesc = "" +
 	"\x05edges\x18\b \x03(\v2\x17.knowledge.v1.BatchEdgeR\x05edges\x12\x18\n" +
 	"\apromote\x18\t \x01(\bR\apromote\x12B\n" +
 	"\x0eclient_context\x18\n" +
-	" \x01(\v2\x1b.knowledge.v1.ClientContextR\rclientContext\"\x16\n" +
-	"\x14CollectChunkResponse\"\xea\x01\n" +
+	" \x01(\v2\x1b.knowledge.v1.ClientContextR\rclientContext\";\n" +
+	"\x14CollectChunkResponse\x12#\n" +
+	"\rfreshness_gen\x18\x01 \x01(\x04R\ffreshnessGen\"\xea\x01\n" +
 	"\x0fFinalizeRequest\x12\x14\n" +
 	"\x05epoch\x18\x01 \x01(\x04R\x05epoch\x12\x1d\n" +
 	"\n" +
@@ -849,17 +886,19 @@ const file_knowledge_v1_ingest_proto_rawDesc = "" +
 	"graph_name\x18\x03 \x01(\tR\tgraphName\x12%\n" +
 	"\x0ecurrent_branch\x18\x04 \x01(\tR\rcurrentBranch\x12\x18\n" +
 	"\apromote\x18\x05 \x01(\bR\apromote\x12B\n" +
-	"\x0eclient_context\x18\x06 \x01(\v2\x1b.knowledge.v1.ClientContextR\rclientContext\"3\n" +
+	"\x0eclient_context\x18\x06 \x01(\v2\x1b.knowledge.v1.ClientContextR\rclientContext\"X\n" +
 	"\x10FinalizeResponse\x12\x1f\n" +
 	"\vfinalize_id\x18\x01 \x01(\tR\n" +
-	"finalizeId\"|\n" +
+	"finalizeId\x12#\n" +
+	"\rfreshness_gen\x18\x02 \x01(\x04R\ffreshnessGen\"|\n" +
 	"\x15FinalizeStatusRequest\x12\x1f\n" +
 	"\vfinalize_id\x18\x01 \x01(\tR\n" +
 	"finalizeId\x12B\n" +
-	"\x0eclient_context\x18\x02 \x01(\v2\x1b.knowledge.v1.ClientContextR\rclientContext\"a\n" +
+	"\x0eclient_context\x18\x02 \x01(\v2\x1b.knowledge.v1.ClientContextR\rclientContext\"\x86\x01\n" +
 	"\x16FinalizeStatusResponse\x121\n" +
 	"\x05state\x18\x01 \x01(\x0e2\x1b.knowledge.v1.FinalizeStateR\x05state\x12\x14\n" +
-	"\x05error\x18\x02 \x01(\tR\x05error\"\x92\x02\n" +
+	"\x05error\x18\x02 \x01(\tR\x05error\x12#\n" +
+	"\rfreshness_gen\x18\x03 \x01(\x04R\ffreshnessGen\"\x92\x02\n" +
 	"\tBatchEdge\x12\x19\n" +
 	"\bfrom_idx\x18\x01 \x01(\x05R\afromIdx\x12\x15\n" +
 	"\x06to_idx\x18\x02 \x01(\x05R\x05toIdx\x12\x17\n" +
@@ -878,9 +917,10 @@ const file_knowledge_v1_ingest_proto_rawDesc = "" +
 	"\vgraph_names\x18\x01 \x03(\tR\n" +
 	"graphNames\x12#\n" +
 	"\rtype_prefixes\x18\x02 \x03(\tR\ftypePrefixes\x12B\n" +
-	"\x0eclient_context\x18\x03 \x01(\v2\x1b.knowledge.v1.ClientContextR\rclientContext\"V\n" +
+	"\x0eclient_context\x18\x03 \x01(\v2\x1b.knowledge.v1.ClientContextR\rclientContext\"{\n" +
 	"\x1aFetchCloudSubgraphResponse\x128\n" +
-	"\x06slices\x18\x01 \x03(\v2 .knowledge.v1.CloudSubgraphSliceR\x06slices\"|\n" +
+	"\x06slices\x18\x01 \x03(\v2 .knowledge.v1.CloudSubgraphSliceR\x06slices\x12#\n" +
+	"\rfreshness_gen\x18\x02 \x01(\x04R\ffreshnessGen\"|\n" +
 	"\x12CloudSubgraphSlice\x12\x1d\n" +
 	"\n" +
 	"graph_name\x18\x01 \x01(\tR\tgraphName\x12\x1d\n" +

@@ -78,8 +78,15 @@ func (s staticTokenSource) Token(_ context.Context) (string, auth.PermissionSet,
 // cloud) so each subtest asserts which backend serviced a given call. The
 // canned ExecuteResponse carries one search hit so the dispatcher's render
 // pipeline produces real LLM-facing output for the body assertions.
+// freshnessGen is the account watermark this engine stamps on the responses
+// that carry one. Zero (the default) means "no watermark", which is what every
+// fixture that never sets it serves — so the field is invisible to the routing
+// subtests. genPoll counts the bulk gen-poll RPCs, which is how a test observes
+// that something woke the pipeline.
 type countingEngine struct {
-	execute atomic.Int32
+	execute      atomic.Int32
+	genPoll      atomic.Int32
+	freshnessGen atomic.Uint64
 }
 
 func (e *countingEngine) Execute(
@@ -91,6 +98,7 @@ func (e *countingEngine) Execute(
 		SearchResults: []*knowledgev1.HydratedResult{
 			{Score: 0.9, Node: &knowledgev1.Node{Id: "n1", Type: "finding", SymbolName: "Hit"}},
 		},
+		FreshnessGen: e.freshnessGen.Load(),
 	}), nil
 }
 
@@ -127,7 +135,10 @@ func (e *countingEngine) PipelineScan(
 func (e *countingEngine) PipelineGenPoll(
 	context.Context, *connect.Request[knowledgev1.PipelineGenPollRequest],
 ) (*connect.Response[knowledgev1.PipelineGenPollResponse], error) {
-	return connect.NewResponse(&knowledgev1.PipelineGenPollResponse{}), nil
+	e.genPoll.Add(1)
+	return connect.NewResponse(&knowledgev1.PipelineGenPollResponse{
+		FreshnessGen: e.freshnessGen.Load(),
+	}), nil
 }
 
 func (e *countingEngine) CorpusDelta(

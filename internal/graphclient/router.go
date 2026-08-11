@@ -269,6 +269,24 @@ func (r *Router) ExportGraph(
 	return gc.ExportGraph(ctx, req)
 }
 
+// FreshnessGen returns the account freshness watermark last observed on a
+// response from the backend this call routes to. ErrNoBackend (or a nil backend)
+// reads as 0, which the wire contract defines as "no watermark".
+//
+// It routes through pick(ctx) rather than reading a package-level slot because a
+// logged-in client holds BOTH a cloud *GraphClient and a local one (Local()
+// serves sync push/pull, :49-56) and their counters belong to different
+// accounts. Reading the backend the caller's traffic actually went to is what
+// makes a later compare meaningful; a shared cell would flap between two
+// accounts' values forever.
+func (r *Router) FreshnessGen(ctx context.Context) uint64 {
+	be, err := r.pick(ctx)
+	if err != nil || be == nil {
+		return 0
+	}
+	return be.FreshnessGen()
+}
+
 // Stats is the per-call-routed EngineService.Stats forwarder. Mirrors
 // (*GraphClient).Stats (client.go:111) so the statsRPC type assertion
 // (intercept_query_cloud_cicd.go:236, intercept_query_stats.go:53, etc.)

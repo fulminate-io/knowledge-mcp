@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/session"
 )
@@ -21,11 +22,17 @@ import (
 // enough to avoid flakes on a loaded CI box, short enough to fail fast.
 func timeAfter() <-chan time.Time { return time.After(5 * time.Second) }
 
-// newTestHTTPServer builds an HTTPServer wrapping a minimal MCPClient. The
-// reaper is disabled (idleTTL 0) so tests drive sessions deterministically.
-func newTestHTTPServer() *HTTPServer {
+// newTestHTTPServer builds an HTTPServer wrapping a minimal MCPClient, with no
+// hive claim Registry. The reaper is disabled (idleTTL 0) so tests drive
+// sessions deterministically.
+func newTestHTTPServer() *HTTPServer { return newTestHTTPServerWithHive(nil) }
+
+// newTestHTTPServerWithHive is newTestHTTPServer with a hive claim Registry
+// wired, for the session-lifecycle tests. The two share one constructor call so
+// the package keeps a single NewHTTPServer call site for the helper.
+func newTestHTTPServerWithHive(hiveSessions *hivemonitor.Registry) *HTTPServer {
 	mc := NewMCPClient(MCPClientConfig{Version: "test"})
-	h := NewHTTPServer(mc, 15023, nil)
+	h := NewHTTPServer(mc, 15023, nil, hiveSessions)
 	h.idleTTL = 0
 	return h
 }
@@ -203,7 +210,7 @@ func TestHTTPDispatchStampsSessionCwd(t *testing.T) {
 			return params, true, kgtools.ToolResult{Content: []kgtools.ContentBlock{{Type: "text", Text: "ok"}}}
 		},
 	})
-	h := NewHTTPServer(mc, 15023, nil)
+	h := NewHTTPServer(mc, 15023, nil, nil)
 	h.idleTTL = 0
 
 	sidK := doInitialize(t, h, 54321)
@@ -274,7 +281,7 @@ func TestPerSessionCancellationIsolation(t *testing.T) {
 		},
 		LoggedIn: func(context.Context) bool { return true }, // skip EnsureServer
 	})
-	h := NewHTTPServer(mc, 15023, nil)
+	h := NewHTTPServer(mc, 15023, nil, nil)
 	h.idleTTL = 0
 
 	sidA := doInitialize(t, h, 54321)

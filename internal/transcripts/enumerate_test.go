@@ -71,6 +71,49 @@ func TestEnumerate(t *testing.T) {
 	}
 }
 
+// TestClaudeProjectSessions asserts the single-project readdir: only the session
+// transcripts sitting DIRECTLY in the project dir are returned, with the nested
+// subagent transcript excluded — the distinction Enumerate deliberately does not
+// draw. The subagent file is written LAST so it is the newest in the tree, which
+// is what a recency-picking caller would otherwise have bound.
+func TestClaudeProjectSessions(t *testing.T) {
+	home := t.TempDir()
+	projDir := filepath.Join(home, ".claude", "projects", "-Users-me-code-knowledge")
+
+	mustWrite(t, filepath.Join(projDir, "sess-1.jsonl"), "{\"type\":\"assistant\"}\n")
+	mustWrite(t, filepath.Join(projDir, "sess-2.jsonl"), "{\"type\":\"assistant\"}\n")
+	mustWrite(t, filepath.Join(projDir, "notes.txt"), "not a transcript\n")
+	mustWrite(t, filepath.Join(projDir, "sess-1", "subagents", "agent-abc.jsonl"), "{\"type\":\"assistant\"}\n")
+
+	entries, err := ClaudeProjectSessions(projDir)
+	if err != nil {
+		t.Fatalf("ClaudeProjectSessions: %v", err)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("entries = %d, want 2 top-level sessions; got %v", len(entries), entries)
+	}
+	for _, e := range entries {
+		if e.Source != SourceClaude {
+			t.Errorf("entry %s source = %q, want claude", e.Path, e.Source)
+		}
+		if e.Size == 0 {
+			t.Errorf("entry %s has zero Size", e.Path)
+		}
+		if filepath.Dir(e.Path) != projDir {
+			t.Errorf("entry %s is not directly in the project dir", e.Path)
+		}
+	}
+
+	// A project dir that does not exist is "no sessions", not an error.
+	missing, err := ClaudeProjectSessions(filepath.Join(home, ".claude", "projects", "-nope"))
+	if err != nil {
+		t.Fatalf("missing project dir: want nil error, got %v", err)
+	}
+	if len(missing) != 0 {
+		t.Fatalf("missing project dir: want no entries, got %v", missing)
+	}
+}
+
 // TestEnumerateMissingCodexRoot asserts that a user with only Claude installed
 // (no ~/.codex root) still enumerates Claude entries with no error.
 func TestEnumerateMissingCodexRoot(t *testing.T) {

@@ -68,6 +68,12 @@ type fakeWireClient struct {
 	// via seedGenPoll.
 	genPollResp *knowledgev1.PipelineGenPollResponse
 
+	// genPollCatalogGen is the account CATALOG watermark every PipelineGenPoll
+	// response carries. Default 0 — the value a server serves before its first
+	// bump, which the client's zero-skip ignores — so tests that seed only entries
+	// (seedGenPoll) never trip the catalog compare. Set via seedGenPollCatalog.
+	genPollCatalogGen uint64
+
 	// embedScanResp / summaryScanResp, when non-nil, are returned for the
 	// matching axis's scans (req.axis == "embed" / "summary") INSTEAD of scanResp.
 	// Lets a test seed eligible items on ONE axis only while the other returns
@@ -141,11 +147,12 @@ func (f *fakeWireClient) PipelineGenPoll(_ context.Context, _ *knowledgev1.Pipel
 	f.mu.Lock()
 	f.calls["pipeline_gen_poll"]++
 	resp := f.genPollResp
+	catalogGen := f.genPollCatalogGen
 	f.mu.Unlock()
 	if resp == nil {
-		return &knowledgev1.PipelineGenPollResponse{}, nil
+		return &knowledgev1.PipelineGenPollResponse{CatalogGen: catalogGen}, nil
 	}
-	return resp, nil
+	return &knowledgev1.PipelineGenPollResponse{Entries: resp.GetEntries(), CatalogGen: catalogGen}, nil
 }
 
 // seedGenPoll installs the response returned for the bulk PipelineGenPoll RPC,
@@ -156,6 +163,18 @@ func (f *fakeWireClient) seedGenPoll(entries ...*knowledgev1.PipelineGenPollEntr
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.genPollResp = &knowledgev1.PipelineGenPollResponse{Entries: entries}
+}
+
+// seedGenPollCatalog installs both the per-(graph,axis) entries AND the account
+// CATALOG watermark the bulk PipelineGenPoll response carries, modeling a server
+// whose graph catalog has moved. Separate from seedGenPoll so that helper's
+// signature stays exactly as its callers (and the landed graph criterion pinning
+// it) expect; a test that does not care about the catalog keeps getting 0.
+func (f *fakeWireClient) seedGenPollCatalog(catalogGen uint64, entries ...*knowledgev1.PipelineGenPollEntry) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.genPollResp = &knowledgev1.PipelineGenPollResponse{Entries: entries}
+	f.genPollCatalogGen = catalogGen
 }
 
 // scanCountForAxis returns how many pipeline_scan RPCs the fake observed for the
@@ -320,6 +339,38 @@ func (f *fakeWireClient) rateLimitGraphNames(gt kgtypes.GraphType, retryAfterSec
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.rateLimitGraphTypes[string(gt)] = retryAfterSecs
+}
+
+// genPollCallCount returns how many bulk PipelineGenPoll RPCs the fake observed,
+// read under the mutex. Tests that drive the gen-poll loop goroutine must go
+// through here rather than reading f.calls directly: the loop writes that map
+// concurrently with the assertion.
+func (f *fakeWireClient) genPollCallCount() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.calls["pipeline_gen_poll"]
+}
+
+// codeGraphNamesReads returns how many listLoadedGraphs graph-names Executes the
+// fake observed for the CODE graph type, read under the mutex (the discovery loop
+// goroutine appends to execRequests concurrently). Each catalog enumeration issues
+// exactly one such read per eligible type (rpc.go's per-type loop), so counting a
+// SINGLE type counts ENUMERATIONS — the unit the wake-driven discovery loop is
+// asserted in, and one that does not move when the eligible-type set changes.
+func (f *fakeWireClient) codeGraphNamesReads() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	n := 0
+	for _, req := range f.execRequests {
+		q := req.GetQuery()
+		if q == nil || q.GetReturnMode() != knowledgev1.ReturnMode_RETURN_MODE_GRAPH_NAMES {
+			continue
+		}
+		if req.GetTarget().GetGraph() == string(kgtypes.GraphCode) {
+			n++
+		}
+	}
+	return n
 }
 
 // mutateCallCount returns the number of mutate(update_batch) calls the

@@ -9,6 +9,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
 // collect_runtime.go holds the standing, daemon-lifetime runtime that owns
@@ -33,6 +35,26 @@ import (
 // override the field in-package with a small value so they never sleep 60s.
 const collectDetachThreshold = 60 * time.Second
 
+// collectGateMaxHold bounds how long one in-flight entry may keep the gap-scan
+// gate raised for its graph (CollectInFlightForGraph). It exists because a
+// detached collect carries NO deadline of its own: its ctx descends from
+// BaseContext, which is cancelled only by daemon Stop, so a collect blocked on an
+// unreachable server never terminates and never reaches the completion block that
+// releases the gate.
+//
+// The bound is at least 8x the longest collect-related span measurable in
+// practice, so it does not expire during healthy work.
+//
+// THE FALSE-POSITIVE DIRECTION MATTERS AND MUST NOT BE "TUNED AWAY". If the bound
+// does expire during a HEALTHY long collect, the gate drops and gap scanning
+// resumes mid-collect — a return to the pre-gate behavior for the rest of that
+// collect, nothing worse. The alternative failure is far worse and completely
+// silent: a wedged gate stops enriching that graph forever, with no error
+// anywhere, turning a visible stale status into invisible stale data. Bounded
+// re-admission beats unbounded staleness. Do not raise this without re-reading
+// that trade.
+const collectGateMaxHold = 30 * time.Minute
+
 // CollectRunStatus is the exported, immutable snapshot of one target's collect
 // run — either the in-flight state (State=="running", FinishedAt zero) or the
 // last completed/failed outcome. manage(status) renders these.
@@ -49,6 +71,11 @@ type CollectRunStatus struct {
 type collectRun struct {
 	label     string
 	startedAt time.Time
+	// graph is the BARE code-graph name this run collects into (empty for every
+	// non-code collector type). It is what CollectInFlightForGraph matches against
+	// a registered collector's name, and it is deliberately NOT branch-qualified —
+	// see CollectInFlightForGraph.
+	graph string
 }
 
 // CollectRunHandle is the completion handle Start returns for a freshly-launched
@@ -142,7 +169,12 @@ func (r *CollectRuntime) clockNow() time.Time {
 // completion block updates the registry outcome, stores h.err, and closes h.done
 // LAST — that ordering is the happens-before edge for a lock-free Err()-after-
 // Done() read and is a plain data race if inverted.
-func (r *CollectRuntime) Start(key, label string, work func() error) (h *CollectRunHandle, started bool, elapsed time.Duration) {
+// graph is the BARE code-graph name this run targets (empty for non-code
+// collectors); recording it on the same map entry is what lets
+// CollectInFlightForGraph answer, and what makes the completion block's
+// delete(r.running, key) release the gap-scan gate on success, on error and on a
+// recovered panic alike — with no second lifetime to keep in step.
+func (r *CollectRuntime) Start(key, label, graph string, work func() error) (h *CollectRunHandle, started bool, elapsed time.Duration) {
 	r.mu.Lock()
 	if run, busy := r.running[key]; busy {
 		el := r.clockNow().Sub(run.startedAt)
@@ -150,7 +182,7 @@ func (r *CollectRuntime) Start(key, label string, work func() error) (h *Collect
 		return nil, false, el
 	}
 	startedAt := r.clockNow()
-	r.running[key] = &collectRun{label: label, startedAt: startedAt}
+	r.running[key] = &collectRun{label: label, startedAt: startedAt, graph: graph}
 	r.mu.Unlock()
 
 	h = &CollectRunHandle{done: make(chan struct{})}
@@ -201,6 +233,38 @@ func (r *CollectRuntime) Start(key, label string, work func() error) (h *Collect
 		close(h.done)
 	})
 	return h, true, 0
+}
+
+// CollectInFlightForGraph reports whether a collect into the code graph called
+// name is running right now. The LLM pipeline consults it (through an inert hook
+// installed at boot) to hold its gap scan off a graph whose collect is still
+// landing rows.
+//
+// THE NAME IT MATCHES IS THE BARE REPO NAME, NEVER BRANCH-QUALIFIED, and that is
+// the whole correctness of the gate. The pipeline registers exactly ONE collector
+// per BASE code-graph name — the catalog it enumerates lists base graphs only, and
+// branch-overlay qualification happens per ITEM, not per collector. A recorded
+// identity carrying a branch suffix could therefore never equal any registered
+// collector's name, and the gate would be permanently inert while every one of its
+// own tests stayed green, because those tests supply both names themselves. A bare
+// name gates every overlay of that repo, which is the only granularity the
+// registration model offers and exactly the one wanted here.
+//
+// Entries older than collectGateMaxHold are IGNORED, so a collect that never
+// terminates cannot starve the pipeline forever.
+func (r *CollectRuntime) CollectInFlightForGraph(gt kgtypes.GraphType, name string) bool {
+	if r == nil || gt != kgtypes.GraphCode || name == "" {
+		return false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	now := r.clockNow()
+	for _, run := range r.running {
+		if run.graph == name && now.Sub(run.startedAt) < collectGateMaxHold {
+			return true
+		}
+	}
+	return false
 }
 
 // Snapshot returns one CollectRunStatus per running target (State=="running",

@@ -127,15 +127,31 @@ type TimelineTopK struct {
 
 // NewTimelineTopK starts an accumulation over the given time field, retaining at
 // most rowCap entries. A non-positive rowCap falls back to TimelineRowCapDefault
-// rather than silently retaining nothing.
+// rather than silently retaining nothing, and one above TimelineRowCapMax is
+// clamped to it.
+//
+// BOTH BOUNDS BELONG HERE, not only at the call site. This constructor is
+// exported and sizes an allocation from rowCap, so a caller passing a huge value
+// — the wire path clamps, but nothing makes every future caller do so — used to
+// overflow the capacity hint into a negative and panic the allocation
+// (CWE-190). Clamping first makes the retention bound the constructor's own
+// guarantee rather than a convention its callers have to keep.
+//
+// The capacity hint is the bare bound with no arithmetic, so no expression the
+// allocator sees can overflow. The page of headroom the sum used to add is worth
+// exactly one growth: Add appends a whole page before truncating back to rowCap,
+// and truncation keeps the grown capacity, so every later page reuses it.
 func NewTimelineTopK(field string, rowCap int) *TimelineTopK {
 	if rowCap <= 0 {
 		rowCap = TimelineRowCapDefault
 	}
+	if rowCap > TimelineRowCapMax {
+		rowCap = TimelineRowCapMax
+	}
 	return &TimelineTopK{
 		field:   field,
 		rowCap:  rowCap,
-		entries: make([]TimelineEntry, 0, rowCap+BrowsePageSize),
+		entries: make([]TimelineEntry, 0, rowCap),
 	}
 }
 

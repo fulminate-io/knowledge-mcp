@@ -21,10 +21,11 @@ import (
 // evidence/source) the generic UPDATE arm would otherwise drop on the floor,
 // re-derives the auto-summary when the caller passed none, and DERIVES a
 // criterion's name from its description — a caller-supplied name is rejected on
-// that type rather than silently discarded. Unroutable params for the
-// (operation, type) pair are rejected loudly (byte-identical node after reject). Returns
-// (false, _) when it does not claim the update (the caller routes it through
-// the cloud-aware engine dispatch).
+// that type rather than silently discarded. Two classes of loud rejection, both
+// leaving the node byte-identical (no forward issued): params unroutable for the
+// (operation, type) pair, and a DERIVED criterion summary over the rune cap.
+// Returns (false, _) when it does not claim the update (the caller routes it
+// through the cloud-aware engine dispatch).
 //
 // CLEAN-FORWARD seam: executeMutate re-compiles the forwarded args through
 // engine.Compile → compileMutateByIDUpdate → updateSetFields, which routes
@@ -92,9 +93,23 @@ func handleClientMutateUpdateTyped(
 
 	// (c) Re-derive the auto-summary ONLY when the caller passed none AND a
 	// derive-source field changed. Caller-supplied summary always wins.
+	//
+	// The length gate lives INSIDE this branch by design: an explicit caller
+	// summary never reaches it, so it stays unvalidated and verbatim at any
+	// length — the carve-out holds by construction rather than by a check that
+	// could be written wrong. It is criterion-scoped because a criterion summary
+	// is derived-not-authored (create gates the same derivation), while rule and
+	// finding summaries are author-supplied and their derivations routinely
+	// exceed the cap. Rejecting before the forward is built keeps this handler's
+	// discipline that a rejected update issues zero writes.
 	summary := a.Summary
 	if summary == "" {
-		summary = rederiveUpdateSummary(nodeType, a, node)
+		summary = rederiveUpdateSummary(nodeType, a, meta, node)
+		if nodeType == kgtypes.NodeCriterion {
+			if verr := validate.DerivedSummary("mutate(update, type=criterion)", "criterion.summary", "description + command", summary); verr != nil {
+				return true, errorResult(verr.Error())
+			}
+		}
 	}
 
 	// (d) Criterion-only: DERIVE name=description when description changes
@@ -234,28 +249,31 @@ func mergeUpdateMetadata(a mutateArgs, nodeType kgtypes.NodeType) map[string]str
 }
 
 // rederiveUpdateSummary re-derives the auto-summary for a typed update using the
-// EFFECTIVE post-update fields. Supplied args win; unsupplied fields are read
-// from the looked-up node by SOURCE — metadata fields (command/criterion_type/
-// scope/evidence) via kgtypes.Value, node FIELDS (name → SymbolName, description)
-// via proto getters. Returns "" for types with no derived summary (the caller
-// then leaves summary unchanged).
-func rederiveUpdateSummary(nodeType kgtypes.NodeType, a mutateArgs, node *knowledgev1.Node) string {
+// EFFECTIVE post-update fields. Metadata-backed sources (criterion type/command,
+// rule scope, finding evidence) are read from the MERGED metadata map via
+// effectiveMeta — the map this same call is about to store, so the derived
+// summary describes the value being written rather than the one being replaced.
+// Node FIELDS (name → SymbolName, description) have no metadata route and are
+// read from the looked-up node via proto getters with supplied args winning.
+// Returns "" for types with no derived summary (the caller then leaves summary
+// unchanged).
+func rederiveUpdateSummary(nodeType kgtypes.NodeType, a mutateArgs, meta map[string]string, node *knowledgev1.Node) string {
 	switch nodeType {
 	case kgtypes.NodeCriterion:
-		cType := effective(a.CriterionType, kgtypes.Value(node, "type"))
+		cType := effectiveMeta(meta, "type", node)
 		if cType == "" {
 			cType = "manual"
 		}
 		desc := effective(a.Description, node.GetDescription())
-		command := effective(a.Command, kgtypes.Value(node, "command"))
+		command := effectiveMeta(meta, "command", node)
 		return projects.DeriveCriterionSummary(cType, desc, command)
 	case kgtypes.NodeRule:
 		name := effective(a.Name, node.GetSymbolName())
-		scope := effective(a.Scope, kgtypes.Value(node, "scope"))
+		scope := effectiveMeta(meta, "scope", node)
 		return projects.DeriveRuleSummary(name, scope)
 	case kgtypes.NodeFinding:
 		desc := effective(a.Description, node.GetDescription())
-		evidence := effective(a.Evidence, kgtypes.Value(node, "evidence"))
+		evidence := effectiveMeta(meta, "evidence", node)
 		return projects.DeriveFindingSummary(desc, evidence)
 	}
 	return ""
@@ -269,6 +287,22 @@ func effective(supplied, existing string) string {
 		return supplied
 	}
 	return existing
+}
+
+// effectiveMeta returns the post-update value of a metadata-backed derive
+// source: the merged map's value whenever the key is PRESENT, otherwise the
+// node's current stored value. Presence rather than non-emptiness is the test,
+// because an explicit empty value is a CLEAR the update stores — falling back
+// on it would re-derive the summary from the value the caller just cleared.
+//
+// A nil meta map is safe to index: mergeUpdateMetadata returns nil when the
+// merged map is empty, and a read from a nil map yields ("", false), which
+// takes the node-value branch.
+func effectiveMeta(meta map[string]string, key string, node *knowledgev1.Node) string {
+	if v, ok := meta[key]; ok {
+		return v
+	}
+	return kgtypes.Value(node, key)
 }
 
 // rejectUnroutableUpdateParams returns a structured CodeInvalidArgument-style

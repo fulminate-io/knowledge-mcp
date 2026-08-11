@@ -40,6 +40,10 @@ var jsLangConfig = LangConfig{
 	CommentKinds: []string{"comment"},
 	IdentRule:    isJSIdent,
 	IsTestFile:   isJSTestFile,
+	// The grammar accepts JSX (this is what .jsx files parse under) and
+	// absorbs newline-bearing inter-child whitespace into the following node's
+	// leading anonymous token exactly as tsx does.
+	TrimsAnonTokenWhitespace: true,
 }
 
 // isJSTestFile reports whether a repo-relative path is test source under the

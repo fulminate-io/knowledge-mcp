@@ -8,10 +8,10 @@ import "sync"
 // worker's hive calls before they reach the cloud, so a degenerate (or rogue)
 // LLM cannot escape — its own OS gates it.
 //
-// IDENTITY: the ban is keyed on the HARNESS session-id (claude
-// CLAUDE_CODE_SESSION_ID / codex rollout session_meta.id) — the
-// OS/harness/file-sourced, LLM-uncontrolled identity from the deterministic
-// transcript binding — NOT the daemon-minted, reconnect-volatile Mcp-Session-Id.
+// IDENTITY: the ban is keyed on the HARNESS session-id (the claude transcript's
+// filename stem / codex rollout session_meta.id) — the file-sourced,
+// LLM-uncontrolled identity from the deterministic transcript binding — NOT the
+// daemon-minted, reconnect-volatile Mcp-Session-Id.
 // Keying on the harness id gives reconnect-stability: a new Mcp-Session-Id for
 // the same CLI session re-resolves (via the Monitor's per-tick RecordResolution)
 // to the same harness id and stays banned.

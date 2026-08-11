@@ -60,6 +60,47 @@ func Enumerate() ([]Entry, error) {
 	return entries, nil
 }
 
+// ClaudeProjectSessions lists the SESSION transcripts sitting directly in one
+// claude project directory (~/.claude/projects/<encoded-cwd>) — a single
+// readdir, deliberately NOT recursive. The scheme names each session transcript
+// <sessionId>.jsonl at the top level of the project dir, while per-session
+// SUBDIRECTORIES hold subagent transcripts; a recursive walk (what Enumerate
+// does, because the upload corpus wants subagents too) therefore surfaces files
+// whose names are not session ids, and on a busy machine one of those is
+// routinely the newest file in the tree. Callers binding a live session by
+// recency need this narrower view.
+//
+// A missing directory yields no entries and no error, mirroring Enumerate's
+// missing-root contract; a file that vanishes between dirent and stat is
+// skipped rather than failing the listing.
+func ClaudeProjectSessions(dir string) ([]Entry, error) {
+	dirents, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+
+	var entries []Entry
+	for _, d := range dirents {
+		if d.IsDir() || !strings.HasSuffix(d.Name(), ".jsonl") {
+			continue
+		}
+		info, statErr := d.Info()
+		if statErr != nil {
+			continue
+		}
+		entries = append(entries, Entry{
+			Path:    filepath.Join(dir, d.Name()),
+			Source:  SourceClaude,
+			Size:    info.Size(),
+			ModTime: info.ModTime(),
+		})
+	}
+	return entries, nil
+}
+
 // walkRoot walks one corpus root, appending an Entry for every non-dir file that
 // satisfies match. A missing root is treated as "no transcripts" (nil error, no
 // entries); per-entry read errors skip that subtree rather than aborting. The

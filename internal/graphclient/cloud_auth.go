@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"sync/atomic"
 
 	"connectrpc.com/connect"
 
@@ -53,13 +54,23 @@ func NewCloudGraphClient(baseURL string, ts auth.TokenSource) *GraphClient {
 	// deployment that reads the per-tag metrics — so the stamper is installed
 	// here as well as on the local client. The health client gets it too and is
 	// unaffected: its request messages carry no client_context field.
-	stamp := connect.WithInterceptors(newOperationInterceptor())
+	// The session stamper rides here too: the cloud is the deployment that reads
+	// the harness session-id off the wire to key a hive member.
+	//
+	// The freshness observer is PREPENDED for the same reason it is on the local
+	// client: connect composes interceptors first-in-slice OUTERMOST, so it sees
+	// the response finally returned to the caller. This is the constructor that
+	// matters most for it — the cloud is the deployment serving a non-zero
+	// watermark today, and a miss here is silent rather than compile-caught.
+	gens := &atomic.Uint64{}
+	stamp := connect.WithInterceptors(newFreshnessObserver(gens), newOperationInterceptor(), newSessionInterceptor())
 	return &GraphClient{
-		baseURL:    baseURL,
-		httpClient: httpClient,
-		health:     knowledgev1connect.NewHealthServiceClient(httpClient, baseURL, stamp),
-		ingest:     knowledgev1connect.NewIngestServiceClient(httpClient, baseURL, stamp),
-		engine:     knowledgev1connect.NewEngineServiceClient(httpClient, baseURL, stamp),
+		baseURL:      baseURL,
+		httpClient:   httpClient,
+		health:       knowledgev1connect.NewHealthServiceClient(httpClient, baseURL, stamp),
+		ingest:       knowledgev1connect.NewIngestServiceClient(httpClient, baseURL, stamp),
+		engine:       knowledgev1connect.NewEngineServiceClient(httpClient, baseURL, stamp),
+		freshnessGen: gens,
 	}
 }
 

@@ -19,6 +19,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/config"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/llmproviders"
 	"github.com/fulminate-io/knowledge-mcp/internal/pipeline"
 )
@@ -28,7 +29,7 @@ import (
 // backend via Router.Backend(ctx) (cloud when logged in, local otherwise), so a
 // mid-session login flip re-routes the next scan + writeback without a restart.
 // Backend(ctx) hands the pipeline the concrete backend to bind per collector;
-// LoggedIn(ctx) lets refreshOnce detect a flip and rebind every collector.
+// LoggedIn(ctx) lets CheckLoginFlip detect a flip and rebind every collector.
 //
 // Lives client-side next to wirePipelineRuntime (placement by ownership): it
 // composes the Router with the pipeline's contract and is consumed only by the
@@ -94,7 +95,7 @@ func (a routedWireClient) Backend(ctx context.Context) (pipeline.WireClient, err
 	return gc, nil
 }
 
-// LoggedIn reports the live login state for refreshOnce's flip detection.
+// LoggedIn reports the live login state for CheckLoginFlip's flip detection.
 func (a routedWireClient) LoggedIn(ctx context.Context) bool {
 	return a.router.LoggedIn(ctx)
 }
@@ -104,6 +105,32 @@ var (
 	_ pipeline.WireClient      = routedWireClient{}
 	_ pipeline.BackendResolver = routedWireClient{}
 )
+
+// attachCollectGate installs the per-graph collect-gate predicate: while a
+// collect into a graph is in flight, that graph's scan loop holds off entirely,
+// so the gap scan's writeback stops landing in the middle of the collect still
+// uploading into the same graph.
+//
+// It is built HERE because bootstrap is the only layer where both the collect
+// runtime and the pipeline are visible; the pipeline package must never import
+// the package that owns the runtime.
+//
+// Each per-collector predicate is bound to THE COLLECTOR'S OWN registered
+// (gt, name) — the same bare base name RegisterGraph passes to newCollector — so
+// the recorded collect identity and the gated collector's name are the same
+// string by construction, never two independently-derived ones.
+//
+// No runtime (degraded / router-less client) installs NO factory at all, so the
+// per-collector predicate stays nil and the gate is inert.
+func attachCollectGate(p *pipeline.Pipeline, c *client) {
+	rt := c.collectRuntime
+	if rt == nil {
+		return
+	}
+	p.AttachCollectGateFactory(func(gt kgtypes.GraphType, name string) func() bool {
+		return func() bool { return rt.CollectInFlightForGraph(gt, name) }
+	})
+}
 
 // wirePipelineRuntime constructs the client-side LLM pipeline (summarize
 // + embed worker pools + per-graph collectors) and attaches it to *client.
@@ -220,6 +247,8 @@ func wirePipelineRuntime(ctx context.Context, c *client, f Config) error {
 		p.AttachHealFactory(c.buildHealFactory())
 	}
 
+	attachCollectGate(p, c)
+
 	// Surface the LIVE active summarizer entry in pipeline status when a fallback
 	// chain is wired: the callback reads the chain's health so status reports the
 	// CURRENT entry (shifting on failover/recovery), not the static configured
@@ -233,9 +262,11 @@ func wirePipelineRuntime(ctx context.Context, c *client, f Config) error {
 		return err
 	}
 
-	// Initial registration: poll once + register each (gt, name).
-	// Refresh goroutine takes over from here, picking up the delta on
-	// subsequent ticks (worst-case lag: one tick).
+	// Initial registration: enumerate the catalog once + register each (gt, name).
+	// The refresh goroutine below takes over from here, but it is wake-driven and
+	// enumerates nothing on its own, so this seed is what populates the collector
+	// set — and it must run BEFORE that goroutine and the gen-poll loop start, so
+	// the gen-poll loop's own seed has a graph set to sample.
 	p.RefreshOnceForBoot(bootCtx) //nolint:errcheck // best-effort initial seed
 
 	// Boot-delay segment-coverage reconcile (one-shot, OFF the critical path): a
@@ -257,7 +288,8 @@ func wirePipelineRuntime(ctx context.Context, c *client, f Config) error {
 	// the MCP listener bind.
 	go c.bootDelayReconcile(ctx)
 
-	// Continuous refresh in background.
+	// Catalog re-enumeration in background: wake-driven, so it costs nothing until
+	// the account's catalog watermark moves or a login flip rebinds the backend.
 	go p.RefreshLoadedGraphs(ctx)
 
 	// Periodic segment-coverage reconcile in background: re-runs the same probe-heal
@@ -267,10 +299,11 @@ func wirePipelineRuntime(ctx context.Context, c *client, f Config) error {
 	// drainOnShutdown cancels on shutdown, so this loop is unwound (no leak).
 	go c.runSegmentReconcileLoop(ctx, segmentReconcileInterval)
 
-	// Central two-phase bulk gen-poll in background: ONE PipelineGenPoll RPC per
-	// tick samples every loaded graph's dirty-gen (Phase 1) and selectively pokes
-	// only the collectors whose gen advanced to issue their Phase-2 detail
-	// PipelineScan — replacing the prior up-to-2N PipelineScan fan-out per tick.
+	// Central two-phase bulk gen-poll in background: ONE PipelineGenPoll RPC
+	// samples every loaded graph's dirty-gen (Phase 1) and selectively pokes only
+	// the collectors whose gen advanced to issue their Phase-2 detail PipelineScan
+	// — replacing the prior up-to-2N PipelineScan fan-out. The loop polls once at
+	// start to seed the shared snapshot, then only when woken.
 	go p.RunGenPollLoop(ctx)
 
 	// Background summarizer-chain health prober (multi-entry chains only): every

@@ -48,11 +48,16 @@
 // taken as CONTIGUOUS BYTE RANGES rather than reassembled token by token,
 // which is precisely why every inter-token byte inside them survives.
 //
-// WHY NO PATTERN ARGUMENT IS NEEDED. The walker records an alignment only when
-// the pattern token's text equals the target token's text
-// (walker.go:237-242), so a literal anchor's SOURCE text is also its pattern
-// text. The anchor list is a complete stand-in for the pattern, and matching
-// is order-preserving, so source order is pattern order.
+// WHY NO PATTERN ARGUMENT IS NEEDED. A literal anchor's SOURCE text is also its
+// PATTERN text, so the anchor list is a complete stand-in for the pattern; and
+// matching is order-preserving, so source order is pattern order. The walker
+// upholds that equality on both of its comparison paths: it records an alignment
+// only for a token whose texts matched, and where a grammar's absorbed layout
+// whitespace made them match on TRIMMED text, it records the trimmed source
+// range rather than the token's full span (alignment.go recordAlignRange,
+// layout_jsx.go alignedTokenRange). The absorbed bytes are then anchored by
+// nothing and survive inside the contiguous source slices below, exactly as any
+// other inter-anchor byte does.
 //
 // IDENTITY IS BY CONSTRUCTION, NOT BY SPECIAL CASE. When the forward scan
 // consumes every anchor and nothing but whitespace remains, the template said

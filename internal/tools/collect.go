@@ -169,7 +169,8 @@ func InterceptCollect(ctx context.Context, deps ClientDeps, params kgtools.CallT
 	// stays byte-identical.
 	work := func() error { return builtinCollectWork(ctx, deps, a, opts) }
 	successText := fmt.Sprintf("Collected %s %s — streamed to server.", a.Type, a.ID)
-	return true, collectWaitOrDetach(rt, collectTargetKey(a.Type, a.ID), fmt.Sprintf("%s %s", a.Type, a.ID), successText, work)
+	return true, collectWaitOrDetach(rt, collectTargetKey(a.Type, a.ID), fmt.Sprintf("%s %s", a.Type, a.ID),
+		CollectGateGraphName(a.Type, a.ID), successText, work)
 }
 
 // recordCollectedRepo upserts the just-collected code repo's name→absolute-path

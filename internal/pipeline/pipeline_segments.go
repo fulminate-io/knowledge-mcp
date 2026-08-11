@@ -52,3 +52,13 @@ func (p *Pipeline) AttachSegmentManager(m ShipManager) { p.segmentMgr = m }
 func (p *Pipeline) AttachHealFactory(fn func(kgtypes.GraphType, string) func(context.Context) error) {
 	p.healFactory = fn
 }
+
+// AttachCollectGateFactory wires the per-graph collect-gate predicate factory.
+// Called once at construction (bootstrap) before Start; nil-safe — leaving it
+// unset means RegisterGraph builds a nil per-collector predicate and the scan loop
+// gates on nothing, which is the pre-gate behavior. The factory is built in
+// bootstrap (over the collect runtime) so this package never imports the tools
+// package that owns it.
+func (p *Pipeline) AttachCollectGateFactory(fn func(kgtypes.GraphType, string) func() bool) {
+	p.collectGateFactory = fn
+}

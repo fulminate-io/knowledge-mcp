@@ -669,7 +669,9 @@ type PipelineScanResponse struct {
 	// unchanged: a truncated page is a VALID page and the caller continues from
 	// after_id as normal. It matters to a caller that sized its page
 	// deliberately and would otherwise silently receive a smaller one.
-	Truncated     bool `protobuf:"varint,4,opt,name=truncated,proto3" json:"truncated,omitempty"`
+	Truncated bool `protobuf:"varint,4,opt,name=truncated,proto3" json:"truncated,omitempty"`
+	// account-scoped freshness watermark; see ExecuteResponse.freshness_gen for the full contract.
+	FreshnessGen  uint64 `protobuf:"varint,5,opt,name=freshness_gen,json=freshnessGen,proto3" json:"freshness_gen,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -730,6 +732,13 @@ func (x *PipelineScanResponse) GetTruncated() bool {
 		return x.Truncated
 	}
 	return false
+}
+
+func (x *PipelineScanResponse) GetFreshnessGen() uint64 {
+	if x != nil {
+		return x.FreshnessGen
+	}
+	return 0
 }
 
 // PipelineScanItem is one (node_id, graph_name) tuple plus the server-composed
@@ -1037,8 +1046,15 @@ func (x *PipelineGenPollGraph) GetGraphName() string {
 
 // PipelineGenPollResponse carries one entry per (graph, axis) the poll sampled.
 type PipelineGenPollResponse struct {
-	state         protoimpl.MessageState  `protogen:"open.v1"`
-	Entries       []*PipelineGenPollEntry `protobuf:"bytes,1,rep,name=entries,proto3" json:"entries,omitempty"` // one (graph, axis, dirty_gen) tuple per sampled pair
+	state   protoimpl.MessageState  `protogen:"open.v1"`
+	Entries []*PipelineGenPollEntry `protobuf:"bytes,1,rep,name=entries,proto3" json:"entries,omitempty"` // one (graph, axis, dirty_gen) tuple per sampled pair
+	// account-scoped CATALOG watermark: advanced ONLY by changes to the graph catalog itself — graph create, graph destroy, sync stamp, collect-metadata write.
+	// It deliberately does NOT move on per-graph dirty-generation advances, so ordinary writes never make a client re-enumerate the catalog.
+	// Always moves together with freshness_gen; freshness_gen also moves on its own.
+	// The same per-replica SAMPLE caveat as freshness_gen applies — compare for change, not for increase.
+	CatalogGen uint64 `protobuf:"varint,2,opt,name=catalog_gen,json=catalogGen,proto3" json:"catalog_gen,omitempty"`
+	// account-scoped freshness watermark; see ExecuteResponse.freshness_gen for the full contract.
+	FreshnessGen  uint64 `protobuf:"varint,3,opt,name=freshness_gen,json=freshnessGen,proto3" json:"freshness_gen,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1078,6 +1094,20 @@ func (x *PipelineGenPollResponse) GetEntries() []*PipelineGenPollEntry {
 		return x.Entries
 	}
 	return nil
+}
+
+func (x *PipelineGenPollResponse) GetCatalogGen() uint64 {
+	if x != nil {
+		return x.CatalogGen
+	}
+	return 0
+}
+
+func (x *PipelineGenPollResponse) GetFreshnessGen() uint64 {
+	if x != nil {
+		return x.FreshnessGen
+	}
+	return 0
 }
 
 // PipelineGenPollEntry is the per-(graph,axis) dirty-gen tuple the client diffs
@@ -1301,7 +1331,9 @@ type CorpusDeltaResponse struct {
 	// rather than an error condition, and a page landing exactly on the ceiling
 	// may still be complete, because the server does not count past the cap to
 	// find out.
-	Truncated     bool `protobuf:"varint,5,opt,name=truncated,proto3" json:"truncated,omitempty"`
+	Truncated bool `protobuf:"varint,5,opt,name=truncated,proto3" json:"truncated,omitempty"`
+	// account-scoped freshness watermark; see ExecuteResponse.freshness_gen for the full contract.
+	FreshnessGen  uint64 `protobuf:"varint,6,opt,name=freshness_gen,json=freshnessGen,proto3" json:"freshness_gen,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1369,6 +1401,13 @@ func (x *CorpusDeltaResponse) GetTruncated() bool {
 		return x.Truncated
 	}
 	return false
+}
+
+func (x *CorpusDeltaResponse) GetFreshnessGen() uint64 {
+	if x != nil {
+		return x.FreshnessGen
+	}
+	return 0
 }
 
 // LayerCursor is one per-layer keyset position. The keyset is
@@ -2394,7 +2433,13 @@ type ExecuteResponse struct {
 	// cap to find out. When false, the server returned everything the request
 	// selected. A client that needs certainty pages with an explicit limit and
 	// drains until a short page.
-	Truncated     bool `protobuf:"varint,12,opt,name=truncated,proto3" json:"truncated,omitempty"`
+	Truncated bool `protobuf:"varint,12,opt,name=truncated,proto3" json:"truncated,omitempty"`
+	// account-scoped freshness watermark: a monotonic counter the server advances whenever ANYTHING in this account changed — a graph was created or dropped, a sync stamped, collect metadata written, or any per-graph dirty generation advanced.
+	// A client compares it against its last-seen value and, only on movement, issues one gen poll to learn what moved.
+	// THE SERVED VALUE IS A PER-REPLICA SAMPLE of that counter, not the counter itself: each replica caches it on a short TTL and refreshes asynchronously, so the value a client observes MAY MOVE BACKWARD between replicas or after a restart.
+	// A client must therefore treat ANY CHANGE as movement and never test only for an increase.
+	// It is a NOTIFICATION, never state: 0 means the serving flavor maintains no watermark or this replica has not loaded one yet.
+	FreshnessGen  uint64 `protobuf:"varint,13,opt,name=freshness_gen,json=freshnessGen,proto3" json:"freshness_gen,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2504,6 +2549,13 @@ func (x *ExecuteResponse) GetTruncated() bool {
 		return x.Truncated
 	}
 	return false
+}
+
+func (x *ExecuteResponse) GetFreshnessGen() uint64 {
+	if x != nil {
+		return x.FreshnessGen
+	}
+	return 0
 }
 
 // MetadataPredicate is IR extension #3 (richer metadata predicates). Today
@@ -4057,8 +4109,10 @@ func (x *GraphStats) GetNonProxyNodeCount() int32 {
 // StatsResponse carries the typed store.GraphStats counters (db.Stats). No
 // rows/labels — the client builds any rendered output.
 type StatsResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	GraphStats    *GraphStats            `protobuf:"bytes,1,opt,name=graph_stats,json=graphStats,proto3" json:"graph_stats,omitempty"` // store.GraphStats
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	GraphStats *GraphStats            `protobuf:"bytes,1,opt,name=graph_stats,json=graphStats,proto3" json:"graph_stats,omitempty"` // store.GraphStats
+	// account-scoped freshness watermark; see ExecuteResponse.freshness_gen for the full contract.
+	FreshnessGen  uint64 `protobuf:"varint,2,opt,name=freshness_gen,json=freshnessGen,proto3" json:"freshness_gen,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4098,6 +4152,13 @@ func (x *StatsResponse) GetGraphStats() *GraphStats {
 		return x.GraphStats
 	}
 	return nil
+}
+
+func (x *StatsResponse) GetFreshnessGen() uint64 {
+	if x != nil {
+		return x.FreshnessGen
+	}
+	return 0
 }
 
 // ExportGraphRequest routes a store.SerializeGraph read to the target graph.
@@ -4159,8 +4220,10 @@ func (x *ExportGraphRequest) GetClientContext() *ClientContext {
 // the serialize seam). No rows/labels — the client either uploads the bytes to
 // cloud (push) or applies them to the local graph via OverwriteGraph (pull).
 type ExportGraphResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	GraphBytes    []byte                 `protobuf:"bytes,1,opt,name=graph_bytes,json=graphBytes,proto3" json:"graph_bytes,omitempty"` // serialize-seam output (KGV2 byte image)
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	GraphBytes []byte                 `protobuf:"bytes,1,opt,name=graph_bytes,json=graphBytes,proto3" json:"graph_bytes,omitempty"` // serialize-seam output (KGV2 byte image)
+	// account-scoped freshness watermark; see ExecuteResponse.freshness_gen for the full contract.
+	FreshnessGen  uint64 `protobuf:"varint,2,opt,name=freshness_gen,json=freshnessGen,proto3" json:"freshness_gen,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4200,6 +4263,13 @@ func (x *ExportGraphResponse) GetGraphBytes() []byte {
 		return x.GraphBytes
 	}
 	return nil
+}
+
+func (x *ExportGraphResponse) GetFreshnessGen() uint64 {
+	if x != nil {
+		return x.FreshnessGen
+	}
+	return 0
 }
 
 // OverwriteGraphRequest carries the flat (graph_type, name) target plus the
@@ -4278,9 +4348,11 @@ func (x *OverwriteGraphRequest) GetClientContext() *ClientContext {
 // OverwriteGraphResponse reports the node/edge counts of the overwritten local
 // graph after the apply (read from the just-written target's db.Stats).
 type OverwriteGraphResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Nodes         int64                  `protobuf:"varint,1,opt,name=nodes,proto3" json:"nodes,omitempty"` // overwritten graph node count
-	Edges         int64                  `protobuf:"varint,2,opt,name=edges,proto3" json:"edges,omitempty"` // overwritten graph edge count
+	state protoimpl.MessageState `protogen:"open.v1"`
+	Nodes int64                  `protobuf:"varint,1,opt,name=nodes,proto3" json:"nodes,omitempty"` // overwritten graph node count
+	Edges int64                  `protobuf:"varint,2,opt,name=edges,proto3" json:"edges,omitempty"` // overwritten graph edge count
+	// account-scoped freshness watermark; see ExecuteResponse.freshness_gen for the full contract.
+	FreshnessGen  uint64 `protobuf:"varint,3,opt,name=freshness_gen,json=freshnessGen,proto3" json:"freshness_gen,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4325,6 +4397,13 @@ func (x *OverwriteGraphResponse) GetNodes() int64 {
 func (x *OverwriteGraphResponse) GetEdges() int64 {
 	if x != nil {
 		return x.Edges
+	}
+	return 0
+}
+
+func (x *OverwriteGraphResponse) GetFreshnessGen() uint64 {
+	if x != nil {
+		return x.FreshnessGen
 	}
 	return 0
 }
@@ -4594,8 +4673,10 @@ type MetadataStatsResponse struct {
 	state          protoimpl.MessageState `protogen:"open.v1"`
 	MetadataStats  *MetadataStats         `protobuf:"bytes,1,opt,name=metadata_stats,json=metadataStats,proto3" json:"metadata_stats,omitempty"`    // store.MetadataStats
 	OverrideConfig *OverrideConfig        `protobuf:"bytes,2,opt,name=override_config,json=overrideConfig,proto3" json:"override_config,omitempty"` // store.OverrideConfig
-	unknownFields  protoimpl.UnknownFields
-	sizeCache      protoimpl.SizeCache
+	// account-scoped freshness watermark; see ExecuteResponse.freshness_gen for the full contract.
+	FreshnessGen  uint64 `protobuf:"varint,3,opt,name=freshness_gen,json=freshnessGen,proto3" json:"freshness_gen,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *MetadataStatsResponse) Reset() {
@@ -4640,6 +4721,13 @@ func (x *MetadataStatsResponse) GetOverrideConfig() *OverrideConfig {
 		return x.OverrideConfig
 	}
 	return nil
+}
+
+func (x *MetadataStatsResponse) GetFreshnessGen() uint64 {
+	if x != nil {
+		return x.FreshnessGen
+	}
+	return 0
 }
 
 // ProxyTarget mirrors store.ProxyTarget (pkg/store/proxy.go:13) — the
@@ -4835,6 +4923,8 @@ type IndexResponse struct {
 	Branches      []*GraphInfo           `protobuf:"bytes,3,rep,name=branches,proto3" json:"branches,omitempty"`                                 // []store.GraphInfo for the list_branches op
 	PrunedIds     []string               `protobuf:"bytes,4,rep,name=pruned_ids,json=prunedIds,proto3" json:"pruned_ids,omitempty"`              // node ids the prune op ACTUALLY hard-deleted; empty for every other op
 	Warning       string                 `protobuf:"bytes,5,opt,name=warning,proto3" json:"warning,omitempty"`                                   // non-fatal degradation notice on an otherwise successful op; empty on a clean run
+	// account-scoped freshness watermark; see ExecuteResponse.freshness_gen for the full contract.
+	FreshnessGen  uint64 `protobuf:"varint,6,opt,name=freshness_gen,json=freshnessGen,proto3" json:"freshness_gen,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -4904,12 +4994,23 @@ func (x *IndexResponse) GetWarning() string {
 	return ""
 }
 
+func (x *IndexResponse) GetFreshnessGen() uint64 {
+	if x != nil {
+		return x.FreshnessGen
+	}
+	return 0
+}
+
 // HiveRequest is the op-dispatched hive work-queue request. The op discriminator
 // selects the operation; target routes to the per-account knowledge graph
 // (reuses GraphSelector); the string fields carry op-specific args. The CALLER's
-// member identity is the unfakeable MCP session-id read from the request CONTEXT
-// server-side, NOT a wire field — member_session is the DAEMON-op target (the
-// member a renew/evict/ack-on-behalf acts upon), distinct from the caller.
+// member identity is the unfakeable harness session-id — the stable identity the
+// local daemon resolves from the agent's on-disk session transcript — read from
+// the request CONTEXT server-side, where it is populated from the
+// Knowledge-Harness-Session-Id request header the daemon sets on every outbound
+// RPC, NOT a wire field — member_session is the DAEMON-op target (the member a
+// renew/evict/ack-on-behalf acts upon), distinct from the caller but drawn from
+// that same identity namespace, which is what makes a renew or evict bind.
 type HiveRequest struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	Op            HiveOp                 `protobuf:"varint,1,opt,name=op,proto3,enum=knowledge.v1.HiveOp" json:"op,omitempty"`                   // operation discriminator
@@ -5069,6 +5170,8 @@ type HiveResponse struct {
 	ResultJson    []byte                 `protobuf:"bytes,1,opt,name=result_json,json=resultJson,proto3" json:"result_json,omitempty"`           // op-specific status blob (no shared Go type — stays bytes)
 	Nodes         []*Node                `protobuf:"bytes,2,rep,name=nodes,proto3" json:"nodes,omitempty"`                                       // affected node(s): the claimed message (claim), the member (register), the work (send) — reused Node carrier
 	AffectedCount int64                  `protobuf:"varint,3,opt,name=affected_count,json=affectedCount,proto3" json:"affected_count,omitempty"` // rows the op touched (e.g. 1 on a successful claim, 0 when nothing was eligible)
+	// account-scoped freshness watermark; see ExecuteResponse.freshness_gen for the full contract.
+	FreshnessGen  uint64 `protobuf:"varint,4,opt,name=freshness_gen,json=freshnessGen,proto3" json:"freshness_gen,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -5124,6 +5227,13 @@ func (x *HiveResponse) GetAffectedCount() int64 {
 	return 0
 }
 
+func (x *HiveResponse) GetFreshnessGen() uint64 {
+	if x != nil {
+		return x.FreshnessGen
+	}
+	return 0
+}
+
 var File_knowledge_v1_engine_proto protoreflect.FileDescriptor
 
 const file_knowledge_v1_engine_proto_rawDesc = "" +
@@ -5139,12 +5249,13 @@ const file_knowledge_v1_engine_proto_rawDesc = "" +
 	"\rlast_seen_gen\x18\x05 \x01(\x04R\vlastSeenGen\x12\x19\n" +
 	"\bafter_id\x18\x06 \x01(\tR\aafterId\x12B\n" +
 	"\x0eclient_context\x18\a \x01(\v2\x1b.knowledge.v1.ClientContextR\rclientContext\x123\n" +
-	"\x16after_stamped_at_nanos\x18\b \x01(\x03R\x13afterStampedAtNanos\"\xb9\x01\n" +
+	"\x16after_stamped_at_nanos\x18\b \x01(\x03R\x13afterStampedAtNanos\"\xde\x01\n" +
 	"\x14PipelineScanResponse\x124\n" +
 	"\x05items\x18\x01 \x03(\v2\x1e.knowledge.v1.PipelineScanItemR\x05items\x12\x1b\n" +
 	"\tdirty_gen\x18\x02 \x01(\x04R\bdirtyGen\x120\n" +
 	"\x14served_horizon_nanos\x18\x03 \x01(\x03R\x12servedHorizonNanos\x12\x1c\n" +
-	"\ttruncated\x18\x04 \x01(\bR\ttruncated\"\x90\x02\n" +
+	"\ttruncated\x18\x04 \x01(\bR\ttruncated\x12#\n" +
+	"\rfreshness_gen\x18\x05 \x01(\x04R\ffreshnessGen\"\x90\x02\n" +
 	"\x10PipelineScanItem\x12\x17\n" +
 	"\anode_id\x18\x01 \x01(\tR\x06nodeId\x12\x1d\n" +
 	"\n" +
@@ -5173,9 +5284,12 @@ const file_knowledge_v1_engine_proto_rawDesc = "" +
 	"\n" +
 	"graph_type\x18\x01 \x01(\tR\tgraphType\x12\x1d\n" +
 	"\n" +
-	"graph_name\x18\x02 \x01(\tR\tgraphName\"W\n" +
+	"graph_name\x18\x02 \x01(\tR\tgraphName\"\x9d\x01\n" +
 	"\x17PipelineGenPollResponse\x12<\n" +
-	"\aentries\x18\x01 \x03(\v2\".knowledge.v1.PipelineGenPollEntryR\aentries\"\x85\x01\n" +
+	"\aentries\x18\x01 \x03(\v2\".knowledge.v1.PipelineGenPollEntryR\aentries\x12\x1f\n" +
+	"\vcatalog_gen\x18\x02 \x01(\x04R\n" +
+	"catalogGen\x12#\n" +
+	"\rfreshness_gen\x18\x03 \x01(\x04R\ffreshnessGen\"\x85\x01\n" +
 	"\x14PipelineGenPollEntry\x12\x1d\n" +
 	"\n" +
 	"graph_type\x18\x01 \x01(\tR\tgraphType\x12\x1d\n" +
@@ -5193,13 +5307,14 @@ const file_knowledge_v1_engine_proto_rawDesc = "" +
 	"\acursors\x18\x04 \x03(\v2\x19.knowledge.v1.LayerCursorR\acursors\x12\x14\n" +
 	"\x05limit\x18\x05 \x01(\x05R\x05limit\x12%\n" +
 	"\x0epinned_horizon\x18\x06 \x01(\x03R\rpinnedHorizon\x12B\n" +
-	"\x0eclient_context\x18\a \x01(\v2\x1b.knowledge.v1.ClientContextR\rclientContext\"\xfb\x01\n" +
+	"\x0eclient_context\x18\a \x01(\v2\x1b.knowledge.v1.ClientContextR\rclientContext\"\xa0\x02\n" +
 	"\x13CorpusDeltaResponse\x12(\n" +
 	"\x05items\x18\x01 \x03(\v2\x12.knowledge.v1.NodeR\x05items\x12!\n" +
 	"\fsafe_horizon\x18\x02 \x01(\x03R\vsafeHorizon\x12;\n" +
 	"\flayer_probes\x18\x03 \x03(\v2\x18.knowledge.v1.LayerProbeR\vlayerProbes\x12<\n" +
 	"\fnext_cursors\x18\x04 \x03(\v2\x19.knowledge.v1.LayerCursorR\vnextCursors\x12\x1c\n" +
-	"\ttruncated\x18\x05 \x01(\bR\ttruncated\"o\n" +
+	"\ttruncated\x18\x05 \x01(\bR\ttruncated\x12#\n" +
+	"\rfreshness_gen\x18\x06 \x01(\x04R\ffreshnessGen\"o\n" +
 	"\vLayerCursor\x12\x1b\n" +
 	"\tlayer_key\x18\x01 \x01(\tR\blayerKey\x12(\n" +
 	"\x10after_updated_at\x18\x02 \x01(\x03R\x0eafterUpdatedAt\x12\x19\n" +
@@ -5286,7 +5401,7 @@ const file_knowledge_v1_engine_proto_rawDesc = "" +
 	"\x04node\x18\x03 \x01(\v2\x12.knowledge.v1.NodeR\x04node\"U\n" +
 	"\x0fTraversalResult\x12\x1a\n" +
 	"\bdistance\x18\x02 \x01(\x05R\bdistance\x12&\n" +
-	"\x04node\x18\x03 \x01(\v2\x12.knowledge.v1.NodeR\x04node\"\xff\x03\n" +
+	"\x04node\x18\x03 \x01(\v2\x12.knowledge.v1.NodeR\x04node\"\xa4\x04\n" +
 	"\x0fExecuteResponse\x12\x10\n" +
 	"\x03ids\x18\x02 \x03(\tR\x03ids\x12C\n" +
 	"\x0esearch_results\x18\x03 \x03(\v2\x1c.knowledge.v1.HydratedResultR\rsearchResults\x12J\n" +
@@ -5300,7 +5415,8 @@ const file_knowledge_v1_engine_proto_rawDesc = "" +
 	"\x05nodes\x18\n" +
 	" \x03(\v2\x12.knowledge.v1.NodeR\x05nodes\x12#\n" +
 	"\rskipped_count\x18\v \x01(\x03R\fskippedCount\x12\x1c\n" +
-	"\ttruncated\x18\f \x01(\bR\ttruncated\"\xeb\x01\n" +
+	"\ttruncated\x18\f \x01(\bR\ttruncated\x12#\n" +
+	"\rfreshness_gen\x18\r \x01(\x04R\ffreshnessGen\"\xeb\x01\n" +
 	"\x11MetadataPredicate\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x122\n" +
 	"\x02op\x18\x02 \x01(\x0e2\".knowledge.v1.MetadataPredicate.OpR\x02op\x12\x14\n" +
@@ -5485,26 +5601,29 @@ const file_knowledge_v1_engine_proto_rawDesc = "" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12\x14\n" +
 	"\x05value\x18\x02 \x01(\x03R\x05value:\x028\x01J\x04\b\x03\x10\x04J\x04\b\a\x10\bJ\x04\b\b\x10\tJ\x04\b\t\x10\n" +
 	"J\x04\b\n" +
-	"\x10\vJ\x04\b\v\x10\fR\fvector_countR\x0ftext_term_countR\x0etext_doc_countR\x12text_reverse_countR\bhas_bm25R\bhas_hnsw\"J\n" +
+	"\x10\vJ\x04\b\v\x10\fR\fvector_countR\x0ftext_term_countR\x0etext_doc_countR\x12text_reverse_countR\bhas_bm25R\bhas_hnsw\"o\n" +
 	"\rStatsResponse\x129\n" +
 	"\vgraph_stats\x18\x01 \x01(\v2\x18.knowledge.v1.GraphStatsR\n" +
-	"graphStats\"\x8d\x01\n" +
+	"graphStats\x12#\n" +
+	"\rfreshness_gen\x18\x02 \x01(\x04R\ffreshnessGen\"\x8d\x01\n" +
 	"\x12ExportGraphRequest\x123\n" +
 	"\x06target\x18\x01 \x01(\v2\x1b.knowledge.v1.GraphSelectorR\x06target\x12B\n" +
-	"\x0eclient_context\x18\x02 \x01(\v2\x1b.knowledge.v1.ClientContextR\rclientContext\"6\n" +
+	"\x0eclient_context\x18\x02 \x01(\v2\x1b.knowledge.v1.ClientContextR\rclientContext\"[\n" +
 	"\x13ExportGraphResponse\x12\x1f\n" +
 	"\vgraph_bytes\x18\x01 \x01(\fR\n" +
-	"graphBytes\"\xaf\x01\n" +
+	"graphBytes\x12#\n" +
+	"\rfreshness_gen\x18\x02 \x01(\x04R\ffreshnessGen\"\xaf\x01\n" +
 	"\x15OverwriteGraphRequest\x12\x1d\n" +
 	"\n" +
 	"graph_type\x18\x01 \x01(\tR\tgraphType\x12\x12\n" +
 	"\x04name\x18\x02 \x01(\tR\x04name\x12\x1f\n" +
 	"\vgraph_bytes\x18\x03 \x01(\fR\n" +
 	"graphBytes\x12B\n" +
-	"\x0eclient_context\x18\x04 \x01(\v2\x1b.knowledge.v1.ClientContextR\rclientContext\"D\n" +
+	"\x0eclient_context\x18\x04 \x01(\v2\x1b.knowledge.v1.ClientContextR\rclientContext\"i\n" +
 	"\x16OverwriteGraphResponse\x12\x14\n" +
 	"\x05nodes\x18\x01 \x01(\x03R\x05nodes\x12\x14\n" +
-	"\x05edges\x18\x02 \x01(\x03R\x05edges\"\x8f\x01\n" +
+	"\x05edges\x18\x02 \x01(\x03R\x05edges\x12#\n" +
+	"\rfreshness_gen\x18\x03 \x01(\x04R\ffreshnessGen\"\x8f\x01\n" +
 	"\x14MetadataStatsRequest\x123\n" +
 	"\x06target\x18\x01 \x01(\v2\x1b.knowledge.v1.GraphSelectorR\x06target\x12B\n" +
 	"\x0eclient_context\x18\x02 \x01(\v2\x1b.knowledge.v1.ClientContextR\rclientContext\"R\n" +
@@ -5527,10 +5646,11 @@ const file_knowledge_v1_engine_proto_rawDesc = "" +
 	"\x11last_full_pass_ts\x18\x02 \x01(\x03R\x0elastFullPassTs\x1aO\n" +
 	"\tKeysEntry\x12\x10\n" +
 	"\x03key\x18\x01 \x01(\tR\x03key\x12,\n" +
-	"\x05value\x18\x02 \x01(\v2\x16.knowledge.v1.KeyStatsR\x05value:\x028\x01\"\xa2\x01\n" +
+	"\x05value\x18\x02 \x01(\v2\x16.knowledge.v1.KeyStatsR\x05value:\x028\x01\"\xc7\x01\n" +
 	"\x15MetadataStatsResponse\x12B\n" +
 	"\x0emetadata_stats\x18\x01 \x01(\v2\x1b.knowledge.v1.MetadataStatsR\rmetadataStats\x12E\n" +
-	"\x0foverride_config\x18\x02 \x01(\v2\x1c.knowledge.v1.OverrideConfigR\x0eoverrideConfig\"Y\n" +
+	"\x0foverride_config\x18\x02 \x01(\v2\x1c.knowledge.v1.OverrideConfigR\x0eoverrideConfig\x12#\n" +
+	"\rfreshness_gen\x18\x03 \x01(\x04R\ffreshnessGen\"Y\n" +
 	"\vProxyTarget\x12\x1d\n" +
 	"\n" +
 	"graph_type\x18\x01 \x01(\tR\tgraphType\x12\x12\n" +
@@ -5552,7 +5672,7 @@ const file_knowledge_v1_engine_proto_rawDesc = "" +
 	"\x16INDEX_OP_DELETE_BRANCH\x10\x05\x12\x1a\n" +
 	"\x16INDEX_OP_LIST_BRANCHES\x10\x06\x12\x12\n" +
 	"\x0eINDEX_OP_PRUNE\x10\a\x12\x1a\n" +
-	"\x16INDEX_OP_REBUILD_CACHE\x10\b\"\x04\b\x01\x10\x01\"\x04\b\x02\x10\x02*\x15INDEX_OP_REBUILD_HNSW*\x15INDEX_OP_REBUILD_BM25\"\xc5\x01\n" +
+	"\x16INDEX_OP_REBUILD_CACHE\x10\b\"\x04\b\x01\x10\x01\"\x04\b\x02\x10\x02*\x15INDEX_OP_REBUILD_HNSW*\x15INDEX_OP_REBUILD_BM25\"\xea\x01\n" +
 	"\rIndexResponse\x12\x1f\n" +
 	"\vresult_json\x18\x01 \x01(\fR\n" +
 	"resultJson\x12%\n" +
@@ -5560,7 +5680,8 @@ const file_knowledge_v1_engine_proto_rawDesc = "" +
 	"\bbranches\x18\x03 \x03(\v2\x17.knowledge.v1.GraphInfoR\bbranches\x12\x1d\n" +
 	"\n" +
 	"pruned_ids\x18\x04 \x03(\tR\tprunedIds\x12\x18\n" +
-	"\awarning\x18\x05 \x01(\tR\awarning\"\xb3\x03\n" +
+	"\awarning\x18\x05 \x01(\tR\awarning\x12#\n" +
+	"\rfreshness_gen\x18\x06 \x01(\x04R\ffreshnessGen\"\xb3\x03\n" +
 	"\vHiveRequest\x12$\n" +
 	"\x02op\x18\x01 \x01(\x0e2\x14.knowledge.v1.HiveOpR\x02op\x123\n" +
 	"\x06target\x18\x02 \x01(\v2\x1b.knowledge.v1.GraphSelectorR\x06target\x12\x12\n" +
@@ -5576,12 +5697,13 @@ const file_knowledge_v1_engine_proto_rawDesc = "" +
 	"\breply_to\x18\v \x01(\tR\areplyTo\x12\x14\n" +
 	"\x05roles\x18\f \x03(\tR\x05roles\x12%\n" +
 	"\x0emember_session\x18\r \x01(\tR\rmemberSession\x12B\n" +
-	"\x0eclient_context\x18\x0e \x01(\v2\x1b.knowledge.v1.ClientContextR\rclientContext\"\x80\x01\n" +
+	"\x0eclient_context\x18\x0e \x01(\v2\x1b.knowledge.v1.ClientContextR\rclientContext\"\xa5\x01\n" +
 	"\fHiveResponse\x12\x1f\n" +
 	"\vresult_json\x18\x01 \x01(\fR\n" +
 	"resultJson\x12(\n" +
 	"\x05nodes\x18\x02 \x03(\v2\x12.knowledge.v1.NodeR\x05nodes\x12%\n" +
-	"\x0eaffected_count\x18\x03 \x01(\x03R\raffectedCount*p\n" +
+	"\x0eaffected_count\x18\x03 \x01(\x03R\raffectedCount\x12#\n" +
+	"\rfreshness_gen\x18\x04 \x01(\x04R\ffreshnessGen*p\n" +
 	"\n" +
 	"SearchMode\x12\x1b\n" +
 	"\x17SEARCH_MODE_UNSPECIFIED\x10\x00\x12\x16\n" +

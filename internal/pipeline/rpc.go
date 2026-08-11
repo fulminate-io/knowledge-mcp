@@ -44,7 +44,7 @@ func debugLogWriteback(axis, graphName string, items []updateBatchItem) {
 // the legacy mutate(update_batch) handler. The two gap-discovery RPCs are NOT
 // engine.Compile-reducible (they need the server's per-axis dirty-gen state), so
 // each rides its own typed EngineService RPC rather than the Execute seam:
-//   - PipelineGenPoll is the bulk Phase-1 poll — ONE call per tick returns the
+//   - PipelineGenPoll is the bulk Phase-1 poll — ONE call per poll returns the
 //     per-(graph,axis) dirty-gen for every loaded graph (no gap walk). The
 //     central gen-poll loop diffs each gen against its watermark.
 //   - PipelineScan is the Phase-2 detail fetch — the central loop fires it only
@@ -57,7 +57,7 @@ type WireClient interface {
 
 // BackendResolver is the OPTIONAL login-aware seam the Pipeline consults to
 // (a) bind a CONCRETE backend per collector at RegisterGraph time and
-// (b) detect a login-state transition so refreshOnce can tear down + rebind
+// (b) detect a login-state transition so CheckLoginFlip can tear down + rebind
 // every collector (Hazard B). The production p.client (the bootstrap
 // routedWireClient over *graphclient.Router) implements it; the Pipeline
 // type-asserts p.client to this interface and falls back to p.client +
@@ -66,8 +66,9 @@ type WireClient interface {
 //   - Backend(ctx) returns the concrete backend WireClient the current login
 //     state selects (cloud when logged in, local otherwise). The collector
 //     scans through it AND stamps it on every emitted work item.
-//   - LoggedIn(ctx) reports the live login state so refreshOnce can compare it
-//     against the prior tick's state and force a full collector rebind on a flip.
+//   - LoggedIn(ctx) reports the live login state so CheckLoginFlip can compare
+//     it against the previously observed state and force a full collector
+//     rebind on a flip.
 type BackendResolver interface {
 	Backend(ctx context.Context) (WireClient, error)
 	LoggedIn(ctx context.Context) bool
@@ -101,7 +102,7 @@ func scanGaps(ctx context.Context, c WireClient, gt kgtypes.GraphType, name, axi
 // pipelineEligibleGraphTypes is the BUILTIN base of the set of graph types the
 // LLM pipeline drains. The eligible-type filter is a client concern (the pipeline
 // owns which types it summarizes/embeds), so it lives here. Registered custom
-// GraphTypeDef types are discovered dynamically each tick
+// GraphTypeDef types are discovered dynamically on every catalog pass
 // (discoverRegisteredGraphTypes) and folded in on top of this base — the server's
 // per-axis gap shims no-op a both-false custom type cheaply, so the client
 // enumerates every registered type unconditionally and lets the server gate

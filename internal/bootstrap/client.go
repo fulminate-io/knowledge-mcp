@@ -138,6 +138,13 @@ type client struct {
 	// p.Stop call in buildClient's cleanup closure (daemon.go) handles nil safely.
 	pipeline *pipeline.Pipeline
 
+	// freshness is the activity hook's state: the account freshness watermark
+	// last observed on a response, plus the cool-off window that bounds how
+	// often observed movement may wake the pipeline. Value, not pointer — the
+	// zero value is usable, so a test-built *client needs no extra wiring.
+	// See client_freshness.go.
+	freshness freshnessTrigger
+
 	// segmentMgr is the per-graph client-hosted BM25+HNSW segment owner. ONE
 	// instance shared between the PRODUCER side (the pipeline ships segments
 	// into it at embed writeback — AttachSegmentManager) and the CONSUMER side

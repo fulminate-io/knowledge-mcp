@@ -99,6 +99,7 @@ var censusSurvivors = map[survivorKey]string{
 	// MetadataPredicates, so a predicate-bounded browse still lands here as
 	// unbounded_type_browse. Deleting the entry turns the gate red.
 	{"hivemonitor/hive_reaper.go", "reaperHives", kindUnboundedTypeBrowse}: "narrowed by a session OP_EQ metadata predicate — one browse per live local session, memberHivesFor's shape — bounded in practice",
+	{"bootstrap/hive_loops.go", "hasLiveMember", kindUnboundedTypeBrowse}:  "narrowed by a session OP_EQ metadata predicate — memberHivesFor's shape, one browse per session resolved inside the boot re-detection window and none at all outside it — bounded in practice",
 
 	// --- ambiguous_selection ---
 	// (none: the recent-browse arm's double Selection assignment was collapsed to

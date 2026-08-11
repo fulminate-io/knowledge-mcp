@@ -128,6 +128,42 @@ The context pack surfaces related decisions, findings, tickets, prior thoughts, 
 
 </constraint>
 
+<constraint id="intent-fidelity" severity="hard">
+
+  <rule>
+    Brainstorm is where the user's rules enter the artifact chain, so it is
+    where intent-twisting starts — and once it starts, everything downstream
+    verifies the twist: the planner elaborates it, the tests assert it, the
+    reviewer audits against it, and every gate is green against the wrong
+    statement. The premise-level sibling of a vacuous test. The catastrophic
+    twist pattern: a paraphrase that sounds equivalent — often MORE
+    user-protective — while inverting who bears a cost or converting an
+    enforcement duty into a compensation duty ("users prepay for everything"
+    becoming "users must never be charged"; "prevent X" becoming "make X
+    painless"; "X is forbidden" becoming "handle X gracefully").
+  </rule>
+
+  <discipline>
+    - Tickets carry load-bearing rules (money, access, security, data handling)
+      as VERBATIM QUOTES of the user's words, with any restatement beside the
+      quote — never a paraphrase alone. The quote is what downstream fidelity
+      gets checked against.
+    - Direction-test every restatement before it enters a ticket: same
+      duty-holder? same cost-bearer? "prevent" still "prevent" (not
+      "compensate"/"absorb"/"smooth")? absolute still absolute?
+    - A proposed mechanism that only ever executes in a state the rule forbids
+      (compensators, make-whole paths, write-offs for "impossible" states) is
+      the tell that the premise twisted: the rule-faithful design treats that
+      state as a defect to alarm on and fix, not a case to serve. Surface the
+      discrepancy to the user instead of designing the mechanism.
+    - When an interpretation of a money/security rule is load-bearing and the
+      original wording is genuinely ambiguous, confirm the reading with the
+      user BEFORE the ticket freezes — a wrong enforcement mechanism costs far
+      more than the question.
+  </discipline>
+
+</constraint>
+
 ## Step 1: Research What Already Exists (`researcher` agent)
 
 Spawn in the background (never block; draft the surface-walk brief while it runs):
@@ -447,5 +483,6 @@ Link the brainstorm's research and thoughts to the project (`relationship:"infor
     <pattern>Attaching patterns "just because they fit" — see pattern-attachment</pattern>
     <pattern>Writing "what we're building" without "what we're NOT building" — negative scope keeps the planner in its lane</pattern>
     <pattern>Letting scope expand silently — surface immediately; expansion needs explicit approval</pattern>
+    <pattern>Scoping a feature below its own surface — if the ticket ships a value users see, it ships the TRUE value; if it ships a flow, it ships every state the flow can reach (payment declines, auth challenges, empty/pending states). Completion work discovered while scoping goes IN scope by default; only the user explicitly chooses to defer it, and "In Scope minus the hard parts" is not a smaller ticket, it is an incomplete one</pattern>
   </anti-patterns>
 </constraint>

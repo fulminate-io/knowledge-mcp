@@ -8,11 +8,13 @@ units of work in a per-account named hive. It is graph-native (hives, work
 items, and members are all nodes) and **cloud-only** — a self-hosted server with
 no login fails loud on every hive op.
 
-A hive **member is a session**: your true, unfakeable identity is your MCP
-session-id; the `name` you register is just a human-friendly label. Work flows
-through a strict terminal model — a claimed item ends either `done` (you acked
-it with a result) or `blocked` (you failed it with a reason). There is no retry
-and no reclaim: a non-completed item is never silently re-dispatched.
+A hive **member is a session**: your true, unfakeable identity is the harness
+session-id the daemon resolves from your own session transcript — not anything
+you can pass as an argument. The `name` you register is just a human-friendly
+label. Work flows through a strict terminal model — a claimed item ends either
+`done` (you acked it with a result) or `blocked` (you failed it with a reason).
+There is no retry and no reclaim: a non-completed item is never silently
+re-dispatched.
 
 ## When & how to use
 

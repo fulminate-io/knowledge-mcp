@@ -46,6 +46,16 @@ type httpSession struct {
 	mu           sync.Mutex
 	activeCancel context.CancelFunc
 	activeReqID  string
+
+	// Per-session harness session-id resolution cache, read and written by
+	// (*HTTPServer).harnessSessionID. Guarded by harnessMu — its own mutex, so a
+	// resolution (which shells out to ps/lsof) never contends with the cancel
+	// slot or the lastSeen touch. harnessID is "" until the transcript resolves;
+	// harnessAttempt is the last attempt time, against which the retry bound is
+	// measured.
+	harnessMu      sync.Mutex
+	harnessID      string
+	harnessAttempt time.Time
 }
 
 // touch bumps the session's lastSeen to now so the idle reaper does not evict
@@ -129,22 +139,34 @@ type cancelSink interface {
 // persistent connection; Codex reconnects per turn, so its prior sessions go
 // idle and must be reaped. A generous window avoids evicting a slow-but-live
 // session.
+//
+// It is also the bound on how long a hive session can outlive the connection
+// that ran it: a client that vanishes without sending DELETE /mcp keeps its hive
+// session — and therefore the daemon's hive loops — alive until the reaper
+// evicts it, at which point reapIdle ends the hive session too.
 const defaultSessionIdleTTL = 30 * time.Minute
 
 // ensureSession stores a session for id carrying cwd, the peer PID, and the
 // peer comm, unless one already exists (idempotent: a repeat initialize with
 // the same minted id reuses the stored session). Minted session ids are unique
 // per initialize, so the already-exists branch is defensive. The pid + comm are
-// retained for the hive daemon monitor's transcript binding (comm selects the
-// claude/codex resolver; pid reads the process env).
-func (h *HTTPServer) ensureSession(id, cwd string, pid int, comm string) {
+// retained for the hive daemon monitor's transcript binding (comm hints which
+// resolver to try first; pid drives the codex open-rollout probe and liveness).
+//
+// It reports whether it actually created the session, so the caller can notify
+// the hive lifecycle that a session opened exactly once. That notification is
+// the caller's job, NOT this function's: it holds the write lock for its whole
+// body, and the notification's consumer reads back through SessionSnapshots,
+// which takes the read lock on the same non-reentrant RWMutex.
+func (h *HTTPServer) ensureSession(id, cwd string, pid int, comm string) (created bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if _, ok := h.sessions[id]; ok {
-		return
+		return false
 	}
 	now := time.Now()
 	h.sessions[id] = &httpSession{id: id, cwd: cwd, pid: pid, comm: comm, createdAt: now, lastSeen: now}
+	return true
 }
 
 // lookupSession returns the session for id, or (nil, false) if no such
@@ -158,10 +180,16 @@ func (h *HTTPServer) lookupSession(id string) (*httpSession, bool) {
 
 // SessionSnapshots returns a copy of {ID, Cwd, PID, Comm} for every live
 // session, under RLock. The hive daemon monitor consumes this each tick to bind
-// an active-claim session to its on-disk transcript: Cwd + Comm select and feed
-// the per-harness deterministic resolver (claude env→file, codex
-// session_meta.cwd match) and PID reads the process env / probes liveness. The
-// returned slice is a copy, so the monitor iterates without holding the lock.
+// an active-claim session to its on-disk transcript: Cwd locates the transcript
+// store (claude project dir, codex session_meta.cwd match) while Comm only hints
+// which resolver to try first, and PID drives the codex open-rollout probe /
+// liveness. The returned slice is a copy, so the monitor iterates without
+// holding the lock.
+//
+// The hive loop controller also reads this from its session-open hook, to see
+// the session that just opened. That read takes h.mu.RLock, which is why the
+// session-open notification is fired by handleHTTPInitialize after ensureSession
+// returns rather than from inside it.
 func (h *HTTPServer) SessionSnapshots() []hivemonitor.SessionSnapshot {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
@@ -184,16 +212,30 @@ func (h *HTTPServer) SessionSnapshots() []hivemonitor.SessionSnapshot {
 // registry). Idempotent — deleting an absent id is a no-op. This is the
 // CLIENT-SIDE HTTPServer.sessions map only; the daemon holds no server-side
 // per-session state (the server is session-oblivious).
+//
+// Ending the MCP session also ends any hive session it was running: there is no
+// hive 'leave' op, so the MCP session going away IS the end of the hive session,
+// and it is what stops the daemon's hive loops once the last one goes. The
+// EndHiveSession call is made OUTSIDE h.mu — it can synchronously drive the loop
+// controller's bounded Stops, and the mutex is not reentrant.
 func (h *HTTPServer) deleteSession(id string) {
 	h.mu.Lock()
 	delete(h.sessions, id)
 	h.mu.Unlock()
+
+	h.hiveSessions.EndHiveSession(id)
 }
 
 // reapIdle deletes every session whose lastSeen is older than h.idleTTL
 // relative to now. A zero idleTTL disables reaping (returns immediately) —
 // used by tests that drive sessions directly. Returns the number of sessions
 // evicted (for test assertions).
+//
+// Reaping is the second teardown path (the first is DELETE /mcp), so it ends the
+// reaped sessions' hive sessions too — otherwise a worker whose connection went
+// away without a DELETE would keep the daemon's hive loops running until the
+// process exited. The EndHiveSession calls are made after the delete loop
+// releases h.mu, for the same non-reentrancy reason as deleteSession.
 func (h *HTTPServer) reapIdle(now time.Time) int {
 	if h.idleTTL <= 0 {
 		return 0
@@ -214,6 +256,10 @@ func (h *HTTPServer) reapIdle(now time.Time) int {
 		delete(h.sessions, id)
 	}
 	h.mu.Unlock()
+
+	for _, id := range stale {
+		h.hiveSessions.EndHiveSession(id)
+	}
 	return len(stale)
 }
 

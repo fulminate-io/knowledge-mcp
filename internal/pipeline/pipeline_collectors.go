@@ -70,7 +70,17 @@ func (p *Pipeline) RegisterGraph(ctx context.Context, gt kgtypes.GraphType, name
 	if p.healFactory != nil {
 		heal = p.healFactory(gt, name)
 	}
-	c := newCollector(gt, name, p.cfg, p.summaryCh, p.embedCh, p.metrics, backend, base, idleMax, flush, heal, p.summaryEnabled(), p.embedEnabled(), p.genSnapshotFor)
+	// Build the per-graph collect-gate predicate (throttle #4) from the
+	// bootstrap-supplied factory. nil when nothing is wired (test fakes, degraded
+	// client) so the collector's scan gate no-ops. Bound to (gt, name) — THE SAME
+	// name this collector is registered under, which is what the recorded collect
+	// identity must equal for the gate to ever fire. Keeps the collect-runtime
+	// dependency off the collector (it sees only this func).
+	var collectInFlight func() bool
+	if p.collectGateFactory != nil {
+		collectInFlight = p.collectGateFactory(gt, name)
+	}
+	c := newCollector(gt, name, p.cfg, p.summaryCh, p.embedCh, p.metrics, backend, base, idleMax, flush, heal, p.summaryEnabled(), p.embedEnabled(), p.genSnapshotFor, collectInFlight)
 	p.collectorWakes[key] = []chan struct{}{c.summaryWake, c.embedWake}
 	p.collectorWG.Go(func() {
 		c.run(cctx)
@@ -96,13 +106,32 @@ func (p *Pipeline) WakeAll() {
 	}
 }
 
+// wakeCatalog triggers ONE catalog re-enumeration (RefreshLoadedGraphs) so a
+// change to the graph SET — the account's catalog_gen moved, or a login flip
+// rebound the backend — is picked up. That loop is wake-driven, so this is not
+// merely an early nudge ahead of a cadence: it is the only thing that makes the
+// loop enumerate at all. This is the graph-SET counterpart to WakeAll's
+// per-(graph,axis) gen poll.
+//
+// Non-blocking + coalescing: the send on the buffered(1) catalogWake is a no-op
+// when an enumeration is already queued, so repeated signals don't pile up. Safe to
+// call before Start / with no loop running (test fakes): the buffered signal simply
+// sits until the loop drains it, or is harmlessly never consumed.
+func (p *Pipeline) wakeCatalog() {
+	select {
+	case p.catalogWake <- struct{}{}:
+	default: // an enumeration is already queued — coalesce
+	}
+}
+
 // cadenceFor returns the (base, idleMax) poll cadence a freshly-registered
 // collector should use. Logged-in (remote) backend → the slow Config.CloudTick
 // base with idle-backoff up to Config.IdleTickMax. Logged-out (local) →
 // Config.Tick with idleMax == base (idle-backoff disabled; loopback scans are
-// cheap and latency-to-first-summary should stay low). A login flip
-// re-registers every collector (handleLoginFlip), so the cadence is re-derived
-// on flip and never stale. No resolver wired (test fakes) → local cadence.
+// cheap and latency-to-first-summary should stay low). A login flip tears down
+// every collector (CheckLoginFlip) and the next catalog diff re-registers them,
+// so the cadence is re-derived on flip and never stale. No resolver wired (test
+// fakes) → local cadence.
 func (p *Pipeline) cadenceFor(ctx context.Context) (base, idleMax time.Duration) {
 	if p.resolver != nil && p.resolver.LoggedIn(ctx) {
 		return p.cfg.CloudTickOrDefault(), p.cfg.IdleTickMaxOrDefault()

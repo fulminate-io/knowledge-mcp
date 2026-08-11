@@ -94,10 +94,10 @@ func (r *fakeResolver) get(mcp string) string {
 	return r.rec[mcp]
 }
 
-// claudeBindingHarness sets up a temp HOME with a resolvable claude transcript
-// whose final conversation line is `tailLine`, and injects the env so
-// ResolveTranscript binds the session. Returns the harness session id and the
-// snapshot.
+// claudeBindingHarness sets up a temp HOME holding the one claude transcript
+// for the snapshot's cwd, whose final conversation line is `tailLine`, so
+// ResolveTranscript binds the session off disk. Returns the harness session id
+// (the transcript's filename stem) and the snapshot.
 func claudeBindingHarness(t *testing.T, tailLine string) (string, SessionSnapshot) {
 	t.Helper()
 	home := t.TempDir()
@@ -119,7 +119,6 @@ func claudeBindingHarness(t *testing.T, tailLine string) (string, SessionSnapsho
 	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	injectProcessEnv(t, pid, map[string]string{"CLAUDE_CODE_SESSION_ID": harnessID})
 
 	return harnessID, SessionSnapshot{ID: "mcp-sess", Cwd: cwd, PID: pid, Comm: "claude"}
 }
@@ -281,7 +280,6 @@ func TestMonitor_ResumeRenewReenablesRenewal(t *testing.T) {
 	}
 	// Initial: a resolved tail → IDLE when no new bytes.
 	writeBody(claudeUserToolResult("toolu_done"))
-	injectProcessEnv(t, pid, map[string]string{"CLAUDE_CODE_SESSION_ID": harnessID})
 	snap := SessionSnapshot{ID: "mcp-resume", Cwd: cwd, PID: pid, Comm: "claude"}
 
 	reg := NewRegistry()

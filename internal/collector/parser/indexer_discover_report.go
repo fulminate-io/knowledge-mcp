@@ -211,7 +211,11 @@ func pathspecsFor(prefixes []string) []string {
 	if len(prefixes) == 0 {
 		return nil
 	}
-	specs := make([]string, 0, len(prefixes)+1)
+	// Cap on len(prefixes) alone; the "--" leader append grows for free.
+	// Computing the size as len(prefixes)+1 would be an addition the allocator
+	// sees, which can overflow int for a pathologically large slice (CWE-190),
+	// and a bare len() cannot.
+	specs := make([]string, 0, len(prefixes))
 	specs = append(specs, "--")
 	for _, raw := range prefixes {
 		p := normalizePrefix(raw)

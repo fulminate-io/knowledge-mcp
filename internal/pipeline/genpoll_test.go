@@ -52,7 +52,7 @@ const genPollGT = kgtypes.GraphCode
 func registerStubCollector(p *Pipeline, name string) *collector {
 	c := newCollector(genPollGT, name, p.cfg, p.summaryCh, p.embedCh, p.metrics, p.client,
 		p.cfg.TickOrDefault(), p.cfg.TickOrDefault(), nil, nil,
-		p.summaryEnabled(), p.embedEnabled(), p.genSnapshotFor)
+		p.summaryEnabled(), p.embedEnabled(), p.genSnapshotFor, nil)
 	key := graphKey{GraphType: genPollGT, GraphName: name}
 	p.collectorMu.Lock()
 	p.collectorCancels[key] = func() {}
@@ -185,6 +185,50 @@ func TestGenPoll_WakeAll_TriggersOnePollNotFanout(t *testing.T) {
 	require.False(t, throttled)
 	assert.Equal(t, 1, fake.calls["pipeline_gen_poll"], "WakeAll → exactly ONE gen-poll")
 	assert.Zero(t, fake.calls["pipeline_scan"], "WakeAll with no advanced gens → ZERO scans (not a 2N fan-out)")
+}
+
+// TestGenPoll_CatalogGenChangeWakesCatalog pins the account CATALOG watermark
+// compare inside genPollOnce. Per the proto contract the served value is a
+// per-replica SAMPLE, so ANY change — including a backward move — counts as
+// movement, while an unchanged value and the 0 a server serves before its first
+// bump must never wake the catalog loop. The first observation only records: the
+// boot pass already enumerated the catalog.
+func TestGenPoll_CatalogGenChangeWakesCatalog(t *testing.T) {
+	fake := newFakeWireClient()
+	p := genPollTestPipeline(t, fake)
+	ctx := context.Background()
+	registerStubCollector(p, "repoA")
+
+	// First observation at 7: recorded, no wake.
+	fake.seedGenPollCatalog(7, entry("repoA", "summary", 1))
+	_, throttled := p.genPollOnce(ctx)
+	require.False(t, throttled)
+	assert.False(t, drainWake(p.catalogWake), "the first catalog observation records without waking")
+
+	// Unchanged: no wake.
+	fake.seedGenPollCatalog(7, entry("repoA", "summary", 1))
+	_, _ = p.genPollOnce(ctx)
+	assert.False(t, drainWake(p.catalogWake), "an unchanged catalog_gen must not wake the catalog loop")
+
+	// Moved forward: wake. This is the known-positive control proving the
+	// no-wake assertions above are not vacuous.
+	fake.seedGenPollCatalog(8, entry("repoA", "summary", 1))
+	_, _ = p.genPollOnce(ctx)
+	assert.True(t, drainWake(p.catalogWake), "a moved catalog_gen must wake the catalog loop")
+
+	// Moved BACKWARD (a different replica's sample): still movement, still a wake.
+	fake.seedGenPollCatalog(6, entry("repoA", "summary", 1))
+	_, _ = p.genPollOnce(ctx)
+	assert.True(t, drainWake(p.catalogWake), "a BACKWARD catalog_gen move is movement — compare for change, not increase")
+
+	// 0 is skipped entirely: no wake, and it must not clobber the last-seen 6
+	// (proved by the next non-zero 6 being treated as UNCHANGED).
+	fake.seedGenPollCatalog(0, entry("repoA", "summary", 1))
+	_, _ = p.genPollOnce(ctx)
+	assert.False(t, drainWake(p.catalogWake), "catalog_gen 0 is skipped, never treated as movement")
+	fake.seedGenPollCatalog(6, entry("repoA", "summary", 1))
+	_, _ = p.genPollOnce(ctx)
+	assert.False(t, drainWake(p.catalogWake), "a 0 response must not clobber the last-seen catalog_gen")
 }
 
 // TestGenPoll_WatermarkAdvanceOnlyAfterDrain proves the per-axis watermark advances

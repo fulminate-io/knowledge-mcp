@@ -29,6 +29,17 @@
 // meant. A whitespace-only differential over two DIFFERENT structures is
 // recorded as layout=no, naming the structural difference as the reason.
 //
+// THE SECOND DIFFERENTIAL: TOKEN-SPAN ABSORPTION, reported in its own absorbed=
+// clause and measured independently of the layout verdict. A grammar may put
+// inter-child layout whitespace INSIDE the following node's leading anonymous
+// token rather than surfacing it as a child of its own — the JSX grammars do,
+// where a `<` spans "\n<". The whitespace-only detector above provably cannot
+// see it: "\n<" is not whitespace-only, so that detector returns empty over a
+// JSX probe pair. The two are separate dimensions of one question — does this
+// grammar's layout leak into what the matcher compares — and a grammar can
+// exhibit either, both or neither. layout= drives the child-list skip;
+// absorbed= drives the trimmed token comparison.
+//
 // A GRAMMAR THAT CANNOT BE PROBED gets an explicit reasoned SKIP, never a
 // silent omission. Either spelling failing to parse, or parsing to a tree
 // carrying ERROR nodes, is a skip: a garbage tree yields a garbage verdict, and
@@ -43,13 +54,13 @@
 // regenerating is a deliberate act and an ordinary suite run never dirties
 // testdata.
 //
-// PERF SHAPE: 42 small parses, two per grammar, run once. Serial; there is no
+// PERF SHAPE: two small parses per probed construct — one per grammar, plus a
+// second for each of the two that accept JSX — run once. Serial; there is no
 // corpus walk and nothing to parallelize.
 
 package ast
 
 import (
-	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -57,7 +68,6 @@ import (
 	"strings"
 	"testing"
 
-	sitter "github.com/smacker/go-tree-sitter"
 	"github.com/stretchr/testify/require"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/treesitter"
@@ -70,102 +80,143 @@ const layoutCensusEnv = "AST_LAYOUT_CENSUS_WRITE"
 // layoutCensusName is the committed artifact under testdata/.
 const layoutCensusName = "layout_token_census.txt"
 
-// layoutProbe is one grammar's differential: the same construct spelled across
+// layoutPair is one construct's differential: the same code spelled across
 // several lines and spelled on one. Nothing but the layout may differ between
-// the two — a probe whose spellings also differ in content would measure the
+// the two — a pair whose spellings also differ in content would measure the
 // content difference and report it as layout.
-type layoutProbe struct {
-	lang       treesitter.Language
+type layoutPair struct {
 	multiLine  string
 	singleLine string
 }
 
-// layoutProbes covers every registered grammar. Each pair is a body holding
-// two statements (or, where a grammar has no such form, the nearest construct
-// whose layout can vary) written both ways.
-var layoutProbes = []layoutProbe{
-	{lang: treesitter.LangBash,
-		multiLine:  "f() {\n  a\n  b\n}\n",
-		singleLine: "f() { a; b; }\n"},
-	{lang: treesitter.LangC,
-		multiLine:  "void f() {\n  a();\n  b();\n}\n",
-		singleLine: "void f() { a(); b(); }\n"},
-	{lang: treesitter.LangCPP,
-		multiLine:  "void f() {\n  a();\n  b();\n}\n",
-		singleLine: "void f() { a(); b(); }\n"},
-	{lang: treesitter.LangCSharp,
-		multiLine:  "class C {\n  void M() {\n    A();\n    B();\n  }\n}\n",
-		singleLine: "class C { void M() { A(); B(); } }\n"},
-	{lang: treesitter.LangElixir,
-		multiLine:  "def f do\n  a()\n  b()\nend\n",
-		singleLine: "def f do a(); b() end\n"},
-	{lang: treesitter.LangElm,
-		multiLine:  "f =\n    let\n        x = 1\n    in\n    x\n",
-		singleLine: "f = let x = 1 in x\n"},
-	{lang: treesitter.LangGo,
-		multiLine:  "package p\n\nfunc f() {\n\ta()\n\tb()\n}\n",
-		singleLine: "package p\n\nfunc f() { a(); b() }\n"},
-	{lang: treesitter.LangGroovy,
-		multiLine:  "def f() {\n  a()\n  b()\n}\n",
-		singleLine: "def f() { a(); b() }\n"},
-	{lang: treesitter.LangJava,
-		multiLine:  "class C {\n  void m() {\n    a();\n    b();\n  }\n}\n",
-		singleLine: "class C { void m() { a(); b(); } }\n"},
-	{lang: treesitter.LangJavaScript,
-		multiLine:  "function f() {\n  a();\n  b();\n}\n",
-		singleLine: "function f() { a(); b(); }\n"},
-	{lang: treesitter.LangKotlin,
-		multiLine:  "fun f() {\n    a()\n    b()\n}\n",
-		singleLine: "fun f() { a(); b() }\n"},
-	{lang: treesitter.LangLua,
-		multiLine:  "function f()\n  a()\n  b()\nend\n",
-		singleLine: "function f() a() b() end\n"},
-	{lang: treesitter.LangOCaml,
-		multiLine:  "let f () =\n  a ();\n  b ()\n",
-		singleLine: "let f () = a (); b ()\n"},
-	{lang: treesitter.LangPython,
-		multiLine:  "def f():\n    a()\n    b()\n",
-		singleLine: "def f(): a(); b()\n"},
-	{lang: treesitter.LangRuby,
-		multiLine:  "def m\n  a\n  b\nend\n",
-		singleLine: "def m; a; b; end\n"},
-	{lang: treesitter.LangRust,
-		multiLine:  "fn f() {\n    a();\n    b();\n}\n",
-		singleLine: "fn f() { a(); b(); }\n"},
-	{lang: treesitter.LangScala,
-		multiLine:  "object O {\n  def m() = {\n    a()\n    b()\n  }\n}\n",
-		singleLine: "object O { def m() = { a(); b() } }\n"},
-	{lang: treesitter.LangSwift,
-		multiLine:  "func f() {\n    a()\n    b()\n}\n",
-		singleLine: "func f() { a(); b() }\n"},
-	{lang: treesitter.LangTSX,
-		multiLine:  "function f() {\n  a();\n  b();\n}\n",
-		singleLine: "function f() { a(); b(); }\n"},
-	{lang: treesitter.LangTypeScript,
-		multiLine:  "function f() {\n  a();\n  b();\n}\n",
-		singleLine: "function f() { a(); b(); }\n"},
+// layoutProbe is one grammar's probe set. Every registered grammar has exactly
+// one probe — that is the coverage invariant — but a grammar may need MORE THAN
+// ONE CONSTRUCT probed, because the two phenomena this census measures do not
+// surface in the same syntax. A block body exposes a whitespace-only layout
+// child; only JSX exposes whitespace absorbed INTO a token.
+//
+// THE FIRST PAIR IS THE CANONICAL LAYOUT PROBE. The layout verdict is the first
+// pair that measures layout=yes, or the first pair's verdict when none does, so
+// a single-pair grammar's row is exactly what it was before probe sets existed.
+// Absorption is reported if ANY pair exhibits it, since a grammar that absorbs
+// in one construct absorbs.
+type layoutProbe struct {
+	lang  treesitter.Language
+	pairs []layoutPair
 }
 
-// layoutVerdict is one grammar's measured result.
+// layoutProbes covers every registered grammar. The canonical pair is a body
+// holding two statements (or, where a grammar has no such form, the nearest
+// construct whose layout can vary) written both ways.
+var layoutProbes = []layoutProbe{
+	{lang: treesitter.LangBash, pairs: []layoutPair{{
+		multiLine:  "f() {\n  a\n  b\n}\n",
+		singleLine: "f() { a; b; }\n"}}},
+	{lang: treesitter.LangC, pairs: []layoutPair{{
+		multiLine:  "void f() {\n  a();\n  b();\n}\n",
+		singleLine: "void f() { a(); b(); }\n"}}},
+	{lang: treesitter.LangCPP, pairs: []layoutPair{{
+		multiLine:  "void f() {\n  a();\n  b();\n}\n",
+		singleLine: "void f() { a(); b(); }\n"}}},
+	{lang: treesitter.LangCSharp, pairs: []layoutPair{{
+		multiLine:  "class C {\n  void M() {\n    A();\n    B();\n  }\n}\n",
+		singleLine: "class C { void M() { A(); B(); } }\n"}}},
+	{lang: treesitter.LangElixir, pairs: []layoutPair{{
+		multiLine:  "def f do\n  a()\n  b()\nend\n",
+		singleLine: "def f do a(); b() end\n"}}},
+	{lang: treesitter.LangElm, pairs: []layoutPair{{
+		multiLine:  "f =\n    let\n        x = 1\n    in\n    x\n",
+		singleLine: "f = let x = 1 in x\n"}}},
+	{lang: treesitter.LangGo, pairs: []layoutPair{{
+		multiLine:  "package p\n\nfunc f() {\n\ta()\n\tb()\n}\n",
+		singleLine: "package p\n\nfunc f() { a(); b() }\n"}}},
+	{lang: treesitter.LangGroovy, pairs: []layoutPair{{
+		multiLine:  "def f() {\n  a()\n  b()\n}\n",
+		singleLine: "def f() { a(); b() }\n"}}},
+	{lang: treesitter.LangJava, pairs: []layoutPair{{
+		multiLine:  "class C {\n  void m() {\n    a();\n    b();\n  }\n}\n",
+		singleLine: "class C { void m() { a(); b(); } }\n"}}},
+	// javascript and tsx carry a SECOND construct: the block pair above cannot
+	// exhibit token-span absorption, which only JSX child position produces.
+	// The block pair stays first and keeps owning the layout verdict, so the
+	// seeded javascript layout=no result is measured by exactly what measured it
+	// before.
+	{lang: treesitter.LangJavaScript, pairs: []layoutPair{{
+		multiLine:  "function f() {\n  a();\n  b();\n}\n",
+		singleLine: "function f() { a(); b(); }\n"}, jsxLayoutPair}},
+	{lang: treesitter.LangKotlin, pairs: []layoutPair{{
+		multiLine:  "fun f() {\n    a()\n    b()\n}\n",
+		singleLine: "fun f() { a(); b() }\n"}}},
+	{lang: treesitter.LangLua, pairs: []layoutPair{{
+		multiLine:  "function f()\n  a()\n  b()\nend\n",
+		singleLine: "function f() a() b() end\n"}}},
+	{lang: treesitter.LangOCaml, pairs: []layoutPair{{
+		multiLine:  "let f () =\n  a ();\n  b ()\n",
+		singleLine: "let f () = a (); b ()\n"}}},
+	{lang: treesitter.LangPython, pairs: []layoutPair{{
+		multiLine:  "def f():\n    a()\n    b()\n",
+		singleLine: "def f(): a(); b()\n"}}},
+	{lang: treesitter.LangRuby, pairs: []layoutPair{{
+		multiLine:  "def m\n  a\n  b\nend\n",
+		singleLine: "def m; a; b; end\n"}}},
+	{lang: treesitter.LangRust, pairs: []layoutPair{{
+		multiLine:  "fn f() {\n    a();\n    b();\n}\n",
+		singleLine: "fn f() { a(); b(); }\n"}}},
+	{lang: treesitter.LangScala, pairs: []layoutPair{{
+		multiLine:  "object O {\n  def m() = {\n    a()\n    b()\n  }\n}\n",
+		singleLine: "object O { def m() = { a(); b() } }\n"}}},
+	{lang: treesitter.LangSwift, pairs: []layoutPair{{
+		multiLine:  "func f() {\n    a()\n    b()\n}\n",
+		singleLine: "func f() { a(); b() }\n"}}},
+	{lang: treesitter.LangTSX, pairs: []layoutPair{{
+		multiLine:  "function f() {\n  a();\n  b();\n}\n",
+		singleLine: "function f() { a(); b(); }\n"}, jsxLayoutPair}},
+	{lang: treesitter.LangTypeScript, pairs: []layoutPair{{
+		multiLine:  "function f() {\n  a();\n  b();\n}\n",
+		singleLine: "function f() { a(); b(); }\n"}}},
+}
+
+// jsxLayoutPair is the JSX child-position differential, shared by the two
+// grammars that accept JSX. It is byte-for-byte the pair the reproduction and
+// the mechanism artifact use (jsx_layout_test.go), so a reader comparing the
+// three is never comparing two different fixtures for one claim.
+var jsxLayoutPair = layoutPair{
+	multiLine:  jsxNewlineChild,
+	singleLine: jsxNoWhitespaceAtAll,
+}
+
+// layoutVerdict is one grammar's measured result: the layout-child differential
+// (layout/token) and, independently, the token-span-absorption differential
+// (absorbed/absorbedToken). The two are SEPARATE dimensions of the same
+// question — does this grammar's layout leak into the child list the matcher
+// compares — and a grammar can exhibit either, both or neither.
 type layoutVerdict struct {
-	lang   string
-	layout bool
-	token  string
-	reason string
-	skip   string
+	lang          string
+	layout        bool
+	token         string
+	reason        string
+	skip          string
+	absorbed      bool
+	absorbedToken string
 }
 
 // line renders the verdict in the census format. layout=yes always carries the
 // why= clause: an artifact stating a token is pure layout without saying how
-// that was established is the hand list this census replaced.
+// that was established is the hand list this census replaced. The absorbed=
+// clause is appended LAST so every row keeps its existing shape and gains
+// exactly one trailing clause.
 func (v layoutVerdict) line() string {
 	if v.skip != "" {
 		return fmt.Sprintf("lang=%s SKIP %s", v.lang, v.skip)
 	}
-	if !v.layout {
-		return fmt.Sprintf("lang=%s layout=no token=- why=%s", v.lang, v.reason)
+	head := fmt.Sprintf("lang=%s layout=no token=- why=%s", v.lang, v.reason)
+	if v.layout {
+		head = fmt.Sprintf("lang=%s layout=yes token=%q why=%s", v.lang, v.token, v.reason)
 	}
-	return fmt.Sprintf("lang=%s layout=yes token=%q why=%s", v.lang, v.token, v.reason)
+	if v.absorbed {
+		return head + fmt.Sprintf(" absorbed=yes token=%q", v.absorbedToken)
+	}
+	return head + " absorbed=no"
 }
 
 // TestLayoutTokenCensus measures every registered grammar, asserts the verdicts
@@ -264,23 +315,61 @@ func registeredLangs() []string {
 	return out
 }
 
-// measureLayout runs one grammar's differential.
+// measureLayout runs every pair in one grammar's probe set and reduces them to
+// a single row. The LAYOUT verdict is the first pair measuring layout=yes, or
+// the first pair's verdict when none does — so a one-pair grammar's row is
+// identical to what it was before probe sets existed. ABSORPTION is reported
+// when ANY pair exhibits it: a grammar that absorbs in one construct absorbs,
+// and the constructs that can exhibit it are not the ones that expose a layout
+// child.
 func measureLayout(t *testing.T, probe layoutProbe) layoutVerdict {
 	t.Helper()
-	v := layoutVerdict{lang: string(probe.lang)}
+	require.NotEmpty(t, probe.pairs,
+		"%s has an empty probe set — coverage counts probes, so an empty one is an unmeasured grammar that still satisfies the count", probe.lang)
 
-	multi, multiSrc, ok := parseClean(t, probe.lang, probe.multiLine)
+	var out layoutVerdict
+	for i, pair := range probe.pairs {
+		v := measureLayoutPair(t, probe.lang, pair)
+		if i == 0 || (!out.layout && v.layout) {
+			absorbed, token := out.absorbed, out.absorbedToken
+			out = v
+			if absorbed {
+				out.absorbed, out.absorbedToken = absorbed, token
+			}
+		}
+		if v.absorbed && !out.absorbed {
+			out.absorbed, out.absorbedToken = true, v.absorbedToken
+		}
+	}
+	return out
+}
+
+// measureLayoutPair runs one construct's differential.
+func measureLayoutPair(t *testing.T, lang treesitter.Language, probe layoutPair) layoutVerdict {
+	t.Helper()
+	v := layoutVerdict{lang: string(lang)}
+
+	multi, multiSrc, ok := parseClean(t, lang, probe.multiLine)
 	if !ok {
 		v.skip = "the multi-line spelling does not parse cleanly under this grammar, so no differential can be taken"
 		return v
 	}
 	defer multi.Close()
-	single, singleSrc, ok := parseClean(t, probe.lang, probe.singleLine)
+	single, singleSrc, ok := parseClean(t, lang, probe.singleLine)
 	if !ok {
 		v.skip = "the one-line spelling does not parse cleanly under this grammar, so no differential can be taken"
 		return v
 	}
 	defer single.Close()
+
+	// The SECOND differential, measured independently of the verdict below: a
+	// token present in both spellings whose text differs only by surrounding
+	// whitespace. The whitespace-only detector cannot observe this — "\n<" is
+	// not whitespace-only — so the two never overlap.
+	if absorbed := absorbedWhitespaceTokens(multi.RootNode(), multiSrc, single.RootNode(), singleSrc); len(absorbed) > 0 {
+		v.absorbed = true
+		v.absorbedToken = absorbed[0]
+	}
 
 	extra := extraWhitespaceTokens(
 		anonWhitespaceTokens(multi.RootNode(), multiSrc),
@@ -306,75 +395,4 @@ func measureLayout(t *testing.T, probe layoutProbe) layoutVerdict {
 		"the one-line spelling parses to the same %d named nodes in the same order, minus this child, so the token distinguishes nothing a caller could have meant",
 		len(multiKinds))
 	return v
-}
-
-// parseClean parses src and reports ok=false when the parse fails or the tree
-// carries ERROR nodes. The caller owns the returned tree.
-func parseClean(t *testing.T, lang treesitter.Language, src string) (*sitter.Tree, []byte, bool) {
-	t.Helper()
-	parser := treesitter.NewParser()
-	defer parser.Close()
-	tree, err := parser.Parse(context.Background(), []byte(src), lang)
-	if err != nil {
-		return nil, nil, false
-	}
-	root := tree.RootNode()
-	if root == nil || root.HasError() {
-		tree.Close()
-		return nil, nil, false
-	}
-	return tree, []byte(src), true
-}
-
-// anonWhitespaceTokens counts, across the whole tree, every anonymous childless
-// token whose source text is whitespace only. Keyed by that text.
-func anonWhitespaceTokens(root *sitter.Node, src []byte) map[string]int {
-	out := map[string]int{}
-	var walk func(n *sitter.Node)
-	walk = func(n *sitter.Node) {
-		if n == nil {
-			return
-		}
-		count := int(n.ChildCount())
-		for i := range count {
-			c := n.Child(i)
-			if c == nil {
-				continue
-			}
-			if !c.IsNamed() && c.ChildCount() == 0 {
-				if text := c.Content(src); text != "" && strings.TrimSpace(text) == "" {
-					out[text]++
-				}
-			}
-			walk(c)
-		}
-	}
-	walk(root)
-	return out
-}
-
-// extraWhitespaceTokens returns, sorted, every token text the multi-line tree
-// carries more often than the one-line tree.
-func extraWhitespaceTokens(multi, single map[string]int) []string {
-	out := make([]string, 0, len(multi))
-	for text, n := range multi {
-		if n > single[text] {
-			out = append(out, text)
-		}
-	}
-	sort.Strings(out)
-	return out
-}
-
-// namedKinds returns the pre-order sequence of named node kinds in the tree.
-// Two spellings that differ only in layout produce the same sequence; a
-// difference means the layout change also changed what the source says.
-func namedKinds(root *sitter.Node) []string {
-	out := []string{}
-	walkAll(root, func(n *sitter.Node) {
-		if n != nil {
-			out = append(out, n.Type())
-		}
-	})
-	return out
 }

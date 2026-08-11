@@ -201,6 +201,20 @@ func pathBase(rel string) string {
 //     is all of them but Go. A token that is whitespace-like but MEANINGFUL
 //     does NOT belong here: C's `;` and Python's offside newline are meaning,
 //     and classifying either as layout would make patterns stop discriminating.
+//   - TrimsAnonTokenWhitespace declares that this grammar absorbs inter-child
+//     layout whitespace into the LEADING ANONYMOUS TOKEN of the following node
+//     instead of surfacing it as a child — the JSX grammars do, so a `<` token
+//     can span "\n<" purely because the author put the child on its own line.
+//     When set, the matcher compares ANONYMOUS CHILDLESS tokens with leading and
+//     trailing whitespace trimmed on both sides. THIS IS A DIFFERENT MECHANISM
+//     FROM LayoutTokens, not a generalization of it: LayoutTokens drops a whole
+//     child from both child lists, while this trims inside a token that also
+//     carries meaningful bytes, where there is no child to drop. A grammar may
+//     declare either, both, or neither. The zero value — byte-exact comparison —
+//     is correct for every grammar that does not absorb, which today is all of
+//     them but tsx and javascript; plain typescript has no JSX and does not
+//     declare it. Named leaves are never trimmed under any setting, so
+//     whitespace inside a string literal still discriminates.
 //   - CommentKinds holds the exact NODE KINDS this grammar emits for a comment
 //     — `comment` for most, but split forms like Rust's line_comment /
 //     block_comment and Kotlin's multiline_comment where the grammar draws the
@@ -219,13 +233,14 @@ func pathBase(rel string) string {
 //     emits at least one comment kind, so unlike IsTestFile there is no
 //     documented-nil disposition — the list is non-empty for all 21.
 type LangConfig struct {
-	Lang         treesitter.Language
-	Reserved     string
-	Wrappers     []ContextWrapper
-	IdentRule    func(string) bool
-	LayoutTokens []string
-	CommentKinds []string
-	IsTestFile   func(string) bool
+	Lang                     treesitter.Language
+	Reserved                 string
+	Wrappers                 []ContextWrapper
+	IdentRule                func(string) bool
+	LayoutTokens             []string
+	TrimsAnonTokenWhitespace bool
+	CommentKinds             []string
+	IsTestFile               func(string) bool
 }
 
 // langRegistry holds the per-language config registered at init time. The

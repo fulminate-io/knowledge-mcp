@@ -119,13 +119,12 @@ func (d *discoveryRecorder) op() graphclient.Operation {
 	return d.executeOp
 }
 
-// TestGraphDiscoveryStampsOperation guards the graph-CATALOG poll, the pipeline's
-// highest-volume background caller: one graph-names read per eligible graph type
-// per tick, forever, whether or not any work is pending. Both entry points into
-// that path are covered because they carry different contexts and neither
-// inherits from the other — the loop runs under the daemon wire ctx and the boot
-// seed under a fresh bootstrap ctx, so a stamp on one says nothing about the
-// other.
+// TestGraphDiscoveryStampsOperation guards the graph-CATALOG discovery path: one
+// graph-names read per eligible graph type on every pass it runs. Both entry
+// points into that path are covered because they carry different contexts and
+// neither inherits from the other — the loop runs under the daemon wire ctx and
+// the boot seed under a fresh bootstrap ctx, so a stamp on one says nothing about
+// the other.
 func TestGraphDiscoveryStampsOperation(t *testing.T) {
 	t.Run("the discovery loop stamps its own operation", func(t *testing.T) {
 		rec := newDiscoveryRecorder()
@@ -138,6 +137,10 @@ func TestGraphDiscoveryStampsOperation(t *testing.T) {
 			defer close(done)
 			p.RefreshLoadedGraphs(ctx)
 		}()
+
+		// The loop is wake-driven and issues nothing until it is signaled, so the
+		// stamp can only be observed on a pass a wake actually buys.
+		p.wakeCatalog()
 
 		select {
 		case <-rec.seen:

@@ -5,6 +5,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
@@ -94,7 +95,8 @@ func TestInterceptHive_ForwardsAgentOp(t *testing.T) {
 		Nodes:         []*knowledgev1.Node{{Id: "m1", Status: "leased", Metadata: map[string]string{"body": "task"}}},
 	}}
 	params := hiveCall(t, map[string]any{"op": "claim", "hive": "h1"})
-	handled, res := InterceptHive(context.Background(), hiveTestDeps(f), params)
+	ctx := session.ContextWithHarnessSessionID(context.Background(), "harness-forward")
+	handled, res := InterceptHive(ctx, hiveTestDeps(f), params)
 	if !handled {
 		t.Fatal("InterceptHive must claim a hive call")
 	}
@@ -148,7 +150,8 @@ func TestInterceptHive_AcceptsRoleAndQueueTo(t *testing.T) {
 	for _, to := range []string{"@queue", "@worker"} {
 		f := &fakeHiveCaller{}
 		params := hiveCall(t, map[string]any{"op": "send", "hive": "h1", "body": "x", "to": to})
-		handled, res := InterceptHive(context.Background(), hiveTestDeps(f), params)
+		ctx := session.ContextWithHarnessSessionID(context.Background(), "harness-routing")
+		handled, res := InterceptHive(ctx, hiveTestDeps(f), params)
 		if !handled || res.IsError {
 			t.Fatalf("send to=%q must be accepted, got handled=%v err=%v", to, handled, res.IsError)
 		}
@@ -192,7 +195,11 @@ func TestInterceptHive_RecordsClaimAndClearsOnAck(t *testing.T) {
 	)
 	reg := hivemonitor.NewRegistry()
 	deps := hiveRegistryDeps{interceptTestDeps: interceptTestDeps{gc: nil}, reg: reg}
-	ctx := session.ContextWithSessionID(context.Background(), sid)
+	// The claim registry is keyed on the MCP session-id; the harness id is the
+	// separate identity the pre-flight guard requires. Deliberately different
+	// values, because the two are different identities.
+	ctx := session.ContextWithHarnessSessionID(
+		session.ContextWithSessionID(context.Background(), sid), "harness-sess-1")
 
 	// A successful claim returning the leased node binds the claim.
 	claimCaller := &fakeHiveCaller{resp: &knowledgev1.HiveResponse{
@@ -232,7 +239,8 @@ func TestInterceptHive_EmptyClaimRecordsNothing(t *testing.T) {
 	reg := hivemonitor.NewRegistry()
 	caller := &fakeHiveCaller{resp: &knowledgev1.HiveResponse{AffectedCount: 0}}
 	deps := hiveRegistryDeps{interceptTestDeps: interceptTestDeps{gc: caller}, reg: reg}
-	ctx := session.ContextWithSessionID(context.Background(), "s")
+	ctx := session.ContextWithHarnessSessionID(
+		session.ContextWithSessionID(context.Background(), "s"), "harness-empty-claim")
 	params := hiveCall(t, map[string]any{"op": "claim", "hive": "h1"})
 	if handled, res := InterceptHive(ctx, deps, params); !handled || res.IsError {
 		t.Fatalf("empty claim should still be handled+success, got handled=%v err=%v", handled, res.IsError)
@@ -290,18 +298,146 @@ func TestInterceptHive_BanGateRefusesBannedSession(t *testing.T) {
 	}
 }
 
-// TestInterceptHive_BanGateForwardsUnbannedAndUnresolved verifies the gate is
-// session-scoped, not a global off-switch: an un-banned (resolved) session's
-// claim forwards normally (hiveN==1), and an UNRESOLVED session's claim also
-// forwards (fail open — the monitor has not bound it yet).
-func TestInterceptHive_BanGateForwardsUnbannedAndUnresolved(t *testing.T) {
+// hiveOpArgs is one agent op's minimal valid argument set — `send` needs a
+// routable `to` to clear validateHiveTo, ack/fail need the msg_id they settle.
+var hiveOpArgs = []struct {
+	op   string
+	args map[string]any
+}{
+	{"register", map[string]any{"op": "register", "hive": "h1", "name": "w1", "roles": []string{"worker"}}},
+	{"send", map[string]any{"op": "send", "hive": "h1", "body": "x", "to": "@queue"}},
+	{"claim", map[string]any{"op": "claim", "hive": "h1"}},
+	{"ack", map[string]any{"op": "ack", "hive": "h1", "msg_id": "m1"}},
+	{"fail", map[string]any{"op": "fail", "hive": "h1", "msg_id": "m1", "reason": "stuck"}},
+}
+
+// TestInterceptHive_MarksHiveSessionActiveOnEveryAgentOp asserts that EVERY one
+// of the five agent ops — not just register and send — marks the calling MCP
+// session hive-active, which is what starts the daemon's hive loops. Marking on
+// claim/ack/fail too is the second recovery path after a daemon restart: the
+// skill's work loop repeats claim, never re-register.
+func TestInterceptHive_MarksHiveSessionActiveOnEveryAgentOp(t *testing.T) {
+	for _, tc := range hiveOpArgs {
+		t.Run(tc.op, func(t *testing.T) {
+			reg := hivemonitor.NewRegistry()
+			f := &fakeHiveCaller{}
+			deps := hiveRegistryDeps{interceptTestDeps: interceptTestDeps{gc: f}, reg: reg}
+			ctx := session.ContextWithHarnessSessionID(
+				session.ContextWithSessionID(context.Background(), "mcp-sess-"+tc.op), "harness-"+tc.op)
+
+			handled, res := InterceptHive(ctx, deps, hiveCall(t, tc.args))
+			if !handled || res.IsError {
+				t.Fatalf("op %q should be handled+success, got handled=%v err=%v content=%q",
+					tc.op, handled, res.IsError, contentText(res))
+			}
+			if got := reg.HiveActiveCount(); got != 1 {
+				t.Fatalf("after a successful %q, HiveActiveCount() = %d, want 1", tc.op, got)
+			}
+		})
+	}
+}
+
+// TestInterceptHive_FailedOrBannedCallDoesNotMarkActive asserts the mark sits
+// AFTER the RPC and AFTER the ban gate: a hive call that fails at the cloud, and
+// one refused because the session is banned, both leave the loops un-started.
+//
+// Each subtest opens with a POSITIVE CONTROL on its own fixture — a zero from a
+// fixture that could never have marked anything proves nothing.
+func TestInterceptHive_FailedOrBannedCallDoesNotMarkActive(t *testing.T) {
+	params := hiveCall(t, map[string]any{"op": "claim", "hive": "h1"})
+
+	t.Run("failed rpc", func(t *testing.T) {
+		const sid = "mcp-sess-rpc"
+		ctx := session.ContextWithHarnessSessionID(
+			session.ContextWithSessionID(context.Background(), sid), "harness-sess-rpc")
+
+		// CONTROL: the same ctx through a SUCCEEDING caller does mark.
+		okReg := hivemonitor.NewRegistry()
+		okDeps := hiveRegistryDeps{interceptTestDeps: interceptTestDeps{gc: &fakeHiveCaller{}}, reg: okReg}
+		if _, res := InterceptHive(ctx, okDeps, params); res.IsError {
+			t.Fatalf("control: a successful claim must not error, got %q", contentText(res))
+		}
+		if got := okReg.HiveActiveCount(); got != 1 {
+			t.Fatalf("control: HiveActiveCount() = %d, want 1 — the fixture never reaches MarkHiveActive", got)
+		}
+
+		// A failing RPC must leave the set empty.
+		failReg := hivemonitor.NewRegistry()
+		failDeps := hiveRegistryDeps{
+			interceptTestDeps: interceptTestDeps{gc: &fakeHiveCaller{err: errors.New("cloud unreachable")}},
+			reg:               failReg,
+		}
+		_, res := InterceptHive(ctx, failDeps, params)
+		if !res.IsError {
+			t.Fatal("a failed hive RPC must surface as an error result")
+		}
+		if got := failReg.HiveActiveCount(); got != 0 {
+			t.Fatalf("after a FAILED hive call, HiveActiveCount() = %d, want 0 — the mark is above the RPC", got)
+		}
+	})
+
+	t.Run("banned session", func(t *testing.T) {
+		const (
+			sid     = "mcp-sess-ban"
+			harness = "harness-evicted"
+		)
+		ctx := session.ContextWithHarnessSessionID(
+			session.ContextWithSessionID(context.Background(), sid), "harness-sess-ban")
+
+		// CONTROL: the same sid, un-banned, does mark.
+		okReg := hivemonitor.NewRegistry()
+		okDeps := hiveRegistryDeps{
+			interceptTestDeps: interceptTestDeps{gc: &fakeHiveCaller{}},
+			reg:               okReg,
+			ban:               hivemonitor.NewBanSet(),
+		}
+		if _, res := InterceptHive(ctx, okDeps, params); res.IsError {
+			t.Fatalf("control: an un-banned claim must not error, got %q", contentText(res))
+		}
+		if got := okReg.HiveActiveCount(); got != 1 {
+			t.Fatalf("control: HiveActiveCount() = %d, want 1 — the fixture never reaches MarkHiveActive", got)
+		}
+
+		// The same session, now resolving to a banned harness id, must not mark.
+		ban := hivemonitor.NewBanSet()
+		ban.RecordResolution(sid, harness)
+		ban.Ban(harness)
+		banReg := hivemonitor.NewRegistry()
+		banDeps := hiveRegistryDeps{
+			interceptTestDeps: interceptTestDeps{gc: &fakeHiveCaller{}},
+			reg:               banReg,
+			ban:               ban,
+		}
+		_, res := InterceptHive(ctx, banDeps, params)
+		if !res.IsError {
+			t.Fatal("a banned session's hive call must be refused")
+		}
+		if got := banReg.HiveActiveCount(); got != 0 {
+			t.Fatalf("after a BANNED session's call, HiveActiveCount() = %d, want 0 — the mark is above the ban gate", got)
+		}
+	})
+}
+
+// TestInterceptHive_BanGateForwardsUnbannedAndBanUnresolved verifies the BAN
+// gate is session-scoped, not a global off-switch: an un-banned (resolved)
+// session's claim forwards normally (hiveN==1), and a session the BanSet has
+// never recorded also forwards (fail open — the monitor has not bound it yet).
+//
+// "Unresolved" here means BAN-RESOLVE unresolved: the harness id is present on
+// the context but unknown to the BanSet's mcp→harness map. That is a different
+// condition from an unresolved HARNESS TRANSCRIPT (no harness id at all), which
+// is refused pre-flight and has its own test —
+// TestInterceptHive_UnresolvedHarnessRefusedLocally. Both contexts below
+// therefore carry a harness id; only the BanSet's knowledge of it varies.
+func TestInterceptHive_BanGateForwardsUnbannedAndBanUnresolved(t *testing.T) {
 	ban := hivemonitor.NewBanSet()
 	ban.RecordResolution("mcp-ok", "harness-ok") // resolved but NOT banned
 
 	// Resolved + un-banned → forwards.
 	f1 := &fakeHiveCaller{}
 	deps1 := hiveRegistryDeps{interceptTestDeps: interceptTestDeps{gc: f1}, ban: ban}
-	ctx1 := session.ContextWithSessionID(context.Background(), "mcp-ok")
+	ctx1 := session.ContextWithHarnessSessionID(
+		session.ContextWithSessionID(context.Background(), "mcp-ok"), "harness-ok")
 	if _, res := InterceptHive(ctx1, deps1, hiveCall(t, map[string]any{"op": "claim", "hive": "h1"})); res.IsError {
 		t.Fatalf("an un-banned session must forward, got error: %v", res.Content)
 	}
@@ -309,14 +445,47 @@ func TestInterceptHive_BanGateForwardsUnbannedAndUnresolved(t *testing.T) {
 		t.Fatalf("un-banned session forward count = %d, want 1", f1.hiveN)
 	}
 
-	// Unresolved (never recorded) → fail open, forwards.
+	// Never recorded in the BanSet → the ban gate fails open, so it forwards.
+	// The BanSet is deliberately left untouched for this session; the harness id
+	// on the context is what clears the pre-flight guard, not the ban map.
 	f2 := &fakeHiveCaller{}
 	deps2 := hiveRegistryDeps{interceptTestDeps: interceptTestDeps{gc: f2}, ban: ban}
-	ctx2 := session.ContextWithSessionID(context.Background(), "mcp-never-seen")
+	ctx2 := session.ContextWithHarnessSessionID(
+		session.ContextWithSessionID(context.Background(), "mcp-never-seen"), "harness-never-seen")
 	if _, res := InterceptHive(ctx2, deps2, hiveCall(t, map[string]any{"op": "claim", "hive": "h1"})); res.IsError {
-		t.Fatalf("an unresolved session must fail OPEN (forward), got error: %v", res.Content)
+		t.Fatalf("a session the BanSet never recorded must fail OPEN (forward), got error: %v", res.Content)
 	}
 	if f2.hiveN != 1 {
-		t.Fatalf("unresolved session forward count = %d, want 1 (fail open)", f2.hiveN)
+		t.Fatalf("ban-unresolved session forward count = %d, want 1 (fail open)", f2.hiveN)
+	}
+}
+
+// TestInterceptHive_UnresolvedHarnessRefusedLocally asserts an agent op from a
+// session whose HARNESS transcript has not resolved is refused before the RPC
+// leaves the machine, with an error naming that cause.
+//
+// The zero-forward assertion is what makes this non-vacuous: without it the test
+// would pass against an implementation that returned a good error AFTER shipping
+// the request, which is exactly what the guard's placement prevents.
+func TestInterceptHive_UnresolvedHarnessRefusedLocally(t *testing.T) {
+	f := &fakeHiveCaller{}
+	deps := hiveRegistryDeps{interceptTestDeps: interceptTestDeps{gc: f}, reg: hivemonitor.NewRegistry()}
+	// An MCP session-id but NO harness id: the unresolved-transcript state.
+	ctx := session.ContextWithSessionID(context.Background(), "mcp-no-harness")
+
+	handled, res := InterceptHive(ctx, deps, hiveCall(t, map[string]any{
+		"op": "register", "hive": "h1", "name": "w1", "roles": []string{"worker"},
+	}))
+	if !handled {
+		t.Fatal("a refused hive call must still be claimed by the intercept")
+	}
+	if !res.IsError {
+		t.Fatal("an agent op with no resolved harness session-id must be refused")
+	}
+	if !strings.Contains(contentText(res), "harness transcript has not resolved yet") {
+		t.Errorf("refusal should name the transcript-resolution cause, got %q", contentText(res))
+	}
+	if f.hiveN != 0 {
+		t.Fatalf("the refusal must happen BEFORE the RPC (hiveN=%d, want 0)", f.hiveN)
 	}
 }

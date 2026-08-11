@@ -50,11 +50,12 @@ type Pipeline struct {
 	// collectors then ride the shared p.client and no flip detection runs.
 	resolver BackendResolver
 
-	// lastLoggedIn caches the login state observed at the previous refreshOnce
-	// tick. A transition forces a full collector teardown + rebind so the
+	// lastLoggedIn caches the login state observed at the previous flip check.
+	// A transition forces a full collector teardown + rebind so the
 	// per-collector dirty-gen caches reset and each collector re-binds the new
-	// backend. Guarded by collectorMu (only touched inside refreshOnce, which
-	// also serializes via the RefreshLoadedGraphs single-flight semaphore).
+	// backend. Guarded by collectorMu (only touched inside handleLoginFlip,
+	// whose callers are the exported CheckLoginFlip — driven per tool call by
+	// the client's activity hook — and nothing else).
 	lastLoggedIn    bool
 	lastLoggedInSet bool
 
@@ -124,17 +125,32 @@ type Pipeline struct {
 	// while reaching for collectorMu.
 	genMu sync.Mutex
 	// genSnapshot is the shared per-(graph,axis) dirty-gen the central bulk poll
-	// writes each tick; the per-collector discover reads it via genSnapshotFor to
-	// decide whether to issue a Phase-2 detail PipelineScan. Guarded by genMu.
+	// writes on every poll; the per-collector discover reads it via genSnapshotFor
+	// to decide whether to issue a Phase-2 detail PipelineScan. Guarded by genMu.
 	genSnapshot map[graphKey]axisGens
 	// lastPokedGen is the central loop's OWN per-(graph,axis) high-water of the gen
 	// it has already poked a collector about (locks option A — the central loop
 	// tracks its own poke watermark; a redundant poke is an RPC-free no-op). A
 	// collector wake fires only when a returned gen ADVANCES past this. Guarded by genMu.
 	lastPokedGen map[graphKey]axisGens
-	// genPollWake is the buffered(1) coalescing trigger WakeAll signals so a collect
-	// forces an immediate bulk gen-poll instead of waiting out the discovery tick.
+	// lastCatalogGen is the account CATALOG watermark last seen on a gen-poll
+	// response. Compared for CHANGE, never for increase: the served value is a
+	// per-replica SAMPLE and may move backward across replicas or restarts
+	// (engine.proto freshness_gen). Guarded by genMu.
+	lastCatalogGen uint64
+	// lastCatalogGenSet records whether lastCatalogGen holds an observation yet, so
+	// the FIRST sample is recorded without waking. Guarded by genMu.
+	lastCatalogGenSet bool
+	// genPollWake is the buffered(1) coalescing trigger the central bulk gen-poll
+	// loop (RunGenPollLoop) waits on. Signaled by WakeAll — a collect or any bulk
+	// write, a new graph's registration, a login flip, and the client's activity
+	// hook when the response watermark moves. Past the loop's one seed poll at
+	// start, a signal here is the only thing that produces a gen poll.
 	genPollWake chan struct{}
+	// catalogWake is the buffered(1) coalescing trigger the CATALOG-discovery loop
+	// (RefreshLoadedGraphs) waits on. Signaled when the account's catalog_gen moved
+	// (genPollOnce) or a login flip rebound the backend (CheckLoginFlip).
+	catalogWake chan struct{}
 
 	collectorWG  sync.WaitGroup // every collector goroutine
 	dispatcherWG sync.WaitGroup // dispatcher goroutines
@@ -161,6 +177,15 @@ type Pipeline struct {
 	// manager is wired (test fakes) → the heal closure is nil → the armed
 	// embed-drain heal-check no-ops.
 	healFactory func(gt kgtypes.GraphType, name string) func(ctx context.Context) error
+
+	// collectGateFactory builds the per-graph collect-gate predicate RegisterGraph
+	// injects into each collector as throttle #4 (runLoop). Built by BOOTSTRAP for
+	// the same reason healFactory is: it closes over the collect runtime, and this
+	// package must never import the tools package that owns it (tools already
+	// imports pipeline, so the reverse edge would be a cycle). nil when nothing is
+	// wired (test fakes, degraded client) → the per-collector predicate is nil →
+	// the gate is inert and every scan proceeds exactly as before.
+	collectGateFactory func(gt kgtypes.GraphType, name string) func() bool
 
 	// activeSummarizer, when set, returns the "provider/model" label of the LIVE
 	// active summarizer entry (the fallback chain's highest-priority healthy
@@ -209,7 +234,7 @@ type EmbedderFunc func(ctx context.Context, items []EmbedItem) (map[string][]byt
 func New(cfg Config, client WireClient, summarizer SummarizerFunc, embedder EmbedderFunc) *Pipeline {
 	// The production client (bootstrap routedWireClient) also satisfies
 	// BackendResolver — bind it so collectors get the login-routed concrete
-	// backend and refreshOnce can detect a flip. Test fakes that implement only
+	// backend and CheckLoginFlip can detect a flip. Test fakes that implement only
 	// WireClient leave resolver nil → collectors ride p.client, no flip rebind.
 	resolver, _ := client.(BackendResolver)
 	return &Pipeline{
@@ -233,6 +258,7 @@ func New(cfg Config, client WireClient, summarizer SummarizerFunc, embedder Embe
 		genSnapshot:      make(map[graphKey]axisGens),
 		lastPokedGen:     make(map[graphKey]axisGens),
 		genPollWake:      make(chan struct{}, 1),
+		catalogWake:      make(chan struct{}, 1),
 		metrics:          &metricsState{},
 	}
 }
@@ -390,6 +416,6 @@ func (p *Pipeline) EnqueueIDs(gt kgtypes.GraphType, name string, ids []string) {
 	}
 }
 
-// RefreshLoadedGraphs / discoveryTick / RefreshOnceForBoot / refreshOnce /
-// handleLoginFlip — the client-side graph-CATALOG discovery poll — live in
+// RefreshLoadedGraphs / RefreshOnceForBoot / refreshOnce / CheckLoginFlip /
+// handleLoginFlip — the client-side graph-CATALOG discovery — live in
 // pipeline_refresh.go (split out to keep this file under the 500-line cap).

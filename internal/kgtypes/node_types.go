@@ -137,7 +137,8 @@ const (
 	//   - NodeMessage    : one unit of work; status pending|leased|done|blocked,
 	//                      contained-by → its hive, responds-to → the message it answers.
 	//   - NodeHiveMember : a member IS a session — true identity is the unfakeable
-	//                      MCP session-id; name is a human-friendly label.
+	//                      harness session-id the daemon resolves from the agent's
+	//                      own session transcript; name is a human-friendly label.
 	NodeHive       NodeType = "hive"
 	NodeMessage    NodeType = "message"
 	NodeHiveMember NodeType = "hive_member"

@@ -1,0 +1,58 @@
+# JSX layout-whitespace mechanism census.
+#
+# Measured, never asserted. For each JSX-bearing grammar this records the same
+# two node kinds parsed from a newline-bearing spelling and from a spelling with
+# no inter-child whitespace, dumps every child of each with its byte span and
+# exact source text, and classifies the difference into one of three mechanisms:
+# anonymous_child, node_padding or token_span_absorption. The matcher seam that
+# can fix the defect follows from which one holds.
+#
+# Regenerate with:
+#   AST_JSX_MECHANISM_WRITE=1 go test ./cmd/knowledge/internal/ast/ -run TestJSXLayoutMechanism
+#
+# A run that classifies anything other than token_span_absorption is a finding to
+# report, not an artifact to overwrite.
+
+lang=tsx mechanism=token_span_absorption self_closing=token_span_absorption closing=token_span_absorption
+lang=tsx node=jsx_self_closing_element mechanism=token_span_absorption why=child counts are equal at 4 and the node starts exactly at its first child, whose text differs from the one-line spelling's only by surrounding whitespace ("\n<" against "<")
+lang=tsx node=jsx_self_closing_element spelling=multi span=[15,38) childCount=4 firstChildStart=15
+lang=tsx node=jsx_self_closing_element spelling=multi child=0 kind="<" named=false extra=false span=[15,17) text="\n<"
+lang=tsx node=jsx_self_closing_element spelling=multi child=1 kind="identifier" named=true extra=false span=[17,26) text="CodeBlock"
+lang=tsx node=jsx_self_closing_element spelling=multi child=2 kind="jsx_attribute" named=true extra=false span=[27,35) text="code={a}"
+lang=tsx node=jsx_self_closing_element spelling=multi child=3 kind="/>" named=false extra=false span=[36,38) text="/>"
+lang=tsx node=jsx_self_closing_element spelling=single span=[15,37) childCount=4 firstChildStart=15
+lang=tsx node=jsx_self_closing_element spelling=single child=0 kind="<" named=false extra=false span=[15,16) text="<"
+lang=tsx node=jsx_self_closing_element spelling=single child=1 kind="identifier" named=true extra=false span=[16,25) text="CodeBlock"
+lang=tsx node=jsx_self_closing_element spelling=single child=2 kind="jsx_attribute" named=true extra=false span=[26,34) text="code={a}"
+lang=tsx node=jsx_self_closing_element spelling=single child=3 kind="/>" named=false extra=false span=[35,37) text="/>"
+lang=tsx node=jsx_closing_element mechanism=token_span_absorption why=child counts are equal at 3 and the node starts exactly at its first child, whose text differs from the one-line spelling's only by surrounding whitespace ("\n</" against "</")
+lang=tsx node=jsx_closing_element spelling=multi span=[38,45) childCount=3 firstChildStart=38
+lang=tsx node=jsx_closing_element spelling=multi child=0 kind="</" named=false extra=false span=[38,41) text="\n</"
+lang=tsx node=jsx_closing_element spelling=multi child=1 kind="identifier" named=true extra=false span=[41,44) text="div"
+lang=tsx node=jsx_closing_element spelling=multi child=2 kind=">" named=false extra=false span=[44,45) text=">"
+lang=tsx node=jsx_closing_element spelling=single span=[37,43) childCount=3 firstChildStart=37
+lang=tsx node=jsx_closing_element spelling=single child=0 kind="</" named=false extra=false span=[37,39) text="</"
+lang=tsx node=jsx_closing_element spelling=single child=1 kind="identifier" named=true extra=false span=[39,42) text="div"
+lang=tsx node=jsx_closing_element spelling=single child=2 kind=">" named=false extra=false span=[42,43) text=">"
+
+lang=javascript mechanism=token_span_absorption self_closing=token_span_absorption closing=token_span_absorption
+lang=javascript node=jsx_self_closing_element mechanism=token_span_absorption why=child counts are equal at 4 and the node starts exactly at its first child, whose text differs from the one-line spelling's only by surrounding whitespace ("\n<" against "<")
+lang=javascript node=jsx_self_closing_element spelling=multi span=[15,38) childCount=4 firstChildStart=15
+lang=javascript node=jsx_self_closing_element spelling=multi child=0 kind="<" named=false extra=false span=[15,17) text="\n<"
+lang=javascript node=jsx_self_closing_element spelling=multi child=1 kind="identifier" named=true extra=false span=[17,26) text="CodeBlock"
+lang=javascript node=jsx_self_closing_element spelling=multi child=2 kind="jsx_attribute" named=true extra=false span=[27,35) text="code={a}"
+lang=javascript node=jsx_self_closing_element spelling=multi child=3 kind="/>" named=false extra=false span=[36,38) text="/>"
+lang=javascript node=jsx_self_closing_element spelling=single span=[15,37) childCount=4 firstChildStart=15
+lang=javascript node=jsx_self_closing_element spelling=single child=0 kind="<" named=false extra=false span=[15,16) text="<"
+lang=javascript node=jsx_self_closing_element spelling=single child=1 kind="identifier" named=true extra=false span=[16,25) text="CodeBlock"
+lang=javascript node=jsx_self_closing_element spelling=single child=2 kind="jsx_attribute" named=true extra=false span=[26,34) text="code={a}"
+lang=javascript node=jsx_self_closing_element spelling=single child=3 kind="/>" named=false extra=false span=[35,37) text="/>"
+lang=javascript node=jsx_closing_element mechanism=token_span_absorption why=child counts are equal at 3 and the node starts exactly at its first child, whose text differs from the one-line spelling's only by surrounding whitespace ("\n</" against "</")
+lang=javascript node=jsx_closing_element spelling=multi span=[38,45) childCount=3 firstChildStart=38
+lang=javascript node=jsx_closing_element spelling=multi child=0 kind="</" named=false extra=false span=[38,41) text="\n</"
+lang=javascript node=jsx_closing_element spelling=multi child=1 kind="identifier" named=true extra=false span=[41,44) text="div"
+lang=javascript node=jsx_closing_element spelling=multi child=2 kind=">" named=false extra=false span=[44,45) text=">"
+lang=javascript node=jsx_closing_element spelling=single span=[37,43) childCount=3 firstChildStart=37
+lang=javascript node=jsx_closing_element spelling=single child=0 kind="</" named=false extra=false span=[37,39) text="</"
+lang=javascript node=jsx_closing_element spelling=single child=1 kind="identifier" named=true extra=false span=[39,42) text="div"
+lang=javascript node=jsx_closing_element spelling=single child=2 kind=">" named=false extra=false span=[42,43) text=">"

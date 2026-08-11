@@ -134,6 +134,46 @@ func cancelFor(p *Pipeline, key graphKey) uintptr {
 	return reflect.ValueOf(c).Pointer()
 }
 
+// TestRefreshOnceSkipsLoginFlip proves the decoupling: the catalog diff no
+// longer performs the login-flip teardown, so a flip observed with no
+// CheckLoginFlip call leaves the survivor's collector in place. Without this
+// negative assertion the decoupling is unfalsifiable — a bare occurrence count
+// cannot tell "the call moved" from "the call ran twice".
+//
+// The discriminator is the RE-REGISTRATION signal, not the collector's cancel
+// identity: cancelFor reports a func's code pointer, which is the same literal
+// inside context.WithCancel for every collector ever created, so it cannot
+// distinguish a torn-down-and-recreated collector from an untouched one. A
+// teardown, in contrast, empties the collector set and makes the survivor look
+// NEW to the diff, which registers it again and wakes the gen-poll loop. No
+// wake means no teardown.
+func TestRefreshOnceSkipsLoginFlip(t *testing.T) {
+	fb := newFlippableBackend()
+	// Both catalogs hold only the survivor, so the wanted/have diff registers
+	// nothing on its own: a registration can only come from a teardown.
+	fb.local.seedGraphNames(kgtypes.GraphCode, "survivor")
+	fb.cloud.seedGraphNames(kgtypes.GraphCode, "survivor")
+
+	p := New(Config{}, fb, nil, nil)
+	ctx := context.Background()
+	survivor := graphKey{GraphType: kgtypes.GraphCode, GraphName: "survivor"}
+
+	p.refreshOnce(ctx)
+	require.Contains(t, registeredKeys(p), survivor, "survivor must be registered logged-out")
+	// Known-positive control for the emptiness assertion below: the first pass
+	// DID register the survivor, so the probe reports a real registration wake.
+	require.True(t, drainWake(p.genPollWake), "the first pass registers the survivor and wakes the gen-poll loop")
+
+	fb.loggedIn.Store(true)
+	p.refreshOnce(ctx)
+
+	require.Contains(t, registeredKeys(p), survivor, "survivor must still be registered after the flip")
+	assert.False(t, drainWake(p.genPollWake),
+		"refreshOnce must not tear down collectors on a login flip — that is CheckLoginFlip's job, driven by the client activity hook")
+
+	require.NoError(t, p.Stop(ctx))
+}
+
 // TestRefreshFlipDelta proves the cloud-only (no-union) decision: the registered
 // collector set always equals the CURRENT backend's catalog, never the union.
 func TestRefreshFlipDelta(t *testing.T) {
@@ -154,7 +194,14 @@ func TestRefreshFlipDelta(t *testing.T) {
 	assert.NotContains(t, have, graphKey{GraphType: kgtypes.GraphCode, GraphName: "cloud-only"})
 
 	// Flip to logged in → cloud catalog registered, local-only unregistered.
+	// The flip teardown is driven by CheckLoginFlip (the client activity hook's
+	// job in production); refreshOnce only diffs the catalog.
+	// The hook runs on EVERY tool call, so in production the pre-flip state is
+	// already seeded by the time a flip happens; model that first observation
+	// here (it only seeds, and reports no transition).
+	require.False(t, p.CheckLoginFlip(ctx), "the first observation seeds the login state, it is not a transition")
 	fb.loggedIn.Store(true)
+	require.True(t, p.CheckLoginFlip(ctx), "the login transition must be detected")
 	p.refreshOnce(ctx)
 	have = registeredKeys(p)
 	assert.Contains(t, have, graphKey{GraphType: kgtypes.GraphCode, GraphName: "cloud-only"})
@@ -210,9 +257,16 @@ func TestFlipResetsGenCache(t *testing.T) {
 	// Let the logged-out collector tick a few times so it caches gen=7.
 	time.Sleep(40 * time.Millisecond)
 
-	// Flip → refreshOnce tears down + re-registers the survivor (fresh collector,
-	// gen cache reset to 0). The recreated collector then scans cloud at gen 0.
+	// Flip → CheckLoginFlip tears down every collector (the client activity hook
+	// drives it in production) and the following refreshOnce re-registers the
+	// survivor fresh, gen cache reset to 0. The recreated collector then scans
+	// cloud at gen 0.
+	// The hook runs on EVERY tool call, so in production the pre-flip state is
+	// already seeded by the time a flip happens; model that first observation
+	// here (it only seeds, and reports no transition).
+	require.False(t, p.CheckLoginFlip(ctx), "the first observation seeds the login state, it is not a transition")
 	fb.loggedIn.Store(true)
+	require.True(t, p.CheckLoginFlip(ctx), "the login transition must be detected")
 	p.refreshOnce(ctx)
 	after := cancelFor(p, survivor)
 	require.NotZero(t, after, "survivor must remain registered after the flip")

@@ -113,7 +113,15 @@ func (s *bm25Segment) collectTopK(scores []float64, touched []uint32, k int, acc
 	if len(touched) == 0 {
 		return nil
 	}
-	h := make(scoredDocHeap, 0, k+1)
+	// Sized from what can actually land in the heap rather than from k+1. k is a
+	// caller-supplied limit, so the addition is an allocation size the caller
+	// controls and can overflow int (CWE-190); the heap also never holds more
+	// than one entry per touched doc, so bounding the hint by the touched set
+	// keeps a huge k from asking for a huge allocation as well.
+	// The max(0, ...) floor keeps a non-positive k — which retains nothing, and
+	// which the old k+1 turned into a 0 capacity at k == -1 — from asking for a
+	// negative one.
+	h := make(scoredDocHeap, 0, max(0, min(k, len(touched))))
 	for _, docID := range touched {
 		if int(docID) >= len(s.members) {
 			continue

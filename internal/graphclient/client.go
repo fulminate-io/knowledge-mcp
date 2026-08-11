@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"net"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	"connectrpc.com/connect"
@@ -46,6 +47,25 @@ type GraphClient struct {
 	// instead of sleeping through the ~4.25s retry-backoff window. Real RPCs
 	// (including HealthService.Status) stay on the retrying clients.
 	probe knowledgev1connect.HealthServiceClient
+
+	// freshnessGen holds the last non-zero account freshness watermark the
+	// observer interceptor read off a response. It is a pointer because the
+	// interceptor closure is built before the struct literal and the two must
+	// share one cell.
+	freshnessGen *atomic.Uint64
+}
+
+// FreshnessGen returns the most recent NON-ZERO account freshness watermark this
+// client has observed on a response. 0 means "never observed one".
+//
+// Nil-safe on both the receiver and the cell: a bare &GraphClient{} literal
+// (client_keepalive_test.go stands two up) has no observer wired, and a nil
+// *GraphClient is the cloud-only user's absent local client, as on Healthy.
+func (c *GraphClient) FreshnessGen() uint64 {
+	if c == nil || c.freshnessGen == nil {
+		return 0
+	}
+	return c.freshnessGen.Load()
 }
 
 // NewGraphClient creates a GraphClient that connects to the given TCP
@@ -86,18 +106,32 @@ func NewGraphClientForURL(baseURL string) *GraphClient {
 		// No global timeout — reindex operations on large repos can take
 		// hours. Per-request timeouts are handled via context.
 	}
-	// The operation stamper runs BEFORE the reconnect retry loop so a retried
-	// attempt re-sends the already-stamped message rather than re-deriving the
-	// label per attempt. The health client gets it too and is unaffected: its
-	// request messages carry no client_context field, so the stamper no-ops.
-	retry := connect.WithInterceptors(newOperationInterceptor(), newReconnectInterceptor())
+	// Both stampers run BEFORE the reconnect retry loop so a retried attempt
+	// re-sends the already-stamped request rather than re-deriving per attempt.
+	// They write to different places: the operation stamper writes a MESSAGE
+	// FIELD (client_context.operation), the session stamper writes a HEADER
+	// (the harness session-id). The health client gets both and is unaffected by
+	// either: its request messages carry no client_context field, so the
+	// operation stamper no-ops, and a health probe carries the harness header
+	// harmlessly when one is in context. The health client gets the freshness
+	// observer too, and no-ops the same way: its response messages declare no
+	// freshness_gen field.
+	//
+	// The freshness observer is PREPENDED, and the position is load-bearing:
+	// connect composes interceptors first-in-slice OUTERMOST, so an outermost
+	// interceptor's post-next code runs LAST on the response path and sees the
+	// response finally returned to the caller. Inside the reconnect interceptor
+	// it would instead record a retried attempt's intermediate response.
+	gens := &atomic.Uint64{}
+	retry := connect.WithInterceptors(newFreshnessObserver(gens), newOperationInterceptor(), newSessionInterceptor(), newReconnectInterceptor())
 	return &GraphClient{
-		baseURL:    baseURL,
-		httpClient: httpClient,
-		health:     knowledgev1connect.NewHealthServiceClient(httpClient, baseURL, retry),
-		ingest:     knowledgev1connect.NewIngestServiceClient(httpClient, baseURL, retry),
-		engine:     knowledgev1connect.NewEngineServiceClient(httpClient, baseURL, retry),
-		probe:      knowledgev1connect.NewHealthServiceClient(httpClient, baseURL),
+		baseURL:      baseURL,
+		httpClient:   httpClient,
+		health:       knowledgev1connect.NewHealthServiceClient(httpClient, baseURL, retry),
+		ingest:       knowledgev1connect.NewIngestServiceClient(httpClient, baseURL, retry),
+		engine:       knowledgev1connect.NewEngineServiceClient(httpClient, baseURL, retry),
+		probe:        knowledgev1connect.NewHealthServiceClient(httpClient, baseURL),
+		freshnessGen: gens,
 	}
 }
 

@@ -271,11 +271,23 @@ func matchNode(pt *PatternTree, p, t *sitter.Node, patSrc, src []byte, caps *Cap
 	// `modifiers` node of bare keywords and the same node carrying an
 	// annotation are then treated identically, instead of the first being
 	// text-compared and the second waved through.
+	//
+	// ONE EXCEPTION, applied to BOTH sides here: a grammar that absorbs layout
+	// whitespace into its leading anonymous tokens (LangConfig.
+	// TrimsAnonTokenWhitespace) has those tokens compared whitespace-trimmed,
+	// or the source's line breaks become a constraint the pattern has to
+	// reproduce byte for byte. It is gated on both nodes being ANONYMOUS so a
+	// named leaf — a string literal, an identifier — keeps discriminating on
+	// the whitespace it carries. The config check comes first because it is the
+	// cheapest, and node source is sliced rather than copied via Content()
+	// because this path runs for every childless token of every candidate.
 	if p.ChildCount() == 0 && t.ChildCount() == 0 {
-		if p.Content(patSrc) != t.Content(src) {
+		trim := pt.LangCfg.TrimsAnonTokenWhitespace && !p.IsNamed() && !t.IsNamed()
+		if !tokenTextMatches(patSrc[p.StartByte():p.EndByte()], src[t.StartByte():t.EndByte()], trim) {
 			return false
 		}
-		caps.recordAlign(p, t)
+		as, ae := alignedTokenRange(src, t.StartByte(), t.EndByte(), trim)
+		caps.recordAlignRange(p, as, ae)
 		return true
 	}
 	return matchChildren(pt, p, t, patSrc, src, caps)

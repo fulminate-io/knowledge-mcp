@@ -20,7 +20,7 @@ func TestCollectRuntime_StartCoalesces(t *testing.T) {
 
 	var ran atomic.Int32
 	release := make(chan struct{})
-	h1, started1, _ := rt.Start("k", "code /repo", func() error {
+	h1, started1, _ := rt.Start("k", "code /repo", "", func() error {
 		ran.Add(1)
 		<-release
 		return nil
@@ -31,7 +31,7 @@ func TestCollectRuntime_StartCoalesces(t *testing.T) {
 	// A small real-time gap so the coalesce path reports a strictly positive elapsed.
 	time.Sleep(2 * time.Millisecond)
 
-	h2, started2, elapsed := rt.Start("k", "code /repo", func() error {
+	h2, started2, elapsed := rt.Start("k", "code /repo", "", func() error {
 		ran.Add(1)
 		return nil
 	})
@@ -50,7 +50,7 @@ func TestCollectRuntime_SnapshotStates(t *testing.T) {
 	rt := NewCollectRuntime()
 
 	release := make(chan struct{})
-	h1, started, _ := rt.Start("k1", "code /a", func() error {
+	h1, started, _ := rt.Start("k1", "code /a", "", func() error {
 		<-release
 		return nil
 	})
@@ -68,7 +68,7 @@ func TestCollectRuntime_SnapshotStates(t *testing.T) {
 	assert.Equal(t, "completed", snap[0].State)
 
 	sentinel := errors.New("boom")
-	h2, started2, _ := rt.Start("k2", "code /b", func() error { return sentinel })
+	h2, started2, _ := rt.Start("k2", "code /b", "", func() error { return sentinel })
 	require.True(t, started2)
 	<-h2.Done()
 
@@ -91,7 +91,7 @@ func TestCollectRuntime_StopDrains(t *testing.T) {
 	rt := NewCollectRuntime()
 
 	started := make(chan struct{})
-	h, ok, _ := rt.Start("k", "code /a", func() error {
+	h, ok, _ := rt.Start("k", "code /a", "", func() error {
 		close(started)
 		// The closure captures the runtime's baseCtx directly — Stop's baseCancel
 		// unblocks this.
@@ -119,7 +119,7 @@ func TestCollectRuntime_StopDrains(t *testing.T) {
 func TestCollectRuntime_ErrAfterDone(t *testing.T) {
 	rt := NewCollectRuntime()
 	sentinel := errors.New("sentinel-err")
-	h, ok, _ := rt.Start("k", "code /a", func() error { return sentinel })
+	h, ok, _ := rt.Start("k", "code /a", "", func() error { return sentinel })
 	require.True(t, ok)
 	<-h.Done()
 	assert.ErrorIs(t, h.Err(), sentinel)
@@ -132,7 +132,7 @@ func TestCollectRuntime_DetachedFailureLoudLog(t *testing.T) {
 	t.Run("normal error", func(t *testing.T) {
 		rt := NewCollectRuntime()
 		out := captureSlog(func() {
-			h, ok, _ := rt.Start("k", "code /a", func() error { return errors.New("boom") })
+			h, ok, _ := rt.Start("k", "code /a", "", func() error { return errors.New("boom") })
 			require.True(t, ok)
 			<-h.Done()
 		})
@@ -142,7 +142,7 @@ func TestCollectRuntime_DetachedFailureLoudLog(t *testing.T) {
 	t.Run("recovered panic", func(t *testing.T) {
 		rt := NewCollectRuntime()
 		out := captureSlog(func() {
-			h, ok, _ := rt.Start("k", "code /a", func() error { panic("kaboom") })
+			h, ok, _ := rt.Start("k", "code /a", "", func() error { panic("kaboom") })
 			require.True(t, ok)
 			<-h.Done()
 		})

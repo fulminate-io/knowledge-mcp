@@ -48,3 +48,32 @@ func WorkspaceCwdFromContext(ctx context.Context) string {
 	v, _ := ctx.Value(workspaceCwdKey{}).(string)
 	return v
 }
+
+// harnessSessionIDKey is the typed context key carrying a session's resolved
+// HARNESS session-id — the daemon-derived identity read from the agent's
+// on-disk transcript, never supplied by the agent. A private type avoids
+// cross-package collisions, mirroring sessionIDKey.
+//
+// It is a DIFFERENT value from the MCP session-id above with a different
+// lifetime: the MCP session-id is a local identity (ban-gate correlation, claim
+// registry, hive-active marking) while the harness session-id is the identity
+// the cloud keys a hive member on. They deliberately occupy separate slots.
+type harnessSessionIDKey struct{}
+
+// ContextWithHarnessSessionID returns a copy of ctx with the harness session-id
+// attached. An empty id is a no-op (returns ctx unchanged) so a session whose
+// transcript has not resolved leaves the context clean and the carrier stamps
+// no header.
+func ContextWithHarnessSessionID(ctx context.Context, harnessID string) context.Context {
+	if harnessID == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, harnessSessionIDKey{}, harnessID)
+}
+
+// HarnessSessionIDFromContext extracts the harness session-id from ctx. Returns
+// "" if none was set — the unresolved-transcript state.
+func HarnessSessionIDFromContext(ctx context.Context) string {
+	v, _ := ctx.Value(harnessSessionIDKey{}).(string)
+	return v
+}

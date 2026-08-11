@@ -133,6 +133,7 @@ func TestCollectorRunLoop_OverlayBacklogDrainsAcrossWavesAndQuiesces(t *testing.
 		nil, embedCh, &metricsState{}, fake,
 		cfg.Tick, cfg.Tick, nil, nil, false, true, // summaryEnabled=false, embedEnabled=true: this test drives runEmbedLoop directly
 		nil, // nil genSnapshot: no central gen-poll in this test → discover always scanGaps (the pre-two-phase drain path this test exercises)
+		nil, // nil collectInFlight: no collect runtime wired → the collect-gate is inert and every scan proceeds
 	)
 
 	ctx, cancel := context.WithCancel(context.Background())

@@ -10,35 +10,41 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 )
 
-// pipeline_refresh.go holds the client-side graph-CATALOG discovery poll on
-// *Pipeline: the RefreshLoadedGraphs loop, its login-aware cadence, the one-shot
-// boot pass, the per-tick diff-and-dispatch (refreshOnce), and the login-flip
-// teardown. Split out of pipeline.go to keep that file under the 500-line cap as
-// the gen-poll state accreted. This is the GRAPH-SET discovery (which graphs
-// exist); the per-(graph,axis) gen discovery lives in genpoll.go.
+// pipeline_refresh.go holds the client-side graph-CATALOG discovery on
+// *Pipeline: the RefreshLoadedGraphs loop, the one-shot boot pass, the
+// diff-and-dispatch pass (refreshOnce), and the login-flip teardown. Split out
+// of pipeline.go to keep that file under the 500-line cap as the gen-poll state
+// accreted. This is the GRAPH-SET discovery (which graphs exist); the
+// per-(graph,axis) gen discovery lives in genpoll.go.
 
-// RefreshLoadedGraphs is the client-side graph-discovery poll. It polls the
-// loaded-graph catalog (listLoadedGraphs → per-type RETURN_MODE_GRAPH_NAMES
+// RefreshLoadedGraphs is the client-side graph-discovery loop. Each pass reads
+// the loaded-graph catalog (listLoadedGraphs → per-type RETURN_MODE_GRAPH_NAMES
 // reads), diffs the response against the current per-(gt, name) collector set,
-// and calls RegisterGraph / UnregisterGraph for the delta. Worst-case lag for
-// graph create/destroy propagation: one poll interval — the price of a wire
-// poll rather than an in-process registry hook.
+// and calls RegisterGraph / UnregisterGraph for the delta.
 //
-// Cadence is remote-aware, mirroring the per-graph collector loop (cadenceFor):
-// a logged-in (remote) backend polls at the slow Config.CloudTick base, a
-// logged-out (local loopback) backend at the cheap Config.Tick base. Polling
-// the REMOTE catalog at the 250ms local cadence fires len(eligibleTypes) wire
-// RPCs every 250ms (~24 RPC/s) and saturates the backend's per-IP rate limiter —
-// the cadence bug this loop previously had.
+// The loop is wake-driven: it runs one pass per signal on catalogWake and is
+// otherwise completely silent, rather than re-reading the catalog on a fixed
+// cadence whether or not the graph set changed. Two things signal it, and
+// between them they cover every way the catalog can move:
+//   - the account CATALOG watermark moved, observed by genPollOnce on the
+//     bulk gen-poll response it already receives (genpoll.go);
+//   - a login flip, via CheckLoginFlip — the new backend is a different server
+//     whose catalog bears no relation to the old one's, and a flip moves no
+//     watermark, so nothing else would re-enumerate.
 //
-// Throttle insurance: when a whole tick is lost to a remote 429 (refreshOnce
-// reports throttled), the loop backs off on a dedicated errBackoff gate instead
-// of re-firing at the base cadence — the discovery-poll equivalent of the
-// collector's #3 scan-error backoff. Without it a sustained 429 turns the poll
-// into a tight retry storm against the shared limiter (backoff.go's documented
-// bug class). A clean tick resets the gate.
+// The catalog is already populated when the loop starts: RefreshOnceForBoot runs
+// the same pass once at bootstrap, before this goroutine is launched.
 //
-// refreshOnce runs synchronously, so a slow poll naturally delays the next one —
+// Throttle insurance: when a whole pass is lost to a remote 429 (refreshOnce
+// reports throttled), the loop backs off on a dedicated errBackoff gate and
+// retries the pass it still owes rather than re-firing immediately — the
+// discovery equivalent of the collector's #3 scan-error backoff. Without it a
+// sustained 429 turns the retry into a tight storm against the shared limiter
+// (backoff.go's documented bug class). A clean pass resets the gate. This retry
+// is the loop's only remaining wait, and it is scoped to work already known to
+// be owed.
+//
+// refreshOnce runs synchronously, so a slow pass naturally delays the next one —
 // no separate single-flight guard is needed.
 //
 // Exits on ctx.Done.
@@ -47,46 +53,52 @@ import (
 // originating tool call to inherit an operation from, so the loop stamps its own
 // ONCE HERE rather than per RPC — every catalog read the loop issues derives
 // from this ctx, so the stamp covers the whole loop body including anything
-// added to it later. Unstamped, this is the single largest source of
-// client.unstamped traffic: the poll fires one graph-names read per eligible
-// graph type every tick, forever, whether or not there is work to drain.
+// added to it later. Unstamped, these reads land in the client.unstamped bucket,
+// indistinguishable in the metrics from a real client stamping bug.
 func (p *Pipeline) RefreshLoadedGraphs(ctx context.Context) {
 	ctx = graphclient.WithOperation(ctx, graphclient.OpPipelineGraphDiscovery)
 	gate := newErrBackoff(p.cfg.ErrBackoffBaseOrDefault(), p.cfg.ErrBackoffMaxOrDefault())
+	// pending means "a pass is already owed" — set only by the throttled retry
+	// below. It starts false because the boot pass has already run.
+	pending := false
 	for {
+		if !pending {
+			select {
+			case <-ctx.Done():
+				return
+			case <-p.catalogWake:
+			}
+		}
+		pending = false
 		hint, throttled := p.refreshOnce(ctx)
-		var d time.Duration
 		if throttled {
 			// Sustained 429: honor the server's Retry-After (or blind exponential)
-			// rather than re-polling at the base cadence and feeding the storm.
-			d = gate.failHint(hint)
+			// rather than re-firing immediately and feeding the storm. The pass is
+			// still owed, so it is retried without waiting for a new wake — a wake
+			// that arrived during the backoff would coalesce onto the same token.
+			d := gate.failHint(hint)
 			slog.Debug("pipeline.refresh: discovery throttled; backing off",
 				"delay", d, "retry_after_hint", hint)
-		} else {
-			gate.ok()
-			d = p.discoveryTick(ctx)
+			pending = true
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(d):
+			}
+			continue
 		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-time.After(d):
-		}
+		gate.ok()
 	}
-}
-
-// discoveryTick returns the base poll interval for the graph-discovery loop:
-// Config.CloudTick when bound to a remote (logged-in) backend, Config.Tick for
-// local loopback. Reuses cadenceFor's login-aware base so discovery and the
-// per-graph collectors stay on the same remote-vs-local cadence.
-func (p *Pipeline) discoveryTick(ctx context.Context) time.Duration {
-	base, _ := p.cadenceFor(ctx)
-	return base
 }
 
 // RefreshOnceForBoot performs the one-shot startup registration pass.
 // Exported so the caller (cmd/knowledge.wirePipelineRuntime) can seed
-// the collector set BEFORE the background refresh goroutine starts so
-// the very first tick has a populated state to diff against.
+// the collector set BEFORE the background refresh goroutine starts.
+//
+// This is the ONLY unconditional catalog enumeration: RefreshLoadedGraphs is
+// wake-driven and issues nothing until something signals it, so a client whose
+// catalog never moves enumerates exactly once per daemon start. It also gives
+// the gen-poll loop's own seed poll a non-empty graph set to sample.
 //
 // Stamps the same query-origin operation as the loop: this runs the identical
 // catalog read, and its caller passes a fresh bootstrap ctx that does not
@@ -97,19 +109,21 @@ func (p *Pipeline) RefreshOnceForBoot(ctx context.Context) {
 }
 
 // refreshOnce performs one diff-and-dispatch pass. Extracted from
-// RefreshLoadedGraphs so the per-tick body stays under the
+// RefreshLoadedGraphs so the loop body stays under the
 // cognitive-complexity cap. Returns (rlHint, throttled) from the catalog
-// enumeration so the caller can back off when the whole tick was lost to a
+// enumeration so the caller can back off when the whole pass was lost to a
 // remote rate-limit; the boot caller (RefreshOnceForBoot) ignores them.
 func (p *Pipeline) refreshOnce(ctx context.Context) (time.Duration, bool) {
-	// Hazard B: on a login-state transition, tear down + clear ALL collectors
-	// BEFORE the diff so every survivor graphKey re-registers fresh against the
-	// NEW backend — resetting the per-collector dirty-gen caches (collector.go)
-	// to 0 (re-scan from scratch) and re-binding the concrete backend. Without
-	// this a graphKey present in both catalogs would never re-register (it sits
-	// in both wanted+have) and would keep scanning the new backend with a stale
+	// Hazard B (login-state transitions) is NOT handled here. This pass performs
+	// the catalog diff only; the teardown that a flip requires — cancel + clear
+	// ALL collectors so every survivor graphKey re-registers fresh against the
+	// NEW backend, resetting the per-collector dirty-gen caches (collector.go) to
+	// 0 and re-binding the concrete backend — lives in CheckLoginFlip below,
+	// driven by the client's activity hook on every tool call rather than by this
+	// poll. The hazard itself is unchanged: a graphKey present in both catalogs
+	// sits in wanted+have and would never re-register on the diff alone, so
+	// without that teardown it would keep scanning the new backend with a stale
 	// gen → silent no-drain of the cloud gaps.
-	p.handleLoginFlip(ctx)
 
 	// listLoadedGraphs never aborts: a per-type enumeration failure (rollout 502,
 	// permission_denied) is skipped, and `succeeded` reports which types this tick
@@ -129,9 +143,11 @@ func (p *Pipeline) refreshOnce(ctx context.Context) (time.Duration, bool) {
 	}
 	p.collectorMu.Unlock()
 
+	registered := 0
 	for k := range wanted {
 		if _, exists := have[k]; !exists {
 			p.RegisterGraph(ctx, k.GraphType, k.GraphName)
+			registered++
 		}
 	}
 	for k := range have {
@@ -139,17 +155,57 @@ func (p *Pipeline) refreshOnce(ctx context.Context) (time.Duration, bool) {
 			p.UnregisterGraph(k.GraphType, k.GraphName)
 		}
 	}
+	// A freshly-registered graph has no entry in the central gen snapshot yet, so
+	// its collector's discover cannot cheap-tick and falls through to a real
+	// PipelineScan every tick until it drains. One bulk poll seeds the snapshot for
+	// every new graph at once, which is what the two-phase protocol exists to do.
+	if registered > 0 {
+		p.WakeAll()
+	}
 	return rlHint, throttled
 }
 
-// handleLoginFlip detects a login-state transition since the previous tick and,
-// on a flip, cancels + clears every collector so the subsequent diff re-registers
-// each wanted graph fresh (reset dirty-gen cache + rebind backend — Hazard B).
-// No-op when no resolver is wired (test fakes) or the state is unchanged. Reuses
-// the cancel-all shape from stopSequence step 1.
-func (p *Pipeline) handleLoginFlip(ctx context.Context) {
+// CheckLoginFlip detects a login-state transition and, on a flip, rebinds
+// everything the OLD backend's identity was baked into. Returns true when it flipped.
+//
+// Beyond handleLoginFlip's per-collector teardown it also clears the CENTRAL
+// two-phase gen-poll caches and signals both wake channels: the new backend is a
+// different server whose generations bear no relation to the old one's, and
+// nothing else would ever re-enumerate (a flip does not move catalog_gen) or
+// re-sample (the rebuilt collectors have no snapshot entry).
+//
+// Lock discipline (the hierarchy pinned on the Pipeline struct): handleLoginFlip
+// takes collectorMu internally, so genMu is taken only AFTER it returns — the two
+// mutexes are never held together.
+func (p *Pipeline) CheckLoginFlip(ctx context.Context) bool {
+	if !p.handleLoginFlip(ctx) {
+		return false
+	}
+	// The central two-phase caches outlive the per-collector teardown above, and
+	// both are keyed to the OLD backend: genSnapshot's sampled gens describe a
+	// server we are no longer talking to, and lastPokedGen is the poke high-water
+	// genPollOnce compares against with `>`, so a new backend reporting LOWER gens
+	// would never poke a collector again.
+	p.genMu.Lock()
+	clear(p.genSnapshot)
+	clear(p.lastPokedGen)
+	p.genMu.Unlock()
+	p.wakeCatalog()
+	p.WakeAll()
+	return true
+}
+
+// handleLoginFlip detects a login-state transition since the previous observation
+// and, on a flip, cancels + clears every collector so the NEXT catalog diff
+// re-registers each wanted graph fresh (reset dirty-gen cache + rebind backend —
+// Hazard B). Reached only through CheckLoginFlip, which the client's per-tool-call
+// activity hook drives; the catalog poll no longer calls it.
+// Returns true only on an actual transition: false for the nil-resolver case (test
+// fakes), for the first observation (which only seeds the state), and when the
+// state is unchanged. Reuses the cancel-all shape from stopSequence step 1.
+func (p *Pipeline) handleLoginFlip(ctx context.Context) bool {
 	if p.resolver == nil {
-		return
+		return false
 	}
 	now := p.resolver.LoggedIn(ctx)
 	p.collectorMu.Lock()
@@ -157,10 +213,10 @@ func (p *Pipeline) handleLoginFlip(ctx context.Context) {
 	if !p.lastLoggedInSet {
 		p.lastLoggedIn = now
 		p.lastLoggedInSet = true
-		return
+		return false
 	}
 	if now == p.lastLoggedIn {
-		return
+		return false
 	}
 	slog.Info("pipeline.refresh: login state flipped — tearing down all collectors to rebind backend + reset gen caches",
 		"logged_in", now)
@@ -170,4 +226,5 @@ func (p *Pipeline) handleLoginFlip(ctx context.Context) {
 	p.collectorCancels = make(map[graphKey]context.CancelFunc)
 	p.collectorWakes = make(map[graphKey][]chan struct{})
 	p.lastLoggedIn = now
+	return true
 }

@@ -27,8 +27,10 @@ const (
 
 // SessionSnapshot is the per-session identity the resolver binds to a
 // transcript: the resolved workspace cwd, the peer process PID, and the peer
-// process command name (comm — "claude" or "codex"). It is produced by the
-// HTTPServer session-snapshot read seam (Phase 3) and consumed here.
+// process command name (comm). Comm is a ROUTING HINT ONLY — a harness may
+// rewrite its process title, so the command name can name anything. It is
+// produced by the HTTPServer session-snapshot read seam (Phase 3) and consumed
+// here.
 type SessionSnapshot struct {
 	ID   string
 	Cwd  string
@@ -37,17 +39,18 @@ type SessionSnapshot struct {
 }
 
 // TranscriptHandle is the resolved binding: the exact transcript file path, its
-// format, and the HARNESS session-id (claude CLAUDE_CODE_SESSION_ID / codex
-// rollout session_meta.id) — the OS/harness/file-sourced, LLM-uncontrolled
-// identity the ban keys on and the value passed as HiveRequest.MemberSession on
-// renew. A zero TranscriptHandle (empty Path) means "not resolved" — the monitor
-// skips that claim this tick rather than treating it as DEAD.
+// format, and the HARNESS session-id (claude transcript filename stem / codex
+// rollout session_meta.id) — the file-sourced, LLM-uncontrolled identity the ban
+// keys on and the value passed as HiveRequest.MemberSession on renew. A zero
+// TranscriptHandle (empty Path) means "not resolved" — the monitor skips that
+// claim this tick rather than treating it as DEAD.
 type TranscriptHandle struct {
 	Path string
 	// HarnessSessionID is the harness-sourced session identity (NOT the
-	// reconnect-volatile Mcp-Session-Id): claude's CLAUDE_CODE_SESSION_ID or
-	// codex's rollout session_meta.id. Stable for the CLI session's life and
-	// LLM-uncontrolled, so it is the ban key and the renew MemberSession.
+	// reconnect-volatile Mcp-Session-Id): the claude transcript's filename stem
+	// (the scheme names each session file <sessionId>.jsonl) or codex's rollout
+	// session_meta.id. Stable for the CLI session's life and LLM-uncontrolled,
+	// so it is the ban key and the renew MemberSession.
 	HarnessSessionID string
 	Format           TranscriptFormat
 }
@@ -64,12 +67,18 @@ func (h TranscriptHandle) Resolved() bool { return h.Path != "" }
 var homeDir = os.UserHomeDir
 
 // ResolveTranscript deterministically binds a session to its EXACT transcript
-// file. It branches on the peer process command:
+// file. The peer's command name is a ROUTING HINT, not an identity source: a
+// harness may rewrite its process title, so a comm that does not name codex is
+// tried against the claude transcript store on disk FIRST — the same
+// file-derived identity the transcript uploader already trusts — and falls back
+// to the codex resolvers when that binds nothing.
 //
-//   - claude: read CLAUDE_CODE_SESSION_ID from the claiming process's
-//     environment (set on EVERY claude launch, unlike --resume args) and join
-//     ~/.claude/projects/<encoded-cwd>/<id>.jsonl where encoded-cwd is Cwd with
-//     every '/' replaced by '-' (the documented claude project-dir scheme).
+//   - claude: list the session transcripts sitting directly in
+//     ~/.claude/projects/<encoded-cwd>, where encoded-cwd is Cwd with every '/'
+//     replaced by '-' (the documented claude project-dir scheme), and bind the
+//     newest by mtime — the live session is the one appended every turn. The
+//     scheme names each file <sessionId>.jsonl, so the filename stem IS the
+//     harness session id; no process introspection is involved.
 //   - codex: PRIMARY (deterministic) — the live agent holds its own
 //     rollout-*.jsonl open for writing, so lsof on the peer PID names the EXACT
 //     file, immune to the cwd collision two same-directory agents cause.
@@ -78,49 +87,89 @@ var homeDir = os.UserHomeDir
 //     snapshot.Cwd, and among matches pick the newest by mtime.
 //
 // A zero (unresolved) handle is returned with a nil error when the binding
-// cannot be made (env absent, file missing, no cwd match, unknown comm) — the
+// cannot be made (no project dir, no transcript on disk, no cwd match) — the
 // monitor treats unresolved as "skip this tick", never as DEAD.
 func ResolveTranscript(ctx context.Context, snap SessionSnapshot) (TranscriptHandle, error) {
-	comm := strings.ToLower(snap.Comm)
-	switch {
-	case strings.Contains(comm, "claude"):
-		return resolveClaudeTranscript(ctx, snap)
-	case strings.Contains(comm, "codex"):
-		// PRIMARY (deterministic): a live codex agent holds its own
-		// rollout-*.jsonl open for writing, so the peer PID names the EXACT file
-		// via lsof — immune to the cwd collision two same-directory agents cause.
-		if path, ok := codexWriteRolloutForPID(ctx, snap.PID); ok {
-			if meta, metaOK := transcripts.ReadCodexSessionMeta(path); metaOK {
-				return TranscriptHandle{Path: path, HarnessSessionID: meta.Payload.ID, Format: FormatCodex}, nil
-			}
-		}
-		// FALLBACK: no rollout held open yet (idle / pre-first-turn — nothing to
-		// monitor) — scan by session_meta.cwd, newest-by-mtime.
-		return resolveCodexTranscript(snap)
-	default:
-		return TranscriptHandle{}, nil
+	if strings.Contains(strings.ToLower(snap.Comm), "codex") {
+		return resolveCodex(ctx, snap)
 	}
+	// Any other comm — including a rewritten process title that names neither
+	// CLI — is tried against the claude transcript store first, then codex.
+	handle, err := resolveClaudeTranscript(snap)
+	if err != nil {
+		return TranscriptHandle{}, err
+	}
+	if handle.Resolved() {
+		return handle, nil
+	}
+	return resolveCodex(ctx, snap)
 }
 
-// resolveClaudeTranscript reads CLAUDE_CODE_SESSION_ID from the peer process
-// env and joins the deterministic project-dir path. Unresolved (zero handle) on
-// absent env var or missing file.
-func resolveClaudeTranscript(ctx context.Context, snap SessionSnapshot) (TranscriptHandle, error) {
-	sid := ProcessEnvValue(ctx, snap.PID, "CLAUDE_CODE_SESSION_ID")
-	if sid == "" {
-		return TranscriptHandle{}, nil
+// resolveCodex runs the codex resolution chain: the deterministic
+// PID→open-write-rollout lookup, then the cwd-scan fallback.
+func resolveCodex(ctx context.Context, snap SessionSnapshot) (TranscriptHandle, error) {
+	// PRIMARY (deterministic): a live codex agent holds its own rollout-*.jsonl
+	// open for writing, so the peer PID names the EXACT file via lsof — immune
+	// to the cwd collision two same-directory agents cause.
+	if path, ok := codexWriteRolloutForPID(ctx, snap.PID); ok {
+		if meta, metaOK := transcripts.ReadCodexSessionMeta(path); metaOK {
+			return TranscriptHandle{Path: path, HarnessSessionID: meta.Payload.ID, Format: FormatCodex}, nil
+		}
 	}
+	// FALLBACK: no rollout held open yet (idle / pre-first-turn — nothing to
+	// monitor) — scan by session_meta.cwd, newest-by-mtime.
+	return resolveCodexTranscript(snap)
+}
+
+// resolveClaudeTranscript binds the session from the transcript store on disk:
+// one readdir of ~/.claude/projects/<encoded-cwd>, newest session transcript by
+// mtime, harness session id taken from the filename stem. Nothing about the peer
+// PROCESS is consulted, so a rewritten process title cannot defeat it. An absent
+// or empty project dir is unresolved (zero handle, nil error), never an error.
+func resolveClaudeTranscript(snap SessionSnapshot) (TranscriptHandle, error) {
 	home, err := homeDir()
 	if err != nil {
 		return TranscriptHandle{}, err
 	}
-	path := filepath.Join(home, ".claude", "projects", transcripts.EncodeClaudeCwd(snap.Cwd), sid+".jsonl")
-	if _, statErr := os.Stat(path); statErr != nil {
-		// File not present yet (or never) — unresolved, not an error.
-		//nolint:nilerr // a missing transcript is "unresolved", not a read failure.
+	dir := filepath.Join(home, ".claude", "projects", transcripts.EncodeClaudeCwd(snap.Cwd))
+	candidates, err := transcripts.ClaudeProjectSessions(dir)
+	if err != nil {
+		return TranscriptHandle{}, err
+	}
+	if len(candidates) == 0 {
 		return TranscriptHandle{}, nil
 	}
-	return TranscriptHandle{Path: path, HarnessSessionID: sid, Format: FormatClaude}, nil
+
+	// Newest by mtime wins: the live session is appended every turn. Path breaks
+	// an mtime tie so the choice is deterministic.
+	sort.Slice(candidates, func(i, j int) bool {
+		if !candidates[i].ModTime.Equal(candidates[j].ModTime) {
+			return candidates[i].ModTime.After(candidates[j].ModTime)
+		}
+		return candidates[i].Path < candidates[j].Path
+	})
+	chosen := candidates[0]
+
+	if len(candidates) > 1 {
+		// A project dir accumulates every past session for that cwd, so >1
+		// candidate is the norm rather than an anomaly. Log all candidates and
+		// the chosen one so a post-hoc diagnosis can see what recency picked.
+		all := make([]string, 0, len(candidates))
+		for _, c := range candidates {
+			all = append(all, c.Path)
+		}
+		slog.Warn("hivemonitor: multiple claude transcripts under the project dir — choosing newest by mtime (the live session is appended each turn)",
+			"cwd", snap.Cwd,
+			"session", snap.ID,
+			"candidates", all,
+			"chosen", chosen.Path)
+	}
+
+	// The claude scheme names each session transcript <sessionId>.jsonl, so the
+	// stem is the harness session id — the identity the uploader reads off these
+	// same files.
+	sid := strings.TrimSuffix(filepath.Base(chosen.Path), ".jsonl")
+	return TranscriptHandle{Path: chosen.Path, HarnessSessionID: sid, Format: FormatClaude}, nil
 }
 
 // resolveCodexTranscript is the FALLBACK codex resolver (the primary is the

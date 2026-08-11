@@ -4,10 +4,23 @@ package hivemonitor
 
 import (
 	"context"
+	"os/exec"
 	"path/filepath"
 	"strconv"
 	"strings"
 )
+
+// execRunner is the exec seam through which the PID→open-rollout probe shells
+// out to `lsof`, so the OUTPUT PARSING is unit-tested against captured fixtures
+// without a live process. It defaults to exec.CommandContext (the same idiom as
+// graphclient/peer_cwd.go's peerCwdRunner — a sibling var of identical shape,
+// not a cross-package reach, since hivemonitor is its own package) and is
+// overridden in tests.
+//
+//nolint:gochecknoglobals // package-level seam for command injection in tests; mirrors the peer_cwd exec idiom.
+var execRunner = func(ctx context.Context, name string, args ...string) ([]byte, error) {
+	return exec.CommandContext(ctx, name, args...).Output()
+}
 
 // codexWriteRolloutForPID returns the rollout-*.jsonl file the codex process
 // pid holds OPEN FOR WRITING, when there is exactly one. A live codex agent

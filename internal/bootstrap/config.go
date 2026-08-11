@@ -132,12 +132,14 @@ type Config struct {
 	// NoHive*/NoTranscriptUpload bools below); nothing reads Headless directly
 	// past applyHeadless.
 	Headless bool
-	// NoHiveMonitor, NoHiveReaper, and NoTranscriptUpload are INTERNAL gate bools
-	// with NO public flag of their own — they are set ONLY by applyHeadless when
-	// Headless is true, mirroring how the --no-* bools above gate their runtimes.
-	// runServe consults NoHiveMonitor/NoHiveReaper to skip the hive monitor +
-	// reaper starts; maybeStartTranscriptUpload consults NoTranscriptUpload to
-	// skip the background transcript-upload loops.
+	// NoHiveMonitor, NoHiveReaper, and NoTranscriptUpload are the coordination-loop
+	// gates. applyHeadless sets all three when Headless is true, and each also has
+	// its own --no-* flag for a daemon that needs the LLM pipeline (which
+	// --headless disables) but must run no coordination loops.
+	// The hive lifecycle controller (hive_loops.go) captures NoHiveMonitor/
+	// NoHiveReaper at wiring time and suppresses that loop for the daemon's whole
+	// life, whatever its hive sessions do; maybeStartTranscriptUpload consults
+	// NoTranscriptUpload to skip the background transcript-upload loops.
 	NoHiveMonitor      bool
 	NoHiveReaper       bool
 	NoTranscriptUpload bool

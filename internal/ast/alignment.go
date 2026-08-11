@@ -81,18 +81,27 @@ type TokenAlign struct {
 // allocated once per Captures and reused across every candidate node after it.
 const alignInitialCap = 32
 
-// recordAlign appends the pattern-to-source mapping for one successfully
+// recordAlignRange appends the pattern-to-source mapping for one successfully
 // compared literal token. Called only from the walker's leaf-compare path, so
 // placeholder positions never reach it.
-func (c *Captures) recordAlign(p, t *sitter.Node) {
-	if c == nil || p == nil || t == nil {
+//
+// THE SOURCE RANGE IS PASSED EXPLICITLY rather than read off the target node,
+// because a comparison may accept a token on FEWER bytes than the token spans: a
+// grammar whose layout whitespace is absorbed into its leading anonymous tokens
+// is compared whitespace-trimmed, and the entry must name the bytes that
+// comparison actually agreed on. Recording the token's full span there would put
+// whitespace no pattern token stands for inside an anchor, and the splice reads
+// an anchor as "this pattern byte range IS that source byte range". See
+// alignedTokenRange in layout_jsx.go.
+func (c *Captures) recordAlignRange(p *sitter.Node, srcStart, srcEnd uint32) {
+	if c == nil || p == nil {
 		return
 	}
 	c.aligns = append(c.aligns, TokenAlign{
 		PatStart: p.StartByte(),
 		PatEnd:   p.EndByte(),
-		SrcStart: t.StartByte(),
-		SrcEnd:   t.EndByte(),
+		SrcStart: srcStart,
+		SrcEnd:   srcEnd,
 	})
 }
 

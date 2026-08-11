@@ -91,14 +91,18 @@ type collectRuntimeProvider interface {
 //     collect error.
 //   - exceeds the cap: return the STILL-RUNNING message; the run finishes detached
 //     under the runtime.
-func collectWaitOrDetach(rt *CollectRuntime, key, label, successText string, work func() error) kgtools.ToolResult {
+//
+// graph is the BARE code-graph name the run targets (empty for non-code
+// collectors). It is recorded on the in-flight entry so the LLM pipeline can hold
+// its gap scan off that graph until the collect finishes.
+func collectWaitOrDetach(rt *CollectRuntime, key, label, graph, successText string, work func() error) kgtools.ToolResult {
 	if rt == nil {
 		if err := work(); err != nil {
 			return errorResult(err.Error())
 		}
 		return textResult(successText)
 	}
-	h, started, elapsed := rt.Start(key, label, work)
+	h, started, elapsed := rt.Start(key, label, graph, work)
 	if !started {
 		return textResult(fmt.Sprintf(
 			"collect of %s already running, started %s ago — not starting a duplicate.", label, elapsed.Round(time.Second)))
@@ -142,4 +146,24 @@ func collectTargetKey(collectorType, id string) string {
 		normID = filepath.Clean(id)
 	}
 	return collectorType + "\x00" + normID
+}
+
+// CollectGateGraphName derives the graph identity recorded alongside a collect
+// run, so the LLM pipeline can hold its gap scan off that graph until the collect
+// finishes. Code targets only — every other collector type gets "" and gates
+// nothing.
+//
+// BARE BASE NAME, DELIBERATELY UNQUALIFIED BY BRANCH: this is exactly how the code
+// collector names the graph it produces, and the pipeline registers one collector
+// per base name. Appending a branch would produce a name no collector can ever
+// carry, leaving the gate permanently inert.
+//
+// EXPORTED so a test can pin BOTH sides of that equality to production code — the
+// name recorded here against the name the real collector emits — instead of
+// hardcoding an expected string and comparing it against itself.
+func CollectGateGraphName(collectorType, id string) string {
+	if collectorType != "code" {
+		return ""
+	}
+	return filepath.Base(filepath.Clean(id))
 }

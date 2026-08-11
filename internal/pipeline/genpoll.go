@@ -14,7 +14,7 @@ import (
 )
 
 // genpoll.go holds the client-side TWO-PHASE bulk gen-poll: ONE central loop on
-// *Pipeline issues a single PipelineGenPoll RPC per tick covering EVERY loaded
+// *Pipeline issues a single PipelineGenPoll RPC per WAKE covering EVERY loaded
 // graph (Phase 1 — server reads __graphs once, samples per-(graph,axis) dirty-gen,
 // NO gap walk), then selectively pokes only the collectors whose gen advanced past
 // the loop's own watermark. Each poked collector's discover then issues the
@@ -44,52 +44,78 @@ const (
 )
 
 // RunGenPollLoop is the central two-phase bulk gen-poll loop. It issues ONE
-// PipelineGenPoll RPC per tick (genPollOnce) covering every loaded graph and
+// PipelineGenPoll RPC per poll (genPollOnce) covering every loaded graph and
 // selectively pokes the collectors whose per-(graph,axis) gen advanced. It mirrors
-// RefreshLoadedGraphs's structure exactly: an errBackoff gate, a login-aware tick
-// cadence (discoveryTick — the SAME base the discovery + collector loops use), an
-// immediate-trigger wake channel (genPollWake, signaled by WakeAll), and a clean
-// exit on ctx.Done.
+// RefreshLoadedGraphs's structure exactly: an errBackoff gate, a wake channel it
+// parks on, and a clean exit on ctx.Done.
+//
+// The loop is wake-driven: one poll per signal on genPollWake, plus ONE seed poll
+// at start, and nothing at all in between. The wake sources are a collect or any
+// bulk write (WakeAll), the client's activity hook when the response watermark
+// moves, a new graph's registration, and a login flip.
+//
+// THE SEED POLL IS NOT OPTIONAL. A collector's discover skips its Phase-2
+// PipelineScan only when the shared snapshot already KNOWS its graph; until the
+// central poll has run once, genSnapshotFor reports the graph unknown and EVERY
+// collector falls through to a real scan on every one of its own ticks — the
+// fan-out this two-phase protocol exists to remove. One poll at loop entry
+// populates the snapshot for every loaded graph at once. It has a graph set to
+// sample because bootstrap registers collectors (via RefreshOnceForBoot) BEFORE
+// launching this goroutine; were the set empty, genPollOnce's zero-graph path
+// issues no RPC and wakes the catalog loop instead, so even a graphless boot
+// recovers rather than parking forever.
 //
 // Throttle insurance (same as RefreshLoadedGraphs): when the whole poll is lost to
-// a remote 429, back off on the dedicated gate via its Retry-After hint rather than
-// re-firing at the base cadence and feeding the storm. A clean tick resets the gate.
+// a remote 429, back off on the dedicated gate via its Retry-After hint and retry
+// the poll still owed rather than re-firing immediately and feeding the storm. A
+// clean poll resets the gate. That retry is the loop's only remaining wait, and it
+// is scoped to work already known to be owed.
 //
 // genPollOnce runs synchronously, so a slow poll naturally delays the next one — no
 // separate single-flight guard is needed.
 func (p *Pipeline) RunGenPollLoop(ctx context.Context) {
 	gate := newErrBackoff(p.cfg.ErrBackoffBaseOrDefault(), p.cfg.ErrBackoffMaxOrDefault())
+	// pending means "a poll is already owed". It starts TRUE for the boot seed
+	// documented above; afterwards only the throttled retry sets it.
+	pending := true
 	for {
+		if !pending {
+			select {
+			case <-ctx.Done():
+				return
+			case <-p.genPollWake:
+			}
+		}
+		pending = false
 		hint, throttled := p.genPollOnce(ctx)
-		var d time.Duration
 		if throttled {
-			d = gate.failHint(hint)
+			d := gate.failHint(hint)
 			slog.Debug("pipeline.genpoll: bulk poll throttled; backing off",
 				"delay", d, "retry_after_hint", hint)
-		} else {
-			gate.ok()
-			d = p.discoveryTick(ctx)
+			pending = true
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(d):
+			}
+			continue
 		}
-		select {
-		case <-ctx.Done():
-			return
-		case <-p.genPollWake:
-			// A collect (WakeAll) signaled — poll immediately rather than waiting
-			// out the discovery tick.
-		case <-time.After(d):
-		}
+		gate.ok()
 	}
 }
 
 // genPollOnce performs one bulk gen-poll pass: build the loaded-graph set from the
 // collector registry, issue ONE PipelineGenPoll RPC, update the shared snapshot,
-// and poke the collectors whose gen advanced past the loop's watermark. Returns
-// (retryAfterHint, throttled) so the caller backs off when the whole poll was lost
-// to a remote 429.
+// and poke the collectors whose gen advanced past the loop's watermark. It also
+// compares the account CATALOG watermark the same response carries and wakes the
+// catalog-discovery loop when it moved. With NO graphs registered it issues no RPC
+// at all and wakes only the catalog loop. Returns (retryAfterHint, throttled) so
+// the caller backs off when the whole poll was lost to a remote 429.
 //
 // Strictly follows the pinned lock hierarchy: collectorMu (read the graph set) →
 // [no locks while the RPC is in flight] → genMu (update snapshot + compute pokes)
-// → collectorMu (deliver pokes). genMu and collectorMu are never held together.
+// → collectorMu (deliver pokes). genMu and collectorMu are never held together,
+// and neither the pokes nor the catalog wake are delivered while genMu is held.
 func (p *Pipeline) genPollOnce(ctx context.Context) (time.Duration, bool) {
 	// (1) Snapshot the loaded-graph set under collectorMu, then release it before
 	// the RPC. The pipeline asks only for the graphs it currently drains (its
@@ -102,7 +128,12 @@ func (p *Pipeline) genPollOnce(ctx context.Context) (time.Duration, bool) {
 	p.collectorMu.Unlock()
 
 	if len(keys) == 0 {
-		return 0, false // no collectors yet — nothing to poll
+		// No collectors means a gen poll can teach us nothing — there are no graphs to
+		// sample. Look at the CATALOG directly instead, which is the only thing that can
+		// move us out of this state. Bounded by the upstream cool-off, so a permanently
+		// graphless client still wakes at most once per activity window.
+		p.wakeCatalog()
+		return 0, false
 	}
 
 	reqGraphs := make([]*knowledgev1.PipelineGenPollGraph, 0, len(keys))
@@ -134,6 +165,7 @@ func (p *Pipeline) genPollOnce(ctx context.Context) (time.Duration, bool) {
 		wakeIdx int
 	}
 	var pokes []poke
+	var catalogMoved bool
 	p.genMu.Lock()
 	for _, e := range resp.GetEntries() {
 		key := graphKey{GraphType: kgtypes.GraphType(e.GetGraphType()), GraphName: e.GetGraphName()}
@@ -156,6 +188,25 @@ func (p *Pipeline) genPollOnce(ctx context.Context) (time.Duration, bool) {
 		p.genSnapshot[key] = cur
 		p.lastPokedGen[key] = poked
 	}
+	// The account CATALOG watermark rides the same response. Its contract, quoted
+	// from engine.proto: "The same per-replica SAMPLE caveat as freshness_gen
+	// applies — compare for change, not for increase." Hence `!=` and never `>`: a
+	// backward move across replicas or a restart is still movement, and treating it
+	// as noise would strand the client on a stale catalog.
+	//
+	// 0 is skipped entirely — it is what a server serves BEFORE ITS FIRST BUMP, and
+	// the permanent value from any flavor that maintains no watermark at all.
+	// Skipping also leaves the last real observation intact.
+	//
+	// The FIRST observation records without waking: the boot pass already
+	// enumerated the catalog.
+	if cg := resp.GetCatalogGen(); cg != 0 {
+		if p.lastCatalogGenSet && cg != p.lastCatalogGen {
+			catalogMoved = true
+		}
+		p.lastCatalogGen = cg
+		p.lastCatalogGenSet = true
+	}
 	p.genMu.Unlock()
 
 	// (4) Deliver the selective pokes under collectorMu (genMu already released).
@@ -163,6 +214,11 @@ func (p *Pipeline) genPollOnce(ctx context.Context) (time.Duration, bool) {
 	// poke to an already-signaled collector is a no-op and never blocks the loop.
 	for _, pk := range pokes {
 		p.pokeAxisWake(pk.key, pk.wakeIdx)
+	}
+	// The catalog wake is delivered here for the same reason as the pokes: never
+	// while holding genMu.
+	if catalogMoved {
+		p.wakeCatalog()
 	}
 	return 0, false
 }

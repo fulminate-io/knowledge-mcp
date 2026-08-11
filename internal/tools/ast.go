@@ -201,10 +201,13 @@ func handleAstMatch(ctx context.Context, deps ClientDeps, a astArgs) kgtools.Too
 		return errorResult("hydrate: " + herr.Error())
 	}
 	// Echo the directory actually walked so the caller can tell which tree
-	// produced the matches. When NOTHING was scanned (zero files), override the
-	// generic no-match hint with the zero-scan one, which names whichever of the
-	// three causes applies — scanned-but-no-match keeps the emptyResultHint
-	// Hydrate already set.
+	// produced the matches. The zero-result hint is chosen in precedence order:
+	// NOTHING scanned (zero files) overrides the generic no-match hint with the
+	// zero-scan one, which names whichever of its three causes applies;
+	// otherwise a zero over a corpus that did not fully parse gets the
+	// degradation warning, which carries the generic guidance inside it; and
+	// scanned-but-no-match over a clean corpus keeps the emptyResultHint Hydrate
+	// already set.
 	//
 	// Compiled is set unconditionally, INCLUDING on a zero result: seeing which
 	// construct the pattern became is what makes a wrong-context zero
@@ -213,8 +216,11 @@ func handleAstMatch(ctx context.Context, deps ClientDeps, a astArgs) kgtools.Too
 	results.Total = total
 	results.Compiled = compiled
 	results.Narrowed = narrowed
-	if walk.FilesScanned == 0 {
+	switch {
+	case walk.FilesScanned == 0:
 		results.Hint = ast.ZeroScanHint(repoDir, a.Language, scope, walk)
+	case total == 0 && walk.FilesWithParseErrors > 0:
+		results.Hint = ast.DegradedZeroHint(walk, compiled)
 	}
 	// pattern_errors rides alongside the results rather than replacing them: an
 	// alternation member that could not be used is reported, and the members
@@ -302,10 +308,18 @@ func handleAstCount(ctx context.Context, deps ClientDeps, a astArgs) kgtools.Too
 		"excluded_truncated": walk.ExcludedTruncated,
 		"discovery_path":     walk.DiscoveryPath,
 	}
-	// count has no scanned-but-no-match hint, so its only hint is the zero-scan
-	// one: fire it exactly when zero files were scanned.
-	if walk.FilesScanned == 0 {
+	// count has no GENERAL scanned-but-no-match hint — a zero over a clean corpus
+	// stays hintless, which is the shape its landed gate pins. It hints in two
+	// cases: zero files scanned, and a zero total over a corpus that did not
+	// fully parse. The second exists because a count-shaped zero is exactly where
+	// a degraded corpus reads as absence with nothing to warn the caller: the
+	// counters are in the payload, but nothing tells the caller what an
+	// error-recovered parse implies about a zero.
+	switch {
+	case walk.FilesScanned == 0:
 		res["hint"] = ast.ZeroScanHint(repoDir, a.Language, scope, walk)
+	case tally.Total == 0 && walk.FilesWithParseErrors > 0:
+		res["hint"] = ast.DegradedZeroHint(walk, compiled)
 	}
 	// Only present when a member actually failed, so a clean call's shape is
 	// exactly what it was before alternation could partially succeed.

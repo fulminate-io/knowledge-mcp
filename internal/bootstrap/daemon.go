@@ -45,7 +45,7 @@ import (
 // finishes in a few seconds — the per-stage deadlines below are abandon-backstops,
 // not expected durations. Pinned to 3s each → 8 * 3s = 24s worst-case, under the
 // Makefile's 27s drain window. If you change one of these, re-check the Makefile
-// loop count (and the reaper/monitor Stop deadlines in startHiveLoops) so the
+// loop count (and the reaper/monitor Stop deadlines in hive_loops.go) so the
 // inequality still holds.
 const (
 	// wireJoinDeadline bounds how long drainOnShutdown waits for the background
@@ -413,7 +413,10 @@ func runServe(args []string) error {
 		LoggedIn:        c.router.LoggedIn,
 	})
 
-	hs := graphclient.NewHTTPServer(c.mcpClient, *httpPort, cfg.AllowedWebOrigins)
+	// The claim Registry passed here is the SAME instance ClaimRegistry() returns
+	// and startHiveLoops installs its lifecycle hooks on — a different instance
+	// would silently mean hive sessions never open or end.
+	hs := graphclient.NewHTTPServer(c.mcpClient, *httpPort, cfg.AllowedWebOrigins, c.claimRegistry)
 
 	// Bind-first (bind-first startup): the MCPClient + HTTPServer above reference c only via
 	// func-field injection (InterceptChain=c.runInterceptChain,
@@ -427,10 +430,12 @@ func runServe(args []string) error {
 	// flag is set.
 	go c.wireRuntimesBackground(c.wireCtx, cfg)
 
-	// Wire the hive daemon Monitor + peer machine-down reaper, each gated on its
-	// Config bool (NoHiveMonitor / NoHiveReaper, both set under --headless). The
-	// returned closure drains whichever loops started; deferring it here keeps the
-	// hive Stops ahead of drainOnShutdown (deferred earlier, so it runs last).
+	// Install the hive daemon Monitor + peer machine-down reaper lifecycle. The
+	// loops do not start here: they follow this daemon's hive sessions, and each
+	// stays gated on its Config bool (NoHiveMonitor / NoHiveReaper, both set under
+	// --headless). The returned closure drains whichever loops are running;
+	// deferring it here keeps the hive Stops ahead of drainOnShutdown (deferred
+	// earlier, so it runs last).
 	defer c.startHiveLoops(cfg, hs)()
 
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM, syscall.SIGINT)

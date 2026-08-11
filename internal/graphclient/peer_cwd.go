@@ -44,10 +44,12 @@ var peerCwdRunner = func(ctx context.Context, name string, args ...string) ([]by
 //
 // lsof shell-out is fine for v1 (a libproc/proc path is a later optimization).
 //
-// Returns the peer's cwd, PID, and comm (the lsof COMMAND column — "claude" /
-// "codex" / etc.). The PID and comm were previously discarded; they are
-// retained so the hive daemon monitor can bind the session to the right
-// per-harness transcript (comm selects the resolver; PID reads the process env).
+// Returns the peer's cwd, PID, and comm (the lsof COMMAND column). The PID and
+// comm were previously discarded; they are retained so the hive daemon monitor
+// can bind the session to the right per-harness transcript. Note that COMMAND
+// carries the peer's PROCESS TITLE, which a harness may rewrite to something
+// naming no CLI at all — downstream that makes comm a routing hint only, never
+// an identity source.
 func resolvePeerCwd(ctx context.Context, localPort, ephemeralPort int) (cwd string, pid int, comm string, err error) {
 	pid, comm, err = peerPIDFromPort(ctx, localPort, ephemeralPort)
 	if err != nil {
