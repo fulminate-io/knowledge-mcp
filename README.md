@@ -1,20 +1,23 @@
 # Knowledge
 
-*An engineering operating system for LLMs.*
+knowledge indexes your code, cloud infrastructure, logs, and docs into
+cross-linked graphs and serves them over MCP: hybrid code search,
+call-graph traversal, structural AST search and replace, and a
+reasoning graph where hypotheses carry their evidence. Runs as a local
+MCP server; any LLM that speaks MCP works from the graph instead of
+rediscovering your system every session.
 
-The metaphor is literal. Collectors are the drivers: they pull your
-code, cloud infrastructure, logs, and docs into one cross-linked,
-queryable graph. `search` and `traverse` are the syscalls. Thoughts,
-decisions, tickets, and plans are the persistent state. Brainstorm →
-ticket → plan → implement is the process model. It all runs as a local
-MCP server, and any LLM that speaks MCP works from the graph instead
-of rediscovering your system every session.
+Collectors keep the index current. The LLM queries it and gets the
+pieces it asked for, sized to the question: a whole-file read bloats
+the context with text that is not the answer, and a fragment read
+leaves gaps. Indexed retrieval is how the graph raises accuracy and
+lowers token spend.
 
-Long-term memory falls out of this design — state persists across
-sessions, machines, and teammates — but memory is the floor, not the
-product. The graph knows your call graph, your cloud, your incidents,
-and the reasoning behind your decisions, and one query surface reaches
-all of it.
+Skills and agents run an engineering workflow (brainstorm → ticket →
+plan → implement) over the same graphs, with researchers, planners,
+reviewers, and implementers reading and writing shared state.
+Thoughts, decisions, tickets, and plans persist across sessions,
+machines, and teammates. The graph makes the agent's work auditable.
 
 ## See it work
 
@@ -31,8 +34,7 @@ search({ "queries": ["bisect embedding batch on token overflow"],
 //   overflow by unwrapping LLMError causes
 ```
 
-Results are graph nodes, not text matches. Walk the call graph from
-any hit:
+Each result is a graph node. Walk the call graph from any hit:
 
 ```jsonc
 traverse({ "start": "internal/embed/voyage.go:voyageEmbedder.EmbedBinaryBatch",
@@ -45,8 +47,8 @@ traverse({ "start": "internal/embed/voyage.go:voyageEmbedder.EmbedBinaryBatch",
 // ...
 ```
 
-Shape questions get structural answers. This is tree-sitter pattern
-matching against the parsed syntax tree, not regex:
+Shape questions get structural answers. This matches the parsed syntax
+tree, so whitespace, comments, and token order don't matter:
 
 ```jsonc
 ast({ "operation": "match", "language": "go", "pattern": "defer $X.Close()" })
@@ -58,8 +60,20 @@ ast({ "operation": "match", "language": "go", "pattern": "defer $X.Close()" })
 The same engine rewrites. Give `replace` a capture template
 (`"defer safeClose($X)"`) and it previews the unified diff without
 touching disk (dry-run is the default), then applies atomically; a
-rewrite that no longer parses is rejected, never written. Mechanical
-multi-file refactors are one tool call, not a sed script.
+rewrite that no longer parses is rejected, never written. A mechanical
+multi-file refactor is one tool call.
+
+The retrieval economics from the intro are visible here. When the
+question is "what is in this file," the index answers without the
+file: `file_symbols` returns each symbol's name, signature, line
+range, and summary.
+
+```jsonc
+file_symbols({ "file_path": "internal/embed/voyage.go", "repo": "knowledge-mcp" })
+```
+
+The file is 246 lines. The context gets the symbol list, and the
+agent can fetch just the symbol it needs.
 
 Reasoning persists the same way. The hypothesis recorded while that
 overflow was being debugged comes back in a later session with its
@@ -73,7 +87,7 @@ thoughts({ "operation": "recall", "query": "voyage batch overflow" })
 //    [validated] charges: +2 (bisection test green; overflow retries gone)
 ```
 
-And from any node you can keep walking — to the decision that shaped
+And from any node you can keep walking: to the decision that shaped
 the code, the ticket that shipped it, or the log stream where it
 failed.
 
@@ -84,35 +98,41 @@ tree-sitter-chunked languages, an indexed call graph, and structural
 AST search *and replace*: match the shapes regex can't express, then
 rewrite every site from a capture template, gated by a dry-run diff
 and a per-file re-parse. "Is there code that *does* this" gets a real
-answer, so agents extend what exists instead of re-implementing it.
+answer, so an agent can check what exists before writing it again.
 
 **Reasoning with evidence.** Hypotheses are first-class nodes; evidence
 attaches as weighted positive or negative charges, and propagation lets
 contradictory beliefs find equilibrium. "Why did we do it this way" has
-an answer months later. See [Reasoning](./docs/guides/reasoning.md).
+an answer months later. The graph also reads back on itself: `query`
+reflection modes include `tensions`, which lists pairs of recorded
+thoughts whose evidence points in opposite directions, and
+`personality`, `blind_spots`, and `influence`, which read the same
+thought graph from other angles. See
+[Reasoning](./docs/guides/reasoning.md).
 
 **Workflow.** Brainstorm → ticket → plan → implement, with every
 artifact in the graph and tickets synced to Linear in real time. One
 coordinator dispatches researchers, planners, reviewers, and
 implementers against shared state, so no single context has to hold
-everything and a compaction or restart is a non-event. Jira, GitHub
-Issues, and Asana are on the roadmap. The full process model, with its
-routing and re-entry paths, is in
+everything, and a compaction or restart loses nothing the graph
+already holds. Jira, GitHub Issues, and Asana are on the roadmap. The
+full process model, with its routing and re-entry paths, is in
 [Concepts](./docs/guides/concepts.md).
 
 **Infrastructure and runtime.** Collectors for cloud (AWS, GCP, Azure,
 Kubernetes), CI/CD, logs (CloudWatch, Loki, Elasticsearch, Stackdriver,
 K8s Events), web pages, and PDFs — each a graph, all cross-linked to
 code. An incident traces from log line to deploy to commit to the
-design decision behind it. And the built-in families are not a closed
-set: `custom_collector` registers your own collector binary, and the
-graph it emits gets the same treatment as the rest — summarized,
-embedded, searchable, syncable.
+design decision behind it. The built-in families are not a closed set:
+`custom_collector` registers your own collector binary, and the graph
+it emits gets the same treatment as the rest: summarized, embedded,
+searchable, syncable.
 
-Practice graphs — best-practice patterns collected from books,
-references, and websites — sit beside your code, so agents reach for
-the established idiom instead of the first thing that compiles. The
-full write-up for each pillar:
+Practice graphs hold best-practice patterns collected from books,
+references, and websites, and sit beside your code, so an agent can
+reach for the established idiom instead of the first thing that
+compiles.
+The full write-up for each pillar:
 [Capabilities](./docs/guides/capabilities.md).
 
 ## Install
@@ -130,8 +150,8 @@ an LLM provider), installs the agents and skills for Claude Code
 and/or Codex if those CLIs are present, and registers the MCP daemon
 with them. It also installs user-level services (launchd on macOS,
 `systemd --user` on Linux) so the graph server (127.0.0.1:15022) and
-MCP daemon (127.0.0.1:15023) start at login. Everything runs as
-**your user** — no `sudo` anywhere.
+MCP daemon (127.0.0.1:15023) start at login. Everything runs as your
+user; no `sudo` anywhere.
 
 Re-running the same line upgrades in place; your config is never
 touched. To configure interactively (pick a provider, paste optional
@@ -139,7 +159,7 @@ API keys), run `knowledge setup` in a terminal any time. Headless
 provisioning: append flags after `sh -s --` (e.g. `--headless`,
 `--no-service`); credentials come from the environment
 (`ANTHROPIC_API_KEY`, `VOYAGE_API_KEY`, `LINEAR_API_KEY`, ...) or
-`~/.knowledge/config` — never from flags. On Windows, follow the
+`~/.knowledge/config`, never from flags. On Windows, follow the
 [manual install guide](./docs/guides/install-windows.md).
 
 <details>
@@ -153,7 +173,7 @@ brew services start knowledge          # shared MCP daemon    (127.0.0.1:15023)
 knowledge install-claude-assets        # wire Claude Code (or: install-codex-assets)
 ```
 
-Run the services as **your user**, never with `sudo`: a root
+Run the services as your user, never with `sudo`: a root
 LaunchDaemon can't read your login keychain.
 
 </details>
@@ -211,8 +231,8 @@ CLI on `$PATH`, then falls back to `ANTHROPIC_API_KEY`,
 
 Full walkthroughs: **[Set up with Claude Code](./docs/guides/setup-claude.md)**
 · **[Set up with Codex](./docs/guides/setup-codex.md)**. `knowledge doctor`
-diagnoses install and daemon/server health. Connecting another MCP
-client by hand? Point it at the daemon's streamable-HTTP endpoint:
+diagnoses install and daemon/server health. To connect another MCP
+client by hand, point it at the daemon's streamable-HTTP endpoint:
 `http://127.0.0.1:15023/mcp`.
 
 ## Two keys worth setting
@@ -221,7 +241,7 @@ Both are optional; both change what you get.
 
 | Key | With it | Without it |
 | --- | --- | --- |
-| `VOYAGE_API_KEY` | Hybrid semantic + keyword search — the LLM finds code and knowledge by meaning | Keyword (BM25) search only |
+| `VOYAGE_API_KEY` | Hybrid semantic + keyword search; the LLM finds code and knowledge by meaning | Keyword (BM25) search only |
 | `LINEAR_API_KEY` | Projects and tickets sync to Linear in real time; status flows both ways | Tickets stay local to the graph |
 
 Get a Voyage key at [voyageai.com](https://voyageai.com); the Linear
@@ -260,33 +280,25 @@ setup ([Claude Code](./docs/guides/setup-claude.md),
 [KNOWLEDGE_TOOLS.md](./KNOWLEDGE_TOOLS.md). The ones you'll touch
 daily: `search`, `ast`, `traverse`, `thoughts`, `record_decision`,
 `create_project` / `create_ticket` / `create_plan`, `assemble`,
-`collect`. Generic primitives — `query`, `mutate`, `delete`,
-`manage` — route by graph and operation.
+`collect`. Generic primitives (`query`, `mutate`, `delete`,
+`manage`) route by graph and operation.
 
 ## Fulminate Cloud (optional)
 
 Knowledge OSS runs entirely local: bring your own LLM, zero
 credentials, full feature set. [Fulminate Cloud](https://fulminate.io)
-is the agent development environment on top of it: cloud machines your
-coding agents run in, one graph your whole team cites, and the
-automation that ties the two together.
+runs the same graph as a shared team environment: cloud machines your
+coding agents run in, one graph the whole team reads and writes,
+workflows and routing that turn inbound events (webhooks, cron ticks,
+Slack) into runs, and dashboards assembled over a dev environment and
+published as pages. The environment tracks every run and agent, keeps
+usage analytics and audit logs, gates what agents may run with hooks,
+and supports BYOC when everything must stay in your own cloud account.
+All tiers are BYOK: bring your own LLM key; Fulminate never resells
+tokens.
 
-A dev environment is a full remote workspace on its own VM; your
-agents keep working after you close your laptop, and the knowledge
-daemon runs inside it, serving the team's shared graph over MCP.
-Workflows codify recurring work, built step by step in a visual
-editor or conversationally in chat, delegating heavy steps to
-subagents. Inbound events (webhooks, cron ticks, anything your
-systems emit) pass through routing rules whose condition trees decide
-where each one lands: a workflow run, a Slack channel, or forwarded
-straight into one of your dev environments. Dashboards are drag-assembled UIs over a dev
-environment, published as pages your team can open — no build step,
-nothing to deploy. Chat and Slack bots answer from the same graph.
-Underneath it all: live tracking of every run and every agent, usage
-analytics down to token counts and tool latency, audit logs of what
-agents read and wrote, hooks that gate what agents may run, and BYOC
-when everything must stay in your own cloud account. All tiers are
-BYOK: bring your own LLM key; Fulminate never resells tokens.
+If one machine and one developer is your whole setup, the local
+server is the product, not a trial of the paid one.
 
 ```bash
 knowledge login    # browser-PKCE OAuth flow; token stored in your keychain
