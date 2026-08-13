@@ -2,8 +2,8 @@
 
 // mcp_http_session_handlers.go — the MCP session's own handlers on the
 // streamable-HTTP transport: establishing one (initialize, which mints the id,
-// negotiates the protocol version, resolves the peer workspace and notifies the
-// hive lifecycle), validating one on an inbound request, and ending one
+// negotiates the protocol version and resolves the peer workspace), validating
+// one on an inbound request, and ending one
 // (DELETE /mcp). The transport framing itself — Run, the mux, and the POST/GET
 // legs — lives in mcp_http.go alongside the HTTPServer type; the per-session
 // state those handlers read and write lives in http_session.go.
@@ -73,25 +73,7 @@ func (h *HTTPServer) handleHTTPInitialize(w http.ResponseWriter, r *http.Request
 	}
 
 	cwd, pid, comm := h.resolvePeerCwdForRequest(r)
-	created := h.ensureSession(sid, cwd, pid, comm)
-
-	// Notify the hive lifecycle that a session opened — the trigger for the loop
-	// controller's post-restart re-detection pass.
-	//
-	// THIS MUST STAY OUT HERE, NOT INSIDE ensureSession. ensureSession holds
-	// h.mu (write) for its whole body, and the hook's consumer reads back through
-	// SessionSnapshots, which takes h.mu.RLock. Go's sync.RWMutex is not
-	// reentrant, so an RLock taken while this goroutine holds the write lock
-	// blocks forever: firing the hook inside ensureSession deadlocks the daemon
-	// permanently on the very first session.
-	//
-	// The created guard is defensive rather than a live branch — this handler
-	// mints a fresh id per initialize and never reuses a client-supplied one, so
-	// created is always true in production; it only makes a hypothetical mint
-	// collision unable to double-notify.
-	if created {
-		h.hiveSessions.NoteSessionOpened(sid)
-	}
+	h.ensureSession(sid, cwd, pid, comm)
 
 	w.Header().Set(mcpSessionHeader, sid)
 

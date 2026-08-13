@@ -71,6 +71,19 @@ type CoverageRow struct {
 	// shape above is pinned, and this is an input to SegDisposition rather than a
 	// value of its own.
 	RepairVerified bool `json:"-"`
+	// StalledSinceNanos is 0 when this graph's coverage can still recover on its own,
+	// and otherwise the wall-clock nanos at which it stopped being able to: the
+	// earlier of the heal breaker's latch and the publish coverage gate's suppression.
+	// It is what the stuck band renders an age from.
+	//
+	// InWorkingSet reports whether this client maintains the graph at all — a graph
+	// no direct interaction has admitted is serviced by no background arm, which is
+	// the intended steady state rather than a fault.
+	//
+	// BOTH carry `json:"-"` for the RepairVerified reason above: they are inputs to
+	// SegDisposition, and the ten-key wire shape is pinned.
+	StalledSinceNanos int64 `json:"-"`
+	InWorkingSet      bool  `json:"-"`
 }
 
 // repairVerifiedFrom is the three-clause formula behind CoverageRow.RepairVerified.
@@ -106,6 +119,17 @@ const (
 	// slow interval rather than every boot, so "gap-repairing" would assert an
 	// examination that may not have happened this process at all.
 	DispositionCacheAged = "cache-aged"
+	// DispositionStuck is the band for a graph this client maintains whose coverage
+	// can no longer recover on its own: the heal breaker has latched it disarmed
+	// (only a manual rebuild_segments or a restart re-arms) or the publish coverage
+	// gate has suspended its republish. Both states can persist indefinitely, so the
+	// row renders an age rather than a promise.
+	DispositionStuck = "stuck"
+	// DispositionUnmanaged is the band for a graph OUTSIDE the working set: no
+	// background arm services it, so no arm will move it. It is not a fault and not a
+	// stall — it is the intended state for a graph this client has not been asked to
+	// work on — which is why it is a band of its own rather than either neighbor.
+	DispositionUnmanaged = "unmanaged"
 )
 
 // segCoverageDisposition classifies one coverage row into the band it sits in.
@@ -118,18 +142,36 @@ const (
 // one it skips — the column would narrate a different graph than the system is
 // acting on.
 //
-// BRANCH ORDER IS THE DESIGN. Arm 2 must precede arm 6: when live exceeds
-// embedded the ratio test in arm 6 is ALSO true, so a classifier checking the band
-// first would label the hard-delete residue class as this gate's under-coverage
-// hole. The band arms delegate to SegmentCoverageFloor and CoverageRatioThreshold
-// so the column and the auto-heal cannot disagree about which graphs self-heal.
+// BRANCH ORDER IS THE DESIGN, and three orderings are load-bearing rather than
+// incidental:
 //
-// The honesty of arms 2, 3, 5 and 6 is exactly the honesty of LiveResident, which
-// is the DISTINCT live-searchable count rather than the summed residency figure.
+//   - The residue arm must precede the ratio arms: when live exceeds embedded the
+//     ratio test is ALSO true, so a classifier checking the band first would label
+//     the hard-delete residue class as this gate's under-coverage hole.
+//   - The unmanaged arm must FOLLOW the no-segments arm. A graph with no segment
+//     pool has no coverage to manage, and its disposition IS the bare dash
+//     (formatCoverageRow), so labeling it unmanaged would replace a correct answer
+//     with a redundant one for every non-segment graph in the account.
+//   - The stuck arm must PRECEDE the ratio arm. A latched or suppressed graph sits
+//     in exactly the resident-below-ratio shape, so the two arms collide by
+//     construction; whichever runs first wins. Placing stuck second would leave the
+//     ratio arm calling the row self-healing — the claim this band exists to stop,
+//     because nothing is healing it.
+//
+// The band arms delegate to SegmentCoverageFloor and CoverageRatioThreshold so the
+// column and the auto-heal cannot disagree about which graphs self-heal.
+//
+// The honesty of the residue, converged, below-floor and ratio arms is exactly the
+// honesty of LiveResident, which is the DISTINCT live-searchable count rather than
+// the summed residency figure.
 func segCoverageDisposition(r CoverageRow) string {
 	switch {
 	case !r.HasSegments:
 		return DispositionNoSegments
+	case !r.InWorkingSet:
+		// No arm services a graph outside the working set, so no band describing what
+		// an arm is doing about it can be true.
+		return DispositionUnmanaged
 	case r.LiveResident > r.Embedded:
 		// Live exceeds embedded: the hard-delete residue class, a different gate's
 		// territory than this column's under-coverage band.
@@ -140,6 +182,11 @@ func segCoverageDisposition(r CoverageRow) string {
 		// Below the floor the ratio arm is disarmed entirely; only the
 		// zero-presence probe heals there.
 		return DispositionBelowFloor
+	case r.StalledSinceNanos > 0:
+		// The graph is in the working set and below coverage, but the arm that would
+		// heal it has given up — a latched breaker or a suspended republish. Reporting
+		// the ratio band here would promise a recovery no arm is attempting.
+		return DispositionStuck
 	case float64(r.LiveResident) < CoverageRatioThreshold*float64(r.Embedded):
 		return DispositionSelfHealing
 	default:
@@ -173,7 +220,7 @@ func renderLLMCoverage(ctx context.Context, deps ClientDeps) string {
 	// auto-summaries — so it is most meaningful as a coverage signal for code
 	// graphs, where Summary is populated only by the summarizer.
 	sb.WriteString("_summarized = node has a non-empty Summary, which INCLUDES deterministic auto-summaries for structured nodes (decisions, findings, thoughts, etc.) — most meaningful as an LLM-coverage signal for code graphs, where Summary is populated only by the summarizer._\n\n")
-	sb.WriteString("_the segment-coverage cell names INDEPENDENT counts and none of them bounds another, so they are labeled rather than joined with \"of\": `shipped N` sums the shipped manifest's doc counts (superseded generations included), `live M` is the distinct live-searchable count, and the embedded count has its own column. The bracketed term is that graph's coverage BAND, derived from the LIVE count, NOT the shipped one: `self-healing` resolves within one reconcile interval, `gap-repairing` is the band the repair arm services, and `cache-aged` is that same band on a graph the coverage backstop has not verified within its interval._\n\n")
+	sb.WriteString("_the segment-coverage cell names INDEPENDENT counts and none of them bounds another, so they are labeled rather than joined with \"of\": `shipped N` sums the shipped manifest's doc counts (superseded generations included), `live M` is the distinct live-searchable count, and the embedded count has its own column. The bracketed term is that graph's coverage BAND, derived from the LIVE count, NOT the shipped one, and it names which arm owns the row: `self-healing` resolves within one reconcile interval, `gap-repairing` is the band the repair arm services, `cache-aged` is that same band on a graph the coverage backstop has not verified within its interval, `stuck` is a graph this client maintains whose heal breaker has latched or whose publish coverage gate has suspended its republish — no arm is servicing it, and the age is how long that has been true IN THIS PROCESS (a restart clears it), and `unmanaged` is a graph this client has never searched, collected into or written to, so no background arm maintains it at all — the intended state for a graph you are not working on rather than a fault._\n\n")
 	// The segment cell reads "shipped N · live M [band]". Shipped sums doc_counts
 	// across the shipped manifest, in which superseded and hard-deleted generations
 	// survive; live is the DISTINCT LIVE-SEARCHABLE doc count. Neither bounds the
@@ -196,10 +243,22 @@ func renderLLMCoverage(ctx context.Context, deps ClientDeps) string {
 	// does NOT load, so a graph whose engine has not warmed yet reads 0 legitimately.
 	//
 	// The bracketed term is the row's coverage BAND and it derives from the LIVE
-	// count, not the shipped one. It also names which arm owns the row, which is why
-	// the two easily-confused bands are worth spelling out: "self-healing" resolves
-	// itself within one reconcile interval, while "gap-repairing" is the band the
-	// repair arm services.
+	// count, not the shipped one. It also names which arm OWNS the row, and that is
+	// what the vocabulary has to keep honest — a band naming an arm that is not
+	// running is worse than no band at all:
+	//
+	//   - "self-healing" resolves itself within one reconcile interval, and
+	//     "gap-repairing" is the band the repair arm services. These two are the
+	//     easily-confused pair.
+	//   - "stuck" is the same shortfall on a graph whose heal arm has GIVEN UP: the
+	//     heal breaker latched (only a manual rebuild_segments or a restart re-arms)
+	//     or the publish coverage gate suspended its republish. It renders an age,
+	//     and that age is PROCESS-SCOPED — both stamps are per-process and a restart
+	//     clears them, so it measures how long the graph has been stuck in THIS
+	//     daemon, not since the condition first arose.
+	//   - "unmanaged" is a graph outside the working set. Nothing services it because
+	//     nothing is supposed to, so it gets its own band rather than borrowing one
+	//     that would report a fault.
 	sb.WriteString("| graph | total | summarized | embedded | segment coverage | summary-fail | embed-fail |\n")
 	sb.WriteString("| --- | --- | --- | --- | --- | --- | --- |\n")
 	for _, r := range rows {
@@ -308,19 +367,22 @@ func segCoveredFor(ctx context.Context, deps ClientDeps, gt kgtypes.GraphType, n
 // the SAME denominator the coverage-ratio auto-heal compares against (T3-2 single
 // definition; do not fork it) and the segment-coverage cell's denominator.
 func newCoverageRow(
-	label string, st *knowledgev1.GraphStats, segCovered, liveResident int, hasSeg, repairVerified bool,
+	label string, st *knowledgev1.GraphStats, segCovered, liveResident int,
+	hasSeg, repairVerified, inWorkingSet bool, stalledSinceNanos int64,
 ) CoverageRow {
 	row := CoverageRow{
-		Graph:          label,
-		Total:          int(st.GetNonProxyNodeCount()),
-		Summarized:     int(st.GetSummarizedCount()),
-		Embedded:       int(st.GetBinaryVectorCount()),
-		SegCovered:     segCovered,
-		LiveResident:   liveResident,
-		HasSegments:    hasSeg,
-		SummaryFail:    int(st.GetSummaryFailureCount()),
-		EmbedFail:      int(st.GetEmbedFailureCount()),
-		RepairVerified: repairVerified,
+		Graph:             label,
+		Total:             int(st.GetNonProxyNodeCount()),
+		Summarized:        int(st.GetSummarizedCount()),
+		Embedded:          int(st.GetBinaryVectorCount()),
+		SegCovered:        segCovered,
+		LiveResident:      liveResident,
+		HasSegments:       hasSeg,
+		SummaryFail:       int(st.GetSummaryFailureCount()),
+		EmbedFail:         int(st.GetEmbedFailureCount()),
+		RepairVerified:    repairVerified,
+		InWorkingSet:      inWorkingSet,
+		StalledSinceNanos: stalledSinceNanos,
 	}
 	// Assemble first, then classify, so the disposition reads exactly the values
 	// that render.
@@ -356,6 +418,11 @@ func newCoverageRow(
 //
 // A graph with no segment pool renders the bare "—": its disposition IS the dash,
 // so appending would print "— [—]".
+//
+// The stuck band is the ONE band that renders more than its name: an age, because a
+// state nothing is working to clear is only actionable once a reader can see how long
+// it has persisted. Every other band names an arm that is running, so its name is the
+// whole story.
 func formatCoverageRow(r CoverageRow) string {
 	if r.Total == 0 {
 		return fmt.Sprintf("| %s | (empty graph) | | | | | |", r.Graph)
@@ -363,7 +430,7 @@ func formatCoverageRow(r CoverageRow) string {
 	segCell := "—"
 	if r.HasSegments {
 		segCell = fmt.Sprintf("shipped %d · live %d [%s]",
-			r.SegCovered, r.LiveResident, r.SegDisposition)
+			r.SegCovered, r.LiveResident, coverageBandTerm(r))
 	}
 	return fmt.Sprintf("| %s | %d | %d of %d | %d of %d | %s | %d | %d |",
 		r.Graph, r.Total,
@@ -371,4 +438,16 @@ func formatCoverageRow(r CoverageRow) string {
 		r.Embedded, r.Total,
 		segCell,
 		r.SummaryFail, r.EmbedFail)
+}
+
+// coverageBandTerm renders the bracketed band term: the bare disposition for every
+// band, plus a stall age for the stuck one. The age is rounded to the minute — the
+// question it answers is "has this been true for a while", which minutes settle and
+// seconds only clutter.
+func coverageBandTerm(r CoverageRow) string {
+	if r.SegDisposition != DispositionStuck || r.StalledSinceNanos == 0 {
+		return r.SegDisposition
+	}
+	return fmt.Sprintf("%s %s", r.SegDisposition,
+		time.Since(time.Unix(0, r.StalledSinceNanos)).Round(time.Minute))
 }

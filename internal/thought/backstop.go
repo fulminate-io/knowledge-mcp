@@ -58,6 +58,13 @@ func (p *PropagationLoop) decideBackstopForce() bool {
 // ErrReflectionInFlight WITHOUT running a second concurrent recompute — the
 // in-flight pass already produces fresh state. Returns the propagation result so
 // the caller can render a summary line. Nil-safe receiver (mirrors Stop).
+//
+// IT IS DELIBERATELY OUTSIDE THE WORKING-SET GATE. This is a USER LEVER — the
+// surface behind thoughts(propagate, force_full:true) — not a background
+// process, so the rule that fences background work off an un-interacted graph
+// does not reach it. Do not "simplify" the gate down into the shared runPass or
+// refreshCorpusCache body to cover both entries: that would silently disable
+// this lever, and the shared-body gate is the plausible-looking edit that does it.
 func (p *PropagationLoop) ForceFullPass(ctx context.Context) (PropagationResult, error) {
 	if p == nil || p.gc == nil {
 		return PropagationResult{}, errors.New("reflection: propagation loop not running in this process")

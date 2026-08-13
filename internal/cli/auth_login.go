@@ -7,6 +7,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 
@@ -28,9 +29,10 @@ const loginUsage = `knowledge login — authenticate via WorkOS browser PKCE
 Usage:
   knowledge login
 
-Requires a working desktop browser. Headless environments (CI runners,
-remote SSH without browser/X-forwarding, container-only) are explicitly
-not supported.
+Prints an authorize URL and additionally opens a browser when one is
+available, so headless environments (CI runners, remote SSH, containers)
+are supported — open the printed URL from any browser that can reach the
+callback address.
 `
 
 // LoginCmd implements `knowledge login`. Returns nil on success; a
@@ -60,10 +62,16 @@ func LoginCmd(args []string) error {
 	return loginBrowserPKCE(ctx)
 }
 
+// runBrowserPKCEFlowFn is the package-private indirection for
+// auth.RunBrowserPKCEFlow, matching the discoverFn seam in auth_logout.go.
+// Tests override it to drive the persist half of login without a browser or
+// a loopback listener; the production value is the real flow.
+var runBrowserPKCEFlowFn = auth.RunBrowserPKCEFlow
+
 // loginBrowserPKCE runs the WorkOS AuthKit browser PKCE flow:
 // discovery (RFC 9728 + RFC 8414) → loopback listener → browser
-// authorize → callback → token exchange → persist refresh token.
-// Prints a single-line "Logged in." on success.
+// authorize → callback → token exchange → persist refresh token and
+// publish the session. Prints a single-line "Logged in." on success.
 func loginBrowserPKCE(ctx context.Context) error {
 	store, err := openStore()
 	if err != nil {
@@ -73,7 +81,7 @@ func loginBrowserPKCE(ctx context.Context) error {
 		return err
 	}
 
-	endpoints, err := auth.Discover(ctx, CloudEndpoint, allowedAuthHosts)
+	endpoints, err := discoverFn(ctx, CloudEndpoint, allowedAuthHosts)
 	if err != nil {
 		return fmt.Errorf("discover OAuth endpoints: %w", err)
 	}
@@ -81,7 +89,7 @@ func loginBrowserPKCE(ctx context.Context) error {
 	fmt.Fprintln(os.Stdout, "Opening your browser to authenticate…")
 	fmt.Fprintln(os.Stdout, "(Waiting for callback. Press Ctrl-C to cancel.)")
 
-	clientID, tr, err := auth.RunBrowserPKCEFlow(ctx, endpoints)
+	clientID, tr, err := runBrowserPKCEFlowFn(ctx, endpoints)
 	if err != nil {
 		return err
 	}
@@ -103,6 +111,15 @@ func loginBrowserPKCE(ctx context.Context) error {
 			return nil
 		}
 		return fmt.Errorf("persist refresh token: %w", err)
+	}
+
+	// Publish the session so read-only consumers can use this login straight
+	// away rather than waiting for the owning process's first refresh. Only
+	// best-effort: a login that authenticated must not fail because the
+	// readable copy did not land.
+	if err := auth.PublishSessionToken(ctx, store, tr); err != nil {
+		slog.Warn("login: could not publish the session access token — read-only consumers will see no session until the next refresh",
+			"error", err)
 	}
 
 	fmt.Fprintln(os.Stdout, "Logged in.")

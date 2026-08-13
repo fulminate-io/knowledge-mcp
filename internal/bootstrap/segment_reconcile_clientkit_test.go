@@ -19,12 +19,39 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/segmentdist"
+	"github.com/fulminate-io/knowledge-mcp/internal/workingset"
 )
 
 // segment_reconcile_clientkit_test.go holds the reconcile fixtures' CLIENT BUILDERS,
 // split out of segment_reconcile_test.go to keep both files under the size cap. The
 // four wrappers narrow to one constructor: each exposes one more of the pieces its
 // callers need (the backend, the cache dir, a supplied backend) and delegates.
+
+// seedWorkingSet builds the working set a fixture DECLARES it has interacted with.
+// Every background arm reads that set, so a fixture that declares nothing is a
+// client that has interacted with nothing and correctly does no work at all —
+// which is why the declaration belongs in the constructor rather than in whichever
+// tests happen to notice they need it.
+func seedWorkingSet(refs ...workingset.Ref) *workingset.Set {
+	s := workingset.New()
+	for _, r := range refs {
+		s.Admit(r.GraphType, r.Name, "fixture")
+	}
+	return s
+}
+
+// fixtureWorkingSet is the reconcile fixtures' standing declaration: the code repos
+// the caller named, plus knowledge/default. The knowledge member is not a seed in
+// the production sense — it is this FIXTURE asserting that its client interacted
+// with the knowledge graph, which is what every one of these tests has always
+// assumed by walking it.
+func fixtureWorkingSet(codeRepos ...string) *workingset.Set {
+	refs := []workingset.Ref{{GraphType: kgtypes.GraphKnowledge, Name: "default"}}
+	for _, r := range codeRepos {
+		refs = append(refs, workingset.Ref{GraphType: kgtypes.GraphCode, Name: r})
+	}
+	return seedWorkingSet(refs...)
+}
 
 // buildReconcileClient wires a *client over an EngineService h2c server + a
 // fakeSegBackend (GCS-agent control plane). The consumer Manager runs on the cloud
@@ -118,6 +145,7 @@ func buildReconcileClientOnBackend(
 		router:     router,
 		authState:  authState,
 		segmentMgr: segmentdist.NewManager(router, dir, 0, segmentdist.WithSegmentTransport(backend.transportBuilder())),
+		workingSet: fixtureWorkingSet(codeRepos...),
 	}
 	return c, eng, backend, dir
 }

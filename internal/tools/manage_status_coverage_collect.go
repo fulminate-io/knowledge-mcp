@@ -54,7 +54,10 @@ const coverageStatsConcurrency = 8
 // remaining latency after the liveness probes went no-retry. Row order stays
 // (knowledge first, then enumeration order) because results land by index, not
 // completion order. A failed Stats drops its row, same as the sequential walk.
-// segCoveredFor stays on the assembly loop: it is a local read, not an RPC.
+// segCoveredFor stays on the assembly loop deliberately: on the logged-in cloud
+// path each call is a remote manifest read, and running them sequentially keeps
+// a many-graph status call from bursting concurrent reads at a backend shared
+// by every user.
 func collectCoverageRows(ctx context.Context, deps ClientDeps) []CoverageRow {
 	gc := deps.GraphCaller()
 	if gc == nil {
@@ -96,7 +99,8 @@ func collectCoverageRows(ctx context.Context, deps ClientDeps) []CoverageRow {
 		}
 		segCovered, liveResident, hasSeg := segCoveredFor(ctx, deps, t.gt, t.name)
 		verified := repairVerifiedFor(deps, t.gt, t.name, now)
-		rows = append(rows, newCoverageRow(t.label, stats[i], segCovered, liveResident, hasSeg, verified))
+		rows = append(rows, newCoverageRow(t.label, stats[i], segCovered, liveResident,
+			hasSeg, verified, inWorkingSetFor(deps, t.gt, t.name), segmentStalledSinceFor(deps, t.gt, t.name)))
 	}
 	return rows
 }
@@ -115,6 +119,55 @@ func repairVerifiedFor(deps ClientDeps, gt kgtypes.GraphType, name string, nowNa
 	}
 	st, ok := sr.RepairVerification(gt, name)
 	return repairVerifiedFrom(st, ok, nowNanos)
+}
+
+// segmentStallReader and workingSetReader are the two OPTIONAL deps capabilities the
+// coverage table reads its honest-band inputs through: since when a graph's coverage
+// stopped being able to recover, and whether this client maintains the graph at all.
+//
+// They are TYPE-ASSERTED rather than added to ClientDeps for the reason the
+// collectRuntimeProvider seam states (collect_detach.go): a required method would
+// have to be implemented by every fake that already implements SegmentCoverage() —
+// twenty-five of them — none of which runs a working set or a heal breaker. A deps
+// satisfying neither reports 0 and false, which reproduces the pre-existing bands
+// exactly: not stalled, and... see inWorkingSetFor for why false is the safe default
+// here rather than the alarming one.
+type segmentStallReader interface {
+	SegmentStalledSince(gt kgtypes.GraphType, name string) int64
+}
+
+type workingSetReader interface {
+	InWorkingSet(gt kgtypes.GraphType, name string) bool
+}
+
+// segmentStalledSinceFor reads the stall stamp through the optional seam. An
+// unwired deps reports 0 — not stalled — which is the honest answer for a client
+// with no heal breaker and no publish gate to have given up.
+func segmentStalledSinceFor(deps ClientDeps, gt kgtypes.GraphType, name string) int64 {
+	r, ok := deps.(segmentStallReader)
+	if !ok {
+		return 0
+	}
+	return r.SegmentStalledSince(gt, name)
+}
+
+// inWorkingSetFor reads working-set membership through the optional seam.
+//
+// AN UNWIRED DEPS REPORTS TRUE, which is the one place these two helpers do NOT
+// mirror each other. The working set's own default is deny — every consumer treats a
+// nil set as empty so a missed wiring under-admits — but that default belongs to the
+// arms that ACT on a graph, where doing nothing is the safe failure. This is a
+// column, and a fixture that wires no working set would otherwise render every graph
+// in the account "unmanaged", replacing every real band with a claim about a
+// mechanism that is not present. Reporting membership keeps the pre-existing bands
+// for a deps that cannot answer, and only a client that genuinely runs a working set
+// can put a row in the unmanaged band.
+func inWorkingSetFor(deps ClientDeps, gt kgtypes.GraphType, name string) bool {
+	r, ok := deps.(workingSetReader)
+	if !ok {
+		return true
+	}
+	return r.InWorkingSet(gt, name)
 }
 
 // coverageTargets enumerates every graph instance the coverage table covers, in

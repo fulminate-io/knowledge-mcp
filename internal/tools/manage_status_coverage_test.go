@@ -185,15 +185,17 @@ func (d *coverageDeps) TensionsProvider() TensionsProvider   { return nil }
 // (gap-repairing), because when live exceeds embedded the ratio test in arm 6 is
 // also true and a band-first classifier would mislabel the residue class.
 func TestSegCoverageDisposition(t *testing.T) {
-	// row builds a VERIFIED row. The default matters: only the last arm consults the
-	// backstop, so leaving these unverified would relabel the band cases and each
-	// landed subtest would stop measuring the arm it names. The unverified shapes are
-	// driven explicitly below.
+	// row builds a VERIFIED, MAINTAINED row. Both defaults matter: only the last arm
+	// consults the backstop, and the unmanaged arm pre-empts every band arm below it,
+	// so a row left unverified or left out of the working set would relabel the band
+	// cases and each landed subtest would stop measuring the arm it names. The
+	// unverified and unmanaged shapes are driven explicitly (below, and in
+	// TestSegCoverageDisposition_StuckAndUnmanagedBands).
 	row := func(embedded, segCovered, liveResident int, hasSeg bool) CoverageRow {
 		return CoverageRow{
 			Embedded: embedded, SegCovered: segCovered,
 			LiveResident: liveResident, HasSegments: hasSeg,
-			RepairVerified: true,
+			RepairVerified: true, InWorkingSet: true,
 		}
 	}
 	unverified := func(r CoverageRow) CoverageRow {

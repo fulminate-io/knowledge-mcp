@@ -44,6 +44,7 @@ func TestPropagationLoop_StopDrainsInFlightPass(t *testing.T) {
 		baseCtx:    baseCtx,
 		baseCancel: baseCancel,
 		clock:      time.Now,
+		admitted:   admittedGate(),
 	}
 
 	// Launch a real pass in flight: runBackgroundPropagation claims the

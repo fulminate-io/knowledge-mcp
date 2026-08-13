@@ -204,14 +204,15 @@ func checkVoyage(configFile string) checkResult {
 }
 
 // checkFulminateAuth checks for a stored OAuth refresh token in the
-// platform keychain. Not-logged-in is info, not warning — paid
-// features being unavailable is a fully-supported state.
+// credential store — the platform keychain when it is available, the
+// ~/.knowledge/credentials file otherwise. Not-logged-in is info, not
+// warning — paid features being unavailable is a fully-supported state.
 func checkFulminateAuth() checkResult {
-	store, err := auth.NewStore()
+	store, err := auth.OpenStore()
 	if err != nil {
 		return checkResult{
 			name: "fulminate", status: statusInfo,
-			msg: "keychain unavailable: " + err.Error(),
+			msg: "credential store unavailable: " + err.Error(),
 		}
 	}
 	_, err = store.Get(context.Background(), auth.KeyRefreshToken)

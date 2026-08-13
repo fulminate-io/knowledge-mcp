@@ -195,6 +195,54 @@ func (p *protoCapture) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	p.next.ServeHTTP(w, r)
 }
 
+// TestCloudClient_RoundTripAdvancesSocketMeter proves the socket-write meter is
+// actually INSTALLED on the shared cloud transport, not merely declared. One
+// real Execute through NewCloudGraphClient must move the process-wide counters;
+// if DialContext were dropped from the transport literal the traffic would
+// still succeed and only this assertion would go red — which a field-presence
+// check could never catch.
+//
+// Cleartext httptest server for the same reason TestCloudExecute_UnaryPOSTOverHTTP11
+// uses one (see its SCOPE OF THE CLAIM note): NewCloudGraphClient hardcodes
+// TLSClientConfig with no RootCAs injection seam. The dialer under test sits
+// BELOW TLS, so a cleartext vehicle exercises exactly the code path that matters.
+func TestCloudClient_RoundTripAdvancesSocketMeter(t *testing.T) {
+	canned := enginetest.ResponseWithNodes(&knowledgev1.Node{Id: "n1"})
+	handler := &stubEngine{respond: func(_ *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error) {
+		return canned, nil
+	}}
+	mux := http.NewServeMux()
+	path, hdlr := knowledgev1connect.NewEngineServiceHandler(handler)
+	mux.Handle(path, hdlr)
+	srv := httptest.NewServer(mux)
+	t.Cleanup(srv.Close)
+
+	gc := NewCloudGraphClient(srv.URL, auth.StaticTokenSource{AccessToken: "tok"})
+
+	before := SocketWriteSnapshot()
+	resp, err := gc.Execute(opCtx(), &knowledgev1.ExecuteRequest{
+		Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{ById: "x"}},
+	})
+	require.NoError(t, err, "the round trip itself must succeed")
+	require.NotNil(t, resp)
+	after := SocketWriteSnapshot()
+
+	assert.Greater(t, after.Writes, before.Writes,
+		"the instrumented dialer must be wired into the shared cloud transport")
+	assert.Greater(t, after.Bytes, before.Bytes,
+		"request bytes travel through the timed Write")
+
+	// The h2-preservation claim gets a compiled check, not just a grep: a custom
+	// DialContext disables HTTP/2 unless ForceAttemptHTTP2 is set.
+	rt, ok := gc.httpClient.Transport.(*bearerRoundTripper)
+	require.True(t, ok, "the cloud client wraps its transport in a bearerRoundTripper")
+	base, ok := rt.base.(*http.Transport)
+	require.True(t, ok, "the bearer round-tripper's base is the shared http.Transport")
+	assert.True(t, base.ForceAttemptHTTP2,
+		"ForceAttemptHTTP2 must stay true beside the custom dialer or h2 is silently lost")
+	assert.NotNil(t, base.DialContext, "the meter's dialer is installed on that same transport")
+}
+
 // TestCloudExecute_UnaryPOSTOverHTTP11 pins that NewCloudGraphClient issues
 // EngineService.Execute as a Connect UNARY POST that succeeds over HTTP/1.1 with
 // no gRPC/gRPC-Web option on the client. The backend is the REAL generated

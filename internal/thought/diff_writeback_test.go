@@ -223,7 +223,7 @@ func TestDiffWriteback_ClusterIDOnlyChangedNodes(t *testing.T) {
 	kgtypes.SetValue(f.thoughts["a3"], "cluster_id", "STALE")
 	f.mu.Unlock()
 
-	buildClusterObjects(ctx, f, groups)
+	buildClusterObjects(ctx, f, groups, nil)
 
 	assert.Equal(t, []string{"a3"}, f.capturedIDs("cluster_id"),
 		"only the member whose cluster_id changed (a3: STALE→a1) is written; a1/a2 unchanged are dropped")

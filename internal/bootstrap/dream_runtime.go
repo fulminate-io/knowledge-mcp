@@ -13,14 +13,12 @@
 // worker subscribed to tool-completed can never re-fire on its own
 // child invocations.
 //
-// The practical upshot: Runner.Start(ctx) walks Registry.All and installs
-// triggers, but in the client-side topology installed triggers are mostly
-// dead — they exist for shape consistency with the server-side wiring
-// they replace and for any future event source the client adds. Calling
-// Start() at boot is therefore mostly registry validation: it surfaces
-// load errors (worker rows that fail to decode, malformed triggers) so
-// the operator sees them at startup instead of when a manual trigger is
-// fired hours later.
+// Wiring the Runner installs NO triggers and reads NO worker rows. A worker
+// runs only when this process creates or triggers it: worker(create) installs
+// that worker's triggers through Runner.InstallWorker, and worker(trigger)
+// dispatches through Runner.OnManualTrigger. Persisted worker rows stay
+// first-class data — list / update / delete are unchanged — but a daemon
+// restart re-arms nothing on their behalf.
 //
 // Worker invocation in the client topology happens through the manual
 // path (worker.trigger MCP intercept, Phase H) which calls into
@@ -115,21 +113,17 @@ func buildRuntime(gc runtimeLister, port int, graphStorage string, dispatch drea
 // into the *client. It hands buildRuntime the login-aware c.router so the
 // Registry's worker-list loopback routes to cloud when logged in (no local
 // server) and local otherwise, and assigns the returned Runner to
-// c.runtime. After construction it calls startWorkerRuntime (Runner.Start
-// under a query-origin stamp) to install triggers; per this file's
-// docstring this is mostly registry
-// validation in the client topology, so a Start failure is logged and
-// the runtime is still kept (manual triggers — the only invocation path
-// that matters today — work without Start).
+// c.runtime.
+//
+// Construction is the whole of the wiring: it issues no graph read and
+// installs no triggers, so a daemon boot re-arms nothing a previous session
+// created. Triggers are installed only for a worker created in THIS process.
 func wireWorkerRuntime(c *client, f Config) error {
 	runner, err := buildRuntime(c.router, f.Port, f.GraphStorage, c.dispatchForRunner())
 	if err != nil {
 		return err
 	}
 	c.runtime = runner
-	if err := startWorkerRuntime(context.Background(), runner); err != nil {
-		slog.Warn("dream runner Start failed; manual triggers still work", "error", err)
-	}
 	return nil
 }
 

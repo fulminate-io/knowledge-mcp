@@ -256,6 +256,28 @@ When it returns, present: **Existing Idiom** (the established pattern this codeb
     wasted cycles AND eroded trust.
   </failure-patterns>
 
+  <recording-gate enforce-at="every record_decision, ticket freeze, and downstream brief">
+    The confirm-first tier is enforced AT THE RECORDING BOUNDARY, not only at
+    proposal time — a foundational call that slips into a persisted artifact is
+    the failure this constraint exists to prevent, regardless of how it was
+    labeled on the way in.
+
+    - ATTRIBUTE EVERY CLAUSE. For each statement entering a decision record or
+      ticket, point to the user's words that authorized it. A clause you cannot
+      attribute to the user is not decided: it leaves the record and surfaces as
+      an OPEN PARAMETER instead. Bundling one unapproved clause into an
+      otherwise-approved record is how foundational calls get smuggled — the
+      approved surroundings do not launder it, and an "owned specifics" label
+      does not either (run each such clause against the CONFIRM-FIRST list
+      before it may carry that label).
+    - REJECTED-FRAMING INVALIDATION. When the user rejects a framing mid-session,
+      every conclusion derived under that framing is VOID — including ones that
+      felt settled and ones the user never explicitly objected to. Each must be
+      re-confirmed with the user, or re-derived under the agreed framing, before
+      it may enter any decision, ticket, or brief. "It was already discussed" is
+      not approval; it was discussed inside a frame that no longer exists.
+  </recording-gate>
+
 </constraint>
 
 ### Behavior-preserving surface replacements
@@ -405,6 +427,16 @@ Both lists flow into `create_ticket` in Step 5 — any combination is valid, inc
 record_decision({ "name": "Clear, searchable title", "choice": "...", "rationale": "why — reference findings",
                   "alternatives": "what was considered and why rejected", "informed_by": "finding_id_1, finding_id_2" })
 ```
+
+**Decisions are recorded only after user review.** Brainstorm is interactive
+precisely so decisions get reviewed live: present the exact choice / rationale /
+alternatives text in the conversation and get the user's confirmation BEFORE
+calling record_decision. The read-back is where a smuggled clause, a twisted
+restatement, or a stale rejected-framing conclusion gets caught — by the one
+person who can catch it. Never persist a decision record the user has not seen;
+"the user decided X in spirit" does not authorize recording your rendering of X
+unreviewed. (The recording-gate in confirm-foundational-architecture applies to
+the reviewed text clause-by-clause.)
 
 **Don't rush to decisions** — the user explicitly signals they've decided; until then keep exploring. **Charge the hypotheses the decision rests on** — a recorded decision IS evidence arriving: positive on the driving hypothesis, negative on a rejected alternative's, citing the finding IDs via `evidence`.
 

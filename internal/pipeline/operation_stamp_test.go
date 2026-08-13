@@ -4,9 +4,7 @@ package pipeline
 
 import (
 	"context"
-	"sync"
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -70,99 +68,5 @@ func TestPipelineLoopsStampOperation(t *testing.T) {
 		require.NoError(t, err)
 		assert.Equal(t, graphclient.OpPipelineEmbedWriteback, c.executeOp,
 			"the writeback is the pipeline's WRITE half and must be distinguishable from its scans")
-	})
-}
-
-// discoveryRecorder records the operation stamped on every Execute the
-// graph-catalog discovery path issues, and signals the first one so a test
-// driving the background loop can stop it deterministically instead of sleeping.
-// It is mutex-guarded rather than reusing opRecordingWireClient because the
-// discovery pass registers a collector, whose own scans then run concurrently
-// with the assertion.
-type discoveryRecorder struct {
-	mu        sync.Mutex
-	executeOp graphclient.Operation
-
-	seenOnce sync.Once
-	seen     chan struct{}
-}
-
-func newDiscoveryRecorder() *discoveryRecorder {
-	return &discoveryRecorder{seen: make(chan struct{})}
-}
-
-func (d *discoveryRecorder) PipelineScan(
-	_ context.Context, _ *knowledgev1.PipelineScanRequest,
-) (*knowledgev1.PipelineScanResponse, error) {
-	return &knowledgev1.PipelineScanResponse{}, nil
-}
-
-func (d *discoveryRecorder) PipelineGenPoll(
-	_ context.Context, _ *knowledgev1.PipelineGenPollRequest,
-) (*knowledgev1.PipelineGenPollResponse, error) {
-	return &knowledgev1.PipelineGenPollResponse{}, nil
-}
-
-func (d *discoveryRecorder) Execute(
-	ctx context.Context, _ *knowledgev1.ExecuteRequest,
-) (*knowledgev1.ExecuteResponse, error) {
-	d.mu.Lock()
-	d.executeOp, _ = graphclient.OperationFromContext(ctx)
-	d.mu.Unlock()
-	d.seenOnce.Do(func() { close(d.seen) })
-	return &knowledgev1.ExecuteResponse{}, nil
-}
-
-func (d *discoveryRecorder) op() graphclient.Operation {
-	d.mu.Lock()
-	defer d.mu.Unlock()
-	return d.executeOp
-}
-
-// TestGraphDiscoveryStampsOperation guards the graph-CATALOG discovery path: one
-// graph-names read per eligible graph type on every pass it runs. Both entry
-// points into that path are covered because they carry different contexts and
-// neither inherits from the other — the loop runs under the daemon wire ctx and
-// the boot seed under a fresh bootstrap ctx, so a stamp on one says nothing about
-// the other.
-func TestGraphDiscoveryStampsOperation(t *testing.T) {
-	t.Run("the discovery loop stamps its own operation", func(t *testing.T) {
-		rec := newDiscoveryRecorder()
-		p := New(Config{}, rec, nil, nil)
-		t.Cleanup(func() { p.UnregisterGraph(kgtypes.GraphKnowledge, "default") })
-
-		ctx, cancel := context.WithCancel(context.Background())
-		done := make(chan struct{})
-		go func() {
-			defer close(done)
-			p.RefreshLoadedGraphs(ctx)
-		}()
-
-		// The loop is wake-driven and issues nothing until it is signaled, so the
-		// stamp can only be observed on a pass a wake actually buys.
-		p.wakeCatalog()
-
-		select {
-		case <-rec.seen:
-		case <-time.After(10 * time.Second):
-			cancel()
-			t.Fatal("the discovery loop issued no catalog read within 10s")
-		}
-		cancel()
-		<-done
-
-		assert.Equal(t, graphclient.OpPipelineGraphDiscovery, rec.op(),
-			"the discovery loop must stamp its own operation — it has no originating tool call to inherit one from")
-	})
-
-	t.Run("the boot seed stamps the same operation", func(t *testing.T) {
-		rec := newDiscoveryRecorder()
-		p := New(Config{}, rec, nil, nil)
-		t.Cleanup(func() { p.UnregisterGraph(kgtypes.GraphKnowledge, "default") })
-
-		p.RefreshOnceForBoot(context.Background())
-
-		assert.Equal(t, graphclient.OpPipelineGraphDiscovery, rec.op(),
-			"the one-shot boot seed runs the SAME catalog read under a fresh bootstrap ctx and must be stamped too")
 	})
 }

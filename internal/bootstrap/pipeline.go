@@ -236,6 +236,14 @@ func wirePipelineRuntime(ctx context.Context, c *client, f Config) error {
 	// AttachHealFactory guard below stays nil-safe for that case.
 	p.AttachSegmentManager(c.segmentMgr)
 
+	// Wire the interaction-earned working set: it is where every catalog pass gets
+	// its wanted set, so the pipeline registers a collector for a graph only once
+	// a search, a collect or a user write has admitted it. Shared with the rest of
+	// the client rather than copied, so an admission recorded on any interaction
+	// path is visible to the next pass. Attached BEFORE Start so the boot
+	// registration pass below already reads it.
+	p.AttachWorkingSet(c.workingSet)
+
 	// Wire the auto-heal factory: on the embed drain after a collect armed
 	// the heal-check, a code graph with ZERO shipped segments triggers a one-shot
 	// rebuild (closure built over the segment-presence probe + tools.RebuildSegments,
@@ -262,11 +270,13 @@ func wirePipelineRuntime(ctx context.Context, c *client, f Config) error {
 		return err
 	}
 
-	// Initial registration: enumerate the catalog once + register each (gt, name).
-	// The refresh goroutine below takes over from here, but it is wake-driven and
-	// enumerates nothing on its own, so this seed is what populates the collector
-	// set — and it must run BEFORE that goroutine and the gen-poll loop start, so
-	// the gen-poll loop's own seed has a graph set to sample.
+	// Initial registration: read the working set once + register each (gt, name).
+	// On a cold boot the working set is EMPTY and this registers nothing, which is
+	// the rule working as designed — nothing is maintained until an interaction
+	// admits a graph, and the admission wakes the refresh goroutine below. It still
+	// runs BEFORE that goroutine and the gen-poll loop start, so a working set
+	// already carrying members (a re-wire within a live process) is registered
+	// before the loops that depend on it.
 	p.RefreshOnceForBoot(bootCtx) //nolint:errcheck // best-effort initial seed
 
 	// Boot-delay segment-coverage reconcile (one-shot, OFF the critical path): a

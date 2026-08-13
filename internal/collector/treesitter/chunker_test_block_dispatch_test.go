@@ -63,12 +63,16 @@ it("beta", () => {});
 				testBlocks = append(testBlocks, c)
 			}
 		}
+		// Edge ToIDs are namespace-qualified (chunker_edges.go:qualifiedName),
+		// so compare against the namespace the chunker actually derives for
+		// this path rather than a literal.
+		ns := fileNamespace("spec.ts", LangTypeScript)
 		for _, e := range res.Edges {
 			if e.Type == EdgeContains && e.FromID == "spec.ts" {
 				// Filter to test_block CONTAINS edges only — the file may
 				// emit declaration-level CONTAINS edges that are unrelated.
 				for _, c := range testBlocks {
-					if e.ToID == c.Name || e.ToID == "."+c.Name {
+					if e.ToID == qualifiedName(ns, c.Name) {
 						containsEdges++
 						break
 					}

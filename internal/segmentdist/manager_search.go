@@ -55,6 +55,13 @@ func (m *Manager) Search(
 	// call is not a user search, and BEFORE the loads below because a search against a
 	// cold or broken engine is precisely a moment when a pull is worth asking for.
 	m.nudgeMerge(gt, name)
+	// The same instant, on the same key, for the same reason: a search is the
+	// direct interaction that admits a graph into this process's working set,
+	// which is what lets the background loops touch it at all. Both recorders
+	// sit behind the k<=0 guard because such a call is not a user search.
+	if m.admitGraph != nil {
+		m.admitGraph(gt, name)
+	}
 
 	dm := m.managerFor(gt, name)
 	bm := m.bm25ManagerFor(gt, name)

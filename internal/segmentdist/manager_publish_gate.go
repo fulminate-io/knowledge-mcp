@@ -2,7 +2,10 @@
 
 package segmentdist
 
-import "log/slog"
+import (
+	"log/slog"
+	"time"
+)
 
 // coverageSkipMaxStreak bounds the publishPending re-arm on the ONE cause that can
 // never self-clear by retrying: the coverage-ratio skip. When the read engine's
@@ -66,6 +69,15 @@ func (m *distManager[Q, S]) publishRetryPending() bool {
 	m.shipMu.Lock()
 	defer m.shipMu.Unlock()
 	return m.publishPending
+}
+
+// coverageSuppressedSince is the shipMu-guarded read of the suppression stamp: the
+// nanos at which this engine's coverage gate became unsatisfiable, or 0 when it is
+// not in a suppression episode.
+func (m *distManager[Q, S]) coverageSuppressedSince() int64 {
+	m.shipMu.Lock()
+	defer m.shipMu.Unlock()
+	return m.coverageSuppressedAtNanos
 }
 
 // completedSwapCount is the shipMu-guarded read of the landed-manifest-swap
@@ -154,9 +166,11 @@ func (m *distManager[Q, S]) markIncompletePublish(missing []string) {
 //
 // It also fires the onCoverageSuppressed hook on the TRANSITION into suppression —
 // the moment retrying stops being able to help, which is the useful moment to ask a
-// periodic reconcile consumer to look sooner. It only RECORDS: no rebuild, and
-// nothing that drives one, runs from this path, so rebuild ownership stays with the
-// consumer and the existing single-flight remains the only rebuild entry point.
+// periodic reconcile consumer to look sooner — and stamps coverageSuppressedAtNanos
+// on that same edge, so a status reader can say how long the engine has been there
+// rather than only that it is. It only RECORDS: no rebuild, and nothing that drives
+// one, runs from this path, so rebuild ownership stays with the consumer and the
+// existing single-flight remains the only rebuild entry point.
 //
 // Locking: ResidentDocCount() is read FIRST, OUTSIDE shipMu (it takes the engine's
 // own lock via the resident set — a DIFFERENT lock, so no nesting), then the streak
@@ -171,9 +185,12 @@ func (m *distManager[Q, S]) markCoverageSkip() {
 	m.shipMu.Lock()
 	if resident > m.lastSkipResident {
 		// Genuine progress since the last skip — the engine is climbing toward
-		// coverage. Reset the streak so a recovering engine re-arms.
+		// coverage. Reset the streak so a recovering engine re-arms, and drop the
+		// suppression stamp with it: this is the moment the engine started climbing
+		// again, so an age outliving it would be a lie.
 		m.coverageSkipStreak = 0
 		m.lastSkipResident = resident
+		m.coverageSuppressedAtNanos = 0
 	}
 	m.coverageSkipStreak++
 	suppress := m.coverageSkipStreak > coverageSkipMaxStreak
@@ -184,6 +201,11 @@ func (m *distManager[Q, S]) markCoverageSkip() {
 	// That makes the hook below naturally debounced — one stuck episode fires it once
 	// per engine, and the streak cannot re-reach the threshold until a rise resets it.
 	transition := m.coverageSkipStreak == coverageSkipMaxStreak+1
+	if transition {
+		// Stamp the edge, not the episode's every skip: the age this feeds counts
+		// from the moment retrying stopped being able to help.
+		m.coverageSuppressedAtNanos = time.Now().UnixNano()
+	}
 	// Arm the retry while NOT suppressing; CLEAR it once suppressing. Clearing is
 	// load-bearing: on the streaks below the bound the bit was latched true, so merely
 	// "not re-arming" would leave it set and the gate would keep re-firing forever. On

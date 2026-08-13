@@ -198,7 +198,7 @@ func oldUniverseTensions(t *testing.T, gc Caller) []TensionReport {
 	}
 
 	nodeByID := fetchNodesByIDs(ctx, gc, nodeIDs)
-	charges := fetchChargesFor(ctx, gc, nodeIDs)
+	charges := fetchChargesFor(ctx, gc, nodeIDs, nil)
 	now := time.Now()
 	propsCache := make(map[string]ThoughtProperties, len(nodeIDs))
 	for _, id := range nodeIDs {

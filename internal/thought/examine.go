@@ -54,7 +54,7 @@ func ExamineThought(ctx context.Context, gc Caller, thoughtID string) (ThoughtEx
 
 	// Charges + evidence: one charges_for round-trip for the thought, then
 	// one fetchNodesByIDs round-trip over the union of all evidence IDs.
-	chargeMap := chargeMapForThoughts(ctx, gc, []string{thoughtID})
+	chargeMap := chargeMapForThoughts(ctx, gc, []string{thoughtID}, nil)
 	chargeNodes := chargeMap[thoughtID]
 	props := computePropertiesFromCharges(chargeNodes, time.Now())
 

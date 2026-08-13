@@ -19,7 +19,7 @@ func luaQueries() *QuerySet {
 		// Documented gap: nested @parent_name binding not captured (mirrors
 		// JS/Kotlin/Scala/Elixir/PHP gap). The inner it() inside describe()
 		// emits with ParentName="" — astPathHash uniquely identifies each.
-		TestBlocks: `[
+		TestBlocks: `([
 			(function_call
 				prefix: (identifier) @fn
 				args: (function_arguments
@@ -33,6 +33,6 @@ func luaQueries() *QuerySet {
 					(function) @params
 				)
 			) @decl
-		] (#match? @fn "^(it|test|spec|pending|describe|context|feature|scenario|insulate|expose|randomize|before_each|after_each|setup|teardown|before|after|lazy_setup|lazy_teardown|strict_setup|strict_teardown|finally)$")`,
+		] (#match? @fn "^(it|test|spec|pending|describe|context|feature|scenario|insulate|expose|randomize|before_each|after_each|setup|teardown|before|after|lazy_setup|lazy_teardown|strict_setup|strict_teardown|finally)$"))`,
 	}
 }

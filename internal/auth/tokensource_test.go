@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"sync/atomic"
@@ -189,10 +190,12 @@ func TestOAuthTokenSource_PreExpiryRefresh(t *testing.T) {
 // guard for the headless-daemon fix: when the credential store cannot
 // persist the rotated refresh token, the freshly acquired access token
 // must still be cached and served (not discarded), the rotation-persist
-// failure is best-effort (a WARN, not a returned error), and the old
-// refresh token is left in place because the failed Set never wrote the
-// new one.
+// failure is not a returned error, and the old refresh token is left in
+// place because the failed Set never wrote the new one. The failure is
+// reported at ERROR rather than silently tolerated: until the rotation
+// lands, every other process on this machine reads a consumed token.
 func TestOAuthTokenSource_PersistFailStillCachesToken(t *testing.T) {
+	logs := installCapturingSlog(t)
 	var calls atomic.Int32
 	newAccess := signTestJWT(t, []string{PermMCPKnowledgeRead, PermDeployBYOC}, time.Now().Add(1*time.Hour).Unix())
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -252,6 +255,16 @@ func TestOAuthTokenSource_PersistFailStillCachesToken(t *testing.T) {
 	}
 	if stored != "frt_old" {
 		t.Errorf("expected store to still hold frt_old (rotation not persisted), got %q", stored)
+	}
+
+	// The tolerated failure is announced, not swallowed, and the write was
+	// retried before giving up.
+	rec, ok := logs.find(slog.LevelError, "could not persist the rotated refresh token")
+	if !ok {
+		t.Fatal("expected an ERROR record naming the failed rotation persist")
+	}
+	if got := intAttr(t, rec, "attempts"); got < 2 {
+		t.Errorf("expected the persist to be retried before giving up, logged attempts=%d", got)
 	}
 }
 

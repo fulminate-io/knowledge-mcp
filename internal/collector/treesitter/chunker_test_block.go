@@ -71,9 +71,17 @@ func (c *Chunker) walkTestBlocks(
 			continue
 		}
 
+		// Qualify by the same parent the chunk carries, under the same name
+		// guard the declaration path uses: recordSymbol keys a test_block as
+		// <ns>.<ParentName>.<Name> whenever @parent_name bound, so an
+		// unqualified endpoint here would fail resolution for exactly those.
+		symbolName := captures.Name
+		if captures.Name != "" && captures.ParentName != "" {
+			symbolName = captures.ParentName + "." + captures.Name
+		}
 		result.Edges = append(result.Edges, Edge{
 			FromID: filePath,
-			ToID:   qualifiedName(fileCtx.PackageName, captures.Name),
+			ToID:   qualifiedName(fileCtx.PackageName, symbolName),
 			Type:   EdgeContains,
 		})
 	}
@@ -123,10 +131,10 @@ func extractTestBlockCaptures(m *sitter.QueryMatch, cqs *compiledQuerySet, src [
 //   - ChunkType is the literal string "test_block" (NOT declNode.Type()).
 //   - Exported is always false (locked decision Q9).
 //   - ParentName comes from the @parent_name capture only — no automatic
-//     AST ascent via findEnclosingFunction. This is by design: the capture
+//     AST ascent via findEnclosingScope. This is by design: the capture
 //     surfaces describe→it nesting deterministically and language-specific
 //     scoping rules (RSpec contexts, Lua busted blocks) don't map cleanly
-//     onto the function-like-types ascent helper.
+//     onto the scope-ascent helper.
 //
 // Bucket B dispatch (locked Q1, Q9): when a testBlockClassifiers entry exists
 // for the language, call it; if it returns (false, TestKindNone), the strict-

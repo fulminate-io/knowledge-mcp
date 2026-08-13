@@ -31,7 +31,7 @@ func rubyQueries() *QuerySet {
 		// from also matching at top level. Chunk.ParentName == "" for
 		// nested it() inside describe() blocks; astPathHash uniquely
 		// identifies each chunk.
-		TestBlocks: `[
+		TestBlocks: `([
 			(call
 				method: (identifier) @fn
 				arguments: (argument_list (string) @name)
@@ -45,6 +45,6 @@ func rubyQueries() *QuerySet {
 				method: (identifier) @fn
 				arguments: (argument_list)
 			) @decl
-		] (#match? @fn "^(it|test|specify|example|focus|fit|fcontext|fdescribe|xit|xtest|xspecify|skip|pending|describe|context|before|after|setup|teardown|let|let!|subject|instance_double|class_double|double|spy|allow|expect)$")`,
+		] (#match? @fn "^(it|test|specify|example|focus|fit|fcontext|fdescribe|xit|xtest|xspecify|skip|pending|describe|context|before|after|setup|teardown|let|let!|subject|instance_double|class_double|double|spy|allow|expect)$"))`,
 	}
 }

@@ -45,6 +45,10 @@ func NewCloudGraphClient(baseURL string, ts auth.TokenSource) *GraphClient {
 			base: &http.Transport{
 				ForceAttemptHTTP2: true,
 				TLSClientConfig:   &tls.Config{MinVersion: tls.VersionTLS12},
+				// Socket-write meter. Wraps the RAW conn beneath TLS, so ALPN
+				// and h2 negotiation are untouched — ForceAttemptHTTP2 above is
+				// what keeps h2 alive beside a custom dialer. See timedConn.
+				DialContext: dialInstrumented,
 			},
 		},
 		// No global timeout — long-running tool calls (large Execute payloads,

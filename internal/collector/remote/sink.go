@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+	"google.golang.org/protobuf/proto"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1/knowledgev1connect"
@@ -181,8 +182,9 @@ var _ collector.Sink = (*UploadSink)(nil)
 // ID-addressed (FromIdx/ToIdx == -1, FromID/ToID set — see kgwire.BatchEdge
 // build sites), so they resolve regardless of which chunk a referenced node
 // arrived in, and the server dedups (From,Type,To) tuples across chunks and the
-// resident graph bundles. Per-chunk transport retry rides the existing reconnect
-// interceptor and is content-idempotent for BOTH nodes and edges: a node
+// resident graph bundles. Per-chunk retry lives in sink_retry.go, covering both
+// transport failures and the ambiguous-intermediary class on separate budgets,
+// and is content-idempotent for BOTH nodes and edges: a node
 // re-lands identically through the server's carry-forward upsert + epoch GC, and
 // an edge re-lands at most once because the server filters duplicate (From,Type,
 // To) tuples. A retry of any edge chunk therefore does not double its edges.
@@ -249,11 +251,28 @@ func (s *UploadSink) WriteResult(ctx context.Context, collectorName string, resu
 		"nodes", len(result.Nodes), "edges", len(result.Edges))
 	for i, req := range reqs {
 		chunkStart := time.Now()
-		if err := s.collectChunkWithRetry(ctx, req); err != nil {
-			return fmt.Errorf("remote sink: CollectChunk %d/%d: %w", i+1, len(reqs), err)
+		reqBytes := proto.Size(req)
+		meterBefore := graphclient.SocketWriteSnapshot()
+		err := s.collectChunkWithRetry(ctx, req)
+		// The meter delta is read BEFORE the error branch on purpose: a chunk
+		// that exhausts its retry budget is exactly the event this reading
+		// exists to explain, so the failure path must never be the one case
+		// with no measurement.
+		d := meterDelta(meterBefore)
+		elapsed := time.Since(chunkStart)
+		if graphclient.ShouldFlagClientSideStall(elapsed, d.InWrite) {
+			logClientSideStall(i+1, len(reqs), reqBytes, elapsed, d.InWrite, d.Writes)
+		}
+		if err != nil {
+			slog.Info("remote sink: chunk failed", "i", i+1, "of", len(reqs), "bytes", reqBytes,
+				"dur", elapsed.Round(time.Millisecond), "socket_writes", d.Writes,
+				"socket_bytes", d.Bytes, "in_write_ms", millis(d.InWrite))
+			return fmt.Errorf("remote sink: CollectChunk %d/%d (%d bytes): %w", i+1, len(reqs), reqBytes, err)
 		}
 		slog.Debug("remote sink: chunk sent", "i", i+1, "of", len(reqs),
-			"nodes", len(req.Nodes), "edges", len(req.Edges), "dur", time.Since(chunkStart).Round(time.Millisecond))
+			"nodes", len(req.Nodes), "edges", len(req.Edges), "bytes", reqBytes,
+			"dur", elapsed.Round(time.Millisecond),
+			"socket_writes", d.Writes, "socket_bytes", d.Bytes, "in_write_ms", millis(d.InWrite))
 	}
 	slog.Debug("remote sink: all chunks uploaded", "graph", result.GraphName, "branch", result.CurrentBranch,
 		"epoch", epoch, "chunks", len(reqs), "dur", time.Since(uploadStart).Round(time.Millisecond))
@@ -268,13 +287,53 @@ func (s *UploadSink) WriteResult(ctx context.Context, collectorName string, resu
 	finStart := time.Now()
 	// Finalize does the epoch GC and promotion work, a different load shape from
 	// the chunk uploads above, so it carries its own term.
-	finResp, err := client.Finalize(graphclient.WithOperation(ctx, graphclient.OpCollectFinalize), finReq)
+	finResp, err := finalizeWithRetry(graphclient.WithOperation(ctx, graphclient.OpCollectFinalize), client, finReq)
 	if err != nil {
 		return fmt.Errorf("remote sink: Finalize: %w", err)
 	}
 	slog.Debug("remote sink: finalize accepted", "graph", result.GraphName, "branch", result.CurrentBranch,
 		"epoch", epoch, "dur", time.Since(finStart).Round(time.Millisecond))
 	return awaitFinalizeTail(ctx, client, finResp.Msg.GetFinalizeId(), result.GraphName, finStart)
+}
+
+// meterDelta returns how far the process-wide socket-write counters advanced
+// since before. Only the difference is meaningful — the absolute counters carry
+// whatever this process accumulated since start.
+func meterDelta(before graphclient.SocketWriteStats) graphclient.SocketWriteStats {
+	now := graphclient.SocketWriteSnapshot()
+	return graphclient.SocketWriteStats{
+		Writes:  now.Writes - before.Writes,
+		Bytes:   now.Bytes - before.Bytes,
+		InWrite: now.InWrite - before.InWrite,
+	}
+}
+
+// millis renders a duration as fractional milliseconds, keeping sub-millisecond
+// readings legible — the client-side-stall signature is precisely a reading of a
+// few milliseconds against an elapsed measured in seconds, and truncating that
+// to an integer would print the most interesting value as 0.
+func millis(d time.Duration) float64 {
+	return float64(d.Microseconds()) / 1000
+}
+
+// logClientSideStall emits the one loud line for a chunk carrying the
+// client-side-stall signature. It is INFO, not WARN: nothing is broken when it
+// fires — the collect may well have succeeded — and a WARN would train the
+// operator to ignore the one instrument armed for a rare event.
+//
+// Extracted rather than written inline because the emission IS the deliverable:
+// inline, a name-grep for the predicate passes even on a discarded call with no
+// logging at all, and an instrument that never fires is indistinguishable from
+// one that was never wired. As a helper it is directly drivable from a test.
+// Keep it a formatter over the record below; it must not grow logic.
+func logClientSideStall(i, of, bytes int, elapsed, inWrite time.Duration, writes int64) {
+	slog.Info("remote sink: chunk was slow while almost no time was spent writing to the socket — "+
+		"the bytes were held CLIENT-SIDE, not by the network path",
+		"i", i, "of", of, "bytes", bytes,
+		"dur", elapsed.Round(time.Millisecond),
+		"in_write_ms", millis(inWrite),
+		"socket_writes", writes,
+		"next", "re-run the collect with GODEBUG=http2debug=2 to capture h2 frame detail on the next occurrence")
 }
 
 // finalizeTailPoll is the interval between FinalizeStatus polls, and
@@ -355,49 +414,6 @@ func awaitFinalizeTail(
 		case <-time.After(finalizeTailPoll):
 		}
 	}
-}
-
-// collectChunkWithRetry sends one CollectChunk, retrying on a retryable
-// transport error (server restart mid-collection, TCP drop) via the existing
-// graphclient backoff. Content-idempotent for both nodes and edges: re-sending
-// the same chunk under the same epoch re-lands nodes identically through the
-// carry-forward upsert + epoch GC, and re-lands edges at most once because the
-// server's collect edge-landing path filters duplicate (From,Type,To) tuples
-// against the batch and the resident graph bundles.
-func (s *UploadSink) collectChunkWithRetry(ctx context.Context, msg *knowledgev1.CollectChunkRequest) error {
-	// Chunk upload is the heaviest ingest phase and is worth telling apart from
-	// the finalize that follows it, so it re-stamps a refinement over whatever
-	// the caller (the collect tool, or a background collector with no
-	// originating tool call) put on ctx.
-	ctx = graphclient.WithOperation(ctx, graphclient.OpCollectChunk)
-	client, err := s.picker(ctx)
-	if err != nil {
-		return fmt.Errorf("remote sink: resolve ingest client: %w", err)
-	}
-	maxAttempts := len(graphclient.RetryBackoff) + 1
-	var attemptErr error
-	for attempt := range maxAttempts {
-		if ctx.Err() != nil {
-			return ctx.Err()
-		}
-		_, err := client.CollectChunk(ctx, connect.NewRequest(msg))
-		if err == nil {
-			return nil
-		}
-		if !graphclient.IsRetryableTransportError(err) {
-			return err
-		}
-		attemptErr = err
-		if attempt == len(graphclient.RetryBackoff) {
-			break
-		}
-		select {
-		case <-time.After(graphclient.RetryBackoff[attempt]):
-		case <-ctx.Done():
-			return ctx.Err()
-		}
-	}
-	return fmt.Errorf("CollectChunk exhausted after %d attempts: %w", maxAttempts, attemptErr)
 }
 
 // edgesFromProto converts the typed proto Edge carrier into []knowledgev1.Edge —

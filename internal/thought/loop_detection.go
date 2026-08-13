@@ -24,9 +24,10 @@ import (
 // plus the max-UpdatedAt watermark over the FRESH per-tick browse — both NEVER
 // over the closure/seed (the watermark must cover externally-changed untouched
 // nodes too). Returns ok=false (already logged) when the browse fails. The
-// EDGE-level leg is added by the caller from runLeidenStep's edgeChanges.
-func (p *PropagationLoop) deriveNodeDirtySeed(ctx context.Context) (dirtySeed map[string]bool, maxWatermark int64, ok bool) {
-	nodes, err := fetchAllThoughtNodes(ctx, p.gc, p) // resident cache when warm; else drain.
+// EDGE-level leg is added by the caller from runLeidenStep's edgeChanges. src is the
+// per-pass memo, so this thought-node read joins the pass's single composition.
+func (p *PropagationLoop) deriveNodeDirtySeed(ctx context.Context, src CorpusSource) (dirtySeed map[string]bool, maxWatermark int64, ok bool) {
+	nodes, err := fetchAllThoughtNodes(ctx, p.gc, src) // resident cache when warm; else drain.
 	if err != nil {
 		slog.Warn("cluster detection: thought-node browse failed", "error", err)
 		return nil, 0, false
@@ -55,7 +56,12 @@ func (p *PropagationLoop) deriveNodeDirtySeed(ctx context.Context) (dirtySeed ma
 // (runLeafAttachment) before the groups build, so a single-edge singleton joins its
 // neighbor's cluster at a per-provenance similarity gate; a nil scanner skips that
 // step with a loud WARN and detection completes exactly as before.
-func (p *PropagationLoop) runClusterDetection() {
+// runClusterDetection runs one detection with its OWN per-pass memo (the boot
+// detection, cold-cache accessor and similarity lever are each a pass of their own);
+// runPass calls runClusterDetectionWith so detection and propagation share ONE memo.
+func (p *PropagationLoop) runClusterDetection() { p.runClusterDetectionWith(newPassReads(p)) }
+
+func (p *PropagationLoop) runClusterDetectionWith(pr *passReads) {
 	if p == nil || p.gc == nil {
 		return
 	}
@@ -83,7 +89,7 @@ func (p *PropagationLoop) runClusterDetection() {
 	defer cancel()
 
 	// 1. Get current adjacency via the bulk wire call.
-	nodeIDs, adj, err := fetchAdjacency(ctx, p.gc, "all", nil, p) // resident cache when warm; else drain.
+	nodeIDs, adj, err := fetchAdjacency(ctx, p.gc, "all", nil, pr) // per-pass memo over the resident cache.
 	if err != nil {
 		// LOUD degradation: distinguish a budget cap from a real failure so a
 		// capped detection pass is never silently dropped. nodeIDs is the count
@@ -103,7 +109,7 @@ func (p *PropagationLoop) runClusterDetection() {
 
 	// 1b. NODE-level dirty leg + the max-UpdatedAt watermark, both derived from the
 	// FRESH per-tick thought-node browse (never the closure/seed).
-	dirtySeed, maxWatermark, ok := p.deriveNodeDirtySeed(ctx)
+	dirtySeed, maxWatermark, ok := p.deriveNodeDirtySeed(ctx, pr)
 	if !ok {
 		return // browse failed — already logged.
 	}
@@ -121,7 +127,7 @@ func (p *PropagationLoop) runClusterDetection() {
 	// as nil so it takes the full branch (rehydrate would rebuild a partition and
 	// defeat the forced full recompute).
 	if prevLeidenState == nil && !forceFull {
-		prevLeidenState, prevAdj = p.rehydrateColdStart(ctx, adj, gamma)
+		prevLeidenState, prevAdj = p.rehydrateColdStart(ctx, adj, gamma, pr)
 	}
 
 	// 3. Decide: full (no usable prior state) or incremental pass (no lock — local copies).
@@ -151,23 +157,23 @@ func (p *PropagationLoop) runClusterDetection() {
 	for _, id := range nodeIDs {
 		groups[communityOf[id]] = append(groups[communityOf[id]], id)
 	}
-	clusters := buildClusterObjects(ctx, p.gc, groups)
+	clusters := buildClusterObjects(ctx, p.gc, groups, pr)
 
 	// 5. Compute personality profile. Feed the charge→evidence adjacency so the
 	// cross-cluster attribution leg participates (not nil — that left trust at 1.000).
-	profile, err := ComputePersonalityScalars(ctx, p.gc, clusters, BuildEvidenceAdj(ctx, p.gc, clusters))
+	profile, err := ComputePersonalityScalars(ctx, p.gc, clusters, BuildEvidenceAdj(ctx, p.gc, clusters, pr), pr)
 	if err != nil {
 		slog.Warn("personality scalar computation failed", "error", err)
 		return
 	}
 
 	// 6. Compute tensions and blind spots.
-	tensions, err := ReflectTensions(ctx, p.gc, p)
+	tensions, err := ReflectTensions(ctx, p.gc, pr)
 	if err != nil {
 		slog.Warn("tension computation failed", "error", err)
 		tensions = nil
 	}
-	blindSpots := p.computeBlindSpots(ctx, nodeIDs, clusters)
+	blindSpots := p.computeBlindSpots(ctx, nodeIDs, clusters, pr)
 
 	// 7. Store all results (incl. the dirty seed + watermark) under lock.
 	p.storeDetectionResults(detectionResults{
@@ -192,11 +198,15 @@ func (p *PropagationLoop) runClusterDetection() {
 // belief-reversal view. The pooled cluster reversal REUSES the same charges map (no
 // extra per-thought fetch); clusters come from the tick's Leiden partition. No
 // per-thought fan-out, no N+1 — every read is a single bulk call.
-func (p *PropagationLoop) computeBlindSpots(ctx context.Context, nodeIDs []string, clusters []ThoughtCluster) BlindSpotReport {
-	influence := BlindSpotInfluenceVector(ctx, p.gc, nodeIDs, p)
-	sessionByThought := FetchSessionLabelsByThought(ctx, p.gc, nodeIDs)
-	charges := fetchChargesFor(ctx, p.gc, nodeIDs)
-	nodeByID := fetchNodesByIDs(ctx, p.gc, nodeIDs)
+//
+// src is the per-pass memo, threaded into ALL FOUR reads, so the node map is PINNED
+// to this pass's snapshot — safe because classifyBlindSpots reads nodeByID only for
+// SymbolName and the source/origin genre facets, never for cluster_id.
+func (p *PropagationLoop) computeBlindSpots(ctx context.Context, nodeIDs []string, clusters []ThoughtCluster, src CorpusSource) BlindSpotReport {
+	influence := BlindSpotInfluenceVector(ctx, p.gc, nodeIDs, src)
+	sessionByThought := FetchSessionLabelsByThought(ctx, p.gc, nodeIDs, src)
+	charges := fetchChargesFor(ctx, p.gc, nodeIDs, src)
+	nodeByID := memoCorpusNodes(ctx, p.gc, nodeIDs, src)
 	// Cited-code staleness precompute for facetCodeChanged: one bulk cross-graph
 	// read (1 edge read + 1 proxy hydrate + 1 code hydrate per distinct cited repo,
 	// no per-thought fan-out) → thoughtID→newest cited-code UpdatedAt.
@@ -383,8 +393,8 @@ func (p *PropagationLoop) storeDetectionResults(r detectionResults) {
 // in-memory state. Returns the rehydrated state and the baseline adjacency to use
 // for the next tick's set-diff; on an empty partition (true first run) or a read
 // failure it returns (nil, the supplied adj) so runLeidenStep takes the full pass.
-func (p *PropagationLoop) rehydrateColdStart(ctx context.Context, adj map[string][]string, gamma float64) (*graph.LeidenState, map[string][]string) {
-	partition, err := partitionFromPersisted(ctx, p.gc, p) // resident cache when warm; else drain.
+func (p *PropagationLoop) rehydrateColdStart(ctx context.Context, adj map[string][]string, gamma float64, src CorpusSource) (*graph.LeidenState, map[string][]string) {
+	partition, err := partitionFromPersisted(ctx, p.gc, src) // resident cache when warm; else drain.
 	if err != nil {
 		slog.Warn("thought: cold-start partition read failed — falling back to full pass", "error", err)
 		return nil, adj

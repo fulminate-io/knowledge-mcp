@@ -141,6 +141,17 @@ type distManager[Q, S any] struct {
 	// auto-re-arms on a resident rise.
 	coverageSkipStreak int
 	lastSkipResident   int
+	// coverageSuppressedAtNanos records WHEN this engine's coverage gate became
+	// unsatisfiable: a time.Now().UnixNano() stamped on the streak's TRANSITION into
+	// suppression and cleared everywhere the streak is (a resident rise in
+	// markCoverageSkip, a landed manifest swap in publishResident), so it is non-zero
+	// exactly while the engine sits in a suppression episode. It is stamped on the
+	// EDGE rather than on every suppressing skip because the age it feeds measures
+	// from the moment retrying stopped being able to help, and a re-stamp per skip
+	// would keep resetting that age to now. Guarded by shipMu with the streak fields
+	// it accompanies. Per-process like all of them: a restart clears it, so the age
+	// is "how long in THIS process".
+	coverageSuppressedAtNanos int64
 	// incompletePublishStreak counts CONSECUTIVE agent-409 (manifestIncompleteError)
 	// publish skips for this engine, reset to 0 on a landed swap. Unlike the
 	// coverage-skip streak it does NOT bound the retry re-arm — the 409 cause is meant

@@ -43,7 +43,7 @@ func scalaQueries() *QuerySet {
 		// captured — they don't match the test_block abstraction (no body).
 		// For setup/teardown hooks `beforeAll { ... }` (no string arg, just
 		// trailing block), the no-string variant is included.
-		TestBlocks: `[
+		TestBlocks: `([
 			(call_expression
 				function: (call_expression
 					function: (identifier) @fn
@@ -68,6 +68,6 @@ func scalaQueries() *QuerySet {
 				operator: (identifier) @fn
 				right: (block) @params
 			) @decl
-		] (#match? @fn "^(test|it|in|should|must|describe|context|feature|scenario|beforeAll|beforeEach|before|afterAll|afterEach|after)$")`,
+		] (#match? @fn "^(test|it|in|should|must|describe|context|feature|scenario|beforeAll|beforeEach|before|afterAll|afterEach|after)$"))`,
 	}
 }

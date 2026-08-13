@@ -67,7 +67,7 @@ func TestBuildClusterObjects_CanonicalLabelStableAcrossRuns(t *testing.T) {
 
 	run := func() map[string]string {
 		fake := &clusterWritebackFake{}
-		clusters := buildClusterObjects(ctx, fake, groups)
+		clusters := buildClusterObjects(ctx, fake, groups, nil)
 		require.Len(t, clusters, 2)
 		// cluster.ID equals the groups key (canonical label), never "cluster-N".
 		for _, c := range clusters {

@@ -91,6 +91,88 @@ func TestIsRetryableTransportError(t *testing.T) {
 	}
 }
 
+// TestIsAmbiguousUploadError covers the ambiguous-intermediary class the
+// collect upload path re-sends once, and — just as importantly — the shapes it
+// must NEVER re-send: an auth denial, a caller cancellation, a request
+// deadline, and the CodeUnavailable case that belongs to the transport
+// predicate instead. Keeping the two predicates disjoint is what makes their
+// two budgets separable.
+func TestIsAmbiguousUploadError(t *testing.T) {
+	tests := []struct {
+		name    string
+		err     error
+		want    bool
+		message string
+	}{
+		{"nil", nil, false, "nil is not an error"},
+		{
+			"connect CodeInternal",
+			connect.NewError(connect.CodeInternal, errors.New("400 Bad Request")),
+			true,
+			"a raw 400 from a fronting proxy lands here, as does an h2 RST_STREAM",
+		},
+		{
+			"connect CodeUnknown",
+			connect.NewError(connect.CodeUnknown, errors.New("524")),
+			true,
+			"an unmapped upstream status (520, 524, 408, 413, 499) lands here",
+		},
+		{
+			"wrapped connect CodeInternal",
+			fmt.Errorf("remote sink: CollectChunk 1/3: %w",
+				connect.NewError(connect.CodeInternal, errors.New("400 Bad Request"))),
+			true,
+			"wrapping preserves the classification",
+		},
+		{
+			"connect CodeInvalidArgument",
+			connect.NewError(connect.CodeInvalidArgument, errors.New("bad input")),
+			false,
+			"application-level errors never retry",
+		},
+		{
+			"connect CodeUnavailable",
+			connect.NewError(connect.CodeUnavailable, errors.New("service unavailable")),
+			false,
+			"CodeUnavailable is the TRANSPORT predicate's job; the two stay disjoint",
+		},
+		{
+			"connect CodePermissionDenied",
+			connect.NewError(connect.CodePermissionDenied, errors.New("permission denied")),
+			false,
+			"the observed auth shape — re-sending can only produce a slower identical denial",
+		},
+		{
+			"connect CodeDeadlineExceeded",
+			connect.NewError(connect.CodeDeadlineExceeded, errors.New("deadline")),
+			false,
+			"a deadline is a give-up signal, never a re-send signal",
+		},
+		{"context.DeadlineExceeded", context.DeadlineExceeded, false, "request deadline fired"},
+		{"context.Canceled", context.Canceled, false, "caller cancelled"},
+		{
+			"connect CodeInternal wrapping context.Canceled",
+			connect.NewError(connect.CodeInternal, context.Canceled),
+			false,
+			"cancellation is checked FIRST, so it wins over the ambiguous code",
+		},
+		{"arbitrary error", errors.New("some app error"), false, "plain error is not a connect status"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			assert.Equal(t, tc.want, IsAmbiguousUploadError(tc.err), tc.message)
+		})
+	}
+}
+
+// TestAmbiguousUploadRetriesBudget pins the budget at 1. The same CodeInternal
+// bucket holds both the transient cut and a genuine server fault, so the
+// constant caps the waste on a real server error at ONE extra upload.
+func TestAmbiguousUploadRetriesBudget(t *testing.T) {
+	assert.Equal(t, 1, AmbiguousUploadRetries,
+		"one extra upload against a genuine server-side error, not four")
+}
+
 // TestRetryBackoff asserts the schedule shape for the interceptor and
 // the resume helper.
 func TestRetryBackoff(t *testing.T) {

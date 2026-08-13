@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/workingset"
 )
 
 // drainWake reports whether a token was queued on ch, consuming it if so.
@@ -55,8 +56,13 @@ func TestWakeCatalogCoalesces(t *testing.T) {
 // until it drains — the per-tick scan the two-phase poll exists to remove.
 func TestRefreshOnceNewGraphWakesGenPoll(t *testing.T) {
 	fake := newFakeWireClient()
-	fake.seedGraphNames(kgtypes.GraphCode, "repoA")
 	p := New(Config{}, fake, nil, nil)
+	// repoA is WANTED because an interaction admitted it — the working set is the
+	// pass's only source of wanted graphs, so seeding the backend's catalog would
+	// register nothing.
+	ws := workingset.New()
+	require.True(t, ws.Admit(kgtypes.GraphCode, "repoA", "collect"))
+	p.AttachWorkingSet(ws)
 	ctx := context.Background()
 
 	require.False(t, drainWake(p.genPollWake), "nothing queued before the first pass")
@@ -66,9 +72,9 @@ func TestRefreshOnceNewGraphWakesGenPoll(t *testing.T) {
 	require.Contains(t, registeredKeys(p), graphKey{GraphType: kgtypes.GraphCode, GraphName: "repoA"})
 	assert.True(t, drainWake(p.genPollWake), "registering a NEW graph must wake the gen-poll loop")
 
-	// Second pass over the same catalog registers nothing — no wake.
+	// Second pass over the same working set registers nothing — no wake.
 	p.refreshOnce(ctx)
-	assert.False(t, drainWake(p.genPollWake), "an unchanged catalog must not wake the gen-poll loop")
+	assert.False(t, drainWake(p.genPollWake), "an unchanged working set must not wake the gen-poll loop")
 
 	require.NoError(t, p.Stop(ctx))
 }

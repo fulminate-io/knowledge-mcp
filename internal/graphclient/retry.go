@@ -91,6 +91,71 @@ func IsRetryableTransportError(err error) bool {
 	return false
 }
 
+// AmbiguousUploadRetries is how many EXTRA attempts an ambiguous upload error
+// buys, on top of the first one. It is deliberately 1 rather than the full
+// RetryBackoff window: the same CodeInternal bucket that holds a transient
+// intermediary cut also holds a genuine server-side application error (the
+// production log carries an "internal: ingest: CollectChunk: ... ERROR:
+// relation ..." shape). A budget of 1 caps the waste on that real fault at ONE
+// extra multi-megabyte upload rather than four, and still surfaces the true
+// error to the caller.
+const AmbiguousUploadRetries = 1
+
+// IsAmbiguousUploadError reports whether err is an intermediary error the
+// client cannot attribute — one where "the server rejected this" and "something
+// between us cut the request" are indistinguishable from the client side.
+// True only for a *connect.Error with Code == CodeInternal or CodeUnknown.
+//
+// Those two codes read reckless to retry until you see where connect-go
+// deposits unattributable statuses. Three distinct sources feed them:
+//
+//   - a raw 400 from a fronting proxy — protocol.go's httpToCode maps 400 to
+//     CodeInternal, which is what a body-read deadline cut looks like to us;
+//   - an unmapped upstream status such as 520, 524, 408, 413 or 499 — the
+//     default arm of that same mapping yields CodeUnknown;
+//   - an h2 RST_STREAM. connect's wrapIfRSTError turns EIGHT stream error codes
+//     into CodeInternal — NO_ERROR, PROTOCOL_ERROR, INTERNAL_ERROR,
+//     FLOW_CONTROL_ERROR, SETTINGS_TIMEOUT, FRAME_SIZE_ERROR,
+//     COMPRESSION_ERROR and CONNECT_ERROR — while REFUSED_STREAM becomes
+//     Unavailable and CANCEL becomes DeadlineExceeded only when the caller's own
+//     deadline has actually elapsed. The breadth is the point: it is what makes
+//     CodeInternal the catch-all bucket for stream terminations the client
+//     cannot attribute.
+//
+// Returns false for:
+//
+//   - context.Canceled and context.DeadlineExceeded, checked FIRST (mirroring
+//     IsRetryableTransportError's own ordering). A caller deadline is a give-up
+//     signal, never a re-send signal, and the RST_STREAM CANCEL branch above can
+//     produce a DeadlineExceeded that must not be re-sent.
+//   - CodePermissionDenied — a shape the production log actually contains
+//     ("remote sink: CollectChunk N/M: permission_denied"). Re-sending it could
+//     only turn into a slower identical denial.
+//   - every other code, including CodeUnavailable, which is
+//     IsRetryableTransportError's job. Keeping the two predicates disjoint is
+//     what lets their two retry budgets stay separable.
+//
+// BOUNDARY, and do not widen it: this predicate is for the collect UPLOAD path
+// only — CollectChunk and Finalize — because those two calls are
+// content-idempotent under their shared epoch. It is NOT a general retry rule.
+// On any other RPC an unattributable server error is information the caller
+// needs immediately, and a blanket retry on this class would mask real client
+// bugs behind a slower failure.
+func IsAmbiguousUploadError(err error) bool {
+	if err == nil {
+		return false
+	}
+	// Checked before the code inspection: a cancelled or deadlined caller must
+	// never be re-sent, whichever code it arrives wearing.
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	if ce, ok := errors.AsType[*connect.Error](err); ok {
+		return ce.Code() == connect.CodeInternal || ce.Code() == connect.CodeUnknown
+	}
+	return false
+}
+
 // isRetryableOpErr inspects the inner error of a *net.OpError for
 // the connection-level sentinels we treat as retryable.
 func isRetryableOpErr(inner error) bool {

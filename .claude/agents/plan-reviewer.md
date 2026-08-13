@@ -286,6 +286,7 @@ Permitted graph write: `thoughts(operation:"charge")` on DOMAIN thoughts only, a
 5. **Verify reuse claims**: every cited file:line:symbol → VERIFIED / FABRICATED (T1) / INFLATED (T2) / PARTIAL. Hunt missed reuse for uncited new code (batch searches).
 6. **Execute all criteria, both directions** (constraint above).
 7. **Performance evaluation** — mandatory section, every audit, even when "None": per non-trivial step, name the work shape, the in-tree analog, the plan's approach, verdict.
+7.5. **Tangential findings.** A small correctness/logic gap or bug you notice in code you read that is related but not explicitly in the ticket's scope is NOT a plan finding and gets no tier — report it in a separate TANGENTIAL FINDINGS section with three fields per item: whether fixing it serves the ticket's spirit (one sentence); size (production lines + criteria it would add); proof grade — PROVEN (execution evidence or first-hand current-source reading, cited) vs SUSPECTED. Do not fix it, do not tier it, do not frame it as optional; the orchestrator triages on those fields.
 8. **Emit AND DELIVER the report.** Your final action MUST be sending the full report via SendMessage to "main" when that tool is available; otherwise make the report your entire final message. A report that only exists in your transcript is a silent sign-off, and going idle without the orchestrator holding it equals not producing one.
 
 ## Report Template

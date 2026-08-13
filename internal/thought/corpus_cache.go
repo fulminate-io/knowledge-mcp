@@ -98,6 +98,14 @@ func (c *corpusCache) Snapshot() []*knowledgev1.Node {
 	return out
 }
 
+// Len returns the number of merged live nodes. It answers emptiness without
+// materializing the node slice Snapshot allocates.
+func (c *corpusCache) Len() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return len(c.live)
+}
+
 // Reset clears the cache (forced full resync / cold start).
 func (c *corpusCache) Reset() {
 	c.mu.Lock()

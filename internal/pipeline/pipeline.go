@@ -9,6 +9,7 @@ import (
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/llmproviders"
+	"github.com/fulminate-io/knowledge-mcp/internal/workingset"
 )
 
 // Pipeline owns the global summary/embed channels, dispatchers, worker
@@ -177,6 +178,14 @@ type Pipeline struct {
 	// manager is wired (test fakes) → the heal closure is nil → the armed
 	// embed-drain heal-check no-ops.
 	healFactory func(gt kgtypes.GraphType, name string) func(ctx context.Context) error
+
+	// workingSet is the set of graphs THIS client process has directly interacted
+	// with, and it is the sole source of the catalog pass's wanted set: the
+	// pipeline drains a graph only once a search, a collect or a user write has
+	// admitted it. nil means EMPTY, never unrestricted — see AttachWorkingSet.
+	// Owned by the client (bootstrap) and shared, not copied, so an admission
+	// recorded on any interaction path is visible to the next catalog pass.
+	workingSet *workingset.Set
 
 	// collectGateFactory builds the per-graph collect-gate predicate RegisterGraph
 	// injects into each collector as throttle #4 (runLoop). Built by BOOTSTRAP for

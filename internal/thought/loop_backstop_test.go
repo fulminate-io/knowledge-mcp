@@ -230,6 +230,7 @@ func newBackstopLoop(fake Caller, clk func() time.Time, lastFull time.Time) *Pro
 		clock:            clk,
 		lastFullPass:     lastFull,
 		stopCh:           make(chan struct{}),
+		admitted:         admittedGate(),
 	}
 }
 
@@ -397,14 +398,15 @@ func TestBackstopCadenceSurvivesRestart(t *testing.T) {
 	require.True(t, ok, "loop A's forced pass must persist last_full_pass")
 	require.True(t, t0.Equal(persisted), "loop A persisted lastFullPass=T0: got %v", persisted)
 
-	// Loop B: simulated restart over the SAME fake. Boot-restore reads T0. Drive its
-	// boot path the way Start does (restore + nothing forced yet), then a T0+1h tick.
+	// Loop B: simulated restart over the SAME fake, booting with NOTHING in memory.
+	// The restore has moved off the boot path and onto the first admitted tick, so
+	// the tick itself must perform it — no manual pre-restore here. If that read
+	// were dropped rather than moved, loop B would tick against a zero watermark
+	// and force a full pass, which the assertions below catch.
 	t1 := t0.Add(time.Hour)
 	loopB := newBackstopLoop(fake, func() time.Time { return t1 }, time.Time{})
-	if restored, rok := readLastFullPass(context.Background(), loopB.gc); rok {
-		loopB.lastFullPass = restored
-	}
-	require.True(t, t0.Equal(loopB.lastFullPass), "loop B (restart) restores lastFullPass=T0")
+	require.True(t, loopB.lastFullPass.IsZero(),
+		"precondition: loop B boots with no watermark in memory")
 
 	loopB.runBackgroundPropagation()
 

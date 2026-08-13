@@ -19,30 +19,23 @@
 // in the safe direction: for as long as the session is still considered live,
 // the worker's lease keeps being renewed rather than dropped.
 //
-// RESTART — coverage and residual, both stated, because only one of them is
-// closed. COVERED: a session that reconnects within the boot re-detection window
-// (armed at the reaper's own machine-down threshold) is re-marked from the hive
-// membership it still holds, so both loops resume with NO hive call from the
-// agent. That covered case is what protects the hive skill's shipped promise to
-// the worker — the daemon "keeps your claim alive while you work, even across a
-// long sub-task that makes no hive calls" (assets/skills/hive/SKILL.md) — which
-// a missed heartbeat would break: a peer reaper reads the member as machine-down
-// and evicts it, and eviction is terminal, blocking the member's in-flight work
-// instead of returning it to the queue, while that worker is alive and still
-// working on it. RESIDUAL, named rather than papered over: a session whose FIRST
-// reconnect lands after the window is not re-detected, and recovers on its next
-// hive call instead. The window is set to the machine-down threshold precisely
-// because that is the last moment re-detection could still have prevented an
-// eviction, so the residual is the case this mechanism could not have saved.
+// RESTART — the loops start from THIS PROCESS'S hive activity and from nothing
+// else. A daemon that restarts holding no in-memory hive state re-detects
+// nothing from the membership a previous process left behind: it renews no
+// leases until an explicit new hive interaction arrives, and a peer reaper
+// evicting a member whose daemon is gone is the system working correctly, since
+// a lease nobody renews is supposed to lapse. Recovery is an intervention — the
+// harness's next hive call re-joins and re-establishes membership. There is no
+// automatic path back, by design: no auto-resume of claims or leases from
+// persisted state, no grace period, no boot-time reconciliation of pre-restart
+// membership.
 
 package bootstrap
 
 import (
 	"context"
 	"log/slog"
-	"maps"
 	"sync"
-	"time"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 
@@ -52,10 +45,10 @@ import (
 )
 
 // startHiveLoops INSTALLS the hive daemon Monitor and the peer machine-down
-// reaper rather than starting them: it builds the lifecycle controller, arms the
-// boot re-detection window, and hands the controller to the claim Registry as
-// its activity and session-open hooks. Neither loop runs until a session on this
-// daemon is hive-active; both stop when the last one ends. The two Config bools
+// reaper rather than starting them: it builds the lifecycle controller and hands
+// it to the claim Registry as its activity hook. Neither loop runs until a
+// session on this daemon is hive-active; both stop when the last one ends. The
+// two Config bools
 // (NoHiveMonitor / NoHiveReaper, both set under --headless so an embedded daemon
 // coordinates no hive) stay hard off-switches on top. Nothing here builds a
 // Tier-2 supervisor either, so a daemon that never joins a hive never constructs
@@ -84,37 +77,20 @@ func (c *client) newHiveLoops(cfg Config, hs *graphclient.HTTPServer) *hiveLoops
 	// would be a cycle.
 	hiveCaller := hiveCallerStampingOperation{inner: c.router}
 
-	// The reaper config is fetched exactly ONCE: it configures the reaper AND
-	// supplies the boot re-detection window length, and a second call would be a
-	// second source of truth for the same number.
-	reaperCfg := hivemonitor.DefaultReaperConfig()
-
 	l := &hiveLoops{
-		noMonitor:       cfg.NoHiveMonitor,
-		noReaper:        cfg.NoHiveReaper,
-		hive:            hiveCaller,
-		snapshots:       hs.SessionSnapshots,
-		registry:        c.claimRegistry,
-		ban:             c.banSet,
-		reaperCfg:       reaperCfg,
-		redetectChecked: map[string]bool{},
+		noMonitor: cfg.NoHiveMonitor,
+		noReaper:  cfg.NoHiveReaper,
+		hive:      hiveCaller,
+		snapshots: hs.SessionSnapshots,
+		registry:  c.claimRegistry,
+		ban:       c.banSet,
+		reaperCfg: hivemonitor.DefaultReaperConfig(),
 	}
 
-	// Arm the boot re-detection window at a DERIVED length: the reaper's own
-	// machine-down threshold. Re-detection is capped at one browse per resolved
-	// session regardless of window length, so the length does not trade cost
-	// against coverage — it selects which sessions are still eligible. The right
-	// interval is therefore the one within which re-detection can still prevent
-	// an eviction, which is exactly the staleness a peer reaper measures against:
-	// shorter forfeits members that were still saveable, longer buys nothing
-	// because past the threshold the member has already been evicted. This runs
-	// once per daemon start, immediately before the HTTP server serves.
-	l.redetectUntil = time.Now().Add(reaperCfg.MachineDownThreshold)
-
-	// Both hooks are nil-safe on the Registry, so a *client built without one is
-	// unaffected.
+	// The activity hook is the ONLY thing that can start these loops, and the
+	// count behind it is raised only by this process's own hive calls. The hook
+	// is nil-safe on the Registry, so a *client built without one is unaffected.
 	c.claimRegistry.SetHiveActivityHook(l.reconcile)
-	c.claimRegistry.SetSessionOpenHook(l.onSessionOpened)
 	return l
 }
 
@@ -131,7 +107,7 @@ func (c *client) newHiveLoops(cfg Config, hs *graphclient.HTTPServer) *hiveLoops
 type hiveLoops struct {
 	noMonitor bool                                 // cfg.NoHiveMonitor, captured at wiring time
 	noReaper  bool                                 // cfg.NoHiveReaper
-	hive      hivemonitor.HiveCaller               // the stamping caller: both loops, the supervisor handler and the re-detection browse
+	hive      hivemonitor.HiveCaller               // the stamping caller: both loops and the supervisor handler
 	snapshots func() []hivemonitor.SessionSnapshot // HTTPServer.SessionSnapshots
 	registry  *hivemonitor.Registry                // the *client's claim Registry — the SAME instance
 	ban       *hivemonitor.BanSet
@@ -146,12 +122,6 @@ type hiveLoops struct {
 	// activation.
 	sup      llmproviders.Supervisor
 	supBuilt bool
-	// redetectUntil is the boot re-detection window deadline; a zero value means
-	// the window is disarmed and session-open events do nothing at all.
-	redetectUntil time.Time
-	// redetectChecked records the MCP session ids re-detection has already
-	// resolved, so each is browsed at most once per daemon start.
-	redetectChecked map[string]bool
 }
 
 // reconcile is the Registry activity hook: it starts the loops while any session
@@ -322,104 +292,6 @@ func (l *hiveLoops) running() (monitor, reaper bool) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	return l.monitor != nil, l.reaper != nil
-}
-
-// onSessionOpened is the Registry session-open hook: the boot re-detection pass
-// that restores hive membership a daemon restart would otherwise drop on the
-// floor. A worker whose harness reconnects after a restart still holds a
-// non-evicted hive_member in the cloud, but this daemon has forgotten it, so
-// nothing would renew its lease until its next hive call.
-//
-// Outside the boot window this returns immediately and issues no RPC, so
-// re-detection contributes exactly zero traffic in the steady state.
-func (l *hiveLoops) onSessionOpened(sessionID string) {
-	l.mu.Lock()
-	if l.redetectUntil.IsZero() || time.Now().After(l.redetectUntil) {
-		l.mu.Unlock()
-		return
-	}
-	// Collect under the lock, act outside it — see redetectSession's deadlock note.
-	var snaps []hivemonitor.SessionSnapshot
-	if l.snapshots != nil {
-		snaps = l.snapshots()
-	}
-	checked := make(map[string]bool, len(l.redetectChecked))
-	maps.Copy(checked, l.redetectChecked)
-	l.mu.Unlock()
-
-	slog.Debug("hive loops: boot re-detection pass", "session", sessionID, "sessions", len(snaps))
-	for _, snap := range snaps {
-		if checked[snap.ID] {
-			continue
-		}
-		l.redetectSession(context.Background(), snap)
-	}
-}
-
-// redetectSession re-detects one session's hive membership: resolve its
-// transcript, browse its hive_member nodes once, and mark the session
-// hive-active when it still holds a member the cloud has not evicted.
-//
-// DEADLOCK HAZARD: MarkHiveActive fires the activity hook, which is reconcile,
-// which takes l.mu — so neither the browse nor the mark may run while l.mu is
-// held. That is why the caller collects under the lock and calls this outside it;
-// do not "simplify" the pass back under the lock.
-//
-// A session whose transcript does NOT resolve is left UNCHECKED: peer-cwd
-// resolution is best-effort and degrades, so a transient miss must not
-// permanently forfeit that session's recovery path — it is retried on a later
-// session-open event still inside the window. The cost bound is therefore one
-// browse per RESOLVED session, once.
-func (l *hiveLoops) redetectSession(ctx context.Context, snap hivemonitor.SessionSnapshot) {
-	handle, err := hivemonitor.ResolveTranscript(ctx, snap)
-	if err != nil {
-		slog.Warn("hive loops: boot re-detection transcript resolve error", "session", snap.ID, "error", err)
-		return
-	}
-	if !handle.Resolved() {
-		return
-	}
-	l.mu.Lock()
-	l.redetectChecked[snap.ID] = true
-	l.mu.Unlock()
-
-	if !l.hasLiveMember(ctx, handle.HarnessSessionID) {
-		return
-	}
-	slog.Info("hive loops: re-detected an existing hive member after restart", "session", snap.ID)
-	l.registry.MarkHiveActive(snap.ID)
-}
-
-// hasLiveMember reports whether the harness session still holds a hive_member
-// the cloud has not evicted. One predicate-narrowed browse, mirroring the
-// Monitor's memberHivesFor query shape rather than inventing a second
-// member-lookup shape. A read failure reports false — re-detection is a recovery
-// path, and the session recovers on its next hive call.
-func (l *hiveLoops) hasLiveMember(ctx context.Context, harnessSessionID string) bool {
-	if l.hive == nil || harnessSessionID == "" {
-		return false
-	}
-	resp, err := l.hive.Execute(ctx, &knowledgev1.ExecuteRequest{
-		Target: &knowledgev1.GraphSelector{Graph: "knowledge"},
-		Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
-			Selection: &knowledgev1.Selection{
-				NodeTypes: []string{"hive_member"},
-				MetadataPredicates: []*knowledgev1.MetadataPredicate{
-					{Key: "session", Op: knowledgev1.MetadataPredicate_OP_EQ, Value: harnessSessionID},
-				},
-			},
-		}},
-	})
-	if err != nil {
-		slog.Warn("hive loops: boot re-detection member read failed", "member", harnessSessionID, "error", err)
-		return false
-	}
-	for _, n := range resp.GetNodes() {
-		if n.GetStatus() != "evicted" && n.GetMetadata()["status"] != "evicted" {
-			return true
-		}
-	}
-	return false
 }
 
 // hiveCallerStampingOperation wraps the injected HiveCaller so BOTH hive

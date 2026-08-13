@@ -4,10 +4,7 @@ package bootstrap
 
 import (
 	"context"
-	"os"
-	"path/filepath"
 	"runtime"
-	"sync"
 	"testing"
 	"time"
 
@@ -20,40 +17,21 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
 )
 
-// lifecycleHiveCaller is the HiveCaller fake injected for both the stamped and
-// the raw caller slot. It counts each half of the seam SEPARATELY: the boot
-// re-detection browse goes through Execute, while an agent hive op (register /
-// send / claim) would go through Hive — the re-detection cases assert the latter
-// stays at zero, which is what "re-detected with no new hive call" means.
-type lifecycleHiveCaller struct {
-	mu       sync.Mutex
-	executes int
-	hives    int
-	nodes    []*knowledgev1.Node
-}
+// lifecycleHiveCaller is the inert HiveCaller fake injected for both the stamped
+// and the raw caller slot. The lifecycle assertions are about which loops are
+// running, not about traffic, so it records nothing and answers empty.
+type lifecycleHiveCaller struct{}
 
 func (c *lifecycleHiveCaller) Hive(
 	_ context.Context, _ *knowledgev1.HiveRequest,
 ) (*knowledgev1.HiveResponse, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.hives++
 	return &knowledgev1.HiveResponse{}, nil
 }
 
 func (c *lifecycleHiveCaller) Execute(
 	_ context.Context, _ *knowledgev1.ExecuteRequest,
 ) (*knowledgev1.ExecuteResponse, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.executes++
-	return &knowledgev1.ExecuteResponse{Nodes: c.nodes}, nil
-}
-
-func (c *lifecycleHiveCaller) counts() (executes, hives int) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	return c.executes, c.hives
+	return &knowledgev1.ExecuteResponse{}, nil
 }
 
 // newLifecycleLoops builds a hiveLoops with every dependency faked, matching
@@ -68,12 +46,11 @@ func newLifecycleLoops(
 		snaps = func() []hivemonitor.SessionSnapshot { return nil }
 	}
 	return &hiveLoops{
-		hive:            caller,
-		snapshots:       snaps,
-		registry:        reg,
-		ban:             hivemonitor.NewBanSet(),
-		reaperCfg:       hivemonitor.DefaultReaperConfig(),
-		redetectChecked: map[string]bool{},
+		hive:      caller,
+		snapshots: snaps,
+		registry:  reg,
+		ban:       hivemonitor.NewBanSet(),
+		reaperCfg: hivemonitor.DefaultReaperConfig(),
 	}
 }
 
@@ -100,29 +77,6 @@ func settleGoroutines(baseline int) int {
 		time.Sleep(10 * time.Millisecond)
 	}
 	return n
-}
-
-// writeCodexRollout writes a minimal codex rollout whose session_meta declares
-// cwd, so hivemonitor.ResolveTranscript's cwd-scan fallback binds a snapshot
-// carrying that Cwd to harnessID. A snapshot PID of 0 short-circuits the
-// deterministic lsof probe, so the fixture needs no live process, and HOME
-// (which os.UserHomeDir reads) points the resolver at the temp tree.
-func writeCodexRollout(t *testing.T, home, cwd, harnessID string) {
-	t.Helper()
-	dir := filepath.Join(home, ".codex", "sessions", "2026", "01", "01")
-	require.NoError(t, os.MkdirAll(dir, 0o750))
-	body := `{"type":"session_meta","payload":{"id":"` + harnessID + `","cwd":"` + cwd + `"}}` + "\n"
-	require.NoError(t, os.WriteFile(filepath.Join(dir, "rollout-"+harnessID+".jsonl"), []byte(body), 0o600))
-}
-
-// memberNodes is a hive_member browse result for harnessID with the given status.
-func memberNodes(harnessID, status string) []*knowledgev1.Node {
-	return []*knowledgev1.Node{{
-		Id:       "member-" + harnessID,
-		Type:     "hive_member",
-		Status:   status,
-		Metadata: map[string]string{"session": harnessID, "hive": "test-hive"},
-	}}
 }
 
 // TestHiveLoops_ActivationStartsAndIdleStops is the core lifecycle assertion:
@@ -307,117 +261,5 @@ func TestHiveLoops_BootWiringStartsNoLoops(t *testing.T) {
 		assert.False(t, reaper)
 		assert.LessOrEqual(t, settleGoroutines(baseline), baseline+1,
 			"the loops must unwind when the last hive session ends")
-	})
-}
-
-// TestHiveLoops_BootRedetectMarksExistingMember covers the restart case: a
-// reconnecting session whose harness still holds a non-evicted hive_member is
-// re-marked hive-active from the session-open hook alone, with NO new hive call,
-// so a daemon restart does not silently drop a live worker's heartbeat. The
-// bounds are asserted in the same test — a re-check, an unresolvable session, an
-// evicted member, and a disarmed window.
-func TestHiveLoops_BootRedetectMarksExistingMember(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-
-	armed := func(caller hivemonitor.HiveCaller, snaps func() []hivemonitor.SessionSnapshot,
-	) (*hivemonitor.Registry, *hiveLoops) {
-		reg := hivemonitor.NewRegistry()
-		l := newLifecycleLoops(reg, caller, snaps)
-		t.Cleanup(l.stopAll)
-		l.redetectUntil = time.Now().Add(time.Minute)
-		reg.SetHiveActivityHook(l.reconcile)
-		reg.SetSessionOpenHook(l.onSessionOpened)
-		return reg, l
-	}
-
-	t.Run("a reconnecting member restarts the loops with no hive call", func(t *testing.T) {
-		cwd := t.TempDir()
-		writeCodexRollout(t, home, cwd, "harness-live")
-		caller := &lifecycleHiveCaller{nodes: memberNodes("harness-live", "active")}
-		snaps := []hivemonitor.SessionSnapshot{{ID: "mcp-live", Cwd: cwd, PID: 0, Comm: "codex"}}
-		reg, l := armed(caller, func() []hivemonitor.SessionSnapshot { return snaps })
-
-		reg.NoteSessionOpened("mcp-live")
-
-		monitor, reaper := l.running()
-		assert.True(t, monitor, "re-detection must start the monitor")
-		assert.True(t, reaper, "re-detection must start the reaper")
-		assert.Equal(t, 1, reg.HiveActiveCount())
-		executes, hives := caller.counts()
-		assert.Equal(t, 1, executes, "re-detection costs exactly ONE hive_member browse")
-		assert.Zero(t, hives, "re-detection must issue NO hive call")
-
-		// A second session-open event for an already-checked session browses again
-		// for nothing.
-		reg.NoteSessionOpened("mcp-live")
-		executes, hives = caller.counts()
-		assert.Equal(t, 1, executes, "an already-checked session must not be browsed twice")
-		assert.Zero(t, hives)
-	})
-
-	t.Run("an unresolvable session is retried, not forfeited", func(t *testing.T) {
-		cwd := t.TempDir() // no rollout yet — the transcript does not resolve
-		caller := &lifecycleHiveCaller{nodes: memberNodes("harness-late", "active")}
-		snaps := []hivemonitor.SessionSnapshot{{ID: "mcp-late", Cwd: cwd, PID: 0, Comm: "codex"}}
-		reg, l := armed(caller, func() []hivemonitor.SessionSnapshot { return snaps })
-
-		reg.NoteSessionOpened("mcp-late")
-		executes, _ := caller.counts()
-		require.Zero(t, executes, "an unresolved transcript must issue no browse")
-		monitor, _ := l.running()
-		require.False(t, monitor)
-
-		// The same session becomes resolvable and a later event inside the window
-		// still recovers it — proof it was never marked checked.
-		writeCodexRollout(t, home, cwd, "harness-late")
-		reg.NoteSessionOpened("mcp-late")
-
-		executes, hives := caller.counts()
-		assert.Equal(t, 1, executes, "a previously unresolvable session must be retried")
-		assert.Zero(t, hives)
-		assert.Equal(t, 1, reg.HiveActiveCount())
-		monitor, reaper := l.running()
-		assert.True(t, monitor)
-		assert.True(t, reaper)
-	})
-
-	t.Run("an evicted member does not activate", func(t *testing.T) {
-		cwd := t.TempDir()
-		writeCodexRollout(t, home, cwd, "harness-evicted")
-		caller := &lifecycleHiveCaller{nodes: memberNodes("harness-evicted", "evicted")}
-		snaps := []hivemonitor.SessionSnapshot{{ID: "mcp-evicted", Cwd: cwd, PID: 0, Comm: "codex"}}
-		reg, l := armed(caller, func() []hivemonitor.SessionSnapshot { return snaps })
-
-		reg.NoteSessionOpened("mcp-evicted")
-
-		executes, _ := caller.counts()
-		require.Equal(t, 1, executes, "the member browse must have happened (else this zero proves nothing)")
-		assert.Zero(t, reg.HiveActiveCount(), "an evicted member must not be re-marked hive-active")
-		monitor, reaper := l.running()
-		assert.False(t, monitor)
-		assert.False(t, reaper)
-	})
-
-	t.Run("a disarmed window issues nothing", func(t *testing.T) {
-		cwd := t.TempDir()
-		writeCodexRollout(t, home, cwd, "harness-disarmed")
-		caller := &lifecycleHiveCaller{nodes: memberNodes("harness-disarmed", "active")}
-		snaps := []hivemonitor.SessionSnapshot{{ID: "mcp-disarmed", Cwd: cwd, PID: 0, Comm: "codex"}}
-		reg, l := armed(caller, func() []hivemonitor.SessionSnapshot { return snaps })
-		l.redetectUntil = time.Time{} // disarmed
-
-		reg.NoteSessionOpened("mcp-disarmed")
-
-		executes, hives := caller.counts()
-		assert.Zero(t, executes, "a disarmed window must issue no browse")
-		assert.Zero(t, hives)
-		assert.Zero(t, reg.HiveActiveCount())
-
-		// An expired window is disarmed too.
-		l.redetectUntil = time.Now().Add(-time.Minute)
-		reg.NoteSessionOpened("mcp-disarmed")
-		executes, _ = caller.counts()
-		assert.Zero(t, executes, "an expired window must issue no browse")
 	})
 }

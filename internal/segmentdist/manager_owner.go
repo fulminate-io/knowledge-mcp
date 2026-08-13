@@ -75,7 +75,14 @@ type Manager struct {
 	// tests inject a fake segment source without threading it through the production
 	// login/transport gate. nil in every production Manager.
 	testSource segmentSource
-	nudges     nudgeState // publish-suppression record + coalescing wake — manager_nudge.go.
+
+	// admitGraph records that a user searched a graph, admitting it into the
+	// client's working set. nil when no admitter was supplied, in which case a
+	// search records nothing — the same default-deny direction the working set
+	// itself takes. Set via WithGraphAdmitter.
+	admitGraph func(gt kgtypes.GraphType, name string)
+
+	nudges nudgeState // publish-suppression record + coalescing wake — manager_nudge.go.
 
 	// dirty holds the per-graph re-emit backlog the embed drain accumulates and the
 	// reconcile tick drains: the documents awaiting a bucket re-emit and the ids of
@@ -241,6 +248,14 @@ type ManagerOption func(*Manager)
 // sentinel (a logged-in client with no segment transport is misconfigured).
 func WithSegmentTransport(builder func() (SegmentControlTransport, error)) ManagerOption {
 	return func(m *Manager) { m.segTransport = builder }
+}
+
+// WithGraphAdmitter supplies the recorder that admits a searched graph into the
+// client's working set. A search IS the direct interaction the working-set rule
+// names, so the Manager reports it at the same instant it nudges the reconcile
+// loop. Without this option a Manager records nothing.
+func WithGraphAdmitter(admit func(gt kgtypes.GraphType, name string)) ManagerOption {
+	return func(m *Manager) { m.admitGraph = admit }
 }
 
 // withSegmentSource is the TEST-ONLY option that pins the segmentSource every

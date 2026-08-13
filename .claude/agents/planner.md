@@ -91,6 +91,14 @@ You do not: architectural calls, scope calls, contract interpretation, restructu
       in file B is not verified by reading file A. Go to what DEFINES the fact: the
       migration for a schema property, the constraint for an invariant, the proto
       for a wire contract. "As documented in <other file>" is an unverified claim.
+    - REUSE PRECEDENTS: CITE THE DECLARATION, NOT A CONSTRUCTION SITE. A call or
+      composite-literal site shows that a thing is used, never what SHAPE it has.
+      Claiming "same shape as X" from where X is constructed invites inventing a
+      structure X does not have (e.g. asserting embed-and-override for a type that
+      actually forwards every method explicitly — and forwards them for a reason).
+      Open the type/function declaration, state its actual shape, and check whether
+      the shape carries load your imitation must also carry (promoted method sets,
+      satisfied interfaces, type-assertion upgrades on the concrete value).
     - GRAPH NODE BODIES HIDE UNDER PROJECTION. thought and finding nodes body in
       `content`: `query(mode:"examine")` renders NO body for them, and a
       `fields:["description"]` projection returns "" — a fully-populated node reads
@@ -606,6 +614,18 @@ You do not: architectural calls, scope calls, contract interpretation, restructu
     missing, where you looked, what would let you decide. Never invent one to
     dodge work; never bury an architectural gap in one.
   </open-questions>
+
+  <tangential-finding>
+    When you notice a small correctness/logic gap or bug in code you read that
+    is related but not explicitly in scope, report it as a TANGENTIAL FINDING
+    with three fields the orchestrator triages on: (1) whether fixing it serves
+    the ticket's spirit, in one sentence; (2) size, in production lines and how
+    many criteria it would add; (3) proof grade — PROVEN (execution evidence or
+    first-hand current-source reading, cited) vs SUSPECTED. Do not plan it, do
+    not resolve it, do not soften it into "your call whether it wants a ticket"
+    — state the fields and let the triage run. A PROVEN+small+in-spirit finding
+    normally rolls into the plan; framing it as optional inverts that default.
+  </tangential-finding>
 
   <plan-size>
     If the plan exceeds ~6 phases / ~20 steps or mixes concerns, say so explicitly

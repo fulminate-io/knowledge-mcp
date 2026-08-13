@@ -4,6 +4,7 @@ package bootstrap
 
 import (
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -99,6 +100,57 @@ func TestSegmentHealBreaker_ClearHealLatchReArms(t *testing.T) {
 	}
 	require.True(t, b.Allow(gt, name), "still armed after fewer than threshold post-clear no-progress passes")
 	require.True(t, b.RecordNoProgress(gt, name), "re-latches after a full fresh run")
+}
+
+// TestHealBreaker_StampsLatchTime verifies the latch stamp's whole lifetime: 0 while
+// the breaker is armed, non-zero EXACTLY on the call that latches (and inside the
+// window that call ran in), unchanged by further no-progress passes within the same
+// latched episode, and 0 again after ClearHealLatch re-arms.
+//
+// The stamp is what the manage(status) stuck band derives a graph's stall age from, so
+// a stamp that stayed 0 (never wired) and a graph that is genuinely not stalled are the
+// same reading — which is why the non-zero transition assertion sits in the same test
+// as the zeroes it controls.
+func TestHealBreaker_StampsLatchTime(t *testing.T) {
+	var b segmentHealBreaker
+	gt, name := kgtypes.GraphCode, "repo"
+
+	require.Zero(t, b.LatchedSince(gt, name), "an unseen graph is not latched")
+
+	// Below the threshold: a streak is building but nothing has latched, so no stamp.
+	for i := range healBreakerTripThreshold - 1 {
+		require.False(t, b.RecordNoProgress(gt, name), "no-progress pass %d is below the trip threshold", i+1)
+		require.Zero(t, b.LatchedSince(gt, name), "an armed breaker reports no stall stamp")
+	}
+
+	// The latching call stamps, and it stamps NOW — bracketed by the wall clock either
+	// side of the call, so a constant or a zero fails.
+	before := time.Now().UnixNano()
+	require.True(t, b.RecordNoProgress(gt, name), "the threshold-th no-progress pass latches")
+	after := time.Now().UnixNano()
+
+	stamp := b.LatchedSince(gt, name)
+	require.NotZero(t, stamp, "latching stamps the instant auto-heal was suspended")
+	require.GreaterOrEqual(t, stamp, before, "the stamp is not older than the latching call")
+	require.LessOrEqual(t, stamp, after, "the stamp is not newer than the latching call")
+
+	// Still the same episode: a no-progress pass on a latched breaker is a no-op, so
+	// the age keeps counting from when the graph actually stalled.
+	require.False(t, b.RecordNoProgress(gt, name), "an already-latched breaker does not re-trip")
+	require.Equal(t, stamp, b.LatchedSince(gt, name), "a further no-progress pass does not re-stamp")
+
+	// Re-arm clears it: the graph is no longer stalled, so it has no stall age.
+	b.ClearHealLatch(gt, name)
+	require.True(t, b.Allow(gt, name), "ClearHealLatch re-arms the breaker")
+	require.Zero(t, b.LatchedSince(gt, name), "re-arming clears the stall stamp")
+
+	// And a fresh latch stamps again rather than resurrecting the old value.
+	for range healBreakerTripThreshold {
+		b.RecordNoProgress(gt, name)
+	}
+	relatched := b.LatchedSince(gt, name)
+	require.NotZero(t, relatched, "a fresh latch stamps again")
+	require.GreaterOrEqual(t, relatched, stamp, "the fresh stamp is taken at the fresh latch, not restored")
 }
 
 // TestSegmentHealBreaker_PerGraphIndependence verifies latching one (gt, name) leaves

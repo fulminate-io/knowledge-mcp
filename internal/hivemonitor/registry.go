@@ -51,26 +51,24 @@ type ClaimedSession struct {
 // from having been called. That re-read is what makes out-of-order delivery of
 // two racing transitions safe.
 //
-// NoteSessionOpened is a stateless notification seam: it fires the session-open
-// hook and records nothing, so the Registry stays a store of claims and activity
-// rather than a directory of sessions. Its only consumer is the hive loops' boot
-// re-detection pass, which uses session establishment as the earliest moment a
-// restarted daemon's reconnecting sessions exist to be examined.
+// The Registry is IN-MEMORY ONLY and has no load-from-graph entry point, so a
+// restarted daemon starts with an empty registry and renews nothing on behalf
+// of a previous process. That absence is a property, not a gap: it is what
+// makes a crashed member's lease lapse rather than be silently resumed.
 //
 // Concurrency: a plain sync.Mutex guards both maps (the client module is
 // xsync-free — see graphclient/mcp_http.go). Bind/Clear/MarkHiveActive/
-// EndHiveSession/NoteSessionOpened run on the dispatch and session paths;
-// ActiveSessions/ClaimsFor run once per monitor tick and HiveActiveCount once
-// per transition. All are O(small) under the lock, so a single mutex is correct
-// and cheap; this mirrors httpSession's plain-mutex map idiom
-// (graphclient/http_session.go). Both hooks fire OUTSIDE the lock so a slow
-// consumer never blocks a concurrent hive call's map update.
+// EndHiveSession run on the dispatch and session paths; ActiveSessions/ClaimsFor
+// run once per monitor tick and HiveActiveCount once per transition. All are
+// O(small) under the lock, so a single mutex is correct and cheap; this mirrors
+// httpSession's plain-mutex map idiom (graphclient/http_session.go). The
+// activity hook fires OUTSIDE the lock so a slow consumer never blocks a
+// concurrent hive call's map update.
 type Registry struct {
-	mu              sync.Mutex
-	sessions        map[string][]Claim
-	active          map[string]struct{}
-	hook            func()
-	sessionOpenHook func(sessionID string)
+	mu       sync.Mutex
+	sessions map[string][]Claim
+	active   map[string]struct{}
+	hook     func()
 }
 
 // NewRegistry returns an empty Registry ready for use.
@@ -240,34 +238,4 @@ func (r *Registry) HiveActiveCount() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return len(r.active)
-}
-
-// SetSessionOpenHook installs the signal fired when an MCP session is
-// established. nil-safe.
-func (r *Registry) SetSessionOpenHook(fn func(sessionID string)) {
-	if r == nil {
-		return
-	}
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	r.sessionOpenHook = fn
-}
-
-// NoteSessionOpened fires the session-open hook with sessionID, outside the
-// lock. It records nothing in the Registry — it is a pure notification seam.
-// It exists because a daemon restart empties the in-memory MCP session map, so
-// a hive-active session cannot be re-detected at the instant the HTTP server
-// starts serving: there are no sessions yet. Session establishment is the
-// earliest moment re-detection can see anything. nil-safe.
-func (r *Registry) NoteSessionOpened(sessionID string) {
-	if r == nil || sessionID == "" {
-		return
-	}
-	r.mu.Lock()
-	hook := r.sessionOpenHook
-	r.mu.Unlock()
-
-	if hook != nil {
-		hook(sessionID)
-	}
 }

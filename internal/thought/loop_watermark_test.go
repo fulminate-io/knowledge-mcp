@@ -155,7 +155,7 @@ func cloneNode(n *knowledgev1.Node) *knowledgev1.Node {
 // diffMetadataUpdates drops the unchanged cluster_id rows.
 func TestWatermark_SelfTriggerGuard_QuietTickAfterRelabel(t *testing.T) {
 	fake := newWatermarkLoopFake()
-	p := &PropagationLoop{gc: fake, stopCh: make(chan struct{})}
+	p := &PropagationLoop{gc: fake, stopCh: make(chan struct{}), admitted: admittedGate()}
 
 	// TICK 1 (cold start → full pass): runBackgroundPropagation runs detection +
 	// scoped propagation, assigns cluster_id, and persists the max-UpdatedAt

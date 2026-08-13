@@ -4,6 +4,7 @@ package treesitter
 
 import (
 	"path/filepath"
+	"strings"
 	"sync"
 
 	sitter "github.com/smacker/go-tree-sitter"
@@ -222,7 +223,63 @@ var extMap = map[string]Language{
 	".md":       LangMarkdown,
 	".markdown": LangMarkdown,
 	".cue":      LangCue,
+	// Every entry below was parse-tested against the grammar it routes to,
+	// with HasError() read on the resulting root. An unmapped extension is
+	// TOTAL ABSENCE rather than degraded chunking: DetectLanguage falls through
+	// to LangUnknown and the discovery gate then declines the file outright, so
+	// it never reaches a chunker at all.
+	".cjs":     LangJavaScript,
+	".mts":     LangTypeScript,
+	".cts":     LangTypeScript,
+	".hxx":     LangCPP,
+	".c++":     LangCPP,
+	".h++":     LangCPP,
+	".ipp":     LangCPP,
+	".tpp":     LangCPP,
+	".inl":     LangCPP,
+	".csx":     LangCSharp,
+	".rake":    LangRuby,
+	".gemspec": LangRuby,
+	".ru":      LangRuby,
+	".sbt":     LangScala,
+	".tfvars":  LangHCL,
+	".phtml":   LangPHP,
+	".pyw":     LangPython,
+	".ksh":     LangBash,
+	".pgsql":   LangSQL,
+	".mysql":   LangSQL,
+	".gvy":     LangGroovy,
+	".gy":      LangGroovy,
+	// .mdx parses clean as markdown, but its JSX is treated as prose.
+	// Degraded rather than broken, and strictly better than not being indexed.
+	".mdx": LangMarkdown,
 }
+
+// DELIBERATELY ABSENT, each measured as haserror=true under the grammar it
+// would have routed to, so the absence is a decision rather than an oversight:
+//
+//	.less, .sass  — their own syntaxes, not CSS
+//	.heex         — a template language, not Elixir
+//	.xhtml        — an XML prolog, not HTML
+//
+// The discriminating control ran in the same binary: a well-formed source file
+// gives haserror=false under its grammar while a deliberately malformed one
+// gives true, so a true above is a property of the input rather than of the
+// harness. No deny-list table is needed — DetectLanguage's fallthrough already
+// denies everything not listed.
+//
+// TWO ROUTING PROBLEMS EXTENSIONS CANNOT FIX, recorded here rather than
+// attempted:
+//
+//   - `.h` routes to LangC, which sends C++ headers to the C grammar. Measured:
+//     a header holding a template class and a namespace gives haserror=true
+//     under c and haserror=false under cpp. That is a WRONG-GRAMMAR problem,
+//     not a missing-extension one, and a `.h` may legitimately be either
+//     language, so it needs content sniffing rather than a table entry.
+//   - `.mli` routes to LangOCaml, which is the IMPLEMENTATION grammar. An
+//     interface file gives haserror=true and every `val` signature produces no
+//     match. The pinned binding exposes no OCaml interface grammar at all, so
+//     this cannot be fixed at the current pin.
 
 // DetectLanguage returns the Language for a file path based on extension.
 // Special cases like Dockerfile (no extension) are handled by filename.
@@ -238,7 +295,22 @@ func DetectLanguage(path string) Language {
 		return LangDockerfile
 	case "Makefile", "makefile", "GNUmakefile":
 		return LangBash
+	case "Rakefile", "Gemfile":
+		return LangRuby
+	case "Jenkinsfile":
+		return LangGroovy
 	}
+	// `Dockerfile.dev` routes nowhere through either path above: filepath.Ext
+	// returns ".dev", which is absent from extMap, and filepath.Base returns
+	// "Dockerfile.dev", which the switch does not match. extMap is consulted
+	// FIRST, so a file genuinely named `Dockerfile.go` still routes to Go.
+	if strings.HasPrefix(base, "Dockerfile.") || strings.HasPrefix(base, "dockerfile.") {
+		return LangDockerfile
+	}
+	// Gemfile.lock is deliberately not routed here: it is a lockfile and
+	// discovery already declines it, so a rule here would be overridden
+	// elsewhere. CMakeLists.txt is likewise absent — there is no cmake grammar
+	// in the registry, so a filename rule would route it to nothing.
 	return LangUnknown
 }
 

@@ -147,8 +147,8 @@ func currentPropagatedAccessor(nodeByID map[string]*knowledgev1.Node) func(id, k
 // The manual propagate tool (handlePropagateClient tools/thought.go) calls this
 // full form; the warm-tick scoping rides RunPropagationScoped directly from
 // runBackgroundPropagation. src forwards the resident corpus cache to the
-// adjacency thought-arm when warm (the loop passes itself; an on-demand caller
-// passes its CorpusProvider or nil).
+// adjacency thought-arm when warm (the loop's own pass hands RunPropagationScoped
+// its per-pass read memo; an on-demand caller passes its CorpusProvider or nil).
 func RunPropagation(ctx context.Context, gc Caller, profile *PersonalityProfile, nodeByID map[string]*knowledgev1.Node, src CorpusSource) (PropagationResult, error) {
 	return RunPropagationScoped(ctx, gc, profile, nodeByID, nil, src)
 }
@@ -179,7 +179,7 @@ func RunPropagationScoped(ctx context.Context, gc Caller, profile *PersonalityPr
 	if len(nodeIDs) == 0 {
 		return PropagationResult{}, nil
 	}
-	chargeMap := chargeMapForThoughts(ctx, gc, nodeIDs)
+	chargeMap := chargeMapForThoughts(ctx, gc, nodeIDs, src)
 
 	// One now for the whole pass: the read-time recency scalar (see the fold)
 	// must be consistent across every component's matrix diagonal and init loop.

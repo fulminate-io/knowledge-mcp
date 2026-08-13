@@ -4,12 +4,8 @@ package pipeline
 
 import (
 	"context"
-	"fmt"
-	"strconv"
 	"sync"
 	"sync/atomic"
-
-	"connectrpc.com/connect"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 
@@ -21,10 +17,10 @@ import (
 // exercise the worker / collector RPC paths. Records every RPC invocation
 // (tool name + invocation count) so per-batch RPC-count assertions can be
 // made cheaply. The worker reads the server-composed text off the
-// scan item directly (no node re-fetch / traverse), so the read-side helpers
-// the fake serves are: listLoadedGraphs (RETURN_MODE_GRAPH_NAMES Execute) and
-// scanGaps (the typed PipelineScan RPC). The write path captures items into
-// recordedWrites for later inspection.
+// scan item directly (no node re-fetch / traverse), so the read side the fake
+// serves is scanGaps (the typed PipelineScan RPC), plus a generic graph-names
+// Execute the pipeline itself no longer issues. The write path captures items
+// into recordedWrites for later inspection.
 type fakeWireClient struct {
 	mu sync.Mutex
 
@@ -36,26 +32,21 @@ type fakeWireClient struct {
 	// Each batch is appended as one element in the outer slice.
 	recordedWrites [][]updateBatchItem
 
-	// Captured ExecuteRequests, in call order. listLoadedGraphs (read) and the
-	// update_batch write both ride the engine Execute seam.
+	// Captured ExecuteRequests, in call order. The update_batch write rides the
+	// engine Execute seam; a graph-names read would too, which is why counting
+	// these is how a test proves the catalog is never read.
 	execRequests []*knowledgev1.ExecuteRequest
 
-	// graphNamesByType seeds the listLoadedGraphs query(mode:modules) per-type
-	// read: graph type → its loaded graphs (served via the graph-names carrier).
-	// Holds the wire proto directly (knowledgev1.GraphInfo) so the seed feeds the
-	// carrier without a store→proto conversion hop.
+	// graphNamesByType seeds the generic graph-names read: graph type → its loaded
+	// graphs (served via the graph-names carrier). Holds the wire proto directly
+	// (knowledgev1.GraphInfo) so the seed feeds the carrier without a store→proto
+	// conversion hop.
+	//
+	// NOTHING IN THE PIPELINE READS THIS ANY MORE. The catalog pass takes its
+	// wanted set from the working set, so a seeded catalog exists to be the
+	// non-empty backend a test proves is NEVER consulted — the known-positive
+	// control that keeps "zero catalog reads" from being a vacuous zero.
 	graphNamesByType map[string][]*knowledgev1.GraphInfo
-
-	// failGraphTypes marks graph types whose listLoadedGraphs Execute read should
-	// return an error (a backend rollout 502, a permission_denied). Used to prove
-	// per-type failures are non-fatal: enumeration skips the type and continues.
-	failGraphTypes map[string]bool
-
-	// rateLimitGraphTypes marks graph types whose listLoadedGraphs Execute read
-	// returns a connect.CodeUnavailable ("Too many requests") error carrying a
-	// Retry-After of the mapped seconds (0 = no hint). Used to prove a whole-tick
-	// remote 429 is classified as a throttle so the discovery loop backs off.
-	rateLimitGraphTypes map[string]int
 
 	// scanResp seeds the typed PipelineScan RPC. Default nil → empty items +
 	// dirty_gen=0 (collector no-op tick). Tests that need non-empty scan
@@ -87,32 +78,25 @@ type fakeWireClient struct {
 	// scanned (the embed-gate proof) while the summary axis flowed.
 	scansByAxis map[string]int
 
-	// graphTypeDefNames seeds the discoverRegisteredGraphTypes browse: the
-	// registered custom GraphTypeDef names returned by the query(type:graph_type_def)
-	// Execute (served via the RETURN_MODE_NODES carrier, one Node per name with
-	// SymbolName=name, matching ToNode's name=ID=SymbolName invariant). nil →
-	// no registered types this tick (the browse returns an empty Nodes carrier).
-	graphTypeDefNames []string
+	// scansByGraph records pipeline_scan invocation counts keyed by the request's
+	// GRAPH NAME, so a test can assert that a never-interacted graph was never
+	// scanned while an admitted one was — the same measurement on both, which is
+	// what stops the zero being indistinguishable from an undriven fake.
+	scansByGraph map[string]int
 
-	// failGraphTypeDefBrowse, when true, makes the graph_type_def browse Execute
-	// return an error (a rollout 502 / permission_denied / decode-failure proxy).
-	// Used to prove the browse failure is non-fatal: builtins still enumerate.
-	failGraphTypeDefBrowse bool
-
-	// rateLimitGraphTypeDefBrowse, when > 0, makes the graph_type_def browse
-	// Execute return a connect.CodeUnavailable 429 carrying that many seconds as
-	// Retry-After. Used to prove a browse 429 feeds the throttle accounting WITHOUT
-	// independently forcing whole-tick backoff when builtins enumerated fine.
-	rateLimitGraphTypeDefBrowse int
+	// genPollRequests captures every PipelineGenPollRequest in call order. The
+	// gen-poll's scoping lives in the REQUEST the client builds from its collector
+	// registry, so asserting the request is what proves a foreign graph is absent;
+	// asserting the response would only describe what the fake chose to say.
+	genPollRequests []*knowledgev1.PipelineGenPollRequest
 }
 
 func newFakeWireClient() *fakeWireClient {
 	return &fakeWireClient{
-		calls:               make(map[string]int),
-		graphNamesByType:    make(map[string][]*knowledgev1.GraphInfo),
-		failGraphTypes:      make(map[string]bool),
-		rateLimitGraphTypes: make(map[string]int),
-		scansByAxis:         make(map[string]int),
+		calls:            make(map[string]int),
+		graphNamesByType: make(map[string][]*knowledgev1.GraphInfo),
+		scansByAxis:      make(map[string]int),
+		scansByGraph:     make(map[string]int),
 	}
 }
 
@@ -125,6 +109,7 @@ func (f *fakeWireClient) PipelineScan(_ context.Context, req *knowledgev1.Pipeli
 	f.mu.Lock()
 	f.calls["pipeline_scan"]++
 	f.scansByAxis[axis]++
+	f.scansByGraph[req.GetGraphName()]++
 	resp := f.scanResp
 	switch {
 	case axis == "embed" && f.embedScanResp != nil:
@@ -143,9 +128,10 @@ func (f *fakeWireClient) PipelineScan(_ context.Context, req *knowledgev1.Pipeli
 // gen-poll loop issues ONE of these per tick. Counts the call under
 // "pipeline_gen_poll" and returns the seeded response (default: an empty response
 // → no entries → no advances → 0 Phase-2 detail fetches).
-func (f *fakeWireClient) PipelineGenPoll(_ context.Context, _ *knowledgev1.PipelineGenPollRequest) (*knowledgev1.PipelineGenPollResponse, error) {
+func (f *fakeWireClient) PipelineGenPoll(_ context.Context, req *knowledgev1.PipelineGenPollRequest) (*knowledgev1.PipelineGenPollResponse, error) {
 	f.mu.Lock()
 	f.calls["pipeline_gen_poll"]++
+	f.genPollRequests = append(f.genPollRequests, req)
 	resp := f.genPollResp
 	catalogGen := f.genPollCatalogGen
 	f.mu.Unlock()
@@ -235,110 +221,25 @@ func (f *fakeWireClient) Execute(_ context.Context, req *knowledgev1.ExecuteRequ
 		return &knowledgev1.ExecuteResponse{AffectedCount: int64(len(m.GetUpdateItems()))}, nil
 	}
 
-	// Read plans: listLoadedGraphs (RETURN_MODE_GRAPH_NAMES) and
-	// discoverRegisteredGraphTypes (a graph_type_def type-browse → RETURN_MODE_NODES
-	// carrier) both ride the Execute seam in the pipeline.
+	// The generic graph-names read still has a server (a seeded catalog is what a
+	// test points at to prove the pipeline never asks for it), but no pipeline code
+	// path issues one any more.
 	if q := req.GetQuery(); q != nil {
 		if q.GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_GRAPH_NAMES {
 			return f.execGraphNames(req.GetTarget().GetGraph())
-		}
-		if sel := q.GetSelection(); sel != nil && sel.GetNodeType() == string(kgtypes.NodeGraphTypeDef) {
-			return f.execGraphTypeDefBrowse()
 		}
 	}
 	return &knowledgev1.ExecuteResponse{}, nil
 }
 
-// execGraphTypeDefBrowse serves the discoverRegisteredGraphTypes
-// query(type:graph_type_def) Execute from seeded graphTypeDefNames via the
-// RETURN_MODE_NODES carrier — one Node per registered name, SymbolName=name
-// (ToNode's name=ID=SymbolName invariant, which discoverRegisteredGraphTypes
-// reads back via node.GetSymbolName()). Honors failGraphTypeDefBrowse /
-// rateLimitGraphTypeDefBrowse so the non-fatal + throttle-accounting paths are
-// exercisable.
-func (f *fakeWireClient) execGraphTypeDefBrowse() (*knowledgev1.ExecuteResponse, error) {
-	f.mu.Lock()
-	failed := f.failGraphTypeDefBrowse
-	retryAfter := f.rateLimitGraphTypeDefBrowse
-	names := f.graphTypeDefNames
-	f.mu.Unlock()
-	if retryAfter > 0 {
-		ce := connect.NewError(connect.CodeUnavailable, fmt.Errorf("Too many requests. Please slow down."))
-		ce.Meta().Set("Retry-After", strconv.Itoa(retryAfter))
-		return nil, ce
-	}
-	if failed {
-		return nil, fmt.Errorf("fake: graph_type_def browse unavailable (simulated rollout)")
-	}
-	nodes := make([]*knowledgev1.Node, len(names))
-	for i, n := range names {
-		nodes[i] = &knowledgev1.Node{SymbolName: n}
-	}
-	return &knowledgev1.ExecuteResponse{Nodes: nodes}, nil
-}
-
-// seedGraphTypeDefs installs the registered custom GraphTypeDef names returned by
-// the discoverRegisteredGraphTypes browse this tick.
-func (f *fakeWireClient) seedGraphTypeDefs(names ...string) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.graphTypeDefNames = names
-}
-
-// failGraphTypeDefBrowseRead marks the graph_type_def browse Execute to error,
-// simulating a registry-browse backend failure (rollout 502 / permission_denied).
-func (f *fakeWireClient) failGraphTypeDefBrowseRead() {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.failGraphTypeDefBrowse = true
-}
-
-// rateLimitGraphTypeDefBrowseRead marks the graph_type_def browse Execute to
-// return a connect.CodeUnavailable 429 carrying retryAfterSecs as Retry-After.
-func (f *fakeWireClient) rateLimitGraphTypeDefBrowseRead(retryAfterSecs int) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.rateLimitGraphTypeDefBrowse = retryAfterSecs
-}
-
-// execGraphNames serves the listLoadedGraphs query(mode:modules) per-type read
-// from seeded graphNamesByType via the typed GraphNames carrier. The seed already
-// holds *knowledgev1.GraphInfo, so it feeds the carrier directly.
+// execGraphNames serves a graph-names read from seeded graphNamesByType via the
+// typed GraphNames carrier. The seed already holds *knowledgev1.GraphInfo, so it
+// feeds the carrier directly.
 func (f *fakeWireClient) execGraphNames(graphType string) (*knowledgev1.ExecuteResponse, error) {
 	f.mu.Lock()
-	failed := f.failGraphTypes[graphType]
-	retryAfter, rateLimited := f.rateLimitGraphTypes[graphType]
 	infos := f.graphNamesByType[graphType]
 	f.mu.Unlock()
-	if rateLimited {
-		ce := connect.NewError(connect.CodeUnavailable, fmt.Errorf("Too many requests. Please slow down."))
-		if retryAfter > 0 {
-			ce.Meta().Set("Retry-After", strconv.Itoa(retryAfter))
-		}
-		return nil, ce
-	}
-	if failed {
-		return nil, fmt.Errorf("fake: list-graphs unavailable for %s (simulated rollout)", graphType)
-	}
 	return &knowledgev1.ExecuteResponse{GraphNames: infos}, nil
-}
-
-// failGraphNames marks a graph type's listLoadedGraphs Execute read to error,
-// simulating a per-type backend failure (rollout 502, permission_denied).
-func (f *fakeWireClient) failGraphNames(gt kgtypes.GraphType) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.failGraphTypes[string(gt)] = true
-}
-
-// rateLimitGraphNames marks a graph type's listLoadedGraphs Execute read to
-// return a connect.CodeUnavailable 429 carrying retryAfterSecs as Retry-After
-// (0 = no hint). Simulates the backend per-IP throttle the discovery loop must
-// classify as a whole-tick throttle and back off from.
-func (f *fakeWireClient) rateLimitGraphNames(gt kgtypes.GraphType, retryAfterSecs int) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	f.rateLimitGraphTypes[string(gt)] = retryAfterSecs
 }
 
 // genPollCallCount returns how many bulk PipelineGenPoll RPCs the fake observed,
@@ -351,12 +252,10 @@ func (f *fakeWireClient) genPollCallCount() int {
 	return f.calls["pipeline_gen_poll"]
 }
 
-// codeGraphNamesReads returns how many listLoadedGraphs graph-names Executes the
-// fake observed for the CODE graph type, read under the mutex (the discovery loop
-// goroutine appends to execRequests concurrently). Each catalog enumeration issues
-// exactly one such read per eligible type (rpc.go's per-type loop), so counting a
-// SINGLE type counts ENUMERATIONS — the unit the wake-driven discovery loop is
-// asserted in, and one that does not move when the eligible-type set changes.
+// codeGraphNamesReads returns how many graph-names Executes the fake observed for
+// the CODE graph type, read under the mutex (the catalog loop goroutine appends to
+// execRequests concurrently). The pipeline no longer issues these at all, so this
+// is now a ZERO-detector: a non-zero reading means catalog enumeration came back.
 func (f *fakeWireClient) codeGraphNamesReads() int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -397,8 +296,9 @@ func (f *fakeWireClient) totalWriteItems() int {
 	return n
 }
 
-// seedGraphNames installs the loaded graphs of a given type for the
-// listLoadedGraphs query(mode:modules) Execute read. Builds proto pointers
+// seedGraphNames installs the loaded graphs of a given type for the graph-names
+// Execute read — in practice, the non-empty backend catalog a test proves the
+// pipeline never consults. Builds proto pointers
 // (knowledgev1.GraphInfo carries protoimpl.MessageState — must never be copied
 // by value, so the slice is []*knowledgev1.GraphInfo).
 func (f *fakeWireClient) seedGraphNames(gt kgtypes.GraphType, names ...string) {

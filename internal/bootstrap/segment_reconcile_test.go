@@ -14,16 +14,18 @@ import (
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
+	"github.com/fulminate-io/knowledge-mcp/internal/graphsel"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 	"github.com/fulminate-io/knowledge-mcp/internal/segmentdist"
 )
 
 // reconcileEngine is an EngineServiceHandler for the segment-reconcile tests. It
-// (a) enumerates per-graph-type instance names via Execute(RETURN_MODE_GRAPH_NAMES)
-// so the reconcile's per-type discovery (tools.ListGraphNamesOfType, now called for
-// every embeddable builtin) sees them — keyed by the requested graph type so a test
-// can register code repos AND non-code instances (e.g. a cloud account); (b) serves
+// (a) enumerates per-graph-type instance names via Execute(RETURN_MODE_GRAPH_NAMES),
+// keyed by the requested graph type. The reconcile no longer consults that seam —
+// its walk is the working set — so a registration here is what a REGRESSION to
+// backend enumeration would pick up, and the counter beside it is how a test
+// asserts no such read happened; (b) serves
 // a configurable segment_rebuild scan page per graph via PipelineScan, RECORDING the
 // call count per graph so a test can assert a rebuild fired (RebuildSegments pages
 // PipelineScan only when the probe reports degenerate); (c) serves a fixed Stats.
@@ -71,6 +73,17 @@ type reconcileEngine struct {
 	// without a counter degrades to "a horizon was eventually written" — a claim a
 	// probe re-issued on every rotation forever satisfies just as well.
 	horizonSeedCalls map[string]int
+	// execByGraph counts EVERY Execute keyed by the target graph, and mutByGraph the
+	// write-carrying subset. They are catch-all recorders on purpose: an assertion
+	// that a graph received no traffic is only as good as the instrument's ability to
+	// have seen traffic of any shape, so nothing here filters by operation term.
+	execByGraph map[string]int
+	mutByGraph  map[string]int
+	// graphNameCalls counts RETURN_MODE_GRAPH_NAMES enumerations. "The walk costs no
+	// enumeration RPC" is a claim about a read that leaves no other trace: a pass that
+	// enumerated and then filtered would look identical on every per-graph counter
+	// here, so the enumeration needs a counter of its own to be assertable at all.
+	graphNameCalls int
 }
 
 // setScanErr arms (or clears) the injected PipelineScan failure under the same mutex
@@ -85,8 +98,23 @@ func (e *reconcileEngine) setScanErr(err error) {
 func (e *reconcileEngine) Execute(
 	_ context.Context, req *connect.Request[knowledgev1.ExecuteRequest],
 ) (*connect.Response[knowledgev1.ExecuteResponse], error) {
+	if gt, name, ok := graphsel.InstanceKeyOf(req.Msg.GetTarget()); ok {
+		e.mu.Lock()
+		if e.execByGraph == nil {
+			e.execByGraph = map[string]int{}
+			e.mutByGraph = map[string]int{}
+		}
+		e.execByGraph[string(gt)+"/"+name]++
+		if req.Msg.GetMutation() != nil {
+			e.mutByGraph[string(gt)+"/"+name]++
+		}
+		e.mu.Unlock()
+	}
 	q := req.Msg.GetQuery()
 	if q != nil && q.GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_GRAPH_NAMES {
+		e.mu.Lock()
+		e.graphNameCalls++
+		e.mu.Unlock()
 		names := e.namesByType[req.Msg.GetTarget().GetGraph()]
 		infos := make([]*knowledgev1.GraphInfo, 0, len(names))
 		for _, n := range names {
@@ -248,20 +276,23 @@ func TestReconcileSegmentCoverage_DegenerateRebuilds(t *testing.T) {
 		"a genuinely-incomplete shipped corpus triggers RebuildSegments — PipelineScan is paged")
 }
 
-// TestReconcileSegmentCoverage_DegenerateNonCodeRebuilds proves the reconcile now
-// enumerates + heals NON-code embeddable builtins: a cloud graph (keyed by account,
-// enumerated via the per-type ListGraphNamesOfType the HasRebuildableSegments loop
-// now calls for cloud) whose shipped corpus is genuinely incomplete vs its embedded
-// count (>= floor so the probe arms, live resident empty after the empty Fetch, and
-// past the healNeedsRebuild gate via embedded=300) triggers exactly one
-// RebuildSegments — PipelineScan is paged for it. Under a code-only enumeration the
-// cloud graph would never be discovered, so no rebuild would fire.
+// TestReconcileSegmentCoverage_DegenerateNonCodeRebuilds proves the reconcile heals
+// NON-code embeddable builtins: a cloud graph (keyed by account) whose shipped corpus
+// is genuinely incomplete vs its embedded count (>= floor so the probe arms, live
+// resident empty after the empty Fetch, and past the healNeedsRebuild gate via
+// embedded=300) triggers exactly one RebuildSegments — PipelineScan is paged for it.
+// Under a code-only walk the cloud graph would never be visited, so no rebuild would
+// fire.
 func TestReconcileSegmentCoverage_DegenerateNonCodeRebuilds(t *testing.T) {
 	c, eng, backend := buildReconcileClientWithSeg(t, 300) // no code repos — exercise the non-code path alone; embedded=300 arms the shipped-completeness gate.
 	ctx := context.Background()
 
-	// Register a cloud account instance so the reconcile's per-type enumeration
-	// (ListGraphNamesOfType for "cloud") discovers it.
+	// The cloud account is a graph THIS CLIENT INTERACTED WITH — that admission is
+	// what puts it in the walk. The engine registration below is deliberately left in
+	// place: it is what the retired per-type enumeration would have discovered, so a
+	// walk that regressed to enumerating would still find it and this test would stop
+	// discriminating between the two mechanisms.
+	c.AdmitGraph(kgtypes.GraphCloud, "acct", "search")
 	eng.namesByType[string(kgtypes.GraphCloud)] = []string{"acct"}
 
 	// Shipped corpus 128 (>= floor) under the cloud account selector but genuinely
@@ -278,16 +309,23 @@ func TestReconcileSegmentCoverage_DegenerateNonCodeRebuilds(t *testing.T) {
 }
 
 // TestReconcileSegmentCoverage_SkipsNonEmbeddableBuiltins is the closed-gate side:
-// the per-type enumeration skips kgtypes.GraphLinkage and kgtypes.GraphTransformers
-// (HasRebuildableSegments returns false), so even if the server WOULD enumerate a
-// degenerate-looking instance for them, the reconcile never probes or rebuilds it —
-// they carry no rebuildable segments.
+// the walk skips kgtypes.GraphLinkage and kgtypes.GraphTransformers
+// (HasRebuildableSegments returns false), so even for an instance this client HAS
+// interacted with, the reconcile never probes or rebuilds it — they carry no
+// rebuildable segments.
+//
+// BOTH INSTANCES ARE ADMITTED ON PURPOSE. Membership is the other reason a graph can
+// be absent from the walk, so leaving them unadmitted would make the zeros below true
+// for that reason instead and this test would no longer touch the type gate it names.
 func TestReconcileSegmentCoverage_SkipsNonEmbeddableBuiltins(t *testing.T) {
 	c, eng := buildReconcileClient(t)
 	ctx := context.Background()
 
+	c.AdmitGraph(kgtypes.GraphLinkage, "lk", "search")
+	c.AdmitGraph(kgtypes.GraphTransformers, "recipes", "search")
+
 	// Register instances for the two non-embeddable sync-eligible builtins. If the
-	// enumeration did NOT skip them, the loop would probe these names.
+	// type gate did NOT skip them, the loop would probe these names.
 	eng.namesByType[string(kgtypes.GraphLinkage)] = []string{"lk"}
 	eng.namesByType[string(kgtypes.GraphTransformers)] = []string{"recipes"}
 	eng.scanItems["lk"] = makeReconcileScanPage("lk", 10)

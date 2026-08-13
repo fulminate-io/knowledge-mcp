@@ -141,7 +141,8 @@ gemini_api_key    = "..."
 ```
 
 > The Fulminate Cloud login token is **not** one of these keys. It is not stored in
-> this file at all — it lives in your operating system keychain (managed by
+> this file at all — it lives in your operating system keychain, or in a 0600
+> file under `~/.knowledge` when no keychain is reachable (both managed by
 > `knowledge login` / `knowledge logout`). `[credentials]` is only the five
 > backend/LLM keys above.
 

@@ -65,9 +65,15 @@ func (c *client) ensureSegmentManager(graphStorage string) {
 		// fresh cold keychain source per manager. The closure adapts the *auth.Transport
 		// return to the segmentdist.SegmentControlTransport factory type (Go has no
 		// return-type covariance, so the bare method value is not assignable).
+		// WithGraphAdmitter records the search side of the working set: a user
+		// search IS the direct interaction that admits a graph, and it is the
+		// one admission that does not pass through Router.Execute.
 		c.segmentMgr = segmentdist.NewManager(c.router, segmentCacheDirFor(graphStorage), 0,
 			segmentdist.WithSegmentTransport(func() (segmentdist.SegmentControlTransport, error) {
 				return c.buildCloudSyncTransport()
+			}),
+			segmentdist.WithGraphAdmitter(func(gt kgtypes.GraphType, name string) {
+				c.AdmitGraph(gt, name, "search")
 			}))
 	}
 }

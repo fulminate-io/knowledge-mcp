@@ -70,7 +70,7 @@ func reflectGranularityDeps(gc *reflectFakeCaller) reflectTestDeps {
 	}
 	var profile *clientthought.PersonalityProfile
 	if len(clusters) > 0 {
-		p, err := clientthought.ComputePersonalityScalars(ctx, gc, clusters, clientthought.BuildEvidenceAdj(ctx, gc, clusters))
+		p, err := clientthought.ComputePersonalityScalars(ctx, gc, clusters, clientthought.BuildEvidenceAdj(ctx, gc, clusters, nil), nil)
 		if err != nil {
 			panic("reflectGranularityDeps: ComputePersonalityScalars: " + err.Error())
 		}

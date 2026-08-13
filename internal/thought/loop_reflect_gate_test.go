@@ -90,7 +90,7 @@ func (f *gateFake) persistedGen() string {
 }
 
 func newGateLoop(fake *gateFake) *PropagationLoop {
-	return &PropagationLoop{gc: fake, stopCh: make(chan struct{})}
+	return &PropagationLoop{gc: fake, stopCh: make(chan struct{}), admitted: admittedGate()}
 }
 
 // TestRunBackgroundPropagation_QuietTickSkips drives a tick

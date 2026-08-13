@@ -169,8 +169,21 @@ func classifyTestBlockPHP(
 	return false, TestKindNone
 }
 
+// resolveDeclNamePHP names namespace declarations, the one PHP kind whose
+// TopLevel pattern binds no @name. Every other PHP pattern — class, interface,
+// trait, method, function — already captures one, so this resolver can only
+// ever fill a namespace's name. The unnamed global `namespace { ... }` has no
+// name: child, resolves to "" and KEEPS its chunk.
+func resolveDeclNamePHP(declNode *sitter.Node, src []byte, chunkType string) string {
+	if chunkType == "namespace_definition" {
+		return fieldNamed(declNode, src, "name", "namespace_name")
+	}
+	return ""
+}
+
 func init() {
 	testBlockClassifiers[LangPHP] = classifyTestBlockPHP
+	declNameResolvers[LangPHP] = resolveDeclNamePHP
 }
 
 // classifyTestKindPHP recognizes PHPUnit's three detection paths in PHP:

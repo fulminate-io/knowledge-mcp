@@ -26,7 +26,7 @@ Government Works, RFC IETF Trust Legal Provisions). Allowed sources:
 - Single fixture PDF ≤ 500 KB.
 - Aggregate corpus across all fixtures ≤ 10 MB.
 
-**Eight ticket categories** (see FUL-83):
+**Eight document categories** the corpus must cover:
 
 1. Caching/HTTP RFC (rfc-7234-caching).
 2. Two-column academic (arxiv-paper-sample).
@@ -184,9 +184,9 @@ fixture=<name> actual=N golden=M chunkCountDelta=... boundaryIoU=...
    in `chunks.golden.json` overriding the failing default. Document
    the override in `NOTES.md`.
 
-Per locked decision #4 (FUL-83): failing-default fixtures get a
-per-fixture override; do NOT lower the global defaults without a
-deliberate ticket.
+Locked rule: a fixture that fails the defaults gets a per-fixture
+override; do NOT lower the global defaults without a deliberate
+decision to do so.
 
 ## 8. Optional poppler cross-validation
 

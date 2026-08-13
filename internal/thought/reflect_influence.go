@@ -91,7 +91,7 @@ func ReflectInfluence(ctx context.Context, gc Caller, limit int, profile *Person
 		// full-corpus read. Threading the map through the personality builder would
 		// widen a second signature with more callers, out of proportion to the gain,
 		// so this rare profile path pays ONE explicit full-corpus charge fetch.
-		chargeMap = fetchChargesFor(ctx, gc, thoughtIDs)
+		chargeMap = fetchChargesFor(ctx, gc, thoughtIDs, nil)
 	} else {
 		// Non-profile (default) path: the charge map is FUSED with the matrix build
 		// — reused for the partition, no second full-corpus charge read.

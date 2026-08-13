@@ -250,7 +250,7 @@ func applyRecallFilters(ctx context.Context, gc Caller, candidates []ThoughtResu
 	for i, c := range candidates {
 		ids[i] = c.Node.Id
 	}
-	chargeMap := chargeMapForThoughts(ctx, gc, ids)
+	chargeMap := chargeMapForThoughts(ctx, gc, ids, nil)
 
 	now := time.Now()
 	var results []ThoughtResult

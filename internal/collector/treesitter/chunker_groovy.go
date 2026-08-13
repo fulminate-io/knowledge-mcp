@@ -84,9 +84,11 @@ func classifyTestKindGroovy(
 	if chunkType != "function_definition" {
 		return true, TestKindHelper
 	}
-	// Read the function name from declNode if @name capture missed it. The
-	// existing TopLevel query for Groovy doesn't bind @name on
-	// function_definition, so `name` is typically empty here.
+	// Read the function name from declNode if it is still missing. Groovy's
+	// TopLevel query binds no @name, so this used to be the only source; the
+	// declNameResolver below now fills it before the chunk is built and this
+	// branch is an unreached backstop rather than the live path. It is kept so
+	// the classifier does not depend on the resolver having run.
 	if name == "" {
 		if fn := declNode.ChildByFieldName("function"); fn != nil && fn.Type() == "identifier" {
 			name = fn.Content(src)
@@ -107,6 +109,23 @@ func classifyTestKindGroovy(
 	return true, TestKindHelper
 }
 
+// resolveDeclNameGroovy names the two kinds Groovy's TopLevel query chunks
+// without capturing a name. BOTH HALVES ARE NEEDED, and the class half is the
+// one that is easy to miss: an unnamed class chunk is skipped by recordSymbol,
+// so the parent-to-member CONTAINS edge its methods emit has a FromID that
+// resolves to nothing. Groovy members already reach their class through the
+// ascent — the missing NAME was the only thing keeping the edge inert.
+func resolveDeclNameGroovy(declNode *sitter.Node, src []byte, chunkType string) string {
+	switch chunkType {
+	case "class_definition":
+		return fieldNamed(declNode, src, "name", "identifier")
+	case "function_definition":
+		return fieldNamed(declNode, src, "function", "identifier")
+	}
+	return ""
+}
+
 func init() {
 	testKindClassifiers[LangGroovy] = classifyTestKindGroovy
+	declNameResolvers[LangGroovy] = resolveDeclNameGroovy
 }

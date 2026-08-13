@@ -24,6 +24,7 @@ import (
 	"sync"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/config"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/llmproviders"
 	clientthought "github.com/fulminate-io/knowledge-mcp/internal/thought"
 	"github.com/fulminate-io/knowledge-mcp/internal/tools"
@@ -59,6 +60,15 @@ func wirePropagationRuntime(c *client, f Config) {
 	// re-draining the whole graph. nil-tolerant — a client without it degrades to
 	// the full drainThoughtBrowse path.
 	loop.WithCorpusScanner(scanner)
+	// Root that cache's warm-start record at the SAME already-tilde-expanded data
+	// root the segment L2 cache uses — runServe expands Config.GraphStorage before
+	// buildClient runs, and ensureSegmentManager is handed the identical value — but
+	// in a SIBLING subtree rather than inside <root>/segments. See corpus_persist.go
+	// for why the segment cache's own placement coupling does not apply here, and why
+	// living inside that tree would put the record in the graph-drop sweep. An empty
+	// root disables persistence and the loop keeps today's resident-only,
+	// cold-on-restart behavior.
+	loop.WithCorpusPersistence(f.GraphStorage)
 	// Attach the resident vector seam + its coverage gate. Both adapters resolve
 	// c.segmentMgr LAZILY, behind PipelineReady(), for two independent reasons: this
 	// function runs (and starts the loop) BEFORE ensureSegmentManager assigns
@@ -67,6 +77,24 @@ func wirePropagationRuntime(c *client, f Config) {
 	// propagation goroutine's read of that field is only race-free through the
 	// pipelineReady publish edge. See propagation_vector_deps.go.
 	loop.WithVectorDeps(residentVectorAdapter{c: c}, coverageGateAdapter{c: c})
+	// Gate the loop's BACKGROUND entries on knowledge/default having been admitted
+	// by a direct user interaction, and wake it the moment one is. Every read in
+	// the propagation family targets that one graph, which is why the waiter is
+	// registered with WakeFor rather than the any-graph Wake: the loop is woken by
+	// the FIRST knowledge/default admission and by nothing else, so a code-graph
+	// collect no longer re-fires the pass. The graph type/name pair handed to
+	// WakeFor is spelled identically to the admission predicate on the next line so
+	// the gate and the wake can never disagree about which graph this loop serves.
+	// Only a graph's first admission ever signaled, so nothing responsive is lost —
+	// and the hourly ticker remains the other trigger. Because only the FIRST
+	// admission is signaled, a wake alone would lose an admission that landed before
+	// this registration; the registration below STRICTLY PRECEDES Start, and the loop
+	// checks membership once after it and catches up, so that admission is still
+	// served. See loop() in thought/loop_lifecycle.go. The manual force_full lever
+	// stays ungated — it is a user interaction, not a background process.
+	loop.WithWorkingSetGate(
+		func() bool { return c.workingSet.Has(kgtypes.GraphKnowledge, "default") },
+		c.workingSet.WakeFor(kgtypes.GraphKnowledge, "default"))
 	c.propLoop = loop
 	loop.Start()
 }

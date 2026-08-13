@@ -30,9 +30,28 @@ import (
 const ServiceName = "io.fulminate.knowledge"
 
 // KeyRefreshToken is the well-known keychain key for the long-lived OAuth
-// refresh token acquired via the device-authorization flow. Only long-lived
-// secrets belong in the keychain; short-lived access tokens stay in memory.
+// refresh token acquired via the device-authorization flow. It is the
+// credential that mints new sessions, and only the process that owns the
+// session redeems it.
 const KeyRefreshToken = "refresh_token"
+
+// KeyAccessToken is the well-known key for the CURRENT session's short-lived
+// access token, written by whichever process owns the session (the login
+// command and the refreshing token source) so that other processes can READ a
+// usable token without holding the refresh credential.
+//
+// Publishing a short-lived token is a deliberate exception to the rule that
+// only long-lived secrets belong in the store. Under refresh-token rotation a
+// reader cannot obtain a token by refreshing without also persisting the
+// rotated replacement, and a process that rotates without persisting strands
+// every other process on a consumed credential. Publishing the access token
+// is what allows a reader to be only a reader.
+const KeyAccessToken = "access_token"
+
+// KeyAccessTokenExpiry is the RFC 3339 instant at which the token under
+// KeyAccessToken stops being usable, written in the same operation. A missing
+// or unparseable value is treated as expired, so a reader fails closed.
+const KeyAccessTokenExpiry = "access_token_expiry"
 
 // KeyClientID is the well-known keychain key for the OAuth client_id issued
 // to this install by Dynamic Client Registration at login time. WorkOS

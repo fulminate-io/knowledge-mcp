@@ -16,9 +16,15 @@ type windowsStore struct{}
 
 // NewStore returns the platform-appropriate Store implementation.
 //
-// On windows the stub is always constructed successfully; the
-// ErrNotImplementedOS signal is surfaced per-call.
+// Outside a test binary the windows stub is always constructed successfully;
+// the ErrNotImplementedOS signal is surfaced per-call. Inside one it fails
+// like every other platform, so the constructor is one seam on every OS:
+// tests must use in-memory fakes; the real credential store is off-limits to
+// test binaries.
 func NewStore() (Store, error) {
+	if err := refuseRealStoreInTest(); err != nil {
+		return nil, err
+	}
 	return windowsStore{}, nil
 }
 

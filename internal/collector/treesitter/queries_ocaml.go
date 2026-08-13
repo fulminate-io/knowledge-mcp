@@ -18,7 +18,7 @@ func ocamlQueries() *QuerySet {
 		// `(value_definition (attribute_id "test") (let_binding pattern: (string)))`
 		// — verified empirically (locked Q6 outcome 1: clean parsing). Both
 		// paths shipped.
-		TestBlocks: `[
+		TestBlocks: `([
 			(application_expression
 				function: (value_path) @fn
 				argument: (string) @name
@@ -28,6 +28,6 @@ func ocamlQueries() *QuerySet {
 				(let_binding pattern: (string) @name)
 			) @decl
 		] (#match? @fn "^(Alcotest\\.test_case|Alcotest\\.test|Alcotest_lwt\\.test_case|Alcotest_lwt\\.test|test_case|test)$")
-		(#match? @ext "^test$")`,
+		(#match? @ext "^test$"))`,
 	}
 }

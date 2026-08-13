@@ -121,8 +121,13 @@ type interceptTestDeps struct {
 	// tensionsProviderNil flip the respective accessor to return a nil interface so a
 	// test can exercise the loop-not-running path. Zero values (computed=false) are the
 	// cold sentinel for the cold-start tests.
+	// corpusThoughts/corpusCharges are threaded into the fake ClusterProvider's
+	// resident-snapshot projections. Empty (the zero value) is cold, which is what
+	// keeps every pre-existing test on the wire path it already exercises.
 	clusters            []clientthought.ThoughtCluster
 	clusterProfile      *clientthought.PersonalityProfile
+	corpusThoughts      []*knowledgev1.Node
+	corpusCharges       []*knowledgev1.Node
 	tensions            []clientthought.TensionReport
 	clusterComputed     bool
 	tensionsComputed    bool
@@ -163,14 +168,30 @@ func (f fakeBlindSpotProvider) GetBlindSpots() clientthought.BlindSpotReport { r
 
 // fakeClusterProvider serves constructed clusters + a personality profile for the
 // cache-serve personality/summary handler tests — a pure value return, no graph reads.
+// It ALSO satisfies clientthought.CorpusSource + ChargeCorpusSource, which is what
+// corpusSourceFromDeps type-asserts for. Both projections report COLD on the zero
+// value, so every pre-existing test is byte-identical: the source stops being nil,
+// but a cold source makes every consumer take exactly the wire path it takes today.
 type fakeClusterProvider struct {
 	clusters []clientthought.ThoughtCluster
 	profile  *clientthought.PersonalityProfile
 	computed bool
+	// corpusThoughts/corpusCharges back the resident-snapshot projections. Empty
+	// means cold, which is the zero value.
+	corpusThoughts []*knowledgev1.Node
+	corpusCharges  []*knowledgev1.Node
 }
 
 func (f fakeClusterProvider) GetClustersCached() ([]clientthought.ThoughtCluster, *clientthought.PersonalityProfile, bool) {
 	return f.clusters, f.profile, f.computed
+}
+
+func (f fakeClusterProvider) CorpusSnapshot() ([]*knowledgev1.Node, bool) {
+	return f.corpusThoughts, len(f.corpusThoughts) > 0
+}
+
+func (f fakeClusterProvider) ChargeSnapshot() ([]*knowledgev1.Node, bool) {
+	return f.corpusCharges, len(f.corpusCharges) > 0
 }
 
 // fakeTensionsProvider serves constructed tension reports for the cache-serve
@@ -233,7 +254,13 @@ func (d interceptTestDeps) ClusterProvider() ClusterProvider {
 	if d.clusterProviderNil {
 		return nil
 	}
-	return fakeClusterProvider{clusters: d.clusters, profile: d.clusterProfile, computed: d.clusterComputed}
+	return fakeClusterProvider{
+		clusters:       d.clusters,
+		profile:        d.clusterProfile,
+		computed:       d.clusterComputed,
+		corpusThoughts: d.corpusThoughts,
+		corpusCharges:  d.corpusCharges,
+	}
 }
 
 func (d interceptTestDeps) TensionsProvider() TensionsProvider {

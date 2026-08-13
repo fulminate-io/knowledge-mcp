@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"sync"
 	"time"
 )
@@ -72,9 +73,11 @@ const accessCacheMargin = 5 * time.Minute
 // AuthKit access-token lifecycle. It caches the current access token
 // in memory, loads the long-lived refresh token from a [Store] when it
 // needs to refresh, runs RFC 9728 + RFC 8414 discovery against the
-// Fulminate endpoint to learn AuthKit's token URL, and best-effort
-// persists the rotated refresh token back to the store on success (a
-// persist failure is logged rather than failing the acquisition).
+// Fulminate endpoint to learn AuthKit's token URL, and persists the
+// rotated refresh token back to the store on success — retried and
+// read-back verified, because the store is how every other process on
+// the machine shares this login. A persist that ultimately fails is
+// logged at ERROR rather than failing the acquisition.
 //
 // The zero value is not usable; construct via [NewOAuthTokenSource].
 type OAuthTokenSource struct {
@@ -114,9 +117,9 @@ func NewOAuthTokenSource(
 // Token implements [TokenSource]. It returns a cached access token if
 // one is valid + >5min from expiry; otherwise it reads the refresh
 // token from the store, exchanges it for a new access/refresh pair,
-// caches the new access token, and then best-effort persists the
-// rotated refresh token (a persist failure is logged, not fatal — the
-// freshly acquired access token is already cached and served).
+// caches the new access token, and then persists the rotated refresh
+// token (a persist failure is logged, not fatal — the freshly acquired
+// access token is already cached and served).
 //
 // On [ErrInvalidGrant] (refresh revoked/expired) the persisted token is
 // NOT cleared — that is the caller's decision (a `knowledge logout`
@@ -188,6 +191,9 @@ func (o *OAuthTokenSource) refreshLocked(ctx context.Context) (string, Permissio
 
 	tr, err := RefreshAccessToken(ctx, eps.TokenEndpoint, clientID, rt, eps.Resource)
 	if err != nil {
+		// Emitted before warnRefreshFailureOnce, which flips the
+		// once-guard the two warnings share.
+		o.warnStaleStoredTokenLocked(err)
 		o.warnRefreshFailureOnce(err)
 		return "", nil, err
 	}
@@ -202,22 +208,120 @@ func (o *OAuthTokenSource) refreshLocked(ctx context.Context) (string, Permissio
 	o.populateFromResponseLocked(tr)
 
 	if tr.RefreshToken != "" && tr.RefreshToken != rt {
-		if setErr := o.store.Set(ctx, KeyRefreshToken, tr.RefreshToken); setErr != nil {
-			// Best-effort persistence: the access token is already cached
-			// and served above, so a failed write here is not fatal to
-			// this call. Residual risk: if the credential store cannot be
-			// written and the provider has invalidated the old refresh
-			// token, a re-login may be required after a process restart
-			// (the rotated token was never durably stored). This is
-			// bounded and recoverable, and strictly better than failing
-			// the whole acquisition. Because the token is now cached, this
-			// warning fires at most once per token lifetime, not per call.
-			slog.Warn("auth: could not persist rotated refresh token — token cached for this session; re-login may be required after restart",
-				"error", setErr)
+		if attempts, persistErr := o.persistRotatedTokenLocked(ctx, tr.RefreshToken); persistErr != nil {
+			// Availability is unchanged: the access token acquired above is
+			// already cached and is returned regardless of this write. What
+			// is not tolerable is silence — a silent persist failure strands
+			// every sibling process on a consumed token, because the
+			// provider rotates the refresh token on every use and only the
+			// replacement can be redeemed.
+			slog.Error("auth: could not persist the rotated refresh token — the stored credential is now stale; other knowledge processes on this machine will fail to authenticate until this process persists a rotation or `knowledge login` is rerun",
+				"error", persistErr, "attempts", attempts)
 		}
 	}
 
+	// Publish the session so read-only consumers — processes that may use
+	// this login but must never write the store — can serve requests without
+	// refreshing. Best-effort and separate from the rotation persist above:
+	// this process already holds the token in memory, so a failure costs
+	// those readers a session, not this caller its token.
+	if err := PublishSessionToken(ctx, o.store, tr); err != nil {
+		slog.Warn("auth: could not publish the session access token — read-only consumers on this machine will see no usable session until the next successful publish",
+			"error", err)
+	}
+
 	return o.accessToken, o.permissions, nil
+}
+
+// PublishSessionToken records the current session's access token and the
+// instant it stops being usable, under [KeyAccessToken] and
+// [KeyAccessTokenExpiry].
+//
+// Called by whichever process owns the session — the login command and the
+// refreshing token source — on the write paths those already perform, so
+// publishing adds no new writer to the store. [ReadOnlyTokenSource] is the
+// consumer.
+//
+// The expiry comes from the token's own `exp` claim, falling back to the
+// response's expires_in when the claim cannot be read. A session whose expiry
+// resolves to neither is written as the zero instant, which every reader
+// treats as expired — publishing a token nobody can date is worse than
+// publishing none.
+func PublishSessionToken(ctx context.Context, store Store, tr *TokenResponse) error {
+	_, exp, err := ParsePermissionsFromJWT(tr.AccessToken)
+	if err != nil || exp.IsZero() {
+		exp = computeExpiry(tr)
+	}
+	if err := store.Set(ctx, KeyAccessToken, tr.AccessToken); err != nil {
+		return fmt.Errorf("auth: publish session token: %w", err)
+	}
+	if err := store.Set(ctx, KeyAccessTokenExpiry, exp.UTC().Format(time.RFC3339)); err != nil {
+		return fmt.Errorf("auth: publish session token expiry: %w", err)
+	}
+	return nil
+}
+
+// persistRetryDelays are the waits between rotation-persist attempts —
+// one entry per RETRY, so the store is written at most
+// len(persistRetryDelays)+1 times. Deliberately short: the refresh path
+// holds o.mu across these waits, and they are only reached once a write
+// has already failed.
+var persistRetryDelays = []time.Duration{
+	50 * time.Millisecond,
+	150 * time.Millisecond,
+}
+
+// errPersistReadBack reports that a store write returned success but the
+// value did not survive a read-back. It carries no token material.
+var errPersistReadBack = errors.New(
+	"auth: rotated refresh token did not survive read-back",
+)
+
+// persistRotatedTokenLocked writes the rotated refresh token to the store
+// and confirms it landed, retrying briefly on failure. It returns the
+// number of write attempts made and the final error, nil once a write is
+// confirmed.
+//
+// Caller must hold o.mu.
+func (o *OAuthTokenSource) persistRotatedTokenLocked(
+	ctx context.Context, token string,
+) (int, error) {
+	for attempt := 0; ; attempt++ {
+		err := o.setAndVerifyLocked(ctx, token)
+		if err == nil {
+			return attempt + 1, nil
+		}
+		if attempt >= len(persistRetryDelays) {
+			return attempt + 1, err
+		}
+		timer := time.NewTimer(persistRetryDelays[attempt])
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return attempt + 1, errors.Join(err, ctx.Err())
+		case <-timer.C:
+		}
+	}
+}
+
+// setAndVerifyLocked writes the token and reads it back, treating a value
+// that does not match what was written as a failed write: a Set that
+// reports success without the value landing is, from every other
+// process's point of view, indistinguishable from no write at all.
+//
+// Caller must hold o.mu.
+func (o *OAuthTokenSource) setAndVerifyLocked(ctx context.Context, token string) error {
+	if err := o.store.Set(ctx, KeyRefreshToken, token); err != nil {
+		return err
+	}
+	stored, err := o.store.Get(ctx, KeyRefreshToken)
+	if err != nil {
+		return fmt.Errorf("auth: read back rotated refresh token: %w", err)
+	}
+	if stored != token {
+		return errPersistReadBack
+	}
+	return nil
 }
 
 // populateFromResponseLocked caches the new access token, permission
@@ -254,6 +358,33 @@ func computeExpiry(tr *TokenResponse) time.Time {
 		return time.Time{}
 	}
 	return time.Now().Add(time.Duration(tr.ExpiresIn) * time.Second)
+}
+
+// warnStaleStoredTokenLocked leaves a breadcrumb when the refresh token
+// read from the store is rejected as no longer redeemable. The provider
+// rotates the refresh token on every use, so the usual cause is that
+// another process on this machine rotated it and could not persist the
+// replacement. The error returned to the caller is unchanged.
+//
+// Shares the warnedOnce guard with warnRefreshFailureOnce, which must be
+// called after this one. Caller must hold o.mu.
+func (o *OAuthTokenSource) warnStaleStoredTokenLocked(err error) {
+	if o.warnedOnce || !isCredentialRejected(err) {
+		return
+	}
+	slog.Warn("auth: the stored refresh token was rejected — it appears already consumed, which happens when another process rotated it and could not persist the replacement; rerun `knowledge login` to reset it",
+		"error", err)
+}
+
+// isCredentialRejected reports whether a refresh failure is the server
+// rejecting the credential itself — invalid_grant, or any 401 — rather
+// than a transport or server-side fault.
+func isCredentialRejected(err error) bool {
+	if errors.Is(err, ErrInvalidGrant) {
+		return true
+	}
+	var oe *OAuthError
+	return errors.As(err, &oe) && oe.StatusCode == http.StatusUnauthorized
 }
 
 // warnRefreshFailureOnce emits a single WARN log per session when a

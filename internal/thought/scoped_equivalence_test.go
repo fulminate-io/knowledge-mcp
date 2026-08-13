@@ -200,7 +200,7 @@ func TestScopedEqualsFull_ClusterIDStable(t *testing.T) {
 	}
 	run := func() map[string]string {
 		f := newEquivalenceFake([]string{"a1", "a2", "a3", "b1", "b2", "b3"}, nil)
-		clusters := buildClusterObjects(ctx, f, groups)
+		clusters := buildClusterObjects(ctx, f, groups, nil)
 		require.Len(t, clusters, 2)
 		out := map[string]string{}
 		f.mu.Lock()

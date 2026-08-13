@@ -20,7 +20,7 @@ func elmQueries() *QuerySet {
 		// The plan spec said `function_call_target / qualified_name` but the
 		// actual upstream grammar uses `target: (value_expr name: (value_qid))`.
 		// Both query and chunker_elm.go updated in lockstep (round-4 fix).
-		TestBlocks: `[
+		TestBlocks: `([
 			(function_call_expr
 				target: (value_expr name: (value_qid) @fn)
 				arg: (string_constant_expr) @name
@@ -30,6 +30,6 @@ func elmQueries() *QuerySet {
 				arg: (value_expr)
 				arg: (string_constant_expr) @name
 			) @decl
-		] (#match? @fn "^(Test\\.test|Test\\.fuzz|Test\\.fuzz2|Test\\.fuzz3|Test\\.describe|Test\\.skip|Test\\.only|test|fuzz|describe)$")`,
+		] (#match? @fn "^(Test\\.test|Test\\.fuzz|Test\\.fuzz2|Test\\.fuzz3|Test\\.describe|Test\\.skip|Test\\.only|test|fuzz|describe)$"))`,
 	}
 }

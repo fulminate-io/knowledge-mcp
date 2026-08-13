@@ -95,7 +95,13 @@ var tensionClaimTypes = map[kgtypes.NodeType]bool{
 //  1. the charge set — resident from the corpus cache when the source is warm
 //     (ZERO wire calls), else a single type=charge drain;
 //  2. ONE bulk EdgeChargedBy read over the charge ids (parent=From, charge=To);
-//  3. ONE bulk hydrate of the charge parents, narrowed to tensionClaimTypes.
+//  3. ONE hydrate of the charge parents, narrowed to tensionClaimTypes — served
+//     through memoCorpusNodes, so parents the resident cache already holds cost
+//     nothing and only the RESIDUAL reaches the wire. That residual leg is
+//     load-bearing here specifically: charge parents legitimately include
+//     NodeFinding and NodeResearch (tensionClaimTypes above), which the corpus
+//     cache does not hold, so dropping uncovered ids would silently empty every
+//     charged finding out of the tension universe.
 //
 // The returned charge map is in the SAME shape fetchChargesFor produces (joined in
 // caller order, parents with no hydratable charge omitted), so ReflectTensions
@@ -143,7 +149,7 @@ func fetchTensionUniverseNodes(ctx context.Context, gc Caller, src CorpusSource)
 		return nil, nil, nil
 	}
 
-	parentByID := fetchNodesByIDs(ctx, gc, parentIDs)
+	parentByID := memoCorpusNodes(ctx, gc, parentIDs, src)
 	universe := make([]*knowledgev1.Node, 0, len(parentIDs))
 	chargesByParent := make(map[string][]*knowledgev1.Node, len(parentIDs))
 	for _, pid := range parentIDs {

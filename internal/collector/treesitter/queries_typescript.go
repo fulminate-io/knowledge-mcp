@@ -9,6 +9,7 @@ func tsQueries() *QuerySet {
 			(class_declaration name: (type_identifier) @name) @decl
 			(interface_declaration name: (type_identifier) @name) @decl
 			(type_alias_declaration name: (type_identifier) @name) @decl
+			(class_body (method_definition name: (property_identifier) @name) @decl)
 			(export_statement declaration: [
 				(function_declaration name: (identifier) @name)
 				(class_declaration name: (type_identifier) @name)

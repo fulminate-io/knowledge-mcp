@@ -65,9 +65,9 @@ type Runner struct {
 	// life of the Runner; entries come and go.
 	inFlightByID map[string]*inflightInvocation
 
-	// subs holds per-worker subscription channels installed on Start. Stop
-	// unsubscribes each channel cleanly. Map key is the worker name +
-	// trigger index, both stable for the run of one Runner.
+	// subs holds per-worker subscription channels installed by
+	// InstallWorker. Stop unsubscribes each channel cleanly. Map key is the
+	// worker name + trigger index, both stable for the run of one Runner.
 	subs []runnerSubscription
 
 	// stopOnce ensures Stop is idempotent.
@@ -240,38 +240,32 @@ func (r *Runner) Cancel(id, name string) (int, error) {
 	return count, nil
 }
 
-// Start subscribes every enabled Worker's triggers to the EventBus and
-// spawns one dispatch goroutine per subscription. Returns immediately;
-// dispatch loops run until Stop is called or ctx is cancelled.
+// InstallWorker subscribes w's triggers to the EventBus and spawns one
+// dispatch goroutine per subscription. Returns immediately; the dispatch
+// loops run until Stop is called or ctx is cancelled.
+//
+// It is called when a worker is CREATED in this process, and that is the
+// only way a worker's triggers are ever installed. A running trigger
+// registration is per-process state: worker rows persist, their running
+// registration does not, so a worker earns its subscriptions by being
+// created here rather than by having existed before a restart. There is
+// deliberately no entry point that walks the registry and installs
+// triggers for workers this process did not create.
 //
 // Self-trigger guard: events whose Origin starts with "worker:" are
 // dropped before the user's Trigger.Filter even runs. This prevents an
 // agent worker subscribed to tool-completed from re-firing on its own
 // MCP tool calls (an infinite loop in v1).
 //
-// Errors loading the registry abort Start with a wrapped error; the
-// Runner remains in a usable state for direct WorkerControl calls
-// (List, OnManualTrigger) but no triggers are installed.
-func (r *Runner) Start(ctx context.Context) error {
-	if r == nil {
-		return errors.New("dream: Runner.Start: nil receiver")
+// A disabled worker installs nothing. nil-safe.
+func (r *Runner) InstallWorker(ctx context.Context, w Worker) {
+	if r == nil || !w.Enabled {
+		return
 	}
-	workers, err := r.Registry.All(ctx)
-	if err != nil {
-		return fmt.Errorf("dream: Runner.Start: load workers: %w", err)
+	for _, t := range w.Triggers {
+		r.installTrigger(ctx, w, t)
 	}
-	for _, w := range workers {
-		if !w.Enabled {
-			continue
-		}
-		for _, t := range w.Triggers {
-			r.installTrigger(ctx, w, t)
-		}
-	}
-	slog.Info("dream: Runner started",
-		"subs", len(r.subs),
-		"workers_total", len(workers))
-	return nil
+	slog.Info("dream: worker triggers installed", "worker", w.Name, "triggers", len(w.Triggers))
 }
 
 // installTrigger registers one EventBus subscription for w + t and

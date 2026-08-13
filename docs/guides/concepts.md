@@ -35,6 +35,61 @@ This framing mirrors the project overview in
 state, and `brainstorm → ticket → plan → revise → implement` is the process
 model.
 
+The process model in full — the stages, the automated routing between them, and
+the re-entry paths:
+
+```mermaid
+---
+title: "Brainstorm = WHY · Ticket = WHAT · Plan = HOW · Implement = THE WORK"
+---
+flowchart TD
+
+    Start([Human starts work])
+
+    B["<b>Brainstorm — the WHY</b>
+    Purpose — Research the full architectural surface that the principle touches
+    Deliverables — Ticket (the WHAT) with thorough In Scope, Out of Scope, success criteria, attached patterns
+    Human touch — States goal and guiding principles, confirms surface classification, signs off the ticket
+    Human role peaks here by design"]
+
+    P["<b>Plan — the HOW</b>
+    Purpose — Lock in specifics, file paths, function names, phase ordering, criterion text
+    Deliverables — Structured phased plan with reuse_check classifications
+    Human touch — None unless context gap surfaces
+    Planner open_questions accuse a bad prompt or a bad ticket. The orchestrator self-tests — can it answer honestly from its own context? If yes, fix the brief and re-spawn. If not, re-enter Brainstorm with the user to cover the gap together"]
+
+    R["<b>Review — does the HOW match the WHAT?</b>
+    Purpose — Adversarial four-tier audit of the plan against the ticket
+    Deliverables — Findings report; next action determined automatically by severity thresholds
+    Human touch — None. Verdict and finding counts drive routing"]
+
+    I["<b>Implement — the WORK</b>
+    Purpose — Execute the plan one phase at a time
+    Deliverables — Working code, tests green, lint clean, closure rolled up plan to ticket to project
+    Human touch — None. Agents work through phases autonomously"]
+
+    Done([Status closure rolled up])
+
+    Start --> B
+    B -->|ticket signed off| P
+    P -->|plan created| R
+    R -->|"no T1/T2 and at most 2 T3, ship-as-is"| I
+    I --> Done
+
+    P -.->|"TICKET-GAP or open_question with no honest answer in orchestrator context — re-enter brainstorm mode with the user"| B
+    R -.->|"T1 or T2 or 3 plus T3, auto revise plan"| P
+    R -.->|"Tier 0 finding, ticket missed the principle"| B
+
+    classDef phase fill:#FFFCEC,stroke:#B89030,stroke-width:2px,color:#222,text-align:left
+    classDef terminator fill:#E8F4FF,stroke:#3A6FA0,stroke-width:2px,color:#222
+
+    class B,P,R,I phase
+    class Start,Done terminator
+
+    linkStyle 0,1,2,3,4 stroke:#2A7A2A,stroke-width:2px
+    linkStyle 5,6,7 stroke:#C04040,stroke-width:2px,stroke-dasharray:6 4
+```
+
 ## The 10 graph families
 
 Everything in knowledge lives in a graph, and every graph belongs to one of ten

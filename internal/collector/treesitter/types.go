@@ -73,7 +73,11 @@ type ChunkContext struct {
 	// Elixir, HCL) — those Bucket B predicates use their own AST signals.
 	Frameworks []Framework
 
-	// PackageName is the Go package or module namespace.
+	// PackageName is the symbol namespace edge IDs are qualified with: the Go
+	// package clause when the file declares one, otherwise
+	// "<language>:<directory>" derived from the file path by fileNamespace.
+	// It is never persisted — it exists only between chunker emission and edge
+	// resolution, which rewrites every surviving endpoint to a graph node ID.
 	PackageName string
 
 	// Signature is the full function/method signature if applicable.

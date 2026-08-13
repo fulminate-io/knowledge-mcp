@@ -139,7 +139,7 @@ func handleReflectInfluence(ctx context.Context, deps ClientDeps, a queryReflect
 	if gc == nil {
 		return errorResult("influence: graph client unavailable")
 	}
-	_, profile := fetchClusterContext(ctx, deps)
+	_, profile, _ := fetchClusterContext(ctx, deps)
 	limit := a.Limit
 	if limit <= 0 {
 		limit = 10
@@ -365,8 +365,12 @@ func handleReflectEvolution(ctx context.Context, deps ClientDeps, a queryReflect
 	if gc == nil {
 		return errorResult("evolution: graph client unavailable")
 	}
-	clusters, _ := fetchClusterContext(ctx, deps)
-	snapshots, err := clientthought.ComputeScalarEvolution(ctx, gc, clusters, a.ClusterA, a.ClusterB, 30, clientthought.BuildEvidenceAdj(ctx, gc, clusters))
+	clusters, _, src := fetchClusterContext(ctx, deps)
+	// REUSE the memo fetchClusterContext already built rather than resolving a second
+	// source: this handler and that call are ONE unit of work, so both halves read the
+	// same pinned snapshot and cannot disagree about the corpus they describe.
+	evidenceAdj := clientthought.BuildEvidenceAdj(ctx, gc, clusters, src)
+	snapshots, err := clientthought.ComputeScalarEvolution(ctx, gc, clusters, a.ClusterA, a.ClusterB, 30, evidenceAdj, src)
 	if err != nil {
 		return errorResult("evolution failed: " + err.Error())
 	}

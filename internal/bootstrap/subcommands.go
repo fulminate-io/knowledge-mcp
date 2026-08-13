@@ -43,6 +43,8 @@ func RunSubcommand() (handled bool, exitCode int) {
 		err = cli.LoginCmd(rest)
 	case "logout":
 		err = cli.LogoutCmd(rest)
+	case "auth-status":
+		err = cli.AuthStatusCmd(rest)
 	case "start":
 		err = runStart(rest)
 	case "stop":
@@ -84,8 +86,16 @@ func RunSubcommand() (handled bool, exitCode int) {
 // whether to print a "<sub>: <err>" annotation. A subcommand that shells out — e.g.
 // `knowledge tunnel <env> --command …` runs ssh, which propagates the REMOTE
 // command's exit status as an *exec.ExitError — surfaces that EXACT code with NO
-// extra line (the child already wrote its own stdout/stderr, SSM-style). Every other
-// error is a generic failure: exit 1 with the annotation.
+// extra line (the child already wrote its own stdout/stderr, SSM-style).
+//
+// `auth-status` reporting no usable session maps to cli.ExitNoValidSession so a
+// caller can tell that answer apart from exit 1, which every unrecognized argv
+// also returns — without a distinct code, a script probing an older binary
+// would read "this subcommand does not exist" as "you are not logged in". The
+// annotation still prints, because the one-line reason is what tells a human
+// which of not-logged-in or expired they hit.
+//
+// Every other error is a generic failure: exit 1 with the annotation.
 func subcommandExit(err error) (code int, printMessage bool) {
 	if err == nil {
 		return 0, false
@@ -93,6 +103,9 @@ func subcommandExit(err error) (code int, printMessage bool) {
 	var exitErr *exec.ExitError
 	if errors.As(err, &exitErr) && exitErr.ExitCode() > 0 {
 		return exitErr.ExitCode(), false
+	}
+	if errors.Is(err, cli.ErrNoValidSession) {
+		return cli.ExitNoValidSession, true
 	}
 	return 1, true
 }

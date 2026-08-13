@@ -146,7 +146,36 @@ func classifyTestBlockLua(
 	return false, TestKindNone
 }
 
+// resolveDeclNameLua names Lua's two chunked declaration kinds.
+//
+// function_statement takes its name: field VERBATIM and applies no kind filter,
+// because the field binds a function_name for `function M.helper` and a plain
+// identifier for `local function localFn`, and both are wanted. The qualified
+// spelling is the point: Lua's container is a table held in a local rather than
+// an ancestor node, so there is no ascent that could recover it. "M.helper"
+// keys as <ns>.M.helper and resolves directly; the colon in "M:method" is inert
+// to edge resolution, which splits only on '.'.
+//
+// variable_declaration is named ONLY when it declares exactly one variable.
+// ChildByFieldName returns the FIRST declarator, so without the guard
+// `local a, b = 1, 2` would be named "a" — a node claiming to be one variable
+// while spanning two.
+func resolveDeclNameLua(declNode *sitter.Node, src []byte, chunkType string) string {
+	switch chunkType {
+	case "function_statement":
+		if n := declNode.ChildByFieldName("name"); n != nil {
+			return n.Content(src)
+		}
+	case "variable_declaration":
+		if countNamedChildrenOfKind(declNode, "variable_declarator") == 1 {
+			return fieldNamed(declNode, src, "name", "variable_declarator")
+		}
+	}
+	return ""
+}
+
 func init() {
 	testKindClassifiers[LangLua] = classifyTestKindLua
 	testBlockClassifiers[LangLua] = classifyTestBlockLua
+	declNameResolvers[LangLua] = resolveDeclNameLua
 }

@@ -152,21 +152,14 @@ const defaultSessionIdleTTL = 30 * time.Minute
 // per initialize, so the already-exists branch is defensive. The pid + comm are
 // retained for the hive daemon monitor's transcript binding (comm hints which
 // resolver to try first; pid drives the codex open-rollout probe and liveness).
-//
-// It reports whether it actually created the session, so the caller can notify
-// the hive lifecycle that a session opened exactly once. That notification is
-// the caller's job, NOT this function's: it holds the write lock for its whole
-// body, and the notification's consumer reads back through SessionSnapshots,
-// which takes the read lock on the same non-reentrant RWMutex.
-func (h *HTTPServer) ensureSession(id, cwd string, pid int, comm string) (created bool) {
+func (h *HTTPServer) ensureSession(id, cwd string, pid int, comm string) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if _, ok := h.sessions[id]; ok {
-		return false
+		return
 	}
 	now := time.Now()
 	h.sessions[id] = &httpSession{id: id, cwd: cwd, pid: pid, comm: comm, createdAt: now, lastSeen: now}
-	return true
 }
 
 // lookupSession returns the session for id, or (nil, false) if no such
@@ -185,11 +178,6 @@ func (h *HTTPServer) lookupSession(id string) (*httpSession, bool) {
 // which resolver to try first, and PID drives the codex open-rollout probe /
 // liveness. The returned slice is a copy, so the monitor iterates without
 // holding the lock.
-//
-// The hive loop controller also reads this from its session-open hook, to see
-// the session that just opened. That read takes h.mu.RLock, which is why the
-// session-open notification is fired by handleHTTPInitialize after ensureSession
-// returns rather than from inside it.
 func (h *HTTPServer) SessionSnapshots() []hivemonitor.SessionSnapshot {
 	h.mu.RLock()
 	defer h.mu.RUnlock()

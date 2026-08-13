@@ -82,6 +82,36 @@ func classifyTestBlockOCaml(
 	return false, TestKindNone
 }
 
+// resolveDeclNameOCaml names OCaml's three chunked declaration kinds.
+//
+// The name always lives one level down: module_definition, value_definition and
+// type_definition expose NO fields of their own — the binding child does. That
+// is the same grammar fact that makes module_binding, not module_definition,
+// the container kind in classLikeTypes.
+//
+// The kind checks are what keep the two negatives unnamed while KEEPING their
+// chunks: `let () = ...` binds a unit pattern rather than a value_name, and
+// `let%test "x" = ...` binds a string. Both resolve to "" and are still chunked,
+// which is exactly what a tightened query would not have done.
+func resolveDeclNameOCaml(declNode *sitter.Node, src []byte, chunkType string) string {
+	switch chunkType {
+	case "value_definition":
+		if lb := firstNamedChildOfKind(declNode, "let_binding"); lb != nil {
+			return fieldNamed(lb, src, "pattern", "value_name")
+		}
+	case "type_definition":
+		if tb := firstNamedChildOfKind(declNode, "type_binding"); tb != nil {
+			return fieldNamed(tb, src, "name", "type_constructor")
+		}
+	case "module_definition":
+		if mb := firstNamedChildOfKind(declNode, "module_binding"); mb != nil {
+			return fieldNamed(mb, src, "name", "module_name")
+		}
+	}
+	return ""
+}
+
 func init() {
 	testBlockClassifiers[LangOCaml] = classifyTestBlockOCaml
+	declNameResolvers[LangOCaml] = resolveDeclNameOCaml
 }

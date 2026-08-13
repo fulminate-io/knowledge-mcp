@@ -109,12 +109,6 @@ const (
 	OpInstructionBootstrap Operation = "instruction.bootstrap"
 	OpPropagationReflect   Operation = "propagation.reflect"
 	OpHiveMonitor          Operation = "hive.monitor"
-	// OpWorkerRuntimeStart is the worker runtime's one-shot boot registry load
-	// (dream Runner.Start reading the worker set to install triggers). It is
-	// deliberately distinct from OpWorker: that term means a user invoked the
-	// worker tool, and folding boot validation into it would erase the difference
-	// between load a daemon imposes on itself and load a caller asked for.
-	OpWorkerRuntimeStart Operation = "worker.runtime_start"
 )
 
 // AllOperations enumerates every declared term. TestOperationVocabulary walks
@@ -139,7 +133,6 @@ var AllOperations = []Operation{
 	OpCorpusDeltaDrain, OpRebuildSegments, OpSegmentDeltaMerge,
 	OpSegmentHeal, OpSegmentReconcile, OpSegmentRepair, OpSegmentHorizonSeed,
 	OpInstructionBootstrap, OpPropagationReflect, OpHiveMonitor,
-	OpWorkerRuntimeStart,
 
 	OpToolUnknown, OpUnstamped,
 }

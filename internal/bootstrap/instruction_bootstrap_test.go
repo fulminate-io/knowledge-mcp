@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -33,7 +34,18 @@ type fakeBootstrapGC struct {
 	queryError     error
 	mutateError    error
 
+	// mu guards calls. The deferred instruction bootstrap runs on its own
+	// goroutine, so the recorder is written from one goroutine and read from the
+	// test's — read it through recorded() rather than touching the slice.
+	mu    sync.Mutex
 	calls []bootstrapCall
+}
+
+// recorded returns a copy of the recorded calls under the lock.
+func (f *fakeBootstrapGC) recorded() []bootstrapCall {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]bootstrapCall(nil), f.calls...)
 }
 
 type bootstrapCall struct {
@@ -55,7 +67,9 @@ func (f *fakeBootstrapGC) Call(_ context.Context, _ string, _ json.RawMessage) (
 func (f *fakeBootstrapGC) Execute(ctx context.Context, req *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error) {
 	op, opOK := graphclient.OperationFromContext(ctx)
 	if req.GetQuery() != nil {
+		f.mu.Lock()
 		f.calls = append(f.calls, bootstrapCall{tool: "query", req: req, op: op, opOK: opOK})
+		f.mu.Unlock()
 		if f.queryError != nil {
 			return nil, f.queryError
 		}
@@ -66,7 +80,9 @@ func (f *fakeBootstrapGC) Execute(ctx context.Context, req *knowledgev1.ExecuteR
 		return enginetest.ResponseWithNodes(nodes...), nil
 	}
 	// mutate (create_batch) Execute.
+	f.mu.Lock()
 	f.calls = append(f.calls, bootstrapCall{tool: "mutate", req: req, op: op, opOK: opOK})
+	f.mu.Unlock()
 	if f.mutateError != nil {
 		return nil, f.mutateError
 	}

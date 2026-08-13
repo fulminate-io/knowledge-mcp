@@ -88,7 +88,7 @@ func TestPersonalityScalars_RerinforcerSemantics(t *testing.T) {
 			},
 		}
 		// evidenceAdj = nil: no evidence resolution at all.
-		profile, err := ComputePersonalityScalars(ctx, fc, clusters, nil)
+		profile, err := ComputePersonalityScalars(ctx, fc, clusters, nil, nil)
 		require.NoError(t, err)
 		// A→B: both charges confirmed (cA1's subsequent cA2 is same polarity;
 		// cA2 no-subsequent fallback) → accuracy 1.0 → scalar 1.8, != 1.000.
@@ -121,10 +121,10 @@ func TestPersonalityScalars_RerinforcerSemantics(t *testing.T) {
 			chargedBy:   map[string][]string{"tA1": {"c1", "c2", "c3"}},
 			chargeNodes: nodes,
 		}
-		without, err := ComputePersonalityScalars(ctx, fc, clusters, nil)
+		without, err := ComputePersonalityScalars(ctx, fc, clusters, nil, nil)
 		require.NoError(t, err)
 		// Evidence: c3 (the net-confirming charge) targets a clustered B thought.
-		with, err := ComputePersonalityScalars(ctx, fc, clusters, map[string][]string{"c3": {"tB1"}})
+		with, err := ComputePersonalityScalars(ctx, fc, clusters, map[string][]string{"c3": {"tB1"}}, nil)
 		require.NoError(t, err)
 
 		sWithout := without.Scalars["A"]["B"]
@@ -157,7 +157,7 @@ func TestPersonalityScalars_RerinforcerSemantics(t *testing.T) {
 			chargeNodes: nodes,
 		}
 		// c3's evidence targets a B thought → A→B is boosted, A→C is not.
-		profile, err := ComputePersonalityScalars(ctx, fc, clusters, map[string][]string{"c3": {"tB1"}})
+		profile, err := ComputePersonalityScalars(ctx, fc, clusters, map[string][]string{"c3": {"tB1"}}, nil)
 		require.NoError(t, err)
 		assert.NotEqual(t, profile.Scalars["A"]["B"], profile.Scalars["A"]["C"],
 			"thought-targeted evidence to B must sharpen A→B relative to the un-attributed A→C")
@@ -171,7 +171,7 @@ func TestPersonalityScalars_RerinforcerSemantics(t *testing.T) {
 			{ID: "B", Label: "B", ThoughtIDs: []string{"tB1"}},
 		}
 		fc := &chargeFakeCaller{} // no charges at all.
-		profile, err := ComputePersonalityScalars(ctx, fc, clusters, nil)
+		profile, err := ComputePersonalityScalars(ctx, fc, clusters, nil, nil)
 		require.NoError(t, err)
 		assert.InDelta(t, 1.0, profile.Scalars["A"]["B"], 1e-9)
 		assert.InDelta(t, 1.0, profile.Scalars["B"]["A"], 1e-9)

@@ -96,6 +96,57 @@ func elixirCallTarget(declNode *sitter.Node, src []byte) string {
 	return ""
 }
 
+// resolveDeclNameElixir names an Elixir definition after the entity it defines
+// rather than after the macro that defines it. The TopLevel query binds the
+// macro keyword as @kw and no @name, so every admitted definition arrives here
+// unnamed and the real name is read out of the call's first argument, in the
+// four shapes the grammar produces:
+//
+//	alias           defmodule MyApp.Worker      -> MyApp.Worker
+//	call            def perform(arg)            -> perform
+//	identifier      def no_args do              -> no_args
+//	binary_operator def with_guard(x) when ...  -> with_guard  (the left of `when`)
+//
+// Anything else resolves to "" and leaves the chunk unnamed exactly as an
+// unnamed chunk behaves today — `defstruct [:a, :b]` takes that path, because
+// it defines fields rather than a named entity.
+func resolveDeclNameElixir(declNode *sitter.Node, src []byte, chunkType string) string {
+	if chunkType != "call" {
+		return ""
+	}
+	args := firstNamedChildOfKind(declNode, "arguments")
+	if args == nil || args.NamedChildCount() == 0 {
+		return ""
+	}
+	arg := args.NamedChild(0)
+	switch arg.Type() {
+	case "alias", "identifier":
+		return arg.Content(src)
+	case "call":
+		return elixirCallTargetName(arg, src)
+	case "binary_operator":
+		// A guard clause: the head is the operator's left side.
+		left := arg.ChildByFieldName("left")
+		if left == nil {
+			return ""
+		}
+		switch left.Type() {
+		case "call":
+			return elixirCallTargetName(left, src)
+		case "identifier":
+			return left.Content(src)
+		}
+	}
+	return ""
+}
+
+// elixirCallTargetName returns a call's target when it is a plain identifier.
+// A qualified target is a dot operator rather than an identifier and yields "".
+func elixirCallTargetName(call *sitter.Node, src []byte) string {
+	return fieldNamed(call, src, "target", "identifier")
+}
+
 func init() {
 	testBlockClassifiers[LangElixir] = classifyTestBlockElixir
+	declNameResolvers[LangElixir] = resolveDeclNameElixir
 }

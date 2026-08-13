@@ -67,6 +67,13 @@ func handleWorkerCreate(ctx context.Context, deps ClientDeps, a workerArgs) kgto
 	if err := cc.Create(ctx, w); err != nil {
 		return errorResult("worker:create: " + err.Error())
 	}
+	// Creating a worker in this process is what installs its triggers. The
+	// runtime is nil in router-less / headless fixtures and when boot
+	// degraded; the row is still created, it simply has no live
+	// registration until a process that has a runtime creates one.
+	if rt := deps.WorkerRuntime(); rt != nil {
+		rt.InstallWorker(ctx, w)
+	}
 	return textResult(fmt.Sprintf("worker %q created (provider=%s tools=%v enabled=%v)",
 		w.Name, w.Provider, w.ToolAllowlist, w.Enabled))
 }

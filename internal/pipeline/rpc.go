@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -101,13 +102,14 @@ func scanGaps(ctx context.Context, c WireClient, gt kgtypes.GraphType, name, axi
 
 // pipelineEligibleGraphTypes is the BUILTIN base of the set of graph types the
 // LLM pipeline drains. The eligible-type filter is a client concern (the pipeline
-// owns which types it summarizes/embeds), so it lives here. Registered custom
-// GraphTypeDef types are discovered dynamically on every catalog pass
-// (discoverRegisteredGraphTypes) and folded in on top of this base — the server's
-// per-axis gap shims no-op a both-false custom type cheaply, so the client
-// enumerates every registered type unconditionally and lets the server gate
-// per-behavior (the registered behavior-config is honored server-side; the
-// client applies no behavior gate).
+// owns which types it summarizes/embeds), so it lives here.
+//
+// It is a FILTER over working-set members, never an enumeration of what to go
+// looking for: the catalog pass reads the graphs this client has interacted with
+// and drops the ones whose type this pipeline does not enrich. The distinction is
+// the point — filtering members costs nothing, whereas enumerating these types
+// against the backend is exactly the per-type read that put collectors behind
+// graphs this machine had never touched.
 var pipelineEligibleGraphTypes = []kgtypes.GraphType{
 	kgtypes.GraphKnowledge,
 	kgtypes.GraphCode,
@@ -117,160 +119,31 @@ var pipelineEligibleGraphTypes = []kgtypes.GraphType{
 	kgtypes.GraphTransformers,
 }
 
-// discoverRegisteredGraphTypes issues ONE query(type:graph_type_def) Execute and
-// returns the registered custom graph type names discovered this tick. It
-// replicates graphtypecrud.Client.List's browse+decode shape (compile a
-// type-browse query, Execute, DecodeNodes, read node.SymbolName — ToNode stores
-// the registered name as both ID and SymbolName) WITHOUT importing graphtypecrud,
-// whose CRUD/validation surface the pipeline does not need.
+// pipelineDrainsType reports whether the pipeline enriches graphs of type gt.
 //
-// Returns (discovered, rlHint, sawRateLimit). A browse error is NON-FATAL: it is
-// logged and the empty slice is returned so the tick proceeds with builtins only
-// (identical to the per-type modules skip below). A rate-limit on the browse is
-// surfaced via (rlHint, sawRateLimit) so it can feed the SAME whole-tick-throttle
-// accounting listLoadedGraphs already runs — but the CALLER must NOT add this
-// browse to `succeeded`, so a registry-browse 429 alone never forces backoff when
-// the builtin types enumerated fine. Builtin-named types are filtered out
-// (defensive dedupe) so a registered type can never duplicate a builtin tick.
-func discoverRegisteredGraphTypes(ctx context.Context, c WireClient) (discovered []kgtypes.GraphType, rlHint time.Duration, sawRateLimit bool) {
-	rawArgs, err := json.Marshal(map[string]any{
-		"type":  string(kgtypes.NodeGraphTypeDef),
-		"limit": graphTypeDefListLimit,
-	})
-	if err != nil {
-		slog.Warn("pipeline.rpc: marshal graph_type_def browse args failed; skipping custom types this tick", "error", err)
-		return nil, 0, false
+// Two admitting cases. A BUILTIN type qualifies only by being listed in
+// pipelineEligibleGraphTypes above, which keeps builtins the pipeline does not
+// enrich (linkage, logs, and the raw ingest types) out. A NON-builtin type is a
+// registered custom GraphTypeDef and qualifies unconditionally: the server's
+// per-axis gap shims no-op a both-false custom type cheaply, so the client
+// applies no behavior gate and lets the server honor the registered
+// behavior-config.
+//
+// An empty type names no graph and qualifies as neither.
+func pipelineDrainsType(gt kgtypes.GraphType) bool {
+	if gt == "" {
+		return false
 	}
-	req, ok := engine.Compile("query", rawArgs)
-	if !ok {
-		slog.Warn("pipeline.rpc: graph_type_def browse query did not compile; skipping custom types this tick")
-		return nil, 0, false
+	if !kgtypes.IsBuiltinGraphType(string(gt)) {
+		return true
 	}
-	resp, err := c.Execute(ctx, req)
-	if err != nil {
-		if hint, isRL := rateLimitHint(err); isRL {
-			rlHint = hint
-			sawRateLimit = true
-		}
-		slog.Warn("pipeline.rpc: graph_type_def browse failed; skipping custom types this tick", "error", err)
-		return nil, rlHint, sawRateLimit
-	}
-	nodes, derr := engine.DecodeNodes(resp)
-	if derr != nil {
-		slog.Warn("pipeline.rpc: graph_type_def browse decode failed; skipping custom types this tick", "error", derr)
-		return nil, 0, false
-	}
-	for _, n := range nodes {
-		name := n.GetSymbolName()
-		if name == "" || kgtypes.IsBuiltinGraphType(name) {
-			continue
-		}
-		discovered = append(discovered, kgtypes.GraphType(name))
-	}
-	return discovered, 0, false
+	return slices.Contains(pipelineEligibleGraphTypes, gt)
 }
 
-// graphTypeDefListLimit caps the graph_type_def browse. Mirrors
-// graphtypecrud.graphTypeListLimit — a large explicit limit so the registry
-// enumeration is never silently truncated by a small default.
-const graphTypeDefListLimit = 100000
-
-// listLoadedGraphs returns every (gt, name) pair the pipeline should drain,
-// composed CLIENT-SIDE over the generic RETURN_MODE_GRAPH_NAMES read (a
-// pure all-types graph enumeration, not pipeline floor). It reproduces the
-// server's old handlePipelineListGraphs: seed the explicit {knowledge, default}
-// entry (ListGraphsLite(GraphKnowledge) enumerates only the situation-overlay
-// subdir, so the root knowledge graph would otherwise be missed), then one
-// query(mode:modules) Execute per eligible type, appending each decoded
-// GraphInfo.Name. The eligible-type set is the builtin base
-// (pipelineEligibleGraphTypes) PLUS the registered custom GraphTypeDef types
-// discovered this tick (discoverRegisteredGraphTypes), so a registered custom
-// graph's loaded names are drained alongside the builtins. Used by the refresh
-// goroutine, which dedupes by graphKey — set membership, not order, is the
-// invariant. Mirrors the D6 in-package engine.Compile+Execute+DecodeGraphNames
-// template.
-//
-// Throttle reporting: when EVERY eligible type fails to enumerate AND at least
-// one of those failures is a remote rate-limit (429), the tick made zero
-// progress purely because the backend is throttling us. listLoadedGraphs
-// surfaces that as (rlThrottled=true, rlHint=max Retry-After seen) so the
-// discovery loop can back off instead of re-firing one query-per-type at the
-// base cadence — the same #3 scan-error insurance the per-graph collector loop
-// already has (collector.go runLoop). Without it a sustained 429 turns the
-// CloudTick/Tick poll into a tight retry storm against the shared backend rate
-// limiter (the bug class backoff.go documents for the worker pool).
-func listLoadedGraphs(ctx context.Context, c WireClient) ([]GraphRef, map[kgtypes.GraphType]bool, time.Duration, bool) {
-	out := []GraphRef{{GraphType: kgtypes.GraphKnowledge, GraphName: "default"}}
-	// Discover registered custom GraphTypeDef types this tick and fold them onto
-	// the builtin base. A discovery failure is non-fatal (custom types skipped,
-	// builtins still enumerate); a discovery rate-limit seeds the SAME
-	// sawRateLimit/rlHint accounting the per-type loop uses, but the browse is
-	// deliberately NOT added to `succeeded` — a registry-browse 429 alone must
-	// never force whole-tick backoff when the builtin types enumerated fine.
-	discovered, discRLHint, discSawRateLimit := discoverRegisteredGraphTypes(ctx, c)
-	graphTypes := make([]kgtypes.GraphType, 0, len(pipelineEligibleGraphTypes)+len(discovered))
-	graphTypes = append(graphTypes, pipelineEligibleGraphTypes...)
-	graphTypes = append(graphTypes, discovered...)
-
-	// succeeded records which graph types this tick actually enumerated. A type's
-	// per-type failure (a rollout 502, a permission_denied, a decode error) is
-	// NON-FATAL: we skip that type this tick rather than abort the whole refresh —
-	// one type's failure must never wedge enrichment for every other graph (the
-	// resilience gap that left the pipeline stalled across a backend rollout). The
-	// caller (refreshOnce) only unregisters collectors within successfully-
-	// enumerated types, so a failing type's existing collectors are preserved and
-	// re-converge on a later clean tick.
-	succeeded := make(map[kgtypes.GraphType]bool, len(graphTypes))
-	rlHint := discRLHint
-	sawRateLimit := discSawRateLimit
-	for _, gt := range graphTypes {
-		rawArgs, err := json.Marshal(map[string]any{
-			"graph":  string(gt),
-			"mode":   "modules",
-			"format": "json",
-		})
-		if err != nil {
-			slog.Warn("pipeline.rpc: marshal list-graphs args failed; skipping type this tick", "graph_type", gt, "error", err)
-			continue
-		}
-		req, ok := engine.Compile("query", rawArgs)
-		if !ok {
-			slog.Warn("pipeline.rpc: list-graphs query did not compile; skipping type this tick", "graph_type", gt)
-			continue
-		}
-		resp, err := c.Execute(ctx, req)
-		if err != nil {
-			if hint, isRL := rateLimitHint(err); isRL {
-				sawRateLimit = true
-				if hint > rlHint {
-					rlHint = hint
-				}
-			}
-			slog.Warn("pipeline.rpc: list-graphs failed; skipping type this tick", "graph_type", gt, "error", err)
-			continue
-		}
-		infos, derr := engine.DecodeGraphNames(resp)
-		if derr != nil {
-			slog.Warn("pipeline.rpc: list-graphs decode failed; skipping type this tick", "graph_type", gt, "error", derr)
-			continue
-		}
-		succeeded[gt] = true
-		for _, info := range infos {
-			if info.Name == "" {
-				continue
-			}
-			out = append(out, GraphRef{GraphType: gt, GraphName: info.Name})
-		}
-	}
-	// rlThrottled only when the WHOLE tick was lost to rate-limiting — a partial
-	// failure (some types enumerated) is already absorbed by the per-type skip
-	// above and must not back off discovery for the healthy types.
-	return out, succeeded, rlHint, len(succeeded) == 0 && sawRateLimit
-}
-
-// GraphRef is one (gt, name) pair returned by listLoadedGraphs. Public so
-// the refresh goroutine can pass it back into RegisterGraph / build a diff
-// set without exposing the wire-shape entry type.
+// GraphRef is one (gt, name) pair in the pipeline's wanted set, produced by the
+// catalog pass's working-set read (wantedGraphs, pipeline_refresh.go) and passed
+// into RegisterGraph / the diff set. Public so the refresh pass can hand these
+// around without exposing a wire-shape entry type.
 type GraphRef struct {
 	GraphType kgtypes.GraphType
 	GraphName string

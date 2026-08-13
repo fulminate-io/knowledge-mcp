@@ -142,20 +142,35 @@ func executeReflectInertMutate(ctx context.Context, gc Caller, args json.RawMess
 
 // fetchChargesFor composes the per-thought charge map CLIENT-SIDE, reproducing
 // the server's handleChargesFor (a PURE read: per-thought outgoing-EdgeChargedBy
-// walk + charge hydration, zero compute). Two Execute calls regardless of
-// |thoughtIDs| — strictly better than the server's N IterEdges + 1 IterateAll:
+// walk + charge hydration, zero compute).
+//
+// src is the per-pass read memo: every consumer of the thought-pivot charge map in
+// one pass is served ONE composition through memoCharges, so the five stages that
+// each built their own map now share it. A nil/non-memo src composes the map on the
+// spot, exactly as before.
+func fetchChargesFor(ctx context.Context, gc Caller, thoughtIDs []string, src CorpusSource) map[string][]*knowledgev1.Node {
+	return memoCharges(ctx, gc, thoughtIDs, src)
+}
+
+// fetchChargesUncached is the composition itself — the read memoCharges falls back
+// to on a miss. AT MOST two Execute calls regardless of |thoughtIDs|, and no hydrate
+// at all when the resident charge snapshot covers the set:
 //
 //  1. ONE bulk RETURN_MODE_EDGES read over the thought-id node set filtered to
 //     EdgeChargedBy; collect the ToID charge IDs per thought (FromID is the
 //     thought, ToID the charge — EdgeChargedBy is thought_parent→charge).
-//  2. ONE bulk fetchNodesByIDs hydrate of the collected charge IDs.
+//  2. ONE memoCorpusNodes hydrate of the collected charge IDs — served from the
+//     resident charge snapshot with a residual-only wire read.
 //
 // Join in caller order, omitting thoughts with no charges (matching
-// handleChargesFor lines 86-97). Empty input → empty map.
-func fetchChargesFor(ctx context.Context, gc Caller, thoughtIDs []string) map[string][]*knowledgev1.Node {
+// handleChargesFor lines 86-97). Empty input → empty map. The error return exists
+// so the memo can tell a FAILED edge read from a genuinely charge-free corpus and
+// decline to memoize the former; every other caller reads it through
+// fetchChargesFor, which keeps the best-effort map-only contract.
+func fetchChargesUncached(ctx context.Context, gc Caller, thoughtIDs []string, src CorpusSource) (map[string][]*knowledgev1.Node, error) {
 	out := map[string][]*knowledgev1.Node{}
 	if gc == nil || len(thoughtIDs) == 0 {
-		return out
+		return out, nil
 	}
 	inSet := make(map[string]bool, len(thoughtIDs))
 	for _, tid := range thoughtIDs {
@@ -165,7 +180,7 @@ func fetchChargesFor(ctx context.Context, gc Caller, thoughtIDs []string) map[st
 	edges, err := fetchEdgesForNodeSet(ctx, gc, thoughtIDs, []kgtypes.EdgeType{kgtypes.EdgeChargedBy})
 	if err != nil {
 		slog.Warn("thought: fetchChargesFor: bulk edges failed", "err", err)
-		return out
+		return out, err
 	}
 
 	// Collect charge IDs per thought (only edges whose FromID is a requested
@@ -181,10 +196,10 @@ func fetchChargesFor(ctx context.Context, gc Caller, thoughtIDs []string) map[st
 		allChargeIDs = append(allChargeIDs, e.ToId)
 	}
 	if len(allChargeIDs) == 0 {
-		return out
+		return out, nil
 	}
 
-	chargeByID := fetchNodesByIDs(ctx, gc, allChargeIDs)
+	chargeByID := memoCorpusNodes(ctx, gc, allChargeIDs, src)
 
 	// Join in caller order; omit thoughts with no (hydratable) charges. Missing
 	// charge IDs (tombstoned/deleted) are silently dropped, matching the server.
@@ -200,35 +215,46 @@ func fetchChargesFor(ctx context.Context, gc Caller, thoughtIDs []string) map[st
 			out[tid] = charges
 		}
 	}
-	return out
+	return out, nil
 }
 
 // fetchNodesByIDs hydrates a slice of node IDs in one Execute round-trip
 // (query{ids:} → the typed Nodes carrier). Returns a map; missing IDs are absent.
+// Best-effort: a failed read is logged and yields an empty map. A caller that must
+// tell a FAILED read from a genuinely absent id — the per-pass memo, which must
+// never memoize a failure — takes fetchNodesByIDsErr instead.
 func fetchNodesByIDs(ctx context.Context, gc Caller, ids []string) map[string]*knowledgev1.Node {
+	out, _ := fetchNodesByIDsErr(ctx, gc, ids)
+	return out
+}
+
+// fetchNodesByIDsErr is fetchNodesByIDs' error-surfacing core: the same single
+// Execute round-trip, with the failure the wrapper swallows returned alongside the
+// (empty) map.
+func fetchNodesByIDsErr(ctx context.Context, gc Caller, ids []string) (map[string]*knowledgev1.Node, error) {
 	out := map[string]*knowledgev1.Node{}
 	if gc == nil || len(ids) == 0 {
-		return out
+		return out, nil
 	}
 	raw, err := json.Marshal(map[string]any{"ids": ids})
 	if err != nil {
 		slog.Warn("thought: fetchNodesByIDs: marshal failed", "err", err)
-		return out
+		return out, err
 	}
 	resp, err := executeViaEngine(ctx, gc, "query", raw)
 	if err != nil {
 		slog.Warn("thought: fetchNodesByIDs: execute failed", "err", err)
-		return out
+		return out, err
 	}
 	nodes, derr := engine.DecodeNodes(resp)
 	if derr != nil {
 		slog.Warn("thought: fetchNodesByIDs: decode failed", "err", derr)
-		return out
+		return out, derr
 	}
 	for _, n := range nodes {
 		out[n.Id] = n
 	}
-	return out
+	return out, nil
 }
 
 // fetchNode is a single-ID convenience wrapper around fetchNodesByIDs.
@@ -249,9 +275,11 @@ func FetchNode(ctx context.Context, gc Caller, id string) (*knowledgev1.Node, bo
 // fetchChargesFor for cmd/knowledge/internal/tools/ — handleChargeClient
 // needs the bulk-charge wire after a mutate(create, type:charge) so it
 // can compute thought properties locally without re-exposing the
-// underlying helper directly.
+// underlying helper directly. Its signature is deliberately UNCHANGED: an
+// on-demand intercept holds no propagation pass, so it passes a nil source and
+// takes the uncached read.
 func FetchChargesFor(ctx context.Context, gc Caller, thoughtIDs []string) map[string][]*knowledgev1.Node {
-	return fetchChargesFor(ctx, gc, thoughtIDs)
+	return fetchChargesFor(ctx, gc, thoughtIDs, nil)
 }
 
 // FetchEdgesForNodeSet is the exported bulk-edge wrapper around

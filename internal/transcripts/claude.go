@@ -137,17 +137,7 @@ func claudeBlocks(raw json.RawMessage) []claudeContentBlock {
 //     the first non-empty value and stamp every row after the scan; a main-agent
 //     file carries no attributionAgent, so its rows keep an empty subagent_type.
 func ParseClaude(r io.Reader) ([]Row, error) {
-	var rows []Row
-	// toolRowByID maps a tool_use id to the index of its tool Row so a later
-	// tool_result can flip its is_error and stamp its duration_ms.
-	toolRowByID := map[string]int{}
-	// lastUserTS is the timestamp of the most recent type=="user" record (which
-	// includes tool_result records) — the anchor a following token Row measures
-	// its model-latency proxy against.
-	var lastUserTS time.Time
-	// subagentType is the file-constant attributionAgent, captured on first sight
-	// and stamped onto every row after the scan.
-	var subagentType string
+	scan := &claudeScan{toolRowByID: map[string]int{}}
 
 	var offset int64
 	sc := newJSONLScanner(r)
@@ -160,116 +150,153 @@ func ParseClaude(r io.Reader) ([]Row, error) {
 		// output; KN-2's watermark inherits it.
 		offset += int64(len(line)) + 1
 
-		if len(bytes.TrimSpace(line)) == 0 || line[0] != '{' {
-			continue
-		}
-		var env claudeEnvelope
-		if err := json.Unmarshal(line, &env); err != nil {
-			// Malformed or half-written trailing line — skip, keep parsing.
-			continue
-		}
-		msg := env.Message
-		if msg == nil {
-			continue
-		}
-		if msg.Model == "<synthetic>" {
-			// Claude's injected synthetic turns are not real API calls — skip.
-			continue
-		}
-
-		// Capture the file-constant subagent type on first sight (stamped below).
-		if subagentType == "" && env.AttributionAgent != "" {
-			subagentType = env.AttributionAgent
-		}
-
-		base := Row{
-			Source:       SourceClaude,
-			SessionID:    env.SessionID,
-			Project:      env.Cwd,
-			GitBranch:    env.GitBranch,
-			RecordTS:     parseRecordTS(env.Timestamp),
-			RecordType:   env.Type,
-			CLIVersion:   env.Version,
-			UUID:         env.UUID,
-			ParentUUID:   env.ParentUUID,
-			SourceOffset: recordStart,
-			// Envelope-wide enrichment: present on every record, so stamp on base
-			// and it flows to both the token Row and the tool Rows. subagent_type
-			// (attributionAgent) is stamped in a post-scan pass — see below.
-			IsSidechain: env.IsSidechain,
-			AgentID:     env.AgentID,
-			IsMeta:      env.IsMeta,
-			Interrupted: env.InterruptedMessageID != "",
-			IsAPIError:  env.IsAPIErrorMessage,
-			MCPServer:   env.AttributionMCPServer,
-			MCPTool:     env.AttributionMCPTool,
-			Skill:       env.AttributionSkill,
-		}
-
-		// Token Row: an assistant turn with usage accounting.
-		if env.Type == "assistant" && msg.Usage != nil {
-			ur := base
-			ur.Model = msg.Model
-			ur.InputTokens = msg.Usage.InputTokens
-			ur.OutputTokens = msg.Usage.OutputTokens
-			ur.CacheCreationTokens = msg.Usage.CacheCreationInputTokens
-			ur.CacheReadTokens = msg.Usage.CacheReadInputTokens
-			ur.CacheCreation1hTokens = msg.Usage.CacheCreation.Ephemeral1h
-			ur.CacheCreation5mTokens = msg.Usage.CacheCreation.Ephemeral5m
-			ur.ServiceTier = msg.Usage.ServiceTier
-			ur.WebSearchCount = msg.Usage.ServerToolUse.WebSearch
-			ur.WebFetchCount = msg.Usage.ServerToolUse.WebFetch
-			ur.StopReason = msg.StopReason
-			// Model-latency proxy: assistant turn ts − last user-role record ts.
-			ur.DurationMs = clampedDeltaMs(lastUserTS, base.RecordTS)
-			rows = append(rows, ur)
-		}
-
-		// Content blocks: tool_use issues a tool Row; tool_result flips IsError and
-		// stamps duration_ms on the tool Row it answers.
-		for _, b := range claudeBlocks(msg.Content) {
-			switch b.Type {
-			case "tool_use":
-				tr := base
-				tr.Model = msg.Model
-				tr.ToolName = b.Name
-				tr.ToolUseID = b.ID
-				tr.ToolInputHash, tr.ToolInputPreview = toolInputFingerprint(b.Input)
-				rows = append(rows, tr)
-				if b.ID != "" {
-					toolRowByID[b.ID] = len(rows) - 1
-				}
-			case "tool_result":
-				if b.ToolUseID != "" {
-					if idx, ok := toolRowByID[b.ToolUseID]; ok {
-						if b.IsError {
-							rows[idx].IsError = true
-						}
-						// tool_result.ts − tool_use.ts: the tool Row already carries
-						// its tool_use timestamp in RecordTS.
-						rows[idx].DurationMs = clampedDeltaMs(rows[idx].RecordTS, base.RecordTS)
-					}
-				}
-			}
-		}
-
-		// A user-role record (incl. tool_result carriers) advances the latency
-		// anchor for the next assistant turn.
-		if env.Type == "user" {
-			lastUserTS = base.RecordTS
-		}
+		scan.record(line, recordStart)
 	}
 	if err := sc.Err(); err != nil {
-		return rows, err
+		return scan.rows, err
 	}
 	// One O(rows) pass stamps the file-constant subagent type. A main-agent file
 	// leaves subagentType empty, so its rows keep an empty subagent_type.
-	if subagentType != "" {
-		for i := range rows {
-			rows[i].SubagentType = subagentType
+	if scan.subagentType != "" {
+		for i := range scan.rows {
+			scan.rows[i].SubagentType = scan.subagentType
 		}
 	}
-	return rows, nil
+	return scan.rows, nil
+}
+
+// claudeScan is the cross-record state of one ParseClaude pass.
+type claudeScan struct {
+	rows []Row
+	// toolRowByID maps a tool_use id to the index of its tool Row so a later
+	// tool_result can flip its is_error and stamp its duration_ms.
+	toolRowByID map[string]int
+	// lastUserTS is the timestamp of the most recent type=="user" record (which
+	// includes tool_result records) — the anchor a following token Row measures
+	// its model-latency proxy against.
+	lastUserTS time.Time
+	// subagentType is the file-constant attributionAgent, captured on first sight
+	// and stamped onto every row after the scan.
+	subagentType string
+}
+
+// record column-extracts one transcript line, appending its token/tool Rows and
+// advancing the scan state. Blank, non-JSON, malformed (half-written trailing),
+// message-less, and synthetic-model lines are skipped without error.
+func (s *claudeScan) record(line []byte, recordStart int64) {
+	if len(bytes.TrimSpace(line)) == 0 || line[0] != '{' {
+		return
+	}
+	var env claudeEnvelope
+	if err := json.Unmarshal(line, &env); err != nil {
+		// Malformed or half-written trailing line — skip, keep parsing.
+		return
+	}
+	msg := env.Message
+	if msg == nil {
+		return
+	}
+	if msg.Model == "<synthetic>" {
+		// Claude's injected synthetic turns are not real API calls — skip.
+		return
+	}
+
+	// Capture the file-constant subagent type on first sight (stamped after the
+	// scan by ParseClaude).
+	if s.subagentType == "" && env.AttributionAgent != "" {
+		s.subagentType = env.AttributionAgent
+	}
+
+	base := Row{
+		Source:       SourceClaude,
+		SessionID:    env.SessionID,
+		Project:      env.Cwd,
+		GitBranch:    env.GitBranch,
+		RecordTS:     parseRecordTS(env.Timestamp),
+		RecordType:   env.Type,
+		CLIVersion:   env.Version,
+		UUID:         env.UUID,
+		ParentUUID:   env.ParentUUID,
+		SourceOffset: recordStart,
+		// Envelope-wide enrichment: present on every record, so stamp on base
+		// and it flows to both the token Row and the tool Rows. subagent_type
+		// (attributionAgent) is stamped in a post-scan pass — see above.
+		IsSidechain: env.IsSidechain,
+		AgentID:     env.AgentID,
+		IsMeta:      env.IsMeta,
+		Interrupted: env.InterruptedMessageID != "",
+		IsAPIError:  env.IsAPIErrorMessage,
+		MCPServer:   env.AttributionMCPServer,
+		MCPTool:     env.AttributionMCPTool,
+		Skill:       env.AttributionSkill,
+	}
+
+	// Token Row: an assistant turn with usage accounting.
+	if env.Type == "assistant" && msg.Usage != nil {
+		s.rows = append(s.rows, s.tokenRow(base, msg))
+	}
+
+	// Content blocks: tool_use issues a tool Row; tool_result flips IsError and
+	// stamps duration_ms on the tool Row it answers.
+	for _, b := range claudeBlocks(msg.Content) {
+		s.contentBlock(base, msg, b)
+	}
+
+	// A user-role record (incl. tool_result carriers) advances the latency
+	// anchor for the next assistant turn.
+	if env.Type == "user" {
+		s.lastUserTS = base.RecordTS
+	}
+}
+
+// tokenRow builds the token Row for an assistant turn with usage accounting.
+func (s *claudeScan) tokenRow(base Row, msg *claudeMsg) Row {
+	ur := base
+	ur.Model = msg.Model
+	ur.InputTokens = msg.Usage.InputTokens
+	ur.OutputTokens = msg.Usage.OutputTokens
+	ur.CacheCreationTokens = msg.Usage.CacheCreationInputTokens
+	ur.CacheReadTokens = msg.Usage.CacheReadInputTokens
+	ur.CacheCreation1hTokens = msg.Usage.CacheCreation.Ephemeral1h
+	ur.CacheCreation5mTokens = msg.Usage.CacheCreation.Ephemeral5m
+	ur.ServiceTier = msg.Usage.ServiceTier
+	ur.WebSearchCount = msg.Usage.ServerToolUse.WebSearch
+	ur.WebFetchCount = msg.Usage.ServerToolUse.WebFetch
+	ur.StopReason = msg.StopReason
+	// Model-latency proxy: assistant turn ts − last user-role record ts.
+	ur.DurationMs = clampedDeltaMs(s.lastUserTS, base.RecordTS)
+	return ur
+}
+
+// contentBlock handles one content block: tool_use appends a tool Row and
+// registers its id; tool_result correlates back to that Row by id.
+func (s *claudeScan) contentBlock(base Row, msg *claudeMsg, b claudeContentBlock) {
+	switch b.Type {
+	case "tool_use":
+		tr := base
+		tr.Model = msg.Model
+		tr.ToolName = b.Name
+		tr.ToolUseID = b.ID
+		tr.ToolInputHash, tr.ToolInputPreview = toolInputFingerprint(b.Input)
+		s.rows = append(s.rows, tr)
+		if b.ID != "" {
+			s.toolRowByID[b.ID] = len(s.rows) - 1
+		}
+	case "tool_result":
+		if b.ToolUseID == "" {
+			return
+		}
+		idx, ok := s.toolRowByID[b.ToolUseID]
+		if !ok {
+			return
+		}
+		if b.IsError {
+			s.rows[idx].IsError = true
+		}
+		// tool_result.ts − tool_use.ts: the tool Row already carries its
+		// tool_use timestamp in RecordTS.
+		s.rows[idx].DurationMs = clampedDeltaMs(s.rows[idx].RecordTS, base.RecordTS)
+	}
 }
 
 // clampedDeltaMs returns (to − from) in whole milliseconds, clamped to >= 0. A

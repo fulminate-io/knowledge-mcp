@@ -4,6 +4,8 @@ package treesitter
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -176,6 +178,79 @@ class FooTests: XCTestCase {
 			}
 		}
 	})
+}
+
+// TestSwiftTestBlocks_BenchmarkFixture asserts the test_block set the corpus
+// benchmark fixture actually EMITS, which the predicate-count gate cannot see:
+// TestTestBlocksPredicatesFilter counts QUERY matches and never runs the
+// chunker, so it says nothing about classifyTestBlockSwift's two extra gates
+// (isSwiftTestFile, swiftEnclosingXCTestCase) that sit between a match and an
+// emitted chunk.
+//
+// The legs discriminate by LINE, not by name — every chunk here is unnamed,
+// because the Swift TestBlocks query binds no @name and the firstStringArg
+// fallback finds no string argument in either call. The positive leg is
+// load-bearing: without it the negative assertion would pass on an empty
+// chunk set.
+func TestSwiftTestBlocks_BenchmarkFixture(t *testing.T) {
+	const (
+		fixture            = "testdata/test_kind/swift/swift-xctest/benchmark/PerfTests.swift"
+		measureLine        = 7  // measure { ... }
+		measureMetricsLine = 13 // measureMetrics([...], automaticallyStartMeasuring: true) { ... }
+		rejectedCallLine   = 24 // autoreleasepool { ... } — the predicate must reject this
+	)
+
+	src, err := os.ReadFile(fixture)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	abs, err := filepath.Abs(fixture)
+	if err != nil {
+		t.Fatalf("Abs: %v", err)
+	}
+
+	chunker := NewChunker()
+	defer chunker.Close()
+	res, err := chunker.ChunkFile(context.Background(), abs, src)
+	if err != nil {
+		t.Fatalf("ChunkFile: %v", err)
+	}
+
+	var blocks []Chunk
+	for _, c := range res.Chunks {
+		if c.ChunkType == "test_block" {
+			blocks = append(blocks, c)
+		}
+	}
+
+	if len(blocks) != 2 {
+		t.Errorf("fixture emits %d test_blocks; want exactly 2 (the measure call at "+
+			"line %d and the measureMetrics call at line %d). Got: %v",
+			len(blocks), measureLine, measureMetricsLine, blocks)
+	}
+
+	seen := map[int]bool{}
+	for _, c := range blocks {
+		seen[c.StartLine] = true
+		if c.StartLine == rejectedCallLine {
+			t.Errorf("the non-measure trailing-closure call at line %d is emitted as a "+
+				"test_block (name=%q) — the #match? predicate did not reject it",
+				rejectedCallLine, c.Name)
+		}
+		if !c.IsTest {
+			t.Errorf("test_block at line %d has IsTest=false; want true", c.StartLine)
+		}
+		if c.TestKind != TestKindBenchmark {
+			t.Errorf("test_block at line %d has TestKind=%q; want %q",
+				c.StartLine, c.TestKind, TestKindBenchmark)
+		}
+	}
+	for _, want := range []int{measureLine, measureMetricsLine} {
+		if !seen[want] {
+			t.Errorf("no test_block starts at line %d; got %d test_blocks: %v",
+				want, len(blocks), blocks)
+		}
+	}
 }
 
 // TestClassifyTestKindSwift_NonTestFile verifies the non-test-file gate.

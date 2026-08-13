@@ -55,19 +55,27 @@ func (c *client) PipelineMetrics() (pipeline.Metrics, bool) {
 	return c.pipeline.Metrics(), true
 }
 
-// CloudStatusInfo reports whether the user is logged in to Fulminate Cloud
-// and the cloud host to surface in manage(status). Satisfies the optional
-// tools.cloudStatusInfo interface read by handleServerStatus: when logged
-// in, status reports the CLOUD graph via the routed Stats RPC instead of
-// the local daemon. c.authState backs the same routing decision the Router
-// uses; IsLoggedIn is the canonical 5s-TTL login signal. The nil-guard
-// matches the degraded-test-fixture tolerance the other accessors carry
-// (e.g. GraphCaller returns nil when router==nil).
+// CloudStatusInfo reports whether this client routes to Fulminate Cloud, and
+// the cloud host to surface in manage(status). Satisfies the optional
+// tools.cloudStatusInfo interface read by handleServerStatus: when it reports
+// true, status reports the CLOUD graph via the routed Stats RPC instead of the
+// local daemon.
+//
+// It asks the ROUTER, deliberately, because the router is what actually decides
+// where a call goes. Router.LoggedIn is `machineAuth || authState.IsLoggedIn`
+// (router.go) — the same predicate Router.pick applies per RPC. Consulting
+// c.authState directly instead would answer a narrower question, "is there a
+// keychain login", and get the machine-token case wrong: a client authenticated
+// by --auth-token / KNOWLEDGE_AUTH_TOKEN routes every op to cloud while holding
+// no keychain session at all, so status rendered the LOCAL daemon while every
+// other operation went to cloud. The nil-guard matches the degraded-test-fixture
+// tolerance the other accessors carry (e.g. GraphCaller returns nil when
+// router==nil).
 func (c *client) CloudStatusInfo() (bool, string) {
-	if c.authState == nil {
+	if c.router == nil {
 		return false, cli.CloudEndpoint
 	}
-	return c.authState.IsLoggedIn(context.Background()), cli.CloudEndpoint
+	return c.router.LoggedIn(context.Background()), cli.CloudEndpoint
 }
 
 // ClientVersion returns the in-process client binary version — the

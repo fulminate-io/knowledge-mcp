@@ -39,6 +39,7 @@ import (
 type fakeRuntime struct {
 	mu sync.Mutex
 
+	installCalls   []dream.Worker
 	triggerCalls   []fakeTriggerCall
 	triggerErr     error
 	statusCalls    []fakeStatusCall
@@ -65,6 +66,12 @@ type fakeTriggerCall struct {
 type fakeStatusCall struct {
 	name  string
 	limit int
+}
+
+func (f *fakeRuntime) InstallWorker(_ context.Context, w dream.Worker) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.installCalls = append(f.installCalls, w)
 }
 
 func (f *fakeRuntime) OnManualTrigger(_ context.Context, name string, payload json.RawMessage) error {

@@ -48,6 +48,26 @@ type oauthErrorBody struct {
 	ErrorDescription string `json:"error_description"`
 }
 
+// OAuthError is an error response from the authorization server that
+// does not map to a typed sentinel. It carries the HTTP status alongside
+// the RFC 6749 §5.2 error code so callers can tell a rejected credential
+// (401) from a server-side fault (5xx) without matching on message text.
+type OAuthError struct {
+	// Code is the server's `error` field, or the HTTP status text when
+	// the response body carried no error code.
+	Code string
+	// StatusCode is the HTTP status of the error response.
+	StatusCode int
+	// Description is the server's `error_description`, falling back to
+	// the raw body when the response was not a well-formed OAuth error.
+	Description string
+}
+
+func (e *OAuthError) Error() string {
+	return fmt.Sprintf("auth: oauth error %q (status %d): %s",
+		e.Code, e.StatusCode, e.Description)
+}
+
 // buildFormPOST constructs a POST request with the standard OAuth headers
 // and a form-urlencoded body. Used by the token-exchange, refresh, and
 // revoke paths.
@@ -63,9 +83,10 @@ func buildFormPOST(ctx context.Context, target string, form url.Values) (*http.R
 }
 
 // classifyOAuthError reads an OAuth error response body and maps the
-// `error` code to a typed sentinel where one exists. Unknown codes
-// become a wrapped generic error carrying the server's error_description
-// so the user sees something actionable on stderr.
+// `error` code to a typed sentinel where one exists. Every other code
+// becomes an [OAuthError] carrying the status and the server's
+// error_description, so the user sees something actionable on stderr and
+// callers can branch on the status.
 func classifyOAuthError(resp *http.Response) error {
 	raw, readErr := io.ReadAll(resp.Body)
 	if readErr != nil {
@@ -87,5 +108,5 @@ func classifyOAuthError(resp *http.Response) error {
 	if code == "" {
 		code = http.StatusText(resp.StatusCode)
 	}
-	return fmt.Errorf("auth: oauth error %q (status %d): %s", code, resp.StatusCode, desc)
+	return &OAuthError{Code: code, StatusCode: resp.StatusCode, Description: desc}
 }

@@ -37,7 +37,7 @@ func cQueries() *QuerySet {
 		// always have two identifiers and the query engine prefers the
 		// first matching pattern. RUN_TEST(fn) and BENCHMARK(fn) are
 		// single-identifier — handled by the single-identifier pattern.
-		TestBlocks: `[
+		TestBlocks: `([
 			(call_expression
 				function: (identifier) @fn
 				arguments: (argument_list . (identifier) @suite . (identifier) @name)
@@ -50,6 +50,6 @@ func cQueries() *QuerySet {
 				function: (identifier) @fn
 				arguments: (argument_list . (identifier) @name .)
 			) @decl
-		] (#match? @fn "^(TEST|TEST_F|TEST_P|TEST_CASE|SECTION|SCENARIO|GIVEN|WHEN|THEN|BOOST_AUTO_TEST_CASE|BOOST_FIXTURE_TEST_CASE|RUN_TEST|BENCHMARK|MOCK_METHOD|MOCK_CONST_METHOD|cmocka_unit_test|cmocka_unit_test_setup_teardown|TYPED_TEST|TYPED_TEST_P|INSTANTIATE_TEST_SUITE_P)$")`,
+		] (#match? @fn "^(TEST|TEST_F|TEST_P|TEST_CASE|SECTION|SCENARIO|GIVEN|WHEN|THEN|BOOST_AUTO_TEST_CASE|BOOST_FIXTURE_TEST_CASE|RUN_TEST|BENCHMARK|MOCK_METHOD|MOCK_CONST_METHOD|cmocka_unit_test|cmocka_unit_test_setup_teardown|TYPED_TEST|TYPED_TEST_P|INSTANTIATE_TEST_SUITE_P)$"))`,
 	}
 }

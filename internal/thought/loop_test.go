@@ -17,6 +17,13 @@ import (
 // the test-injected onTick replaces the runBackgroundPropagation call
 // path that would dereference it. The clock defaults to time.Now (cadence tests
 // overwrite p.clock directly).
+// admittedGate is the working-set gate every fixture whose SUBJECT is the pass
+// body wires. Those tests assert what a tick does once knowledge/default has been
+// admitted by a direct user interaction; without the gate seeded, the background
+// entries short-circuit before the behavior under test runs. Fixtures that assert
+// the GATE itself supply their own predicate instead.
+func admittedGate() func() bool { return func() bool { return true } }
+
 func newPropagationLoopForTest(interval, backstopInterval time.Duration, onTick func()) *PropagationLoop {
 	p := &PropagationLoop{
 		interval:         interval,

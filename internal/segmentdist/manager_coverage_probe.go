@@ -125,6 +125,46 @@ func (m *Manager) IsL2Authoritative(gt kgtypes.GraphType, name string) bool {
 	return m.managerFor(gt, name).l2Authoritative
 }
 
+// CoverageSuppressedSince reports when this graph's publish coverage gate became
+// unsatisfiable — the EARLIEST non-zero suppression stamp across the graph's engines
+// — and 0 when no engine is suppressed. A caller pairs it with the bootstrap heal
+// breaker's LatchedSince to answer "since when has this graph been unable to heal",
+// which is the two-owner span the manage(status) stuck band renders.
+//
+// HOW MANY ENGINES, read off the struct rather than off prose: the Manager holds
+// exactly two per-graph distManager maps — managers (HNSW) and bm25Managers (BM25),
+// manager_owner.go — each keyed by the bare graphKey with no engine discriminator, so
+// a graph has two engines that can reach the publish coverage gate and each keeps its
+// OWN skip streak. The EARLIEST is the honest answer: the graph has been unable to
+// publish complete coverage since the first of its engines gave up.
+//
+// It reads the maps DIRECTLY rather than through managerFor/bm25ManagerFor, which
+// lazily CONSTRUCT an engine (cache directory, segment source, possibly a transport
+// build). Its caller asks about every graph in the account, so constructing on a read
+// would build engines for graphs this client does not maintain. A graph with no
+// constructed engine has never published and so has never been suppressed: 0.
+func (m *Manager) CoverageSuppressedSince(gt kgtypes.GraphType, name string) int64 {
+	k := graphKey{graphType: gt, graphName: name}
+	m.mu.Lock()
+	hnswDM, hasHNSW := m.managers[k]
+	bm25DM, hasBM25 := m.bm25Managers[k]
+	m.mu.Unlock()
+
+	earliest := int64(0)
+	consider := func(at int64) {
+		if at != 0 && (earliest == 0 || at < earliest) {
+			earliest = at
+		}
+	}
+	if hasHNSW {
+		consider(hnswDM.coverageSuppressedSince())
+	}
+	if hasBM25 {
+		consider(bm25DM.coverageSuppressedSince())
+	}
+	return earliest
+}
+
 // LoadResidentDocCount loads the graph's HNSW engine (idempotent; L2-only on the OSS
 // path) and returns the resident HNSW doc count — the L2 resident numerator the OSS
 // degeneracy collapse compares against the embedded-node denominator. It is the

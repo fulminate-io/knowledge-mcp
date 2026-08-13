@@ -21,10 +21,10 @@ func swiftQueries() *QuerySet {
 		// keeps classifying the containing function_declaration normally.
 		// Tree-sitter Swift parses `measure { body }` as
 		// `(call_expression (simple_identifier "measure") (call_suffix (lambda_literal)))`.
-		TestBlocks: `(call_expression
+		TestBlocks: `((call_expression
 			(simple_identifier) @fn
 			(call_suffix (lambda_literal) @params)
 		) @decl
-		(#match? @fn "^(measure|measureMetrics)$")`,
+		(#match? @fn "^(measure|measureMetrics)$"))`,
 	}
 }

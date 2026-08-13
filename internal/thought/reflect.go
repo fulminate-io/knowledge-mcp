@@ -106,8 +106,9 @@ func lessPairDesc(a, b ClusterPairScalar) bool {
 // vector (the influence-keyed facet then sees zero influence everywhere, leaving
 // the other facets intact) rather than failing the whole surface. Called by the
 // propagation loop's computeBlindSpots so the facet classifier gets the influence
-// signal for free off the loop's tick — the loop passes itself as src, so the
-// matrix build reads the resident corpus instead of re-draining.
+// signal for free off the loop's tick — the loop passes its per-pass read memo as
+// src, so the matrix build reuses the pass's adjacency and charge map rather than
+// re-reading them (and, with no memo, still reads the resident corpus not the wire).
 func BlindSpotInfluenceVector(ctx context.Context, gc Caller, thoughtIDs []string, src CorpusSource) map[string]float64 {
 	if len(thoughtIDs) == 0 {
 		return nil
@@ -145,7 +146,7 @@ func ReflectSummary(ctx context.Context, gc Caller, clusters []ThoughtCluster, s
 	summary.TotalSessions = countByType(ctx, gc, "thought_session")
 
 	if summary.TotalThoughts > 0 {
-		charges := fetchChargesFor(ctx, gc, thoughtIDs)
+		charges := fetchChargesFor(ctx, gc, thoughtIDs, src)
 		now := time.Now()
 		var totalV, totalM float64
 		for _, id := range thoughtIDs {

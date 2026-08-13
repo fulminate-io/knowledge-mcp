@@ -166,7 +166,7 @@ func expandTraceNeighbors(
 		}
 		var chargeMap map[string][]*knowledgev1.Node
 		if len(thoughtIDs) > 0 {
-			chargeMap = chargeMapForThoughts(ctx, gc, thoughtIDs)
+			chargeMap = chargeMapForThoughts(ctx, gc, thoughtIDs, nil)
 		}
 
 		for _, nid := range unvisited {

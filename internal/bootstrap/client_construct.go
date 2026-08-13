@@ -12,18 +12,23 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/graphtypecrud"
 	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/tools"
 	"github.com/fulminate-io/knowledge-mcp/internal/workercrud"
+	"github.com/fulminate-io/knowledge-mcp/internal/workingset"
 )
 
 // client_construct.go holds constructClient (the *client builder) and its two
 // test seams. Split out of client.go to keep that file under the file-length cap.
 
-// newAuthStoreFn is the keychain Store constructor used by constructClient.
+// newAuthStoreFn is the credential Store constructor used by constructClient.
 // Tests override it to inject an in-memory store (e.g. a logged-in fake) and
 // avoid touching the real platform keychain. Mirrors the cli.go newStoreFn
-// seam. Production callers leave the default in place so auth.NewStore runs.
-var newAuthStoreFn = auth.NewStore
+// seam. Production callers leave the default in place so auth.OpenStore runs,
+// which prefers the platform keychain and falls back to the
+// ~/.knowledge/credentials file only when the keychain is provably
+// unreachable.
+var newAuthStoreFn = auth.OpenStore
 
 // startKeepaliveFn is a method-expression seam over
 // (*graphclient.GraphClient).StartKeepalive so tests can observe whether
@@ -37,7 +42,7 @@ var startKeepaliveFn = (*graphclient.GraphClient).StartKeepalive
 // cloud-selection bool that constructClient threads into the Router. It is the
 // single place the three Router.pick (router.go:173) inputs are decided.
 //
-// Three mutually exclusive paths:
+// Four mutually exclusive paths, in precedence order:
 //   - --no-auth (fail-closed local-only floor): forces BOTH cloud triggers off
 //     in one chokepoint. machineAuth is false WITHOUT consulting f.AuthToken (a
 //     present --auth-token / KNOWLEDGE_AUTH_TOKEN cannot re-enable cloud), and
@@ -52,6 +57,15 @@ var startKeepaliveFn = (*graphclient.GraphClient).StartKeepalive
 //     StaticTokenSource bearing the caller-supplied opaque token, machineAuth
 //     true. No browser login, no keychain refresh. Permissions are left nil —
 //     the token is opaque to the client and the backend enforces its scopes.
+//     It outranks the read-only lever below: a caller who supplied their own
+//     credential is not reaching for the operator's.
+//   - read-only credential lever engaged (auth.CredentialStoreReadOnlyEnv): the
+//     read-only source over the session the owning process published,
+//     machineAuth false. Never the OAuth source — refreshing rotates the
+//     refresh token, and persisting the replacement is precisely what the
+//     lever forbids, so a refresh here could only end by stranding every other
+//     process on a consumed credential. Such a process must use an existing
+//     session or fail, never re-authenticate.
 //   - no machine token: the interactive keychain OAuth source, machineAuth
 //     false. Cloud selection then follows the keychain login state.
 //
@@ -68,6 +82,9 @@ func selectAuthSources(f Config) (auth.Store, auth.TokenSource, bool) {
 	}
 	if f.AuthToken != "" {
 		return authStore, auth.StaticTokenSource{AccessToken: f.AuthToken}, true
+	}
+	if auth.CredentialStoreIsReadOnly() {
+		return authStore, auth.NewReadOnlyTokenSource(authStore), false
 	}
 	tokenSource := auth.NewOAuthTokenSource(
 		authStore,
@@ -145,13 +162,29 @@ func constructClient(f Config) *client {
 		// dependencies — no router/pipeline) so a detached collect always has a
 		// runtime to launch under once it passes the PipelineReady gate.
 		collectRuntime: tools.NewCollectRuntime(),
+		// workingSet is constructed EARLY and unconditionally for the same
+		// reason: it is the gate every background loop consults, and a
+		// consumer wired before it existed would read nil (EMPTY) forever.
+		workingSet: workingset.New(),
 	}
+	// Record every direct user interaction with a concrete graph instance. The
+	// recorder sits on Router.Execute so every routed call is judged by the same
+	// (operation, instance) rule; the Router keeps returning c.router from
+	// GraphCaller(), so no type-assertion seam is disturbed.
+	c.router.AttachWorkingSet(c.AdmitGraph)
 	// Per-call login-aware routing: the sink re-picks the IngestService
 	// backend on every CollectChunk/Finalize/FetchCloudSubgraph via the
 	// Router (cloud when logged in, local otherwise), so a mid-session
 	// `knowledge login` flip routes the next collect to cloud without a
 	// restart. Do NOT capture a fixed tcp.IngestClient() here.
-	c.sink = remote.NewUploadSinkFunc(c.router.IngestClient)
+	//
+	// It is WRAPPED so a collect of any graph family admits the graph it just
+	// produced. DefaultSinkFactory below closes over c.sink, so wrapping here
+	// covers the handler that forgets opts.Sink too.
+	c.sink = admittingSink{
+		inner: remote.NewUploadSinkFunc(c.router.IngestClient),
+		admit: func(gt kgtypes.GraphType, name string) { c.AdmitGraph(gt, name, "collect") },
+	}
 	// Wire the worker CRUD client through the login-aware Router so a
 	// logged-in (cloud-only, no local server) daemon serves worker CRUD
 	// from cloud instead of dialing :15022. Every CRUD call rides the

@@ -75,11 +75,16 @@ func isMachineGenreThought(n *knowledgev1.Node, enclosingSession string) bool {
 // deriveSessionSiblings group-by-session pattern: EdgeKGContains is
 // session(From)→thought(To), so grouping the To endpoints by their From session
 // node and hydrating the session nodes' SymbolName labels yields each thought's
-// session label. Used by the blind-spots handler + loop to feed the session-marker
-// facet of the genre classifier. A thought with no enclosing session is absent
-// from the map (its lookup returns ""). Best-effort: a read error yields an empty
-// map (the session-marker facet then never fires, leaving source/origin intact).
-func FetchSessionLabelsByThought(ctx context.Context, gc Caller, thoughtIDs []string) map[string]string {
+// session label. Its one caller is the loop's computeBlindSpots, which feeds the
+// session-marker facet of the genre classifier. A thought with no enclosing session
+// is absent from the map (its lookup returns ""). Best-effort: a read error yields an
+// empty map (the session-marker facet then never fires, leaving source/origin intact).
+//
+// src routes BOTH reads through the per-pass memo: the edge read is the SAME bulk
+// EdgeKGContains read deriveSessionSiblings issues (memoKGContainsEdges), and the
+// session-node hydrate comes off the resident session snapshot with a residual-only
+// wire read (memoCorpusNodes). A nil/non-memo src reads the wire exactly as before.
+func FetchSessionLabelsByThought(ctx context.Context, gc Caller, thoughtIDs []string, src CorpusSource) map[string]string {
 	out := map[string]string{}
 	if gc == nil || len(thoughtIDs) == 0 {
 		return out
@@ -88,10 +93,7 @@ func FetchSessionLabelsByThought(ctx context.Context, gc Caller, thoughtIDs []st
 	for _, id := range thoughtIDs {
 		idSet[id] = true
 	}
-	edges, err := fetchEdgesForNodeSet(ctx, gc, thoughtIDs, []kgtypes.EdgeType{kgtypes.EdgeKGContains})
-	if err != nil {
-		return out
-	}
+	edges := memoKGContainsEdges(ctx, gc, thoughtIDs, src)
 	// Group thought members by their enclosing session (the From endpoint) and
 	// collect the distinct session IDs to hydrate for their labels.
 	thoughtsBySession := make(map[string][]string)
@@ -114,7 +116,7 @@ func FetchSessionLabelsByThought(ctx context.Context, gc Caller, thoughtIDs []st
 	for sid := range sessionIDSet {
 		sessionIDs = append(sessionIDs, sid)
 	}
-	sessionNodes := fetchNodesByIDs(ctx, gc, sessionIDs)
+	sessionNodes := memoCorpusNodes(ctx, gc, sessionIDs, src)
 	for sid, members := range thoughtsBySession {
 		label := sid
 		if n, ok := sessionNodes[sid]; ok && n.SymbolName != "" {

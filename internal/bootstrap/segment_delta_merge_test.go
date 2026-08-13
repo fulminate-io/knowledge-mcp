@@ -118,19 +118,16 @@ func TestMergeSkippedUntilWatermarkSeeded(t *testing.T) {
 	require.NoError(t, err)
 	require.Zero(t, w, "PRECONDITION: and no rebuild watermark either")
 
-	// THREE PASSES, and the number is DERIVED rather than observed. The backstop grants
-	// ONE graph the repair slot per pass and this fixture walks two (knowledge/default
-	// plus the code repo). Pass 1 serves knowledge/default, which is declined and
-	// seeded. Pass 2 finds knowledge/default already answered by its fresh record, so
-	// it returns at the backstop gate BEFORE the round-robin claim — correctly, since a
-	// gated graph must not consume the rotation — which leaves the pass's offer count
-	// at one while the cursor still sits at one, so the repo is passed over. Pass 3
-	// wraps the cursor against that shortened rotation and serves the repo. A gated
-	// graph therefore costs the graph behind it at most one extra rotation; if a
+	// ONE PASS, and the number is DERIVED rather than observed. The backstop grants ONE
+	// graph the repair slot per pass and this fixture walks two — the code repo and
+	// knowledge/default — in the working set's (graph type, name) order, which puts the
+	// code repo FIRST. So pass 1 offers the repo the slot, declines it and seeds its
+	// horizon, and the pull under test has already had its chance by then: the delta
+	// read runs ahead of the backstop within the same pass, against a graph that at
+	// that moment still had no horizon of any kind. A second pass here would find the
+	// graph seeded and pull, which is step 3's subject rather than this one's. If a
 	// fixture change moves this, RE-DERIVE it the same way rather than raising it to
 	// whatever the run prints.
-	c.reconcileSegmentCoverage(ctx)
-	c.reconcileSegmentCoverage(ctx)
 	c.reconcileSegmentCoverage(ctx)
 	require.Zero(t, eng.deltaScanCallCount(repo),
 		"a graph with no horizon of any kind must pull NOTHING — a zero-watermark window is the whole corpus")
@@ -172,9 +169,9 @@ func TestMergeSkippedUntilWatermarkSeeded(t *testing.T) {
 		require.NoError(t, cc.segmentMgr.AddAndMarkDirty(ctx, kgtypes.GraphCode, convRepo, cdocs))
 		require.NoError(t, cc.segmentMgr.ReEmitDirtyBuckets(ctx, kgtypes.GraphCode, convRepo))
 
-		// Three passes for the same derived rotation reason as the parent body.
-		cc.reconcileSegmentCoverage(ctx)
-		cc.reconcileSegmentCoverage(ctx)
+		// One pass for the same derived rotation reason as the parent body: the code
+		// repo sorts ahead of knowledge/default in the working set, so it is offered
+		// the slot on the first pass.
 		cc.reconcileSegmentCoverage(ctx)
 
 		// A merge horizon WAS written for it, even though nothing scanned it.

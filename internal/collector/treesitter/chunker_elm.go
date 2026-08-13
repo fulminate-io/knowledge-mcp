@@ -74,6 +74,26 @@ func classifyTestBlockElm(
 	return false, TestKindNone
 }
 
+// resolveDeclNameElm names Elm's three chunked declaration kinds. A
+// value_declaration carries its name inside function_declaration_left, whose
+// first lower_case_identifier is the function being defined — the identifiers
+// after it are its parameters, which is why the FIRST one is taken rather than
+// any one. The two type kinds bind name: directly.
+func resolveDeclNameElm(declNode *sitter.Node, src []byte, chunkType string) string {
+	switch chunkType {
+	case "value_declaration":
+		if fdl := firstNamedChildOfKind(declNode, "function_declaration_left"); fdl != nil {
+			if id := firstNamedChildOfKind(fdl, "lower_case_identifier"); id != nil {
+				return id.Content(src)
+			}
+		}
+	case "type_declaration", "type_alias_declaration":
+		return fieldNamed(declNode, src, "name", "upper_case_identifier")
+	}
+	return ""
+}
+
 func init() {
 	testBlockClassifiers[LangElm] = classifyTestBlockElm
+	declNameResolvers[LangElm] = resolveDeclNameElm
 }

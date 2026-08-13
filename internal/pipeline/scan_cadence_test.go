@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/workingset"
 )
 
 // TestScanTickFor_BackendAware proves the self-DDoS fix: a collector
@@ -93,10 +94,15 @@ func TestSleepForWake_TimerReturnsNotByWake(t *testing.T) {
 func TestWakeAll_RegistersAndClears(t *testing.T) {
 	fb := newFlippableBackend()
 	fb.loggedIn.Store(true)
-	fb.cloud.seedGraphNames(kgtypes.GraphCode, "g1", "g2")
 	// Hour-long cadence so the collectors register then sleep — WakeAll is what
 	// would rouse them; here we just assert the wiring, not the timing.
 	p := New(Config{CloudTick: time.Hour, IdleTickMax: time.Hour}, fb, nil, nil)
+	// Two interacted-with graphs: the pass registers a collector per working-set
+	// member, so the members are what produce the wake entries counted below.
+	ws := workingset.New()
+	require.True(t, ws.Admit(kgtypes.GraphCode, "g1", "collect"))
+	require.True(t, ws.Admit(kgtypes.GraphCode, "g2", "collect"))
+	p.AttachWorkingSet(ws)
 	ctx := context.Background()
 	p.refreshOnce(ctx)
 
@@ -104,11 +110,11 @@ func TestWakeAll_RegistersAndClears(t *testing.T) {
 	nWakes := len(p.collectorWakes)
 	nCancels := len(p.collectorCancels)
 	p.collectorMu.Unlock()
-	// 1:1 invariant: every registered collector carries a wake entry (the exact
-	// count depends on the always-seeded knowledge/default plus the two code
-	// graphs, so assert the relationship, not a hard number).
+	// 1:1 invariant: every registered collector carries a wake entry. The count is
+	// asserted against the FIXTURE's two admitted graphs rather than against
+	// nCancels alone — two counts that lost the same members would still be equal.
 	assert.Equal(t, nCancels, nWakes, "each registered collector carries a wake entry")
-	assert.GreaterOrEqual(t, nWakes, 2, "the two seeded code graphs are registered")
+	assert.Equal(t, 2, nWakes, "one wake entry per admitted code graph")
 
 	p.WakeAll() // must not block / panic
 	p.WakeAll() // coalesces — a second call with a signal already queued is a no-op

@@ -136,7 +136,7 @@ func TestDeriveSessionSiblings_EqualsTraversal(t *testing.T) {
 	}
 
 	// BULK derivation: one edge read + pure group-by.
-	got := deriveSessionSiblings(ctx, fake, nodeIDs, idSet)
+	got := deriveSessionSiblings(ctx, fake, nodeIDs, idSet, nil)
 
 	// RPC SHAPE: exactly one bulk edges Execute regardless of thought count.
 	assert.Equal(t, 1, fake.bulkEdgeCalls,
@@ -220,7 +220,7 @@ func TestDeriveSessionSiblings_CliqueCapped(t *testing.T) {
 		idSet[id] = true
 	}
 
-	got := deriveSessionSiblings(ctx, newFake(), nodeIDs, idSet)
+	got := deriveSessionSiblings(ctx, newFake(), nodeIDs, idSet, nil)
 
 	// (1) ANTI-HUB MAX DEGREE: no member exceeds 2K sibling edges. This is the
 	// load-bearing regression guard — the rejected fully-connected-core scheme gave
@@ -251,7 +251,7 @@ func TestDeriveSessionSiblings_CliqueCapped(t *testing.T) {
 	// (3) DETERMINISM: a second independent derivation over the same fixture is
 	// byte-identical (raw slice order, not just set-equality) — the sort.Strings
 	// makes the band a stable function of the member set across ticks.
-	got2 := deriveSessionSiblings(ctx, newFake(), nodeIDs, idSet)
+	got2 := deriveSessionSiblings(ctx, newFake(), nodeIDs, idSet, nil)
 	assert.True(t, reflect.DeepEqual(got, got2),
 		"the banded derivation must be byte-identical across runs (deterministic band)")
 
@@ -282,7 +282,7 @@ func TestDeriveSessionSiblings_CliqueCapped(t *testing.T) {
 	smallFake := &sessionAdjacencyFake{
 		members: map[string][]string{"small": append([]string(nil), smallIDs...)},
 	}
-	smallGot := deriveSessionSiblings(ctx, smallFake, smallIDs, smallIDSet)
+	smallGot := deriveSessionSiblings(ctx, smallFake, smallIDs, smallIDSet, nil)
 	// Inline full-clique reference: every member is a sibling of every other.
 	wantClique := make(map[string][]string, smallSize)
 	for _, a := range smallIDs {

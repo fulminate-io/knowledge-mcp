@@ -10,18 +10,27 @@ import (
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/llmproviders"
+	"github.com/fulminate-io/knowledge-mcp/internal/workingset"
 )
 
 // TestCapstone_RegisteredGraphEnumerateAndShip is PART A of the end-to-end
-// capstone (the pipeline half): a REGISTERED custom graph type (hellograph) is
-// (1) ENUMERATED by the client pipeline's per-tick discovery and (2) DRAINED on
+// capstone (the pipeline half): an INTERACTED-WITH custom graph type (hellograph)
+// is (1) REGISTERED by the client pipeline's catalog pass and (2) DRAINED on
 // BOTH axes (summary + embed) with its BM25+HNSW segments shipped under its own
 // (gt, name) key — so a collected custom graph actually becomes searchable.
 //
-// FAILS-WHEN-ABSENT: reverting Phase 1 (the discoverRegisteredGraphTypes fold-in)
-// makes the enumeration assertion fail — listLoadedGraphs would no longer surface
-// hellograph, so the pipeline would never scan/drain it and the segments below
-// would never ship.
+// WHAT EARNS THE DRAIN CHANGED. Registering a custom graph type no longer causes
+// the pipeline to drain its graphs; INTERACTING with a graph does. The pipeline's
+// wanted set is the client's working set, so hellograph/demo is drained here
+// because the fixture admits it — modeling the collect or search that would admit
+// it in production — and a registered type nobody touched is drained by nothing.
+//
+// FAILS-WHEN-ABSENT: drop the admission below and the registration assertion
+// fails — the pass would find an empty wanted set, register no collector, and the
+// segments below would never ship.
+//
+// A custom type needs no registry lookup on this path: the member carries its own
+// GraphType, and pipelineDrainsType admits every non-builtin type.
 //
 // The LIVE hellograph:demo verification post-deploy (client rebuild + cloud
 // redeploy, then a real search(graph:hellograph,name:demo)) is the true
@@ -31,36 +40,30 @@ import (
 func TestCapstone_RegisteredGraphEnumerateAndShip(t *testing.T) {
 	ctx := context.Background()
 
-	// --- (1) ENUMERATION: the registry browse surfaces hellograph and
-	// listLoadedGraphs folds its loaded graph (hellograph/demo) into the drain set
-	// alongside the builtins. This is the half reverting Phase 1 breaks.
+	const customGT = kgtypes.GraphType("hellograph")
+	const customName = "demo"
+
+	// --- (1) REGISTRATION: an interaction admits hellograph/demo, and the catalog
+	// pass registers a collector for exactly it.
 	wc := newFakeWireClient()
-	wc.seedGraphTypeDefs("hellograph")
-	wc.seedGraphNames(kgtypes.GraphType("hellograph"), "demo")
-
-	refs, succeeded, _, throttled := listLoadedGraphs(ctx, wc)
-	require.False(t, throttled)
-	got := map[string]bool{}
-	for _, r := range refs {
-		got[string(r.GraphType)+"/"+r.GraphName] = true
-	}
-	require.True(t, got["hellograph/demo"],
-		"the registered custom graph is enumerated and drained (reverting Phase 1 breaks this)")
-	require.True(t, succeeded[kgtypes.GraphType("hellograph")],
-		"the custom type enumerated cleanly")
-
-	// --- (2) DRAIN + SHIP: the summary AND embed axes drain hellograph:demo work
-	// and the ship manager receives the segments keyed on (hellograph, demo).
 	fe := &fakeEmbedder{vectors: map[string][]byte{"world-node": vec32(7)}}
 	noopSum := func(_ context.Context, _ []llmproviders.BatchChunk) (map[string]llmproviders.SummarizeResult, error) {
 		return nil, nil
 	}
 	p := New(Config{}, wc, noopSum, fe.call)
+	ws := workingset.New()
+	require.True(t, ws.Admit(customGT, customName, "collect"),
+		"the interaction that earns the custom graph its place")
+	p.AttachWorkingSet(ws)
+
+	p.refreshOnce(ctx)
+	require.Contains(t, registeredKeys(p), graphKey{GraphType: customGT, GraphName: customName},
+		"the interacted-with custom graph gets a collector (dropping the admission breaks this)")
+
+	// --- (2) DRAIN + SHIP: the summary AND embed axes drain hellograph:demo work
+	// and the ship manager receives the segments keyed on (hellograph, demo).
 	fsm := &fakeShipManager{}
 	p.AttachSegmentManager(fsm)
-
-	const customGT = kgtypes.GraphType("hellograph")
-	const customName = "demo"
 
 	// Summary axis: a hellograph:demo summary work item drains through the summary
 	// worker (proves the summary axis flows for the custom graph).

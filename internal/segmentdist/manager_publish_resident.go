@@ -222,6 +222,10 @@ func (m *distManager[Q, S]) publishResident(
 	m.publishPending = false
 	m.coverageSkipStreak = 0
 	m.lastSkipResident = 0
+	// The suppression stamp goes with the streak that produced it: a landed swap is
+	// the strongest possible evidence the episode is over, so an age surviving it
+	// would report a graph as stalled while its publishes are demonstrably landing.
+	m.coverageSuppressedAtNanos = 0
 	// The swap landed, so any prior agent-409 incomplete streak converged — reset it
 	// so a future 409 re-arms fresh and escalates only on a NEW persistent episode.
 	m.incompletePublishStreak = 0

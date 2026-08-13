@@ -6,7 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"strings"
+	"path/filepath"
 
 	sitter "github.com/smacker/go-tree-sitter"
 )
@@ -124,6 +124,14 @@ func (c *Chunker) ChunkFile(ctx context.Context, filePath string, src []byte) (*
 	if err != nil {
 		return nil, err
 	}
+	// This swap MUST stay above `defer tree.Close()`: a deferred method call
+	// fixes its receiver at the defer statement, so swapping below it would
+	// close the discarded tree and leak the adopted one. Everything downstream
+	// reads lang, so setting it here routes the query set and the Result.
+	if alt := c.cppHeaderFallback(ctx, filePath, src, lang, tree); alt != nil {
+		tree.Close()
+		tree, lang = alt, LangCPP
+	}
 	defer tree.Close()
 
 	cqs := c.getCompiledQueries(lang)
@@ -133,7 +141,7 @@ func (c *Chunker) ChunkFile(ctx context.Context, filePath string, src []byte) (*
 		Language: lang,
 	}
 
-	fileCtx := c.extractFileContext(tree.RootNode(), src, cqs)
+	fileCtx := c.extractFileContext(tree.RootNode(), src, filePath, lang, cqs)
 	fileCtx.Frameworks = DetectFrameworks(lang, fileCtx.Imports)
 	if extend, ok := frameworkExtenders[lang]; ok {
 		fileCtx.Frameworks = extend(tree.RootNode(), src, filePath, fileCtx.Frameworks)
@@ -144,70 +152,54 @@ func (c *Chunker) ChunkFile(ctx context.Context, filePath string, src []byte) (*
 	return result, nil
 }
 
-// extractFileContext pulls imports and package name from the AST root.
-func (c *Chunker) extractFileContext(root *sitter.Node, src []byte, cqs *compiledQuerySet) ChunkContext {
-	ctx := ChunkContext{}
-
-	// Extract imports.
-	if cqs.imports != nil {
-		qc := sitter.NewQueryCursor()
-		defer qc.Close()
-		qc.Exec(cqs.imports, root)
-		for {
-			m, ok := qc.NextMatch()
-			if !ok {
-				break
-			}
-			m = filterPredicates(cqs.imports, m, src)
-			for _, cap := range m.Captures {
-				importPath := cap.Node.Content(src)
-				// Strip quotes from Go import paths.
-				importPath = strings.Trim(importPath, "\"'`")
-				ctx.Imports = append(ctx.Imports, importPath)
-			}
-		}
+// cppHeaderFallback re-parses an erroring C header under the cpp grammar and
+// returns the alternate tree when it comes back clean, or nil when the C tree
+// stands. A `.h` may legitimately be either language and extMap routes every
+// one of them to C, so the extension is a guess that the parse confirms. The
+// second parse is paid solely by a header whose C parse already produced an
+// error tree — where today's chunks are garbage anyway; a clean C header pays
+// one HasError read on an already-built tree. The caller owns closing the tree
+// this returns, and a rejected alternate is closed here.
+func (c *Chunker) cppHeaderFallback(
+	ctx context.Context, filePath string, src []byte, lang Language, tree *sitter.Tree,
+) *sitter.Tree {
+	if lang != LangC || filepath.Ext(filePath) != ".h" || !tree.RootNode().HasError() {
+		return nil
 	}
-
-	// Extract Go package name.
-	for i := range int(root.ChildCount()) {
-		child := root.Child(i)
-		if child.Type() == "package_clause" {
-			for j := range int(child.ChildCount()) {
-				gc := child.Child(j)
-				if gc.Type() == "package_identifier" {
-					ctx.PackageName = gc.Content(src)
-					break
-				}
-			}
-			break
-		}
+	alt, err := c.parser.Parse(ctx, src, LangCPP)
+	if err != nil {
+		return nil
 	}
-
-	return ctx
+	if alt.RootNode().HasError() {
+		alt.Close()
+		return nil
+	}
+	return alt
 }
 
-// walkTopLevel iterates top-level AST nodes, emitting chunks and edges.
-//
-// AST traversal requires nested type-switching across node kinds.
-func (c *Chunker) walkTopLevel(
+// pendingDecl is a declaration collected by walkTopLevel's first pass, held
+// until colliding names have been counted so the suffix can be applied before
+// the chunk and its edges are built from the same name.
+type pendingDecl struct {
+	declNode   *sitter.Node
+	chunkType  string
+	name       string
+	parentName string
+}
+
+// collectTopLevelDecls runs the TopLevel query and returns every declaration it
+// matched, alongside the byte ranges they cover so the caller can find orphans.
+// Nothing is emitted here: names are not final until colliding ones have been
+// counted across the whole file.
+func collectTopLevelDecls(
 	root *sitter.Node,
 	src []byte,
-	filePath string,
 	lang Language,
 	cqs *compiledQuerySet,
-	fileCtx ChunkContext,
-	result *Result,
-) {
-	if cqs.topLevel == nil {
-		return
-	}
-
+) (pending []pendingDecl, coveredRanges []byteRange) {
 	qc := sitter.NewQueryCursor()
 	defer qc.Close()
 	qc.Exec(cqs.topLevel, root)
-
-	// Track byte ranges covered by declarations to find orphan nodes.
-	var coveredRanges []byteRange
 
 	for {
 		m, ok := qc.NextMatch()
@@ -240,8 +232,82 @@ func (c *Chunker) walkTopLevel(
 			name = extractLexicalName(declNode, src)
 		}
 
-		c.emitDeclarationChunk(declNode, src, filePath, lang, fileCtx, chunkType, name, result)
-		c.emitDeclarationEdges(declNode, src, filePath, lang, fileCtx, chunkType, name, cqs, result)
+		// Per-language name recovery for declarations whose TopLevel query binds
+		// no @name. It runs on the PARSED NODE rather than by tightening the
+		// query, because a query pattern that names a field also FILTERS on it:
+		// requiring pattern:(value_name) on OCaml's value_definition deletes
+		// `let () = ...` and `let%test "x" = ...` outright, and requiring
+		// name:(namespace_name) on PHP's namespace_definition deletes the
+		// unnamed global `namespace { ... }`. Resolving here leaves the chunk set
+		// byte-identical and adds only the Name.
+		//
+		// The empty-name guard is the whole safety argument: a resolver can only
+		// fill a name that is empty today, so no declaration that already has one
+		// can change its node ID. The placement is load-bearing too — the name
+		// must be final before the pending entry below, because pass 2 counts
+		// collisions on (parentName, name) and a name filled later would be
+		// excluded from that count and emit an unsuffixed duplicate ID.
+		if name == "" {
+			if resolve, ok := declNameResolvers[lang]; ok {
+				name = resolve(declNode, src, chunkType)
+			}
+		}
+
+		// One parent for both emitters: the chunk's ParentName and the edge
+		// endpoints must be the same string, or parser/populate's symbolMap
+		// key and the edge IDs disagree and the edges fail resolution.
+		pending = append(pending, pendingDecl{
+			declNode:   declNode,
+			chunkType:  chunkType,
+			name:       name,
+			parentName: declParentName(declNode, src, lang, chunkType),
+		})
+	}
+	return pending, coveredRanges
+}
+
+// walkTopLevel iterates top-level AST nodes, emitting chunks and edges.
+//
+// AST traversal requires nested type-switching across node kinds.
+func (c *Chunker) walkTopLevel(
+	root *sitter.Node,
+	src []byte,
+	filePath string,
+	lang Language,
+	cqs *compiledQuerySet,
+	fileCtx ChunkContext,
+	result *Result,
+) {
+	if cqs.topLevel == nil {
+		return
+	}
+
+	// Pass 1: collect. Declarations are disambiguated before they are emitted,
+	// because a chunk and its edges must carry the same name and only the
+	// emission site still holds the AST position that tells two colliding
+	// declarations apart. DeduplicateChunks renames colliding chunks after the
+	// fact, but by then the edges are already identical strings to each other,
+	// so no rename map can attribute an edge back to its chunk.
+	pending, coveredRanges := collectTopLevelDecls(root, src, lang, cqs)
+
+	// Unnamed declarations are excluded from the count: they carry no name to
+	// collide on, their endpoints are already inert, and their stable naming is
+	// a separate concern that must not gain a second astPathHash site here.
+	counts := make(map[[2]string]int, len(pending))
+	for _, p := range pending {
+		if p.name != "" {
+			counts[[2]string{p.parentName, p.name}]++
+		}
+	}
+
+	// Pass 2: emit. The suffix is the same astPathHash value DeduplicateChunks
+	// appends today, so node IDs are unchanged — what changes is that the
+	// edges now carry the matching name.
+	names := resolveCollisionNames(pending, counts)
+	for i, p := range pending {
+		c.emitDeclarationChunk(p.declNode, src, filePath, lang, fileCtx, p.chunkType, names.final[i], p.parentName, result)
+		c.emitDeclarationEdges(p.declNode, src, filePath, lang, fileCtx, p.chunkType, names.final[i], p.parentName,
+			names.parentEdgeName(p), names.typeRefAlias, cqs, result)
 	}
 
 	// Collect import edges.
@@ -297,38 +363,31 @@ func (c *Chunker) emitDeclarationChunk(
 	filePath string,
 	lang Language,
 	fileCtx ChunkContext,
-	chunkType, name string,
+	chunkType, name, parentName string,
 	result *Result,
 ) {
 	chunk := Chunk{
-		Content:   declNode.Content(src),
-		FilePath:  filePath,
-		Language:  lang,
-		ChunkType: chunkType,
-		Name:      name,
-		StartLine: int(declNode.StartPoint().Row) + 1,
-		EndLine:   int(declNode.EndPoint().Row) + 1,
-		StartByte: int(declNode.StartByte()),
-		EndByte:   int(declNode.EndByte()),
-		Exported:  declNode.Type() == "export_statement",
-		PathHash:  astPathHash(declNode),
+		Content:    declNode.Content(src),
+		FilePath:   filePath,
+		Language:   lang,
+		ChunkType:  chunkType,
+		Name:       name,
+		StartLine:  int(declNode.StartPoint().Row) + 1,
+		EndLine:    int(declNode.EndPoint().Row) + 1,
+		StartByte:  int(declNode.StartByte()),
+		EndByte:    int(declNode.EndByte()),
+		Exported:   declNode.Type() == "export_statement",
+		PathHash:   astPathHash(declNode),
+		ParentName: parentName,
 	}
 	if c.config.includeContext {
 		chunk.Context = fileCtx
 	}
 	if lang == LangGo && chunkType == "method_declaration" {
-		chunk.ParentName = extractGoReceiver(declNode, src)
 		chunk.Context.Signature = extractGoSignature(declNode, src)
 	}
 	if lang == LangGo && chunkType == "function_declaration" {
 		chunk.Context.Signature = extractGoSignature(declNode, src)
-	}
-	// For any declaration inside a function/method body, set ParentName
-	// to the enclosing function so the node ID is unique (e.g., "func.varName").
-	if chunk.ParentName == "" {
-		if enclosing := findEnclosingFunction(declNode, src); enclosing != "" {
-			chunk.ParentName = enclosing
-		}
 	}
 	// Bucket A test classification dispatch — per-language predicate decides
 	// (IsTest, TestKind) on the declaration. Languages without a registered
@@ -348,20 +407,34 @@ func (c *Chunker) emitDeclarationEdges(
 	filePath string,
 	lang Language,
 	fileCtx ChunkContext,
-	chunkType, name string,
+	chunkType, name, parentName, parentEdgeName string,
+	typeRefAlias map[string]string,
 	cqs *compiledQuerySet,
 	result *Result,
 ) {
-	// Compute the receiver-qualified symbol name for edge IDs.
-	// For methods, this is "Receiver.Method" (e.g., "db.Retrieve") to avoid
-	// collisions when multiple types in the same package share a method name.
+	// Compute the parent-qualified symbol name for edge IDs — "Receiver.Method"
+	// for a Go method, "Class.member" elsewhere — to avoid collisions when
+	// several parents in the same namespace share a member name. parentName is
+	// the same value the chunk carries, so this string equals the symbolMap key
+	// parser/populate builds from the chunk. Pass 2 above appends
+	// "#"+astPathHash to a colliding declaration's OWN name, while a member's
+	// parentName was captured in pass 1 and stays unsuffixed. When the collision
+	// is on a container (two C++ blocks reopening one namespace, a Rust struct
+	// beside its impls), the parent-to-member edge below therefore uses
+	// parentEdgeName instead — the disambiguated name of the container that
+	// lexically encloses this member — and a type reference naming that
+	// container is repointed through typeRefAlias to whichever colliding
+	// declaration is the type, or left alone when more than one candidate
+	// survives. Both edges then name a key some chunk carries, while every
+	// member's own node ID is unchanged: only the edges take the suffix.
+	//
+	// The name guard is load-bearing: many TopLevel patterns bind no @name, so
+	// their chunks carry Name "" and qualifiedName already returns "" for them,
+	// leaving the edge inert. Without the guard those endpoints would become a
+	// non-empty "<ns>.<parent>." that enters resolution instead of being dropped.
 	symbolName := name
-	var receiver string
-	if lang == LangGo && chunkType == "method_declaration" {
-		receiver = extractGoReceiver(declNode, src)
-		if receiver != "" {
-			symbolName = receiver + "." + name
-		}
+	if name != "" && parentName != "" {
+		symbolName = parentName + "." + name
 	}
 
 	// Emit CONTAINS edge (file → declaration).
@@ -371,24 +444,28 @@ func (c *Chunker) emitDeclarationEdges(
 		Type:   EdgeContains,
 	})
 
-	// For Go methods: emit CONTAINS (type → method).
-	if receiver != "" {
+	// Parent → member CONTAINS: a Go receiver type → its method, and a
+	// class → its member in every other language.
+	if name != "" && parentName != "" {
 		result.Edges = append(result.Edges, Edge{
-			FromID: qualifiedName(fileCtx.PackageName, receiver),
+			FromID: qualifiedName(fileCtx.PackageName, parentEdgeName),
 			ToID:   qualifiedName(fileCtx.PackageName, symbolName),
 			Type:   EdgeContains,
 		})
 	}
 
-	result.Edges = append(result.Edges, c.extractCallEdges(declNode, src, fileCtx.PackageName, symbolName, cqs)...)
-	result.Edges = append(result.Edges, c.extractTypeRefEdges(declNode, src, fileCtx.PackageName, symbolName, cqs)...)
+	if name != "" {
+		result.Edges = append(result.Edges, c.extractCallEdges(declNode, src, fileCtx.PackageName, symbolName, cqs)...)
+		result.Edges = append(result.Edges,
+			aliasTypeRefTargets(c.extractTypeRefEdges(declNode, src, fileCtx.PackageName, symbolName, cqs), typeRefAlias)...)
+	}
 
 	// For Go struct types: extract EMBEDS edges.
 	if lang == LangGo && chunkType == "type_declaration" {
 		embeds := extractGoEmbeds(declNode, src)
 		for _, embedded := range embeds {
 			result.Edges = append(result.Edges, Edge{
-				FromID: qualifiedName(fileCtx.PackageName, name),
+				FromID: qualifiedName(fileCtx.PackageName, symbolName),
 				ToID:   embedded,
 				Type:   EdgeEmbeds,
 			})

@@ -5,89 +5,84 @@ package pipeline
 import (
 	"context"
 	"log/slog"
-	"time"
-
-	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 )
 
-// pipeline_refresh.go holds the client-side graph-CATALOG discovery on
+// pipeline_refresh.go holds the client-side collector-registration pass on
 // *Pipeline: the RefreshLoadedGraphs loop, the one-shot boot pass, the
 // diff-and-dispatch pass (refreshOnce), and the login-flip teardown. Split out
 // of pipeline.go to keep that file under the 500-line cap as the gen-poll state
-// accreted. This is the GRAPH-SET discovery (which graphs exist); the
-// per-(graph,axis) gen discovery lives in genpoll.go.
+// accreted. This decides the GRAPH SET (which graphs this client drains, read
+// off the working set); the per-(graph,axis) gen discovery lives in genpoll.go.
+//
+// REGISTRATION IS THE RESOURCE THIS FILE GATES. A registered collector is a
+// goroutine pair plus a gen-poll entry plus a scan cadence, so a graph outside
+// the working set gets no collector AT ALL rather than a registered-but-idle
+// one — there is no cheaper place downstream to decline the work.
 
 // RefreshLoadedGraphs is the client-side graph-discovery loop. Each pass reads
-// the loaded-graph catalog (listLoadedGraphs → per-type RETURN_MODE_GRAPH_NAMES
-// reads), diffs the response against the current per-(gt, name) collector set,
-// and calls RegisterGraph / UnregisterGraph for the delta.
+// the WORKING SET — the graphs this client process has directly interacted with
+// — diffs it against the current per-(gt, name) collector set, and calls
+// RegisterGraph / UnregisterGraph for the delta.
 //
-// The loop is wake-driven: it runs one pass per signal on catalogWake and is
-// otherwise completely silent, rather than re-reading the catalog on a fixed
-// cadence whether or not the graph set changed. Two things signal it, and
-// between them they cover every way the catalog can move:
-//   - the account CATALOG watermark moved, observed by genPollOnce on the
-//     bulk gen-poll response it already receives (genpoll.go);
-//   - a login flip, via CheckLoginFlip — the new backend is a different server
-//     whose catalog bears no relation to the old one's, and a flip moves no
-//     watermark, so nothing else would re-enumerate.
+// A pass costs ZERO RPCs. The wanted set is a local map read, not a remote
+// catalog enumeration, which is what makes the scoping true rather than merely
+// filtered: a graph this client never touched is never asked about, never
+// registered, and therefore never scanned, enriched or written back to.
 //
-// The catalog is already populated when the loop starts: RefreshOnceForBoot runs
-// the same pass once at bootstrap, before this goroutine is launched.
+// The loop is wake-driven: it runs one pass per signal and is otherwise
+// completely silent. Two things signal it, and between them they cover every way
+// the wanted set can move:
+//   - an ADMISSION — a search, a collect or a user write earned a new graph its
+//     place, which is the only thing that can ADD to the wanted set;
+//   - a login flip, via CheckLoginFlip — the new backend is a different server,
+//     and the flip tears down every collector so each survivor must re-register
+//     against it.
 //
-// Throttle insurance: when a whole pass is lost to a remote 429 (refreshOnce
-// reports throttled), the loop backs off on a dedicated errBackoff gate and
-// retries the pass it still owes rather than re-firing immediately — the
-// discovery equivalent of the collector's #3 scan-error backoff. Without it a
-// sustained 429 turns the retry into a tight storm against the shared limiter
-// (backoff.go's documented bug class). A clean pass resets the gate. This retry
-// is the loop's only remaining wait, and it is scoped to work already known to
-// be owed.
+// The collector set is already populated when the loop starts: RefreshOnceForBoot
+// runs the same pass once at bootstrap, before this goroutine is launched. The
+// loop runs one more pass on entry anyway — it costs no RPC, and it is what makes
+// an admission landing in the gap between that boot pass and this goroutine
+// actually being scheduled take effect rather than wait for an unrelated signal.
+//
+// There is no throttle gate here, deliberately, and its absence is not an
+// oversight to be repaired: a pass performs no RPC, so nothing in it can be
+// rate-limited. RunGenPollLoop keeps ITS gate (genpoll.go) because the bulk
+// gen-poll still issues a real RPC for admitted graphs and can still be throttled.
 //
 // refreshOnce runs synchronously, so a slow pass naturally delays the next one —
 // no separate single-flight guard is needed.
 //
 // Exits on ctx.Done.
 //
-// Query-origin: the ctx handed in is the daemon wire ctx, which has no
-// originating tool call to inherit an operation from, so the loop stamps its own
-// ONCE HERE rather than per RPC — every catalog read the loop issues derives
-// from this ctx, so the stamp covers the whole loop body including anything
-// added to it later. Unstamped, these reads land in the client.unstamped bucket,
-// indistinguishable in the metrics from a real client stamping bug.
+// Query-origin: this loop carries NO operation stamp of its own, and that is a
+// consequence of the pass issuing no RPC rather than an omission. A stamp exists
+// to attribute load, and there is none here to attribute; every RPC the pipeline
+// does issue stamps itself at its own call site (the gap scan, the writeback and
+// the bulk gen-poll each apply their own term immediately before the call), so a
+// stamp here could not label anything even indirectly through the collectors this
+// pass registers.
 func (p *Pipeline) RefreshLoadedGraphs(ctx context.Context) {
-	ctx = graphclient.WithOperation(ctx, graphclient.OpPipelineGraphDiscovery)
-	gate := newErrBackoff(p.cfg.ErrBackoffBaseOrDefault(), p.cfg.ErrBackoffMaxOrDefault())
-	// pending means "a pass is already owed" — set only by the throttled retry
-	// below. It starts false because the boot pass has already run.
-	pending := false
+	// REGISTER THE ADMISSION WAITER FIRST, THEN READ MEMBERSHIP, THEN WAIT. Wake
+	// hands out a per-caller channel and a channel registered after an admission
+	// does not carry that admission, so registering here — before the pass below —
+	// is what stops an admission that lands between this goroutine's launch and its
+	// first scheduling from being lost. The pass at the top of the loop closes the
+	// same window from the other side: it reads the set that already exists rather
+	// than assuming the first interesting thing happens after we start waiting.
+	//
+	// A nil working set yields a nil channel. Receiving on a nil channel blocks
+	// forever, which is CORRECT here: that arm simply never fires and the loop still
+	// serves ctx.Done and catalogWake. It must NOT be "fixed" into a default arm —
+	// a default would spin this loop.
+	admitted := p.workingSet.Wake()
 	for {
-		if !pending {
-			select {
-			case <-ctx.Done():
-				return
-			case <-p.catalogWake:
-			}
+		p.refreshOnce(ctx)
+		select {
+		case <-ctx.Done():
+			return
+		case <-p.catalogWake:
+		case <-admitted:
 		}
-		pending = false
-		hint, throttled := p.refreshOnce(ctx)
-		if throttled {
-			// Sustained 429: honor the server's Retry-After (or blind exponential)
-			// rather than re-firing immediately and feeding the storm. The pass is
-			// still owed, so it is retried without waiting for a new wake — a wake
-			// that arrived during the backoff would coalesce onto the same token.
-			d := gate.failHint(hint)
-			slog.Debug("pipeline.refresh: discovery throttled; backing off",
-				"delay", d, "retry_after_hint", hint)
-			pending = true
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(d):
-			}
-			continue
-		}
-		gate.ok()
 	}
 }
 
@@ -95,25 +90,50 @@ func (p *Pipeline) RefreshLoadedGraphs(ctx context.Context) {
 // Exported so the caller (cmd/knowledge.wirePipelineRuntime) can seed
 // the collector set BEFORE the background refresh goroutine starts.
 //
-// This is the ONLY unconditional catalog enumeration: RefreshLoadedGraphs is
-// wake-driven and issues nothing until something signals it, so a client whose
-// catalog never moves enumerates exactly once per daemon start. It also gives
-// the gen-poll loop's own seed poll a non-empty graph set to sample.
+// It registers whatever the working set already holds, which on a cold boot is
+// NOTHING: membership is in-memory and per-process, so a freshly started daemon
+// maintains no graph until the first interaction admits one. That is the intended
+// consequence of the rule, not a gap for a boot-time seed to fill. It also gives
+// the gen-poll loop's own seed poll whatever graph set exists to sample — an
+// empty one issues no RPC at all.
 //
-// Stamps the same query-origin operation as the loop: this runs the identical
-// catalog read, and its caller passes a fresh bootstrap ctx that does not
-// descend from the loop's, so it needs its own stamp to keep the boot burst out
-// of the client.unstamped bucket.
+// This is a WIRING wrapper, not a second mechanism: it delegates to the same
+// refreshOnce the loop runs, so scoping that pass scoped this one too, and there
+// is no separate boot discovery path to go looking for.
+//
+// Carries no query-origin stamp, for the same reason the loop carries none: the
+// pass issues no RPC to attribute.
 func (p *Pipeline) RefreshOnceForBoot(ctx context.Context) {
-	p.refreshOnce(graphclient.WithOperation(ctx, graphclient.OpPipelineGraphDiscovery))
+	p.refreshOnce(ctx)
+}
+
+// wantedGraphs returns every graph the pipeline should currently drain: the
+// members of the client's working set, filtered to the types this pipeline
+// enriches (pipelineDrainsType). It is a local read and issues NO RPCs.
+//
+// A nil working set yields NOTHING, which is the default-deny direction: an
+// unwired pipeline drains nothing rather than everything.
+//
+// Registered CUSTOM graph types need no discovery step here. A custom-type
+// member arrives already carrying its own GraphType — recorded by whichever
+// interaction admitted it — so the type is known from the member itself rather
+// than from a registry browse.
+func (p *Pipeline) wantedGraphs() []GraphRef {
+	members := p.workingSet.Members()
+	out := make([]GraphRef, 0, len(members))
+	for _, m := range members {
+		if !pipelineDrainsType(m.GraphType) {
+			continue
+		}
+		out = append(out, GraphRef{GraphType: m.GraphType, GraphName: m.Name})
+	}
+	return out
 }
 
 // refreshOnce performs one diff-and-dispatch pass. Extracted from
 // RefreshLoadedGraphs so the loop body stays under the
-// cognitive-complexity cap. Returns (rlHint, throttled) from the catalog
-// enumeration so the caller can back off when the whole pass was lost to a
-// remote rate-limit; the boot caller (RefreshOnceForBoot) ignores them.
-func (p *Pipeline) refreshOnce(ctx context.Context) (time.Duration, bool) {
+// cognitive-complexity cap.
+func (p *Pipeline) refreshOnce(ctx context.Context) {
 	// Hazard B (login-state transitions) is NOT handled here. This pass performs
 	// the catalog diff only; the teardown that a flip requires — cancel + clear
 	// ALL collectors so every survivor graphKey re-registers fresh against the
@@ -125,13 +145,14 @@ func (p *Pipeline) refreshOnce(ctx context.Context) (time.Duration, bool) {
 	// without that teardown it would keep scanning the new backend with a stale
 	// gen → silent no-drain of the cloud gaps.
 
-	// listLoadedGraphs never aborts: a per-type enumeration failure (rollout 502,
-	// permission_denied) is skipped, and `succeeded` reports which types this tick
-	// actually enumerated. We register every wanted graph, but only UNREGISTER
-	// within successfully-enumerated types — a type whose enumeration failed has
-	// an incomplete wanted-set this tick, so tearing down its collectors on the
-	// strength of that empty set would be the churn (and stall) we are fixing.
-	graphs, succeeded, rlHint, throttled := listLoadedGraphs(ctx, p.client)
+	// The wanted set is a LOCAL read of the working set, so it has no per-type
+	// failure mode and no partially-known state: it is either the whole truth or
+	// the process is gone. That is why the unregister arm below tears down every
+	// collector no longer wanted, with no per-type success guard — the guard that
+	// used to sit there existed solely to stop a FAILED remote enumeration from
+	// mistaking an empty response for an empty account, and there is no longer a
+	// remote enumeration to fail.
+	graphs := p.wantedGraphs()
 	wanted := make(map[graphKey]struct{}, len(graphs))
 	for _, g := range graphs {
 		wanted[graphKey(g)] = struct{}{}
@@ -151,7 +172,7 @@ func (p *Pipeline) refreshOnce(ctx context.Context) (time.Duration, bool) {
 		}
 	}
 	for k := range have {
-		if _, still := wanted[k]; !still && succeeded[k.GraphType] {
+		if _, still := wanted[k]; !still {
 			p.UnregisterGraph(k.GraphType, k.GraphName)
 		}
 	}
@@ -162,7 +183,6 @@ func (p *Pipeline) refreshOnce(ctx context.Context) (time.Duration, bool) {
 	if registered > 0 {
 		p.WakeAll()
 	}
-	return rlHint, throttled
 }
 
 // CheckLoginFlip detects a login-state transition and, on a flip, rebinds

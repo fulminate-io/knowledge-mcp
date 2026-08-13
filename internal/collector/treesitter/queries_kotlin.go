@@ -23,7 +23,7 @@ func kotlinQueries() *QuerySet {
 		// JS/TS gap). Tree-sitter has no clean exclude-inner pattern; chunk
 		// ParentName == "" for nested it() inside describe(). astPathHash
 		// uniquely identifies each chunk by AST position.
-		TestBlocks: `[
+		TestBlocks: `([
 			(call_expression
 				(call_expression
 					(simple_identifier) @fn
@@ -47,6 +47,6 @@ func kotlinQueries() *QuerySet {
 				(simple_identifier) @fn
 				(call_suffix (annotated_lambda) @params)
 			) @decl
-		] (#match? @fn "^(test|it|context|describe|by|given|when|then|Given|When|Then|should|expect|feature|scenario|FunSpec|DescribeSpec|BehaviorSpec|StringSpec|FreeSpec|WordSpec|beforeTest|beforeEach|beforeSpec|beforeEachTest|beforeAll|afterTest|afterEach|afterSpec|afterEachTest|afterAll)$")`,
+		] (#match? @fn "^(test|it|context|describe|by|given|when|then|Given|When|Then|should|expect|feature|scenario|FunSpec|DescribeSpec|BehaviorSpec|StringSpec|FreeSpec|WordSpec|beforeTest|beforeEach|beforeSpec|beforeEachTest|beforeAll|afterTest|afterEach|afterSpec|afterEachTest|afterAll)$"))`,
 	}
 }

@@ -7,6 +7,7 @@ func jsQueries() *QuerySet {
 		TopLevel: `[
 			(function_declaration name: (identifier) @name) @decl
 			(class_declaration name: (identifier) @name) @decl
+			(class_body (method_definition name: (property_identifier) @name) @decl)
 			(export_statement declaration: [
 				(function_declaration name: (identifier) @name)
 				(class_declaration name: (identifier) @name)
@@ -18,7 +19,14 @@ func jsQueries() *QuerySet {
 			(identifier) @callee
 			(member_expression property: (property_identifier) @callee)
 		])`,
-		Imports:  `(import_statement source: (string) @path)`,
+		Imports: `(import_statement source: (string) @path)`,
+		// TypeRefs is empty BY DESIGN, not by omission. The plain JavaScript
+		// grammar emits no type nodes at all: JSDoc arrives as one opaque
+		// comment token, and the only structural type references in the tree are
+		// new_expression and class_heritage. Capturing those two would not
+		// restore parity with TypeScript either — the TypeScript query captures
+		// neither `extends` nor `new`, so adding them here would BREAK the
+		// parity it appears to restore. This zero is permanent at this grammar.
 		TypeRefs: "",
 		// TestBlocks: three-pattern union covering jest, vitest, mocha, jasmine,
 		// AVA, tape, node:test, bun:test, Playwright, Cypress.
@@ -48,7 +56,7 @@ func jsQueries() *QuerySet {
 // Pattern A. Tree-sitter S-expression has no clean dedup for this case.
 // The chunk's ParentName == "" for nested it() calls; the indexer's
 // astPathHash still uniquely identifies each chunk by AST position.
-const jsTestBlocksQuery = `[
+const jsTestBlocksQuery = `([
   (call_expression
     function: (identifier) @fn
     arguments: (arguments
@@ -100,4 +108,4 @@ const jsTestBlocksQuery = `[
        (function_expression)]
     )
   ) @decl
-] (#match? @fn "^(it|test|specify|fit|xit|xtest|describe|context|fdescribe|xdescribe|suite|beforeAll|beforeEach|before|afterAll|afterEach|after|bench|it\\.skip|it\\.only|it\\.each|test\\.skip|test\\.only|test\\.each|describe\\.skip|describe\\.only|describe\\.each|test\\.describe|test\\.beforeEach|test\\.beforeAll|test\\.afterEach|test\\.afterAll)$")`
+] (#match? @fn "^(it|test|specify|fit|xit|xtest|describe|context|fdescribe|xdescribe|suite|beforeAll|beforeEach|before|afterAll|afterEach|after|bench|it\\.skip|it\\.only|it\\.each|test\\.skip|test\\.only|test\\.each|describe\\.skip|describe\\.only|describe\\.each|test\\.describe|test\\.beforeEach|test\\.beforeAll|test\\.afterEach|test\\.afterAll)$"))`

@@ -56,6 +56,38 @@ func InstanceField(gt kgtypes.GraphType) Field {
 	}
 }
 
+// InstanceKeyOf is the REVERSE of the family switch: it reads the graph type and
+// instance name back off a wire selector. It delegates to InstanceField so the
+// two directions can never disagree about which field a family is keyed by.
+//
+// An empty Graph means the knowledge default, so it returns an empty instance
+// name and leaves the ""→"default" collapse to workingset.Normalize — one
+// normalization site, not two. A nil selector addresses nothing and reports
+// ok=false.
+//
+// A selector naming only a graph TYPE, which is the shape a catalog enumeration
+// compiles to, yields an empty instance name for every family whose key is
+// repo / account / language.
+func InstanceKeyOf(sel *knowledgev1.GraphSelector) (kgtypes.GraphType, string, bool) {
+	if sel == nil {
+		return "", "", false
+	}
+	gt := kgtypes.GraphType(sel.GetGraph())
+	if gt == "" {
+		return kgtypes.GraphKnowledge, "", true
+	}
+	switch InstanceField(gt) {
+	case FieldRepo:
+		return gt, sel.GetRepo(), true
+	case FieldAccount:
+		return gt, sel.GetAccount(), true
+	case FieldLanguage:
+		return gt, sel.GetLanguage(), true
+	default:
+		return gt, sel.GetName(), true
+	}
+}
+
 // GraphSelectorFor builds a *knowledgev1.GraphSelector addressing (gt, name).
 // When omitDefaultName is true, a name field is left empty for the empty string
 // or the literal "default" (the guard the edge/selector-args call sites apply);

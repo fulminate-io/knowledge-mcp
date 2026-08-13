@@ -92,8 +92,15 @@ const sessionCliqueCap = 50
 // idSet. subset is the optional post-walk projection.
 // src: a warm CorpusSource serves the scope="all" thought-node arm from
 // the resident cache; nil/cold and scope="all_types" always drain (all_types spans
-// every node type, not the thought-only cache). Edges are always a fresh wire read —
-// they are not cached.
+// every node type, not the thought-only cache). Edges are read once PER PASS when
+// src is the per-pass memo (memoAdjacencyAll) and once per call otherwise; they are
+// never cached across passes.
+//
+// scope="all" is served through memoAdjacencyAll, which holds the UNPROJECTED
+// (nodeIDs, adj) pair for the pass, so a subset request is the same composition
+// followed by projectAdjacencySubset — the last thing this function does either way.
+// scope="all_types" is NEVER memoized: it spans every node type rather than the
+// thought-only corpus, so it stays on the uncached path.
 func fetchAdjacency(ctx context.Context, gc Caller, scope string, subset []string, src CorpusSource) ([]string, map[string][]string, error) {
 	if gc == nil {
 		return nil, nil, nil
@@ -106,6 +113,36 @@ func fetchAdjacency(ctx context.Context, gc Caller, scope string, subset []strin
 		return nil, nil, fmt.Errorf("thoughts(adjacency): unknown scope %q (want 'all' or 'all_types')", scope)
 	}
 
+	if scope == "all" {
+		nodeIDs, adj, err := memoAdjacencyAll(ctx, gc, src)
+		if err != nil {
+			return nil, nil, err
+		}
+		nodeIDs, adj = projectAdjacencySubset(nodeIDs, adj, subset)
+		return nodeIDs, adj, nil
+	}
+
+	nodeIDs, adj, err := fetchAdjacencyUncached(ctx, gc, scope, src)
+	if err != nil {
+		return nil, nil, err
+	}
+	nodeIDs, adj = projectAdjacencySubset(nodeIDs, adj, subset)
+	return nodeIDs, adj, nil
+}
+
+// fetchAdjacencyAllUncached is the scope="all" composition memoAdjacencyAll runs on
+// a miss (and the whole read when there is no memo). Named separately from the
+// scope-generic body below because the memo only ever serves scope="all".
+func fetchAdjacencyAllUncached(ctx context.Context, gc Caller, src CorpusSource) ([]string, map[string][]string, error) {
+	return fetchAdjacencyUncached(ctx, gc, "all", src)
+}
+
+// fetchAdjacencyUncached is the adjacency composition itself — the node-id fetch,
+// the ONE bulk edges read, and (scope="all") the session-sibling union. It is the
+// SINGLE implementation both the memo path and the uncached path take, so a memoized
+// pass and an unmemoized one compose adjacency identically. The caller owns the
+// subset projection.
+func fetchAdjacencyUncached(ctx context.Context, gc Caller, scope string, src CorpusSource) ([]string, map[string][]string, error) {
 	nodeIDs, err := fetchAdjacencyNodeIDs(ctx, gc, scope, src)
 	if err != nil {
 		return nil, nil, err
@@ -133,13 +170,12 @@ func fetchAdjacency(ctx context.Context, gc Caller, scope string, subset []strin
 	// thought count — replacing the per-thought 2N traversal that was the dominant
 	// reflection cost. scope="all_types" runs NO expansion.
 	if scope == "all" {
-		sibAdj := deriveSessionSiblings(ctx, gc, nodeIDs, idSet)
+		sibAdj := deriveSessionSiblings(ctx, gc, nodeIDs, idSet, src)
 		for id, sibs := range sibAdj {
 			adj[id] = append(adj[id], sibs...)
 		}
 	}
 
-	nodeIDs, adj = projectAdjacencySubset(nodeIDs, adj, subset)
 	return nodeIDs, adj, nil
 }
 
@@ -259,12 +295,16 @@ func buildAdjacencyFromEdges(edges []knowledgev1.Edge, idSet map[string]bool) ma
 // POLLUTION GUARD: EdgeKGContains is ALSO the generic plan→phase→step containment
 // edge, so the idSet[e.ToId] filter drops any non-thought member — a
 // thought_session contains only thoughts, but the filter is robust regardless.
-func deriveSessionSiblings(ctx context.Context, gc Caller, nodeIDs []string, idSet map[string]bool) map[string][]string {
+//
+// src routes the read through memoKGContainsEdges, so the ONE bulk read this
+// derivation issues is shared with FetchSessionLabelsByThought — the other consumer
+// of the same edge set — instead of each paying for its own. A nil/non-memo src
+// reads the wire exactly as before. A FAILED read still yields an empty sibling map
+// (memoKGContainsEdges returns nil edges and memoizes nothing), so the best-effort
+// contract below is unchanged.
+func deriveSessionSiblings(ctx context.Context, gc Caller, nodeIDs []string, idSet map[string]bool, src CorpusSource) map[string][]string {
 	sibAdj := make(map[string][]string)
-	edges, err := fetchEdgesForNodeSet(ctx, gc, nodeIDs, []kgtypes.EdgeType{kgtypes.EdgeKGContains})
-	if err != nil {
-		return sibAdj
-	}
+	edges := memoKGContainsEdges(ctx, gc, nodeIDs, src)
 	// Group thought members by their enclosing session (the From endpoint).
 	bySession := make(map[string][]string)
 	for i := range edges {

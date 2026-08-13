@@ -49,6 +49,40 @@ func TestCorpusCache_MergeDelta_UpsertRemoveAdvance(t *testing.T) {
 	assert.Equal(t, int64(3000), c.cursors["default"].afterUpdatedAt)
 }
 
+// TestCorpusCache_Len asserts Len() is an exact equivalent of len(Snapshot())
+// across the four states in order — fresh, populated, post-tombstone and post-Reset.
+// The tombstone state is the one that matters: it is where a naive counter drifts
+// from the live map, because the delete path REMOVES a row rather than adding one.
+//
+// Each state pins Len() against a fixture-derived constant AS WELL AS against the
+// snapshot. The equivalence alone would be satisfied by both sides losing the same
+// rows — two empties agree just as well as two twos — so the constant is what makes
+// the agreement mean the counts are RIGHT rather than merely equal.
+func TestCorpusCache_Len(t *testing.T) {
+	c := newCorpusCache()
+
+	assert.Equal(t, 0, c.Len(), "a fresh cache holds nothing")
+	assert.Len(t, c.Snapshot(), c.Len(), "fresh: Len agrees with the snapshot")
+
+	c.MergeDelta(&knowledgev1.CorpusDeltaResponse{
+		Items:       []*knowledgev1.Node{liveNode("t1", 1000), liveNode("t2", 2000)},
+		NextCursors: []*knowledgev1.LayerCursor{cursor(2000, "t2")},
+	})
+	assert.Equal(t, 2, c.Len(), "both merged live rows are counted")
+	assert.Len(t, c.Snapshot(), c.Len(), "populated: Len agrees with the snapshot")
+
+	c.MergeDelta(&knowledgev1.CorpusDeltaResponse{
+		Items:       []*knowledgev1.Node{deadNode("t2", 3000)},
+		NextCursors: []*knowledgev1.LayerCursor{cursor(3000, "t2")},
+	})
+	assert.Equal(t, 1, c.Len(), "the tombstoned row leaves the live set")
+	assert.Len(t, c.Snapshot(), c.Len(), "post-tombstone: Len agrees with the snapshot")
+
+	c.Reset()
+	assert.Equal(t, 0, c.Len(), "Reset empties the cache")
+	assert.Len(t, c.Snapshot(), c.Len(), "post-Reset: Len agrees with the snapshot")
+}
+
 // TestCorpusCache_Snapshot_DedupesOverlayOverBase asserts a same-id base row
 // followed by an overlay row (server emits base-first) resolves overlay-wins.
 func TestCorpusCache_Snapshot_DedupesOverlayOverBase(t *testing.T) {

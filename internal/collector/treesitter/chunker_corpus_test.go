@@ -126,7 +126,9 @@ var testCorpusMatrix = map[Language]map[Framework][]TestKind{
 		FrameworkBashBats: {TestKindTest, TestKindSetup, TestKindTeardown},
 	},
 	LangSwift: {
-		FrameworkSwiftXCTest:  {TestKindTest, TestKindSetup, TestKindTeardown},
+		FrameworkSwiftXCTest: {
+			TestKindTest, TestKindSetup, TestKindTeardown, TestKindBenchmark,
+		},
 		FrameworkSwiftTesting: {TestKindTest},
 	},
 	LangCSharp: {

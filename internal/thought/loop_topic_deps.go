@@ -63,3 +63,23 @@ func (p *PropagationLoop) WithCorpusScanner(scanner CorpusDeltaScanner) *Propaga
 	}
 	return p
 }
+
+// WithCorpusPersistence attaches the client data root the resident corpus cache
+// persists its warm-start record under, returning the loop for fluent
+// construction. An EMPTY root leaves persistence DISABLED — the loop stays
+// resident-only and cold on every restart, which is what every test that omits
+// this setter exercises. Nil-tolerant on p.
+//
+// It takes the ROOT and never the record path: CorpusCachePathFor binds the graph
+// type and name internally to the same (knowledge, "default") pair drainCorpusDelta
+// sends on the wire, so the record and the drain cannot disagree about which graph
+// they describe. Reconstructing the layout at the call site is what would let them.
+func (p *PropagationLoop) WithCorpusPersistence(root string) *PropagationLoop {
+	if p == nil {
+		return nil
+	}
+	if root != "" {
+		p.corpusCachePath = CorpusCachePathFor(root)
+	}
+	return p
+}

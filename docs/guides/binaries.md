@@ -156,18 +156,20 @@ and `knowledge stop`.
 
 ## `knowledge login`
 
-`knowledge login` is the optional sign-in for Fulminate Cloud. It opens your
-browser to complete an OAuth flow and stores the resulting credential in your
-operating system keychain; from then on the client routes to the cloud account
-instead of a local graph. It is purely opt-in — the client and server work fully
-offline against a local graph without ever logging in. There are no flags beyond
-`--help`; a desktop browser is required, so headless environments are not
-supported.
+`knowledge login` is the optional sign-in for Fulminate Cloud. It prints an
+authorize URL to complete an OAuth flow, additionally opening your browser when
+one is available, and stores the resulting credential in your operating system
+keychain when one is available and in a 0600 file under `~/.knowledge`
+otherwise; from then on the client routes to the cloud account instead of a
+local graph. It is purely opt-in — the client and server work fully offline
+against a local graph without ever logging in. There are no flags beyond
+`--help`; headless and container environments are supported, since the printed
+URL can be opened from any browser that can reach the callback address.
 
 ## `knowledge logout`
 
-`knowledge logout` signs you back out: it deletes the stored credential from the
-keychain and best-effort revokes it server-side. It is idempotent — safe to run
+`knowledge logout` signs you back out: it deletes the stored credential from
+whichever store holds it and best-effort revokes it server-side. It is idempotent — safe to run
 when you are already logged out — and takes no flags beyond `--help`. After
 logout the client returns to operating against your local graph.
 

@@ -25,12 +25,14 @@ import (
 //     re-fire forever.
 //
 // ONE KEY, SEVERAL WRITERS. The recorder is keyed by graphKey, and a single graph
-// has THREE distManagers that can reach the publish coverage gate: the embed HNSW
-// engine, the deterministic HNSW engine, and the BM25 engine. Each keeps its OWN
-// skip streak, so each can independently cross its own suppression transition for
-// the SAME (graph type, name) — and the map collapses those into one entry. So
-// "one nudge per suppression episode" is a per-KEY property, never a per-engine
-// one.
+// has TWO distManagers that can reach the publish coverage gate: the HNSW engine
+// for vectors and the BM25 engine for field-bearing text. That pair is the whole
+// set — manager_owner.go:36-40 declares exactly those two per-graph engine maps
+// (managers and bm25Managers) and records that the third, which held a
+// deterministic HNSW engine, is gone. Each keeps its OWN skip streak, so each can
+// independently cross its own suppression transition for the SAME (graph type,
+// name) — and the map collapses those into one entry. So "one nudge per
+// suppression episode" is a per-KEY property, never a per-engine one.
 //
 // The map and the channel are created LAZILY under mu on first use rather than at
 // Manager construction, so a zero-valued nudgeState is immediately usable.

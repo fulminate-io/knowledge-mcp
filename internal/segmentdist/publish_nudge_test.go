@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 
@@ -201,6 +202,105 @@ func TestCoverageSkipNudgesOnce(t *testing.T) {
 			"two engines suppressing for one graph collapse to a single recorded entry")
 		require.Equal(t, NudgedGraph{GraphType: gt, Name: name}, nudged[0])
 	})
+}
+
+// TestCoverageSkip_StampsSuppressionEdge pins the suppression STAMP — the "since
+// when" a manage(status) stuck band renders an age from — across its whole lifetime:
+// 0 while skips are below the bound, non-zero on the transition into suppression and
+// taken at that instant, unchanged by further suppressing skips inside the same
+// episode, and 0 again once the resident rises.
+//
+// The stamp must be taken on the EDGE, not on every suppressing skip: an age
+// re-stamped per skip would reset to now on every drain and report a graph stuck for
+// seconds no matter how long it had actually been stuck. The unchanged-within-episode
+// assertion is what fails against that implementation.
+//
+// Fixture shape follows no_second_record_within_one_episode above: a fresh engine
+// whose resident is 0 can be driven past the bound repeatedly WITHOUT the resident
+// ever rising, so the streak climbs uninterrupted and the transition lands where the
+// bound is crossed.
+func TestCoverageSkip_StampsSuppressionEdge(t *testing.T) {
+	ctx := context.Background()
+	_, gc := newSegmentHarness(t)
+	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	gt, name := kgtypes.GraphCode, "stampRepo"
+	dm := mgr.managerFor(gt, name)
+
+	// Below the bound: skips are happening and the streak is climbing, but retrying
+	// can still help, so nothing is stamped.
+	for i := range coverageSkipMaxStreak {
+		dm.markCoverageSkip()
+		require.Zero(t, dm.coverageSuppressedSince(),
+			"skip %d is below the suppression bound, so the engine is not stuck yet", i+1)
+		require.Zero(t, mgr.CoverageSuppressedSince(gt, name),
+			"the owner reports no stall while no engine is suppressed")
+	}
+
+	// THE EDGE. The skip that crosses the bound stamps, and it stamps NOW — bracketed
+	// by the wall clock either side of the call, so a zero or a constant fails.
+	before := time.Now().UnixNano()
+	dm.markCoverageSkip()
+	after := time.Now().UnixNano()
+
+	stamp := dm.coverageSuppressedSince()
+	require.NotZero(t, stamp, "the transition into suppression stamps when retrying stopped helping")
+	require.GreaterOrEqual(t, stamp, before, "the stamp is not older than the suppressing skip")
+	require.LessOrEqual(t, stamp, after, "the stamp is not newer than the suppressing skip")
+	require.Equal(t, stamp, mgr.CoverageSuppressedSince(gt, name),
+		"the owner surfaces the suppressed engine's stamp")
+
+	// SAME episode, resident still not risen: every further skip suppresses but none is
+	// the transition, so the age keeps counting from when the engine actually got stuck.
+	for range 5 {
+		dm.markCoverageSkip()
+	}
+	require.Equal(t, stamp, dm.coverageSuppressedSince(),
+		"a suppressing skip that is not the episode's transition must not re-stamp")
+
+	// A GENUINE RESIDENT RISE ENDS THE EPISODE. AddAndMarkDirty force-seals without
+	// shipping, so the resident climbs with no publish path involved.
+	require.NoError(t, mgr.AddAndMarkDirty(ctx, gt, name, prefixIDs(hnswVecDocs(10), "stamp-")))
+	require.Positive(t, dm.engine.ResidentDocCount(), "the sealed batch raised the resident count")
+	dm.markCoverageSkip()
+	require.Zero(t, dm.coverageSuppressedSince(),
+		"a resident rise means the engine started climbing again, so it carries no stall age")
+	require.Zero(t, mgr.CoverageSuppressedSince(gt, name),
+		"and the owner reports no stall once its engines are unsuppressed")
+
+	// THE OWNER TAKES THE EARLIEST OF THE GRAPH'S TWO ENGINES. Without this the
+	// accessor could read one map and still satisfy every assertion above, which would
+	// under-report a graph whose BM25 engine gave up first.
+	t.Run("earliest_of_two_engines", func(t *testing.T) {
+		_, gc := newSegmentHarness(t)
+		mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+		gt, name := kgtypes.GraphCode, "twoStampRepo"
+		hnswDM := mgr.managerFor(gt, name)
+		bm25DM := mgr.bm25ManagerFor(gt, name)
+
+		// BM25 gives up first.
+		for range coverageSkipMaxStreak + 1 {
+			bm25DM.markCoverageSkip()
+		}
+		bm25Stamp := bm25DM.coverageSuppressedSince()
+		require.NotZero(t, bm25Stamp)
+		require.Equal(t, bm25Stamp, mgr.CoverageSuppressedSince(gt, name),
+			"one suppressed engine is enough for the graph to read stalled")
+
+		// HNSW follows, strictly later.
+		time.Sleep(2 * time.Millisecond)
+		for range coverageSkipMaxStreak + 1 {
+			hnswDM.markCoverageSkip()
+		}
+		hnswStamp := hnswDM.coverageSuppressedSince()
+		require.Greater(t, hnswStamp, bm25Stamp, "the second engine gave up strictly later")
+		require.Equal(t, bm25Stamp, mgr.CoverageSuppressedSince(gt, name),
+			"the graph has been unable to publish complete coverage since the FIRST engine gave up")
+	})
+
+	// A graph with no constructed engine reports no stall — and does not construct one
+	// to answer, which is why the accessor reads the maps instead of the factories.
+	require.Zero(t, mgr.CoverageSuppressedSince(kgtypes.GraphCode, "neverTouchedRepo"),
+		"a graph this manager holds no engine for has never been suppressed")
 }
 
 // anyContains reports whether any of the rendered records contains substr — the

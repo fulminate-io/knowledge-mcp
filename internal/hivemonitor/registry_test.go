@@ -150,25 +150,6 @@ func TestRegistry_EndHiveSessionDropsClaims(t *testing.T) {
 	}
 }
 
-// TestRegistry_NoteSessionOpenedFiresHook asserts the session-open notification
-// delivers each session id to the hook and records nothing in the Registry.
-func TestRegistry_NoteSessionOpenedFiresHook(t *testing.T) {
-	r := NewRegistry()
-	var seen []string
-	r.SetSessionOpenHook(func(sessionID string) { seen = append(seen, sessionID) })
-
-	r.NoteSessionOpened("s1")
-	r.NoteSessionOpened("s2")
-	r.NoteSessionOpened("")
-
-	if len(seen) != 2 || seen[0] != "s1" || seen[1] != "s2" {
-		t.Fatalf("session-open hook saw %v, want [s1 s2]", seen)
-	}
-	if r.HiveActiveCount() != 0 {
-		t.Errorf("NoteSessionOpened recorded state: HiveActiveCount = %d, want 0", r.HiveActiveCount())
-	}
-}
-
 // TestRegistry_HiveActivityNilSafe asserts the hive-activity methods are no-ops
 // on a nil Registry, matching the Bind/Clear/ActiveSessions/ClaimsFor contract.
 // The positive control comes first so the nil assertions below cannot pass
@@ -181,11 +162,9 @@ func TestRegistry_HiveActivityNilSafe(t *testing.T) {
 	}
 
 	var nilReg *Registry
-	nilReg.SetHiveActivityHook(func() {})      // must not panic
-	nilReg.SetSessionOpenHook(func(string) {}) // must not panic
-	nilReg.MarkHiveActive("s")                 // must not panic
-	nilReg.EndHiveSession("s")                 // must not panic
-	nilReg.NoteSessionOpened("s")              // must not panic
+	nilReg.SetHiveActivityHook(func() {}) // must not panic
+	nilReg.MarkHiveActive("s")            // must not panic
+	nilReg.EndHiveSession("s")            // must not panic
 	if nilReg.HiveActiveCount() != 0 {
 		t.Errorf("nil Registry HiveActiveCount = %d, want 0", nilReg.HiveActiveCount())
 	}

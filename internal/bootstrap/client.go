@@ -23,6 +23,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/transcriptanalytics"
 	"github.com/fulminate-io/knowledge-mcp/internal/transcriptsync"
 	"github.com/fulminate-io/knowledge-mcp/internal/workercrud"
+	"github.com/fulminate-io/knowledge-mcp/internal/workingset"
 )
 
 // toolSchema is the client-local wire shape built from the client-owned tool
@@ -236,6 +237,14 @@ type client struct {
 	// constructClient-built client; the accessors nil-guard for direct test
 	// fixtures.
 	collectRuntime *tools.CollectRuntime
+
+	// workingSet is the set of graphs a direct user interaction has admitted in
+	// THIS process, and the gate every background loop consults before touching
+	// a graph. Constructed EARLY and unconditionally in constructClient (it has
+	// zero dependencies) so no wiring order can leave a consumer holding nil.
+	// It is nil for a directly-built test fixture, and nil reads as EMPTY —
+	// default-deny, never unrestricted.
+	workingSet *workingset.Set
 
 	// Tool-schema cache: built once by loadSchemas on the first
 	// tools/list request from the client-owned catalog

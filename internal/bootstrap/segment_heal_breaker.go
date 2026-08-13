@@ -6,6 +6,7 @@ import (
 	"context"
 	"log/slog"
 	"sync"
+	"time"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine/formats/hnsw"
@@ -53,12 +54,19 @@ type segmentHealBreaker struct {
 	state map[string]*healBreakerEntry
 }
 
-// healBreakerEntry is one graph's breaker state: the consecutive no-progress streak
-// and whether the breaker has latched disarmed. Once latched, only ClearHealLatch (a
-// manual rebuild_segments success) or a process restart clears it.
+// healBreakerEntry is one graph's breaker state: the consecutive no-progress streak,
+// whether the breaker has latched disarmed, and WHEN it latched. Once latched, only
+// ClearHealLatch (a manual rebuild_segments success) or a process restart clears it.
+//
+// latchedAtNanos is a wall-clock time.Now().UnixNano() stamped on the one call that
+// latches and zeroed with the rest of the entry on re-arm, so it is non-zero exactly
+// while latched is true. It is PER-PROCESS state like the latch it accompanies — a
+// restart clears both — so an age derived from it measures how long auto-heal has
+// been disarmed IN THIS PROCESS, which is the same lifetime the latch itself has.
 type healBreakerEntry struct {
 	noProgressStreak int
 	latched          bool
+	latchedAtNanos   int64
 }
 
 // healBreakerKey keys the latch map on (graphType, name), matching the RebuildSegments
@@ -106,6 +114,7 @@ func (b *segmentHealBreaker) RecordNoProgress(gt kgtypes.GraphType, name string)
 	e.noProgressStreak++
 	if e.noProgressStreak >= healBreakerTripThreshold {
 		e.latched = true
+		e.latchedAtNanos = time.Now().UnixNano()
 		b.mu.Unlock()
 		slog.Warn("bootstrap: auto-heal suspended for graph until a manual rebuild_segments or restart (heal breaker latched after consecutive no-progress rebuilds)",
 			"graph_type", gt, "name", name, "no_progress_streak", healBreakerTripThreshold)
@@ -140,6 +149,27 @@ func (b *segmentHealBreaker) ClearHealLatch(gt kgtypes.GraphType, name string) {
 	e := b.entryLocked(gt, name)
 	e.latched = false
 	e.noProgressStreak = 0
+	e.latchedAtNanos = 0
+}
+
+// LatchedSince reports the wall-clock nanos at which (gt, name) latched disarmed, and
+// 0 when the breaker is not latched — so a caller can render how long a graph has been
+// stalled without a second membership question. It is the stall stamp's heal-breaker
+// half; the publish coverage gate owns the other half
+// (segmentdist.Manager.CoverageSuppressedSince).
+//
+// It reads the map WITHOUT the lazy entryLocked allocation Allow uses, deliberately:
+// its caller is the manage(status) coverage table, which asks about every eligible
+// graph rather than only the ones a heal pass has touched, and a graph the breaker has
+// never recorded is by definition not latched.
+func (b *segmentHealBreaker) LatchedSince(gt kgtypes.GraphType, name string) int64 {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	e := b.state[healBreakerKey(gt, name)]
+	if e == nil || !e.latched {
+		return 0
+	}
+	return e.latchedAtNanos
 }
 
 // classifyHealOutcome is the STRICT v5 no-progress/progress classifier for one AUTO

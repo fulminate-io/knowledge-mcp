@@ -54,12 +54,12 @@ type thoughtChargeCache struct {
 // if the caller didn't supply it, we skip the evidence resolution and
 // leave every charge's evidenceCluster as "" (degraded — affects
 // personality scalars only).
-func buildChargeCache(ctx context.Context, gc Caller, clusters []ThoughtCluster, thoughtToCluster map[string]string, evidenceAdj map[string][]string) thoughtChargeCache {
+func buildChargeCache(ctx context.Context, gc Caller, clusters []ThoughtCluster, thoughtToCluster map[string]string, evidenceAdj map[string][]string, src CorpusSource) thoughtChargeCache {
 	var allThoughtIDs []string
 	for _, c := range clusters {
 		allThoughtIDs = append(allThoughtIDs, c.ThoughtIDs...)
 	}
-	chargeNodeMap := chargeMapForThoughts(ctx, gc, allThoughtIDs)
+	chargeNodeMap := chargeMapForThoughts(ctx, gc, allThoughtIDs, src)
 	evidenceCluster := buildChargeEvidenceMap(chargeNodeMap, thoughtToCluster, evidenceAdj)
 
 	cache := thoughtChargeCache{charges: make(map[string][]chargeInfo, len(chargeNodeMap))}
@@ -83,8 +83,8 @@ func buildChargeCache(ctx context.Context, gc Caller, clusters []ThoughtCluster,
 // thoughtIDs (typically a single cluster's thoughts during
 // ComputeScalarEvolution), then resolves their evidence-cluster links
 // against the full thoughtToCluster map.
-func buildScopedChargeCache(ctx context.Context, gc Caller, thoughtIDs []string, thoughtToCluster map[string]string, evidenceAdj map[string][]string) thoughtChargeCache {
-	chargeNodeMap := chargeMapForThoughts(ctx, gc, thoughtIDs)
+func buildScopedChargeCache(ctx context.Context, gc Caller, thoughtIDs []string, thoughtToCluster map[string]string, evidenceAdj map[string][]string, src CorpusSource) thoughtChargeCache {
+	chargeNodeMap := chargeMapForThoughts(ctx, gc, thoughtIDs, src)
 	evidenceCluster := buildChargeEvidenceMap(chargeNodeMap, thoughtToCluster, evidenceAdj)
 	cache := thoughtChargeCache{charges: make(map[string][]chargeInfo, len(chargeNodeMap))}
 	for tid, charges := range chargeNodeMap {
@@ -144,7 +144,11 @@ func buildChargeEvidenceMap(chargeMap map[string][]*knowledgev1.Node, thoughtToC
 // fetchEdgesForNodeSet over the collected charge IDs filtered to EdgeEvidencedBy.
 // EdgeEvidencedBy is charge→evidence, so FromId is the charge and ToId the
 // evidence target.
-func BuildEvidenceAdj(ctx context.Context, gc Caller, clusters []ThoughtCluster) map[string][]string {
+//
+// src is the per-pass read memo: the charge map leg is shared with every other
+// stage of the pass rather than composed again here. A nil/non-memo src composes it
+// on the spot, exactly as before.
+func BuildEvidenceAdj(ctx context.Context, gc Caller, clusters []ThoughtCluster, src CorpusSource) map[string][]string {
 	out := map[string][]string{}
 	if gc == nil || len(clusters) == 0 {
 		return out
@@ -153,7 +157,7 @@ func BuildEvidenceAdj(ctx context.Context, gc Caller, clusters []ThoughtCluster)
 	for _, c := range clusters {
 		allThoughtIDs = append(allThoughtIDs, c.ThoughtIDs...)
 	}
-	chargeMap := chargeMapForThoughts(ctx, gc, allThoughtIDs)
+	chargeMap := chargeMapForThoughts(ctx, gc, allThoughtIDs, src)
 	var chargeIDs []string
 	for _, charges := range chargeMap {
 		for _, ch := range charges {
@@ -181,8 +185,10 @@ func BuildEvidenceAdj(ctx context.Context, gc Caller, clusters []ThoughtCluster)
 // from the track record of cross-cluster charge accuracy.
 // evidenceAdj is the optional charge→evidence-target adjacency map
 // (callers may have it from a prior adjacency fetch); pass nil for
-// the degraded mode (zero evidence resolution).
-func ComputePersonalityScalars(ctx context.Context, gc Caller, clusters []ThoughtCluster, evidenceAdj map[string][]string) (PersonalityProfile, error) {
+// the degraded mode (zero evidence resolution). src is the per-pass read memo, so
+// the charge map this drives is the pass's single composition; an on-demand handler
+// with no loop in hand passes nil and takes the uncached read.
+func ComputePersonalityScalars(ctx context.Context, gc Caller, clusters []ThoughtCluster, evidenceAdj map[string][]string, src CorpusSource) (PersonalityProfile, error) {
 	profile := PersonalityProfile{
 		Scalars:       make(map[string]map[string]float64),
 		ClusterLabels: make(map[string]string),
@@ -196,7 +202,7 @@ func ComputePersonalityScalars(ctx context.Context, gc Caller, clusters []Though
 		}
 	}
 
-	cache := buildChargeCache(ctx, gc, clusters, thoughtToCluster, evidenceAdj)
+	cache := buildChargeCache(ctx, gc, clusters, thoughtToCluster, evidenceAdj, src)
 
 	for _, clusterA := range clusters {
 		profile.Scalars[clusterA.ID] = make(map[string]float64)
@@ -292,8 +298,9 @@ func weighSubsequentChargesFromCache(charges []chargeInfo, chargeID string, char
 const defaultEvolutionSamples = 30
 
 // ComputeScalarEvolution returns a temporal series of personality
-// scalars for clusterA's trust toward clusterB.
-func ComputeScalarEvolution(ctx context.Context, gc Caller, clusters []ThoughtCluster, clusterA, clusterB string, n int, evidenceAdj map[string][]string) ([]ScalarSnapshot, error) {
+// scalars for clusterA's trust toward clusterB. src is the per-pass read memo; an
+// on-demand handler with no loop in hand passes nil and takes the uncached read.
+func ComputeScalarEvolution(ctx context.Context, gc Caller, clusters []ThoughtCluster, clusterA, clusterB string, n int, evidenceAdj map[string][]string, src CorpusSource) ([]ScalarSnapshot, error) {
 	if n <= 0 {
 		n = defaultEvolutionSamples
 	}
@@ -316,7 +323,7 @@ func ComputeScalarEvolution(ctx context.Context, gc Caller, clusters []ThoughtCl
 			thoughtToCluster[tid] = c.ID
 		}
 	}
-	cache := buildScopedChargeCache(ctx, gc, clusterANode.ThoughtIDs, thoughtToCluster, evidenceAdj)
+	cache := buildScopedChargeCache(ctx, gc, clusterANode.ThoughtIDs, thoughtToCluster, evidenceAdj, src)
 
 	timestamps := chargeTimestampsForCluster(*clusterANode, cache)
 	if len(timestamps) == 0 {

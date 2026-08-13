@@ -36,6 +36,8 @@ collectors.
 - [Set up with Codex](setup-codex.md) — first-run setup for Codex.
 - [Configuration](config.md) — the `~/.knowledge/config` reference (providers,
   models, and credentials).
+- [Run with Docker](docker.md) — the `ghcr.io/fulminate-io/knowledge-mcp` image:
+  a local HTTP stack, a stdio MCP client, and collecting a repository in CI.
 
 ## Contents
 

@@ -40,7 +40,7 @@ func cppQueries() *QuerySet {
 		//       identifier-only args.
 		//   (2) call_expression shape — Catch2 TEST_CASE / BOOST_AUTO_TEST_CASE /
 		//       BENCHMARK / MOCK_METHOD with string-literal or identifier args.
-		TestBlocks: `[
+		TestBlocks: `([
 			(function_definition
 				declarator: (function_declarator
 					declarator: (identifier) @fn
@@ -72,6 +72,6 @@ func cppQueries() *QuerySet {
 				function: (identifier) @fn
 				arguments: (argument_list . (identifier) @name .)
 			) @decl
-		] (#match? @fn "^(TEST|TEST_F|TEST_P|TEST_CASE|SECTION|SCENARIO|GIVEN|WHEN|THEN|BOOST_AUTO_TEST_CASE|BOOST_FIXTURE_TEST_CASE|RUN_TEST|BENCHMARK|MOCK_METHOD|MOCK_CONST_METHOD|cmocka_unit_test|cmocka_unit_test_setup_teardown|TYPED_TEST|TYPED_TEST_P|INSTANTIATE_TEST_SUITE_P)$")`,
+		] (#match? @fn "^(TEST|TEST_F|TEST_P|TEST_CASE|SECTION|SCENARIO|GIVEN|WHEN|THEN|BOOST_AUTO_TEST_CASE|BOOST_FIXTURE_TEST_CASE|RUN_TEST|BENCHMARK|MOCK_METHOD|MOCK_CONST_METHOD|cmocka_unit_test|cmocka_unit_test_setup_teardown|TYPED_TEST|TYPED_TEST_P|INSTANTIATE_TEST_SUITE_P)$"))`,
 	}
 }

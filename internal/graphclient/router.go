@@ -10,6 +10,7 @@ import (
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1/knowledgev1connect"
 	"github.com/fulminate-io/knowledge-mcp/internal/auth"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
 // ErrNoBackend is the sentinel returned by Router methods when neither a
@@ -61,6 +62,10 @@ type Router struct {
 
 	mu    sync.Mutex
 	cloud *GraphClient
+	// admitGraph records a user interaction with a concrete graph instance into
+	// the working set. Installed by AttachWorkingSet; nil until then, and a nil
+	// admitter records nothing. See router_admission.go.
+	admitGraph func(gt kgtypes.GraphType, name, reason string)
 }
 
 // NewRouter wires a Router. local may be nil (cloud-first user with no
@@ -196,10 +201,15 @@ func (r *Router) ensureCloud() *GraphClient {
 // Execute is the per-call-routed EngineService.Execute forwarder. Mirrors
 // (*GraphClient).Execute (client.go:98) so every tools-side render.Executor
 // type-assertion seam succeeds when GraphCaller() returns a *Router.
+//
+// It is also the working-set admission chokepoint: every routed call passes
+// through here, so admission is decided uniformly by (operation, instance)
+// rather than per call site. See router_admission.go.
 func (r *Router) Execute(
 	ctx context.Context,
 	req *knowledgev1.ExecuteRequest,
 ) (*knowledgev1.ExecuteResponse, error) {
+	r.recordAdmission(ctx, req)
 	gc, err := r.pick(ctx)
 	if err != nil {
 		return nil, err

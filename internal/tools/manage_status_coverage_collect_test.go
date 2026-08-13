@@ -78,7 +78,8 @@ func TestCollectCoverageRows_JSONShape(t *testing.T) {
 
 	// A graph with no rebuildable segments carries has_segments=false so the web
 	// renders '—' rather than 'shipped 0 · live 0'.
-	nonSeg := newCoverageRow("linkage", &knowledgev1.GraphStats{NonProxyNodeCount: 3}, 0, 0, false, false)
+	nonSeg := newCoverageRow("linkage", &knowledgev1.GraphStats{NonProxyNodeCount: 3},
+		0, 0, false, false, true, 0)
 	nsRaw, err := json.Marshal(nonSeg)
 	require.NoError(t, err)
 	var ns map[string]any

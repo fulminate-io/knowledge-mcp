@@ -335,11 +335,13 @@ func (c *client) wireRuntimesBackground(ctx context.Context, f Config) {
 	// skills}/*.md. Server-side projects.Bootstrap call has been
 	// removed; the client owns disk I/O for code-graph + project
 	// assets now. Non-fatal — startup continues on error.
-	if err := runInstructionBootstrap(context.Background(), c.router, f.RootDir); err != nil {
-		slog.Warn("instruction bootstrap failed; agent/skill nodes will not be seeded this session",
-			"error", err)
-	}
-	stage("instruction bootstrap done")
+	//
+	// DEFERRED UNTIL ADMITTED, not run at boot: it is a query plus a create_batch
+	// against the knowledge graph, so at boot it would be background work against
+	// a graph no interaction has earned. The goroutine waits on the working set
+	// and exits on ctx.Done.
+	go c.deferInstructionBootstrapUntilAdmitted(ctx, c.router, f.RootDir)
+	stage("instruction bootstrap deferred until the knowledge graph is admitted")
 
 	// Background hourly transcript upload — gated on NoTranscriptUpload (set under
 	// --headless) so an embedded daemon spawns no upload loops. See

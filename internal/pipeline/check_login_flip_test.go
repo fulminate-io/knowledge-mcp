@@ -54,7 +54,7 @@ func TestCheckLoginFlipRebindsAlone(t *testing.T) {
 	assert.Zero(t, genCacheLen(p, &p.genSnapshot), "genSnapshot must be cleared on a flip")
 	assert.Zero(t, genCacheLen(p, &p.lastPokedGen),
 		"lastPokedGen must be cleared on a flip — it holds the OLD backend's high-water")
-	assert.True(t, drainWake(p.catalogWake), "a flip must wake the catalog loop to re-enumerate")
+	assert.True(t, drainWake(p.catalogWake), "a flip must wake the catalog loop so every wanted graph re-registers")
 	assert.True(t, drainWake(p.genPollWake), "a flip must wake the gen-poll loop to re-sample")
 }
 

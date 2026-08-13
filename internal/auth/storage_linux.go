@@ -26,7 +26,13 @@ type linuxStore struct{}
 // secret daemon are actually reachable — those errors surface on the first
 // Set/Get/Delete call. We intentionally defer the probe because there is no
 // cheap "is it available?" check that doesn't also touch the keyring.
+//
+// Inside a test binary construction always fails: tests must use in-memory
+// fakes; the real credential store is off-limits to test binaries.
 func NewStore() (Store, error) {
+	if err := refuseRealStoreInTest(); err != nil {
+		return nil, err
+	}
 	return linuxStore{}, nil
 }
 

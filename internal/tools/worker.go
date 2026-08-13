@@ -39,6 +39,11 @@ import (
 // than alongside ClientDeps in deps.go) means tests live next to the
 // production code that defines the contract.
 type WorkerRuntimeAPI interface {
+	// InstallWorker subscribes a newly created worker's triggers. It is
+	// called on a successful worker:create in this process — the only path
+	// that installs triggers, since a running trigger registration is
+	// per-process state and is never restored from persisted worker rows.
+	InstallWorker(ctx context.Context, w dream.Worker)
 	OnManualTrigger(ctx context.Context, name string, payload json.RawMessage) error
 	Status(ctx context.Context, name string, limit int) ([]dream.InvocationRecord, error)
 	ByName(ctx context.Context, name string) (dream.Worker, bool, error)

@@ -7,6 +7,7 @@ import (
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
+	"github.com/fulminate-io/knowledge-mcp/internal/workingset"
 )
 
 // ShipManager is the narrow surface the embed-writeback seam uses to build + ship
@@ -52,6 +53,18 @@ func (p *Pipeline) AttachSegmentManager(m ShipManager) { p.segmentMgr = m }
 func (p *Pipeline) AttachHealFactory(fn func(kgtypes.GraphType, string) func(context.Context) error) {
 	p.healFactory = fn
 }
+
+// AttachWorkingSet wires the client's interaction-earned working set, which is
+// where every catalog pass now gets its wanted set. Called once at construction
+// (bootstrap) before Start.
+//
+// NIL MEANS EMPTY, NEVER UNRESTRICTED. Leaving it unset registers no collectors
+// at all rather than falling back to draining everything the account holds, so a
+// missed wiring UNDER-admits — visible as a pipeline that enriches nothing —
+// instead of silently restoring the account-wide behavior this gate exists to
+// remove. Default-deny is the whole point, so the nil case must never grow a
+// permissive fallback.
+func (p *Pipeline) AttachWorkingSet(ws *workingset.Set) { p.workingSet = ws }
 
 // AttachCollectGateFactory wires the per-graph collect-gate predicate factory.
 // Called once at construction (bootstrap) before Start; nil-safe — leaving it

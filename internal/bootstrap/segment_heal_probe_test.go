@@ -54,7 +54,7 @@ func (e *coverageStatsEngine) Stats(
 // regime — so the fixture seeds a keychain refresh token AND a segment transport to
 // keep the manager on the GCS source. The OSS-local heal path is exercised
 // separately by buildOSSHealClient.
-func buildHealProbeClient(t *testing.T, embedded int32) (*client, *fakeSegBackend) {
+func buildHealProbeClient(t *testing.T, embedded int32, codeRepos ...string) (*client, *fakeSegBackend) {
 	t.Helper()
 	backend := newFakeSegBackend(t)
 	eng := &coverageStatsEngine{countingEngine: &countingEngine{}, embedded: embedded}
@@ -76,6 +76,7 @@ func buildHealProbeClient(t *testing.T, embedded int32) (*client, *fakeSegBacken
 		router:     router,
 		authState:  authState,
 		segmentMgr: segmentdist.NewManager(router, t.TempDir(), 0, segmentdist.WithSegmentTransport(backend.transportBuilder())),
+		workingSet: fixtureWorkingSet(codeRepos...),
 	}
 	return c, backend
 }
@@ -134,7 +135,7 @@ func TestSegmentPoolDegenerateCoverageProbe(t *testing.T) {
 	ctx := opCtx()
 
 	t.Run("CASE A degenerate-but-nonzero heals", func(t *testing.T) {
-		c, backend := buildHealProbeClient(t, 120)
+		c, backend := buildHealProbeClient(t, 120, "repoA")
 		shipHNSW(t, backend, "repoA", 12) // covered=12, anyUnknown=false
 		snap, err := c.segmentMgr.ShippedManifestSnapshot(ctx, kgtypes.GraphCode, "repoA", hnsw.New().Name())
 		require.NoError(t, err)
@@ -144,7 +145,7 @@ func TestSegmentPoolDegenerateCoverageProbe(t *testing.T) {
 	})
 
 	t.Run("CASE B healthy disarms", func(t *testing.T) {
-		c, backend := buildHealProbeClient(t, 60)
+		c, backend := buildHealProbeClient(t, 60, "repoB")
 		shipHNSW(t, backend, "repoB", 58) // covered=58, anyUnknown=false
 		snap, err := c.segmentMgr.ShippedManifestSnapshot(ctx, kgtypes.GraphCode, "repoB", hnsw.New().Name())
 		require.NoError(t, err)
@@ -154,7 +155,7 @@ func TestSegmentPoolDegenerateCoverageProbe(t *testing.T) {
 	})
 
 	t.Run("CASE C small graph below floor no-flap", func(t *testing.T) {
-		c, backend := buildHealProbeClient(t, 10)
+		c, backend := buildHealProbeClient(t, 10, "repoC")
 		shipHNSW(t, backend, "repoC", 1) // covered=1, embedded=10 < floor → ratio never consulted
 		snap, err := c.segmentMgr.ShippedManifestSnapshot(ctx, kgtypes.GraphCode, "repoC", hnsw.New().Name())
 		require.NoError(t, err)
@@ -164,7 +165,7 @@ func TestSegmentPoolDegenerateCoverageProbe(t *testing.T) {
 	})
 
 	t.Run("CASE D migration all-zero-doc_count storm guard disarms", func(t *testing.T) {
-		c, backend := buildHealProbeClient(t, 60000)
+		c, backend := buildHealProbeClient(t, 60000, "repoD")
 		shipHNSW(t, backend, "repoD", 0, 0) // every HNSW meta doc_count==0 → anyUnknown=true
 		snap, err := c.segmentMgr.ShippedManifestSnapshot(ctx, kgtypes.GraphCode, "repoD", hnsw.New().Name())
 		require.NoError(t, err)

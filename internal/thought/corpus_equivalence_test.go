@@ -299,21 +299,21 @@ type canonCluster struct {
 }
 
 // computeEquivSurface runs the five criterion surfaces against ONE fake wire, with
-// the thought-node set sourced through the given loop `p` (p.corpus populated →
-// resident cache; p.corpus nil → wire drain). Every non-node input (edges, charges,
-// sessions, docs) comes from the same fake, so the surface differs ONLY if the cache
-// diverges the node set from the drain.
-func computeEquivSurface(t *testing.T, gc *reflectEquivFake, p *PropagationLoop) equivSurface {
+// the thought-node set sourced through `src` (usually the loop `p`: p.corpus
+// populated → resident cache; p.corpus nil → wire drain; or a newPassReads(p) memo
+// over it). Every non-node input (edges, charges, sessions, docs) comes from the same
+// fake, so the surface differs ONLY if the source diverges the node set.
+func computeEquivSurface(t *testing.T, gc *reflectEquivFake, p *PropagationLoop, src CorpusSource) equivSurface {
 	t.Helper()
 	ctx := context.Background()
 
-	clusters, err := DetectPersistedClusters(ctx, gc, p)
+	clusters, err := DetectPersistedClusters(ctx, gc, src)
 	require.NoError(t, err)
 
-	nodeIDs, adj, err := fetchAdjacency(ctx, gc, "all", nil, p)
+	nodeIDs, adj, err := fetchAdjacency(ctx, gc, "all", nil, src)
 	require.NoError(t, err)
 
-	res, err := RunPropagationScoped(ctx, gc, nil, nil, nil, p)
+	res, err := RunPropagationScoped(ctx, gc, nil, nil, nil, src)
 	require.NoError(t, err)
 
 	// Topic-label overrides: mutate cluster labels from the persisted topic docs.
@@ -324,7 +324,7 @@ func computeEquivSurface(t *testing.T, gc *reflectEquivFake, p *PropagationLoop)
 	// the SET, which sorting preserves).
 	sortedIDs := append([]string(nil), nodeIDs...)
 	sort.Strings(sortedIDs)
-	blindSpots := p.computeBlindSpots(ctx, sortedIDs, clusters)
+	blindSpots := p.computeBlindSpots(ctx, sortedIDs, clusters, src)
 
 	return canonicalizeSurface(clusters, adj, res, blindSpots)
 }
@@ -400,7 +400,7 @@ func canonRoundBlindSpots(r BlindSpotReport) BlindSpotReport {
 // equivLoop builds a struct-literal PropagationLoop wired to gc with a FIXED clock
 // (blind-spot recency determinism). cache non-nil → warm resident source; nil →
 // drain. baseCtx/clock defaults are covered by baseContext()/clockNow() nil-guards.
-func equivLoop(gc *reflectEquivFake, cache *corpusCache) *PropagationLoop {
+func equivLoop(gc Caller, cache *corpusCache) *PropagationLoop {
 	fixed := time.Unix(1_700_000_000, 0)
 	return &PropagationLoop{gc: gc, corpus: cache, clock: func() time.Time { return fixed }}
 }
@@ -424,13 +424,13 @@ func TestCorpusCacheEquivalence_CachedEqualsDrain(t *testing.T) {
 
 	// DRAIN run: p.corpus nil → CorpusSnapshot warm=false → every consumer drains.
 	gcFull := newReflectEquivFake(spec)
-	oFull := computeEquivSurface(t, gcFull, equivLoop(gcFull, nil))
+	oFull := surfaceFromLoop(t, gcFull, equivLoop(gcFull, nil))
 
 	// CACHED run: same corpus, node set served from the resident cache (fed via the
 	// real MergeDelta) — a distinct fake so the drain run's writeback can't leak in.
 	gcCached := newReflectEquivFake(spec)
 	cache := cacheFromNodes(gcCached.thoughtNodesSlice())
-	oCached := computeEquivSurface(t, gcCached, equivLoop(gcCached, cache))
+	oCached := surfaceFromLoop(t, gcCached, equivLoop(gcCached, cache))
 
 	// The gate is only meaningful if the surface is non-trivial: real clusters, real
 	// propagated values, and a non-empty blind-spot report (so a T2-C-class
@@ -454,13 +454,13 @@ func TestCorpusCacheEquivalence_PoisonedMergeGoesRed(t *testing.T) {
 	spec := defaultEquivSpec()
 
 	gcFull := newReflectEquivFake(spec)
-	oFull := computeEquivSurface(t, gcFull, equivLoop(gcFull, nil))
+	oFull := surfaceFromLoop(t, gcFull, equivLoop(gcFull, nil))
 
 	// POISON: drop the last thought from the cache feed — a lost-node merge fault.
 	gcCached := newReflectEquivFake(spec)
 	poisoned := gcCached.thoughtNodesSlice()
 	poisoned = poisoned[:len(poisoned)-1] // "a3" never lands in the cache.
-	oCached := computeEquivSurface(t, gcCached, equivLoop(gcCached, cacheFromNodes(poisoned)))
+	oCached := surfaceFromLoop(t, gcCached, equivLoop(gcCached, cacheFromNodes(poisoned)))
 
 	// The dropped node changes cluster cA's membership + the blind-spot set, so the
 	// surfaces MUST differ — this is the RED the real gate above catches.

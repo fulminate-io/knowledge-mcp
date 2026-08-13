@@ -40,11 +40,18 @@ func BuildHierarchy(ctx context.Context, gc postpopulate.GraphCaller, graphName 
 	var batchEdges []knowledgev1.Edge
 	var packageNodes []*knowledgev1.Node
 
-	// NOTE: file→chunk (file→declaration) CONTAINS edges are NOT built here.
-	// The treesitter chunker emits them at collect time (chunker.go
-	// emitDeclarationEdges: FromID=filePath, ToID=declaration, Type=CONTAINS),
-	// uploaded with the nodes — see populate.go's "File→symbol membership is
-	// handled by the existing CONTAINS edges emitted by treesitter/chunker.go".
+	// NOTE: neither chunker-emitted CONTAINS shape is built here. The treesitter
+	// chunker emits both at collect time (chunker.go emitDeclarationEdges): the
+	// file→declaration edge, and the parent-to-member edge from a Go receiver
+	// type or a class to its member. Both are uploaded with the nodes — see
+	// populate.go's "File→symbol membership is handled by the existing CONTAINS
+	// edges emitted by treesitter/chunker.go".
+	//
+	// Both shapes pass through parser.resolveEdges (parser/edges.go), which
+	// drops any edge whose endpoint does not resolve against the build's
+	// symbolMap — so a declaration whose name is ambiguous within its file
+	// still ends up with no CONTAINS edge.
+	//
 	// The old store-based BuildHierarchy re-derived them via a full IterateAll
 	// scan; that scan has no wire-expressible 'all code-type nodes' browse and
 	// is redundant given the chunker already wired the edges. The unique value

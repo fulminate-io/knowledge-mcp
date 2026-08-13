@@ -156,10 +156,9 @@ func (c *client) commitMergeWatermark(g segmentGraphRef, pending mergePending) {
 	}
 }
 
-// reconcileSegmentCoverage is the startup + periodic read-side reconcile: it
-// enumerates every segment-bearing builtin (the embeddable graph types
-// kgtypes.HasRebuildableSegments admits — knowledge/default explicit plus every
-// instance of code, cloud, cicd, practice via ListGraphNamesOfType), probes each
+// reconcileSegmentCoverage is the startup + periodic read-side reconcile: it walks
+// the graphs this client has interacted with that carry rebuildable segments (see
+// segmentBearingGraphs — a local working-set read, no enumeration RPC), probes each
 // for the LIVE-resident-vs-shipped degeneracy a daemon restart
 // can leave behind (a fully-embedded, un-recollected graph whose searchable pool
 // collapsed to empty with no embed-drain or search to re-trigger a heal), and —
@@ -198,8 +197,8 @@ func (c *client) reconcileSegmentCoverage(ctx context.Context) {
 // reconcileSegmentCoverageScoped is the pass body. deltaScope selects which graphs
 // the pass VISITS AT ALL:
 //
-//   - nil — the PERIODIC SWEEP (startup and the interval ticker). Every graph is
-//     visited, which is what guarantees a delete reaches the pool within one
+//   - nil — the PERIODIC SWEEP (startup and the interval ticker). Every graph the
+//     walk yields is visited, which is what guarantees a delete reaches the pool within one
 //     interval even when nothing local signaled it: a collect that only REMOVES
 //     files writes nothing here, so it produces no nudge, and a nudge-only consumer
 //     would never learn about it.
@@ -243,7 +242,7 @@ func (c *client) reconcileSegmentCoverageScoped(ctx context.Context, deltaScope 
 		c.beginRepairTick()
 	}
 
-	for _, g := range c.segmentBearingGraphs(ctx) {
+	for _, g := range c.segmentBearingGraphs() {
 		if deltaScope != nil {
 			if _, signaled := deltaScope[g]; !signaled {
 				continue // a woken pass is the nudged graphs' pass, not a corpus sweep.
@@ -253,15 +252,30 @@ func (c *client) reconcileSegmentCoverageScoped(ctx context.Context, deltaScope 
 	}
 }
 
-// segmentBearingGraphs enumerates every segment-bearing builtin: knowledge/default
-// (seeded explicitly — its default instance has an empty enumerated name that
-// ListGraphNamesOfType drops) plus every instance of the other embeddable builtins
-// (code, cloud, cicd, practice), enumerated through the SAME ListGraphNamesOfType
-// seam the status coverage table uses (the *client satisfies tools.ClientDeps). The
-// kgtypes.HasRebuildableSegments gate mirrors segCoveredFor's matching gate
-// (manage_status_coverage.go) so the reconcile probes exactly the graph set
-// manage(status) reports as segment-bearing — linkage + transformers (sync-eligible
-// but non-embeddable) are skipped, they carry no rebuildable segments.
+// segmentBearingGraphs is the graph set every arm of this pass walks: the graphs
+// THIS CLIENT HAS INTERACTED WITH — searched, collected into, or written to — and
+// nothing else. It reads the working set locally and COSTS NO RPC: it asks no
+// backend to enumerate anything, which is the point. The routed per-type
+// enumeration it replaced (one ListGraphNamesOfType per embeddable builtin) ran on
+// every periodic tick and every nudge-woken pass, and a working set consulted only
+// AFTER such an enumeration would have left those reads in place.
+//
+// A graph nobody interacts with is therefore never probed, healed or published by
+// this client. Stated so a future reader does not "fix" it: a graph NO client
+// interacts with stops being enriched and stops having segments published — that is
+// INTENDED, not a regression.
+//
+// There is no knowledge/default seed and no seed of any other kind. knowledge is a
+// member exactly when an interaction earned it, like every other graph, and
+// workingset.Normalize is what guarantees it then arrives under the "default"
+// instance name however the interaction spelled it — so the two-spellings drift the
+// old explicit seed existed to prevent cannot return through this path.
+//
+// The kgtypes.HasRebuildableSegments gate survives unchanged and still mirrors
+// segCoveredFor's matching gate (manage_status_coverage.go), so the reconcile probes
+// exactly the graph set manage(status) reports as segment-bearing — linkage +
+// transformers (sync-eligible but non-embeddable) are skipped, they carry no
+// rebuildable segments.
 //
 // IT IS A SHARED HELPER ON PURPOSE. The periodic reconcile pass and the
 // clean-shutdown backlog drain both need "every segment-bearing graph", and two
@@ -269,27 +283,14 @@ func (c *client) reconcileSegmentCoverageScoped(ctx context.Context, deltaScope 
 // produced once — an instrument asking knowledge/"" while the reconcile seeded
 // knowledge/"default". One definition means the drain cannot walk a different set
 // from the pass that queued the work.
-//
-// A per-type enumeration failure WARNs and skips that type rather than failing the
-// whole walk, so one unreachable graph type never costs the others their pass.
-func (c *client) segmentBearingGraphs(ctx context.Context) []segmentGraphRef {
-	graphs := []segmentGraphRef{{gt: kgtypes.GraphKnowledge, name: "default"}}
-	for _, gt := range kgtypes.SyncEligibleGraphTypes() {
-		if gt == kgtypes.GraphKnowledge {
-			continue // already seeded explicitly above (empty default-instance name).
-		}
-		if !kgtypes.HasRebuildableSegments(gt) {
+func (c *client) segmentBearingGraphs() []segmentGraphRef {
+	members := c.workingSet.Members()
+	graphs := make([]segmentGraphRef, 0, len(members))
+	for _, m := range members {
+		if !kgtypes.HasRebuildableSegments(m.GraphType) {
 			continue // linkage / transformers — no rebuildable segments.
 		}
-		names, err := tools.ListGraphNamesOfType(ctx, c, string(gt))
-		if err != nil {
-			slog.Warn("bootstrap: segment enumeration could not list graphs of type (skipping this type)",
-				"graph_type", gt, "error", err)
-			continue
-		}
-		for _, name := range names {
-			graphs = append(graphs, segmentGraphRef{gt: gt, name: name})
-		}
+		graphs = append(graphs, segmentGraphRef{gt: m.GraphType, name: m.Name})
 	}
 	return graphs
 }
@@ -320,7 +321,7 @@ func (c *client) drainSegmentBacklog(ctx context.Context) {
 	ctx = graphclient.WithOperation(ctx, graphclient.OpSegmentReconcile)
 
 	var drained, skipped []string
-	for _, g := range c.segmentBearingGraphs(ctx) {
+	for _, g := range c.segmentBearingGraphs() {
 		label := string(g.gt) + "/" + g.name
 		if ctx.Err() != nil {
 			// The window closed mid-walk: record the remainder rather than pushing

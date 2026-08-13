@@ -281,7 +281,12 @@ func TestReconcileTickDrivesTheReBucketTrigger(t *testing.T) {
 	ctx := opCtx()
 	c, eng, behindRepo, _ := reBucketBehindFixture(t)
 
+	// The aligned graph must RIDE THE SAME PASS, so this client has to have interacted
+	// with it: an unadmitted graph is absent from the walk, and its zero scan count
+	// below would then say nothing about the trigger. The engine registration is kept
+	// beside the admission so a regression to backend enumeration is still visible.
 	const alignedRepo = "reBucketAlignedRepo"
+	c.AdmitGraph(kgtypes.GraphCode, alignedRepo, "search")
 	eng.namesByType[string(kgtypes.GraphCode)] = []string{behindRepo, alignedRepo}
 
 	// The aligned graph: seeded and drained, so its layout equals the count its own

@@ -71,7 +71,7 @@ func DetectThoughtClusters(ctx context.Context, gc Caller, gamma float64) ([]Tho
 		return nil, nil
 	}
 	clusterOf := runLeidenLocal(nodeIDs, adj, gamma)
-	return groupAndBuildClusters(ctx, gc, nodeIDs, clusterOf), nil
+	return groupAndBuildClusters(ctx, gc, nodeIDs, clusterOf, nil), nil
 }
 
 // DetectAllClusters detects communities over EVERY node type (except
@@ -90,7 +90,7 @@ func DetectAllClusters(ctx context.Context, gc Caller, gamma float64) ([]Thought
 		return nil, nil
 	}
 	clusterOf := runLeidenLocal(nodeIDs, adj, gamma)
-	return groupAndBuildClusters(ctx, gc, nodeIDs, clusterOf), nil
+	return groupAndBuildClusters(ctx, gc, nodeIDs, clusterOf, nil), nil
 }
 
 // ErrClustersNotComputed is the cold-case sentinel DetectPersistedClusters
@@ -144,7 +144,7 @@ func DetectPersistedClusters(ctx context.Context, gc Caller, src CorpusSource) (
 	for _, members := range groups {
 		allMembers = append(allMembers, members...)
 	}
-	chargesByID := fetchChargesFor(ctx, gc, allMembers)
+	chargesByID := fetchChargesFor(ctx, gc, allMembers, src)
 
 	now := time.Now()
 	clusters := make([]ThoughtCluster, 0, len(groups))
@@ -200,12 +200,12 @@ func partitionFromPersisted(ctx context.Context, gc Caller, src CorpusSource) (m
 // then sorts by size descending. Aggregates and persistence run inside
 // buildClusterObjects (which issues the locked single bulk_update_metadata
 // write).
-func groupAndBuildClusters(ctx context.Context, gc Caller, nodeIDs []string, clusterOf map[string]string) []ThoughtCluster {
+func groupAndBuildClusters(ctx context.Context, gc Caller, nodeIDs []string, clusterOf map[string]string, src CorpusSource) []ThoughtCluster {
 	groups := make(map[string][]string)
 	for _, id := range nodeIDs {
 		groups[clusterOf[id]] = append(groups[clusterOf[id]], id)
 	}
-	clusters := buildClusterObjects(ctx, gc, groups)
+	clusters := buildClusterObjects(ctx, gc, groups, src)
 	sort.Slice(clusters, func(i, j int) bool {
 		// Size desc with an ID tie-break so equal-size clusters order deterministically
 		// (the groups map is iterated in random order upstream).
@@ -218,18 +218,22 @@ func groupAndBuildClusters(ctx context.Context, gc Caller, nodeIDs []string, clu
 }
 
 // buildClusterObjects constructs ThoughtCluster values from grouped
-// node IDs. Calls fetchNodesByIDs (one bulk node hydrate over the Execute
-// seam) for label resolution + fetchChargesFor (one bulk charge fetch) for
-// charge aggregation, then constructs all clusters from the two prebuilt
-// maps. Persistence is a single bulk_update_metadata mutate.
-func buildClusterObjects(ctx context.Context, gc Caller, groups map[string][]string) []ThoughtCluster {
+// node IDs. Calls memoCorpusNodes (the member hydrate: resident-cache projection
+// plus a residual-only wire read) for label resolution + fetchChargesFor (the
+// pass's single charge map) for charge aggregation, then constructs all clusters
+// from the two prebuilt maps. Persistence is a single bulk_update_metadata mutate.
+//
+// src is the per-pass read memo; nil is the standalone/on-demand path and reads
+// exactly as before. NOTE that the member hydrate may return a map WIDER than
+// allMembers (see memoCorpusNodes) — every use below indexes it by member id.
+func buildClusterObjects(ctx context.Context, gc Caller, groups map[string][]string, src CorpusSource) []ThoughtCluster {
 	// Flatten all members for the bulk fetches.
 	var allMembers []string
 	for _, members := range groups {
 		allMembers = append(allMembers, members...)
 	}
-	nodeByID := fetchNodesByIDs(ctx, gc, allMembers)
-	chargesByID := fetchChargesFor(ctx, gc, allMembers)
+	nodeByID := memoCorpusNodes(ctx, gc, allMembers, src)
+	chargesByID := fetchChargesFor(ctx, gc, allMembers, src)
 
 	now := time.Now()
 	clusters := make([]ThoughtCluster, 0, len(groups))

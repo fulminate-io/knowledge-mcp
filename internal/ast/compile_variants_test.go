@@ -163,11 +163,15 @@ func TestCompileVariants_UnionAndHosting(t *testing.T) {
 		require.NoError(t, err)
 		defer cp.Close()
 
-		repoRoot := filepath.Join("..", "..", "..", "..")
-		raws, stats, err := Match(context.Background(), repoRoot, treesitter.LangGo, cp, nil, Scope{
+		// Anchor at the MODULE root (two levels above this package), not the git
+		// root: the module can live at a repo subpath or at the repo root, and
+		// module-relative prefixes are the one spelling that names these
+		// packages in both layouts.
+		moduleRoot := filepath.Join("..", "..")
+		raws, stats, err := Match(context.Background(), moduleRoot, treesitter.LangGo, cp, nil, Scope{
 			PackagePrefixes: []string{
-				"cmd/knowledge/internal/collector/cloud/gcp/",
-				"cmd/knowledge/internal/pipeline/",
+				"internal/collector/cloud/gcp/",
+				"internal/pipeline/",
 			},
 		})
 		require.NoError(t, err)
@@ -179,9 +183,9 @@ func TestCompileVariants_UnionAndHosting(t *testing.T) {
 		}
 		// A FLOOR, not an equality: an unrelated new adjacent-call pair
 		// elsewhere under these prefixes must not false-fail the gate.
-		require.GreaterOrEqual(t, files["cmd/knowledge/internal/collector/cloud/gcp/collector_clients.go"], 1,
+		require.GreaterOrEqual(t, files["internal/collector/cloud/gcp/collector_clients.go"], 1,
 			"the known real site in collector_clients.go stopped matching; rule 3 destroyed a working capability")
-		require.GreaterOrEqual(t, files["cmd/knowledge/internal/pipeline/pipeline.go"], 1,
+		require.GreaterOrEqual(t, files["internal/pipeline/pipeline.go"], 1,
 			"the known real site in pipeline.go stopped matching; rule 3 destroyed a working capability")
 
 		for _, rm := range raws {

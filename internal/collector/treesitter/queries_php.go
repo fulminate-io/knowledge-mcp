@@ -28,7 +28,7 @@ func phpQueries() *QuerySet {
 		// Documented gap: nested @parent_name binding not captured (mirrors
 		// JS/Kotlin/Scala/Elixir gap). The inner test/it inside describe()
 		// emits with ParentName="" — astPathHash uniquely identifies each.
-		TestBlocks: `[
+		TestBlocks: `([
 			(function_call_expression
 				function: (name) @fn
 				arguments: (arguments
@@ -41,6 +41,6 @@ func phpQueries() *QuerySet {
 					(argument [(arrow_function) (anonymous_function_creation_expression)])
 				)
 			) @decl
-		] (#match? @fn "^(test|it|describe|context|beforeEach|beforeAll|afterEach|afterAll|setUp|tearDown|setUpBeforeClass|tearDownAfterClass|dataset)$")`,
+		] (#match? @fn "^(test|it|describe|context|beforeEach|beforeAll|afterEach|afterAll|setUp|tearDown|setUpBeforeClass|tearDownAfterClass|dataset)$"))`,
 	}
 }

@@ -17,17 +17,24 @@ import (
 // Unresolvable edges (e.g., calls to stdlib) are dropped.
 // IMPORTS edges are passed through unchanged.
 func resolveEdges(edges []*knowledgev1.Edge, symbolMap map[string]string, nodeIDs map[string]bool) []*knowledgev1.Edge {
-	// Build reverse lookup: bare symbol name → []nodeID for cross-package resolution.
+	// Build reverse lookup: language partition + bare symbol name → []nodeID for
+	// cross-package resolution. The partition keeps a Go caller's candidate set
+	// free of same-named symbols from other languages, whose namespaces carry a
+	// "<language>:" prefix; Go namespaces are bare package names and land in the
+	// "" partition. The NUL separator is used because no namespace or symbol
+	// contains one.
 	byName := make(map[string][]string)
 	// Build pkg:method → []nodeID for same-package method resolution when
 	// the symbolMap key includes a receiver type (e.g., "store.db.Retrieve").
+	// This key already begins with the full namespace token, so it is partitioned
+	// across languages by construction.
 	byPkgName := make(map[string][]string)
 	for qualName, nodeID := range symbolMap {
 		parts := strings.Split(qualName, ".")
 		if len(parts) >= 2 {
 			method := parts[len(parts)-1]
-			byName[method] = append(byName[method], nodeID)
 			pkg := parts[0]
+			byName[nsLang(pkg)+"\x00"+method] = append(byName[nsLang(pkg)+"\x00"+method], nodeID)
 			byPkgName[pkg+":"+method] = append(byPkgName[pkg+":"+method], nodeID)
 		}
 	}
@@ -67,7 +74,16 @@ func resolveEdges(edges []*knowledgev1.Edge, symbolMap map[string]string, nodeID
 	return resolved
 }
 
-// extractCallerContext extracts the Go package name and receiver type from a
+// nsLang returns the language partition of a namespace token: the prefix
+// before the ':' for non-Go namespaces, "" for Go package names.
+func nsLang(ns string) string {
+	if before, _, ok := strings.Cut(ns, ":"); ok {
+		return before
+	}
+	return ""
+}
+
+// extractCallerContext extracts the namespace and receiver type from a
 // qualified edge ID. For "store.db.Retrieve" returns ("store", "db").
 // For "store.Open" returns ("store", "").
 func extractCallerContext(qualName string) (pkg, receiver string) {
@@ -90,7 +106,8 @@ func extractCallerContext(qualName string) (pkg, receiver string) {
 //     a. Receiver-qualified: callerPkg.callerReceiver.id (e.g., "store.db.Retrieve")
 //     b. Direct: callerPkg.id (e.g., "store.Open")
 //     c. Fuzzy: any same-package symbol with this name (unambiguous only)
-//  4. Unambiguous cross-package lookup (bare name found in exactly one package)
+//  4. Unambiguous cross-package lookup within the id's language partition (bare
+//     name found in exactly one package of that language)
 //  5. For dotted IDs (e.g., "g.Close" from variable method calls): extract the last
 //     segment and retry steps 3-4 with just the method name
 //
@@ -123,15 +140,28 @@ func resolveEdgeID(id, callerPkg, callerReceiver string, symbolMap map[string]st
 		}
 	}
 
-	// 4. Unambiguous cross-package resolution.
-	if candidates := byName[id]; len(candidates) == 1 {
+	// The bare-name partition comes from the id being resolved when the id
+	// carries its own namespace, and from the caller otherwise. The inner
+	// guard matters: a dotted callee that is not a namespace — TypeScript
+	// captures a whole member_expression, so `this.area()` arrives as
+	// "this.area" — must keep the caller's partition rather than being
+	// reassigned to Go's.
+	part := nsLang(callerPkg)
+	if before, _, ok := strings.Cut(id, "."); ok {
+		if l := nsLang(before); l != "" {
+			part = l
+		}
+	}
+
+	// 4. Unambiguous cross-package resolution within the language partition.
+	if candidates := byName[part+"\x00"+id]; len(candidates) == 1 {
 		return candidates[0]
 	}
 
 	// 5. For dotted IDs like "g.Close" (method calls on variables), extract the
 	// last segment and retry resolution with just the method name.
 	if idx := strings.LastIndex(id, "."); idx >= 0 {
-		if nodeID := resolveDottedEdgeCallee(id[idx+1:], callerPkg, callerReceiver, symbolMap, byName, byPkgName); nodeID != "" {
+		if nodeID := resolveDottedEdgeCallee(id[idx+1:], callerPkg, callerReceiver, part, symbolMap, byName, byPkgName); nodeID != "" {
 			return nodeID
 		}
 	}
@@ -141,7 +171,9 @@ func resolveEdgeID(id, callerPkg, callerReceiver string, symbolMap map[string]st
 
 // resolveDottedEdgeCallee resolves a method name extracted from a dotted ID
 // (e.g., "Close" from "g.Close") by retrying same-package and cross-package lookups.
-func resolveDottedEdgeCallee(methodName, callerPkg, callerReceiver string, symbolMap map[string]string, byName, byPkgName map[string][]string) string {
+// part is the language partition resolveEdgeID derived from the full dotted id;
+// methodName is the last segment and so never carries a namespace of its own.
+func resolveDottedEdgeCallee(methodName, callerPkg, callerReceiver, part string, symbolMap map[string]string, byName, byPkgName map[string][]string) string {
 	// Try receiver-qualified (same receiver calling own method).
 	if callerPkg != "" && callerReceiver != "" {
 		if nodeID, ok := symbolMap[callerPkg+"."+callerReceiver+"."+methodName]; ok {
@@ -158,7 +190,7 @@ func resolveDottedEdgeCallee(methodName, callerPkg, callerReceiver string, symbo
 			return candidates[0]
 		}
 	}
-	if candidates := byName[methodName]; len(candidates) == 1 {
+	if candidates := byName[part+"\x00"+methodName]; len(candidates) == 1 {
 		return candidates[0]
 	}
 	return ""

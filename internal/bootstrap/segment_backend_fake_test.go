@@ -117,6 +117,12 @@ type fakeSegBackend struct {
 
 	publishCalls int
 	readCalls    int
+	// publishByGraph / readByGraph split those totals per graph instance. A pass that
+	// publishes for one graph and not another is invisible in a global count, and
+	// "this graph was never published for" is exactly the claim the working-set
+	// regression makes.
+	publishByGraph map[string]int
+	readByGraph    map[string]int
 	// failReadAfterN, when > 0, makes the first N manifest/read calls succeed and
 	// every read AFTER that return a transport error (the 524/down shape) — the GCS
 	// analog of the deleted healSegmentService.failListAfterN, letting a fixture model
@@ -222,6 +228,10 @@ func (b *fakeSegBackend) handleManifestPublish(body []byte) ([]byte, error) {
 	}
 	b.mu.Lock()
 	b.publishCalls++
+	if b.publishByGraph == nil {
+		b.publishByGraph = map[string]int{}
+	}
+	b.publishByGraph[req.GraphType+"/"+req.Name]++
 	var missing []string
 	for _, d := range req.Digests {
 		objectPath := segMintObjectPath(req.GraphType, req.Name, req.Format, d.ContentHash)
@@ -250,6 +260,10 @@ func (b *fakeSegBackend) handleManifestRead(body []byte) ([]byte, error) {
 	}
 	b.mu.Lock()
 	b.readCalls++
+	if b.readByGraph == nil {
+		b.readByGraph = map[string]int{}
+	}
+	b.readByGraph[req.GraphType+"/"+req.Name]++
 	failAfter := b.failReadAfterN
 	reads := b.readCalls
 	digests, found := b.manifests[segManifestKey(req.GraphType, req.Name, req.Format)]

@@ -1,7 +1,6 @@
 # ReplaceBucket / withReplaced call-site census
 
-Run before adding `SegmentedIndex.ReplaceBucketGroup` (FUL-1052 Step 5 fix,
-step `e6f502e6ab36455205deae4e36798425`). Regenerate with:
+Run before adding `SegmentedIndex.ReplaceBucketGroup`. Regenerate with:
 
 ```
 ast({operation:"match", language:"go", pattern:"$X.ReplaceBucket($$$A)", include_tests:true})

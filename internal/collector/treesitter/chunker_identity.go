@@ -6,10 +6,34 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	sitter "github.com/smacker/go-tree-sitter"
 )
+
+// namespaceSanitizer strips the two characters that carry structural meaning in
+// an edge ID: '.' separates namespace from symbol in parser/edges.go, and ':'
+// separates the language prefix from the directory below.
+var namespaceSanitizer = strings.NewReplacer(".", "_", ":", "_")
+
+// fileNamespace derives the per-file symbol namespace from the file's
+// parent directory. Non-Go namespaces carry a language prefix so a Go
+// package name can never collide with a directory basename; the ':' is
+// the language separator and is stripped from the basename so exactly
+// one colon means "not Go". Dots are replaced because parser/edges.go
+// splits namespace from symbol on '.'.
+//
+// The namespace is not persisted: parser/populate.go writes no namespace field
+// on a node, and parser/resolveEdges rewrites every surviving edge endpoint to
+// a graph node ID. It exists only between chunker emission and edge resolution.
+func fileNamespace(filePath string, lang Language) string {
+	base := namespaceSanitizer.Replace(filepath.Base(filepath.Dir(filePath)))
+	if lang == LangGo {
+		return base
+	}
+	return string(lang) + ":" + base
+}
 
 // functionLikeTypes are AST node types that represent function/method scopes
 // across all supported tree-sitter grammars. Used to find the enclosing
@@ -17,17 +41,142 @@ import (
 var functionLikeTypes = map[string]bool{
 	"function_declaration": true, // Go, JS, TS, Swift, Kotlin
 	"method_declaration":   true, // Go, C#, Java, PHP
-	"method_definition":    true, // JS/TS class methods, Ruby
+	"method_definition":    true, // JS/TS class methods
 	"function_definition":  true, // Python, C, C++, Rust
 	"arrow_function":       true, // JS/TS
+	"method":               true, // Ruby
+	"singleton_method":     true, // Ruby
 }
 
-// findEnclosingFunction walks up the AST parent chain and returns the name of
-// the enclosing function or method. For Go methods, returns "Receiver.Method".
-// For anonymous functions assigned to variables (e.g., const handler = () => {}),
-// uses the variable name. Returns "" if the node is at top-level scope.
-func findEnclosingFunction(node *sitter.Node, src []byte) string {
+// classLikeTypes are AST node types that represent a named container whose
+// members another query pattern chunks separately — a class, interface, trait,
+// protocol, module or namespace. Membership is a census of the 32 queries_*.go
+// TopLevel queries: a kind belongs here when that language's query chunks a
+// member declaration nested inside it and containerName can resolve the
+// container's own name from one of its three sources.
+//
+// NO GO NODE KIND APPEARS HERE. Go's containers are type_declaration,
+// type_spec, struct_type and interface_type; their absence is what makes Go's
+// behavior unchanged by construction rather than by measurement. Note that
+// method_definition and method_declaration are function-like, not class-like,
+// and stay in functionLikeTypes.
+//
+// A kind admitted for one language is admitted for every language that uses
+// it: "class" is Ruby's class declaration and also the kind of a
+// TypeScript/JavaScript class expression, which is correct here — a member of
+// a named class expression takes the class's name, and a member of an
+// anonymous one takes nothing. ADDING A KIND HERE THEREFORE REQUIRES A CENSUS
+// OF EVERY GRAMMAR THAT USES IT, derived by reading the queries_*.go TopLevel
+// patterns rather than by probing one language and inferring the rest: a
+// passing test suite cannot reveal that an added kind also appears in a
+// grammar nobody wrote a fixture for.
+//
+// Containment is SINGLE-ANCESTOR: a member takes the name of its nearest named
+// container, never a dotted chain of every container above it. A C++ member of
+// `namespace outer { namespace inner { ... } }` therefore carries "inner"
+// alone. Where a grammar itself hands over a qualified spelling as one name
+// node — C#'s `namespace App.Models`, C++17's `namespace a::b` — that full
+// path is kept, because it arrives as the container's own name.
+//
+// Deliberately excluded, with the grammar reason: Elixir's container and
+// member are both the call kind, so no kind-based rule can tell defmodule from
+// def; C#'s file_scoped_namespace_declaration and PHP's semicolon-form
+// namespace are SIBLINGS of the declarations they name rather than ancestors,
+// so no upward walk reaches them and they are resolved from the file's own
+// declaration instead.
+var classLikeTypes = map[string]bool{
+	"class_definition":      true, // Python, Scala
+	"class_declaration":     true, // TypeScript/TSX, Java, C#, PHP, Swift; Kotlin (see below)
+	"class_specifier":       true, // C++
+	"struct_specifier":      true, // C++
+	"struct_declaration":    true, // C#
+	"interface_declaration": true, // Java, C#, PHP
+	"enum_declaration":      true, // Java, C#
+	"trait_declaration":     true, // PHP
+	"trait_definition":      true, // Scala
+	"object_definition":     true, // Scala
+	"protocol_declaration":  true, // Swift
+	"class":                 true, // Ruby; also JS/TS class expressions
+	"module":                true, // Ruby
+	// Kotlin's class_declaration and object_declaration bind their name
+	// POSITIONALLY — ChildByFieldName("name") returns nil on both, so their
+	// names come from containerName's third source, the scan of direct named
+	// children.
+	"object_declaration": true, // Kotlin (no name field — see containerName)
+	// Namespace-style containers. Each is admitted because a probe measured it
+	// as a true named ancestor of the declarations its language's query chunks.
+	"mod_item":              true, // Rust module — binds name:, true ancestor
+	"impl_item":             true, // Rust impl — binds type:, see containerName
+	"namespace_definition":  true, // C++; PHP braced form only
+	"namespace_declaration": true, // C#, block form only
+	"module_binding":        true, // OCaml — module_definition has no fields
+}
+
+// containerName resolves a class-like container's name. Grammars disagree
+// about where they put it, so three sources are tried in order:
+//
+//  1. the name: field — every kind in classLikeTypes except the two below,
+//     proven because each language's own TopLevel query compiles a name:
+//     pattern against that kind;
+//  2. the type: field, accepted ONLY when it binds a type_identifier —
+//     Rust's impl_item carries type: and no name:, and queries_rust.go
+//     chunks an impl only as (impl_item type: (type_identifier) @name), so
+//     rejecting any other kind keeps a member's ParentName in agreement
+//     with the container chunk that actually exists;
+//  3. the first direct named child of an identifier-like kind — Kotlin's
+//     grammar attaches NO field name to ANY node, so its container names
+//     are reachable only positionally.
+//
+// Returns "" when none applies, which makes findEnclosingScope keep
+// walking — an anonymous C++ namespace, an anonymous class expression and
+// a generic Rust impl all take that path.
+func containerName(p *sitter.Node, src []byte) string {
+	if n := p.ChildByFieldName("name"); n != nil {
+		return n.Content(src)
+	}
+	if n := p.ChildByFieldName("type"); n != nil {
+		// A type: field binding anything else — Rust's `impl<T> Gen<T>` binds
+		// type: generic_type — returns early rather than falling through to
+		// the scan, which would otherwise pick some unrelated identifier out
+		// of the node and parent members to a container chunk that does not
+		// exist.
+		if n.Type() == "type_identifier" {
+			return n.Content(src)
+		}
+		return ""
+	}
+	// The scan MUST NOT stop at the first named child. Kotlin puts `modifiers`
+	// at index 0 of both `data class Point` and `private class Dog : ...`, so a
+	// first-child rule resolves neither and their members lose their parent
+	// entirely. A supertype cannot win the scan instead: it sits inside a
+	// delegation_specifier, never as a direct child.
+	for i := range int(p.NamedChildCount()) {
+		switch c := p.NamedChild(i); c.Type() {
+		case "type_identifier", "simple_identifier":
+			return c.Content(src)
+		}
+	}
+	return ""
+}
+
+// findEnclosingScope walks up the AST parent chain and returns the name of the
+// enclosing scope — a class-like container or a function/method. For Go
+// methods, returns "Receiver.Method". For anonymous functions assigned to
+// variables (e.g., const handler = () => {}), uses the variable name. Returns
+// "" if the node is at top-level scope.
+func findEnclosingScope(node *sitter.Node, src []byte) string {
 	for p := node.Parent(); p != nil; p = p.Parent() {
+		// Class-like containers get their own branch and CONTINUE when
+		// unnamed, so a nameless container never reaches the
+		// function-oriented fallbacks below — anonymousFuncName would
+		// otherwise name it after the variable it is assigned to and parent
+		// every member to a thing that is not its class.
+		if classLikeTypes[p.Type()] {
+			if nm := containerName(p, src); nm != "" {
+				return nm
+			}
+			continue
+		}
 		if !functionLikeTypes[p.Type()] {
 			continue
 		}
@@ -56,6 +205,19 @@ func findEnclosingFunction(node *sitter.Node, src []byte) string {
 		// to find a named parent scope.
 	}
 	return ""
+}
+
+// declParentName returns the qualification prefix for a declaration — the Go
+// receiver for a Go method, otherwise the enclosing scope. One call serves both
+// the chunk's ParentName and its edge endpoints, so parser/populate's symbolMap
+// key and the emitted edge IDs are the same string by construction.
+func declParentName(declNode *sitter.Node, src []byte, lang Language, chunkType string) string {
+	if lang == LangGo && chunkType == "method_declaration" {
+		if r := extractGoReceiver(declNode, src); r != "" {
+			return r
+		}
+	}
+	return findEnclosingScope(declNode, src)
 }
 
 // anonymousFuncName resolves the name for an anonymous function node by checking
@@ -180,6 +342,127 @@ func firstStringArg(callNode *sitter.Node, src []byte) string {
 		}
 	}
 	return ""
+}
+
+// nonTypeContainerKinds are the classLikeTypes members a type reference never
+// names: an implementation, module, namespace or companion-object block that
+// shares its name with the type it accompanies. Every entry is a member of the
+// classLikeTypes census above, so this is a FILTER over that list rather than a
+// second census — derived by asking of each admitted kind "is this a type, or a
+// block that implements or scopes one?", and checkable by diffing the two.
+var nonTypeContainerKinds = map[string]bool{
+	"impl_item":             true, // Rust impl
+	"mod_item":              true, // Rust module
+	"namespace_definition":  true, // C++; PHP braced form
+	"namespace_declaration": true, // C# block form
+	"module_binding":        true, // OCaml
+	"module":                true, // Ruby
+	"object_definition":     true, // Scala companion object
+	"object_declaration":    true, // Kotlin object
+}
+
+// collisionNames is one file's resolution of every colliding declaration name,
+// computed once and serving both edge rewrites: the parent-to-member CONTAINS
+// FromID and the USES_TYPE ToID.
+type collisionNames struct {
+	// final is each pendingDecl's emitted name, positionally.
+	final []string
+	// suffixed maps a disambiguated declaration's node to its suffixed name.
+	//
+	// Keying by *sitter.Node POINTER identity is sound only because
+	// go-tree-sitter does node interning — Tree.cachedNode hands back one
+	// interned *Node per position per Tree, so the node an ancestor walk
+	// reaches is the same pointer collectTopLevelDecls stored. Verified at the
+	// vendored pin v0.0.0-20240827094217-dd81d9e9be82. A re-vendor returning a
+	// fresh wrapper per call would make every lookup miss SILENTLY, degrading
+	// this to the unfixed behavior with no test failing.
+	suffixed map[*sitter.Node]string
+	// typeRefAlias maps a collided base name to the suffixed name of the one
+	// declaration a type reference to it may mean. A base name is absent when
+	// the answer is ambiguous.
+	typeRefAlias map[string]string
+}
+
+// resolveCollisionNames computes every declaration's final name and, for each
+// collided base name, the single declaration a type reference to it may mean.
+//
+// The candidate pool is EVERY top-level declaration, not only containers: a
+// Rust `pub fn Thing()` beside `pub struct Thing {}` collides, and the function
+// belongs to no container deny set, so a deny-set-only rule would hand it the
+// alias. The rule is therefore ambiguity abstention — claim the alias only when
+// EXACTLY ONE colliding declaration survives nonTypeContainerKinds, and claim
+// nothing when two or more survive or none does, leaving the reference to drop
+// as it would without the rule. A wrong edge is worse than a missing one.
+func resolveCollisionNames(pending []pendingDecl, counts map[[2]string]int) collisionNames {
+	c := collisionNames{final: make([]string, len(pending))}
+	survivors := make(map[string]int)
+	winner := make(map[string]string)
+
+	for i, p := range pending {
+		c.final[i] = p.name
+		if p.name == "" || counts[[2]string{p.parentName, p.name}] < 2 {
+			continue
+		}
+		suffixed := p.name + "#" + astPathHash(p.declNode)
+		c.final[i] = suffixed
+		if c.suffixed == nil {
+			c.suffixed = make(map[*sitter.Node]string)
+		}
+		c.suffixed[p.declNode] = suffixed
+		// chunkType rather than the raw node kind: resolveChunkType unwraps an
+		// export_statement, so an exported TypeScript declaration is weighed as
+		// the interface or function it declares.
+		if !nonTypeContainerKinds[p.chunkType] {
+			survivors[p.name]++
+			winner[p.name] = suffixed
+		}
+	}
+
+	for base, n := range survivors {
+		if n != 1 {
+			continue
+		}
+		if c.typeRefAlias == nil {
+			c.typeRefAlias = make(map[string]string)
+		}
+		c.typeRefAlias[base] = winner[base]
+	}
+	return c
+}
+
+// parentEdgeName returns the container name a member's parent-to-member edge
+// must carry: p.parentName when nothing collided, otherwise the disambiguated
+// name of the nearest enclosing declaration that took a suffix on that base
+// name. The ascent mirrors findEnclosingScope in SHAPE — the walk that produced
+// p.parentName in the first place — but keys on node identity rather than node
+// kind, so it finds the same container that walk named.
+func (c collisionNames) parentEdgeName(p pendingDecl) string {
+	if p.parentName == "" || len(c.suffixed) == 0 {
+		return p.parentName
+	}
+	prefix := p.parentName + "#"
+	for n := p.declNode.Parent(); n != nil; n = n.Parent() {
+		if s, ok := c.suffixed[n]; ok && strings.HasPrefix(s, prefix) {
+			return s
+		}
+	}
+	return p.parentName
+}
+
+// aliasTypeRefTargets repoints every USES_TYPE edge whose target is a collided
+// base name onto the declaration the alias table picked. A type-reference edge
+// carries the bare, unqualified name as its ToID, so this rewrite is what lets
+// it resolve against the suffixed key the winning chunk actually carries.
+func aliasTypeRefTargets(edges []Edge, alias map[string]string) []Edge {
+	if len(alias) == 0 {
+		return edges
+	}
+	for i := range edges {
+		if to, ok := alias[edges[i].ToID]; ok {
+			edges[i].ToID = to
+		}
+	}
+	return edges
 }
 
 // astPathHash computes a short hash of the AST path from a node to the tree root.

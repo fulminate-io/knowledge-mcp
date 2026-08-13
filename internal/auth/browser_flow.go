@@ -10,11 +10,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
+	"os"
 	"os/exec"
 	"runtime"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -37,13 +40,40 @@ const oauthScopes = "openid profile email offline_access"
 // 2FA challenge.
 const browserFlowTimeout = 5 * time.Minute
 
-// ErrBrowserUnavailable is returned by RunBrowserPKCEFlow when the
-// platform's "open URL in browser" command exits non-zero — typically
-// because the environment has no DISPLAY (remote SSH), no default
-// browser registered, or the user is in a container. `knowledge login`
-// is browser-only by design (no device-flow fallback) so this is a
-// terminal, user-facing error.
-var ErrBrowserUnavailable = errors.New("auth: knowledge login requires a browser; this command is not supported in headless environments")
+// authCallbackPort is the fixed loopback port the callback listener binds in
+// container mode. The container has no way to publish a randomly-chosen port
+// after the fact, so the port has to be known ahead of time for the frontend
+// route and the image to agree on it. 15025 sits just past the ports this
+// project already claims: 15021 pprof, 15022 graph server, 15023 the frontend
+// external listener, 15024 the daemon's loopback MCP.
+const authCallbackPort = 15025
+
+// defaultRedirectHostPort is the HOST-published port the browser dials when
+// KNOWLEDGE_LOGIN_REDIRECT_PORT is unset — the frontend's external listener,
+// which forwards /auth/callback on to authCallbackPort inside the container.
+const defaultRedirectHostPort = 15023
+
+// envLoginViaFrontend selects container mode when non-empty. The image sets
+// it, so a login container inherits it with no user action, and a host shell
+// can never carry it accidentally. It is named for the mechanism rather than
+// for "container" so nothing else grows a dependency on it.
+const envLoginViaFrontend = "KNOWLEDGE_LOGIN_VIA_FRONTEND"
+
+// envLoginRedirectPort optionally overrides the host-published port the
+// browser dials. Honored only in container mode.
+const envLoginRedirectPort = "KNOWLEDGE_LOGIN_REDIRECT_PORT"
+
+// hostCallbackPath and frontendCallbackPath are the two callback paths. The
+// browser dials the path the redirect URI advertises, the frontend forwards
+// that same path, and the listener answers it — no path is ever rewritten.
+const (
+	hostCallbackPath     = "/callback"
+	frontendCallbackPath = "/auth/callback"
+)
+
+// promptOut is where the flow writes the authorize URL. Replaced in tests so
+// a unit test can read what the flow printed.
+var promptOut io.Writer = os.Stdout
 
 // RunBrowserPKCEFlow drives the OAuth 2.0 Authorization Code + PKCE
 // flow with a local-loopback callback against the discovered AuthKit
@@ -53,16 +83,18 @@ var ErrBrowserUnavailable = errors.New("auth: knowledge login requires a browser
 //
 // Steps:
 //  1. Generate a PKCE code_verifier + S256 code_challenge.
-//  2. Bind a TCP listener on 127.0.0.1:<random port> and build the
-//     redirect_uri http://127.0.0.1:<port>/callback.
+//  2. Bind a loopback TCP listener and build the matching redirect_uri —
+//     a random port and /callback on a host, the fixed authCallbackPort
+//     and the frontend's published port and /auth/callback in a container
+//     (see bindCallbackListener).
 //  3. Dynamically register a fresh public client (RFC 7591) whose
 //     redirect_uri matches this loopback callback. WorkOS honors RFC 8707
 //     resource indicators only for DCR/CIMD clients — a static OAuth
 //     Application would get invalid_target at the token endpoint.
 //  4. Open the user's browser to the AuthKit authorize URL with PKCE +
 //     RFC 8707 `resource` parameter.
-//  5. Wait on the listener for /callback?code=…&state=… and validate
-//     state.
+//  5. Wait on the listener for the callback path with ?code=…&state=…
+//     and validate state.
 //  6. Shut the listener down and POST grant_type=authorization_code to
 //     AuthKit's token endpoint with the code, code_verifier, redirect_uri,
 //     client_id, and resource parameter.
@@ -85,16 +117,11 @@ func RunBrowserPKCEFlow(
 		return "", nil, fmt.Errorf("auth: state: %w", err)
 	}
 
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	listener, redirectURI, err := bindCallbackListener()
 	if err != nil {
-		return "", nil, fmt.Errorf("auth: bind loopback listener: %w", err)
+		return "", nil, err
 	}
 	defer listener.Close()
-	tcpAddr, ok := listener.Addr().(*net.TCPAddr)
-	if !ok {
-		return "", nil, fmt.Errorf("auth: loopback listener returned non-TCP addr %T", listener.Addr())
-	}
-	redirectURI := fmt.Sprintf("http://127.0.0.1:%d/callback", tcpAddr.Port)
 
 	clientID, err = RegisterPublicClient(ctx, endpoints.RegistrationEndpoint, redirectURI)
 	if err != nil {
@@ -110,8 +137,14 @@ func RunBrowserPKCEFlow(
 	srv := startLoopbackServer(listener, state, resultCh)
 	defer func() { _ = srv.Shutdown(context.Background()) }()
 
+	// The printed URL is the contract; the launcher is best-effort
+	// convenience. Printing first means the URL is there whether the launcher
+	// succeeds, fails, or succeeds without opening anything — the last of
+	// which is what a headless host with xdg-open installed but no DISPLAY
+	// does, since cmd.Start() returns nil as soon as the binary exists.
+	fmt.Fprintf(promptOut, "\nTo authenticate, open this URL:\n\n  %s\n\n", authorizeURL)
 	if err := openBrowser(authorizeURL); err != nil {
-		return "", nil, fmt.Errorf("%w (underlying: %v)", ErrBrowserUnavailable, err)
+		fmt.Fprintf(promptOut, "Could not open a browser automatically (%v). Open the URL above.\n", err)
 	}
 
 	var cb callbackResult
@@ -139,17 +172,79 @@ type callbackResult struct {
 	err  error
 }
 
-// startLoopbackServer wires a single-shot HTTP server on the bound
-// listener whose /callback handler validates state, extracts the code,
-// pushes a callbackResult to resultCh, and renders a small "you can
-// close this tab" page. Any path other than /callback returns 404.
+// bindCallbackListener binds the loopback callback listener and returns it
+// with the redirect_uri the browser should be sent to.
+//
+// On a host (the default) this is byte-for-byte the historical behavior: a
+// random port on 127.0.0.1, advertised as itself.
+//
+// In container mode the two ports come apart. The listener binds the fixed
+// authCallbackPort inside the container, while the advertised URI names the
+// HOST-published frontend port, because that is the address the user's
+// browser can actually reach; the frontend forwards /auth/callback inward.
+//
+// The loopback fence is untouched either way — the listener is 127.0.0.1 in
+// both modes, and the only thing container mode changes is a port number
+// written into a URL.
+func bindCallbackListener() (net.Listener, string, error) {
+	if os.Getenv(envLoginViaFrontend) == "" {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			return nil, "", fmt.Errorf("auth: bind loopback listener: %w", err)
+		}
+		tcpAddr, ok := listener.Addr().(*net.TCPAddr)
+		if !ok {
+			_ = listener.Close()
+			return nil, "", fmt.Errorf("auth: loopback listener returned non-TCP addr %T", listener.Addr())
+		}
+		return listener, fmt.Sprintf("http://127.0.0.1:%d%s", tcpAddr.Port, hostCallbackPath), nil
+	}
+
+	// Resolve the advertised port before binding, so a bad value fails
+	// without leaving a listener behind.
+	hostPort, err := redirectHostPort()
+	if err != nil {
+		return nil, "", err
+	}
+	listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", authCallbackPort))
+	if err != nil {
+		return nil, "", fmt.Errorf(
+			"auth: bind loopback listener on port %d — another `knowledge login` may already be in progress: %w",
+			authCallbackPort, err)
+	}
+	return listener, fmt.Sprintf("http://127.0.0.1:%d%s", hostPort, frontendCallbackPath), nil
+}
+
+// redirectHostPort resolves the host-published port the browser dials. An
+// unparseable or out-of-range override is a loud error naming the variable,
+// never a silent fall back to the default: a user who set the variable wants
+// that port, and defaulting quietly sends the browser somewhere the callback
+// never arrives.
+func redirectHostPort() (int, error) {
+	raw := os.Getenv(envLoginRedirectPort)
+	if raw == "" {
+		return defaultRedirectHostPort, nil
+	}
+	port, err := strconv.Atoi(raw)
+	if err != nil || port < 1 || port > 65535 {
+		return 0, fmt.Errorf("auth: %s=%q is not a valid TCP port (1-65535)", envLoginRedirectPort, raw)
+	}
+	return port, nil
+}
+
+// startLoopbackServer wires a single-shot HTTP server on the bound listener
+// whose callback handler validates state, extracts the code, pushes a
+// callbackResult to resultCh, and renders a small "you can close this tab"
+// page. The same handler answers both callback paths, since which one the
+// browser dials depends on the mode bindCallbackListener chose. Any other
+// path returns 404.
 func startLoopbackServer(listener net.Listener, expectedState string, resultCh chan<- callbackResult) *http.Server {
 	mux := http.NewServeMux()
 	var once sync.Once
 	send := func(r callbackResult) {
 		once.Do(func() { resultCh <- r })
 	}
-	mux.HandleFunc("/callback", func(w http.ResponseWriter, r *http.Request) {
+	handleCallback := func(w http.ResponseWriter, r *http.Request) {
 		q := r.URL.Query()
 		if errCode := q.Get("error"); errCode != "" {
 			desc := q.Get("error_description")
@@ -172,7 +267,9 @@ func startLoopbackServer(listener net.Listener, expectedState string, resultCh c
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
 		_, _ = w.Write([]byte(callbackHTML))
 		send(callbackResult{code: code})
-	})
+	}
+	mux.HandleFunc(hostCallbackPath, handleCallback)
+	mux.HandleFunc(frontendCallbackPath, handleCallback)
 
 	srv := &http.Server{
 		Handler:           mux,
@@ -272,8 +369,8 @@ func randomURLSafe(n int) (string, error) {
 }
 
 // openBrowser opens the user's default browser to target on macOS,
-// Linux, and Windows. Returns an error if the platform launcher exits
-// non-zero — caller maps this to ErrBrowserUnavailable.
+// Linux, and Windows. Returns an error if the platform launcher cannot be
+// started — best-effort only, since the caller has already printed the URL.
 //
 // Replaced in tests via openBrowserFn so unit tests don't fork `open`.
 var openBrowserFn = openBrowserDefault

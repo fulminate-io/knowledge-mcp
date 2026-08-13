@@ -17,6 +17,7 @@ import (
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/llmproviders"
+	"github.com/fulminate-io/knowledge-mcp/internal/workingset"
 )
 
 // flippableBackend is a test WireClient + BackendResolver pair over two
@@ -44,7 +45,7 @@ func (f *flippableBackend) current() *fakeWireClient {
 }
 
 func (f *flippableBackend) PipelineScan(ctx context.Context, req *knowledgev1.PipelineScanRequest) (*knowledgev1.PipelineScanResponse, error) {
-	// listLoadedGraphs only issues Execute; collectors scan through the
+	// The catalog pass issues no RPC at all; collectors scan through the
 	// recordingBackend returned by Backend(). This direct path stays for
 	// WireClient completeness.
 	return f.current().PipelineScan(ctx, req)
@@ -149,12 +150,14 @@ func cancelFor(p *Pipeline, key graphKey) uintptr {
 // wake means no teardown.
 func TestRefreshOnceSkipsLoginFlip(t *testing.T) {
 	fb := newFlippableBackend()
-	// Both catalogs hold only the survivor, so the wanted/have diff registers
-	// nothing on its own: a registration can only come from a teardown.
-	fb.local.seedGraphNames(kgtypes.GraphCode, "survivor")
-	fb.cloud.seedGraphNames(kgtypes.GraphCode, "survivor")
 
 	p := New(Config{}, fb, nil, nil)
+	// The working set holds only the survivor and does not change across the flip,
+	// so the wanted/have diff registers nothing on its own: a registration can only
+	// come from a teardown.
+	ws := workingset.New()
+	require.True(t, ws.Admit(kgtypes.GraphCode, "survivor", "collect"))
+	p.AttachWorkingSet(ws)
 	ctx := context.Background()
 	survivor := graphKey{GraphType: kgtypes.GraphCode, GraphName: "survivor"}
 
@@ -174,28 +177,42 @@ func TestRefreshOnceSkipsLoginFlip(t *testing.T) {
 	require.NoError(t, p.Stop(ctx))
 }
 
-// TestRefreshFlipDelta proves the cloud-only (no-union) decision: the registered
-// collector set always equals the CURRENT backend's catalog, never the union.
+// TestRefreshFlipDelta pins what a login flip does and does NOT change about the
+// registered set.
+//
+// WHAT DRIVES THE SET CHANGED, and the old claim here is now false. This test
+// used to assert the registered set equals the CURRENT BACKEND'S CATALOG (never
+// the union), because the pass enumerated that catalog. The pass now reads the
+// working set, which is a property of what THIS CLIENT has interacted with and is
+// entirely independent of which backend is serving. So a flip changes the backend
+// a collector is bound to — never which graphs are wanted.
+//
+// The backends are deliberately seeded with DIFFERENT catalogs and neither
+// appears in the registered set: that is the assertion that would fail if catalog
+// enumeration crept back in.
 func TestRefreshFlipDelta(t *testing.T) {
 	fb := newFlippableBackend()
-	// Logged-out catalog: a local-only code repo + the survivor repo.
+	// Two disagreeing backend catalogs, neither of which may influence anything.
 	fb.local.seedGraphNames(kgtypes.GraphCode, "local-only", "survivor")
-	// Logged-in (cloud) catalog: a cloud-only code repo + the survivor repo.
 	fb.cloud.seedGraphNames(kgtypes.GraphCode, "cloud-only", "survivor")
 
 	p := New(Config{}, fb, nil, nil)
+	// Only the survivor was ever interacted with.
+	ws := workingset.New()
+	require.True(t, ws.Admit(kgtypes.GraphCode, "survivor", "search"))
+	p.AttachWorkingSet(ws)
 	ctx := context.Background()
 
-	// Logged out → local catalog registered.
-	p.refreshOnce(ctx)
-	have := registeredKeys(p)
-	assert.Contains(t, have, graphKey{GraphType: kgtypes.GraphCode, GraphName: "local-only"})
-	assert.Contains(t, have, graphKey{GraphType: kgtypes.GraphCode, GraphName: "survivor"})
-	assert.NotContains(t, have, graphKey{GraphType: kgtypes.GraphCode, GraphName: "cloud-only"})
+	survivor := graphKey{GraphType: kgtypes.GraphCode, GraphName: "survivor"}
+	wantSet := map[graphKey]struct{}{survivor: {}}
 
-	// Flip to logged in → cloud catalog registered, local-only unregistered.
-	// The flip teardown is driven by CheckLoginFlip (the client activity hook's
-	// job in production); refreshOnce only diffs the catalog.
+	// Logged out: exactly the admitted graph — not the local backend's catalog.
+	p.refreshOnce(ctx)
+	assert.Equal(t, wantSet, registeredKeys(p),
+		"the working set is the wanted set — the logged-out backend's local-only graph is not registered")
+
+	// Flip to logged in. The teardown is driven by CheckLoginFlip (the client
+	// activity hook's job in production); refreshOnce only diffs the wanted set.
 	// The hook runs on EVERY tool call, so in production the pre-flip state is
 	// already seeded by the time a flip happens; model that first observation
 	// here (it only seeds, and reports no transition).
@@ -203,11 +220,12 @@ func TestRefreshFlipDelta(t *testing.T) {
 	fb.loggedIn.Store(true)
 	require.True(t, p.CheckLoginFlip(ctx), "the login transition must be detected")
 	p.refreshOnce(ctx)
-	have = registeredKeys(p)
-	assert.Contains(t, have, graphKey{GraphType: kgtypes.GraphCode, GraphName: "cloud-only"})
-	assert.Contains(t, have, graphKey{GraphType: kgtypes.GraphCode, GraphName: "survivor"})
-	assert.NotContains(t, have, graphKey{GraphType: kgtypes.GraphCode, GraphName: "local-only"},
-		"local-only graph must be unregistered after login (cloud-only, no union)")
+
+	// Same set after the flip: the survivor was torn down by the flip and
+	// re-registered by this pass, and the cloud backend's cloud-only graph — which
+	// the OLD enumerating behavior would have picked up here — stays absent.
+	assert.Equal(t, wantSet, registeredKeys(p),
+		"a flip rebinds the backend but never changes WHICH graphs are wanted")
 
 	require.NoError(t, p.Stop(ctx))
 }
@@ -226,8 +244,6 @@ func TestFlipResetsGenCache(t *testing.T) {
 		Tick: 5 * time.Millisecond,
 	}
 	fb := newFlippableBackend()
-	fb.local.seedGraphNames(kgtypes.GraphCode, "survivor")
-	fb.cloud.seedGraphNames(kgtypes.GraphCode, "survivor")
 	// Logged-out scans return a NON-ZERO dirty gen with zero items, so the
 	// pre-flip collector caches lastSummaryGen/lastEmbedGen = 7. If the flip did
 	// NOT reset the cache, the post-flip scan against cloud would carry
@@ -246,6 +262,11 @@ func TestFlipResetsGenCache(t *testing.T) {
 		return nil, nil
 	}
 	p := New(cfg, fb, noopSum, nil)
+	// The survivor is drained because an interaction admitted it; the flip below
+	// changes which backend its collector is bound to, not whether it is wanted.
+	ws := workingset.New()
+	require.True(t, ws.Admit(kgtypes.GraphCode, "survivor", "collect"))
+	p.AttachWorkingSet(ws)
 	ctx := context.Background()
 	require.NoError(t, p.Start(ctx))
 	survivor := graphKey{GraphType: kgtypes.GraphCode, GraphName: "survivor"}

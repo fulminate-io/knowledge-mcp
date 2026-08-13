@@ -20,9 +20,13 @@ type darwinStore struct{}
 // NewStore returns the platform-appropriate Store implementation.
 //
 // On darwin the keychain is always available (the `security` CLI ships with
-// macOS), so NewStore never fails today. The error return is reserved for
-// future platforms whose backends may need a probe (e.g. Windows DPAPI).
+// macOS), so outside a test binary NewStore never fails today. Inside one it
+// always fails: tests must use in-memory fakes; the real credential store is
+// off-limits to test binaries.
 func NewStore() (Store, error) {
+	if err := refuseRealStoreInTest(); err != nil {
+		return nil, err
+	}
 	return darwinStore{}, nil
 }
 

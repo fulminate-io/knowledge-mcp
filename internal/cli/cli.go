@@ -42,10 +42,12 @@ import (
 // newStoreFn is the store constructor used by the auth subcommands.
 // Tests override it to inject an in-memory store and avoid touching
 // the real platform keychain. Production callers leave the default in
-// place so auth.NewStore runs.
-var newStoreFn = auth.NewStore
+// place so auth.OpenStore runs, which prefers the platform keychain and
+// falls back to the ~/.knowledge/credentials file only when the keychain
+// is provably unreachable.
+var newStoreFn = auth.OpenStore
 
-// openStore opens the platform keychain and returns a usage-specific
+// openStore opens the credential store and returns a usage-specific
 // error path when the OS has no implementation (currently Windows).
 //
 // Callers should handle the returned (nil, nil) case as "print the

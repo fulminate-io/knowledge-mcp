@@ -9,6 +9,7 @@ import (
 	"net/http/httptest"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/auth"
 )
@@ -58,6 +59,48 @@ func TestLogoutCmd_RevokesAndDeletesRefreshToken(t *testing.T) {
 	}
 	if _, err := mem.Get(ctx, auth.KeyRefreshToken); !errors.Is(err, auth.ErrNotFound) {
 		t.Errorf("refresh token not deleted: err=%v", err)
+	}
+}
+
+// TestLogoutCmd_ClearsPublishedSession asserts logout removes the published
+// session, not just the refresh token. A session left behind outlives the
+// logout: a read-only consumer would keep authenticating as the logged-out
+// operator until the access token lapsed on its own.
+func TestLogoutCmd_ClearsPublishedSession(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer srv.Close()
+
+	withFakeDiscovery(t, srv.URL)
+	mem := withMemoryStore(t)
+	ctx := context.Background()
+	primed := map[string]string{
+		auth.KeyRefreshToken:      "frt_old",
+		auth.KeyClientID:          "cli",
+		auth.KeyAccessToken:       "at_live",
+		auth.KeyAccessTokenExpiry: time.Now().Add(time.Hour).UTC().Format(time.RFC3339),
+	}
+	for k, v := range primed {
+		if err := mem.Set(ctx, k, v); err != nil {
+			t.Fatalf("prime %s: %v", k, err)
+		}
+	}
+
+	if err := LogoutCmd(nil); err != nil {
+		t.Fatalf("LogoutCmd: %v", err)
+	}
+
+	for key := range primed {
+		if _, err := mem.Get(ctx, key); !errors.Is(err, auth.ErrNotFound) {
+			t.Errorf("%s survived logout: err=%v", key, err)
+		}
+	}
+
+	// The consequence, not just the key names: a reader must no longer
+	// resolve a session from this store.
+	if _, _, err := auth.NewReadOnlyTokenSource(mem).Token(ctx); !errors.Is(err, auth.ErrNoSession) {
+		t.Errorf("a reader still resolves a session after logout: %v", err)
 	}
 }
 

@@ -30,9 +30,22 @@ type fakeCorpusScanner struct {
 	probeLiveDelta int64 // inject a probe divergence (0 = faithful)
 	calls          int
 	pinnedSeen     []int64
+	// cursorsSeen records, per call, the "default"-layer after_updated_at the CLIENT
+	// SENT (0 when it sent no cursor). It is what distinguishes a warm restart from a
+	// cold drain of a small corpus, which a call count alone cannot.
+	cursorsSeen []int64
+	// itemsServed records, per call, how many items the page actually returned.
+	itemsServed []int
+	// err, when non-nil, is returned instead of a response — the wire failure the
+	// warm-start discard path exists to handle.
+	err error
 }
 
 func (f *fakeCorpusScanner) CorpusDelta(_ context.Context, req *knowledgev1.CorpusDeltaRequest) (*knowledgev1.CorpusDeltaResponse, error) {
+	if f.err != nil {
+		f.calls++
+		return nil, f.err
+	}
 	f.calls++
 	f.pinnedSeen = append(f.pinnedSeen, req.GetPinnedHorizon())
 	h := req.GetPinnedHorizon()
@@ -46,6 +59,7 @@ func (f *fakeCorpusScanner) CorpusDelta(_ context.Context, req *knowledgev1.Corp
 			afterUA, afterID = c.GetAfterUpdatedAt(), c.GetAfterId()
 		}
 	}
+	f.cursorsSeen = append(f.cursorsSeen, afterUA)
 	limit := int(req.GetLimit())
 
 	var items []*knowledgev1.Node
@@ -69,6 +83,7 @@ func (f *fakeCorpusScanner) CorpusDelta(_ context.Context, req *knowledgev1.Corp
 			items = append(items, n)
 		}
 	}
+	f.itemsServed = append(f.itemsServed, len(items))
 	next := &knowledgev1.LayerCursor{LayerKey: "default", AfterUpdatedAt: afterUA, AfterId: afterID}
 	if len(items) > 0 {
 		last := items[len(items)-1]
@@ -211,7 +226,8 @@ func TestPropagationLoop_BootWarmsCorpusCache(t *testing.T) {
 		rows:   []corpusRow{{"t1", 1000, false}, {"t2", 2000, false}},
 		freshH: 10_000_000,
 	}}
-	p := (&PropagationLoop{gc: fake, stopCh: make(chan struct{})}).WithCorpusScanner(fake)
+	p := (&PropagationLoop{gc: fake, stopCh: make(chan struct{}), admitted: admittedGate()}).
+		WithCorpusScanner(fake)
 
 	p.runBootClusterDetection()
 

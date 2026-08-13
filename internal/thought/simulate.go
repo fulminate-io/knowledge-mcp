@@ -56,7 +56,7 @@ func SimulateRemoveCharge(ctx context.Context, gc Caller, chargeID string) (Simu
 
 	// One bulk charges fetch for all affected thoughts (perf
 	// invariant — never per-thought N+1).
-	chargeMap := chargeMapForThoughts(ctx, gc, thoughtIDs)
+	chargeMap := chargeMapForThoughts(ctx, gc, thoughtIDs, nil)
 
 	// One now for the whole pass: before/after are computed at the SAME
 	// instant so the recency scalar cancels cleanly between them.
@@ -106,7 +106,7 @@ func SimulateInvalidateThought(ctx context.Context, gc Caller, thoughtID string)
 			chargeIDs = append(chargeIDs, nid)
 		}
 	}
-	chargeMap := chargeMapForThoughts(ctx, gc, chargeIDs)
+	chargeMap := chargeMapForThoughts(ctx, gc, chargeIDs, nil)
 
 	// One now for the whole pass (recency scalar is read-time, see fold).
 	now := time.Now()
@@ -146,7 +146,7 @@ func SimulateAddCharge(ctx context.Context, gc Caller, thoughtID, polarity strin
 		return SimulationResult{}, fmt.Errorf("thought not found: %s: %w", thoughtID, graphclient.ErrNotFound)
 	}
 
-	chargeMap := chargeMapForThoughts(ctx, gc, []string{thoughtID})
+	chargeMap := chargeMapForThoughts(ctx, gc, []string{thoughtID}, nil)
 	now := time.Now()
 	before := computePropertiesFromCharges(chargeMap[thoughtID], now)
 

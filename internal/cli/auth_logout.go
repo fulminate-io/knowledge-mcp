@@ -21,9 +21,10 @@ const logoutUsage = `knowledge logout — revoke + delete stored OAuth credentia
 Usage:
   knowledge logout
 
-Deletes the stored refresh token from the keychain and best-effort
-revokes it at the AuthKit revocation endpoint. Safe to run when
-already logged out.
+Deletes the stored credentials — refresh token, client id, and the
+published session token — from the credential store and best-effort
+revokes the refresh token at the AuthKit revocation endpoint. Safe to
+run when already logged out.
 `
 
 // LogoutCmd implements `knowledge logout`. Returns nil on success or
@@ -33,8 +34,9 @@ already logged out.
 // Server-side revocation is best-effort: discovery failures, AuthKit
 // not exposing a revocation_endpoint, network errors, and non-200
 // responses are all logged at WARN but never block local cleanup. The
-// critical invariant is that the refresh token is gone from the
-// keychain when LogoutCmd returns.
+// critical invariant is that neither the refresh token nor the published
+// session token is left in the credential store when LogoutCmd returns —
+// either one alone would keep some process authenticated.
 func LogoutCmd(args []string) error {
 	fs := flag.NewFlagSet("logout", flag.ContinueOnError)
 	fs.SetOutput(os.Stdout)
@@ -61,6 +63,12 @@ func LogoutCmd(args []string) error {
 
 	deleteIgnoringMissing(ctx, store, auth.KeyRefreshToken)
 	deleteIgnoringMissing(ctx, store, auth.KeyClientID)
+	// The published session must go too. It is independently usable by any
+	// process that can read the store, so leaving it behind would let a
+	// reader keep authenticating as the logged-out operator until the access
+	// token lapsed on its own.
+	deleteIgnoringMissing(ctx, store, auth.KeyAccessToken)
+	deleteIgnoringMissing(ctx, store, auth.KeyAccessTokenExpiry)
 
 	fmt.Fprintln(os.Stdout, "Logged out.")
 	return nil

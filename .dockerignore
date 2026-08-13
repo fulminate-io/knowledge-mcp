@@ -1,0 +1,17 @@
+# Docker build context excludes for the knowledge-mcp image.
+#
+# This file is named `dockerignore` here and lands at the published repository
+# root as `.dockerignore`. It is a DIFFERENT file from the internal repository's
+# own root .dockerignore, which excludes the context for the private cloud and
+# static builds — two build contexts, two files, deliberately distinct names so
+# neither is mistaken for the other.
+#
+# Keep this conservative: exclude only what is provably NOT source the build
+# needs. The client stage builds the whole module and runs scripts/sync-assets.sh,
+# which reads .claude/ and writes internal/assets — so internal/, gen/, go.mod,
+# go.sum, .claude/ and scripts/ must all remain in the context.
+
+bin/
+.git/
+*.log
+.DS_Store

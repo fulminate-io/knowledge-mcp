@@ -135,7 +135,7 @@ func BuildTrustMatrixWithCharges(ctx context.Context, gc Caller, thoughtIDs []st
 	if err != nil {
 		return TrustMatrix{}, nil, fmt.Errorf("thought: BuildTrustMatrix: adjacency: %w", err)
 	}
-	chargeMap := chargeMapForThoughts(ctx, gc, thoughtIDs)
+	chargeMap := chargeMapForThoughts(ctx, gc, thoughtIDs, src)
 
 	rows := fillSparseRows(thoughtIDs, idIndex, adj, chargeMap, now)
 	normalizeSparseRows(rows)
