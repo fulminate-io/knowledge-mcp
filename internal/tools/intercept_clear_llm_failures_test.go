@@ -253,46 +253,66 @@ func TestMutateComposers_ClearLLMFailures_MultiGraphFanOut(t *testing.T) {
 }
 
 // TestMutateComposers_ClearLLMFailures_OverlayFanOut asserts the clear fans a
-// resolved base out across its overlay keys: for code/agent with one overlay key
-// code/agent@feature-x, it issues 2 predicate UPDATEs per resolved key (4 total),
-// and the overlay UPDATE's GraphSelector carries Branch=feature-x (the code
-// overlay routes via Branch → server repo@branch Scope), while the base UPDATE
-// carries an empty Branch. Fails-when-absent: a base-only fan-out leaves the
-// overlay markers unreachable (only 2 UPDATEs, no Branch).
+// resolved base out across its overlay keys: for code/agent with one overlay key,
+// it issues 2 predicate UPDATEs per resolved key (4 total), and the overlay
+// UPDATE's GraphSelector carries Branch=feature-x (the code overlay routes via
+// Branch → server repo@branch Scope), while the base UPDATE carries an empty
+// Branch. Fails-when-absent: a base-only fan-out leaves the overlay markers
+// unreachable (only 2 UPDATEs, no Branch).
+//
+// TABLE OVER THE TWO CATALOG KEY FORMS, because the two backends genuinely report
+// the SAME overlay differently — cloud as the composed "agent@feature-x" key, OSS
+// and local as the bare "feature-x" name — and the resolver must be blind to which
+// one arrived. The two cases must produce IDENTICAL results; that equivalence IS
+// the assertion. The bare case is the regression gate on appendOverlayTargets'
+// former atSplit-based skip, which dropped EVERY OSS overlay silently: the landed
+// version of this test seeded the cloud form only, a single-shape probe that was
+// generalized to both backends.
 func TestMutateComposers_ClearLLMFailures_OverlayFanOut(t *testing.T) {
-	fc := &fakeGraphCaller{
-		mutateAffected:    1,
-		listGraphsResult:  listGraphsResultJSON(t, [2]string{"code", "agent"}),
-		overlayKeysByBase: map[string][]string{"agent": {"agent@feature-x"}},
+	cases := []struct {
+		name string
+		key  string
+	}{
+		{"cloud form key", "agent@feature-x"},
+		{"bare OSS key", "feature-x"},
 	}
-	deps := interceptTestDeps{gc: fc}
-	handled, res := InterceptManage(opCtx(), deps, kgtools.CallToolParams{
-		Name:      "manage",
-		Arguments: json.RawMessage(`{"operation":"clear_llm_failures","graph":"code","name":"agent"}`),
-	})
-	require.True(t, handled)
-	require.False(t, res.IsError, "clear: %s", toolResultText(res))
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			fc := &fakeGraphCaller{
+				mutateAffected:    1,
+				listGraphsResult:  listGraphsResultJSON(t, [2]string{"code", "agent"}),
+				overlayKeysByBase: map[string][]string{"agent": {tc.key}},
+			}
+			deps := interceptTestDeps{gc: fc}
+			handled, res := InterceptManage(opCtx(), deps, kgtools.CallToolParams{
+				Name:      "manage",
+				Arguments: json.RawMessage(`{"operation":"clear_llm_failures","graph":"code","name":"agent"}`),
+			})
+			require.True(t, handled)
+			require.False(t, res.IsError, "clear: %s", toolResultText(res))
 
-	// 2 resolved keys (base agent + overlay agent@feature-x) * 2 markers = 4 UPDATEs.
-	require.Len(t, fc.execMutations, 4, "two markers per resolved key (base + overlay)")
+			// 2 resolved keys (base agent + the overlay) * 2 markers = 4 UPDATEs.
+			require.Len(t, fc.execMutations, 4, "two markers per resolved key (base + overlay)")
 
-	var baseUpdates, overlayUpdates int
-	for _, req := range mutationExecRequests(fc) {
-		tgt := req.GetTarget()
-		require.NotNil(t, tgt)
-		assert.Equal(t, "code", tgt.GetGraph())
-		assert.Equal(t, "agent", tgt.GetRepo(), "overlay routes via Branch, not a composed Repo")
-		switch tgt.GetBranch() {
-		case "":
-			baseUpdates++
-		case "feature-x":
-			overlayUpdates++
-		default:
-			t.Errorf("unexpected branch %q on clear UPDATE", tgt.GetBranch())
-		}
+			var baseUpdates, overlayUpdates int
+			for _, req := range mutationExecRequests(fc) {
+				tgt := req.GetTarget()
+				require.NotNil(t, tgt)
+				assert.Equal(t, "code", tgt.GetGraph())
+				assert.Equal(t, "agent", tgt.GetRepo(), "overlay routes via Branch, not a composed Repo")
+				switch tgt.GetBranch() {
+				case "":
+					baseUpdates++
+				case "feature-x":
+					overlayUpdates++
+				default:
+					t.Errorf("unexpected branch %q on clear UPDATE", tgt.GetBranch())
+				}
+			}
+			assert.Equal(t, 2, baseUpdates, "two base UPDATEs (one per marker)")
+			assert.Equal(t, 2, overlayUpdates, "two overlay UPDATEs carrying Branch=feature-x")
+		})
 	}
-	assert.Equal(t, 2, baseUpdates, "two base UPDATEs (one per marker)")
-	assert.Equal(t, 2, overlayUpdates, "two overlay UPDATEs carrying Branch=feature-x")
 }
 
 // TestMutateComposers_ClearLLMFailures_UnresolvableName asserts a graph+name

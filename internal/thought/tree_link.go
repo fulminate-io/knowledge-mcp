@@ -79,7 +79,7 @@ const treeRootMaxLevels = 6
 // collectThoughtArtifacts collects, for each thought in thoughtIDs, the set of
 // work-item artifacts it is attached to by ANY edge in EITHER direction — the seed for
 // the upward root resolution. It does TWO bulk reads for the WHOLE thought set (no
-// per-thought traverse): ONE bulk fetchEdgesForNodeSet over the thought IDs with NO
+// per-thought traverse): a bulk fetchEdgesForNodeSet over the thought IDs with NO
 // edge-type filter, then ONE bulk fetchNodesByIDs over the distinct neighbor IDs to
 // hydrate their types.
 //
@@ -248,7 +248,8 @@ func ResolveTreeRoots(ctx context.Context, gc Caller, thoughtIDs []string) (root
 // then walks each artifact UP the `contains` ancestry to its tree root via a BOUNDED
 // LEVEL-BY-LEVEL bulk read: starting from the distinct artifact set, it repeats
 // (≤ treeRootMaxLevels) a fetchEdgesForNodeSet over the current level filtered to
-// EdgeKGContains, recording parentOf[child]=parent for every contains edge whose child
+// EdgeKGContains — each such read itself drained in bounded pivot pages —
+// recording parentOf[child]=parent for every contains edge whose child
 // is a current-level node, and stops the moment a level adds no new parent. The
 // resolution is then pure in-memory:
 //
@@ -333,7 +334,8 @@ func resolveArtifactsAndRoots(ctx context.Context, gc Caller, thoughtIDs []strin
 }
 
 // buildContainsParentMap walks UP the `contains` ancestry from the seed artifact set in
-// a BOUNDED LEVEL-BY-LEVEL bulk read (≤ treeRootMaxLevels fetchEdgesForNodeSet calls),
+// a BOUNDED LEVEL-BY-LEVEL bulk read (≤ treeRootMaxLevels fetchEdgesForNodeSet calls,
+// each drained in bounded pivot pages),
 // recording parentOf[child]=parent for every contains edge whose child is a current-
 // level node. It stops the moment a level adds no new parent. The level cap guarantees
 // termination regardless of graph shape.

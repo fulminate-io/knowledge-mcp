@@ -11,11 +11,10 @@ package topology
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
-	"github.com/fulminate-io/knowledge-mcp/internal/engine"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/topology/foundation"
 )
 
@@ -27,19 +26,20 @@ type graphCaller interface {
 	Execute(ctx context.Context, req *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error)
 }
 
-// topoExecutor is the narrow Execute seam. fetchNodeIndex compiles the
-// function-ish code browse to a QueryPlan and decodes the nodes_json carrier. It
-// is identical to graphCaller (both require only Execute); the type-assert keeps
-// the upgrade-or-loud-error path expressed in one place.
+// topoExecutor is the narrow Execute seam. fetchNodeIndex hands it to
+// foundation.FetchNodesByType, whose GraphCaller interface it satisfies
+// directly — both declare the identical Execute-only signature, so no adapter
+// sits between them. topoExecutor is likewise identical to graphCaller; the
+// type-assert keeps the upgrade-or-loud-error path expressed in one place.
 type topoExecutor interface {
 	Execute(ctx context.Context, req *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error)
 }
 
 // RunDeadCode is the client-side entry point invoked by the
 // InterceptTopology intercept. It runs runRTA against repoRoot, fetches
-// the code graph's function-ish node index via one wire RPC, joins the
-// dead functions to graph node IDs, applies reflection-risk
-// classification, and returns the Findings slice.
+// the code graph's function-ish node index by draining bounded keyset pages
+// per node type, joins the dead functions to graph node IDs, applies
+// reflection-risk classification, and returns the Findings slice.
 //
 // Errors propagate up; the intercept renders them via errorResult so
 // the user sees the same diagnostic shape as the prior server-side
@@ -88,38 +88,35 @@ func RunDeadCode(ctx context.Context, gc graphCaller, repoRoot, repo string, top
 	return truncateTopK(findings, topK), nil
 }
 
-// fetchNodeIndex issues a single Execute that pulls every function-ish node in
-// the scoped code graph. The request is a code-graph PLURAL-types browse
-// (`{graph:"code", repo:X, types:[...]}`) that lowers to the plural
-// arm (Selection.NodeTypes, honored inside the store selection) on the relaxed
-// code guard; the typed Nodes carrier (engine.DecodeNodes) carries the function nodes,
-// which buildNodeIndexFromNodes keys by (filePath, line).
+// fetchNodeIndex pulls every function-ish node in the scoped code graph by
+// delegating one drain per entry of functionishTypes to
+// foundation.FetchNodesByType, then keying the union with
+// buildNodeIndexFromNodes by (filePath, line).
+//
+// The per-type shape is load-bearing twice over, which is why this is a
+// delegate rather than a cursor bolted onto the previous plural-types browse.
+// The plural types key is a POST-FILTER applied after the cap, so on a graph
+// holding more than a page of other types that sort first it returns nothing;
+// and the plural compile arm threads no after_id, so a keyset drain over it
+// would never see a short page and would not terminate. The singular type key
+// pushes the filter into the index selection and is the only arm that carries
+// the cursor.
+//
+// The seven drains run serially. Each is internally serial anyway (a keyset
+// cursor chains), dead-code analysis is off the latency-critical path, and the
+// per-type reads are small — so no concurrency primitive is introduced here.
 func fetchNodeIndex(ctx context.Context, gc graphCaller, repo string) (*codeNodeIndex, error) {
 	ex, ok := gc.(topoExecutor)
 	if !ok {
 		return nil, fmt.Errorf("topology/dead_code: requires an Execute-capable graph client")
 	}
-	payload := map[string]any{
-		"graph": "code",
-		"repo":  repo,
-		"types": functionishTypes,
-		"limit": 0, // no cap — we want every function node
-	}
-	body, err := json.Marshal(payload)
-	if err != nil {
-		return nil, fmt.Errorf("marshal query payload: %w", err)
-	}
-	req, ok := engine.Compile("query", body)
-	if !ok {
-		return nil, fmt.Errorf("topology/dead_code: node-index query not reducible to an ExecuteRequest")
-	}
-	resp, err := ex.Execute(ctx, req)
-	if err != nil {
-		return nil, fmt.Errorf("execute query: %w", err)
-	}
-	nodes, err := engine.DecodeNodes(resp)
-	if err != nil {
-		return nil, fmt.Errorf("decode node index: %w", err)
+	var nodes []*knowledgev1.Node
+	for _, t := range functionishTypes {
+		batch, err := foundation.FetchNodesByType(ctx, ex, kgtypes.GraphCode, repo, kgtypes.NodeType(t))
+		if err != nil {
+			return nil, fmt.Errorf("fetch %s nodes: %w", t, err)
+		}
+		nodes = append(nodes, batch...)
 	}
 	return buildNodeIndexFromNodes(nodes), nil
 }

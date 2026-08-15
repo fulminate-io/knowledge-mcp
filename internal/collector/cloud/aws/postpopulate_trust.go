@@ -20,11 +20,11 @@ const methodAWSCrossAccountTrust = "aws-cross-account-trust"
 //
 // Per decision: edges are written to BOTH the current account's graph and the
 // other account's graph for full bidirectional query coverage. All graph I/O
-// rides the wire (postpopulate.BrowseNodes / ListGraphNames / LinkEdgesBatch) —
+// rides the wire (postpopulate.BrowseAllNodes / ListGraphNames / LinkEdgesBatch) —
 // graphName is the current account's cloud graph; peer accounts are enumerated
 // via ListGraphNames(GraphCloud) and read/written by name.
 func resolveCrossAccountTrust(ctx context.Context, gc postpopulate.GraphCaller, graphName string) error {
-	roles, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, iamRoleQuery())
+	roles, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, iamRoleQuery())
 	if err != nil {
 		return err
 	}
@@ -88,12 +88,12 @@ func resolveCrossAccountTrust(ctx context.Context, gc postpopulate.GraphCaller, 
 	return nil
 }
 
-// iamRoleQuery is the BrowseNodes filter for iam-role cloud nodes.
+// iamRoleQuery is the browse filter for iam-role cloud nodes. It carries no
+// limit: its callers drain, and the drain sets the per-page limit itself.
 func iamRoleQuery() map[string]any {
 	return map[string]any{
-		"type":  string(kgtypes.NodeCloudResource),
-		"meta":  map[string]string{"resource_type": "iam-role"},
-		"limit": 0,
+		"type": string(kgtypes.NodeCloudResource),
+		"meta": map[string]string{"resource_type": "iam-role"},
 	}
 }
 
@@ -113,9 +113,8 @@ func buildPeerPrincipalSets(ctx context.Context, gc postpopulate.GraphCaller, cu
 		if name == "" || name == currentAccount {
 			continue
 		}
-		nodes, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, name, map[string]any{
-			"type":  string(kgtypes.NodeCloudResource),
-			"limit": 0,
+		nodes, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, name, map[string]any{
+			"type": string(kgtypes.NodeCloudResource),
 		})
 		if err != nil {
 			slog.Debug("aws trust: browse peer account failed", "account", name, "err", err)

@@ -15,7 +15,7 @@
 // Each analyzer's ALGORITHM is preserved verbatim from the prior store-backed
 // implementation — only the data-access layer changes. Where the prior code
 // did a per-node edge query inside a BFS or a presence check, this package
-// fetches the relevant edge set in ONE bulk foundation.FetchEdges call and
+// fetches the relevant edge set in a bulk foundation.FetchEdges call and
 // builds an in-memory adjacency / presence index, then walks it. This keeps
 // the analyzer outputs byte-stable while honoring the one-fetch-no-N+1 rule.
 package cloud
@@ -82,7 +82,7 @@ func extractExtraInt(extra map[string]string, key string, def, maxVal int) int {
 // edgeIndex is an in-memory directed-edge index built once from a bulk
 // foundation.FetchEdges over a node set. It answers the presence / adjacency
 // questions the prior analyzers asked the scoped store via per-node IterEdges,
-// without a per-node fan-out: one bulk fetch populates the whole index and
+// without a per-node fan-out: a bulk fetch populates the whole index and
 // every subsequent lookup is a map read.
 //
 // out[from][edgeType] holds the set of to-IDs reachable from `from` via an

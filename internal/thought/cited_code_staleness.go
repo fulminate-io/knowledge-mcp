@@ -31,7 +31,7 @@ const codeRefMethod = "code-ref"
 // source as it stands today. Exported because that gate lives in package tools,
 // which imports package thought (no cycle: thought imports nothing from tools).
 //
-// It mirrors FetchSessionLabelsByThought (genre.go:82) step-for-step — one bulk
+// It mirrors FetchSessionLabelsByThought (genre.go:82) step-for-step — a bulk
 // edge read, group, bulk hydrate, fold — and is genuinely distinct only in that
 // it filters a different edge Method and crosses into the CODE graph grouped by
 // repo. Performance is first-class: exactly ONE edge read + ONE knowledge-graph
@@ -44,7 +44,7 @@ func ResolveCitedCodeNodes(ctx context.Context, gc Caller, thoughtIDs []string) 
 		return out
 	}
 
-	// (1) ONE bulk edge read over the thought set, relates-to only. Method survives
+	// (1) Bulk edge read over the thought set, relates-to only. Method survives
 	// the decode (engine.EdgesFromProto copies e.GetMethod()).
 	edges, err := fetchEdgesForNodeSet(ctx, gc, thoughtIDs, []kgtypes.EdgeType{kgtypes.EdgeRelatesTo})
 	if err != nil {

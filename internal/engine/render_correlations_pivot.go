@@ -58,7 +58,16 @@ type CorrelationEdgeRow struct {
 // server truncated the scan. The two notices are independent — a small graph
 // hits neither, a filtered call may hit only the truncation notice, an
 // unfiltered whole-graph call hits both.
-func RenderCorrelations(label string, rows []CorrelationEdgeRow, total int, scanCapped bool) string {
+//
+// groups carries the multi-candidate groups the composer reconstructed; their
+// rows are removed from rows and the group blocks render BELOW the table. total
+// and scanCapped are UNCHANGED by grouping — total keeps counting EDGES, group
+// members included, because it counts edges rather than asserting call facts and
+// three existing behaviors read that number.
+//
+// Correlations is a ranked whole-graph edge TABLE, not a walk, so no frontier
+// line is emitted: there is no path to short-circuit and no distance to truncate.
+func RenderCorrelations(label string, rows []CorrelationEdgeRow, total int, scanCapped bool, groups []CandidateGroup) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "## Correlations — %s\n\n", label)
 	fmt.Fprintf(&sb, "%d edge(s), sorted by confidence desc.\n\n", total)
@@ -68,8 +77,18 @@ func RenderCorrelations(label string, rows []CorrelationEdgeRow, total int, scan
 		r := &rows[i]
 		fromLabel := fmt.Sprintf("`%s` [%s]", r.FromName, typeOrDash(r.FromType))
 		toLabel := fmt.Sprintf("`%s` [%s]", r.ToName, typeOrDash(r.ToType))
+		// The METHOD half of the group-suppression rule: a grouped row's method
+		// belongs to its block, which states it as the block's semantics. This
+		// renderer prints no Evidence column, so it needs only this half. Guard,
+		// not removal — every non-group row still shows its method. Belt-and-braces
+		// for the same reason as the explain arm: composers pass only ungrouped
+		// rows, but this is a primitive a future surface may call unfiltered.
+		method := methodOrDash(r.Edge.Method)
+		if IsCandidateEdge(&r.Edge) {
+			method = methodOrDash("")
+		}
 		fmt.Fprintf(&sb, "| %s | %s | %s | %.2f | %s |\n",
-			fromLabel, r.Edge.Type, toLabel, r.Edge.Confidence, methodOrDash(r.Edge.Method))
+			fromLabel, r.Edge.Type, toLabel, r.Edge.Confidence, method)
 	}
 	if total > len(rows) {
 		fmt.Fprintf(&sb, "\n…and %d more edge(s) below the top %d by confidence.\n", total-len(rows), len(rows))
@@ -85,6 +104,7 @@ func RenderCorrelations(label string, rows []CorrelationEdgeRow, total int, scan
 			"\n_Scan capped at %d edge(s) of an UNORDERED walk — this ranking is a SAMPLE, not the graph's true top %d. Narrow with edge_type for an exact ranking._\n",
 			total, len(rows))
 	}
+	writeCandidateGroupsNoFrontier(&sb, groups, nil, nil)
 	return sb.String()
 }
 

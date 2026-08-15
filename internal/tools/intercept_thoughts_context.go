@@ -12,7 +12,7 @@
 //	(5) TICKETS bounded type:ticket browse, terminal-status-excluded (direct QueryPlan+Execute)
 //
 // No new retrieval machinery — orchestration only over verified primitives.
-// Each section is ONE bulk wire read (no N+1); sections are serial by
+// Each section is a bulk wire read (no N+1); sections are serial by
 // necessity (expand depends on seed IDs, charge on the combined set).
 
 package tools
@@ -109,7 +109,7 @@ func handleRecallContext(ctx context.Context, deps ClientDeps, a recallClientArg
 	sortContextRows(expand)
 
 	// (3) CHARGE state — collect thought-typed node IDs across seed+expand and
-	// derive a validated/contested label from charge polarity counts. ONE bulk
+	// derive a validated/contested label from charge polarity counts. A bulk
 	// edge read + ONE bulk hydrate inside FetchChargesFor.
 	annotations := chargeAnnotations{}
 	var thoughtIDs []string
@@ -179,7 +179,7 @@ func composeContextSeed(ctx context.Context, deps ClientDeps, gc GraphCaller, qu
 }
 
 // composeContextExpand walks one hop out from the seed SET over the expand edge
-// types in ONE bulk both-direction RETURN_MODE_EDGES read, collects peer IDs
+// types in a bulk both-direction RETURN_MODE_EDGES read, collects peer IDs
 // outside the seed set (deduped, capped), and hydrates them in one bulk read.
 // It marks every hydrated peer in seen so later sections dedup against it.
 func composeContextExpand(ctx context.Context, gc GraphCaller, seedIDs []string, seen map[string]bool) []engine.SearchResult {

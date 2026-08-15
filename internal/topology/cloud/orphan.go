@@ -22,7 +22,7 @@ import (
 //
 // ANALYZER CONTRACT — the analyzer reads its node and edge sets over the wire
 // through req.Caller. It fetches every node in the scoped graph (one
-// FetchAllNodes) plus every edge incident to that node set (one bulk
+// FetchAllNodes) plus every edge incident to that node set (a bulk
 // FetchEdges), builds an in-memory orphanGraph, and dispatches each candidate
 // node to its registered rule. The iam-role rule additionally enumerates
 // other cloud graphs (foundation.FetchGraphNames) to detect cross-account
@@ -178,7 +178,7 @@ func (a OrphanAnalyzer) Run(ctx context.Context, req foundation.Request) ([]foun
 	return foundation.TruncateTopK(findings, req.TopK), nil
 }
 
-// buildOrphanGraph fetches every edge incident to the node set in ONE bulk
+// buildOrphanGraph fetches every edge incident to the node set in a bulk paged
 // read and returns the in-memory view the rules read.
 func buildOrphanGraph(ctx context.Context, req foundation.Request, nodes []*knowledgev1.Node) (*orphanGraph, error) {
 	ids := make([]string, 0, len(nodes))

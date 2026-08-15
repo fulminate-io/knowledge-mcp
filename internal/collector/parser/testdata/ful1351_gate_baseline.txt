@@ -1,0 +1,44 @@
+# ful1351 pre-existing gate baseline.
+#
+# Every one of the nine landed exact-row gates, run BYTE-FOR-BYTE AS STORED in
+# the knowledge graph (path substituted for the implementing worktree, nothing
+# else) against the COMMITTED pair BEFORE this ticket regenerated anything.
+# Measured at HEAD d0d65ba46b37e2370df9c71b454aafa547bf9e21.
+#
+# IT EXISTS SO THE REGENERATION BATCH IS READABLE. Without it, a red after the
+# batch cannot be told from a condition that predates the work.
+#
+# THE MEASUREMENT DISAGREES WITH THE PLAN'S EXPECTED CONTENT, and the plan says
+# to report the difference rather than copy the paragraph. Phase 2's overview
+# named two gates as already red at plan-time HEAD dd635dfd; at d0d65ba4 ALL
+# NINE ARE GREEN. Both reds resolved between planning and implementation, and
+# neither by anything this ticket did:
+#
+#   gate_qualified_member_rows — the plan describes this gate as requiring
+#     ecma_typescript_bound_rule_qualified_import AND
+#     ecma_tsx_bound_rule_qualified_import above zero. The criterion's CURRENT
+#     stored command requires the three qualified_MEMBER rows to be PRESENT as
+#     integers, which they are (all three read 0, and presence is what is
+#     asserted). The gate was re-authored after the plan was written; the plan's
+#     prose describes the superseded command.
+#   gate_sibling_rung_skips — the plan records sibling_rung_skipped_refs
+#     as ABSENT from the artifact entirely. It is present and non-zero:
+#     sibling_rung_skipped_refs=322, sibling_rung_skipped_ambiguous_refs=1.
+#
+# Format: <gate label> exit=<status> — <what the artifact says>
+#
+# THE LABELS NAME EACH GATE BY WHAT IT ASSERTS. They are stable identifiers for
+# this record only; each one stands where that gate's stored criterion id stood,
+# so a reader matches a row to a gate by the property named rather than by an id
+# that means nothing outside the authoring graph. Only the labels changed — every
+# exit status and every measured value below is as originally recorded.
+
+gate_matched_pair_corpus_root exit=0 — both artifacts stamp the canonical corpus_root and agree
+gate_awk_acceptance_over_pair exit=0 — ful1336_check.awk passes over both halves of the matched pair
+gate_dot_scope_zero exit=0 — dot_scope_binds=0, dot_scope_groups=0
+gate_cross_file_containment_zero exit=0 — cross_file_contains=0, collided_key_resolutions=0, same_file_contains non-zero, probe file absent
+gate_uncontained_chunks_zero exit=0 — uncontained_node_chunks=0 with the same_file_contains known-positive
+gate_pinned_unqualified_import_literal exit=0 — the PINNED literal ecma_typescript_bound_rule_unqualified_import=1582 holds
+gate_group_count_partition_identity exit=0 — per partition, group count equals distinct group keys; dynamic_unbound has its own row
+gate_qualified_member_rows exit=0 — all three qualified_member rows present (ecma_typescript=0, ecma_tsx=0, go=0)
+gate_sibling_rung_skips exit=0 — sibling_rung_skipped_refs=322

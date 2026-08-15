@@ -253,8 +253,9 @@ func (c *client) reconcileSegmentCoverageScoped(ctx context.Context, deltaScope 
 }
 
 // segmentBearingGraphs is the graph set every arm of this pass walks: the graphs
-// THIS CLIENT HAS INTERACTED WITH — searched, collected into, or written to — and
-// nothing else. It reads the working set locally and COSTS NO RPC: it asks no
+// THIS CLIENT HAS INTERACTED WITH — searched, collected into, or written to — AND,
+// for code graphs, whose codebase this machine actually holds. Membership is both
+// conditions, not just the first. It reads the working set locally and COSTS NO RPC: it asks no
 // backend to enumerate anything, which is the point. The routed per-type
 // enumeration it replaced (one ListGraphNamesOfType per embeddable builtin) ran on
 // every periodic tick and every nudge-woken pass, and a working set consulted only
@@ -264,6 +265,13 @@ func (c *client) reconcileSegmentCoverageScoped(ctx context.Context, deltaScope 
 // this client. Stated so a future reader does not "fix" it: a graph NO client
 // interacts with stops being enriched and stops having segments published — that is
 // INTENDED, not a regression.
+//
+// The local-presence half is intended in the same way and for a sharper reason: a
+// code graph whose repo is not checked out on this machine is never probed, healed
+// or published BY THIS CLIENT, even after a user interaction admits it. This client
+// cannot read that codebase, so any segment work it did would be built from nothing;
+// the machine that DOES hold the repo is the one that publishes for it. Interaction
+// alone is not enough to make this machine the right one to do the work.
 //
 // There is no knowledge/default seed and no seed of any other kind. knowledge is a
 // member exactly when an interaction earned it, like every other graph, and
@@ -290,9 +298,61 @@ func (c *client) segmentBearingGraphs() []segmentGraphRef {
 		if !kgtypes.HasRebuildableSegments(m.GraphType) {
 			continue // linkage / transformers — no rebuildable segments.
 		}
+		if !c.graphLocallyPresent(m.GraphType, m.Name) {
+			continue // code graph whose checkout this machine does not hold.
+		}
 		graphs = append(graphs, segmentGraphRef{gt: m.GraphType, name: m.Name})
 	}
 	return graphs
+}
+
+// graphLocallyPresent reports whether background work may touch this graph on
+// THIS machine. Every family but code passes unconditionally — they have no
+// checkout to hold — and the type check comes first so a non-code member
+// short-circuits before any I/O. A code graph passes only when this machine
+// actually holds its repo.
+func (c *client) graphLocallyPresent(gt kgtypes.GraphType, name string) bool {
+	present := c.presentLocally(gt, name)
+	// Report only the CODE branch: no other family is gated, so a line for one
+	// would claim a decision that was never made.
+	if !present && gt == kgtypes.GraphCode {
+		c.logPresenceSkipOnce(gt, name)
+	}
+	return present
+}
+
+// presentLocally is the predicate itself, without the reporting. The graph-type
+// check precedes the manifest read so a non-code member costs no I/O.
+func (c *client) presentLocally(gt kgtypes.GraphType, name string) bool {
+	if c.localPresence != nil {
+		return c.localPresence(gt, name)
+	}
+	if gt != kgtypes.GraphCode {
+		return true
+	}
+	return tools.LocalCodeRepoPresent(name)
+}
+
+// logPresenceSkipOnce reports a code graph declined for background work, at most
+// once per graph per process. A silent skip is indistinguishable from a broken
+// gate, but the predicate is consulted on every reconcile tick and every catalog
+// pass, so a line per call would be a metronome of noise on exactly the machines
+// this helps. Latched, like AdmitGraph's first-admission line.
+func (c *client) logPresenceSkipOnce(gt kgtypes.GraphType, name string) {
+	key := string(gt) + "\x00" + name
+	c.presenceSkipMu.Lock()
+	if _, seen := c.presenceSkipLogged[key]; seen {
+		c.presenceSkipMu.Unlock()
+		return
+	}
+	if c.presenceSkipLogged == nil {
+		c.presenceSkipLogged = map[string]struct{}{}
+	}
+	c.presenceSkipLogged[key] = struct{}{}
+	c.presenceSkipMu.Unlock()
+
+	slog.Info("working set: code graph skipped for background work - no local checkout on this machine (user reads are unaffected)",
+		"graph_type", gt, "graph", name)
 }
 
 // drainSegmentBacklog ships whatever is queued in the in-memory segment backlog,

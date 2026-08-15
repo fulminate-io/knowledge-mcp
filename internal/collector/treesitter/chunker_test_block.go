@@ -23,29 +23,67 @@ type testBlockCaptures struct {
 	Params string
 }
 
-// walkTestBlocks runs the TestBlocks query and emits one test_block chunk per
-// match. Strictly disjoint from walkTopLevel — leaf chunks only, one CONTAINS
-// edge per chunk, no CALLS / USES_TYPE / EMBEDS edges, no orphan tracking.
+// testBlockSite is one TestBlocks match that SURVIVED the strict-positive
+// classifier gate, collected before walkTopLevel runs so its byte ranges are
+// available to declaration edge emission and to orphan collection.
 //
-// Returns immediately when cqs.testBlocks is nil (the per-language TestBlocks
-// query string was empty), mirroring the topLevel == nil guard at chunker.go:202.
-func (c *Chunker) walkTestBlocks(
+// A rejected match is absent from this list entirely, and that absence is
+// load-bearing rather than tidy: a rejected match produces no test_block chunk,
+// so contributing its range would suppress the orphan twin of a node that was
+// never created and delete the only chunk covering that source.
+type testBlockSite struct {
+	declNode *sitter.Node
+	captures testBlockCaptures
+	// testKind is the classifier's verdict, carried so emitTestBlockChunk does
+	// not classify a second time. isTest is false — with testKind empty — for a
+	// language that registers no classifier, preserving the pre-Bucket-B shape.
+	isTest   bool
+	testKind TestKind
+
+	// declRange is the @decl node's own extent: what "inside this test block"
+	// means for the leaf rule and for the leaked-declaration migration.
+	declRange byteRange
+	// coverRange is what the site contributes to coveredRanges, and it is NOT
+	// declRange. collectOrphans tests whole ROOT-LEVEL CHILDREN for containment
+	// (chunker_edges.go:229-235), and the @decl of a JS/TS test block is the
+	// call_expression while the root child is the expression_statement wrapping
+	// it — one byte longer whenever the source terminates the call with a
+	// semicolon. Contributing declRange would leave `end <= r.end` false and
+	// suppress nothing at all, silently. See testBlockCoverRange.
+	coverRange byteRange
+	// leaf is true when NO other surviving site is strictly contained in this
+	// one. Only leaves emit TEST_CALLS: a describe does not call what its its
+	// call, and emitting the inner call from every enclosing level would
+	// multiply a callee's inbound count by the nesting depth of whichever test
+	// happened to exercise it.
+	leaf bool
+}
+
+// collectTestBlockSites runs the TestBlocks query and returns every match that
+// passes the classifier, with the two ranges and the leaf flag resolved.
+//
+// IT RUNS BEFORE walkTopLevel — see ChunkFile — because both consumers of these
+// ranges live INSIDE walkTopLevel: the emitDeclarationEdges loop tests leak
+// containment, and collectOrphans, which runs after it, tests twin suppression.
+// One collection serves both; the query executes exactly once per file and
+// walkTestBlocks emits from this same list rather than re-running it.
+func (c *Chunker) collectTestBlockSites(
 	root *sitter.Node,
 	src []byte,
 	filePath string,
 	lang Language,
 	cqs *compiledQuerySet,
 	fileCtx ChunkContext,
-	result *Result,
-) {
+) []testBlockSite {
 	if cqs.testBlocks == nil {
-		return
+		return nil
 	}
 
 	qc := sitter.NewQueryCursor()
 	defer qc.Close()
 	qc.Exec(cqs.testBlocks, root)
 
+	var sites []testBlockSite
 	for {
 		m, ok := qc.NextMatch()
 		if !ok {
@@ -64,26 +102,77 @@ func (c *Chunker) walkTestBlocks(
 			captures.Name = firstStringArg(declNode, src)
 		}
 
-		if !c.emitTestBlockChunk(declNode, src, filePath, lang, fileCtx, captures, result) {
-			// Strict-positive gate (locked Q9): predicate returned (false,
-			// TestKindNone). Skip CONTAINS edge so dropped chunks don't leave
-			// orphan edges referencing a non-emitted node.
-			continue
+		site := testBlockSite{
+			declNode:   declNode,
+			captures:   captures,
+			declRange:  byteRange{start: declNode.StartByte(), end: declNode.EndByte()},
+			coverRange: testBlockCoverRange(declNode),
 		}
+		// Bucket B dispatch (locked Q1, Q9). The strict-positive gate DROPS a
+		// match the classifier rejects, here rather than at emission, so a
+		// dropped match contributes no range and leaves no chunk.
+		if classify, ok := testBlockClassifiers[lang]; ok {
+			isTest, kind := classify(declNode, src, captures, fileCtx, filePath)
+			if !isTest {
+				continue
+			}
+			site.isTest, site.testKind = isTest, kind
+		}
+		sites = append(sites, site)
+	}
+
+	markLeafTestBlocks(sites)
+	return sites
+}
+
+// walkTestBlocks emits one test_block chunk per surviving site, its file
+// CONTAINS edge, and — for LEAF sites only — the TEST_CALLS edges its body's
+// call sites produce.
+//
+// Strictly disjoint from walkTopLevel on the CHUNK side: leaf chunks only, one
+// CONTAINS edge per chunk, no USES_TYPE and no EMBEDS. It is no longer
+// edge-free: the body's calls now emit, through the SAME Calls query, the same
+// refForParent/attachRefSite carriers and the same resolution ladder that a
+// declaration's calls ride — only the edge TYPE differs.
+//
+// Emits nothing when sites is empty, which covers both the languages whose
+// TestBlocks query string is empty and the files that contain no test block.
+func (c *Chunker) walkTestBlocks(
+	sites []testBlockSite,
+	src []byte,
+	filePath string,
+	lang Language,
+	cqs *compiledQuerySet,
+	fileCtx ChunkContext,
+	ref *RefSite,
+	result *Result,
+) {
+	for i := range sites {
+		site := &sites[i]
+
+		slot := c.emitTestBlockChunk(site, src, filePath, lang, fileCtx, result)
 
 		// Qualify by the same parent the chunk carries, under the same name
-		// guard the declaration path uses: recordSymbol keys a test_block as
-		// <ns>.<ParentName>.<Name> whenever @parent_name bound, so an
-		// unqualified endpoint here would fail resolution for exactly those.
-		symbolName := captures.Name
-		if captures.Name != "" && captures.ParentName != "" {
-			symbolName = captures.ParentName + "." + captures.Name
+		// guard the declaration path uses: the declaration index keys a
+		// test_block as <ns>.<ParentName>.<Name> whenever @parent_name bound, so
+		// an unqualified endpoint here would fail resolution for exactly those.
+		symbolName := site.captures.Name
+		if site.captures.Name != "" && site.captures.ParentName != "" {
+			symbolName = site.captures.ParentName + "." + site.captures.Name
 		}
+		// ToChunk names the chunk emitTestBlockChunk just appended, making the
+		// target exact so the pre-pass can overwrite the qualified name. That is
+		// what closes the unnamed-test-block case: a block whose query bound no
+		// @name and whose body offered no string literal produced an empty ToID,
+		// which resolution dropped, leaving the chunk node contained by nothing.
 		result.Edges = append(result.Edges, Edge{
-			FromID: filePath,
-			ToID:   qualifiedName(fileCtx.PackageName, symbolName),
-			Type:   EdgeContains,
+			FromID:  filePath,
+			ToID:    qualifiedName(fileCtx.PackageName, symbolName),
+			Type:    EdgeContains,
+			ToChunk: slot,
 		})
+
+		c.emitTestBlockCallEdges(site, src, fileCtx, symbolName, cqs, slot, ref, result)
 	}
 }
 
@@ -125,8 +214,9 @@ func extractTestBlockCaptures(m *sitter.QueryMatch, cqs *compiledQuerySet, src [
 }
 
 // emitTestBlockChunk appends a single test_block chunk to result.Chunks and
-// returns true. Mirrors emitDeclarationChunk's shape but diverges on three
-// contracts:
+// returns its 1-BASED slot in that slice. The 1-based encoding matches
+// Edge.FromChunk/ToChunk, where 0 means unset.
+// Mirrors emitDeclarationChunk's shape but diverges on three contracts:
 //
 //   - ChunkType is the literal string "test_block" (NOT declNode.Type()).
 //   - Exported is always false (locked decision Q9).
@@ -136,53 +226,43 @@ func extractTestBlockCaptures(m *sitter.QueryMatch, cqs *compiledQuerySet, src [
 //     scoping rules (RSpec contexts, Lua busted blocks) don't map cleanly
 //     onto the scope-ascent helper.
 //
-// Bucket B dispatch (locked Q1, Q9): when a testBlockClassifiers entry exists
-// for the language, call it; if it returns (false, TestKindNone), the strict-
-// positive gate DROPS the chunk and emitTestBlockChunk returns false so the
-// caller can skip the parallel CONTAINS edge append. When no classifier is
-// registered, the chunk is appended with IsTest=false TestKind="" preserving
-// the pre-Bucket-B behavior (transient state during phased rollout).
+// THE RETURN IS ALWAYS NON-ZERO. The strict-positive gate (locked Q1, Q9) has
+// already run in collectTestBlockSites, which is where a classifier's
+// (false, TestKindNone) drops the match — so every site reaching here is one
+// the classifier accepted, or one whose language registers no classifier at
+// all and therefore carries IsTest=false TestKind="" as it always has.
 //
 // Context.Signature carries the @params text verbatim.
 func (c *Chunker) emitTestBlockChunk(
-	declNode *sitter.Node,
+	site *testBlockSite,
 	src []byte,
 	filePath string,
 	lang Language,
 	fileCtx ChunkContext,
-	captures testBlockCaptures,
 	result *Result,
-) bool {
+) int {
 	chunk := Chunk{
-		Content:    declNode.Content(src),
+		Content:    site.declNode.Content(src),
 		FilePath:   filePath,
 		Language:   lang,
 		ChunkType:  "test_block",
-		Name:       captures.Name,
-		StartLine:  int(declNode.StartPoint().Row) + 1,
-		EndLine:    int(declNode.EndPoint().Row) + 1,
-		StartByte:  int(declNode.StartByte()),
-		EndByte:    int(declNode.EndByte()),
+		Name:       site.captures.Name,
+		StartLine:  int(site.declNode.StartPoint().Row) + 1,
+		EndLine:    int(site.declNode.EndPoint().Row) + 1,
+		StartByte:  int(site.declRange.start),
+		EndByte:    int(site.declRange.end),
 		Exported:   false,
-		PathHash:   astPathHash(declNode),
-		ParentName: captures.ParentName,
+		PathHash:   astPathHash(site.declNode),
+		ParentName: site.captures.ParentName,
+		IsTest:     site.isTest,
+		TestKind:   site.testKind,
 	}
 	if c.config.includeContext {
 		chunk.Context = fileCtx
 	}
-	chunk.Context.Signature = captures.Params
-
-	if classify, ok := testBlockClassifiers[lang]; ok {
-		isTest, kind := classify(declNode, src, captures, fileCtx, filePath)
-		if !isTest {
-			// Strict-positive gate (locked Q9): drop entirely. The caller
-			// guards the CONTAINS edge on this return value.
-			return false
-		}
-		chunk.IsTest = isTest
-		chunk.TestKind = kind
-	}
+	chunk.Context.Signature = site.captures.Params
 
 	result.Chunks = append(result.Chunks, chunk)
-	return true
+	// 1-based: len AFTER the append.
+	return len(result.Chunks)
 }

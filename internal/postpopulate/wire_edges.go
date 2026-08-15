@@ -12,6 +12,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/graphsel"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgwire"
+	"github.com/fulminate-io/knowledge-mcp/internal/paging"
 )
 
 // OutgoingEdges / IncomingEdges re-export the shared kgwire.EdgeDirection enum
@@ -30,7 +31,10 @@ const (
 // BrowseEdges reads the edges of a single node from a named per-account/per-repo
 // graph via the Execute carrier seam: a RETURN_MODE_EDGES read keyed by the node
 // id (the same shape engine.dispatchGraphWideEdges / graphWideEdgeUnion uses),
-// decoded from the typed edges carrier. Unlike a traverse-walk, this returns the
+// drained in bounded pages and decoded from the typed edges carrier. A node
+// whose edge count exceeds the drain's per-page ceiling makes the drain error by
+// name rather than hand a resolver a silently short edge set to rewrite from.
+// Unlike a traverse-walk, this returns the
 // RAW edges — including edges whose endpoint is a bare string that is NOT itself a
 // graph node (e.g. a dangling Route53 DNS hostname, an unresolved group: target)
 // — which is exactly what an edge-rewrite resolver needs.
@@ -57,21 +61,29 @@ func BrowseEdges(ctx context.Context, gc GraphCaller, gt kgtypes.GraphType, grap
 		}
 		sel.EdgeTypes = types
 	}
-	plan := &knowledgev1.QueryPlan{
-		Ids:        []string{nodeID},
-		Selection:  sel,
-		Forward:    &fwd,
-		ReturnMode: knowledgev1.ReturnMode_RETURN_MODE_EDGES,
-	}
-	req := &knowledgev1.ExecuteRequest{
-		Plan:   &knowledgev1.ExecuteRequest_Query{Query: plan},
-		Target: edgeSelector(gt, graphName),
-	}
-	resp, err := gc.Execute(ctx, req)
-	if err != nil {
-		return nil, fmt.Errorf("postpopulate: browse edges %s/%s from %s: %w", gt, graphName, nodeID, err)
-	}
-	return engine.DecodeEdges(resp)
+	// The plan Limit and the drain's edgeCap are the same number twice on
+	// purpose: the Limit is what the server enforces, the cap is what the drain
+	// uses to notice it was enforced. One without the other yields a drain that
+	// never detects truncation, or one that splits on a threshold nobody applies.
+	return paging.DrainPivotEdges([]string{nodeID}, paging.EdgePivotPageSize, engine.CorrelationsEdgeScanCap,
+		func(idPage []string) ([]knowledgev1.Edge, error) {
+			plan := &knowledgev1.QueryPlan{
+				Ids:        idPage,
+				Selection:  sel,
+				Forward:    &fwd,
+				ReturnMode: knowledgev1.ReturnMode_RETURN_MODE_EDGES,
+				Limit:      int32(engine.CorrelationsEdgeScanCap),
+			}
+			req := &knowledgev1.ExecuteRequest{
+				Plan:   &knowledgev1.ExecuteRequest_Query{Query: plan},
+				Target: edgeSelector(gt, graphName),
+			}
+			resp, err := gc.Execute(ctx, req)
+			if err != nil {
+				return nil, fmt.Errorf("postpopulate: browse edges %s/%s from %s: %w", gt, graphName, nodeID, err)
+			}
+			return engine.DecodeEdges(resp)
+		})
 }
 
 // UnlinkEdge removes a single directed edge (from→to of edgeType) from a named

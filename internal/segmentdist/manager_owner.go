@@ -3,6 +3,7 @@
 package segmentdist
 
 import (
+	"context"
 	"sync"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
@@ -29,6 +30,12 @@ type Manager struct {
 	caller   loginState
 	cacheDir string
 	maxBytes int64
+	// boundAccountID is the Fulminate account selected when this Manager was
+	// constructed — the account its cacheDir and its per-graph sources belong
+	// to. Every serving entry point compares it against the live selection and
+	// REFUSES on a mismatch (manager_account_guard.go) rather than serving the
+	// previous account's cached segments. Written once at construction.
+	boundAccountID string
 
 	mu sync.Mutex
 	// managers holds the HNSW engine per graph (vectors). bm25Managers holds the
@@ -291,15 +298,17 @@ type graphKey struct {
 // segment-transport builder that selects the GCS source on the logged-in path.
 func NewManager(caller loginState, cacheDir string, maxBytes int64, opts ...ManagerOption) *Manager {
 	m := &Manager{
-		caller:       caller,
-		cacheDir:     cacheDir,
-		maxBytes:     maxBytes,
-		managers:     make(map[graphKey]*distManager[[]byte, struct{}]),
-		bm25Managers: make(map[graphKey]*distManager[bm25.Query, *bm25.CorpusStats]),
-		dirty:        make(map[graphKey]*graphDirtyState),
-		tombstoned:   make(map[graphKey][]searchengine.ExternalID),
-		tombstoneSeq: make(map[graphKey]map[searchengine.ExternalID]uint64),
-		rebuildWork:  make(map[graphKey]*stagedRebuild),
+		caller:   caller,
+		cacheDir: cacheDir,
+		maxBytes: maxBytes,
+		// Sampled ONCE here, alongside the cacheDir it belongs to.
+		boundAccountID: accountSelectionID(context.Background()),
+		managers:       make(map[graphKey]*distManager[[]byte, struct{}]),
+		bm25Managers:   make(map[graphKey]*distManager[bm25.Query, *bm25.CorpusStats]),
+		dirty:          make(map[graphKey]*graphDirtyState),
+		tombstoned:     make(map[graphKey][]searchengine.ExternalID),
+		tombstoneSeq:   make(map[graphKey]map[searchengine.ExternalID]uint64),
+		rebuildWork:    make(map[graphKey]*stagedRebuild),
 	}
 	for _, opt := range opts {
 		opt(m)

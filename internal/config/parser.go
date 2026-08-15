@@ -27,13 +27,19 @@ type parseShape struct {
 	// duration string like "10m"). Kept as a raw string here and parsed via
 	// time.ParseDuration in Parse so a malformed value surfaces a clear,
 	// key-named error rather than a generic TOML type error. Empty = absent.
-	HealthProbeInterval string            `toml:"health_probe_interval"`
-	Default             parseSection      `toml:"default"`
-	Summarizer          *parseSection     `toml:"summarizer"`
-	Dream               *parseSection     `toml:"dream"`
-	Supervisor          *parseSection     `toml:"supervisor"`
-	Topics              *parseSection     `toml:"topics"`
-	Credentials         *parseCredentials `toml:"credentials"`
+	HealthProbeInterval string `toml:"health_probe_interval"`
+	// FulminateAccountID is the top-level fulminate_account_id key: the
+	// Fulminate account (tenancy) this machine's cloud calls are routed to.
+	// Copied verbatim into Config — no validation, no normalization; an id
+	// the gateway will reject is a state the client must be able to hold and
+	// report on. Empty = absent = no selection.
+	FulminateAccountID string            `toml:"fulminate_account_id"`
+	Default            parseSection      `toml:"default"`
+	Summarizer         *parseSection     `toml:"summarizer"`
+	Dream              *parseSection     `toml:"dream"`
+	Supervisor         *parseSection     `toml:"supervisor"`
+	Topics             *parseSection     `toml:"topics"`
+	Credentials        *parseCredentials `toml:"credentials"`
 }
 
 // parseCredentials mirrors the optional [credentials] TOML table. Pointer
@@ -116,6 +122,12 @@ func Parse(data []byte) (*Config, error) {
 	}
 
 	cfg := &Config{SchemaVersion: version}
+
+	// fulminate_account_id: copied verbatim, exactly as the credential strings
+	// below are. Validation belongs to the CLI pre-checks and the gateway, not
+	// to parsing — the client must be able to hold (and report on) a selection
+	// the gateway will reject.
+	cfg.FulminateAccountID = raw.FulminateAccountID
 
 	// health_probe_interval: a Go duration string. Empty leaves the field zero
 	// (the prober defaults it downstream); a malformed value is a hard Parse

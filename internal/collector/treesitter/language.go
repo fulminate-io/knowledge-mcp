@@ -4,6 +4,7 @@ package treesitter
 
 import (
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 
@@ -325,4 +326,40 @@ func LanguageGrammar(l Language) (*sitter.Language, bool) {
 		return nil, false
 	}
 	return entry.lang, true
+}
+
+// LanguageNamingSources reports the three places a declaration's name can come
+// from for one language: the TopLevel query's captures, the TestBlocks query,
+// and a registered declaration-name resolver.
+//
+// It exposes the SOURCES rather than a participation verdict, so the rule that
+// combines them lives with the gate that cares — and so a gate outside this
+// package derives participation from the query text itself instead of from a
+// hand-maintained list that rots the first time a query is tightened.
+// Everything is zero-valued for an unregistered language.
+func LanguageNamingSources(l Language) (topLevel, testBlocks string, hasDeclNameResolver bool) {
+	entry, ok := registry[l]
+	if !ok {
+		return "", "", false
+	}
+	qs := entry.Queries()
+	_, hasResolver := declNameResolvers[l]
+	return qs.TopLevel, qs.TestBlocks, hasResolver
+}
+
+// RegisteredLanguages returns every language the chunker can parse, sorted by
+// name so a caller iterating it runs in a stable order rather than a map's.
+//
+// It exists so a coverage gate OUTSIDE this package can derive its subject list
+// from the registry itself: a table that enumerates languages by hand silently
+// shrinks its own proof the day a language is added, while one derived from
+// here fails until the new language is accounted for. LangUnknown is absent
+// because it is not in the registry.
+func RegisteredLanguages() []Language {
+	out := make([]Language, 0, len(registry))
+	for lang := range registry {
+		out = append(out, lang)
+	}
+	slices.Sort(out)
+	return out
 }

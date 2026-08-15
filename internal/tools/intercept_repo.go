@@ -80,9 +80,11 @@ var manageCodeGraphOps = map[string]bool{
 // reads that checkout's current branch. This is machine-correct for any repo —
 // including cross-repo targets and renamed/forked clones — because the manifest
 // records where the repo actually lives here, rather than guessing from cwd. A
-// repo absent from the manifest, or a detached/non-git HEAD, leaves branch
-// unstamped and falls through to the base graph WITHOUT error — the caller passes
-// branch: explicitly to read an overlay. repo="all" is never branch-stamped.
+// repo absent from the manifest, or a checkout whose branch cannot be determined
+// (a non-git directory, or a detached HEAD — a detection failure here even
+// though git exits 0 for it), leaves branch unstamped and falls through to the
+// base graph WITHOUT error — the caller passes branch: explicitly to read an
+// overlay. repo="all" is never branch-stamped.
 //
 // Return tuple:
 //   - rewritten: a possibly-mutated CallToolParams. When no rewrite was
@@ -107,8 +109,9 @@ var manageCodeGraphOps = map[string]bool{
 //  4. Branch injection (manifest-based): missing/empty args["branch"]
 //     auto-fills via coderun.DetectBranch run in the repo's recorded on-disk
 //     directory (lookupRepoDir → ~/.knowledge/repos.json). A manifest miss, a
-//     detached/non-git HEAD, or repo="all" leaves branch unstamped and falls
-//     through to the base graph WITHOUT error. Never inferred from cwd.
+//     detection failure (a non-git directory, or a detached HEAD), or
+//     repo="all" leaves branch unstamped and falls through to the base graph
+//     WITHOUT error. Never inferred from cwd.
 //
 //  5. Graph materialization (search only): a `search` that got past the gate
 //     targets the code graph — an omitted graph was the code default, an
@@ -184,8 +187,9 @@ func InjectRepoIfCodeGraph(ctx context.Context, deps ClientDeps, params kgtools.
 	// Branch auto-detect (machine-correct, manifest-based). Repo STAYS explicitly
 	// required above — this does NOT re-introduce repo inference. When the caller
 	// omitted branch, the repo's real on-disk dir from the machine-local manifest
-	// drives DetectBranch so the searched repo's ACTUAL branch is stamped; absent a
-	// manifest hit / detached HEAD / repo="all" it stays unset (→ base graph).
+	// drives DetectBranch so the searched repo's ACTUAL branch is stamped; on a
+	// manifest miss, a detection failure (a detached HEAD is one), or repo="all"
+	// it stays unset (→ base graph).
 	if decodeStringField(args, "branch") == "" && repo != "all" {
 		if branch := autoDetectBranch(ctx, repo); branch != "" {
 			if b, mErr := json.Marshal(branch); mErr == nil {
@@ -209,19 +213,58 @@ func InjectRepoIfCodeGraph(ctx context.Context, deps ClientDeps, params kgtools.
 	return params, false, kgtools.ToolResult{}
 }
 
-// autoDetectBranch returns the current git branch of the repo recorded in the
-// machine-local manifest (~/.knowledge/repos.json), or "" when the repo is not
-// in the manifest, its recorded checkout has a detached/non-git HEAD, or
-// DetectBranch otherwise fails. Pure read — no cwd inference.
-func autoDetectBranch(ctx context.Context, repo string) string {
+// branchDetectState is WHY autoDetectBranchReason answered the way it did. It
+// exists because an empty branch alone cannot tell a caller whether this machine
+// simply has no checkout of the repo — in which case the base graph is the whole
+// answer and nothing is missing — or whether the manifest named a checkout that
+// could not be read, in which case an overlay may exist and we failed to find
+// out. Those two deserve different treatment, and only one of them is worth
+// telling the user about.
+type branchDetectState int
+
+const (
+	// branchDetected: the manifest named a checkout and git reported its branch.
+	branchDetected branchDetectState = iota
+	// branchNoManifestEntry: the repo has no manifest entry, so this machine holds
+	// no local checkout of it. Not a failure — there is no overlay to miss.
+	branchNoManifestEntry
+	// branchDetectFailed: the manifest promised a checkout it could not deliver.
+	branchDetectFailed
+)
+
+// autoDetectBranchReason returns the current git branch of the repo recorded in
+// the machine-local manifest (~/.knowledge/repos.json) together with the state
+// that explains the answer. Pure read — no cwd inference.
+//
+// What each state returns:
+//   - branchDetected → (branch, branchDetected).
+//   - branchNoManifestEntry → ("", branchNoManifestEntry): the repo is not in the
+//     manifest at all.
+//   - branchDetectFailed → ("", branchDetectFailed): DetectBranch errored (the
+//     recorded directory is gone or is not a git repo), OR the checkout is on a
+//     detached HEAD — a detection failure HERE even though git exits 0 for it and
+//     reports the literal branch name "HEAD". The empty branch is the operative
+//     half of that second case: returning "HEAD" would leave every caller
+//     stamping "HEAD" as though it were a real branch.
+func autoDetectBranchReason(ctx context.Context, repo string) (string, branchDetectState) {
 	dir, ok := lookupRepoDir(repo)
 	if !ok {
-		return ""
+		return "", branchNoManifestEntry
 	}
 	branch, err := coderun.DetectBranch(ctx, dir)
 	if err != nil {
-		return ""
+		return "", branchDetectFailed
 	}
+	if branch == "HEAD" {
+		return "", branchDetectFailed
+	}
+	return branch, branchDetected
+}
+
+// autoDetectBranch is the branch-only view of autoDetectBranchReason, for the
+// callers that have nothing to do with the reason. One derivation, not two.
+func autoDetectBranch(ctx context.Context, repo string) string {
+	branch, _ := autoDetectBranchReason(ctx, repo)
 	return branch
 }
 

@@ -15,7 +15,22 @@ func goQueries() *QuerySet {
 			(identifier) @callee
 			(selector_expression) @callee
 		])`,
-		Imports:  `(import_spec path: (interpreted_string_literal) @path)`,
-		TypeRefs: `(type_identifier) @typeref`,
+		// THE WHOLE import_spec, ONE CAPTURE. A registered importParsers arm is
+		// invoked ONCE PER CAPTURE rather than once per match
+		// (chunker_imports.go), so a two-capture spec binding `name:` and
+		// `path:` separately would invoke parseGoImport twice for every aliased
+		// import. The arm reads both fields off the captured node instead.
+		Imports: `(import_spec) @import`,
+		// A QUALIFIED type keeps its package: `store.Node` is captured whole so
+		// the resolution walk can split it at its last dot and bind the
+		// reference through the file's imports, instead of seeing a bare `Node`
+		// that can only match a same-package declaration. The alternation
+		// captures BOTH kinds and the inner type_identifier of a qualified_type
+		// survives with a different text, so extractTypeRefEdges keeps only the
+		// OUTERMOST capture per type expression.
+		TypeRefs: `[
+			(qualified_type) @typeref
+			(type_identifier) @typeref
+		]`,
 	}
 }

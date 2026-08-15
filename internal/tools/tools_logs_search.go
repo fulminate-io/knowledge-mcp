@@ -134,36 +134,26 @@ func runLogSearchQueries(
 	return out
 }
 
-// queryLogSearch fetches all log_template nodes in the graph via
-// gc.Call("query", graph:logs, name, type:log_template) and filters
+// queryLogSearch fetches EVERY log-template node in the graph via
+// fetchLogNodesByType (which drains keyset pages over the raw plan) and filters
 // them client-side by substring match on SymbolName + summary fields.
 // Per the "server stores nodes, client translates" lock: ranking + text
 // filter is translation work; server only serves the raw nodes. Server-
 // side `text:` against graph=logs is the label-filter parser (key=value
 // / severity>=LEVEL), not BM25 — using it would re-route through
 // InterceptLogsQuery's parser and reject free text.
+//
+// The client-side substring filter is only as complete as the set it filters,
+// so this reads the whole type rather than one bounded page. The engine Match
+// selects on the CANONICAL node type: kgtypes.NodeLogTemplate ("log-template")
+// — the historical hardcoded "log_template" was an inert selector the client
+// __type filter compensated for; the carrier Match needs the real type string.
 func queryLogSearch(ctx context.Context, gc GraphCaller, name, q string, limit int) ([]logSearchHit, error) {
-	args, err := json.Marshal(map[string]any{
-		"graph": "logs",
-		"name":  name,
-		// The engine Match selects on the CANONICAL node type. Use
-		// kgtypes.NodeLogTemplate ("log-template") — the prior hardcoded
-		// "log_template" was an inert selector the client __type filter
-		// compensated for; the carrier Match needs the real type string.
-		"type":  string(kgtypes.NodeLogTemplate),
-		"limit": 0,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("marshal query args: %w", err)
-	}
-	resp, err := executeQuery(ctx, gc, args)
+	nodes, err := fetchLogNodesByType(ctx, gc, name, string(kgtypes.NodeLogTemplate), false)
 	if err != nil {
 		return nil, fmt.Errorf("query: %w", err)
 	}
-	all, err := decodeLogSearchHits(resp)
-	if err != nil {
-		return nil, err
-	}
+	all := logSearchHitsFromNodes(nodes)
 	// Tag every hit so the caller's template filter still works; the
 	// type-browse RPC already returned log-template nodes so this is
 	// belt-and-suspenders for the metadata["__type"] check.
@@ -201,16 +191,12 @@ func filterLogHitsBySubstring(hits []logSearchHit, q string, limit int) []logSea
 	return out
 }
 
-// decodeLogSearchHits decodes the log_template type-browse response (the
-// nodes_json carrier, engine.DecodeNodes) into logSearchHits. Score is 0 (a
-// type-browse carries no rank; the template filter is substring-based, score-
-// independent). The node Type is stashed under the synthetic "__type" metadata
-// key so callers filter template-only without a separate field.
-func decodeLogSearchHits(resp *knowledgev1.ExecuteResponse) ([]logSearchHit, error) {
-	nodes, err := engine.DecodeNodes(resp)
-	if err != nil {
-		return nil, err
-	}
+// logSearchHitsFromNodes projects drained log-template nodes into logSearchHits.
+// Score is 0 (a type-browse carries no rank; the template filter is
+// substring-based, score-independent). The node Type is stashed under the
+// synthetic "__type" metadata key so callers filter template-only without a
+// separate field.
+func logSearchHitsFromNodes(nodes []*knowledgev1.Node) []logSearchHit {
 	out := make([]logSearchHit, 0, len(nodes))
 	for _, n := range nodes {
 		md := make(map[string]string, len(n.Metadata)+1)
@@ -222,7 +208,7 @@ func decodeLogSearchHits(resp *knowledgev1.ExecuteResponse) ([]logSearchHit, err
 			metadata:   md,
 		})
 	}
-	return out, nil
+	return out
 }
 
 // checkLogGraphExists issues a minimal query to confirm the named log

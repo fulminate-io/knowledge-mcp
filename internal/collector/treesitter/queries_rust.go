@@ -13,11 +13,21 @@ func rustQueries() *QuerySet {
 			(mod_item name: (identifier) @name) @decl
 			(type_item name: (type_identifier) @name) @decl
 		]`,
+		// The scoped_identifier arm is what makes `foo::bar(2)` emit a callee at
+		// all — it produced no CALLS edge in any earlier state of this file.
+		// A path form the index cannot represent, `<Foo as Bar>::baz`, is
+		// captured VERBATIM and lands external rather than being normalised
+		// into something that looks bound.
 		Calls: `(call_expression function: [
 			(identifier) @callee
-			(field_expression field: (field_identifier) @callee)
+			(field_expression) @callee
+			(scoped_identifier) @callee
 		])`,
-		Imports:  `(use_declaration) @import`,
+		// The use_as_clause child is named so this query and the arm agree on
+		// where `use x::y as z` puts its alias. One capture per statement: the
+		// arm walks the declaration's own shape for the list, wildcard and
+		// nested-alias forms.
+		Imports:  `(use_declaration (use_as_clause)?) @import`,
 		TypeRefs: `(type_identifier) @typeref`,
 	}
 }

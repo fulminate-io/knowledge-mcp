@@ -40,10 +40,9 @@ func resolveAADGroupAssignments(ctx context.Context, gc postpopulate.GraphCaller
 // buildAADGroupIndex queries all azure:aad:group nodes and returns a map
 // from raw object ID (GUID) to the full group node ID.
 func buildAADGroupIndex(ctx context.Context, gc postpopulate.GraphCaller, graphName string) map[string]string {
-	groups, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
-		"type":  string(kgtypes.NodeCloudResource),
-		"meta":  map[string]string{"resource_type": "azure:aad:group"},
-		"limit": 0,
+	groups, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
+		"type": string(kgtypes.NodeCloudResource),
+		"meta": map[string]string{"resource_type": "azure:aad:group"},
 	})
 	if err != nil {
 		slog.Debug("azure aad group resolve: query groups", "err", err)
@@ -78,10 +77,9 @@ func resolveAccessedByGroups(
 ) []knowledgev1.Edge {
 	// Query all cloud resource nodes that have outgoing EdgeAccessedBy.
 	// We iterate node types that commonly emit ACCESSED_BY (KeyVault).
-	vaults, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
-		"type":  string(kgtypes.NodeCloudResource),
-		"meta":  map[string]string{"resource_type": "Microsoft.KeyVault/vaults"},
-		"limit": 0,
+	vaults, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
+		"type": string(kgtypes.NodeCloudResource),
+		"meta": map[string]string{"resource_type": "Microsoft.KeyVault/vaults"},
 	})
 	if err != nil {
 		return nil
@@ -115,7 +113,7 @@ func resolveAccessedByGroups(
 func resolveAssumesRoleGroups(
 	ctx context.Context, gc postpopulate.GraphCaller, graphName string, groupIndex map[string]string,
 ) []knowledgev1.Edge {
-	identities, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, managedIdentityQuery())
+	identities, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, managedIdentityQuery())
 	if err != nil {
 		return nil
 	}

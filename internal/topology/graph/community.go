@@ -16,7 +16,7 @@ package graph
 //     immediately runs RunLeiden over the result.
 //
 // The adjacency build reads the scoped graph's nodes (one wire browse) and
-// every incident edge (one bulk wire read), then groups the edges per node
+// every incident edge (a bulk wire read), then groups the edges per node
 // in memory — the N+1-free twin of the legacy per-node store.From walk.
 
 import (
@@ -84,7 +84,7 @@ func BuildAdjacency(
 	return nodeIDs, adj, nil
 }
 
-// buildAdjacencyEdges fetches the edges in ONE bulk wire read and builds the
+// buildAdjacencyEdges fetches the edges in a bulk wire read and builds the
 // undirected adjacency map. Each edge contributes its other endpoint to BOTH
 // endpoints' neighbor lists (filtered to the surviving set), reproducing the
 // forward+backward walk the legacy store-backed collectNeighbors performed.

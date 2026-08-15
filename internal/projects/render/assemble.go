@@ -10,6 +10,7 @@ import (
 
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
+	"github.com/fulminate-io/knowledge-mcp/internal/paging"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
@@ -111,6 +112,21 @@ func Handle(ctx context.Context, gc GraphCaller, args json.RawMessage) kgtools.T
 // the store.Match(NodeType) query replaced by a wire call to
 // query({type:<typ>}). Multiple matches: the first is used; a warn
 // is logged.
+//
+// THREE LEGS, each load-bearing for a different reason:
+//
+//   - The browse DRAINS bounded id-keyset pages. It used to be one browse
+//     carrying no limit at all, which the compile path caps at
+//     browseDefaultLimit — so assemble(type, name) searched only the first
+//     page of that type before reporting the node nonexistent.
+//   - A symbol_name EQ field_predicate narrows server-side. This is a PERF
+//     requirement, not decoration: without it every by-name assemble drains
+//     the entire node set of the type. The predicate rides the singular
+//     type-browse arm, the only compile arm that also threads after_id.
+//   - The client-side SymbolName scan below STAYS. It is the CORRECTNESS
+//     leg: an old or predicate-blind server that ignores field_predicates
+//     returns an arbitrary page, and the scan is what stops a wrong-named
+//     node being resolved.
 func resolveAssembleByName(ctx context.Context, gc GraphCaller, typ, name string) (string, *kgtools.ToolResult) {
 	if typ == "" || name == "" {
 		res := kgtools.ErrorResult("provide id, or both type and name for lookup")
@@ -121,29 +137,35 @@ func resolveAssembleByName(ctx context.Context, gc GraphCaller, typ, name string
 		res := kgtools.ErrorResult("resolve by name: " + eerr.Error())
 		return "", &res
 	}
-	payload := struct {
-		Type string `json:"type"`
-	}{Type: typ}
-	raw, err := json.Marshal(payload)
-	if err != nil {
-		res := kgtools.ErrorResult("resolve by name: marshal: " + err.Error())
-		return "", &res
-	}
-	req, ok := engine.Compile("query", raw)
-	if !ok {
-		res := kgtools.ErrorResult("resolve by name: query not reducible to an ExecuteRequest")
-		return "", &res
-	}
-	resp, err := ex.Execute(ctx, req)
-	if err != nil {
-		res := kgtools.ErrorResult("resolve by name: " + err.Error())
-		return "", &res
-	}
-	// query(type:) compiles to a type-browse whose typed Nodes carrier
-	// (engine.DecodeNodes) carries the matched wire node payloads.
-	candidates, derr := engine.DecodeNodes(resp)
+	candidates, derr := paging.DrainKeysetPages(func(afterID string) ([]*knowledgev1.Node, error) {
+		raw, merr := json.Marshal(map[string]any{
+			"type": typ,
+			"field_predicates": []map[string]string{
+				{"field": "symbol_name", "op": "eq", "value": name},
+			},
+			"limit": paging.BrowsePageSize,
+			// SET on every page including the first, where the value is empty:
+			// presence, not emptiness, is what selects the keyset browse.
+			"after_id":   afterID,
+			"skip_total": true,
+		})
+		if merr != nil {
+			return nil, fmt.Errorf("marshal: %w", merr)
+		}
+		req, ok := engine.Compile("query", raw)
+		if !ok {
+			return nil, fmt.Errorf("query not reducible to an ExecuteRequest")
+		}
+		resp, rerr := ex.Execute(ctx, req)
+		if rerr != nil {
+			return nil, rerr
+		}
+		// query(type:) compiles to a type-browse whose typed Nodes carrier
+		// (engine.DecodeNodes) carries the matched wire node payloads.
+		return engine.DecodeNodes(resp)
+	}, paging.BrowsePageSize)
 	if derr != nil {
-		res := kgtools.ErrorResult("resolve by name: decode: " + derr.Error())
+		res := kgtools.ErrorResult("resolve by name: " + derr.Error())
 		return "", &res
 	}
 

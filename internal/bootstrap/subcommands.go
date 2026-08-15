@@ -14,7 +14,8 @@ import (
 )
 
 // RunSubcommand inspects os.Args[1] and, when it matches one of the
-// recognized CLI subcommands (login/logout/start/stop/status/serve/
+// recognized CLI subcommands (login/logout/auth-status/accounts/account/
+// start/stop/status/serve/
 // install/setup/install-claude-assets/install-codex-assets/transcript-upload/tunnel/doctor/version),
 // dispatches to the appropriate handler.
 // Returns (handled=true, exitCode) when it handled the invocation so
@@ -40,11 +41,15 @@ func RunSubcommand() (handled bool, exitCode int) {
 	var err error
 	switch sub {
 	case "login":
-		err = cli.LoginCmd(rest)
+		err = withSelectionRestart(func() error { return cli.LoginCmd(rest) })
 	case "logout":
 		err = cli.LogoutCmd(rest)
 	case "auth-status":
 		err = cli.AuthStatusCmd(rest)
+	case "accounts":
+		err = cli.AccountsCmd(rest)
+	case "account":
+		err = withSelectionRestart(func() error { return runAccountVerb(rest) })
 	case "start":
 		err = runStart(rest)
 	case "stop":
@@ -80,6 +85,40 @@ func RunSubcommand() (handled bool, exitCode int) {
 		return true, code
 	}
 	return true, 0
+}
+
+// withSelectionRestart runs a command that can MOVE the stored account
+// selection, and restarts a running daemon when it did, so the user performs
+// no manual step.
+//
+// It wraps both `account use` and `login`: login ESTABLISHES the selection
+// where there was none, which moves the daemon's account identity off "" — the
+// segment manager built under the unpartitioned cache root would otherwise
+// refuse to serve until a restart, recreating exactly the hoop this removes.
+//
+// A failed command never triggers a restart.
+func withSelectionRestart(run func() error) error {
+	before := storedSelection()
+	if err := run(); err != nil {
+		return err
+	}
+	restartDaemonIfSelectionChanged(before)
+	return nil
+}
+
+// runAccountVerb dispatches the `account` noun's verbs. Two commands, one
+// noun: `accounts` (plural, read) lists, `account use` (singular, write)
+// selects.
+func runAccountVerb(args []string) error {
+	if len(args) == 0 {
+		return errors.New("account: expected a verb — the supported one is `knowledge account use <id|slug>`")
+	}
+	switch args[0] {
+	case "use":
+		return cli.AccountUseCmd(args[1:])
+	default:
+		return fmt.Errorf("account: unknown verb %q — the supported one is `knowledge account use <id|slug>`", args[0])
+	}
 }
 
 // subcommandExit maps a subcommand's returned error to the process exit code and

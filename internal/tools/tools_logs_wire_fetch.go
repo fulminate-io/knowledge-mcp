@@ -33,6 +33,7 @@ import (
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
+	"github.com/fulminate-io/knowledge-mcp/internal/paging"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
@@ -119,12 +120,12 @@ func fetchLogNodesByType(
 	if err != nil {
 		return nil, err
 	}
-	return engine.DrainKeysetPages(func(afterID string) ([]*knowledgev1.Node, error) {
+	return paging.DrainKeysetPages(func(afterID string) ([]*knowledgev1.Node, error) {
 		cursor := afterID
 		plan := &knowledgev1.QueryPlan{
 			Selection:  &knowledgev1.Selection{NodeType: nodeType},
 			ContentB64: wantContent,
-			Limit:      int32(engine.BrowsePageSize),
+			Limit:      int32(paging.BrowsePageSize),
 			// SET on every page including the first, where the value is empty:
 			// presence is what selects the keyset browse.
 			AfterId:   &cursor,
@@ -138,7 +139,7 @@ func fetchLogNodesByType(
 			return nil, fmt.Errorf("rpc: %w", rerr)
 		}
 		return decodeLogBrowseResponse(resp, wantContent)
-	}, engine.BrowsePageSize)
+	}, paging.BrowsePageSize)
 }
 
 // fetchLogNodesByIDs hydrates a caller-supplied set of node IDs in ONE

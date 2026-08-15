@@ -4,54 +4,118 @@ package parser
 
 import (
 	"testing"
-	"time"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/collector/treesitter"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
-// TestResolveEdges_PreservesMetadata verifies that resolveEdges carries
-// Weight/Confidence/Method/Evidence/LastValidated through the raw-ID →
-// node-ID rewrite. Regression test for the bug where tree-sitter CALLS
-// edges silently lost their Weight (call-site count) in the resolver,
-// producing Weight-zero edges in the code graph.
+// refSiteFor builds the per-file reference site a chunker would attach.
+//
+// IT HARDCODES GO whatever the file path says. That was invisible while every
+// rung behaved identically in every language; the sibling rung is now
+// per-language, so a hand-built site with a .ts path still resolves as Go and
+// is gated. A case about a language's own rung must say which language it
+// means — refSiteForLang is how.
+func refSiteFor(file, scope, parent string) *treesitter.RefSite {
+	return &treesitter.RefSite{File: file, Scope: scope, Parent: parent, Lang: treesitter.LangGo}
+}
+
+// refSiteForLang is refSiteFor with the language as a parameter, for the cases
+// whose subject is a per-language rung rather than the ladder's shape.
+func refSiteForLang(file, scope, parent string, lang treesitter.Language) *treesitter.RefSite {
+	ref := refSiteFor(file, scope, parent)
+	ref.Lang = lang
+	return ref
+}
+
+// indexOf builds a declIndex from (nodeID, scope, parent, name) tuples.
+func indexOf(t *testing.T, recs ...*declRec) *declIndex {
+	t.Helper()
+	ix := newDeclIndex(len(recs))
+	for _, r := range recs {
+		require.NoError(t, ix.add(r))
+	}
+	return ix
+}
+
+// TestResolveEdges_PreservesMetadata pins the metadata the resolver must put on
+// the edges it emits.
+//
+// The resolver no longer REWRITES caller-supplied edges — it CONSTRUCTS graph
+// edges from the chunker's results — so the property under test is that the
+// chunker's Weight survives the construction, and that a multi-candidate
+// reference gets the three residue fields rather than being narrowed to one
+// edge. The original regression this name guards (tree-sitter CALLS edges
+// silently losing their call-site Weight) is still the first assertion.
 func TestResolveEdges_PreservesMetadata(t *testing.T) {
-	// knowledgev1.Edge.LastValidated is an int64 (unix nanos); carry a
-	// representative timestamp as int64.
-	lv := time.Now().UTC().Truncate(time.Second).UnixNano()
-	edges := []*knowledgev1.Edge{
-		{
-			FromId:        "pkgA.Caller",
-			ToId:          "pkgB.Callee",
-			Type:          string(kgtypes.EdgeCalls),
-			Weight:        7,
-			Confidence:    0.82,
-			Method:        "tree-sitter",
-			Evidence:      "3 call sites in function body",
-			LastValidated: lv,
-		},
-	}
-	symbolMap := map[string]string{
-		"pkgA.Caller": "a/caller.go:Caller",
-		"pkgB.Callee": "b/callee.go:Callee",
-	}
-	nodeIDs := map[string]bool{
-		"a/caller.go:Caller": true,
-		"b/callee.go:Callee": true,
-	}
+	t.Run("bound_reference_keeps_weight", func(t *testing.T) {
+		results := []*treesitter.Result{{
+			FilePath: "a/caller.go",
+			Language: treesitter.LangGo,
+			Edges: []treesitter.Edge{{
+				FromID:  "a/caller.go:Caller",
+				ToID:    "Callee",
+				Type:    treesitter.EdgeCalls,
+				Weight:  7,
+				RefByte: 42,
+				Ref:     refSiteFor("a/caller.go", "dir:a", ""),
+			}},
+		}}
+		ix := indexOf(t, &declRec{NodeID: "a/callee.go:Callee", File: "a/callee.go", Scope: "dir:a", Name: "Callee"})
+		nodeIDs := map[string]bool{"a/caller.go:Caller": true, "a/callee.go:Callee": true}
 
-	got := resolveEdges(edges, symbolMap, nodeIDs)
+		got := resolveEdges(results, ix, nodeIDs)
 
-	assert.Len(t, got, 1, "resolver must emit exactly one resolved edge")
-	e := got[0]
-	assert.Equal(t, "a/caller.go:Caller", e.FromId)
-	assert.Equal(t, "b/callee.go:Callee", e.ToId)
-	assert.Equal(t, string(kgtypes.EdgeCalls), e.Type)
-	assert.InDelta(t, 7.0, e.Weight, 1e-9, "Weight must be preserved")
-	assert.InDelta(t, 0.82, e.Confidence, 1e-9, "Confidence must be preserved")
-	assert.Equal(t, "tree-sitter", e.Method, "Method must be preserved")
-	assert.Equal(t, "3 call sites in function body", e.Evidence, "Evidence must be preserved")
-	assert.Equal(t, lv, e.LastValidated, "LastValidated must be preserved")
+		require.Len(t, got, 1, "one candidate binds to exactly one edge")
+		e := got[0]
+		assert.Equal(t, "a/caller.go:Caller", e.FromId)
+		assert.Equal(t, "a/callee.go:Callee", e.ToId)
+		assert.Equal(t, string(kgtypes.EdgeCalls), e.Type)
+		assert.InDelta(t, 7.0, e.Weight, 1e-9, "Weight must survive construction")
+		// A bound edge carries none of the residue fields — they mean
+		// "this edge is one of several guesses", which a bound edge is not.
+		assert.InDelta(t, 0.0, e.Confidence, 1e-9)
+		assert.Empty(t, e.Method)
+		assert.Empty(t, e.Evidence)
+	})
+
+	t.Run("ambiguous_reference_carries_confidence_method_and_group_key", func(t *testing.T) {
+		ref := refSiteFor("a/caller.go", "dir:a", "")
+		results := []*treesitter.Result{{
+			FilePath: "a/caller.go",
+			Language: treesitter.LangGo,
+			Edges: []treesitter.Edge{{
+				FromID:  "a/caller.go:Caller",
+				ToID:    "Callee",
+				Type:    treesitter.EdgeCalls,
+				Weight:  3,
+				RefByte: 1042,
+				Ref:     ref,
+			}},
+		}}
+		// TWO surviving declarations under one key — the shape the replaced
+		// scalar map could not represent, because the second assignment
+		// deleted the first.
+		ix := indexOf(t,
+			&declRec{NodeID: "a/one.go:Callee", File: "a/one.go", Scope: "dir:a", Name: "Callee"},
+			&declRec{NodeID: "a/two.go:Callee", File: "a/two.go", Scope: "dir:a", Name: "Callee"},
+		)
+		nodeIDs := map[string]bool{"a/caller.go:Caller": true, "a/one.go:Callee": true, "a/two.go:Callee": true}
+
+		got := resolveEdges(results, ix, nodeIDs)
+
+		require.Len(t, got, 2, "an ambiguous reference emits one edge per candidate, never a narrowed guess")
+		wantKey := groupKey("a/caller.go", 1042, string(kgtypes.EdgeCalls), "Callee")
+		for _, e := range got {
+			assert.InDelta(t, 0.5, e.Confidence, 1e-9, "Confidence is 1/N")
+			assert.Equal(t, kgtypes.EdgeMethodAmbiguousName, e.Method)
+			assert.Equal(t, wantKey, e.Evidence, "every member of one group shares one key")
+		}
+		// File order, which the index preserves by construction.
+		assert.Equal(t, "a/one.go:Callee", got[0].ToId)
+		assert.Equal(t, "a/two.go:Callee", got[1].ToId)
+	})
 }

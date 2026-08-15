@@ -12,6 +12,8 @@ import (
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/enginetest"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/paging"
 )
 
 // TestDispatchGraphWide_PivotPagedEdgePlan asserts the start-less traverse
@@ -103,7 +105,7 @@ func TestDispatchGraphWideEdges_TextFormatUsesIDsOnly(t *testing.T) {
 		nodesQ := s.reqs[0].GetQuery()
 		assert.Equal(t, knowledgev1.ReturnMode_RETURN_MODE_IDS, nodesQ.GetReturnMode(),
 			"the text arm must not hydrate whole nodes to print two counts")
-		assert.Equal(t, int32(BrowsePageSize), nodesQ.GetLimit(), "a bounded page, not limit 0")
+		assert.Equal(t, int32(paging.BrowsePageSize), nodesQ.GetLimit(), "a bounded page, not limit 0")
 		require.NotNil(t, nodesQ.AfterId, "after_id must be PRESENT on page 1 — presence selects the keyset browse")
 		assert.Empty(t, nodesQ.GetAfterId(), "page 1's cursor is the empty string")
 		assert.True(t, nodesQ.GetSkipTotal(), "the drain never reads Total")
@@ -140,4 +142,69 @@ func TestDispatchGraphWide_EmptyGraphSkipsEdgeRead(t *testing.T) {
 		"traverse", json.RawMessage(`{"graph":"knowledge","format":"json"}`))
 	require.NoError(t, err)
 	assert.Equal(t, 1, s.calls, "no nodes → no edge read")
+}
+
+// TestDispatchGraphWide_CandidateGroups pins the graph-wide JSON arm's group
+// collapse: one edge_groups entry per group, member edges withheld from the flat
+// array, and the arm's own dangling-source rule applied to groups as well.
+func TestDispatchGraphWide_CandidateGroups(t *testing.T) {
+	groupEdges := func(from string) []knowledgev1.Edge {
+		key := from + ":42:CALLS:Run"
+		return []knowledgev1.Edge{
+			{FromId: from, ToId: "p/a.go:Run", Type: "CALLS", Method: kgtypes.EdgeMethodAmbiguousName, Evidence: key, Confidence: 1.0 / 3.0},
+			{FromId: from, ToId: "p/b.go:Run", Type: "CALLS", Method: kgtypes.EdgeMethodAmbiguousName, Evidence: key, Confidence: 1.0 / 3.0},
+			{FromId: from, ToId: "p/c.go:Run", Type: "CALLS", Method: kgtypes.EdgeMethodAmbiguousName, Evidence: key, Confidence: 1.0 / 3.0},
+		}
+	}
+	nodes := []*knowledgev1.Node{
+		{Id: "n1", SymbolName: "One", Type: "function"},
+		{Id: "n2", SymbolName: "Two", Type: "function"},
+		{Id: "p/a.go:Run", SymbolName: "Run", Type: "function", FilePath: "p/a.go", StartLine: 10},
+		{Id: "p/b.go:Run", SymbolName: "Run", Type: "function", FilePath: "p/b.go", StartLine: 20},
+		{Id: "p/c.go:Run", SymbolName: "Run", Type: "function", FilePath: "p/c.go", StartLine: 30},
+	}
+
+	renderPayload := func(t *testing.T, edges []knowledgev1.Edge) map[string]any {
+		t.Helper()
+		s := &seqExec{responses: []*knowledgev1.ExecuteResponse{
+			enginetest.ResponseWithNodes(nodes...),
+			{Edges: edgesToProtoForTest(edges)},
+		}}
+		out, err := Dispatch(context.Background(), s.fn(),
+			"traverse", json.RawMessage(`{"graph":"knowledge","format":"json"}`))
+		require.NoError(t, err)
+		var payload map[string]any
+		require.NoError(t, json.Unmarshal([]byte(out.Content[0].Text), &payload))
+		return payload
+	}
+
+	t.Run("group_emitted_and_members_excluded", func(t *testing.T) {
+		// BOTH HALVES REQUIRED: asserting only the exclusion is satisfied by an
+		// implementation that drops every edge.
+		edges := append(groupEdges("n1"), knowledgev1.Edge{FromId: "n1", ToId: "n2", Type: "contains"})
+		payload := renderPayload(t, edges)
+
+		rows, ok := payload["edge_groups"].([]any)
+		require.True(t, ok, "edge_groups must be present")
+		require.Len(t, rows, 1)
+		assert.Len(t, rows[0].(map[string]any)["candidates"].([]any), 3)
+
+		flat := payload["edges"].([]any)
+		require.Len(t, flat, 1, "only the bound edge stays in the flat array")
+		assert.Equal(t, "n2", flat[0].(map[string]any)["target"])
+	})
+
+	t.Run("dangling_source_group_skipped", func(t *testing.T) {
+		// The group's source has no node row, so the arm's existing dangling rule
+		// drops it — while the bound edge with a known source still renders, so
+		// this leg cannot pass by emitting nothing at all.
+		edges := append(groupEdges("ghost"), knowledgev1.Edge{FromId: "n1", ToId: "n2", Type: "contains"})
+		payload := renderPayload(t, edges)
+
+		_, hasGroups := payload["edge_groups"]
+		assert.False(t, hasGroups, "a group whose source is not enumerated is skipped entirely")
+		flat := payload["edges"].([]any)
+		require.Len(t, flat, 1)
+		assert.Equal(t, "n2", flat[0].(map[string]any)["target"])
+	})
 }

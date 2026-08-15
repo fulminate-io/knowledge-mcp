@@ -246,22 +246,41 @@ func targetsForType(ctx context.Context, deps ClientDeps, graphType string, name
 }
 
 // appendOverlayTargets enumerates the overlay keys of one base graph and appends
-// a clear target per overlay (split base@overlay → {name:base, branch:overlay}).
-// Returns the grown slice. An overlay key whose split does not match the base is
-// skipped defensively (the enumeration is base-scoped, so this is belt-and-braces).
+// a clear target per overlay ({name:base, branch:<bare overlay name>}). Returns
+// the grown slice.
+//
+// THE KEY ARRIVES IN EITHER OF TWO FORMS and both must resolve: the CLOUD catalog
+// reports the composed "base@overlay" key, the OSS/local catalog reports the BARE
+// overlay name. Normalization is the shared bareOverlayName (declared in
+// intercept_manage_repair_edges_targets.go) — ONE normalization for every consumer
+// of this vocabulary in the package, never a second one written here.
+//
+// This USED TO split with atSplit and skip any key that did not split, which meant
+// every OSS/local overlay hit the "no @" arm and was dropped: the fan-out silently
+// resolved to base targets only, and clear_llm_failures left every marker outside
+// the base graph set, so the LLM pipeline never re-discovered those nodes. It was
+// a silent INCOMPLETE write, not a wrong one, and only on that backend — which is
+// why no gate caught it until the fan-out test was tabled over both key forms.
+//
+// A key still carrying an "@" AFTER normalization did not belong to this base;
+// the enumeration is base-scoped, so skipping it is belt-and-braces.
 func appendOverlayTargets(ctx context.Context, deps ClientDeps, out []clearLLMFailureTarget, graphType, base string) ([]clearLLMFailureTarget, error) {
 	keys, err := listOverlayKeysOfBase(ctx, deps, graphType, base)
 	if err != nil {
 		return nil, err
 	}
 	for _, key := range keys {
-		b, overlay, ok := atSplit(key)
-		// Defensive: the enumeration is base-scoped, so every key should be
-		// base@overlay; skip anything that doesn't split or doesn't match the base.
-		if !ok || overlay == "" || b != base {
+		bare := bareOverlayName(base, key)
+		if bare == "" {
 			continue
 		}
-		out = append(out, clearLLMFailureTarget{graphType: graphType, name: b, branch: overlay})
+		if left, _, ok := atSplit(bare); ok && left != base {
+			continue
+		}
+		// The target's name is `base`: a bare key has no left half to take it
+		// from, and the enumeration is base-scoped, so the two were always equal
+		// in the cases the old split let through.
+		out = append(out, clearLLMFailureTarget{graphType: graphType, name: base, branch: bare})
 	}
 	return out, nil
 }

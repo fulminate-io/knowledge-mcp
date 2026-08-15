@@ -51,13 +51,18 @@ type Pipeline struct {
 	// collectors then ride the shared p.client and no flip detection runs.
 	resolver BackendResolver
 
-	// lastLoggedIn caches the login state observed at the previous flip check.
-	// A transition forces a full collector teardown + rebind so the
+	// lastLoggedIn and lastAccountID cache the BACKEND IDENTITY observed at the
+	// previous flip check: the login state and the selected Fulminate account.
+	// A transition in EITHER forces a full collector teardown + rebind so the
 	// per-collector dirty-gen caches reset and each collector re-binds the new
 	// backend. Guarded by collectorMu (only touched inside handleLoginFlip,
 	// whose callers are the exported CheckLoginFlip — driven per tool call by
 	// the client's activity hook — and nothing else).
+	//
+	// lastLoggedInSet gates the first-observation seeding for BOTH fields; a
+	// second flag could drift out of step with it.
 	lastLoggedIn    bool
+	lastAccountID   string
 	lastLoggedInSet bool
 
 	// backoff is the shared exponential-backoff gate for LLM calls. One
@@ -186,6 +191,15 @@ type Pipeline struct {
 	// Owned by the client (bootstrap) and shared, not copied, so an admission
 	// recorded on any interaction path is visible to the next catalog pass.
 	workingSet *workingset.Set
+
+	// localPresence narrows the admitted set to the graphs this MACHINE can
+	// actually serve — for code graphs, the ones whose repo is checked out here.
+	// Owned by the client (bootstrap) for the same reason collectGateFactory is:
+	// the answer comes from the machine-local repo manifest in the tools package,
+	// which this package must never import. nil is PERMISSIVE — see
+	// AttachLocalPresence, and note the direction is deliberately the opposite of
+	// workingSet's.
+	localPresence func(gt kgtypes.GraphType, name string) bool
 
 	// collectGateFactory builds the per-graph collect-gate predicate RegisterGraph
 	// injects into each collector as throttle #4 (runLoop). Built by BOOTSTRAP for

@@ -42,7 +42,7 @@ func (p *PropagationLoop) runPass(ctxProbe context.Context, forceFull bool) (Pro
 	// cap. Each tick drains the full corpus via runClusterDetection AND
 	// RunPropagationScoped, both calling fetchAdjacency("all"). The per-thought
 	// session-sibling traversal that once dominated this cost is GONE — session
-	// adjacency now comes from ONE bulk EdgeKGContains read regardless of N
+	// adjacency now comes from a bulk EdgeKGContains read
 	// (deriveSessionSiblings), so the per-tick wire cost is a handful of bulk reads
 	// plus the paged node browse, not a per-thought RPC fan-out. This OUTER budget
 	// brackets runClusterDetection (its own ctx below) AND RunPropagationScoped, so
@@ -149,8 +149,8 @@ func (p *PropagationLoop) runPass(ctxProbe context.Context, forceFull bool) (Pro
 
 	// LOUD ACCOUNTING (ticket mandate): report the scoped pass's actuals against
 	// the full-pass equivalent. The avoided cost is HONEST: (a) the retired 2N
-	// per-thought session-sibling traversal — now ONE bulk EdgeKGContains read
-	// regardless of N; (b) the skipped DeGroot/Leiden recompute over untouched
+	// per-thought session-sibling traversal — now a bulk EdgeKGContains read;
+	// (b) the skipped DeGroot/Leiden recompute over untouched
 	// components (carry-forward); (c) the O(N)→O(changed) writeback rows via
 	// diffMetadataUpdates. It is NOT a claim of avoided EDGE reads — the full edge
 	// read still runs every tick. full_pass_equivalent is what an unscoped pass

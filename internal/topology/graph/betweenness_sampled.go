@@ -352,7 +352,7 @@ func (a SampledBetweennessAnalyzer) runPerPackage(ctx context.Context, req found
 // runPerPackageOne computes exact betweenness for one package's
 // contained-node subgraph via NewGonumGraphUnweighted and returns the
 // per-node findings for that package. The contained-node set is read in
-// ONE bulk wire edge fetch over the package node, filtered to forward
+// a bulk wire edge fetch over the package node, filtered to forward
 // CONTAINS edges.
 func runPerPackageOne(ctx context.Context, req foundation.Request, pkg *knowledgev1.Node) ([]foundation.Finding, error) {
 	edges, err := foundation.FetchEdges(ctx, req.Caller, req.Graph, req.Name, []string{pkg.Id}, []kgtypes.EdgeType{kgtypes.EdgeContains})

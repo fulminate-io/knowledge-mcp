@@ -46,7 +46,7 @@ func resolveCrossTenantTrust(ctx context.Context, gc postpopulate.GraphCaller, g
 // EdgeAssumesRole edges, and returns EdgeTrusts for any assignment
 // whose principal_type is Guest or ForeignGroup.
 func resolveRBACGuestTrust(ctx context.Context, gc postpopulate.GraphCaller, graphName string) ([]knowledgev1.Edge, error) {
-	identities, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, managedIdentityQuery())
+	identities, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, managedIdentityQuery())
 	if err != nil {
 		return nil, err
 	}
@@ -75,7 +75,7 @@ func resolveRBACGuestTrust(ctx context.Context, gc postpopulate.GraphCaller, gra
 // outbound EdgeWorkloadIdentity edges. When the federated credential's
 // issuer is from a different tenant than the identity, emit EdgeTrusts.
 func resolveFederatedTenantTrust(ctx context.Context, gc postpopulate.GraphCaller, graphName string) ([]knowledgev1.Edge, error) {
-	identities, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, managedIdentityQuery())
+	identities, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, managedIdentityQuery())
 	if err != nil {
 		return nil, err
 	}
@@ -108,13 +108,13 @@ func resolveFederatedTenantTrust(ctx context.Context, gc postpopulate.GraphCalle
 	return edges, nil
 }
 
-// managedIdentityQuery is the BrowseNodes filter for Azure user-assigned
-// managed-identity cloud nodes.
+// managedIdentityQuery is the browse filter for Azure user-assigned
+// managed-identity cloud nodes. It carries no limit: its callers drain, and the
+// drain sets the per-page limit itself.
 func managedIdentityQuery() map[string]any {
 	return map[string]any{
-		"type":  string(kgtypes.NodeCloudResource),
-		"meta":  map[string]string{"resource_type": "Microsoft.ManagedIdentity/userAssignedIdentities"},
-		"limit": 0,
+		"type": string(kgtypes.NodeCloudResource),
+		"meta": map[string]string{"resource_type": "Microsoft.ManagedIdentity/userAssignedIdentities"},
 	}
 }
 

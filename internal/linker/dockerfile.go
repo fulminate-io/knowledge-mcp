@@ -196,14 +196,15 @@ func parseCopyDirectives(content string) []string {
 	return paths
 }
 
-// queryCodePackages returns NodePackage entries from a named code graph via
-// the Execute carrier seam (browseNodesViaEngine → nodes_json carrier).
+// queryCodePackages returns EVERY NodePackage entry in a named code graph via
+// the Execute carrier seam (drainNodesViaEngine → keyset pages → nodes_json
+// carrier). The caller derives edges from the complete package set, so this
+// drains rather than taking one bounded page.
 func queryCodePackages(ctx context.Context, gc GraphCaller, codeGraphName string) ([]*knowledgev1.Node, error) {
-	nodes, err := browseNodesViaEngine(ctx, gc, map[string]any{
+	nodes, err := drainNodesViaEngine(ctx, gc, map[string]any{
 		"graph": "code",
 		"repo":  codeGraphName,
 		"type":  string(kgtypes.NodePackage),
-		"limit": 0,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("query code packages (%s): %w", codeGraphName, err)

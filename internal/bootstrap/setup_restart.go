@@ -246,7 +246,7 @@ func startServerAndDaemon(outcome serviceOutcome) error {
 	if err != nil {
 		return err
 	}
-	if _, err := spawnDaemonProcess(graphStorage); err != nil {
+	if err := spawnDaemonProcess(graphStorage); err != nil {
 		return fmt.Errorf("knowledge setup: spawn daemon: %w", err)
 	}
 	return nil
@@ -264,21 +264,33 @@ func stopDaemonUnit() {
 
 // kickstartUnits restarts the loaded persistence units so the new
 // binaries take effect (the outcomeUnit branch — validated by the
-// real-box manual smoke).
+// real-box manual smoke). Server first, then daemon, unchanged.
 func kickstartUnits() error {
+	for _, u := range []struct{ label, unit string }{
+		{launchdServerLabel, systemdServerUnit},
+		{launchdDaemonLabel, systemdDaemonUnit},
+	} {
+		if err := kickstartUnit(u.label, u.unit); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// kickstartUnit restarts ONE loaded persistence unit, named per platform
+// (launchd label on darwin, systemd unit on linux). Extracted from
+// kickstartUnits so a caller that must cycle only the DAEMON — the account
+// switch, which has no business interrupting the single-tenant 15022 server —
+// can do so without cycling both.
+func kickstartUnit(label, unit string) error {
 	switch serviceGOOS {
 	case "darwin":
-		uid := os.Getuid()
-		for _, label := range []string{launchdServerLabel, launchdDaemonLabel} {
-			if err := runLaunchctl("kickstart", "-k", fmt.Sprintf("gui/%d/%s", uid, label)); err != nil {
-				return fmt.Errorf("launchctl kickstart %s: %w", label, err)
-			}
+		if err := runLaunchctl("kickstart", "-k", fmt.Sprintf("gui/%d/%s", os.Getuid(), label)); err != nil {
+			return fmt.Errorf("launchctl kickstart %s: %w", label, err)
 		}
 	case "linux":
-		for _, unit := range []string{systemdServerUnit, systemdDaemonUnit} {
-			if err := runSystemctlUser("restart", unit); err != nil {
-				return fmt.Errorf("systemctl --user restart %s: %w", unit, err)
-			}
+		if err := runSystemctlUser("restart", unit); err != nil {
+			return fmt.Errorf("systemctl --user restart %s: %w", unit, err)
 		}
 	}
 	return nil
@@ -288,22 +300,22 @@ func kickstartUnits() error {
 // serve daemon: a bare fork+exec with NO SysProcAttr (the kernel
 // reparents the child to launchd/systemd for free — see lifecycle.go's
 // no-Setsid caveat). Mirrors spawnServer's shape (log-file via
-// os.OpenFile, stdin=/dev/null, PID captured before Release). The argv
+// os.OpenFile, stdin=/dev/null, Release after start). The argv
 // matches the canonical brew service block invocation.
-func spawnDaemonProcess(graphStorage string) (int, error) {
+func spawnDaemonProcess(graphStorage string) error {
 	exe, err := getExecutable()
 	if err != nil {
-		return 0, fmt.Errorf("resolve client path for daemon: %w", err)
+		return fmt.Errorf("resolve client path for daemon: %w", err)
 	}
 	logPath := filepath.Join(expandTilde(graphStorage), "knowledge-daemon.log")
 	logF, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600) //nolint:gosec // logPath derived from ~/.knowledge
 	if err != nil {
-		return 0, fmt.Errorf("open daemon log %s: %w", logPath, err)
+		return fmt.Errorf("open daemon log %s: %w", logPath, err)
 	}
 	devNull, err := os.OpenFile(os.DevNull, os.O_RDONLY, 0)
 	if err != nil {
 		_ = logF.Close()
-		return 0, fmt.Errorf("open devnull: %w", err)
+		return fmt.Errorf("open devnull: %w", err)
 	}
 
 	argv := []string{
@@ -321,13 +333,12 @@ func spawnDaemonProcess(graphStorage string) (int, error) {
 	if err := cmd.Start(); err != nil {
 		_ = logF.Close()
 		_ = devNull.Close()
-		return 0, fmt.Errorf("start daemon %s: %w", exe, err)
+		return fmt.Errorf("start daemon %s: %w", exe, err)
 	}
 	_ = devNull.Close()
 
-	pid := cmd.Process.Pid
 	_ = cmd.Process.Release()
-	return pid, nil
+	return nil
 }
 
 // serviceGraphStorage returns ~/.knowledge — the daemon's graph storage

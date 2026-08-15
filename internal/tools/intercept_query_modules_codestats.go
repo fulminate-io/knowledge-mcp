@@ -11,6 +11,7 @@ import (
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/paging"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 )
@@ -129,7 +130,7 @@ func typeBrowsePage(nt kgtypes.NodeType, cursor *string, mode knowledgev1.Return
 	return &knowledgev1.QueryPlan{
 		Selection:  &knowledgev1.Selection{NodeType: string(nt)},
 		ReturnMode: mode,
-		Limit:      int32(engine.BrowsePageSize),
+		Limit:      int32(paging.BrowsePageSize),
 		AfterId:    cursor,
 		SkipTotal:  true, // the drain consumes only the payload, never Total
 	}
@@ -137,7 +138,7 @@ func typeBrowsePage(nt kgtypes.NodeType, cursor *string, mode knowledgev1.Return
 
 // drainNodesOfType drains every hydrated node of nt in bounded keyset pages.
 func drainNodesOfType(ctx context.Context, exec engine.ExecuteFn, target *knowledgev1.GraphSelector, nt kgtypes.NodeType) []*knowledgev1.Node {
-	nodes, err := engine.DrainKeysetPages(func(afterID string) ([]*knowledgev1.Node, error) {
+	nodes, err := paging.DrainKeysetPages(func(afterID string) ([]*knowledgev1.Node, error) {
 		cursor := afterID
 		resp, rerr := exec(ctx, &knowledgev1.ExecuteRequest{
 			Plan:   &knowledgev1.ExecuteRequest_Query{Query: typeBrowsePage(nt, &cursor, knowledgev1.ReturnMode_RETURN_MODE_UNSPECIFIED)},
@@ -147,7 +148,7 @@ func drainNodesOfType(ctx context.Context, exec engine.ExecuteFn, target *knowle
 			return nil, rerr
 		}
 		return engine.DecodeNodes(resp)
-	}, engine.BrowsePageSize)
+	}, paging.BrowsePageSize)
 	if err != nil {
 		return nil
 	}
@@ -156,7 +157,7 @@ func drainNodesOfType(ctx context.Context, exec engine.ExecuteFn, target *knowle
 
 // drainIDsOfType drains every node id of nt in bounded keyset pages.
 func drainIDsOfType(ctx context.Context, exec engine.ExecuteFn, target *knowledgev1.GraphSelector, nt kgtypes.NodeType) []string {
-	ids, err := engine.DrainKeysetIDs(func(afterID string) ([]string, error) {
+	ids, err := paging.DrainKeysetIDs(func(afterID string) ([]string, error) {
 		cursor := afterID
 		resp, rerr := exec(ctx, &knowledgev1.ExecuteRequest{
 			Plan:   &knowledgev1.ExecuteRequest_Query{Query: typeBrowsePage(nt, &cursor, knowledgev1.ReturnMode_RETURN_MODE_IDS)},
@@ -166,7 +167,7 @@ func drainIDsOfType(ctx context.Context, exec engine.ExecuteFn, target *knowledg
 			return nil, rerr
 		}
 		return resp.GetIds(), nil
-	}, engine.BrowsePageSize)
+	}, paging.BrowsePageSize)
 	if err != nil {
 		return nil
 	}

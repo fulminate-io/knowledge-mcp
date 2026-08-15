@@ -33,9 +33,8 @@ func resolveIAMBindingGroups(ctx context.Context, gc postpopulate.GraphCaller, g
 	visited := make(map[string]bool) // dedup by "fromID:groupNodeID"
 
 	// Scan all cloud resource nodes for outgoing GRANTS edges to group: targets.
-	nodes, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
-		"type":  string(kgtypes.NodeCloudResource),
-		"limit": 0,
+	nodes, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
+		"type": string(kgtypes.NodeCloudResource),
 	})
 	if err != nil {
 		return err
@@ -67,10 +66,9 @@ func resolveIAMBindingGroups(ctx context.Context, gc postpopulate.GraphCaller, g
 // buildGroupIndex queries all Cloud Identity group nodes and returns an
 // email→nodeID map for lookups.
 func buildGroupIndex(ctx context.Context, gc postpopulate.GraphCaller, graphName string) map[string]string {
-	groups, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
-		"type":  string(kgtypes.NodeCloudResource),
-		"meta":  map[string]string{"resource_type": "gcp:cloudidentity:group"},
-		"limit": 0,
+	groups, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
+		"type": string(kgtypes.NodeCloudResource),
+		"meta": map[string]string{"resource_type": "gcp:cloudidentity:group"},
 	})
 	if err != nil || len(groups) == 0 {
 		return nil

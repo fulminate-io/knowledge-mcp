@@ -29,7 +29,7 @@ package cloud
 //
 // DATA ACCESS — one foundation.FetchNodesByType(NodeCloudResource) browse
 // supplies the candidate ServiceAccounts and the node-ID → name map used to
-// label findings; one bulk foundation.FetchEdges over the cloud node set
+// label findings; a bulk foundation.FetchEdges over the cloud node set
 // (filtered to the forward edge types) supplies the adjacency the BFS walks
 // in-memory. No per-node edge or by-id fetch.
 
@@ -122,7 +122,7 @@ func (a CrossProviderBlastAnalyzer) Run(ctx context.Context, req foundation.Requ
 }
 
 // buildCrossProviderIndex fetches every forward edge incident to the cloud
-// node set in ONE bulk read and returns the forward adjacency plus the
+// node set in a bulk paged read and returns the forward adjacency plus the
 // node-ID → display-name map used to label findings.
 func buildCrossProviderIndex(
 	ctx context.Context,

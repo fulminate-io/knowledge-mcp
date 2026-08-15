@@ -43,10 +43,9 @@ func (m fwRuleMetadata) encode() string {
 // resolveFirewallRules queries all GCP firewall and instance nodes, builds an
 // instance index, and emits instance-to-instance and instance-to-CIDR edges.
 func resolveFirewallRules(ctx context.Context, gc postpopulate.GraphCaller, graphName string) error {
-	firewalls, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
-		"type":  string(kgtypes.NodeCloudResource),
-		"meta":  map[string]string{"resource_type": "gcp:compute:firewall"},
-		"limit": 0,
+	firewalls, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
+		"type": string(kgtypes.NodeCloudResource),
+		"meta": map[string]string{"resource_type": "gcp:compute:firewall"},
 	})
 	if err != nil {
 		return fmt.Errorf("gcp firewall: query firewalls: %w", err)
@@ -55,10 +54,9 @@ func resolveFirewallRules(ctx context.Context, gc postpopulate.GraphCaller, grap
 		return nil
 	}
 
-	instances, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
-		"type":  string(kgtypes.NodeCloudResource),
-		"meta":  map[string]string{"resource_type": "gcp:compute:instance"},
-		"limit": 0,
+	instances, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
+		"type": string(kgtypes.NodeCloudResource),
+		"meta": map[string]string{"resource_type": "gcp:compute:instance"},
 	})
 	if err != nil {
 		return fmt.Errorf("gcp firewall: query instances: %w", err)

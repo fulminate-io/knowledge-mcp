@@ -7,9 +7,11 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/auth"
+	"github.com/fulminate-io/knowledge-mcp/internal/config"
 )
 
 // ExitNoValidSession is the exit code `knowledge auth-status` returns when it
@@ -41,8 +43,9 @@ Usage:
   knowledge auth-status
 
 Reads the session published by whichever process owns the login and reports
-whether it is currently usable. Makes no network call, writes nothing, and
-prints no token material. Works unchanged under
+whether it is currently usable, and names the Fulminate account this machine
+routes cloud calls to (read from ~/.knowledge/config). Makes no network call,
+writes nothing, and prints no token material. Works unchanged under
 KNOWLEDGE_CREDENTIAL_STORE_READONLY, because it only ever reads.
 
 This answers "am I logged in?" without side effects. It does NOT verify the
@@ -96,10 +99,39 @@ func AuthStatusCmd(args []string) error {
 	// failure to re-read it here costs only the detail, never the verdict.
 	if expiry, readErr := store.Get(ctx, auth.KeyAccessTokenExpiry); readErr == nil {
 		fmt.Fprintf(os.Stdout, "Logged in — session valid until %s.\n", expiry)
+		printSelectedAccount(os.Stdout)
 		return nil
 	}
 	fmt.Fprintln(os.Stdout, "Logged in — session valid.")
+	printSelectedAccount(os.Stdout)
 	return nil
+}
+
+// printSelectedAccount reports the Fulminate account this machine routes cloud
+// calls to, read STRAIGHT FROM THE CONFIG FILE.
+//
+// It deliberately does NOT go through auth.SelectedAccount(): that singleton
+// carries a TTL cache and a rejection marker — process state — while
+// auth-status reports what is STORED, exactly as it promises about the session.
+//
+// A read failure is not a verdict: it prints a note and returns, leaving the
+// caller's error (and therefore the exit code) untouched.
+func printSelectedAccount(out io.Writer) {
+	path, pathErr := config.DefaultPath()
+	if pathErr != nil {
+		fmt.Fprintln(out, "Account: (could not read ~/.knowledge/config)")
+		return
+	}
+	acct, readErr := config.ReadSelectedAccountID(path)
+	if readErr != nil {
+		fmt.Fprintln(out, "Account: (could not read ~/.knowledge/config)")
+		return
+	}
+	if acct == "" {
+		fmt.Fprintln(out, "Account: (none selected — your primary account)")
+		return
+	}
+	fmt.Fprintf(out, "Account: %s\n", acct)
 }
 
 // noUsableSession turns a read-only source failure into the one-line reason a

@@ -16,7 +16,7 @@ import (
 // adjacency map — the reduction of thoughts(adjacency) off the raw
 // gc.Call onto the generic Execute seam. It reproduces the server's
 // handleAdjacency (a PURE topology.BuildAdjacency read) using a single bulk
-// RETURN_MODE_EDGES read over the node set + (scope="all") ONE bulk
+// RETURN_MODE_EDGES read over the node set + (scope="all") a bulk
 // EdgeKGContains read + client-side group-by-session sibling derivation,
 // replacing both the N per-node neighbor walks the server ran internally AND the
 // former per-thought session-sibling traversal.
@@ -33,7 +33,7 @@ func FetchThoughtAdjacency(ctx context.Context, gc Caller, src CorpusSource) ([]
 // FetchAdjacency is the exported wrapper that thoughts(adjacency) drives:
 // it forwards the op's variable scope ("all" or "all_types") and optional
 // thought_ids subset projection straight to fetchAdjacency, which validates
-// the scope, does the ONE bulk edges read, runs session-sibling expansion for
+// the scope, does the bulk edges read, runs session-sibling expansion for
 // scope="all", and projects the subset. Kept distinct from FetchThoughtAdjacency
 // (which hardcodes scope="all", subset=nil for the blind-spots fixed-shape call)
 // so the op's variable shape and the reflection call stay un-conflated.
@@ -75,9 +75,9 @@ const sessionCliqueCap = 50
 
 // fetchAdjacency composes the whole-graph adjacency map CLIENT-SIDE, reproducing
 // the server's handleAdjacency (a PURE topology.BuildAdjacency read — zero
-// valence/propagation compute) over the generic Execute seam. One bulk
+// valence/propagation compute) over the generic Execute seam. A bulk
 // RETURN_MODE_EDGES read over the node set replaces the N per-node neighbor
-// walks; scope="all" adds the session-sibling expansion via ONE further bulk
+// walks; scope="all" adds the session-sibling expansion via a further bulk
 // EdgeKGContains read + client-side group-by-session (deriveSessionSiblings) —
 // NO per-thought traversal.
 //
@@ -138,7 +138,7 @@ func fetchAdjacencyAllUncached(ctx context.Context, gc Caller, src CorpusSource)
 }
 
 // fetchAdjacencyUncached is the adjacency composition itself — the node-id fetch,
-// the ONE bulk edges read, and (scope="all") the session-sibling union. It is the
+// the bulk edges read, and (scope="all") the session-sibling union. It is the
 // SINGLE implementation both the memo path and the uncached path take, so a memoized
 // pass and an unmemoized one compose adjacency identically. The caller owns the
 // subset projection.
@@ -152,7 +152,7 @@ func fetchAdjacencyUncached(ctx context.Context, gc Caller, scope string, src Co
 		idSet[id] = true
 	}
 
-	// ONE bulk edges read over the whole node set (the N+1-avoidance). scope="all"
+	// Bulk edges read over the whole node set (the N+1-avoidance). scope="all"
 	// filters to the 5 thought-cluster edge types; scope="all_types" reads all.
 	var edgeFilter []kgtypes.EdgeType
 	if scope == "all" {
@@ -165,7 +165,7 @@ func fetchAdjacencyUncached(ctx context.Context, gc Caller, scope string, src Co
 
 	adj := buildAdjacencyFromEdges(edges, idSet)
 
-	// scope="all": session-sibling expansion via ONE bulk EdgeKGContains read +
+	// scope="all": session-sibling expansion via a bulk EdgeKGContains read +
 	// pure client-side group-by-session (deriveSessionSiblings), regardless of
 	// thought count — replacing the per-thought 2N traversal that was the dominant
 	// reflection cost. scope="all_types" runs NO expansion.
@@ -279,11 +279,11 @@ func buildAdjacencyFromEdges(edges []knowledgev1.Edge, idSet map[string]bool) ma
 
 // deriveSessionSiblings reproduces the server thoughtAdjacencySessionSiblings
 // SiblingExpander's contract (walk EdgeKGContains "in" to the enclosing session,
-// then "out" to every co-member) for the WHOLE thought set from ONE bulk
+// then "out" to every co-member) for the WHOLE thought set from a bulk
 // EdgeKGContains read + pure client-side group-by — replacing the former
-// per-thought 2-traversal-per-thought session walk with a single node-SET
-// RETURN_MODE_EDGES read regardless of N. Returns nodeID → session-sibling
-// neighbors (to be unioned into the adjacency).
+// per-thought 2-traversal-per-thought session walk with one node-SET
+// RETURN_MODE_EDGES read, drained in bounded pivot pages. Returns nodeID →
+// session-sibling neighbors (to be unioned into the adjacency).
 //
 // EdgeKGContains is session(From)→thought(To). fetchEdgesForNodeSet's Forward=nil
 // returns BOTH directions, so a session→thought edge surfaces even though the
@@ -296,7 +296,7 @@ func buildAdjacencyFromEdges(edges []knowledgev1.Edge, idSet map[string]bool) ma
 // edge, so the idSet[e.ToId] filter drops any non-thought member — a
 // thought_session contains only thoughts, but the filter is robust regardless.
 //
-// src routes the read through memoKGContainsEdges, so the ONE bulk read this
+// src routes the read through memoKGContainsEdges, so the bulk read this
 // derivation issues is shared with FetchSessionLabelsByThought — the other consumer
 // of the same edge set — instead of each paying for its own. A nil/non-memo src
 // reads the wire exactly as before. A FAILED read still yields an empty sibling map

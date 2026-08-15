@@ -124,10 +124,9 @@ func buildAWSELBDNSIndex(ctx context.Context, gc postpopulate.GraphCaller) (map[
 // Retrieve without WithCreate intentionally: we only want already-present
 // graphs, never to materialize a fresh empty graph as a side effect.
 func queryCloudGraphByResourceType(ctx context.Context, gc postpopulate.GraphCaller, graphName, resourceType string) ([]*knowledgev1.Node, error) {
-	return postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
-		"type":  string(kgtypes.NodeCloudResource),
-		"meta":  map[string]string{"resource_type": resourceType},
-		"limit": 0,
+	return postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
+		"type": string(kgtypes.NodeCloudResource),
+		"meta": map[string]string{"resource_type": resourceType},
 	})
 }
 

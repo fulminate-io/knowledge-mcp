@@ -33,10 +33,9 @@ func resolveAzureImageLineage(ctx context.Context, gc postpopulate.GraphCaller, 
 
 	// Query App Service and Function App nodes.
 	for _, rt := range []string{"Microsoft.Web/sites", "Microsoft.Web/sites/functionapp"} {
-		sites, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
-			"type":  string(kgtypes.NodeCloudResource),
-			"meta":  map[string]string{"resource_type": rt},
-			"limit": 0,
+		sites, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
+			"type": string(kgtypes.NodeCloudResource),
+			"meta": map[string]string{"resource_type": rt},
 		})
 		if err != nil {
 			return fmt.Errorf("azure image lineage: query %s: %w", rt, err)
@@ -79,10 +78,9 @@ func resolveAzureImageLineage(ctx context.Context, gc postpopulate.GraphCaller, 
 // buildACRIndex queries ACR registry nodes and builds a map from login server
 // hostname (e.g. "myregistry.azurecr.io") to node ID.
 func buildACRIndex(ctx context.Context, gc postpopulate.GraphCaller, graphName string) (map[string]string, error) {
-	registries, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
-		"type":  string(kgtypes.NodeCloudResource),
-		"meta":  map[string]string{"resource_type": "Microsoft.ContainerRegistry/registries"},
-		"limit": 0,
+	registries, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
+		"type": string(kgtypes.NodeCloudResource),
+		"meta": map[string]string{"resource_type": "Microsoft.ContainerRegistry/registries"},
 	})
 	if err != nil {
 		return nil, err

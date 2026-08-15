@@ -32,6 +32,21 @@ type SegmentSearcher interface {
 	Search(ctx context.Context, gt kgtypes.GraphType, name, queryText string, queryVec []byte, k int) ([]searchengine.Hit, error)
 }
 
+// SegmentOverlaySearcher is the narrow consumer-side seam the BRANCH code search
+// uses to query a base graph and its branch-overlay graph as ONE corpus.
+// *segmentdist.Manager satisfies it (Manager.SearchOverlay). Kept SEPARATE from
+// SegmentSearcher for the same reason SegmentVectorResolver is — folding a second
+// method in would break every Search-only test double — and because the two seams
+// answer different questions: one pool, or a base plus its overlay.
+//
+// It exists as its own arm rather than as two SegmentSearcher calls merged by the
+// caller because the two pools can only be ranked against each other BEFORE
+// fusion, where raw engine scores still carry magnitude. A caller holding two
+// already-fused hit lists has nothing comparable left to order them by.
+type SegmentOverlaySearcher interface {
+	SearchOverlay(ctx context.Context, gt kgtypes.GraphType, base, overlay, queryText string, queryVec []byte, k int) ([]searchengine.Hit, error)
+}
+
 // SegmentVectorResolver is the narrow consumer-side seam the mode:"similar" search
 // claim uses to resolve a node's STORED query vector from the client-local HNSW
 // segments by external id. *segmentdist.Manager satisfies it (Manager.VectorByID).

@@ -3,9 +3,15 @@
 // repo_manifest.go — a MACHINE-LOCAL repo-name → on-disk-path registry, stored
 // at ~/.knowledge/repos.json (alongside the daemon's pid + logs). Populated at
 // code-collect time (repo name → the absolute path it was collected from on
-// THIS machine) and read by the three name→dir consumers: ast's cross-repo walk
+// THIS machine) and read by the four name→dir consumers: ast's cross-repo walk
 // root (resolveRepoDir), the code-search staleness footer (correct-dir +
-// branch-aware), and the search/query/traverse branch auto-detect.
+// branch-aware), the search/query/traverse branch auto-detect, and
+// LocalCodeRepoPresent, which answers whether this machine holds the checkout at
+// all so background work can be scoped to code graphs it can actually serve.
+//
+// The manifest SELF-HEALS on write: entries whose recorded directory has
+// vanished are dropped when Record rewrites the file, so it never grows
+// monotonically past the checkouts this machine still holds.
 //
 // LOAD-BEARING INVARIANT: this file is NEVER persisted to the cloud / shared
 // graph / any synced store. The path is machine-specific — handing another
@@ -20,9 +26,13 @@ package tools
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
+	"io/fs"
+	"log/slog"
 	"os"
 	"path/filepath"
+	"slices"
 	"sync"
 )
 
@@ -37,7 +47,8 @@ type repoManifest struct {
 	path string
 }
 
-// defaultRepoManifest is the process-wide manifest the four consumers reach.
+// defaultRepoManifest is the process-wide manifest the name→dir consumers and
+// the collect-time writer reach.
 // It points at ~/.knowledge/repos.json. nil only when the home dir can't be
 // resolved at init (an effectively impossible environment) — the lookupRepoDir
 // / recordRepoDir package helpers below tolerate a nil instance by degrading to
@@ -82,6 +93,10 @@ func (m *repoManifest) Lookup(repoName string) (string, bool) {
 // A read failure on the existing file is treated as an empty map (the single
 // upsert is preserved) rather than refusing the write — a malformed manifest
 // self-heals on the next collect.
+//
+// The rewrite also PRUNES entries whose recorded directory has vanished (see
+// pruneVanishedLocked), which is why the already-current short-circuit below
+// fires only when there is additionally nothing to drop.
 func (m *repoManifest) Record(repoName, absPath string) error {
 	if m == nil {
 		return fmt.Errorf("repo manifest: home dir unresolved; cannot record %q", repoName)
@@ -97,11 +112,51 @@ func (m *repoManifest) Record(repoName, absPath string) error {
 		// than blocking the record. The just-collected mapping is what matters.
 		entries = map[string]string{}
 	}
-	if entries[repoName] == absPath {
-		return nil // already current — skip the rewrite.
+	dropped := pruneVanishedLocked(entries, repoName)
+	if entries[repoName] == absPath && len(dropped) == 0 {
+		return nil // already current and nothing vanished — skip the rewrite.
 	}
 	entries[repoName] = absPath
-	return m.writeAtomicLocked(entries)
+	if err := m.writeAtomicLocked(entries); err != nil {
+		return err
+	}
+	if len(dropped) > 0 {
+		slog.Info("repo manifest: dropped entries whose recorded directory no longer exists",
+			"repos", dropped, "count", len(dropped))
+	}
+	return nil
+}
+
+// pruneVanishedLocked deletes every entry except keep whose recorded directory
+// is DEFINITIVELY gone, returning the dropped names sorted. Removing an entry is
+// acceptable ONLY because a later collect re-records the repo — the manifest is a
+// cache of where each repo was collected from, never the record of its existence.
+// A stat error that is not fs.ErrNotExist (permission denied, an IO error, an
+// unreadable parent) KEEPS the entry: the conservative direction on a deletion
+// path is the opposite of LocalCodeRepoPresent's, which degrades to absent so
+// background work does less.
+//
+// Callers hold m.mu, so these stats run under the lock every Lookup also takes.
+// That is sound ONLY because the recorded paths are LOCAL CHECKOUTS on this
+// machine — see the file header's machine-local invariant. A recorded path on a
+// mounted-but-unresponsive network filesystem would block the whole manifest
+// rather than one caller; an unmounted or deleted path returns ENOENT promptly
+// and is exactly what this prunes.
+func pruneVanishedLocked(entries map[string]string, keep string) []string {
+	var dropped []string
+	for name, dir := range entries {
+		if name == keep {
+			continue
+		}
+		if _, err := os.Stat(dir); err != nil && errors.Is(err, fs.ErrNotExist) {
+			dropped = append(dropped, name)
+		}
+	}
+	for _, name := range dropped {
+		delete(entries, name)
+	}
+	slices.Sort(dropped)
+	return dropped
 }
 
 // readLocked loads and decodes the manifest map. A missing file is NOT an error
@@ -169,4 +224,25 @@ func lookupRepoDir(repoName string) (string, bool) {
 // best-effort caller logs and swallows.
 func recordRepoDir(repoName, absPath string) error {
 	return defaultRepoManifest.Record(repoName, absPath)
+}
+
+// LocalCodeRepoPresent reports whether this machine actually holds the checkout
+// for a code graph named repo. Both halves are required: the manifest must name
+// the repo AND the recorded directory must still exist, so a checkout deleted
+// after it was collected reads as absent.
+//
+// It degrades to ABSENT on any stat error, matching Lookup's degrade-to-unknown
+// posture. The conservative direction here is to do LESS background work, never
+// more: a false negative costs some enrichment that a later collect restores,
+// while a false positive is the failure this predicate exists to prevent.
+func LocalCodeRepoPresent(repo string) bool {
+	dir, ok := lookupRepoDir(repo)
+	if !ok {
+		return false
+	}
+	fi, err := os.Stat(dir)
+	if err != nil {
+		return false
+	}
+	return fi.IsDir()
 }

@@ -43,9 +43,9 @@ const (
 // through. It pins a foundation.GraphCaller plus the cloud-graph instance name
 // (account) so the ported algorithms can issue the same "edges out of this
 // node" / "node by id" / "every cloud resource" reads they used to issue
-// against a store-scoped DB, now as single Execute round-trips. One legacy
-// scoped.IterEdges / scoped.Query call maps to exactly one wire read here — no
-// new N+1 fan-out is introduced.
+// against a store-scoped DB, now over the wire. One legacy scoped.IterEdges /
+// scoped.Query call maps to one bounded wire read here (the edge read pages
+// internally) — no new N+1 fan-out is introduced.
 //
 // A cloudReader is cheap to construct (it holds two references) so analyzers
 // build a fresh one per account; the cross-account IAM walk builds one per

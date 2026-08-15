@@ -114,6 +114,13 @@ func (p *Pipeline) RefreshOnceForBoot(ctx context.Context) {
 // A nil working set yields NOTHING, which is the default-deny direction: an
 // unwired pipeline drains nothing rather than everything.
 //
+// Membership is then narrowed by local presence: an admitted graph this machine
+// cannot serve — a code graph whose repo is not checked out here — gets no
+// collector, and registration is the resource, so it gets no goroutine pair, no
+// gen-poll entry, no scan and no writeback either. A nil presence predicate
+// narrows nothing (see AttachLocalPresence), which is why it is safe for a
+// fixture to leave it unwired.
+//
 // Registered CUSTOM graph types need no discovery step here. A custom-type
 // member arrives already carrying its own GraphType — recorded by whichever
 // interaction admitted it — so the type is known from the member itself rather
@@ -124,6 +131,9 @@ func (p *Pipeline) wantedGraphs() []GraphRef {
 	for _, m := range members {
 		if !pipelineDrainsType(m.GraphType) {
 			continue
+		}
+		if p.localPresence != nil && !p.localPresence(m.GraphType, m.Name) {
+			continue // this machine cannot serve it — e.g. a code graph with no checkout here.
 		}
 		out = append(out, GraphRef{GraphType: m.GraphType, GraphName: m.Name})
 	}
@@ -185,7 +195,8 @@ func (p *Pipeline) refreshOnce(ctx context.Context) {
 	}
 }
 
-// CheckLoginFlip detects a login-state transition and, on a flip, rebinds
+// CheckLoginFlip detects a backend-identity transition — the login state or the
+// selected Fulminate account — and, on a flip, rebinds
 // everything the OLD backend's identity was baked into. Returns true when it flipped.
 //
 // Beyond handleLoginFlip's per-collector teardown it also clears the CENTRAL
@@ -215,36 +226,45 @@ func (p *Pipeline) CheckLoginFlip(ctx context.Context) bool {
 	return true
 }
 
-// handleLoginFlip detects a login-state transition since the previous observation
-// and, on a flip, cancels + clears every collector so the NEXT catalog diff
+// handleLoginFlip detects a BACKEND IDENTITY transition since the previous
+// observation — the login state OR the selected Fulminate account — and, on a
+// flip, cancels + clears every collector so the NEXT catalog diff
 // re-registers each wanted graph fresh (reset dirty-gen cache + rebind backend —
 // Hazard B). Reached only through CheckLoginFlip, which the client's per-tool-call
 // activity hook drives; the catalog poll no longer calls it.
 // Returns true only on an actual transition: false for the nil-resolver case (test
 // fakes), for the first observation (which only seeds the state), and when the
-// state is unchanged. Reuses the cancel-all shape from stopSequence step 1.
+// identity is unchanged. Reuses the cancel-all shape from stopSequence step 1.
+//
+// An account switch is cloud->cloud, so it never moves the login boolean —
+// serving the previous account's collectors after one is a correctness bug,
+// not a staleness annoyance, which is why both halves are compared here.
 func (p *Pipeline) handleLoginFlip(ctx context.Context) bool {
 	if p.resolver == nil {
 		return false
 	}
 	now := p.resolver.LoggedIn(ctx)
+	account := p.resolver.SelectedAccountID(ctx)
 	p.collectorMu.Lock()
 	defer p.collectorMu.Unlock()
 	if !p.lastLoggedInSet {
 		p.lastLoggedIn = now
+		p.lastAccountID = account
 		p.lastLoggedInSet = true
 		return false
 	}
-	if now == p.lastLoggedIn {
+	if now == p.lastLoggedIn && account == p.lastAccountID {
 		return false
 	}
-	slog.Info("pipeline.refresh: login state flipped — tearing down all collectors to rebind backend + reset gen caches",
-		"logged_in", now)
+	slog.Info("pipeline.refresh: backend identity flipped — tearing down all collectors to rebind backend + reset gen caches",
+		"logged_in", now,
+		"account_id", account)
 	for _, cancel := range p.collectorCancels {
 		cancel()
 	}
 	p.collectorCancels = make(map[graphKey]context.CancelFunc)
 	p.collectorWakes = make(map[graphKey][]chan struct{})
 	p.lastLoggedIn = now
+	p.lastAccountID = account
 	return true
 }

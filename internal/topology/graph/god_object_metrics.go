@@ -15,7 +15,7 @@ import (
 // computers used by GodObjectAnalyzer plus the bulk-edge fetch that feeds
 // them. The prior store-backed implementation issued a per-candidate
 // IterEdges fan-out (one query per candidate per metric); this version
-// fetches the candidate set's edges in ONE bulk wire read and the contained
+// fetches the candidate set's edges in a bulk wire read and the contained
 // methods' callee edges in a SECOND bulk read, then groups the edges per
 // node in memory. The CK metric definitions are byte-for-byte unchanged —
 // only the data-access layer collapses from N+1 to two bulk reads.

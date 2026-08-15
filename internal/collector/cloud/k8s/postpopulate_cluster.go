@@ -55,9 +55,8 @@ func resolveClusterLinkage(ctx context.Context, gc postpopulate.GraphCaller, gra
 		return err
 	}
 
-	resources, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
-		"type":  string(kgtypes.NodeCloudResource),
-		"limit": 0,
+	resources, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
+		"type": string(kgtypes.NodeCloudResource),
 	})
 	if err != nil {
 		return err

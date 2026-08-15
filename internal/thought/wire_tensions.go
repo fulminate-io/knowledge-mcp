@@ -94,7 +94,7 @@ var tensionClaimTypes = map[kgtypes.NodeType]bool{
 // Three reads on the cold path, ONE on the warm path:
 //  1. the charge set — resident from the corpus cache when the source is warm
 //     (ZERO wire calls), else a single type=charge drain;
-//  2. ONE bulk EdgeChargedBy read over the charge ids (parent=From, charge=To);
+//  2. a bulk EdgeChargedBy read over the charge ids (parent=From, charge=To);
 //  3. ONE hydrate of the charge parents, narrowed to tensionClaimTypes — served
 //     through memoCorpusNodes, so parents the resident cache already holds cost
 //     nothing and only the RESIDUAL reaches the wire. That residual leg is
@@ -216,7 +216,8 @@ func fetchTensionChargeSet(ctx context.Context, gc Caller, src CorpusSource) ([]
 //
 // Cost is the cheap half of fetchAdjacency("all"): the charged-universe build
 // (fetchTensionUniverseNodes — resident charges on a warm pass, so no browse at all)
-// + one bulk RETURN_MODE_EDGES read filtered to tensionEdgeTypes
+// + a bulk RETURN_MODE_EDGES read filtered to tensionEdgeTypes, drained in
+// bounded pivot pages
 // (fetchEdgesForNodeSet) + a pure client-side O(edges) machine filter. It
 // deliberately SKIPS the session-sibling expansion (the extra EdgeKGContains read +
 // group-by) that dominates fetchAdjacency("all"). The universe is LOCAL to this

@@ -140,11 +140,16 @@ func (g *parityCaller) Execute(_ context.Context, req *knowledgev1.ExecuteReques
 		return g.answerTraversal(q), nil
 	}
 	if q.GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_EDGES {
-		// node-SET form (Ids[]) → union of each pivot's OUTGOING edges
-		// filtered by Selection.EdgeTypes (the depends-on batch). The
-		// per-node ById form keeps the legacy union for any direct caller.
+		// node-SET form (Ids[]) → union of each pivot's edges filtered by
+		// Selection.EdgeTypes. Forward=true selects OUTGOING only (the
+		// depends-on batch); an UNSET Forward is the both-direction union the
+		// server's node-SET carrier returns, which is what a paged pivot drain
+		// over a single node sends. The per-node ById form keeps the legacy
+		// union for any direct caller.
 		if ids := q.GetIds(); len(ids) > 0 {
-			return &knowledgev1.ExecuteResponse{Edges: g.nodeSetEdges(ids, q.GetSelection().GetEdgeTypes())}, nil
+			return &knowledgev1.ExecuteResponse{
+				Edges: g.nodeSetEdges(ids, q.GetSelection().GetEdgeTypes(), q.GetForward()),
+			}, nil
 		}
 		var out []*knowledgev1.Edge
 		for i := range g.f.edges {
@@ -232,7 +237,7 @@ func (g *parityCaller) answerTraversal(q *knowledgev1.QueryPlan) *knowledgev1.Ex
 
 // nodeSetEdges unions each pivot's OUTGOING edges (Forward=&true semantics)
 // filtered to the requested edge types.
-func (g *parityCaller) nodeSetEdges(ids []string, edgeTypes []string) []*knowledgev1.Edge {
+func (g *parityCaller) nodeSetEdges(ids, edgeTypes []string, outgoingOnly bool) []*knowledgev1.Edge {
 	want := map[string]bool{}
 	for _, et := range edgeTypes {
 		want[et] = true
@@ -244,8 +249,9 @@ func (g *parityCaller) nodeSetEdges(ids []string, edgeTypes []string) []*knowled
 	var out []*knowledgev1.Edge
 	for i := range g.f.edges {
 		e := g.f.edges[i]
-		if !pivots[e.FromId] {
-			continue // outgoing-only
+		incident := pivots[e.FromId] || (!outgoingOnly && pivots[e.ToId])
+		if !incident {
+			continue
 		}
 		if len(want) > 0 && !want[e.Type] {
 			continue

@@ -66,9 +66,8 @@ func resolveOIDCFederation(ctx context.Context, gc postpopulate.GraphCaller, gra
 func scanCloudGraph(
 	ctx context.Context, gc postpopulate.GraphCaller, cloudName, oidcID, issuer string,
 ) ([]knowledgev1.Edge, error) {
-	resources, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, cloudName, map[string]any{
-		"type":  string(kgtypes.NodeCloudResource),
-		"limit": 0,
+	resources, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, cloudName, map[string]any{
+		"type": string(kgtypes.NodeCloudResource),
 	})
 	if err != nil {
 		return nil, err

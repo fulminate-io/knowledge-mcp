@@ -11,11 +11,17 @@ func scalaQueries() *QuerySet {
 			(object_definition name: (identifier) @name) @decl
 			(val_definition pattern: (identifier) @name) @decl
 		]`,
+		// The field_expression is captured WHOLE rather than reaching past it to
+		// its field: the wrapper's own text IS the qualified callee
+		// (`obj.doThing`, `a.b.c`), and capturing the field alone discarded the
+		// qualifier.
 		Calls: `(call_expression function: [
 			(identifier) @callee
-			(field_expression field: (identifier) @callee)
+			(field_expression) @callee
 		])`,
-		Imports:  `(import_declaration) @import`,
+		// The arrow_renamed_identifier inside namespace_selectors is what
+		// carries `import a.{D => F}`'s local name. One capture per statement.
+		Imports:  `(import_declaration (namespace_selectors (arrow_renamed_identifier)?)?) @import`,
 		TypeRefs: `(type_identifier) @typeref`,
 		// TestBlocks: ScalaTest, MUnit, Specs2.
 		//

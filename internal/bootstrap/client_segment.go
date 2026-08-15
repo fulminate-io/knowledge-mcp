@@ -5,7 +5,6 @@ package bootstrap
 import (
 	"context"
 	"log/slog"
-	"path/filepath"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 
@@ -17,14 +16,18 @@ import (
 )
 
 // segmentCacheDirFor is the L2 disk-cache root for client-built/pulled HNSW
-// segment blobs: filepath.Join(root, "segments"), where root is the already
-// tilde-expanded --graph-storage data root the daemon was started with. This is
+// segment blobs, rooted at <root>/segments — where root is the already
+// tilde-expanded --graph-storage data root the daemon was started with. That is
 // the SAME expression the server resolves its own segment store under
 // (filepath.Join(<graph-storage>, "segments")), so client L2 and server store
 // co-locate over a shared root — the successor to the retired HOME-fixed
 // segmentCacheDir() that unconditionally returned <home>/.knowledge/segments.
+//
+// When a Fulminate account is selected the root is PARTITIONED BY ACCOUNT
+// (accountSegmentRoot), so two accounts' blobs for the same graph name can
+// never occupy the same directory. With no selection the path is unchanged.
 func segmentCacheDirFor(root string) string {
-	return filepath.Join(root, "segments")
+	return accountSegmentRoot(root, selectedAccountForSegments())
 }
 
 // ensureSegmentManager constructs the client-side segment Manager

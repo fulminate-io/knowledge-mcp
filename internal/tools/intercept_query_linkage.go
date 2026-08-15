@@ -12,6 +12,7 @@ import (
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/paging"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 )
@@ -104,12 +105,12 @@ func linkageStatsClient(ctx context.Context, gc statsRPC, format string) kgtools
 // The nodes stay HYDRATED because the breakdown reads their foreign_graph
 // metadata, which no ids carrier serves; the paging is what bounds the read.
 func renderLinkageProxyBreakdown(ctx context.Context, gc statsRPC) string {
-	proxies, err := engine.DrainKeysetPages(func(afterID string) ([]*knowledgev1.Node, error) {
+	proxies, err := paging.DrainKeysetPages(func(afterID string) ([]*knowledgev1.Node, error) {
 		cursor := afterID
 		resp, rerr := gc.Execute(ctx, &knowledgev1.ExecuteRequest{
 			Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
 				Selection: &knowledgev1.Selection{NodeType: string(kgtypes.NodeProxy)},
-				Limit:     int32(engine.BrowsePageSize),
+				Limit:     int32(paging.BrowsePageSize),
 				// SET on every page including the first, where the value is empty:
 				// presence is what selects the keyset browse.
 				AfterId:   &cursor,
@@ -121,7 +122,7 @@ func renderLinkageProxyBreakdown(ctx context.Context, gc statsRPC) string {
 			return nil, rerr
 		}
 		return engine.DecodeNodes(resp)
-	}, engine.BrowsePageSize)
+	}, paging.BrowsePageSize)
 	if err != nil || len(proxies) == 0 {
 		return ""
 	}

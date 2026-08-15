@@ -80,7 +80,7 @@ const sampleNeighborsCap = 5
 // When direction is "both", the result interleaves in- and out-neighbors up
 // to the cap with no preference for direction. Duplicates are deduped so a
 // node that appears in both directions only takes one slot. Returns nil on any
-// error. The legacy per-direction scoped.IterEdges reads become one bulk
+// error. The legacy per-direction scoped.IterEdges reads become a bulk
 // foundation.FetchEdges over the single node ID, filtered by edge direction in
 // memory.
 func sampleNeighbors(ctx context.Context, caller foundation.GraphCaller, graphType kgtypes.GraphType, name string, nodeID string, direction string) []string {

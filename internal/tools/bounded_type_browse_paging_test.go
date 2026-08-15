@@ -12,9 +12,9 @@ import (
 	"github.com/stretchr/testify/require"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
-	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 	"github.com/fulminate-io/knowledge-mcp/internal/enginetest"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/paging"
 )
 
 // pagingFake is a cursor-HONORING type-browse backend: it serves ids strictly
@@ -70,7 +70,7 @@ func (f *pagingFake) Execute(ctx context.Context, req *knowledgev1.ExecuteReques
 // justifies. Against the unfixed single-Execute read this returns only the first
 // page's files, so the file count comes out short.
 func TestListModulesForRepo_PagedBrowse(t *testing.T) {
-	const files = 2*engine.BrowsePageSize + 7
+	const files = 2*paging.BrowsePageSize + 7
 	f := &pagingFake{byType: map[string][]*knowledgev1.Node{
 		string(kgtypes.NodePackage): {
 			{Id: "pkg/alpha", Type: string(kgtypes.NodePackage), Summary: "the alpha package"},
@@ -105,7 +105,7 @@ func TestListModulesForRepo_PagedBrowse(t *testing.T) {
 		require.NotNil(t, p.AfterId, "after_id must be PRESENT on every page — presence selects the keyset browse")
 		assert.True(t, p.GetSkipTotal(), "a drain page never reads Total")
 	}
-	assert.Equal(t, files/engine.BrowsePageSize+1, idsPlans, "the file browse pages rather than reading the type in one Execute")
+	assert.Equal(t, files/paging.BrowsePageSize+1, idsPlans, "the file browse pages rather than reading the type in one Execute")
 	assert.Equal(t, 1, nodePlans, "two packages fit in one page")
 }
 
@@ -113,7 +113,7 @@ func TestListModulesForRepo_PagedBrowse(t *testing.T) {
 // appears with its full count across more than two pages. Against the unfixed
 // single-Execute read the later pages' proxies are simply absent from the counts.
 func TestRenderLinkageProxyBreakdown_PagedBrowse(t *testing.T) {
-	const proxies = 2*engine.BrowsePageSize + 3
+	const proxies = 2*paging.BrowsePageSize + 3
 	f := &pagingFake{byType: map[string][]*knowledgev1.Node{}}
 	want := map[string]int{}
 	for i := range proxies {
@@ -131,7 +131,7 @@ func TestRenderLinkageProxyBreakdown_PagedBrowse(t *testing.T) {
 		assert.Contains(t, body, fmt.Sprintf("%d", count),
 			"the count for %s must reflect every page, not just the first", fg)
 	}
-	assert.Len(t, f.plans, proxies/engine.BrowsePageSize+1,
+	assert.Len(t, f.plans, proxies/paging.BrowsePageSize+1,
 		"the proxy browse pages rather than reading the whole type in one Execute")
 	for _, p := range f.plans {
 		require.NotNil(t, p.AfterId, "after_id must be PRESENT on every page")

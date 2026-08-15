@@ -1,0 +1,100 @@
+# captured-at: d0d65ba46b37e2370df9c71b454aafa547bf9e21
+ecma_typescript_references=4
+ecma_typescript_bound=1
+ecma_typescript_collided_key_resolutions=0
+ecma_typescript_bound_rule_unqualified_import=1
+ecma_typescript_bound_rule_qualified_import=0
+ecma_typescript_bound_rule_qualified_member=0
+ecma_typescript_bound_rule_qualified_path=0
+ecma_typescript_sibling_member_bound=0
+ecma_typescript_ambiguous_groups=0
+ecma_typescript_dynamic_groups=1
+ecma_typescript_dynamic_unbound=0
+ecma_typescript_dynamic_member_access=1
+ecma_typescript_dynamic_computed_access=0
+ecma_typescript_rule_external_qualifier=0
+ecma_typescript_external=2
+ecma_typescript_external_out_of_repo=0
+ecma_typescript_external_out_of_index=0
+ecma_typescript_external_no_named_declarations=0
+ecma_typescript_external_no_binding=2
+ecma_tsx_references=1
+ecma_tsx_bound=1
+ecma_tsx_collided_key_resolutions=0
+ecma_tsx_bound_rule_unqualified_import=0
+ecma_tsx_bound_rule_qualified_import=0
+ecma_tsx_bound_rule_qualified_member=0
+ecma_tsx_bound_rule_qualified_path=0
+ecma_tsx_sibling_member_bound=0
+ecma_tsx_ambiguous_groups=0
+ecma_tsx_dynamic_groups=0
+ecma_tsx_dynamic_unbound=0
+ecma_tsx_dynamic_member_access=0
+ecma_tsx_dynamic_computed_access=0
+ecma_tsx_rule_external_qualifier=0
+ecma_tsx_external=0
+ecma_tsx_external_out_of_repo=0
+ecma_tsx_external_out_of_index=0
+ecma_tsx_external_no_named_declarations=0
+ecma_tsx_external_no_binding=0
+ecma_javascript_references=1
+ecma_javascript_bound=1
+ecma_javascript_collided_key_resolutions=0
+ecma_javascript_bound_rule_unqualified_import=0
+ecma_javascript_bound_rule_qualified_import=0
+ecma_javascript_bound_rule_qualified_member=0
+ecma_javascript_bound_rule_qualified_path=0
+ecma_javascript_sibling_member_bound=0
+ecma_javascript_ambiguous_groups=0
+ecma_javascript_dynamic_groups=0
+ecma_javascript_dynamic_unbound=0
+ecma_javascript_dynamic_member_access=0
+ecma_javascript_dynamic_computed_access=0
+ecma_javascript_rule_external_qualifier=0
+ecma_javascript_external=0
+ecma_javascript_external_out_of_repo=0
+ecma_javascript_external_out_of_index=0
+ecma_javascript_external_no_named_declarations=0
+ecma_javascript_external_no_binding=0
+#
+# go_binds_files / go_binds_entries are the LIVENESS control: zero here
+# means the arm never ran, which reads as "no improvement" without them.
+# go_binds_scopes_unknown is the input the external-qualifier rung consumes.
+# go_external and go_r2x_terminations are RECORDED, NOT GATED: terminating
+# a reference that previously became a wrong dynamic edge RAISES external,
+# so a gate demanding it fall would be demanding the defect back.
+# go_ambiguous_group_<n> lines list each surviving group's key and the file
+# of every candidate — the input to the manual attribution criterion.
+#
+# ATTRIBUTION OF THE SURVIVING GROUPS, recorded here rather than in the
+# artifact body because the artifact is generated and a hand-edit would be
+# erased by the next regeneration. Every group listed below was checked by
+# reading the //go:build line of each candidate file, and all of them are
+# MUTUALLY-EXCLUSIVE BUILD-CONSTRAINT PAIRS — several declarations of one
+# name in one scope, which is the ticket's stated legitimately-ambiguous
+# class and the correct answer rather than residue to drive to zero. The
+# three families seen are: GOOS pairs (a _linux.go file against a _stub.go
+# carrying //go:build !linux), //go:build devendpoint against !devendpoint,
+# and //go:build internal against !internal.
+# A GROUP WHOSE CANDIDATES ARE NOT SUCH A SET IS A DEFECT TO REPORT, never
+# residue to accept — re-run this attribution when the listing changes.
+go_references=5
+go_bound=1
+go_external=2
+go_ambiguous_groups=1
+go_dynamic_groups=1
+go_dynamic_unbound=0
+go_bound_rule_qualified_import=1
+go_bound_rule_unqualified_import=0
+go_bound_rule_qualified_member=0
+go_bound_rule_dot_scope=0
+go_sibling_member_bound=0
+go_uses_type_bound=0
+go_uses_type_total=1
+go_binds_files=1
+go_binds_entries=1
+go_binds_scopes_unknown=0
+go_r2x_terminations=0
+go_dot_scope_files=0
+go_ambiguous_group_listing=1
+go_ambiguous_group_0=dup/use.go:13:CALLS:Twin|dup/a.go,dup/b.go

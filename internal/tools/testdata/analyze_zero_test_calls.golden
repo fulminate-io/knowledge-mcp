@@ -1,0 +1,19 @@
+[knowledge] # Serve (function) — svc/handler.go:10-40
+
+**Signature:** `func Serve() error`
+
+## Callers (1)
+
+### Main (function) — svc/main.go:3
+
+
+- `svc/handler.go:Dispatch` may CALLS one of 3 candidates - exactly one is the real target [group svc/handler.go:88:CALLS:Run - confidence 0.33 each]
+    1. `p/a.go:Run` - p/a.go:11 - func Run() error
+    2. `p/b.go:Run` - p/b.go:22 - func Run(n int)
+    3. `p/c.go:Run` - p/c.go:33 - func Run(s string)
+    traversal stops at this candidate group - re-traverse from a validated candidate to continue
+
+## Callees (1)
+
+### Load (function) — svc/store.go:60
+

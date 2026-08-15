@@ -31,10 +31,9 @@ func resolveDNSRecordTargets(ctx context.Context, gc postpopulate.GraphCaller, g
 		return nil
 	}
 
-	records, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
-		"type":  string(kgtypes.NodeCloudResource),
-		"meta":  map[string]string{"resource_type": "gcp:dns:recordSet"},
-		"limit": 0,
+	records, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
+		"type": string(kgtypes.NodeCloudResource),
+		"meta": map[string]string{"resource_type": "gcp:dns:recordSet"},
 	})
 	if err != nil {
 		return fmt.Errorf("gcp dns resolve: query records: %w", err)
@@ -130,10 +129,9 @@ func addIPMapping(index map[string][]string, ip, nodeID string) {
 
 // indexGCEIPs extracts external IPs from GCE instance Content JSON.
 func indexGCEIPs(ctx context.Context, gc postpopulate.GraphCaller, graphName string, index map[string][]string) error {
-	nodes, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
-		"type":  string(kgtypes.NodeCloudResource),
-		"meta":  map[string]string{"resource_type": "gcp:compute:instance"},
-		"limit": 0,
+	nodes, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
+		"type": string(kgtypes.NodeCloudResource),
+		"meta": map[string]string{"resource_type": "gcp:compute:instance"},
 	})
 	if err != nil {
 		return err
@@ -175,10 +173,9 @@ func parseGCEInstanceIPs(content string) []string {
 
 // indexSQLIPs extracts IPs from Cloud SQL instance Content JSON.
 func indexSQLIPs(ctx context.Context, gc postpopulate.GraphCaller, graphName string, index map[string][]string) error {
-	nodes, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
-		"type":  string(kgtypes.NodeCloudResource),
-		"meta":  map[string]string{"resource_type": "gcp:sql:instance"},
-		"limit": 0,
+	nodes, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
+		"type": string(kgtypes.NodeCloudResource),
+		"meta": map[string]string{"resource_type": "gcp:sql:instance"},
 	})
 	if err != nil {
 		return err
@@ -216,10 +213,9 @@ func parseSQLInstanceIPs(content string) []string {
 
 // indexForwardingRuleIPs extracts IPs from forwarding rule Content JSON.
 func indexForwardingRuleIPs(ctx context.Context, gc postpopulate.GraphCaller, graphName string, index map[string][]string) {
-	nodes, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
-		"type":  string(kgtypes.NodeCloudResource),
-		"meta":  map[string]string{"resource_type": "gcp:compute:forwardingRule"},
-		"limit": 0,
+	nodes, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
+		"type": string(kgtypes.NodeCloudResource),
+		"meta": map[string]string{"resource_type": "gcp:compute:forwardingRule"},
 	})
 	if err != nil {
 		return // best-effort

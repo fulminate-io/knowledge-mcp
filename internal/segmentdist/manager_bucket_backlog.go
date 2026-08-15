@@ -125,6 +125,11 @@ func (m *Manager) AddAndMarkDirtyFields(_ context.Context, gt kgtypes.GraphType,
 // which recorded no tail — finishes with its entries discharged rather than queued
 // forever against the byte cap.
 func (m *Manager) ReEmitDirtyBuckets(ctx context.Context, gt kgtypes.GraphType, name string) error {
+	// Fail closed on an in-session account switch, for the same reason Flush
+	// does: this manager's sources belong to the account it was built under.
+	if err := m.checkAccountBinding(ctx); err != nil {
+		return err
+	}
 	hnswSnap, bm25Snap := m.snapshotDirty(gt, name)
 
 	// Read the tombstone set ONCE for both formats — one lock acquisition, and one

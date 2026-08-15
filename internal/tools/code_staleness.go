@@ -32,28 +32,33 @@ import (
 // pair (a graph collected before staleness tracking landed).
 //
 // Branch-aware: when branch is non-empty, the read passes overlay_of=repo so the
-// catalog enumerates the repo's "<repo>@*" overlay keys, and we filter for the
-// "<repo>@<branch>" overlay entry — so the footer reports the searched BRANCH
-// overlay's collect meta, not the stale base. An empty branch keeps the base
-// enumeration (filter on name == repo).
+// catalog enumerates the repo's overlay entries, and we filter for the entry whose
+// NORMALIZED overlay name is the branch — so the footer reports the searched
+// BRANCH overlay's collect meta, not the stale base. An empty branch keeps the
+// base enumeration (filter on name == repo). The two backends report the overlay
+// under DIFFERENT names (cloud "<repo>@<branch>", OSS/local a bare "<branch>"), so
+// the match runs through the shared bareOverlayName — see stalenessEntryMatches.
 //
-// NOTE: the overlay path depends on the server populating overlay entries' collect
-// meta (listOverlays → readSyncMeta). Until that server-side enablement lands,
-// overlay entries surface with empty collect meta and this degrades to ok=false
-// for a branch read — the client-side wire is in place and becomes live the moment
-// the server fills overlay collect meta.
+// NOTE: there are TWO distinct reasons a branch read can degrade to ok=false, and
+// they must stay distinguishable. (1) The overlay path depends on the server
+// populating overlay entries' collect meta (listOverlays → readSyncMeta); until
+// that server-side enablement lands, overlay entries surface with empty collect
+// meta and a branch read degrades — the client-side wire is in place and becomes
+// live the moment the server fills overlay collect meta. (2) The entry genuinely
+// is not there. What is NO LONGER a cause is the overlay name's SPELLING: the
+// match used to test only the cloud "<repo>@<branch>" form, so on the OSS/local
+// backend it could never match and every branch-scoped footer silently rendered
+// nothing while looking like cause (1).
 func recordedSyncMeta(ctx context.Context, exec engine.ExecuteFn, repo, branch string) (syncCommit string, syncTime int64, ok bool) {
 	if exec == nil || repo == "" {
 		return "", 0, false
 	}
 	modulesArgs := map[string]any{"graph": "code", "mode": "modules"}
-	// Branch overlays are keyed "<repo>@<branch>"; overlay_of restricts the
-	// catalog enumeration to the repo's overlay keys so the branch entry is in
-	// the returned set. wantName is the entry we filter for.
-	wantName := repo
+	// overlay_of restricts the catalog enumeration to the repo's overlay entries
+	// so the branch entry is in the returned set; stalenessEntryMatches owns which
+	// entry is the wanted one, because the two backends spell it differently.
 	if branch != "" {
 		modulesArgs["overlay_of"] = repo
-		wantName = repo + "@" + branch
 	}
 	args, err := json.Marshal(modulesArgs)
 	if err != nil {
@@ -72,7 +77,7 @@ func recordedSyncMeta(ctx context.Context, exec engine.ExecuteFn, repo, branch s
 		return "", 0, false
 	}
 	for _, gi := range infos {
-		if gi.GetName() != wantName {
+		if !stalenessEntryMatches(repo, branch, gi.GetName()) {
 			continue
 		}
 		sc, st := gi.GetCollectedCommit(), gi.GetCollectedTime()
@@ -82,6 +87,34 @@ func recordedSyncMeta(ctx context.Context, exec engine.ExecuteFn, repo, branch s
 		return sc, st, true
 	}
 	return "", 0, false
+}
+
+// stalenessEntryMatches reports whether one catalog entry is the one a read for
+// (repo, branch) wants. A BASE read (empty branch) matches the entry whose name IS
+// the repo, unchanged. A BRANCH read matches on the NORMALIZED overlay name, so
+// the cloud "<repo>@<branch>" key and the OSS/local bare "<branch>" name both
+// resolve — through the shared bareOverlayName, never a second normalization
+// written locally.
+//
+// THIS IS NOT A WIDENING. bareOverlayName only strips a leading repo+"@", so the
+// BASE entry — whose name IS the repo — normalizes to the repo and still fails a
+// branch read, which is exactly the stale-base lie the "branch read with only a
+// base entry degrades" subtest exists to forbid. A suffix test, a Contains check,
+// or a TrimPrefix of an unanchored "@" would each let the base entry satisfy a
+// branch read and reintroduce it.
+//
+// ONE COLLIDING EDGE, stated rather than policed: when a repo's name equals its
+// branch name, the normalized base name and the branch are the same string. In
+// PRODUCTION this cannot mis-resolve, because overlay_of makes the catalog read
+// enumerate overlay entries ONLY and the base entry is not in the returned set
+// (the OSS registry delegates the whole call to listOverlays). The base entry
+// appears alongside overlays only in the test fixture, whose graphNamesFake
+// ignores overlay_of and serves whatever it was seeded with.
+func stalenessEntryMatches(repo, branch, name string) bool {
+	if branch == "" {
+		return name == repo
+	}
+	return bareOverlayName(repo, name) == branch
 }
 
 // codeStalenessFooter renders a one-line "code index" staleness footer for the

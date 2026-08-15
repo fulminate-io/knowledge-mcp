@@ -21,7 +21,7 @@
 //   - "max_depth" — BFS depth cap (default 15, max 100).
 //
 // DATA ACCESS — one foundation.FetchNodesByType(NodeCloudResource) browse
-// supplies the candidate nodes; one bulk foundation.FetchEdges over the whole
+// supplies the candidate nodes; a bulk foundation.FetchEdges over the whole
 // cloud node set (filtered to the event-chain edge types) supplies the
 // adjacency the BFS walks in-memory. No per-node edge fetch.
 package cloud
@@ -108,7 +108,7 @@ func (EventChainAnalyzer) Run(ctx context.Context, req foundation.Request) ([]fo
 }
 
 // buildEventChainIndex fetches every event-chain edge incident to the cloud
-// node set in ONE bulk read and returns the in-memory adjacency the BFS walks.
+// node set in a bulk paged read and returns the in-memory adjacency the BFS walks.
 func buildEventChainIndex(ctx context.Context, req foundation.Request, nodes []*knowledgev1.Node) (*edgeIndex, error) {
 	ids := make([]string, 0, len(nodes))
 	for _, n := range nodes {

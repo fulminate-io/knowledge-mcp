@@ -19,7 +19,7 @@ import (
 // REVERSE DIRECTION — the BFS walks INCOMING edges from the seed. A node
 // with an incoming edge "depends on" the seed in the source direction, so
 // walking backward enumerates everything downstream of a failure. The
-// incoming dependents of a frontier layer are read in one bulk wire edge
+// incoming dependents of a frontier layer are read in a bulk wire edge
 // fetch over the layer and filtered to edges whose ToId is in the layer.
 //
 // REDUNDANCY WEIGHTING — every visited intermediate node is run through

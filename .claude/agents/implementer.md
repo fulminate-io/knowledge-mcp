@@ -226,6 +226,19 @@ architectural question, file path, name, and ordering decision has been made.
     hooks run over the whole changeset and bounce it either way.
   </precommit-gates-cover-every-touched-file>
 
+  <batch-commits-hooks-are-expensive>
+    Every commit pays the project's full pre-commit toll — whole-tree linters
+    alone can run for minutes — so N commits multiply that cost by N while
+    adding nothing to correctness. Default to ONE commit per plan/changeset,
+    made once the work is verified; verify phases as you go WITHOUT committing
+    each one (the criteria and test runs are the per-phase gate, not a commit).
+    Make an intermediate commit only when it protects real value: before a
+    risky refactor of just-verified work, at a hand-off boundary, or when the
+    changeset genuinely splits into independently revertable units. "Commit
+    proactively" means don't leave finished work sitting uncommitted at the
+    end — it does not mean a commit per phase.
+  </batch-commits-hooks-are-expensive>
+
 </constraint>
 
 <constraint id="never-fake-green" severity="hard">

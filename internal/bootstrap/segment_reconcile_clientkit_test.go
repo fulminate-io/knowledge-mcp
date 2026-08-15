@@ -53,6 +53,17 @@ func fixtureWorkingSet(codeRepos ...string) *workingset.Set {
 	return seedWorkingSet(refs...)
 }
 
+// fixturePresence is the companion declaration to fixtureWorkingSet: the code
+// repos these fixtures name are treated as CHECKED OUT on this machine. Their
+// subject is what the reconcile does with a member, not whether the member's
+// repo happens to exist under a temp dir, and the real predicate consults a
+// machine-local manifest that a test machine has no reason to carry. The
+// presence condition itself is the subject of
+// TestSegmentBearingGraphs_SkipsAbsentCodeRepo, which states its own.
+func fixturePresence() func(kgtypes.GraphType, string) bool {
+	return func(kgtypes.GraphType, string) bool { return true }
+}
+
 // buildReconcileClient wires a *client over an EngineService h2c server + a
 // fakeSegBackend (GCS-agent control plane). The consumer Manager runs on the cloud
 // GCS segment source (logged-in + WithSegmentTransport). The returned engine handle
@@ -146,6 +157,8 @@ func buildReconcileClientOnBackend(
 		authState:  authState,
 		segmentMgr: segmentdist.NewManager(router, dir, 0, segmentdist.WithSegmentTransport(backend.transportBuilder())),
 		workingSet: fixtureWorkingSet(codeRepos...),
+
+		localPresence: fixturePresence(),
 	}
 	return c, eng, backend, dir
 }

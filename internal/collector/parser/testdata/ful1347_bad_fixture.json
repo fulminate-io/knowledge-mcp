@@ -1,0 +1,20 @@
+{
+  "commit": "0000000000000000000000000000000000000000",
+  "corpora": [
+    {
+      "primary_language": "rust",
+      "corpus_root": "/nowhere/rust",
+      "corpus_commit": "0000000000000000000000000000000000000000",
+      "files_discovered": 0,
+      "chunk_nodes": 0,
+      "files_by_language": {},
+      "languages_with_no_file": [],
+      "languages": [
+        {"language": "rust", "calls_edges": 0, "baseline_calls_edges": 0, "usestype_edges": 0,
+         "bound": 0, "ambiguous_groups": 0, "dynamic_groups": 0, "dynamic_unbound": 0,
+         "collided_key_resolutions": 7, "collided_alias_narrowed": 0,
+         "ambiguous_refs": 0, "ambiguous_by_rule": {}}
+      ]
+    }
+  ]
+}

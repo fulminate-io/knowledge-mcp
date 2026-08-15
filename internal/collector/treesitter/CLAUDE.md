@@ -143,11 +143,26 @@ constructors, methods, getters, setters, static and async members — which
 their `TopLevel` queries never matched before. Those nodes do not exist in any
 previously collected graph.
 
-Structural edges follow the same rule. `CALLS`, `USES_TYPE` and both `CONTAINS`
-shapes are emitted with namespace-qualified endpoints and only survive
-`parser.resolveEdges` when both endpoints resolve against the build's symbol
-map, so a graph collected before this change carries whatever its old
-endpoints resolved to.
+Structural edges no longer share one rule, and the symbol map they used to
+resolve against is gone. Four things are true now:
+
+- **File-to-symbol `CONTAINS` is addressed POSITIONALLY**, by the chunk slot the
+  chunker records at emission, and consults no declaration index at all. It is
+  exact by construction rather than by name agreement.
+- **Orphan chunks receive containment** where they previously received none —
+  every chunk comes from a file, so every chunk node is contained by its file.
+- **A Go method's parent-to-member source is the one containment endpoint still
+  resolved by NAME**: its container is the receiver type, a sibling declaration
+  that may live in another file, so no slot can address it. It resolves through
+  `parser`'s collision-safe declaration index at package scope.
+- **A reference may now produce a GROUP of edges** rather than one or none. A
+  reference matching several surviving declarations emits one edge per
+  candidate at `Confidence` 1/N sharing one group key, tagged either
+  `ambiguous-name` (closed: exactly one is the referent) or `dynamic` (open:
+  one of these, or something static analysis cannot reach).
+
+A graph collected before this change carries whatever its old endpoints
+resolved to.
 
 Nothing migrates in place: run a re-collect of the repo to pick up the new IDs
 and nodes. Superseded nodes are cleaned up by the collect-epoch sweep — the

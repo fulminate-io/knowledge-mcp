@@ -45,7 +45,7 @@ func resolveServiceCloudLBLinkage(ctx context.Context, gc postpopulate.GraphCall
 		return nil
 	}
 
-	services, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, k8sResourceQuery("Service"))
+	services, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, k8sResourceQuery("Service"))
 	if err != nil {
 		return err
 	}

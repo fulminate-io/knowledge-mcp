@@ -7,7 +7,9 @@
 // implementation across the whole client tree (the single-owner invariant).
 //
 // It imports only render (FetchNodeIn), engine (Compile/Decode), pkg/store
-// (BuildCrossGraphProxy + types), and gen — NEVER cmd/knowledge/internal/tools
+// (BuildCrossGraphProxy + types), graphclient (to stamp its own query origin on
+// the reads it issues, as every other RPC-issuing client package does), and
+// gen — NEVER cmd/knowledge/internal/tools
 // or cmd/knowledge/internal/linker (which would cycle). It defines its own narrow
 // Call-only GraphCaller, mirroring the anti-cycle pattern render/tools/linker use.
 package crossgraph
@@ -21,6 +23,7 @@ import (
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
+	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/projects/render"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
@@ -118,7 +121,12 @@ func fetchGraphNamesOfType(ctx context.Context, ex render.Executor, graphType st
 	if !ok {
 		return nil, fmt.Errorf("list-graphs query not reducible (%s)", graphType)
 	}
-	resp, err := ex.Execute(ctx, req)
+	// Attribution only, NOT load-bearing for the working-set gate: a mode:modules
+	// query compiles to a type-only target, which the admission recorder's
+	// instance-key half refuses regardless of the operation stamped here. The
+	// stamp is what stops this enumeration's load from being reported against
+	// whichever user call happened to trigger the composer.
+	resp, err := ex.Execute(graphclient.WithOperation(ctx, graphclient.OpCrossGraphProbe), req)
 	if err != nil {
 		return nil, fmt.Errorf("query graphs (%s): %w", graphType, err)
 	}
@@ -136,6 +144,13 @@ func LocateForeignNode(ctx context.Context, gc GraphCaller, graphs []ForeignGrap
 	if gc == nil || id == "" {
 		return "", "", nil, false
 	}
+	// The probe scan is attributed to the probe, never to the tool call that
+	// happened to trigger it. This is load-bearing: each FetchNodeIn below
+	// addresses a concrete graph instance the user never named, so inheriting an
+	// admitting caller stamp would pull every scanned foreign graph into this
+	// process's working set on the strength of one unrelated interaction. Hoisted
+	// out of the loop — the value is loop-invariant, so no probe pays for it.
+	ctx = graphclient.WithOperation(ctx, graphclient.OpCrossGraphProbe)
 	for _, fg := range graphs {
 		n, err := render.FetchNodeIn(ctx, gc, id, fg.GraphType, fg.GraphName)
 		if err != nil {

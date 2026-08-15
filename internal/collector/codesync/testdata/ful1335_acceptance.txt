@@ -1,0 +1,9 @@
+=== RUN   TestCallsLanguageCensus_EdgeProbe
+PREPAIRS bash->bash=559 go->go=34961 javascript->javascript=98 python->python=2 tsx->tsx=1911 typescript->typescript=996
+2026/08/13 23:13:31 INFO BuildGoCallGraph callers=3509 funcs=8761 package_errors=0
+2026/08/13 23:13:31 INFO precise call graph: replaced tree-sitter CALLS edges removed=34961 kept_non_go=3566 added=9036 rta_callers=3509 decl_key_collisions=0 package_errors=0
+POSTPAIRS bash->bash=559 go->go=9036 javascript->javascript=98 python->python=2 tsx->tsx=1911 typescript->typescript=996
+POSTMETHODCALLERS 4894
+--- PASS: TestCallsLanguageCensus_EdgeProbe (5.63s)
+PASS
+ok  	github.com/fulminate-io/knowledge/cmd/knowledge/internal/collector/codesync	6.215s

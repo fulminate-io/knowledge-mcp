@@ -131,6 +131,17 @@ func (queryParitySearcher) Search(
 	return []searchengine.Hit{{ID: qpSeedKnowledge, Score: 1}}, nil
 }
 
+// SearchOverlay makes this fake satisfy the two-pool seam as well, which the code
+// search arm REQUIRES whenever a branch is set: that arm rejects a branch search
+// outright when the engine cannot serve base and overlay together, so a probe row
+// driving the branch param would otherwise observe that rejection rather than the
+// param's declared class.
+func (queryParitySearcher) SearchOverlay(
+	_ context.Context, _ kgtypes.GraphType, _, _, _ string, _ []byte, _ int,
+) ([]searchengine.Hit, error) {
+	return []searchengine.Hit{{ID: qpSeedKnowledge, Score: 1}}, nil
+}
+
 // queryParityDeps wraps the fake with the two seams the search arms require:
 // interceptTestDeps reports PipelineReady() true already, and the searcher knob
 // supplies the segment engine those arms would otherwise report unavailable.

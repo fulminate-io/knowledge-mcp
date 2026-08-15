@@ -25,6 +25,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgwire"
+	"github.com/fulminate-io/knowledge-mcp/internal/paging"
 	"github.com/fulminate-io/knowledge-mcp/internal/projects/render"
 )
 
@@ -59,12 +60,18 @@ func migratePracticeProxiesOnce(ctx context.Context, gc GraphCaller) {
 }
 
 // scanSlugLessPracticeProxies returns every SLUG-LESS practice proxy in the
-// knowledge graph. It issues ONE Match(NodeProxy) Execute carrying a server-side
-// MetadataPredicate{foreign_graph OP_EQ practice} so only practice proxies come
-// back (no over-fetch of code/cloud/cicd/linkage proxies — the predicate lowers
-// to a server-side Meta("foreign_graph","practice") equality filter via
-// applyMetadataPredicates), then filters the narrowed set client-side to the
-// slug-less discriminant.
+// knowledge graph. It DRAINS bounded id-keyset pages of a Match(NodeProxy) plan
+// carrying a server-side MetadataPredicate{foreign_graph OP_EQ practice} so only
+// practice proxies come back (no over-fetch of code/cloud/cicd/linkage proxies —
+// the predicate lowers to a server-side Meta("foreign_graph","practice") equality
+// filter via applyMetadataPredicates), then filters the narrowed set client-side
+// to the slug-less discriminant. Metadata predicates survive paging, so the
+// narrowing holds on every page.
+//
+// It used to take the whole set in ONE Execute whose raw plan set no Limit. That
+// is a bound, not a drain: a raw plan bypasses engine.Compile so the browse
+// default never applied, and the only ceiling was the server's own clamp — a
+// silent truncation rather than a complete read once the proxy set outgrew it.
 //
 // The slug-less shape (buildPracticeProxy with Name=="") is
 // proxy:practice:<foreign_id> with NO language metadata; the slug-ful shape is
@@ -76,23 +83,31 @@ func scanSlugLessPracticeProxies(ctx context.Context, gc GraphCaller) ([]*knowle
 	if err != nil {
 		return nil, err
 	}
-	resp, err := ex.Execute(ctx, &knowledgev1.ExecuteRequest{
-		Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
-			Selection: &knowledgev1.Selection{
-				NodeType: string(kgtypes.NodeProxy),
-				MetadataPredicates: []*knowledgev1.MetadataPredicate{{
-					Key:   "foreign_graph",
-					Op:    knowledgev1.MetadataPredicate_OP_EQ,
-					Value: "practice",
-				}},
-			},
-		}},
-		Target: &knowledgev1.GraphSelector{Graph: "knowledge"},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("scan slug-less practice proxies: %w", err)
-	}
-	proxies, derr := engine.DecodeNodes(resp)
+	proxies, derr := paging.DrainKeysetPages(func(afterID string) ([]*knowledgev1.Node, error) {
+		cursor := afterID
+		resp, rerr := ex.Execute(ctx, &knowledgev1.ExecuteRequest{
+			Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
+				Selection: &knowledgev1.Selection{
+					NodeType: string(kgtypes.NodeProxy),
+					MetadataPredicates: []*knowledgev1.MetadataPredicate{{
+						Key:   "foreign_graph",
+						Op:    knowledgev1.MetadataPredicate_OP_EQ,
+						Value: "practice",
+					}},
+				},
+				Limit: int32(paging.BrowsePageSize),
+				// SET on every page including the first, where the value is empty:
+				// presence, not emptiness, is what selects the keyset browse.
+				AfterId:   &cursor,
+				SkipTotal: true,
+			}},
+			Target: &knowledgev1.GraphSelector{Graph: "knowledge"},
+		})
+		if rerr != nil {
+			return nil, fmt.Errorf("scan slug-less practice proxies: %w", rerr)
+		}
+		return engine.DecodeNodes(resp)
+	}, paging.BrowsePageSize)
 	if derr != nil {
 		return nil, fmt.Errorf("scan slug-less practice proxies: decode: %w", derr)
 	}

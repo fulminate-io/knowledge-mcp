@@ -4,6 +4,8 @@ package coderun
 
 import (
 	"context"
+	"fmt"
+	"sort"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -12,6 +14,7 @@ import (
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/enginetest"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/paging"
 )
 
 // fakeGraphCaller is a package-local postpopulate.GraphCaller for the codesync
@@ -51,6 +54,11 @@ func (f *fakeGraphCaller) graphNames() *knowledgev1.ExecuteResponse {
 // browse serves a type-browse keyed by Target.Repo. An empty repo is a miss —
 // the code graph requires a repo selector, so a name:-routed read would land in
 // the wrong (or no) graph.
+//
+// It models the server's page semantics closely enough that the difference
+// between a paged read and a capped one is observable: a fake that returns every
+// match verbatim is green whether or not the read is capped, which makes any
+// "the hierarchy saw all the files" assertion vacuous.
 func (f *fakeGraphCaller) browse(tgt *knowledgev1.GraphSelector, q *knowledgev1.QueryPlan) *knowledgev1.ExecuteResponse {
 	repo := tgt.GetRepo()
 	if repo == "" {
@@ -60,10 +68,32 @@ func (f *fakeGraphCaller) browse(tgt *knowledgev1.GraphSelector, q *knowledgev1.
 	var matched []*knowledgev1.Node
 	for _, n := range f.nodesByRepo[repo] {
 		if wantType != "" && n.Type != wantType {
-			continue
+			continue // singular type — an INDEX selection, applied before the cap
 		}
 		matched = append(matched, n)
 	}
+
+	// The keyset cursor: ids strictly greater than the cursor, ascending. Only
+	// applied when after_id is PRESENT, because page 1 of a drain carries a SET
+	// BUT EMPTY cursor; absent, the seeded order is served so the pre-existing
+	// tests keep their current meaning.
+	if q.AfterId != nil {
+		sort.Slice(matched, func(i, j int) bool { return matched[i].GetId() < matched[j].GetId() })
+		if cursor := q.GetAfterId(); cursor != "" {
+			kept := matched[:0]
+			for _, n := range matched {
+				if n.GetId() > cursor {
+					kept = append(kept, n)
+				}
+			}
+			matched = kept
+		}
+	}
+
+	if lim := int(q.GetLimit()); lim > 0 && len(matched) > lim {
+		matched = matched[:lim]
+	}
+
 	return enginetest.ResponseWithNodes(matched...)
 }
 
@@ -183,6 +213,55 @@ func TestLinkStepsToCode_RoutesByRepo(t *testing.T) {
 		"step must implement the existing file node")
 	assert.False(t, keys["step-1->pkg/missing/none.go:implements"],
 		"step must NOT link to a non-existent file node")
+}
+
+// countFileContainsEdges counts the CONTAINS edges whose target is one of the
+// seeded file ids — the dir→file edges. The dir→dir hierarchy edges carry the
+// same type, so membership in the seeded set is what separates them.
+func countFileContainsEdges(fc *fakeGraphCaller, seeded map[string]bool) int {
+	n := 0
+	for _, req := range fc.createBatchMutations() {
+		for _, e := range req.GetMutation().GetEdges() {
+			if e.GetType() == string(kgtypes.EdgeContains) && seeded[e.GetToId()] {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+// TestBuildHierarchy_DrainsAllPages seeds more than two full browse pages of file
+// nodes and asserts every one of them ends up with a dir→file CONTAINS edge. The
+// file count is written as the page-size expression rather than a literal so the
+// test tracks the page size, and three pages (two full plus a short one) means
+// the short-final-page termination is exercised rather than assumed.
+func TestBuildHierarchy_DrainsAllPages(t *testing.T) {
+	const repo = "myrepo"
+
+	wantFiles := paging.BrowsePageSize*2 + 7
+
+	seed := make([]*knowledgev1.Node, 0, wantFiles)
+	seeded := make(map[string]bool, wantFiles)
+	for i := range wantFiles {
+		id := fmt.Sprintf("pkg/d%03d/f%04d.go", i%50, i)
+		seed = append(seed, fileNode(id))
+		seeded[id] = true
+	}
+	// Fixture-derived cardinality guard: a fixture that silently built the wrong
+	// number of nodes must not be able to satisfy the assertion below by
+	// shrinking both sides of it.
+	require.Len(t, seed, wantFiles)
+	require.Len(t, seeded, wantFiles)
+
+	fc := &fakeGraphCaller{nodesByRepo: map[string][]*knowledgev1.Node{
+		repo: seed,
+	}}
+
+	require.NoError(t, BuildHierarchy(context.Background(), fc, repo))
+
+	got := countFileContainsEdges(fc, seeded)
+	assert.Equal(t, wantFiles, got,
+		"hierarchy must contain every file node: want %d, got %d", wantFiles, got)
 }
 
 // TestLinkStepsToCode_NoSteps_NoWrite confirms a code graph with no steps fires

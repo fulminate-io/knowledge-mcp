@@ -22,7 +22,7 @@ import (
 //
 // The computation is pure and in-memory: it composes BitSimilarity (centroid.go)
 // over the already-drained vector index — NO re-drain, NO LLM, NO wire calls in the
-// selector itself. The single wire touch is ONE bulk idempotency pre-read (the
+// selector itself. The single wire touch is a bulk idempotency pre-read (the
 // caller supplies the existing-pair set) and ONE batched edge write (Phase 3).
 
 // densifyCandidate is one selected undirected member pair (A < B canonically) with
@@ -122,11 +122,11 @@ func selectTopicKNN(memberIDs []string, vectorIndex map[string][]byte, k int, th
 }
 
 // fetchExistingPairs bulk-reads the EXISTING relates-to edges incident to the union
-// of all member thought IDs in ONE round-trip (fetchEdgesForNodeSet — the same
-// N+1-avoidance bulk RETURN_MODE_EDGES read the medoid link step and fetchAdjacency
-// hold) and returns the set of canonical (min,max) member pairs already joined by a
-// relates-to edge of ANY provenance. ONE bulk read for the ENTIRE densify pass (all
-// topics), NOT per-topic and NOT per-pair.
+// of all member thought IDs (fetchEdgesForNodeSet — the same N+1-avoidance bulk
+// RETURN_MODE_EDGES read, drained in bounded pivot pages, that the medoid link step
+// and fetchAdjacency hold) and returns the set of canonical (min,max) member pairs
+// already joined by a relates-to edge of ANY provenance. A single bulk read for the
+// ENTIRE densify pass (all topics), NOT per-topic and NOT per-pair.
 //
 // relates-to edges are written DIRECTIONAL (FromId→ToId) but are SEMANTICALLY
 // undirected for dedup here, so both the existing edge keys and the candidate keys
@@ -265,7 +265,7 @@ func existingTopicPairs(memberIDs []string, existing map[string]bool) []densifyC
 // repeated in the rendered report line.)
 //
 // existing is the whole-pass any-provenance existing-pair set from fetchExistingPairs
-// (one bulk read, shared across all topics). The driver does NO wire I/O itself —
+// (a bulk read, shared across all topics). The driver does NO wire I/O itself —
 // pure in-memory composition over the drained vectorIndex.
 func computeDensifyEdges(topics []Topic, vectorIndex map[string][]byte, existing map[string]bool, params DensifyParams) densifyResult {
 	var res densifyResult
@@ -357,7 +357,7 @@ func writeDensifyEdges(ctx context.Context, gc Caller, pairs []densifyCandidate)
 }
 
 // runDensifyPhase materializes within-topic kNN relates-to edges over the surviving
-// post-cascade topics. It does ONE bulk idempotency pre-read over the union
+// post-cascade topics. It does a bulk idempotency pre-read over the union
 // of all member thoughts, computes the budget-capped edge set + component estimates
 // in memory, writes every edge in ONE batched create_batch, and fills the report's
 // densify fields. A nil vectorIndex (the nil-scanner total-degrade band) sets the loud
@@ -372,7 +372,7 @@ func (p *PropagationLoop) runDensifyPhase(ctx context.Context, topics []Topic, v
 		return
 	}
 
-	// ONE bulk pre-read of existing relates-to edges over the union of all member
+	// Bulk pre-read of existing relates-to edges over the union of all member
 	// thoughts across every surviving topic (the any-provenance idempotency set).
 	memberSet := map[string]struct{}{}
 	for _, tp := range topics {

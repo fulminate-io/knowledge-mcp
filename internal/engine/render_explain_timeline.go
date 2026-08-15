@@ -26,7 +26,14 @@ import (
 // + per-edge "### Edge #n" blocks (resolved from/to names, Type, Score, Method,
 // Last validated, Evidence). The composer pre-resolves endpoint names via a bulk
 // hydrate and passes them in nameByID (empty fallback → truncated id).
-func RenderExplainEdges(label string, edges []knowledgev1.Edge, nameByID map[string]*knowledgev1.Node) string {
+//
+// groups carries the multi-candidate groups the composer reconstructed; their
+// member edges are NOT in edges, so the "### Edge #n" blocks never restate a
+// group's members and the numbering stays a numbering of what is listed. The
+// group blocks render after them. Explain is a single-node edge LISTING, not a
+// walk, so it passes reached=nil (no candidate is "the node this walk reached")
+// and no frontier line is emitted — there is no path here to short-circuit.
+func RenderExplainEdges(label string, edges []knowledgev1.Edge, nameByID map[string]*knowledgev1.Node, groups []CandidateGroup) string {
 	var sb strings.Builder
 	fmt.Fprintf(&sb, "## Explain — %s\n\n", label)
 	fmt.Fprintf(&sb, "%d edge(s).\n\n", len(edges))
@@ -39,17 +46,28 @@ func RenderExplainEdges(label string, edges []knowledgev1.Edge, nameByID map[str
 		if e.Confidence > 0 {
 			fmt.Fprintf(&sb, "- Score: %.2f\n", e.Confidence)
 		}
-		if e.Method != "" {
+		// A group member's method and group key are already stated by its group
+		// block (as the block's semantics), so a second per-edge copy is redundant
+		// and the raw key invites parsing an identifier this plan renders opaquely.
+		// Every other edge keeps both fields verbatim — a cloud or linkage edge's
+		// Evidence is a genuine human-readable citation.
+		//
+		// BELT-AND-BRACES BY DESIGN, NOT DEAD CODE: composers pass only the
+		// ungrouped remainder here, so a member should never arrive. The guard
+		// exists because this is a render primitive a future surface may call with
+		// an unfiltered slice, and the defect it prevents is silent.
+		if e.Method != "" && !IsCandidateEdge(e) {
 			fmt.Fprintf(&sb, "- Method: %s\n", e.Method)
 		}
 		if !nanosToTime(e.LastValidated).IsZero() {
 			fmt.Fprintf(&sb, "- Last validated: %s\n", nanosToTime(e.LastValidated).Format("2006-01-02T15:04:05Z07:00"))
 		}
-		if e.Evidence != "" {
+		if e.Evidence != "" && !IsCandidateEdge(e) {
 			fmt.Fprintf(&sb, "- Evidence (raw): %s\n", e.Evidence)
 		}
 		sb.WriteString("\n")
 	}
+	writeCandidateGroupsNoFrontier(&sb, groups, nameByID, nil)
 	return sb.String()
 }
 

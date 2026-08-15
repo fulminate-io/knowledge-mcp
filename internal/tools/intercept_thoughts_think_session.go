@@ -19,6 +19,7 @@ import (
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/paging"
 	"github.com/fulminate-io/knowledge-mcp/internal/validate"
 )
 
@@ -31,28 +32,35 @@ import (
 // attaches to a wrong-named session. On a same-name collision it returns the
 // lowest id (sort.Strings, ids[0]) over the filtered set — the lowest-id tie-break
 // idiom reproducing the deleted resolveSessionsByName backfill — else it creates a
-// new session node and returns its id. The browse sets no explicit limit, so it
-// inherits browseDefaultLimit=10; the store orders matches by id, keeping the
-// lowest id on page one, so the tie-break is deterministic without a drain. The
-// browse rides the Execute carrier (engine.DecodeNodes). The prior limit:0 browse
-// — capped to browseDefaultLimit=10, so the existing session fell off the page
-// once the corpus exceeded 10 sessions — was the duplicate-spawning defect this
-// resolve replaces.
+// new session node and returns its id. THE DRAIN is what makes that tie-break
+// deterministic: it reads bounded id-keyset pages until the corpus is exhausted,
+// so every same-name session is in the filtered set before the sort runs, whatever
+// order the store returns them in. The browse rides the Execute carrier
+// (engine.DecodeNodes). The prior limit:0 browse — capped to browseDefaultLimit=10,
+// so the existing session fell off the page once the corpus exceeded 10 sessions —
+// was the duplicate-spawning defect this resolve replaces.
 func getOrCreateThoughtSessionClient(ctx context.Context, gc GraphCaller, name string) (string, error) {
-	args, err := json.Marshal(map[string]any{
-		"type": string(kgtypes.NodeThoughtSession),
-		"field_predicates": []map[string]string{
-			{"field": "symbol_name", "op": "eq", "value": name},
-		},
-	})
-	if err != nil {
-		return "", fmt.Errorf("marshal session browse: %w", err)
-	}
-	resp, err := executeQuery(ctx, gc, args)
-	if err != nil {
-		return "", fmt.Errorf("session browse: %w", err)
-	}
-	sessions, derr := engine.DecodeNodes(resp)
+	sessions, derr := paging.DrainKeysetPages(func(afterID string) ([]*knowledgev1.Node, error) {
+		args, merr := json.Marshal(map[string]any{
+			"type": string(kgtypes.NodeThoughtSession),
+			"field_predicates": []map[string]string{
+				{"field": "symbol_name", "op": "eq", "value": name},
+			},
+			"limit": paging.BrowsePageSize,
+			// SET on every page including the first, where the value is empty:
+			// presence, not emptiness, is what selects the keyset browse.
+			"after_id":   afterID,
+			"skip_total": true,
+		})
+		if merr != nil {
+			return nil, fmt.Errorf("marshal session browse: %w", merr)
+		}
+		resp, rerr := executeQuery(ctx, gc, args)
+		if rerr != nil {
+			return nil, fmt.Errorf("session browse: %w", rerr)
+		}
+		return engine.DecodeNodes(resp)
+	}, paging.BrowsePageSize)
 	if derr != nil {
 		return "", fmt.Errorf("session decode: %w", derr)
 	}

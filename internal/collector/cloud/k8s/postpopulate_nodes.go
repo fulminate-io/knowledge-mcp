@@ -31,7 +31,7 @@ import (
 // both resolvers are independent, but grouping them keeps cross-graph
 // linkage contiguous.
 func resolveNodeVMLinkage(ctx context.Context, gc postpopulate.GraphCaller, graphName string) error {
-	nodes, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, k8sResourceQuery("Node"))
+	nodes, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, k8sResourceQuery("Node"))
 	if err != nil {
 		return err
 	}

@@ -190,7 +190,8 @@ func handleAstMatch(ctx context.Context, deps ClientDeps, a astArgs) kgtools.Too
 	// here because ast carries no branch arg: autoDetectBranch resolves the repo's
 	// recorded on-disk directory from the manifest and reads its current branch,
 	// keyed on the same graph name hydration uses. It returns "" on a manifest
-	// miss or detached HEAD, which falls through to the base graph as before.
+	// miss, and on a detection failure (a detached HEAD is one), which falls
+	// through to the base graph as before.
 	branch := autoDetectBranch(ctx, a.Repo)
 
 	// nil GraphCaller is tolerated — the hydrator's b.gc == nil branch returns

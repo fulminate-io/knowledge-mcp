@@ -118,6 +118,45 @@ func TestCompileTraverse_IncludeEdgeMetadata(t *testing.T) {
 	assert.True(t, req.GetQuery().GetIncludeEdgeMetadata(), "the include_edge_metadata carrier is set")
 }
 
+// TestCompileTraverse_CodeGraphAlwaysRequestsEdges asserts a code-graph
+// traversal requests the edge-metadata carrier whether or not the caller asked,
+// because only the per-edge Method tells a multi-candidate group from N bound
+// edges — and asserts the rule stops at the code graph.
+func TestCompileTraverse_CodeGraphAlwaysRequestsEdges(t *testing.T) {
+	cases := []struct {
+		name string
+		args string
+		want bool
+	}{
+		{
+			name: "code_graph_without_the_parameter_still_requests_edges",
+			args: `{"start":"n1","graph":"code","repo":"knowledge"}`,
+			want: true,
+		},
+		{
+			name: "code_graph_with_the_parameter_stays_true",
+			args: `{"start":"n1","graph":"code","repo":"knowledge","include_edge_metadata":true}`,
+			want: true,
+		},
+		{
+			// THE CATCHER. Without this leg an implementation that sets the
+			// carrier unconditionally passes both legs above while silently
+			// taxing every non-code traversal in the product with a server-side
+			// edge re-walk for a group that cannot exist there.
+			name: "knowledge_graph_without_the_parameter_stays_false",
+			args: `{"start":"n1","graph":"knowledge"}`,
+			want: false,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			req, ok := compileTraverse(json.RawMessage(tc.args))
+			require.True(t, ok, "traverse must compile")
+			assert.Equal(t, tc.want, req.GetQuery().GetIncludeEdgeMetadata())
+		})
+	}
+}
+
 // TestCompileTraverse_OnePlanPerCall asserts a single ExecuteRequest carrying
 // one QueryPlan — no N-fanout for the both case (the engine issues the two
 // directed sub-queries server-side; the client emits ONE plan).

@@ -16,6 +16,7 @@ import (
 
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 	"github.com/fulminate-io/knowledge-mcp/internal/enginetest"
+	"github.com/fulminate-io/knowledge-mcp/internal/paging"
 )
 
 // corrFake counts node-set fetches and edge fetches and records every compiled
@@ -254,7 +255,7 @@ func TestComposePivot_KeysetPaged(t *testing.T) {
 				continue
 			}
 			nodePlans++
-			assert.Equal(t, int32(engine.BrowsePageSize), p.GetLimit(), "plan[%d] carries the page limit", i)
+			assert.Equal(t, int32(paging.BrowsePageSize), p.GetLimit(), "plan[%d] carries the page limit", i)
 			assert.NotNil(t, p.AfterId, "plan[%d] SETS the keyset cursor (presence selects the keyset browse)", i)
 			assert.True(t, p.GetSkipTotal(), "plan[%d] skips Total", i)
 		}
@@ -298,7 +299,7 @@ func TestRenderCorrelations_Golden(t *testing.T) {
 		{Edge: knowledgev1.Edge{FromId: "a", ToId: "b", Type: "correlates-with", Confidence: 0.91, Method: "cooccur"},
 			FromName: "Alpha", ToName: "Bravo", FromType: "finding", ToType: "decision"},
 	}
-	got := engine.RenderCorrelations("knowledge", rows, 1, false)
+	got := engine.RenderCorrelations("knowledge", rows, 1, false, nil)
 	assert.Contains(t, got, "## Correlations — knowledge")
 	assert.Contains(t, got, "| `Alpha` [finding] | correlates-with | `Bravo` [decision] | 0.91 | cooccur |")
 }

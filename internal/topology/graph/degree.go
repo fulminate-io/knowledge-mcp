@@ -20,10 +20,10 @@ import (
 //
 // All three share a single computeDegrees pass that materializes the
 // wire-built GonumGraph, fetches every edge incident to the materialized
-// node set in ONE bulk wire read (foundation.FetchEdges — the N+1 guard),
+// node set in a bulk wire read (foundation.FetchEdges — the N+1 guard),
 // and groups the edges per node in memory to produce the per-edge-type
 // breakdown that goes into the Finding.Metrics map. The legacy per-node
-// scoped.IterEdges loop becomes one bulk fetch plus an in-memory group-by.
+// scoped.IterEdges loop becomes a bulk fetch plus an in-memory group-by.
 //
 // Top-K finding construction is augmented with two shared helpers from
 // helpers.go: ResolveNodeName for human-readable titles and sampleNeighbors
@@ -62,7 +62,7 @@ type degreeRow struct {
 func (r degreeRow) total() int { return r.FanIn + r.FanOut }
 
 // computeDegrees materializes the graph, fetches every incident edge in
-// ONE bulk wire read, and returns one degreeRow per node containing both
+// a bulk wire read, and returns one degreeRow per node containing both
 // the aggregate fan-in/fan-out counts and the per-edge-type breakdown.
 //
 // Bulk-edge group-by: the single FetchEdges call returns every edge whose

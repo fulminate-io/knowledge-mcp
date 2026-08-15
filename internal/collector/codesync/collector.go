@@ -3,7 +3,6 @@
 package codesync
 
 import (
-	"bufio"
 	"context"
 	"errors"
 	"fmt"
@@ -17,7 +16,6 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/parser"
 	"github.com/fulminate-io/knowledge-mcp/internal/collectorwire"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
-	"github.com/fulminate-io/knowledge-mcp/internal/kgwire"
 	"github.com/fulminate-io/knowledge-mcp/internal/postpopulate"
 )
 
@@ -74,17 +72,7 @@ func (c *CodeCollector) Collect(ctx context.Context, id string, opts collector.C
 
 	// Convert pre-resolved *knowledgev1.Edge to kgwire.BatchEdge for the collector
 	// pipeline (BatchEdge stays the gap carrier the wire-send chain consumes).
-	batchEdges := make([]kgwire.BatchEdge, len(pop.Edges))
-	for i, e := range pop.Edges {
-		batchEdges[i] = kgwire.BatchEdge{
-			FromIdx: -1,
-			ToIdx:   -1,
-			FromID:  e.FromId,
-			ToID:    e.ToId,
-			Type:    kgtypes.EdgeType(e.Type),
-			Weight:  e.Weight,
-		}
-	}
+	batchEdges := parser.ToBatchEdges(pop.Edges, "")
 
 	// Report the git branch we collected from. The server compares it
 	// against the existing graph's recorded default branch (graph metadata
@@ -107,7 +95,7 @@ func (c *CodeCollector) Collect(ctx context.Context, id string, opts collector.C
 	// CLIENT-SIDE and ship them over the wire. The server pod never
 	// opens these files — topology analyzers read both from graph
 	// metadata (ModulePathKey, LayerConfigKey) instead.
-	modulePath, _ := readModulePath(rootDir)
+	modulePath, _ := parser.ReadModulePath(rootDir)
 	layerConfig, _ := readLayerConfig(rootDir)
 
 	// CollectResult.Nodes is []*knowledgev1.Node; the parser now builds the
@@ -124,44 +112,6 @@ func (c *CodeCollector) Collect(ctx context.Context, id string, opts collector.C
 		ModulePath:    modulePath,
 		LayerConfig:   layerConfig,
 	}, nil
-}
-
-// readModulePath opens <rootDir>/go.mod and returns the `module ...`
-// directive. Mirrors the prior pkg/topology/dsm_matrix.go::readModulePath
-// (which is being deleted in Phase 5.2). Returns ("", nil) on any failure
-// so non-Go repos don't trip the collector — the caller persists the
-// empty value and dsm.go server-side gracefully skips when the metadata
-// key is empty.
-func readModulePath(rootDir string) (string, error) {
-	f, err := os.Open(filepath.Join(rootDir, "go.mod"))
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return "", nil
-		}
-		return "", err
-	}
-	defer f.Close()
-	scanner := bufio.NewScanner(f)
-	for scanner.Scan() {
-		line := strings.TrimSpace(scanner.Text())
-		if !strings.HasPrefix(line, "module ") {
-			continue
-		}
-		rest := strings.TrimSpace(strings.TrimPrefix(line, "module"))
-		rest = strings.TrimPrefix(rest, `"`)
-		rest = strings.TrimSuffix(rest, `"`)
-		if idx := strings.Index(rest, "//"); idx >= 0 {
-			rest = strings.TrimSpace(rest[:idx])
-		}
-		if rest == "" {
-			return "", nil
-		}
-		return rest, nil
-	}
-	if err := scanner.Err(); err != nil {
-		return "", err
-	}
-	return "", nil
 }
 
 // readLayerConfig reads `.knowledge/topology_layers.yaml` under rootDir

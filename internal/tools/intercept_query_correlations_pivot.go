@@ -13,6 +13,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/graphsel"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/paging"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 )
@@ -52,7 +53,7 @@ import (
 //     capped at engine.CorrelationsRowCapDefault/Max with a SAMPLE notice when the
 //     scan cap engaged (the walk ranges an unordered *xsync.Map,
 //     cmd/knowledge-server/internal/store/graph_graph.go:58).
-//   - pivot — BOUNDED. Keyset pages of engine.BrowsePageSize streamed into
+//   - pivot — BOUNDED. Keyset pages of paging.BrowsePageSize streamed into
 //     engine.PivotAccumulator (nodeSetPage below); the render was already capped
 //     at 20x20 by capPivotKeys (engine/render_correlations_pivot.go).
 //   - pivot text-seed arm — ALREADY BOUNDED before this ticket, by
@@ -119,7 +120,44 @@ func composeCorrelations(ctx context.Context, exec engine.ExecuteFn, a queryArgs
 		}
 		return textResult(engine.RenderCorrelationsEmpty(label, filterMsg))
 	}
-	return textResult(engine.RenderCorrelations(label, rows, total, scanCapped))
+	// Collapse multi-candidate groups over the ROW edges: grouped rows leave the
+	// table and render as one block below it, so N candidates of one reference
+	// stop occupying N ranked rows at 1/N each. `total` deliberately keeps
+	// counting EDGES, group members included — it counts edges rather than
+	// asserting call facts, and three existing behaviors read that number.
+	groupRows, ungroupedRows := splitCorrelationGroups(rows)
+	return textResult(engine.RenderCorrelations(label, ungroupedRows, total, scanCapped, groupRows))
+}
+
+// splitCorrelationGroups reconstructs candidate groups from the row edges and
+// returns the groups plus the rows that are not group members, preserving the
+// composer's confidence-desc ordering for the surviving rows.
+func splitCorrelationGroups(rows []engine.CorrelationEdgeRow) ([]engine.CandidateGroup, []engine.CorrelationEdgeRow) {
+	edges := make([]knowledgev1.Edge, 0, len(rows))
+	for i := range rows {
+		edges = append(edges, copyEdge(&rows[i].Edge))
+	}
+	groups, _ := engine.GroupCandidateEdges(edges)
+	if len(groups) == 0 {
+		return nil, rows
+	}
+	kept := make([]engine.CorrelationEdgeRow, 0, len(rows))
+	for i := range rows {
+		if engine.IsCandidateEdge(&rows[i].Edge) {
+			continue
+		}
+		// Field-by-field, not `kept = append(kept, rows[i])`: CorrelationEdgeRow
+		// embeds a knowledgev1.Edge, whose noCopy MessageState makes a by-value
+		// copy a copylocks violation (the same constraint copyEdge documents).
+		kept = append(kept, engine.CorrelationEdgeRow{
+			Edge:     copyEdge(&rows[i].Edge),
+			FromName: rows[i].FromName,
+			ToName:   rows[i].ToName,
+			FromType: rows[i].FromType,
+			ToType:   rows[i].ToType,
+		})
+	}
+	return groups, kept
 }
 
 // fetchCorrelationRows issues ONE match-all RETURN_MODE_EDGES Execute capped at
@@ -309,7 +347,7 @@ func pivotFetchNodesClient(ctx context.Context, deps ClientDeps, a queryArgs, on
 		onPage(nodes)
 		return nil
 	}
-	return engine.DrainKeysetPagesFunc(func(afterID string) ([]*knowledgev1.Node, error) {
+	return paging.DrainKeysetPagesFunc(func(afterID string) ([]*knowledgev1.Node, error) {
 		cursor := afterID
 		resp, err := gc.Execute(ctx, &knowledgev1.ExecuteRequest{
 			Plan:   &knowledgev1.ExecuteRequest_Query{Query: nodeSetPage(a.Type, &cursor, a.IncludeTombstones)},
@@ -319,7 +357,7 @@ func pivotFetchNodesClient(ctx context.Context, deps ClientDeps, a queryArgs, on
 			return nil, err
 		}
 		return engine.DecodeNodes(resp)
-	}, engine.BrowsePageSize, func(page []*knowledgev1.Node) error {
+	}, paging.BrowsePageSize, func(page []*knowledgev1.Node) error {
 		onPage(page)
 		return nil
 	})
@@ -335,7 +373,7 @@ func pivotFetchNodesClient(ctx context.Context, deps ClientDeps, a queryArgs, on
 func nodeSetPage(nodeType string, cursor *string, includeTombstones bool) *knowledgev1.QueryPlan {
 	return &knowledgev1.QueryPlan{
 		Selection:         &knowledgev1.Selection{NodeType: nodeType},
-		Limit:             int32(engine.BrowsePageSize),
+		Limit:             int32(paging.BrowsePageSize),
 		AfterId:           cursor,
 		SkipTotal:         true, // the drain consumes only the payload, never Total
 		IncludeTombstones: includeTombstones,

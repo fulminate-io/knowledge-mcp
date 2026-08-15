@@ -106,10 +106,9 @@ func (m sgRuleMetadata) encode() string {
 // protocol, port range, and CIDR text so the analyzer can evaluate
 // port intersections without re-parsing the SG Content blob.
 func resolveSecurityGroupRules(ctx context.Context, gc postpopulate.GraphCaller, graphName string) error {
-	sgs, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
-		"type":  string(kgtypes.NodeCloudResource),
-		"meta":  map[string]string{"resource_type": "security-group"},
-		"limit": 0,
+	sgs, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
+		"type": string(kgtypes.NodeCloudResource),
+		"meta": map[string]string{"resource_type": "security-group"},
 	})
 	if err != nil {
 		return fmt.Errorf("aws sg: query security groups: %w", err)

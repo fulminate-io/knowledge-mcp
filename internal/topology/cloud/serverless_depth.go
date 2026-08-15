@@ -29,7 +29,7 @@
 //
 // DATA ACCESS — one foundation.FetchNodesByType(NodeCloudResource) browse
 // supplies both the candidate functions and the node-ID → resource_type map
-// the BFS uses to label discovered dependencies; one bulk foundation.FetchEdges
+// the BFS uses to label discovered dependencies; a bulk foundation.FetchEdges
 // over the cloud node set (filtered to the dependency edge types) supplies the
 // forward adjacency. No per-node edge or by-id fetch.
 package cloud
@@ -140,7 +140,7 @@ func (ServerlessDepthAnalyzer) Run(ctx context.Context, req foundation.Request) 
 }
 
 // buildServerlessIndex fetches every dependency edge incident to the cloud
-// node set in ONE bulk read and returns the in-memory forward adjacency.
+// node set in a bulk paged read and returns the in-memory forward adjacency.
 func buildServerlessIndex(ctx context.Context, req foundation.Request, nodes []*knowledgev1.Node) (*edgeIndex, error) {
 	ids := make([]string, 0, len(nodes))
 	for _, n := range nodes {

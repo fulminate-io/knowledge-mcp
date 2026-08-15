@@ -54,6 +54,8 @@ func buildOSSHealClient(t *testing.T, embedded int32, codeRepos ...string) (*cli
 		authState:  authState,
 		segmentMgr: segmentdist.NewManager(router, t.TempDir(), 0), // router.LoggedIn==false → OSS-local source
 		workingSet: fixtureWorkingSet(codeRepos...),
+
+		localPresence: fixturePresence(),
 	}
 	return c, eng
 }

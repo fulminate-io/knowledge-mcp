@@ -12,6 +12,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/graphsel"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgwire"
+	"github.com/fulminate-io/knowledge-mcp/internal/paging"
 )
 
 // GraphCaller is the narrow base render seam this package needs. Mirrors
@@ -128,8 +129,8 @@ func FetchNodeIn(ctx context.Context, gc GraphCaller, nodeID, graphType, graphNa
 	return nodes[0], nil
 }
 
-// IterEdges fetches a node's edges via the RETURN_MODE_EDGES carrier (one
-// Execute, both directions) and applies the caller's direction + edgeTypes
+// IterEdges fetches a node's edges via the RETURN_MODE_EDGES carrier (bounded
+// pages, both directions) and applies the caller's direction + edgeTypes
 // filters client-side over the decoded knowledgev1.Edge slice. The edge's
 // FromId/ToId relative to nodeID determines its direction. Returns
 // []*knowledgev1.Edge — knowledgev1.Edge value-embeds the proto MessageState,
@@ -159,18 +160,29 @@ func IterEdgesIn(
 	if err != nil {
 		return nil, err
 	}
-	resp, err := ex.Execute(ctx, &knowledgev1.ExecuteRequest{
-		Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
-			ById:              nodeID,
-			ReturnMode:        knowledgev1.ReturnMode_RETURN_MODE_EDGES,
-			IncludeTombstones: true,
-		}},
-		Target: graphTarget(graphType, graphName),
-	})
+	// The plan Limit and the drain's edgeCap are the same number twice on
+	// purpose: the Limit is what the server enforces, the cap is what the drain
+	// uses to notice it was enforced. One without the other yields a drain that
+	// never detects truncation, or one that splits on a threshold nobody applies.
+	rawEdges, err := paging.DrainPivotEdges([]string{nodeID}, paging.EdgePivotPageSize, engine.CorrelationsEdgeScanCap,
+		func(idPage []string) ([]knowledgev1.Edge, error) {
+			resp, rerr := ex.Execute(ctx, &knowledgev1.ExecuteRequest{
+				Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
+					Ids:               idPage,
+					ReturnMode:        knowledgev1.ReturnMode_RETURN_MODE_EDGES,
+					IncludeTombstones: true,
+					Limit:             int32(engine.CorrelationsEdgeScanCap),
+				}},
+				Target: graphTarget(graphType, graphName),
+			})
+			if rerr != nil {
+				return nil, fmt.Errorf("iter edges %q: %w", nodeID, rerr)
+			}
+			return decodeCarrierEdges(resp), nil
+		})
 	if err != nil {
-		return nil, fmt.Errorf("iter edges %q: %w", nodeID, err)
+		return nil, err
 	}
-	rawEdges := decodeCarrierEdges(resp)
 	return filterEdges(rawEdges, nodeID, direction, edgeTypes), nil
 }
 
@@ -209,10 +221,10 @@ func filterEdges(rawEdges []knowledgev1.Edge, nodeID string, direction kgwire.Ed
 	return out
 }
 
-// FetchDependsOnEdges fetches the depends-on edges among nodeIDs in ONE
-// RETURN_MODE_EDGES Execute and returns a map from each dependent's ID
-// to its first depends-on target. It batches the per-child
-// firstDependsOn lookup the tree renderer otherwise does node-by-node.
+// FetchDependsOnEdges fetches the depends-on edges among nodeIDs through the
+// bounded pivot drain and returns a map from each dependent's ID to its first
+// depends-on target. It batches the per-child firstDependsOn lookup the tree
+// renderer otherwise does node-by-node.
 //
 // The plan pivots on the node-SET (QueryPlan.Ids) and sets Forward=&true
 // so the server unions only each pivot's OUTGOING depends-on edges. That
@@ -232,19 +244,30 @@ func FetchDependsOnEdges(ctx context.Context, gc GraphCaller, nodeIDs []string) 
 		return nil, err
 	}
 	fwd := true
-	resp, err := ex.Execute(ctx, &knowledgev1.ExecuteRequest{
-		Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
-			Ids:               nodeIDs,
-			Forward:           &fwd,
-			ReturnMode:        knowledgev1.ReturnMode_RETURN_MODE_EDGES,
-			IncludeTombstones: true,
-			Selection:         &knowledgev1.Selection{EdgeTypes: []string{string(kgtypes.EdgeDependsOn)}},
-		}},
-	})
+	// The plan Limit and the drain's edgeCap are the same number twice on
+	// purpose: the Limit is what the server enforces, the cap is what the drain
+	// uses to notice it was enforced. One without the other yields a drain that
+	// never detects truncation, or one that splits on a threshold nobody applies.
+	edges, err := paging.DrainPivotEdges(nodeIDs, paging.EdgePivotPageSize, engine.CorrelationsEdgeScanCap,
+		func(idPage []string) ([]knowledgev1.Edge, error) {
+			resp, rerr := ex.Execute(ctx, &knowledgev1.ExecuteRequest{
+				Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
+					Ids:               idPage,
+					Forward:           &fwd,
+					ReturnMode:        knowledgev1.ReturnMode_RETURN_MODE_EDGES,
+					IncludeTombstones: true,
+					Limit:             int32(engine.CorrelationsEdgeScanCap),
+					Selection:         &knowledgev1.Selection{EdgeTypes: []string{string(kgtypes.EdgeDependsOn)}},
+				}},
+			})
+			if rerr != nil {
+				return nil, fmt.Errorf("fetch depends-on edges: %w", rerr)
+			}
+			return decodeCarrierEdges(resp), nil
+		})
 	if err != nil {
-		return nil, fmt.Errorf("fetch depends-on edges: %w", err)
+		return nil, err
 	}
-	edges := decodeCarrierEdges(resp)
 	dependsOn := make(map[string]string, len(edges))
 	for i := range edges {
 		e := &edges[i]

@@ -15,6 +15,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/enginetest"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/paging"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 )
@@ -186,11 +187,11 @@ func seedFileIndex(n int) ([]string, []knowledgev1.Node) {
 func TestFileSymbolsCollector_FallbackBrowsesFileIndexOncePerCall(t *testing.T) {
 	// More than 2*BrowsePageSize so the drain pages at least three times — a
 	// single-page corpus could not tell one drain from three.
-	const corpus = 2*engine.BrowsePageSize + 1
+	const corpus = 2*paging.BrowsePageSize + 1
 	ids, nodes := seedFileIndex(corpus)
 	f := &fsFake{useFallback: true, fileIDs: ids, allNodes: nodes}
 
-	wantPages := corpus/engine.BrowsePageSize + 1 // full pages + the short final one
+	wantPages := corpus/paging.BrowsePageSize + 1 // full pages + the short final one
 	res := composeFileSymbols(context.Background(), f.exec, fileSymbolsArgs{Repo: "r"},
 		[]string{"f00001.go", "f00002.go", "f00003.go"})
 	require.False(t, res.IsError, textBodyTools(res))
@@ -261,12 +262,12 @@ func TestAstHydrator_PassesBranch(t *testing.T) {
 // Without it a hydrator that builds its collector INSIDE the per-file loop would
 // pass every other test in this plan.
 func TestAstHydrator_MemoizesFileIndexAcrossFiles(t *testing.T) {
-	const corpus = 2*engine.BrowsePageSize + 1
+	const corpus = 2*paging.BrowsePageSize + 1
 	ids, nodes := seedFileIndex(corpus)
 	f := &fsFake{useFallback: true, fileIDs: ids, allNodes: nodes}
 	b := graphClientHydratorBackend{gc: fsCaller{f: f}, repo: "knowledge"}
 
-	wantPages := corpus/engine.BrowsePageSize + 1
+	wantPages := corpus/paging.BrowsePageSize + 1
 	require.NoError(t, b.IterateFunctionish(context.Background(),
 		[]string{"f00001.go", "f00002.go", "f00003.go"}, func(*knowledgev1.Node) error { return nil }))
 

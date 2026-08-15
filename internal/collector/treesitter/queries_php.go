@@ -12,12 +12,21 @@ func phpQueries() *QuerySet {
 			(trait_declaration name: (name) @name) @decl
 			(namespace_definition) @decl
 		]`,
+		// The FIRST arm is unchanged and was already correct — `qualified_name`
+		// spans `\Foo\Bar` whole, so plain function calls never lost their
+		// qualifier. The other two gain the object/scope capture and compose a
+		// span across their two @callee captures: `$o->doThing`, `Bar::stat`.
+		//
+		// The wildcard on scope is required for `\Other\Thing::go()`, whose
+		// scope is a qualified_name node rather than a plain name.
 		Calls: `[
 			(function_call_expression function: [(name) (qualified_name)] @callee)
-			(member_call_expression name: (name) @callee)
-			(scoped_call_expression name: (name) @callee)
+			(member_call_expression object: (_) @callee name: (name) @callee)
+			(scoped_call_expression scope: (_) @callee name: (name) @callee)
 		]`,
-		Imports:  `(namespace_use_declaration) @import`,
+		// The namespace_aliasing_clause child is what carries `use Foo\Bar as
+		// Qux`'s local name. One capture per statement.
+		Imports:  `(namespace_use_declaration (namespace_use_clause (namespace_aliasing_clause)?)) @import`,
 		TypeRefs: `(named_type (name) @typeref)`,
 		// TestBlocks: Pest's `test('name', fn () => ...)`,
 		// `it('name', fn () => ...)`, `describe('group', function () {...})`,

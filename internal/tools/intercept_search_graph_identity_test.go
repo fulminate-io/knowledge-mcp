@@ -109,6 +109,11 @@ func TestSearchJSONCarriesSourceGraph_AllFamilies(t *testing.T) {
 		// code graphs (RETURN_MODE_GRAPH_NAMES) and serves the per-repo ids[] hydrate;
 		// the fan-out segment searcher dispatches by name == repo, so each repo
 		// surfaces its OWN node. Each result must carry its OWN repo as the instance.
+		// Empty temp manifest: the fan-out detects each repo's branch from the
+		// machine-local manifest, and this subtest is about per-result graph
+		// identity. Pinning both repos to the no-entry state keeps them on the
+		// single-pool path regardless of what this developer has collected.
+		withTestManifest(t)
 		gc := newFanOutHarness(t, []string{"repoA", "repoB"},
 			&knowledgev1.Node{Id: "a.go:A", SymbolName: "A", Type: "function", FilePath: "a.go", StartLine: 1},
 			&knowledgev1.Node{Id: "b.go:B", SymbolName: "B", Type: "function", FilePath: "b.go", StartLine: 1},

@@ -92,6 +92,43 @@ func TestWorkingSet_PipelineWritebackDoesNotAdmit(t *testing.T) {
 			"admitting the writeback would make the working set self-admitting")
 }
 
+// TestUserCallAdmitsOnlyTheNamedGraph states the invariant the whole fan-out
+// CLASS must keep: one user call admits the one graph it named, and the internal
+// fan-outs it triggers admit nothing — however many graphs they happen to
+// address. The per-site tests prove the two fan-outs that exist today stamp
+// correctly; this one gives a third fan-out, added later with an inherited
+// stamp, a written rule to be measured against.
+//
+// ITS REACH IS THE ROUTER, NOT THE SYSTEM. It observes only admissions flowing
+// through Router.Execute, and two production admission vectors deliberately
+// bypass that funnel — the collect sink (admittingSink.WriteResult) and the
+// segmentdist search admitter — each a genuine user interaction carrying its own
+// test, TestCollectSinkAdmitsEveryGraphFamily among them.
+func TestUserCallAdmitsOnlyTheNamedGraph(t *testing.T) {
+	t.Parallel()
+
+	r, rec := routerWithRecorder(t)
+
+	// (1) KNOWN-POSITIVE CONTROL, first: the user's own call against the graph
+	// the user named. If this does not fire, the two silences below prove only
+	// that the recorder was never reachable.
+	_, _ = r.Execute(WithOperation(context.Background(), OpThoughts), codeMutation("named-by-the-user"))
+	require.Equal(t, []string{"code/named-by-the-user"}, rec.recorded(),
+		"control: the recorder must be live before its silence means anything")
+
+	// (2) and (3): the fan-outs that same call triggers, each addressing a
+	// DIFFERENT graph the user never named.
+	_, _ = r.Execute(WithOperation(context.Background(), OpCrossGraphProbe), codeMutation("probed-not-named"))
+	_, _ = r.Execute(WithOperation(context.Background(), OpPostCollectFanout), codeMutation("enriched-not-named"))
+
+	// SET EQUALITY, never a count: a count of one is equally satisfied by having
+	// admitted the wrong graph.
+	assert.Equal(t, []string{"code/named-by-the-user"}, rec.recorded(),
+		"a user call admits ONLY the graph it named — the graphs its internal fan-outs "+
+			"reach are not interactions, and admitting them is what let one call pull in "+
+			"every graph in the account")
+}
+
 // TestWorkingSet_InstanceTargetAdmitsTypeOnlyDoesNot pins the structural half of
 // the gate and its one named exception.
 func TestWorkingSet_InstanceTargetAdmitsTypeOnlyDoesNot(t *testing.T) {

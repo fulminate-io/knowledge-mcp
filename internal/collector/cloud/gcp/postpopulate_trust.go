@@ -29,10 +29,9 @@ var impersonationRoles = map[string]bool{
 // trust convention.
 func resolveCrossProjectTrust(ctx context.Context, gc postpopulate.GraphCaller, graphName string) error {
 	// Query all service account nodes.
-	sas, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
-		"type":  string(kgtypes.NodeCloudResource),
-		"meta":  map[string]string{"resource_type": "gcp:iam:serviceAccount"},
-		"limit": 0,
+	sas, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
+		"type": string(kgtypes.NodeCloudResource),
+		"meta": map[string]string{"resource_type": "gcp:iam:serviceAccount"},
 	})
 	if err != nil {
 		return err

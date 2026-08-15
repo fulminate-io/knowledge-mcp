@@ -146,8 +146,50 @@ func (c *Chunker) ChunkFile(ctx context.Context, filePath string, src []byte) (*
 	if extend, ok := frameworkExtenders[lang]; ok {
 		fileCtx.Frameworks = extend(tree.RootNode(), src, filePath, fileCtx.Frameworks)
 	}
-	c.walkTopLevel(tree.RootNode(), src, filePath, lang, cqs, fileCtx, result)
-	c.walkTestBlocks(tree.RootNode(), src, filePath, lang, cqs, fileCtx, result)
+
+	// One RefSite per file, shared by every reference edge the file emits: the
+	// walks below assign this same pointer rather than constructing a site per
+	// edge, so a file costs one struct and one Binds map however many
+	// references it makes.
+	//
+	// Its Binds field is where the file's imports stop being discarded.
+	// Context.Imports is captured at chunker_filecontext.go:19-37 and, before
+	// this carrier existed, went no further than the chunk's embedding context
+	// — nothing downstream could see what a file imported, so a reference could
+	// only ever be matched by name. bindsFor returns nil until a language
+	// registers a BindsResolver.
+	ref := &RefSite{
+		File:  filePath,
+		Scope: ScopeID(filePath, lang, fileCtx.PackageName),
+		Lang:  lang,
+	}
+	// ALLOCATE the map here, and only when this language has an arm, because
+	// refForParent derives a parented site by VALUE: a later pass that assigned
+	// a fresh map would update the file-level site alone and leave every
+	// parented reference reading the nil header it copied. A map is a reference
+	// type, so an allocation here is visible through every by-value copy and
+	// the pass can fill it in place.
+	if hasBindsResolver(lang) {
+		ref.Binds = map[string]Bind{}
+		ref.DotScopes = map[string]bool{}
+	}
+	result.Ref = ref
+
+	// THE TEST-BLOCK COLLECTION IS HOISTED ABOVE walkTopLevel, and the landmark
+	// that forces it is emitDeclarationEdges rather than the orphan pass. Both
+	// consumers of these ranges live inside walkTopLevel: the leaked-declaration
+	// migration tests containment INSIDE the emitDeclarationEdges loop, and twin
+	// suppression needs them by the time collectOrphans runs — which is LATER. A
+	// collection placed between the two would satisfy "before the orphan pass"
+	// literally while every leak silently tested as not-leaked, a no-op with
+	// nothing red at the seam. One collection above both serves both.
+	//
+	// The chunk EMISSION order is unchanged by the hoist: this pass only reads
+	// the tree, and walkTestBlocks still appends its chunks after walkTopLevel's.
+	testBlocks := c.collectTestBlockSites(tree.RootNode(), src, filePath, lang, cqs, fileCtx)
+
+	c.walkTopLevel(tree.RootNode(), src, filePath, lang, cqs, fileCtx, ref, testBlocks, result)
+	c.walkTestBlocks(testBlocks, src, filePath, lang, cqs, fileCtx, ref, result)
 
 	return result, nil
 }
@@ -276,6 +318,8 @@ func (c *Chunker) walkTopLevel(
 	lang Language,
 	cqs *compiledQuerySet,
 	fileCtx ChunkContext,
+	ref *RefSite,
+	testBlocks []testBlockSite,
 	result *Result,
 ) {
 	if cqs.topLevel == nil {
@@ -290,6 +334,24 @@ func (c *Chunker) walkTopLevel(
 	// so no rename map can attribute an edge back to its chunk.
 	pending, coveredRanges := collectTopLevelDecls(root, src, lang, cqs)
 
+	// TWIN SUPPRESSION. Every top-level test block was chunked TWICE: once as a
+	// test_block here, and once as an orphan expression_statement by
+	// collectOrphans, because coveredRanges was built from TopLevel matches
+	// alone and walkTestBlocks contributed nothing to it. Contributing the
+	// test-block extents is what makes the orphan pass skip the duplicate.
+	//
+	// The twin is SUPPRESSED rather than emitted-and-deleted: containment edges
+	// address chunks POSITIONALLY by 1-based slot (types.go:166-179), so
+	// removing a chunk after the fact would renumber every slot above it and
+	// silently repoint edges at the wrong declarations. A node never created
+	// costs nothing to address.
+	//
+	// THE CONTRIBUTED EXTENT IS coverRange, NOT the @decl range — see
+	// testBlockCoverRange for the one-byte reason.
+	for i := range testBlocks {
+		coveredRanges = append(coveredRanges, testBlocks[i].coverRange)
+	}
+
 	// Unnamed declarations are excluded from the count: they carry no name to
 	// collide on, their endpoints are already inert, and their stable naming is
 	// a separate concern that must not gain a second astPathHash site here.
@@ -303,11 +365,39 @@ func (c *Chunker) walkTopLevel(
 	// Pass 2: emit. The suffix is the same astPathHash value DeduplicateChunks
 	// appends today, so node IDs are unchanged — what changes is that the
 	// edges now carry the matching name.
+	//
+	// The emission is SPLIT into two sub-passes because containment is now
+	// addressed by chunk slot rather than by name. A member's parent-to-member
+	// edge needs its CONTAINER's slot, and tree-sitter yields matches in the
+	// query's order rather than the source's, so the container is not
+	// guaranteed to have been emitted yet when the member is reached. Emitting
+	// every chunk first makes every slot available to every edge.
 	names := resolveCollisionNames(pending, counts)
+	slots := make(slotIndex, len(pending))
 	for i, p := range pending {
 		c.emitDeclarationChunk(p.declNode, src, filePath, lang, fileCtx, p.chunkType, names.final[i], p.parentName, result)
+		// 1-based: the slot is len AFTER the append, so 0 stays available as
+		// "unset" on an Edge literal that omits the field.
+		slots[byteRange{start: p.declNode.StartByte(), end: p.declNode.EndByte()}] = len(result.Chunks)
+	}
+	for i, p := range pending {
+		// LEAK MIGRATION. A declaration whose byte range falls inside a test
+		// block's is test-origin, and its call edges have ALWAYS been emitted —
+		// the ECMAScript (lexical_declaration) @decl pattern is unanchored, so
+		// tree-sitter matches it at any depth and a binding inside an it() body
+		// chunks as an ordinary declaration. Those edges were CALLS and are now
+		// TEST_CALLS, so the graph does not end up with two classes of test edge
+		// and only one of them labeled.
+		//
+		// THE RULE IS RANGE CONTAINMENT AND NOTHING ELSE — no name matching, no
+		// path heuristic. Its boundary is honest and documented: a test-origin
+		// declaration in one of the languages with no TestBlocks query has no
+		// test_block range to sit inside, so it is not identifiable by this rule
+		// and its edges stay CALLS.
+		declRange := byteRange{start: p.declNode.StartByte(), end: p.declNode.EndByte()}
+		testOrigin := testBlockRangeContains(testBlocks, declRange)
 		c.emitDeclarationEdges(p.declNode, src, filePath, lang, fileCtx, p.chunkType, names.final[i], p.parentName,
-			names.parentEdgeName(p), names.typeRefAlias, cqs, result)
+			names.typeRefAlias, cqs, slots, ref, testOrigin, result)
 	}
 
 	// Collect import edges.
@@ -398,77 +488,4 @@ func (c *Chunker) emitDeclarationChunk(
 		chunk.TestKind = kind
 	}
 	result.Chunks = append(result.Chunks, chunk)
-}
-
-// emitDeclarationEdges adds CONTAINS, CALLS, USES_TYPE, and EMBEDS edges to result.Edges.
-func (c *Chunker) emitDeclarationEdges(
-	declNode *sitter.Node,
-	src []byte,
-	filePath string,
-	lang Language,
-	fileCtx ChunkContext,
-	chunkType, name, parentName, parentEdgeName string,
-	typeRefAlias map[string]string,
-	cqs *compiledQuerySet,
-	result *Result,
-) {
-	// Compute the parent-qualified symbol name for edge IDs — "Receiver.Method"
-	// for a Go method, "Class.member" elsewhere — to avoid collisions when
-	// several parents in the same namespace share a member name. parentName is
-	// the same value the chunk carries, so this string equals the symbolMap key
-	// parser/populate builds from the chunk. Pass 2 above appends
-	// "#"+astPathHash to a colliding declaration's OWN name, while a member's
-	// parentName was captured in pass 1 and stays unsuffixed. When the collision
-	// is on a container (two C++ blocks reopening one namespace, a Rust struct
-	// beside its impls), the parent-to-member edge below therefore uses
-	// parentEdgeName instead — the disambiguated name of the container that
-	// lexically encloses this member — and a type reference naming that
-	// container is repointed through typeRefAlias to whichever colliding
-	// declaration is the type, or left alone when more than one candidate
-	// survives. Both edges then name a key some chunk carries, while every
-	// member's own node ID is unchanged: only the edges take the suffix.
-	//
-	// The name guard is load-bearing: many TopLevel patterns bind no @name, so
-	// their chunks carry Name "" and qualifiedName already returns "" for them,
-	// leaving the edge inert. Without the guard those endpoints would become a
-	// non-empty "<ns>.<parent>." that enters resolution instead of being dropped.
-	symbolName := name
-	if name != "" && parentName != "" {
-		symbolName = parentName + "." + name
-	}
-
-	// Emit CONTAINS edge (file → declaration).
-	result.Edges = append(result.Edges, Edge{
-		FromID: filePath,
-		ToID:   qualifiedName(fileCtx.PackageName, symbolName),
-		Type:   EdgeContains,
-	})
-
-	// Parent → member CONTAINS: a Go receiver type → its method, and a
-	// class → its member in every other language.
-	if name != "" && parentName != "" {
-		result.Edges = append(result.Edges, Edge{
-			FromID: qualifiedName(fileCtx.PackageName, parentEdgeName),
-			ToID:   qualifiedName(fileCtx.PackageName, symbolName),
-			Type:   EdgeContains,
-		})
-	}
-
-	if name != "" {
-		result.Edges = append(result.Edges, c.extractCallEdges(declNode, src, fileCtx.PackageName, symbolName, cqs)...)
-		result.Edges = append(result.Edges,
-			aliasTypeRefTargets(c.extractTypeRefEdges(declNode, src, fileCtx.PackageName, symbolName, cqs), typeRefAlias)...)
-	}
-
-	// For Go struct types: extract EMBEDS edges.
-	if lang == LangGo && chunkType == "type_declaration" {
-		embeds := extractGoEmbeds(declNode, src)
-		for _, embedded := range embeds {
-			result.Edges = append(result.Edges, Edge{
-				FromID: qualifiedName(fileCtx.PackageName, symbolName),
-				ToID:   embedded,
-				Type:   EdgeEmbeds,
-			})
-		}
-	}
 }

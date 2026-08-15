@@ -289,7 +289,7 @@ func effectiveGate(prov string) float64 {
 }
 
 // buildLeafProvenance recovers per-edge provenance for every edge incident to a
-// candidate leaf in ONE bulk fetchEdgesForNodeSet read (no per-leaf round-trips),
+// candidate leaf in a bulk fetchEdgesForNodeSet read (no per-leaf round-trips),
 // returning leaf→{neighbor→provenance}. Provenance is classified from the edge
 // Method: tree-link / densify / topic-similarity machine edges by their stamped
 // method, every other typed reasoning edge (relates-to / next / branches-from /

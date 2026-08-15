@@ -26,8 +26,11 @@ import (
 // routedWireClient over a *graphclient.Router across a mid-session login flip.
 type flippableBackend struct {
 	loggedIn atomic.Bool
-	local    *fakeWireClient
-	cloud    *fakeWireClient
+	// accountID is the selected Fulminate account this backend reports. An
+	// account switch is cloud->cloud, so it moves independently of loggedIn.
+	accountID atomic.Value // string
+	local     *fakeWireClient
+	cloud     *fakeWireClient
 
 	mu            sync.Mutex
 	cloudScanGens []uint64 // LastSeenGen of every scan the cloud backend served
@@ -105,6 +108,15 @@ func (r *recordingBackend) Execute(ctx context.Context, req *knowledgev1.Execute
 }
 
 func (f *flippableBackend) LoggedIn(_ context.Context) bool { return f.loggedIn.Load() }
+
+// SelectedAccountID reports the second half of the backend identity.
+func (f *flippableBackend) SelectedAccountID(_ context.Context) string {
+	id, _ := f.accountID.Load().(string)
+	return id
+}
+
+// setAccount models `knowledge account use` landing a new selection.
+func (f *flippableBackend) setAccount(id string) { f.accountID.Store(id) }
 
 var (
 	_ WireClient      = (*flippableBackend)(nil)

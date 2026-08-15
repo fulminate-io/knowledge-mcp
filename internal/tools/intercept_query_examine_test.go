@@ -5,6 +5,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"slices"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -28,15 +29,20 @@ type examineFake struct {
 func (f *examineFake) exec(_ context.Context, req *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error) {
 	q := req.GetQuery()
 	switch {
-	case q.GetById() == f.subjectID && q.GetReturnMode() != knowledgev1.ReturnMode_RETURN_MODE_EDGES:
-		// (1) subject node read (return mode unset → server defaults to nodes).
-		return nodesResp(t2nodes(knowledgev1.Node{Id: f.subjectID, SymbolName: "Subject", Type: "step", Status: "active"}))
-	case q.GetById() == f.subjectID && q.GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_EDGES:
-		// (2) edge neighborhood.
+	case q.GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_EDGES:
+		// (2) edge neighborhood. The pivot arrives as the node-SET form (Ids[],
+		// what the paged pivot drain sends) or the single-node form (ById), so
+		// this arm is keyed on the return mode and checks both carriers.
+		if !planPivotsInclude(q, f.subjectID) {
+			return &knowledgev1.ExecuteResponse{}, nil
+		}
 		return edgesResp([]*knowledgev1.Edge{
 			{FromId: f.subjectID, ToId: "A", Type: "relates-to"},
 			{FromId: "B", ToId: f.subjectID, Type: "informed-by"},
 		})
+	case q.GetById() == f.subjectID:
+		// (1) subject node read (return mode unset → server defaults to nodes).
+		return nodesResp(t2nodes(knowledgev1.Node{Id: f.subjectID, SymbolName: "Subject", Type: "step", Status: "active"}))
 	case len(q.GetSelection().GetFromId()) > 0:
 		// (3) ancestry hop — return the parent for the current node, up to 2 hops.
 		from := q.GetSelection().GetFromId()[0]
@@ -60,6 +66,12 @@ func (f *examineFake) exec(_ context.Context, req *knowledgev1.ExecuteRequest) (
 		return nodesResp(nodes)
 	}
 	return &knowledgev1.ExecuteResponse{}, nil
+}
+
+// planPivotsInclude reports whether id is one of the plan's edge pivots, in
+// either carrier: the node-SET form (Ids[]) or the single-node form (ById).
+func planPivotsInclude(q *knowledgev1.QueryPlan, id string) bool {
+	return q.GetById() == id || slices.Contains(q.GetIds(), id)
 }
 
 func t2nodes(n ...knowledgev1.Node) []knowledgev1.Node { return n }

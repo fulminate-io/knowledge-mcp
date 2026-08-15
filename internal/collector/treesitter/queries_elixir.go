@@ -36,7 +36,25 @@ func elixirQueries() *QuerySet {
 		// as zero-capture matches.
 		TopLevel: `((call target: (identifier) @kw) @decl
 		(#match? @kw "^(defmodule|defprotocol|defimpl|def|defp|defmacro|defmacrop|defdelegate|defguard|defguardp|defstruct|defexception)$"))`,
-		Calls:    `(call target: (identifier) @callee)`,
+		// Calls: in Elixir every DEFINITION is also a call, so an unfiltered
+		// `target: (identifier)` capture emitted a CALLS edge to `defmodule`,
+		// `def`, `import` and `alias` for every module in the corpus — four of
+		// five callees being the language's own macro keywords. The same
+		// capture MISSED every qualified call, because `Enum.map` parses as
+		// `target: (dot)` and never as an identifier.
+		//
+		// THE OUTER PARENTHESES AROUND PATTERN-PLUS-PREDICATE ARE LOAD-BEARING
+		// here for exactly the reason the TopLevel comment above measures: a
+		// predicate written as a sibling S-expression compiles into a separate,
+		// capture-free pattern and leaves this one entirely unfiltered.
+		//
+		// THE EXCLUSION LIST IS TopLevel's ALLOWLIST PLUS THE FOUR DIRECTIVES
+		// (import, alias, require, use) — macros that are not declarations but
+		// are equally not calls to anything the index holds. THE TWO LISTS MUST
+		// STAY IN SYNC: a definition macro added to TopLevel and not here
+		// immediately starts emitting a CALLS edge to its own keyword.
+		Calls: `((call target: [ (identifier) @callee (dot) @callee ])
+		(#not-match? @callee "^(defmodule|defprotocol|defimpl|def|defp|defmacro|defmacrop|defdelegate|defguard|defguardp|defstruct|defexception|import|alias|require|use)$"))`,
 		Imports:  "",
 		TypeRefs: "",
 		// TestBlocks: ExUnit block-form `test "name" do ... end`,

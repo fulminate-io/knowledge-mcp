@@ -11,6 +11,7 @@ import (
 	"sync"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
+	"github.com/fulminate-io/knowledge-mcp/internal/paging"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
@@ -181,13 +182,13 @@ func (c *fileSymbolsCollector) collect(ctx context.Context, filePath string) []*
 // consequence of the callers happening to be serial.
 func (c *fileSymbolsCollector) fileIndex(ctx context.Context) []string {
 	c.once.Do(func() {
-		ids, err := engine.DrainKeysetIDs(func(afterID string) ([]string, error) {
+		ids, err := paging.DrainKeysetIDs(func(afterID string) ([]string, error) {
 			cursor := afterID
 			resp, rerr := c.exec(ctx, &knowledgev1.ExecuteRequest{
 				Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
 					Selection:  &knowledgev1.Selection{NodeType: string(kgtypes.NodeFile)},
 					ReturnMode: knowledgev1.ReturnMode_RETURN_MODE_IDS,
-					Limit:      int32(engine.BrowsePageSize),
+					Limit:      int32(paging.BrowsePageSize),
 					// AfterId is ALWAYS SET, including the empty cursor on page 1:
 					// its PRESENCE is what selects the keyset browse. Omitting it on
 					// page 1 makes the backend page in its own default order, and the
@@ -203,7 +204,7 @@ func (c *fileSymbolsCollector) fileIndex(ctx context.Context) []string {
 				return nil, rerr
 			}
 			return resp.GetIds(), nil
-		}, engine.BrowsePageSize)
+		}, paging.BrowsePageSize)
 		if err != nil {
 			return
 		}

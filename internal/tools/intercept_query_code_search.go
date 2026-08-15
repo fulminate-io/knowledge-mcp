@@ -6,15 +6,12 @@ import (
 	"context"
 	"encoding/json"
 	"runtime"
-	"sort"
 	"strings"
 	"sync"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/embed"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
-	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
-	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 )
@@ -186,10 +183,15 @@ func composeCodeSearch(ctx context.Context, deps ClientDeps, exec engine.Execute
 	// degrade (PipelineReady()==true but wirePipelineRuntime built no Manager) —
 	// the latter is caught by the nil-mgr guard below. There is no server-Execute
 	// fallback (the comment that once claimed one described a path never coded).
-	cdeps := codeSearchDeps{exec: exec}
+	cdeps := codeSearchDeps{exec: exec, degrade: &searchDegrade{}}
 	if deps != nil {
 		cdeps.mgr = deps.SegmentManager()
 		cdeps.gc = deps.GraphCaller()
+		// The two-pool arm rides the SAME concrete Manager, resolved through its own
+		// narrow seam so the Search-only doubles stay compilable.
+		if ov, ok := cdeps.mgr.(SegmentOverlaySearcher); ok {
+			cdeps.ovl = ov
+		}
 	}
 	// Permanent-degrade guard (bind-first startup): loud-error before any per-repo/per-query
 	// goroutine dereferences a nil Manager (a goroutine nil-deref crashes the
@@ -197,6 +199,13 @@ func composeCodeSearch(ctx context.Context, deps ClientDeps, exec engine.Execute
 	// sub-composers directly with a real cdeps, so it is exempt.
 	if deps != nil && cdeps.mgr == nil {
 		return errorResult("code search: client segment engine unavailable (LLM pipeline degraded at boot)")
+	}
+	// A branch search that cannot reach the two-pool arm must fail VISIBLY. Falling
+	// back to the base pool alone would drop every branch-only change from the
+	// result set while the banner still read healthy — the same class of silent
+	// wrong answer the two-pool arm exists to remove.
+	if deps != nil && a.Branch != "" && cdeps.ovl == nil {
+		return errorResult("code search: client segment engine lacks the branch-overlay arm")
 	}
 
 	if len(a.Repos) > 0 || a.Repo == "all" {
@@ -213,9 +222,18 @@ func composeCodeSearch(ctx context.Context, deps ClientDeps, exec engine.Execute
 // exec is NOT a search fallback; it carries only the staleness-footer Execute
 // (appendStalenessFooter). There is no server RETURN_MODE_SEARCH fallback.
 type codeSearchDeps struct {
-	mgr  SegmentSearcher
-	gc   GraphCaller
-	exec engine.ExecuteFn
+	mgr SegmentSearcher
+	// ovl is the two-pool arm, resolved off the same concrete Manager when it
+	// offers one. It is nil on the direct-cdeps unit-test path; production branch
+	// searches are gated on it being present in composeCodeSearch.
+	ovl SegmentOverlaySearcher
+	gc  GraphCaller
+	// degrade records search legs that failed, so the render can say so instead of
+	// presenting a short result set as a healthy one. Allocated once per search
+	// call in composeCodeSearch; legitimately nil on the direct-cdeps unit-test
+	// paths, which is why both its methods are nil-receiver-safe.
+	degrade *searchDegrade
+	exec    engine.ExecuteFn
 }
 
 // codeSearchModeLabel returns "hybrid" when any per-query vector is threaded
@@ -313,7 +331,9 @@ func composeCodeSearchSingleRepo(ctx context.Context, deps ClientDeps, cdeps cod
 	perQuery = applyCodeResultFilters(perQuery, a)
 
 	if a.Format == "json" {
-		return engine.RenderForCaller(strings.Join(queries, " "), flattenCodeResults(perQuery), "json", nil, "")
+		return appendDegradeContent(
+			engine.RenderForCaller(strings.Join(queries, " "), flattenCodeResults(perQuery), "json", nil, ""),
+			cdeps.degrade)
 	}
 
 	counts := make([]int, len(perQuery))
@@ -321,6 +341,11 @@ func composeCodeSearchSingleRepo(ctx context.Context, deps ClientDeps, cdeps cod
 		counts[i] = len(perQuery[i])
 	}
 	var sb strings.Builder
+	// A degraded search LEADS with the warning: buried under the results it reads
+	// as a footnote to an answer rather than a reason to doubt one.
+	if banner := cdeps.degrade.banner(); banner != "" {
+		sb.WriteString(banner + "\n\n")
+	}
 	engine.WriteCodePerQuerySearchHeader(&sb, queries, counts, codeSearchModeLabel(queryVecs))
 	if groupByFile {
 		engine.FormatCodePerQueryGroupByFile(&sb, queries, perQuery)
@@ -384,56 +409,18 @@ func searchOneCodeQuery(ctx context.Context, cdeps codeSearchDeps, target *knowl
 // accumulates per-collect deltas on top of it. Overlay-only would silently drop
 // every file untouched since the branch was cut — the bulk of any repo.
 //
-// Dedup is by node ID with the OVERLAY winning, mirroring the composite
-// base+overlay precedence that hydrateEngineHits applies one call later. Scores
-// from the two pools are produced against different IDF corpora and so are not
-// strictly comparable; the merge still orders on them, which is a RANKING
-// approximation only — a node present in both pools always resolves to exactly
-// one entry, so recall and identity are exact. A pool that errors or does not
-// exist contributes nothing rather than failing the search, so a repo on its
-// default branch (where no overlay pool was ever written) behaves as before.
-// mergeOverlayOverBase unions two pools' hits with the OVERLAY winning any id
-// present in both, then re-ranks and truncates to limit.
+// Which pools to open, and how to rank across them, is codeSearchPoolHits' job
+// (code_search_pools.go). Everything below the hit list — hydration, the
+// path_prefix filter, the repo tag — is the same for one pool or two.
 //
-// Overlay-wins mirrors the composite base+overlay precedence hydrateEngineHits
-// applies one call later, so a node changed on the branch resolves to the branch
-// version rather than to two entries or to the stale base one.
-//
-// The re-rank is a RANKING APPROXIMATION and deliberately so: the two pools score
-// against different IDF corpora, so their scores are not strictly comparable.
-// Ordering across the union is therefore approximate — but dedup is by id, so
-// recall and identity are exact, which is what correctness depends on.
-func mergeOverlayOverBase(overlayHits, baseHits []searchengine.Hit, limit int) []searchengine.Hit {
-	seen := make(map[string]struct{}, len(overlayHits))
-	for _, h := range overlayHits {
-		seen[h.ID] = struct{}{}
-	}
-	merged := overlayHits
-	for _, h := range baseHits {
-		if _, dup := seen[h.ID]; dup {
-			continue
-		}
-		merged = append(merged, h)
-	}
-	sort.SliceStable(merged, func(i, j int) bool { return merged[i].Score > merged[j].Score })
-	if len(merged) > limit {
-		merged = merged[:limit]
-	}
-	return merged
-}
-
+// CANDIDATES ARE OVER-FETCHED AND CUT LAST. The engine is asked for
+// codeSearchOverfetch*limit candidates and the result list is truncated to limit
+// only AFTER hydration drops and the path_prefix filter have run. The order is
+// the whole point: truncating first is what let a search that asked for 5 return
+// 2 with nothing reporting it.
 func searchOneCodeQueryClient(ctx context.Context, cdeps codeSearchDeps, target *knowledgev1.GraphSelector, query string, queryVec []byte, limit int, pathPrefix, repo string) []engine.CodeResolvedResult {
-	base := target.GetRepo()
-	hits, err := cdeps.mgr.Search(ctx, kgtypes.GraphCode, base, query, queryVec, limit)
-	if err != nil {
-		hits = nil
-	}
-	if overlay := overlayName(base, target.GetBranch()); overlay != base {
-		overlayHits, overlayErr := cdeps.mgr.Search(ctx, kgtypes.GraphCode, overlay, query, queryVec, limit)
-		if overlayErr == nil && len(overlayHits) > 0 {
-			hits = mergeOverlayOverBase(overlayHits, hits, limit)
-		}
-	}
+	hits := codeSearchPoolHits(ctx, cdeps, target.GetRepo(), target.GetBranch(),
+		query, queryVec, limit*codeSearchOverfetch)
 	if len(hits) == 0 {
 		return nil
 	}
@@ -448,6 +435,9 @@ func searchOneCodeQueryClient(ctx context.Context, cdeps codeSearchDeps, target 
 			continue
 		}
 		out = append(out, engine.CodeResolvedResult{Score: hr.Score, Node: hr.Node, Found: true, Repo: repo})
+	}
+	if len(out) > limit {
+		out = out[:limit]
 	}
 	return out
 }

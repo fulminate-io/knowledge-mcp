@@ -73,6 +73,31 @@ type ChunkContext struct {
 	// Elixir, HCL) — those Bucket B predicates use their own AST signals.
 	Frameworks []Framework
 
+	// ImportBindings is the file's import table: one entry per NAME its import
+	// statements bind, in the language-neutral ImportBinding shape. It is a
+	// FAITHFUL record of the statement list rather than a filtered one — a
+	// side-effect import binds no name and is recorded anyway, with an empty
+	// Local.
+	//
+	// Populated only for languages with a registered importParsers arm, and
+	// empty for the other 29. It is a file-level fact: every chunk of one file
+	// carries the same table.
+	ImportBindings []ImportBinding
+
+	// ReExports is the file's `export ... from '<spec>'` table — names it
+	// forwards from another module without binding them locally. Populated
+	// only for languages with a registered importParsers arm; empty for the
+	// other 29, and empty for a file whose exports name no source.
+	ReExports []ReExport
+
+	// DefaultExportName is the declared name behind this file's
+	// `export default`, for languages that have the form: the function or class
+	// name in `export default function App() {}`, or the identifier in
+	// `export default someIdent`. Empty when the file default-exports nothing,
+	// when the default export is anonymous, and for every language with no
+	// registered importParsers arm.
+	DefaultExportName string
+
 	// PackageName is the symbol namespace edge IDs are qualified with: the Go
 	// package clause when the file declares one, otherwise
 	// "<language>:<directory>" derived from the file path by fileNamespace.
@@ -125,6 +150,18 @@ const (
 	EdgeCalls    EdgeType = "CALLS"
 	EdgeUsesType EdgeType = "USES_TYPE"
 	EdgeEmbeds   EdgeType = "EMBEDS"
+
+	// EdgeTestCalls is the CALLS edge a TEST source emits — the body of a
+	// test_block chunk, or a declaration lexically inside one. Resolution
+	// treats it exactly as EdgeCalls (it falls to the same reference arm at
+	// parser/edges.go:128), so the distinct type buys the READ side an
+	// explicit choice rather than buying the write side any new behavior.
+	//
+	// The wire literal mirrors kgtypes.EdgeTestCalls verbatim, in the same
+	// per-module-duplicate idiom this file's other four constants already
+	// follow — the chunker carries its own EdgeType vocabulary because no
+	// hand-written package is shared across the two binaries.
+	EdgeTestCalls EdgeType = "TEST_CALLS"
 )
 
 // Edge represents a directed relationship between two code entities.
@@ -137,6 +174,37 @@ type Edge struct {
 	// invokes callee inside the function body) or 0 for edge types where
 	// aggregation does not apply (CONTAINS, IMPORTS, USES_TYPE, EMBEDS).
 	Weight float64
+
+	// FromChunk and ToChunk address a chunk POSITIONALLY: a 1-BASED index
+	// into the emitting Result.Chunks, with 0 meaning unset. The 1-based
+	// encoding is load-bearing — an Edge composite literal that omits the
+	// field zero-values it, and slot 0 is a real chunk, so a 0-based field
+	// would make every existing literal in every test claim to point at the
+	// file's first declaration.
+	//
+	// A containment edge carries BOTH a name-built endpoint and a slot. The
+	// slot is authoritative: the parser's pre-pass overwrites an endpoint
+	// from its slot wherever one exists, and leaves the name alone where the
+	// slot is 0. The name is a legacy carrier, not a fallback the pre-pass
+	// consults.
+	FromChunk int
+	ToChunk   int
+
+	// RefByte is the StartByte of the DECLARATION that emitted this
+	// reference, and the second component of the ambiguity group key. It is
+	// 0 on containment and IMPORTS edges, which are not references. Byte 0
+	// needs no unset encoding: it is the file's first byte, and no
+	// declaration whose reference we resolve starts there.
+	RefByte int
+
+	// Ref is the reference site: one per file, shared by every edge whose
+	// declaration has no parent, plus one derived copy per parented
+	// declaration carrying that declaration's Parent.
+	//
+	// nil on IMPORTS and on positionally-addressed CONTAINS; SET on
+	// reference edges AND on a Go method's parent-to-member CONTAINS, whose
+	// receiver source is a sibling the chunker cannot address by slot.
+	Ref *RefSite
 }
 
 // Result holds the complete output of parsing and chunking a single file.
@@ -145,4 +213,9 @@ type Result struct {
 	Language Language
 	Chunks   []Chunk
 	Edges    []Edge
+
+	// Ref is the file-level reference site, carried here so the parser's
+	// post-chunk Binds pass can reach it directly. Reaching it through Edges
+	// instead would miss any file that emitted no reference edge at all.
+	Ref *RefSite
 }

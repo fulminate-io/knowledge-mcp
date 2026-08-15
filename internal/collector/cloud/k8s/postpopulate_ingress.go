@@ -46,7 +46,7 @@ func resolveIngressCloudLBLinkage(ctx context.Context, gc postpopulate.GraphCall
 		return nil
 	}
 
-	ingresses, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, k8sResourceQuery("Ingress"))
+	ingresses, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, k8sResourceQuery("Ingress"))
 	if err != nil {
 		return err
 	}

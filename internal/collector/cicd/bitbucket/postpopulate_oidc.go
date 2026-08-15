@@ -77,10 +77,9 @@ func scanCloudGraph(
 func scanAWSRoles(
 	ctx context.Context, gc postpopulate.GraphCaller, cloudName, issuerURL, workspace string,
 ) ([]knowledgev1.Edge, error) {
-	roles, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, cloudName, map[string]any{
-		"type":  string(kgtypes.NodeCloudResource),
-		"meta":  map[string]string{"resource_type": "iam-role"},
-		"limit": 0,
+	roles, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, cloudName, map[string]any{
+		"type": string(kgtypes.NodeCloudResource),
+		"meta": map[string]string{"resource_type": "iam-role"},
 	})
 	if err != nil {
 		return nil, err
@@ -103,10 +102,9 @@ func scanAWSRoles(
 func scanAzureFederated(
 	ctx context.Context, gc postpopulate.GraphCaller, cloudName, issuerURL, workspace string,
 ) ([]knowledgev1.Edge, error) {
-	identities, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, cloudName, map[string]any{
-		"type":  string(kgtypes.NodeCloudResource),
-		"meta":  map[string]string{"resource_type": "managed-identity"},
-		"limit": 0,
+	identities, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, cloudName, map[string]any{
+		"type": string(kgtypes.NodeCloudResource),
+		"meta": map[string]string{"resource_type": "managed-identity"},
 	})
 	if err != nil {
 		return nil, err

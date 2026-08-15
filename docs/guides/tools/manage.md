@@ -66,10 +66,10 @@ A full error round auto-pauses the pipeline and it does not self-heal —
 | --- | --- | --- | --- | --- |
 | `auth_type` | string |  |  | Authentication mechanism for configure_log_backend (bearer, basic, aws_profile, api_key, service_account, kubeconfig, ...) |
 | `before` | string |  |  | For prune: cutoff for which tombstoned nodes to hard-delete. A relative window ('24h', '2d') or an absolute RFC3339 timestamp; only tombstones tombstoned before it are pruned. Omit to prune ALL tombstoned nodes. |
-| `branch` | string |  |  | Branch name (for delete_branch, list_branches) |
+| `branch` | string |  |  | Branch name (for delete_branch, list_branches). For repair_edges: repair ONLY that one branch overlay of name — branch REQUIRES name (branch with an empty name is an error), and the value is the BARE overlay name ('launch-fixes'), though the composed catalog key ('myrepo@launch-fixes') is accepted and normalized. Omit branch and a repair covers the base graph AND every branch overlay of each targeted repo. |
 | `credential` | string |  |  | Credential value for configure_log_backend — stored encrypted at rest. Accepts the raw value (e.g., a bearer token, API key, or service account JSON) or a $ENV_VAR reference resolved at query time. Optional when auth_type=kubeconfig. |
 | `dry_run` | boolean |  |  | For promote_metadata: when true, run the decision pass and report intended actions without mutating the graph. For drop_graph: when true, render a 'would drop' preview and issue ZERO mutations. Default false (executes). |
-| `execute` | boolean |  |  | For prune-cache: when true, DELETE the orphaned segments; default false renders a would-remove preview only. |
+| `execute` | boolean |  |  | For prune-cache: when true, DELETE the orphaned segments; default false renders a would-remove preview only. For repair_edges: when true, REMOVE the enumerated cross-file CONTAINS fossils; default false renders the preview only. |
 | `force` | boolean |  |  | For promote_metadata: when true, bypass the hysteresis bands and use the simple distinct<1000 rule. Operator one-shot path only. |
 | `force_edge` | array of string |  |  | Metadata keys pinned to value-node edges for set_metadata_overrides. Replaces the existing list. |
 | `force_edge[]` | string |  |  |  |
@@ -80,7 +80,7 @@ A full error round auto-pauses the pipeline and it does not self-heal —
 | `keys` | string |  |  | For promote_metadata: comma-separated metadata key filter. Only the named keys are considered for promotion/demotion; empty means every key the stats snapshot observed. |
 | `kube_context` | string |  |  | Kubeconfig context name from ~/.kube/config. Required when provider=k8s and auth_type=kubeconfig. Auth is resolved via client-go using the operator's environment (gcloud/aws-iam-authenticator/service-account tokens). |
 | `name` | string |  |  | Repository name (the repo name to record for register_repo; or log_backend name for configure_log_backend; or query_id for discard_logs) |
-| `operation` | string | yes | status, pprof_start, pprof_stop, delete_branch, list_branches, link, configure_log_backend, list_log_backends, list_logs, discard_logs, set_metadata_overrides, promote_metadata, clear_llm_failures, pause_pipeline, resume_pipeline, pipeline_status, prune, prune-cache, rebuild_cache, rebuild_segments, drop_graph, register_repo | Operation to perform |
+| `operation` | string | yes | status, pprof_start, pprof_stop, delete_branch, list_branches, link, configure_log_backend, list_log_backends, list_logs, discard_logs, set_metadata_overrides, promote_metadata, clear_llm_failures, pause_pipeline, resume_pipeline, pipeline_status, prune, prune-cache, rebuild_cache, rebuild_segments, drop_graph, register_repo, repair_edges | Operation to perform |
 | `provider` | string |  |  | Log backend provider for configure_log_backend (cloudwatch, loki, elasticsearch, stackdriver, k8s, ...) |
 | `reason` | string |  |  | For pause_pipeline: optional operator reason surfaced by pipeline_status. Defaults to a generic 'manually paused by operator' string when omitted. |
 | `reset` | boolean |  |  | For rebuild_segments: when true, ignore the stored watermark and rebuild the WHOLE corpus. Default false scans only what changed since the last rebuild that landed. |

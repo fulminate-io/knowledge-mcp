@@ -41,6 +41,12 @@ type traverseArgs struct {
 // ExecuteResponse.traversal_edges_json (the include_edge_metadata carrier); the
 // client renders it.
 //
+// The carrier is requested for a SECOND, INDEPENDENT reason on the code graph:
+// a code-graph walk needs the per-edge Method to tell a multi-candidate edge
+// group from N bound edges, so the field is set there even when the caller did
+// not ask for it. Do not "simplify" the condition back to the caller's
+// parameter alone.
+//
 // Direction maps to the forward tri-state: out→true, in→false, both→nil (the
 // engine computes the forward+backward union with min-distance dedup
 // server-side — the client must NOT re-derive it). EdgeTypes are canonicalized
@@ -75,7 +81,15 @@ func compileTraverse(args json.RawMessage) (*knowledgev1.ExecuteRequest, bool) {
 
 	// include_edge_metadata rides the carrier — the engine re-walks the traversed
 	// edges and returns the per-edge metadata for the client to render.
-	if a.IncludeEdgeMetadata {
+	//
+	// A CODE-GRAPH walk sets it whether or not the caller asked, for the second
+	// reason named on compileTraverse: without the per-edge Method the client
+	// cannot tell a multi-candidate group from N bound edges. This is a
+	// code-graph rule and must not be generalised to every graph to look
+	// symmetric — groups are emitted only by the code collector, so widening it
+	// would add a server-side edge re-walk to every knowledge, cloud and practice
+	// traversal in exchange for a group that cannot exist there.
+	if a.IncludeEdgeMetadata || isCodeGraph(a.Graph) {
 		plan.IncludeEdgeMetadata = true
 	}
 

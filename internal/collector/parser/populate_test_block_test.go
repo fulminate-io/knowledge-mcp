@@ -40,7 +40,7 @@ func TestChunkResultsToPopulate_TestBlockPassThrough(t *testing.T) {
 		},
 	}
 
-	pop := chunkResultsToPopulate("myrepo", "", results)
+	pop := chunkResultsToPopulate("myrepo", &treesitter.RepoContext{}, results)
 
 	id := ChunkNodeID(chunk)
 	n := nodeByID(pop.Nodes, id)

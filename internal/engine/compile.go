@@ -78,6 +78,10 @@ func buildTarget(graph, repo, account, name, language, branch string) *knowledge
 // isCodeGraph reports whether the selector targets the code graph, which is
 // SPECIALIZED (HandleSearchCode / HandleAnalyzeNode) and
 // therefore never reducible on search/query.
+//
+// Second consumer: compileTraverse requests the edge-metadata carrier on every
+// code-graph traversal, because only the code collector emits multi-candidate
+// edge groups and only the per-edge Method distinguishes one from N bound edges.
 func isCodeGraph(graph string) bool {
 	return graph == "code"
 }

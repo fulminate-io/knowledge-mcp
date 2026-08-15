@@ -1,0 +1,11 @@
+=== RUN   TestCallsLanguageCensus_EdgeProbe
+2026/08/14 12:02:05 INFO collector: dot-scope census dot_scopes_filled=0
+2026/08/14 12:02:06 INFO collector: reference resolution bound=69595 external=76437 ambiguous_groups=85 ambiguous_edges=171 dynamic_groups=16491 dynamic_edges=39670 dynamic_unbound=29213 max_dynamic_group_size=59 dot_scope_binds=0 dot_scope_groups=0
+PREPAIRS bash->bash=133 go->go=75182 python->python=112
+2026/08/14 12:02:18 INFO BuildGoCallGraph modules=4 callers=17445 covered_files=3836 package_errors=0
+2026/08/14 12:02:18 INFO precise call graph: replaced tree-sitter CALLS edges removed=67988 kept_non_go=245 kept_uncovered_go=7194 added=43778 rta_callers=17445 modules=4 covered_files=3836 decl_key_collisions=0 package_errors=0 go_toolchain_missing=false
+POSTPAIRS bash->bash=133 go->go=50972 python->python=112
+POSTMETHODCALLERS 7365
+--- PASS: TestCallsLanguageCensus_EdgeProbe (13.45s)
+PASS
+ok  	github.com/fulminate-io/knowledge/cmd/knowledge/internal/collector/codesync	14.057s

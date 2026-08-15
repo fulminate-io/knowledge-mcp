@@ -4,6 +4,7 @@ package parser
 
 import (
 	"context"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"sort"
@@ -26,11 +27,6 @@ type PopulateResult struct {
 	Nodes   []*knowledgev1.Node
 	Edges   []*knowledgev1.Edge
 	Entries []NodeEntry
-
-	// SymbolMap maps "pkg.Symbol" → nodeID for edge resolution.
-	// Used by single-file updates where cross-file resolution requires the graph.
-	// For full-reindex populates, edges are pre-resolved and this is nil.
-	SymbolMap map[string]string
 }
 
 // NodeEntry tracks a node and its source chunk content for summarization.
@@ -59,7 +55,23 @@ func Populate(ctx context.Context, repoName, repoDir string) (PopulateResult, er
 	if err != nil {
 		return PopulateResult{}, err
 	}
-	return chunkResultsToPopulate(repoName, repoDir, results), nil
+	// The repo context is already in hand here — Populate holds the root and
+	// the discovered file list — so nothing has to be plumbed from further
+	// away. The DISCOVERED file set is preferred over one derived from the
+	// results: a file that produced no chunks still has a scope.
+	//
+	// THE ERROR IS DISCARDED DELIBERATELY, exactly as the collector discards
+	// it: a repo with no go.mod is the normal non-Go case, not a failure. An
+	// empty module path makes a language arm that consumes it return its zero
+	// result — the same value the seam returns for a language with no arm
+	// registered at all, so nothing downstream can tell the two apart.
+	mp, _ := ReadModulePath(repoDir)
+	rc := &treesitter.RepoContext{
+		Root:       repoDir,
+		ModulePath: mp,
+		Files:      files,
+	}
+	return chunkResultsToPopulate(repoName, rc, results), nil
 }
 
 // PopulateForExternalGraph runs the parser collector flow (Populate) and
@@ -80,9 +92,9 @@ func Populate(ctx context.Context, repoName, repoDir string) (PopulateResult, er
 // produce distinct node IDs ("owner/foo@main/README.md" vs
 // "owner/bar@main/README.md").
 //
-// The conversion from knowledgev1.Edge to kgwire.BatchEdge mirrors
-// codesync/sync.go:toBatchEdges field-for-field; the materializer never
-// sees a knowledgev1.Edge.
+// The conversion from knowledgev1.Edge to kgwire.BatchEdge is delegated to
+// ToBatchEdges, which both callers share; the materializer never sees a
+// knowledgev1.Edge.
 func PopulateForExternalGraph(ctx context.Context, repoName, repoDir string) ([]*knowledgev1.Node, []kgwire.BatchEdge, error) {
 	pop, err := Populate(ctx, repoName, repoDir)
 	if err != nil {
@@ -107,20 +119,7 @@ func PopulateForExternalGraph(ctx context.Context, repoName, repoDir string) ([]
 	}
 
 	// Namespace every edge endpoint and convert to BatchEdge in one pass.
-	// Conversion body mirrors codesync/sync.go:toBatchEdges field-for-field.
-	batchEdges := make([]kgwire.BatchEdge, len(pop.Edges))
-	for i, e := range pop.Edges {
-		batchEdges[i] = kgwire.BatchEdge{
-			FromIdx: -1,
-			ToIdx:   -1,
-			FromID:  prefix + e.FromId,
-			ToID:    prefix + e.ToId,
-			Type:    kgtypes.EdgeType(e.Type),
-			Weight:  e.Weight,
-		}
-	}
-
-	return pop.Nodes, batchEdges, nil
+	return pop.Nodes, ToBatchEdges(pop.Edges, prefix), nil
 }
 
 // chunkResultsToPopulate converts treesitter chunk results into a
@@ -137,10 +136,26 @@ func PopulateForExternalGraph(ctx context.Context, repoName, repoDir string) ([]
 // File→symbol membership is handled by the existing CONTAINS edges
 // emitted by treesitter/chunker.go and codegraph/hierarchy.go; we do
 // NOT emit a duplicate symbol→file "defined-in" edge.
-func chunkResultsToPopulate(repoName, repoDir string, results []*treesitter.Result) PopulateResult {
+// THE RepoContext IS TAKEN BY POINTER, not by value. It carries the per-collect
+// derivation caches two binds arms fill lazily — the rust crate anchors and the
+// JVM source-root set — so a copy would fork those caches, and the sync
+// primitives guarding them make a copy a vet failure besides.
+func chunkResultsToPopulate(repoName string, rc *treesitter.RepoContext, results []*treesitter.Result) PopulateResult {
+	repoDir := rc.Root
 	DeduplicateChunks(results)
+	// Strictly after DeduplicateChunks, which rewrites chunk.Name and so
+	// changes ChunkNodeID, and strictly before the loop below, whose
+	// sort.SliceStable reorders result.Chunks and invalidates every slot.
+	resolveSlotEdges(results)
+	// Strictly after DeduplicateChunks and strictly before the index build, so
+	// an arm sees final names and the ladder sees filled binds.
+	fillBinds(rc, results)
 
-	symbolMap := make(map[string]string)
+	totalChunks := 0
+	for _, result := range results {
+		totalChunks += len(result.Chunks)
+	}
+	ix := newDeclIndex(totalChunks)
 	nodeIDs := make(map[string]bool)
 	langNodes := make(map[string]string) // language → lang_node ID
 	var nodes []*knowledgev1.Node
@@ -209,7 +224,7 @@ func chunkResultsToPopulate(repoName, repoDir string, results []*treesitter.Resu
 			nodeID := appendChunkNode(chunk, description, &nodes)
 			nodeIDs[nodeID] = true
 			entries = append(entries, NodeEntry{NodeID: nodeID, Content: chunk.Content})
-			recordSymbol(symbolMap, chunk, nodeID)
+			indexDeclaration(ix, result, chunk, nodeID)
 			if chunk.Language != "" {
 				langID := ensureLangNode(repoName, string(chunk.Language), langNodes, &nodes)
 				nodeIDs[langID] = true
@@ -220,11 +235,16 @@ func chunkResultsToPopulate(repoName, repoDir string, results []*treesitter.Resu
 				})
 			}
 		}
-
-		allEdges = append(allEdges, ConvertEdges(result.Edges)...)
 	}
 
-	resolvedEdges := resolveEdges(allEdges, symbolMap, nodeIDs)
+	// Populate-then-resolve, now structural rather than incidental: the index
+	// is complete across every file before any reference is resolved, and
+	// resolution consumes the chunk results directly so the reference site each
+	// edge carries survives to the walk.
+	//
+	// allEdges holds only the language-hub edges built above — they name node
+	// IDs on both ends already and never enter resolution.
+	resolvedEdges := append(allEdges, resolveEdges(results, ix, nodeIDs)...)
 	return PopulateResult{
 		Nodes:   nodes,
 		Edges:   resolvedEdges,
@@ -273,17 +293,34 @@ func stripCommentMarkers(content string) string {
 	return strings.TrimSpace(strings.TrimLeft(content, "/*# "))
 }
 
-// recordSymbol updates the symbolMap with the package-qualified key for
-// later edge resolution. No-op when the chunk lacks a name or package.
-func recordSymbol(symbolMap map[string]string, chunk treesitter.Chunk, nodeID string) {
-	if chunk.Name == "" || chunk.Context.PackageName == "" {
+// indexDeclaration records one named declaration in the declaration index.
+//
+// The key is built from BASE names while the identity keeps the suffixed one:
+// a reference writes Thing, never Thing#a1b2c3d4, so base-name keying is what
+// lets a reference to a collided declaration find the whole surviving set.
+//
+// Unnamed chunks are skipped — they carry no name to be referenced by. The
+// package-name guard the old scalar map also applied is deliberately NOT
+// carried over: the namespace is no longer part of the key, and every language
+// now gets a non-empty namespace regardless.
+//
+// A duplicate node ID means ChunkNodeID or DeduplicateChunks has regressed. It
+// is a defect to alarm on rather than a case to serve, so it is logged and the
+// first record is kept.
+func indexDeclaration(ix *declIndex, result *treesitter.Result, chunk treesitter.Chunk, nodeID string) {
+	if chunk.Name == "" {
 		return
 	}
-	key := chunk.Context.PackageName + "." + chunk.Name
-	if chunk.ParentName != "" {
-		key = chunk.Context.PackageName + "." + chunk.ParentName + "." + chunk.Name
+	err := ix.add(&declRec{
+		NodeID: nodeID,
+		File:   result.FilePath,
+		Scope:  treesitter.ScopeID(result.FilePath, result.Language, chunk.Context.PackageName),
+		Parent: baseDeclName(chunk.ParentName),
+		Name:   baseDeclName(chunk.Name),
+	})
+	if err != nil {
+		slog.Error("collector: duplicate declaration node ID", "file", result.FilePath, "error", err)
 	}
-	symbolMap[key] = nodeID
 }
 
 // ensureLangNode returns the deterministic NodeLanguage ID for (repoName,

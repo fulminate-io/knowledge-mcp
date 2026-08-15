@@ -1,0 +1,14 @@
+=== RUN   TestAugmentPreciseCallGraph_CoverageAndSurvival
+2026/08/14 11:49:12 WARN git ls-files failed, falling back to filesystem walk error="exit status 128"
+2026/08/14 11:49:12 INFO collector: dot-scope census dot_scopes_filled=0
+2026/08/14 11:49:12 INFO collector: reference resolution bound=7 external=1 ambiguous_groups=0 ambiguous_edges=0 dynamic_groups=1 dynamic_edges=1 dynamic_unbound=0 max_dynamic_group_size=1 dot_scope_binds=0 dot_scope_groups=0
+2026/08/14 11:49:12 INFO BuildGoCallGraph callers=2 funcs=4 package_errors=0
+2026/08/14 11:49:12 INFO precise call graph: replaced tree-sitter CALLS edges removed=5 kept_non_go=0 added=2 rta_callers=2 decl_key_collisions=0 package_errors=0
+COVCALLS top/top.go:TopA -> top/top.go:topB
+COVCALLS web/dom.go:Walk -> web/dom.go:walker.append
+    reindex_coverage_test.go:80: want: a precise CALLS edge inside the nested module sub/; got: absent — the analysis did not cover that module
+    reindex_coverage_test.go:85: want: the tree-sitter CALLS edge from a build-tag-excluded Go file preserved; got: deleted with nothing to replace it
+--- FAIL: TestAugmentPreciseCallGraph_CoverageAndSurvival (0.12s)
+FAIL
+FAIL	github.com/fulminate-io/knowledge/cmd/knowledge/internal/collector/codesync	0.872s
+FAIL

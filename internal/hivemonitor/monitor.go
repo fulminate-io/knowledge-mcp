@@ -11,6 +11,7 @@ import (
 	"time"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/paging"
 )
 
 // errMonitorAlreadyStarted is returned by Start when the monitor is already
@@ -284,24 +285,39 @@ func (m *Monitor) populateBansFromCloud(ctx context.Context, active []ClaimedSes
 
 // banEvictedMembers queries the hive_member nodes of one hive with
 // status=='evicted' and Bans each by its `session` metadata (the harness id).
+//
+// The evicted set is DRAINED in keyset pages: every evicted member must be
+// banned, and a member that fell off the read boundary would never be.
 func (m *Monitor) banEvictedMembers(ctx context.Context, hive string) {
-	resp, err := m.hive.Execute(ctx, &knowledgev1.ExecuteRequest{
-		Target: &knowledgev1.GraphSelector{Graph: "knowledge"},
-		Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
-			Selection: &knowledgev1.Selection{
-				NodeTypes: []string{"hive_member"},
-				Statuses:  []string{"evicted"},
-				MetadataPredicates: []*knowledgev1.MetadataPredicate{
-					{Key: "hive", Op: knowledgev1.MetadataPredicate_OP_EQ, Value: hive},
+	nodes, err := paging.DrainKeysetPages(func(afterID string) ([]*knowledgev1.Node, error) {
+		cursor := afterID
+		resp, rerr := m.hive.Execute(ctx, &knowledgev1.ExecuteRequest{
+			Target: &knowledgev1.GraphSelector{Graph: "knowledge"},
+			Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
+				Selection: &knowledgev1.Selection{
+					NodeTypes: []string{"hive_member"},
+					Statuses:  []string{"evicted"},
+					MetadataPredicates: []*knowledgev1.MetadataPredicate{
+						{Key: "hive", Op: knowledgev1.MetadataPredicate_OP_EQ, Value: hive},
+					},
 				},
-			},
-		}},
-	})
+				Limit: int32(paging.BrowsePageSize),
+				// SET on every page including the first, where the value is empty:
+				// presence is what selects the keyset browse.
+				AfterId:   &cursor,
+				SkipTotal: true,
+			}},
+		})
+		if rerr != nil {
+			return nil, rerr
+		}
+		return resp.GetNodes(), nil
+	}, paging.BrowsePageSize)
 	if err != nil {
 		slog.Warn("hivemonitor: read evicted members failed", "hive", hive, "error", err)
 		return
 	}
-	for _, n := range resp.GetNodes() {
+	for _, n := range nodes {
 		// The member's harness session-id is the `session` metadata; fall back to
 		// the node Status field for the evicted check (the predicate already
 		// filtered, but be defensive against a metadata-less node).

@@ -213,6 +213,12 @@ type traverseContext struct {
 // resp.TraversalEdges with the per-edge metadata ([]knowledgev1.Edge); the client
 // renders it as an edges section (T2.4c). When the carrier is empty the edges
 // section is absent (edges:[] in JSON).
+//
+// Multi-candidate edge groups are reconstructed from those same edges and
+// rendered as ONE block per group; their member edges are WITHHELD from the flat
+// edges section, so a candidate appears under its group and nowhere else. Groups
+// render whenever they exist, independent of the caller's include_edge_metadata
+// — code-graph walks request the carrier for themselves (compileTraverse).
 func renderTraversalResponse(resp *knowledgev1.ExecuteResponse, c traverseContext) (kgtools.ToolResult, error) {
 	results, err := decodeTraversal(resp)
 	if err != nil {
@@ -223,6 +229,12 @@ func renderTraversalResponse(resp *knowledgev1.ExecuteResponse, c traverseContex
 	if graph == "" {
 		graph = "knowledge"
 	}
+
+	// Reconstruct groups and apply the frontier short-circuit ONCE, before either
+	// arm renders, so text and JSON list exactly the same nodes — a divergence
+	// between the arms would be a second, silent semantics.
+	g := prepareTraversalGroups(c.Start, results, edges, resp.GetTruncated())
+	results, ungrouped := g.results, g.ungrouped
 
 	if c.Format == "json" {
 		nodes := make([]map[string]any, 0, len(results))
@@ -235,13 +247,18 @@ func renderTraversalResponse(resp *knowledgev1.ExecuteResponse, c traverseContex
 				"description": r.Node.Description,
 			})
 		}
-		return jsonResult(map[string]any{
+		payload := map[string]any{
 			"start":     c.Start,
 			"graph":     graph,
 			"direction": c.Direction,
 			"nodes":     nodes,
-			"edges":     edgeMetadataJSON(edges),
-		}), nil
+			// Only the UNGROUPED remainder: a group's members appear under
+			// edge_groups and nowhere else, so a JSON consumer never reads N
+			// alternatives as N independent facts.
+			"edges": edgeMetadataJSON(ungrouped),
+		}
+		attachCandidateGroupsJSON(payload, g.groups, traversalNodeIndex(results), g.reached, g.incomplete)
+		return jsonResult(payload), nil
 	}
 
 	var sb strings.Builder
@@ -259,84 +276,15 @@ func renderTraversalResponse(resp *knowledgev1.ExecuteResponse, c traverseContex
 		sb.WriteString(line)
 		sb.WriteString("\n")
 	}
-	writeEdgeMetadataSection(&sb, edges, c.Direction)
+	// Multi-candidate groups render as ONE block each, and their member edges are
+	// withheld from the flat edges section below so a candidate is never restated
+	// as an independent fact. With no groups this costs zero bytes of output.
+	writeCandidateGroups(&sb, g.groups, traversalNodeIndex(results), g.reached)
+	if g.incomplete {
+		sb.WriteString("\ngroup reconstruction incomplete - some candidates or reachable nodes are not shown\n")
+	}
+	writeEdgeMetadataSection(&sb, ungrouped, c.Direction)
 	return kgtools.TextResult(sb.String()), nil
-}
-
-// writeEdgeMetadataSection renders the per-edge metadata block client-side,
-// mirroring the server-side writeEdgeMetadataSection (tools_traverse_edge_metadata.go:170)
-// — the server render funcs live in package tools and cannot be imported here,
-// so this is the minimal client-side render reading the []knowledgev1.Edge
-// fields. A no-op when there are no edges (the carrier was empty /
-// include_edge_metadata was unset).
-func writeEdgeMetadataSection(sb *strings.Builder, edges []knowledgev1.Edge, direction string) {
-	if len(edges) == 0 {
-		return
-	}
-	fmt.Fprintf(sb, "\n### Edges (%d) with metadata (direction=%s)\n\n", len(edges), direction)
-	for i := range edges {
-		e := &edges[i]
-		fmt.Fprintf(sb, "- `%s` → `%s` [edge_type=%s]", e.FromId, e.ToId, e.Type)
-		if annot := edgeMetadataAnnotation(e); annot != "" {
-			fmt.Fprintf(sb, "\n    %s", annot)
-		}
-		if !nanosToTime(e.LastValidated).IsZero() {
-			fmt.Fprintf(sb, "\n    last_validated: %s", nanosToTime(e.LastValidated).UTC().Format("2006-01-02T15:04:05Z"))
-		}
-		sb.WriteString("\n")
-	}
-}
-
-// edgeMetadataAnnotation builds a compact "confidence=0.92 · method=manual ·
-// weight=0.9 · evidence=..." annotation from the non-empty edge fields,
-// mirroring the server edgeMetadataAnnotation (tools_traverse_edge_metadata.go:34).
-func edgeMetadataAnnotation(e *knowledgev1.Edge) string {
-	var parts []string
-	if e.Confidence > 0 {
-		parts = append(parts, fmt.Sprintf("confidence=%.2f", e.Confidence))
-	}
-	if e.Method != "" {
-		parts = append(parts, fmt.Sprintf("method=%s", e.Method))
-	}
-	if e.Weight > 0 {
-		parts = append(parts, fmt.Sprintf("weight=%g", e.Weight))
-	}
-	if e.Evidence != "" {
-		parts = append(parts, fmt.Sprintf("evidence=%q", e.Evidence))
-	}
-	return strings.Join(parts, " · ")
-}
-
-// edgeMetadataJSON renders the edge-metadata rows for the JSON traversal output,
-// mirroring the server edgeMetadataMap (tools_traverse_edge_metadata.go:197):
-// one row per edge with from/to/edge_type plus the populated metadata fields.
-func edgeMetadataJSON(edges []knowledgev1.Edge) []map[string]any {
-	rows := make([]map[string]any, 0, len(edges))
-	for i := range edges {
-		e := &edges[i]
-		row := map[string]any{
-			"from":      e.FromId,
-			"to":        e.ToId,
-			"edge_type": e.Type,
-		}
-		if e.Weight != 0 {
-			row["weight"] = e.Weight
-		}
-		if e.Confidence != 0 {
-			row["confidence"] = e.Confidence
-		}
-		if e.Method != "" {
-			row["method"] = e.Method
-		}
-		if e.Evidence != "" {
-			row["evidence"] = e.Evidence
-		}
-		if !nanosToTime(e.LastValidated).IsZero() {
-			row["last_validated"] = nanosToTime(e.LastValidated).UTC().Format("2006-01-02T15:04:05Z")
-		}
-		rows = append(rows, row)
-	}
-	return rows
 }
 
 // traversalNodeName mirrors nodeDisplayName (tools_query_linkage.go:347):

@@ -251,7 +251,7 @@ func resolveANPReachabilityEdges(
 ) error {
 	var policies []*knowledgev1.Node
 	for _, rt := range []string{"AdminNetworkPolicy", "BaselineAdminNetworkPolicy"} {
-		nodes, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, k8sResourceQuery(rt))
+		nodes, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, k8sResourceQuery(rt))
 		if err != nil {
 			return err
 		}

@@ -9,8 +9,19 @@ func kotlinQueries() *QuerySet {
 			(class_declaration (type_identifier) @name) @decl
 			(object_declaration (type_identifier) @name) @decl
 		]`,
-		Calls:    `(call_expression) @callee`,
-		Imports:  `(import_header (identifier) @path)`,
+		// Capturing the call_expression WHOLE swallowed the arguments into the
+		// callee text. The two arms below capture the callee alone: the bare
+		// identifier, or the navigation_expression whose own text is the
+		// qualified callee (`obj.doThing`, `a.b.c`).
+		Calls: `(call_expression [
+			(simple_identifier) @callee
+			(navigation_expression) @callee
+		])`,
+		// The import_alias child is what the previous path-only capture LOST:
+		// `import a.b.D as E` bound E locally and the alias was unrecoverable
+		// downstream. One capture per statement — the arm reads both parts off
+		// the captured header.
+		Imports:  `(import_header (identifier) (import_alias)?) @import`,
 		TypeRefs: `(user_type (type_identifier) @typeref)`,
 		// TestBlocks: Kotest (FunSpec/DescribeSpec/BehaviorSpec/StringSpec)
 		// and Spek. Kotlin grammar parses `test("name") { ... }` as nested

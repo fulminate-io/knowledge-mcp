@@ -6,7 +6,6 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
-	"encoding/json"
 	"fmt"
 	"log/slog"
 	"sort"
@@ -20,7 +19,6 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/logs/cloudresolver"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/remote"
 	"github.com/fulminate-io/knowledge-mcp/internal/collectorwire"
-	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	logwire "github.com/fulminate-io/knowledge-mcp/internal/logwire"
 )
@@ -147,20 +145,16 @@ func resolveLogsProviderConfig(ctx context.Context, deps ClientDeps, a collectAr
 			"kube_context": a.KubeContext,
 		}, nil
 	}
-	// Query by type=log-backend and filter by SymbolName client-side, via the
+	// Drain type=log-backend and filter by SymbolName client-side, via the
 	// Execute carrier seam. This handles both new records (where node ID == name)
 	// and legacy UUID-keyed records that pre-date the deterministic-ID write path.
-	args, err := json.Marshal(map[string]any{"type": "log-backend", "limit": 0})
-	if err != nil {
-		return nil, fmt.Errorf("marshal query args: %w", err)
-	}
-	resp, err := executeQuery(ctx, deps.GraphCaller(), args)
+	// The name match is client-side, so the browse must return the COMPLETE
+	// backend set: it drains keyset pages rather than taking one bounded page.
+	nodes, err := drainQueryNodes(ctx, deps.GraphCaller(), map[string]any{
+		"type": string(kgtypes.NodeLogBackend),
+	})
 	if err != nil {
 		return nil, fmt.Errorf("list log_backends: %w", err)
-	}
-	nodes, derr := engine.DecodeNodes(resp)
-	if derr != nil {
-		return nil, fmt.Errorf("list log_backends decode: %w", derr)
 	}
 	cfg, err := parseLogBackendByName(nodes, name)
 	if err != nil {

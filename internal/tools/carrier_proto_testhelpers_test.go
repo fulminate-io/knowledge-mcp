@@ -42,6 +42,27 @@ func traversalResultsToProtoForTest(results []engine.TraversalResult) []*knowled
 	return out
 }
 
+// edgesToProtoForTest seeds the typed edge carriers (traversal_edges / edges) the
+// real server emits. Field-by-field because knowledgev1.Edge carries a noCopy
+// MessageState — the same constraint copyEdge documents.
+func edgesToProtoForTest(edges []knowledgev1.Edge) []*knowledgev1.Edge {
+	out := make([]*knowledgev1.Edge, len(edges))
+	for i := range edges {
+		e := &edges[i]
+		out[i] = &knowledgev1.Edge{
+			FromId:        e.FromId,
+			ToId:          e.ToId,
+			Type:          e.Type,
+			Weight:        e.Weight,
+			Confidence:    e.Confidence,
+			Method:        e.Method,
+			Evidence:      e.Evidence,
+			LastValidated: e.LastValidated,
+		}
+	}
+	return out
+}
+
 // carrier_proto_testhelpers_test.go provides the proto converters the
 // server-simulating fakes in this package use to populate the typed proto
 // carriers migrated off the bytes *_json convention. After T5.5 the

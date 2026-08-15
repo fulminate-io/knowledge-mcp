@@ -46,7 +46,7 @@ var externalWorkloadTypes = []string{
 func resolveExternalConnections(ctx context.Context, gc postpopulate.GraphCaller, graphName string) error {
 	var allWorkloads []*knowledgev1.Node
 	for _, rt := range externalWorkloadTypes {
-		nodes, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, k8sResourceQuery(rt))
+		nodes, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, k8sResourceQuery(rt))
 		if err != nil {
 			return err
 		}

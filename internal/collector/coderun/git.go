@@ -9,8 +9,16 @@ import (
 	"strings"
 )
 
-// DetectBranch returns the current git branch name for the given repo directory.
-// Returns empty string on error (detached HEAD, not a git repo, etc.).
+// DetectBranch returns the current git branch name for the given repo directory,
+// exactly as `git rev-parse --abbrev-ref HEAD` reports it.
+//
+// A detached HEAD is NOT an error at this layer, and that is git's own semantics
+// rather than a choice made here: the command exits 0 and prints the literal
+// string "HEAD", so this returns ("HEAD", nil). Deciding whether an
+// undetermined branch matters belongs to the caller, which is where the manifest
+// and overlay context needed to judge it lives. Only a genuine git error — the
+// directory missing, not a git repo, no commits yet — returns a non-nil error,
+// and the branch is empty in that case.
 func DetectBranch(ctx context.Context, repoDir string) (string, error) {
 	cmd := exec.CommandContext(ctx, "git", "-C", repoDir, "rev-parse", "--abbrev-ref", "HEAD")
 	out, err := cmd.Output()
@@ -21,7 +29,8 @@ func DetectBranch(ctx context.Context, repoDir string) (string, error) {
 }
 
 // HeadCommit returns the current HEAD commit SHA for the given repo directory.
-// Returns empty string on error (not a git repo, no commits yet, etc.).
+// An empty SHA is returned alongside the error (not a git repo, no commits yet,
+// etc.).
 // Shifted client-side off the deleted server-side
 // fetchGitInfoIfNeeded — clients pass the SHA to the server via the
 // staleness wire args.

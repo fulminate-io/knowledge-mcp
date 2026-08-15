@@ -73,26 +73,84 @@ func FormatCodeWithRepo(repo, text string) string {
 	return fmt.Sprintf("[%s] %s", repo, text)
 }
 
+// AnalyzeView is the whole input to RenderAnalyzeNode — a struct rather than a
+// nine-argument positional list.
+//
+// Callers and Callees hold only the PLAIN entries: a group's candidates are
+// rendered inside its group block and are removed from these slices by the
+// composer, so the section counts never report the same reference as both N
+// callers and one group of N.
+//
+// TestCallers/TestCallees are the call traffic whose SOURCE is test code, walked
+// over the distinct TEST_CALLS edge. They are SEPARATE CARRIERS ON PURPOSE:
+// folding test callers into Callers would re-create at the display layer exactly
+// the production/test conflation the distinct edge type exists to end. Each test
+// side carries its own groups on the same terms as the production sides.
+type AnalyzeView struct {
+	RepoLabel        string
+	Subject          *knowledgev1.Node
+	Callers          []*knowledgev1.Node
+	Callees          []*knowledgev1.Node
+	CallerGroups     []CandidateGroup
+	CalleeGroups     []CandidateGroup
+	TestCallers      []*knowledgev1.Node
+	TestCallees      []*knowledgev1.Node
+	TestCallerGroups []CandidateGroup
+	TestCalleeGroups []CandidateGroup
+	Candidates       map[string]*knowledgev1.Node
+	Reached          map[string]bool
+	IncludeSource    bool
+	Incomplete       bool
+}
+
 // RenderAnalyzeNode ports the server HandleAnalyzeNode body: FormatNodeFull
 // (subject) + "## Callers (n)" / "## Callees (n)" sections (FormatNodeCompact per
 // result) with the no-callers/no-callees empty lines, wrapped with the repo
 // label. The composer supplies the resolved subject + caller/callee node slices.
-func RenderAnalyzeNode(repoLabel string, subject *knowledgev1.Node, callers, callees []*knowledgev1.Node, includeSource bool) string {
+//
+// Each section additionally renders its multi-candidate groups as one block per
+// group, after its plain entries. THE SECTION COUNT COUNTS THE ENTRIES IT LISTS:
+// candidates live in the group block and are not also plain callers/callees.
+//
+// The test-call sections follow their production counterpart per direction, and
+// are OMITTED ENTIRELY when a side has neither entries nor groups — unlike the
+// production sections, which state their emptiness. The asymmetry is deliberate:
+// a graph collected before the TEST_CALLS edge existed carries no test-call edge
+// at all, so "No test callers found." would report an absence as a fact when the
+// truth is that test traffic is not indexed yet.
+func RenderAnalyzeNode(v AnalyzeView) string {
 	var sb strings.Builder
-	sb.WriteString(FormatCodeNodeFull(subject))
-	fmt.Fprintf(&sb, "\n## Callers (%d)\n\n", len(callers))
-	for _, n := range callers {
-		sb.WriteString(FormatCodeNodeCompact(n, includeSource))
+	sb.WriteString(FormatCodeNodeFull(v.Subject))
+	writeAnalyzeSection(&sb, v, "Callers", "No callers found.\n", v.Callers, v.CallerGroups)
+	writeAnalyzeTestSection(&sb, v, "Test Callers", v.TestCallers, v.TestCallerGroups)
+	writeAnalyzeSection(&sb, v, "Callees", "No callees found.\n", v.Callees, v.CalleeGroups)
+	writeAnalyzeTestSection(&sb, v, "Test Callees", v.TestCallees, v.TestCalleeGroups)
+	if v.Incomplete {
+		sb.WriteString("\ngroup reconstruction incomplete - some candidates or reachable nodes are not shown\n")
 	}
-	if len(callers) == 0 {
-		sb.WriteString("No callers found.\n")
+	return FormatCodeWithRepo(v.RepoLabel, sb.String())
+}
+
+// writeAnalyzeSection writes one analyze section: the "## <label> (n)" header
+// counting the PLAIN entries, those entries, the emptyLine when the section has
+// neither entries nor groups, then the group blocks.
+func writeAnalyzeSection(sb *strings.Builder, v AnalyzeView, label, emptyLine string, nodes []*knowledgev1.Node, groups []CandidateGroup) {
+	fmt.Fprintf(sb, "\n## %s (%d)\n\n", label, len(nodes))
+	for _, n := range nodes {
+		sb.WriteString(FormatCodeNodeCompact(n, v.IncludeSource))
 	}
-	fmt.Fprintf(&sb, "\n## Callees (%d)\n\n", len(callees))
-	for _, n := range callees {
-		sb.WriteString(FormatCodeNodeCompact(n, includeSource))
+	if len(nodes) == 0 && len(groups) == 0 {
+		sb.WriteString(emptyLine)
 	}
-	if len(callees) == 0 {
-		sb.WriteString("No callees found.\n")
+	writeCandidateGroups(sb, groups, v.Candidates, v.Reached)
+}
+
+// writeAnalyzeTestSection writes a test-call section, or nothing at all when the
+// side is empty. See RenderAnalyzeNode for why an empty test side is silent
+// where an empty production side is not.
+func writeAnalyzeTestSection(sb *strings.Builder, v AnalyzeView, label string, nodes []*knowledgev1.Node, groups []CandidateGroup) {
+	if len(nodes) == 0 && len(groups) == 0 {
+		return
 	}
-	return FormatCodeWithRepo(repoLabel, sb.String())
+	writeAnalyzeSection(sb, v, label, "", nodes, groups)
 }

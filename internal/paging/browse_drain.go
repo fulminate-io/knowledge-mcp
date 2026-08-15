@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Apache-2.0
 
-package engine
+package paging
 
 import (
 	"fmt"
@@ -9,11 +9,14 @@ import (
 )
 
 // browse_drain.go holds the shared id-KEYSET browse drain: the cursor core in its
-// two page shapes (hydrated nodes and ids-only). It lives in package engine
-// because every bounded whole-type read in the client needs it — the thought
-// graph's type browses and adjacency read, the file_symbols/ast file index, the
-// topology type fetch, and the graph-wide node enumeration — and engine is the
-// one package all of those already import.
+// two page shapes (hydrated nodes and ids-only), plus the bounded pivot-page edge
+// drain. It lives in its own LEAF package because every bounded whole-type read in
+// the client needs it — the thought graph's type browses and adjacency read, the
+// file_symbols/ast file index, the topology type fetch, the graph-wide node
+// enumeration and the hive monitor's member reads — and those callers sit on both
+// sides of the engine boundary. Every file here imports only the standard library
+// and the generated protobuf types, so no importer can be pulled into a cycle by
+// reaching for the drain.
 
 // BrowsePageSize is the per-page row count for the keyset browse drain. 500 is a
 // low RPC count with a bounded per-page payload. A POSITIVE limit is also what
@@ -177,7 +180,7 @@ func drainPivotPage(
 	if edgeCap > 0 && len(edges) >= edgeCap {
 		if len(pivots) == 1 {
 			return fmt.Errorf(
-				"engine: pivot %q alone returns at least %d edges, the per-page ceiling — its edge set cannot be read completely by a pivot drain",
+				"paging: pivot %q alone returns at least %d edges, the per-page ceiling — its edge set cannot be read completely by a pivot drain",
 				pivots[0], edgeCap)
 		}
 		mid := len(pivots) / 2

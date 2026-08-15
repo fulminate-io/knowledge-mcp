@@ -227,18 +227,37 @@ func TestCollidedTypeRefPrefersTheType(t *testing.T) {
 		assert.NotContains(t, targets, objectID, "the companion object is never a type's referent")
 	})
 
-	t.Run("rust_fn_and_struct_no_alias", func(t *testing.T) {
-		// THE ABSTENTION CASE, and the only one here that discriminates in
-		// EITHER declaration order. A function colliding with a type leaves TWO
-		// candidates that could be the referent, so nothing is claimed and the
-		// reference drops exactly as it does without the rule. Under a
-		// deny-set-only design this fixture sent both edges to the function.
+	t.Run("rust_fn_and_struct_multi_binds", func(t *testing.T) {
+		// RE-DERIVED: THE ABSTENTION RULE IS SUPERSEDED. A function colliding
+		// with a type still leaves TWO candidates that could be the referent —
+		// what changed is what happens next. Abstaining DELETED the reference,
+		// which is a claim of its own ("this reference names nothing") and a
+		// false one. The reference now emits one edge per candidate at
+		// Confidence 1/N under one shared group key: exactly one of these is
+		// the referent, and the graph says so instead of guessing or discarding.
 		const path = "pkg/g.rs"
 		res := populateFixture(t, []fixtureFile{{
 			path: path,
 			src:  "pub fn Thing() {}\npub struct Thing {}\npub fn make() -> Thing { Thing{} }\n",
 		}})
-		assert.Empty(t, usesTypeTargets(res), "an ambiguous name claims nothing")
+		structID := nodeOnLine(t, res, path, 2, "struct_item")
+		fnID := nodeOnLine(t, res, path, 1, "function_item")
+
+		groups := map[string][]string{}
+		for _, e := range res.Edges {
+			if kgtypes.EdgeType(e.Type) != kgtypes.EdgeUsesType {
+				continue
+			}
+			require.Equal(t, kgtypes.EdgeMethodAmbiguousName, e.Method,
+				"every reference to the collided name is a CLOSED group member")
+			assert.InDelta(t, 0.5, e.Confidence, 1e-9, "two candidates, so 1/N is one half")
+			groups[e.Evidence] = append(groups[e.Evidence], e.ToId)
+		}
+		require.Len(t, groups, 2, "two references to Thing, so two groups")
+		for key, targets := range groups {
+			assert.ElementsMatch(t, []string{fnID, structID}, targets,
+				"group %s must offer BOTH candidates — neither is silently dropped", key)
+		}
 	})
 
 	t.Run("rust_uncollided_control", func(t *testing.T) {
@@ -254,34 +273,63 @@ func TestCollidedTypeRefPrefersTheType(t *testing.T) {
 		assert.Len(t, usesTypeTargets(res), 2)
 	})
 
-	t.Run("csharp_reopened_namespace_zero_survivors", func(t *testing.T) {
-		// Both candidates for the name `App` are namespace declarations, so
-		// ZERO survive the deny set and the rule abstains — an implementation
-		// that claimed the alias when zero survive, rather than when exactly
-		// one does, would fail the first half here.
+	t.Run("csharp_partial_class_multi_binds", func(t *testing.T) {
+		// RE-DERIVED AGAIN, AND RENAMED, because the C# TypeRefs query is now
+		// ANCHORED TO TYPE POSITIONS. The previous fixture reached its reopened
+		// namespace only through the old every-identifier capture, which made a
+		// namespace NAME and a class's own NAME into USES_TYPE targets — both
+		// wrong edges of exactly the class that capture existed to remove — so
+		// that fixture now produces no type reference at all, and a namespace
+		// cannot appear in a type position to replace it.
 		//
-		// The four class-targeting edges are the within-fixture known positive
-		// showing the first half is not passing on an empty edge set. They
-		// resolve today with no aliasing at all and would resolve under any of
-		// these rules; their surviving says nothing about abstention.
+		// THE PROPERTY UNDER TEST IS UNCHANGED: a reference naming a collided
+		// container offers BOTH blocks rather than dropping either. It is now
+		// exercised on C#'s OTHER reopened form, the partial class, through a
+		// real type position — a field declaration, which is what a C# type
+		// reference actually looks like. Both candidates are classes, so the
+		// type-reference alias rule still abstains (no single declaration is
+		// THE type) and the reference becomes a two-member CLOSED group.
 		//
-		// What this fixture CANNOT discriminate is deny-set membership: a
-		// same-kind pair tallies either 0 or 2 survivors, and both abstain.
+		// The collided declarations are TOP-LEVEL deliberately. A class nested
+		// in a namespace block carries that namespace as its Parent, and the
+		// own-scope rung looks up an unparented key, so a nested pair would
+		// resolve to nothing and the case would pass its group assertion
+		// vacuously on an empty set.
+		//
+		// THE TWO BLOCKS ARE NOT BYTE-IDENTICAL: DeduplicateChunks runs before
+		// resolution, so identical declarations would collapse into one chunk
+		// and the collision would vanish before the walk ever saw it.
+		//
+		// `Other g;` is the within-fixture known positive — it binds to exactly
+		// one candidate, so the group assertions cannot be passing on an empty
+		// edge set.
 		const path = "pkg/re.cs"
 		res := populateFixture(t, []fixtureFile{{
 			path: path,
-			src:  "namespace App { class A {} }\nnamespace App { class B {} }\n",
+			src: "partial class Thing { void A() {} }\n" +
+				"partial class Thing { void B() {} }\n" +
+				"class Other {}\n" +
+				"class User { Thing f; Other g; }\n",
 		}})
-		first := nodeOnLine(t, res, path, 1, "namespace_declaration")
-		second := nodeOnLine(t, res, path, 2, "namespace_declaration")
+		first := nodeOnLine(t, res, path, 1, "class_declaration")
+		second := nodeOnLine(t, res, path, 2, "class_declaration")
 
-		targets := usesTypeTargets(res)
-		assert.NotContains(t, targets, first, "an ambiguous namespace name claims nothing")
-		assert.NotContains(t, targets, second, "an ambiguous namespace name claims nothing")
-		assert.ElementsMatch(t, []string{
-			"pkg/re.cs:App.A", "pkg/re.cs:App.A",
-			"pkg/re.cs:App.B", "pkg/re.cs:App.B",
-		}, targets, "the class-targeting references are unaffected")
+		var grouped, bound []string
+		for _, e := range res.Edges {
+			if kgtypes.EdgeType(e.Type) != kgtypes.EdgeUsesType {
+				continue
+			}
+			if e.Method == kgtypes.EdgeMethodAmbiguousName {
+				grouped = append(grouped, e.ToId)
+				continue
+			}
+			assert.Empty(t, e.Evidence, "a bound reference carries no group key")
+			bound = append(bound, e.ToId)
+		}
+		assert.ElementsMatch(t, []string{first, second}, grouped,
+			"the reference to the collided class offers both blocks, neither dropped")
+		assert.ElementsMatch(t, []string{"pkg/re.cs:Other"}, bound,
+			"a reference to an uncollided type binds exactly")
 	})
 
 	t.Run("cpp_reopened_namespace_no_alias", func(t *testing.T) {

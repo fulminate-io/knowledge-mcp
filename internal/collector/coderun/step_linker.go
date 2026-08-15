@@ -19,17 +19,15 @@ import (
 // (→ Target.Repo==graphName). Step and file nodes already exist, so the
 // KGImplements edges are emitted edges-only via one LinkEdgesBatch.
 func LinkStepsToCode(ctx context.Context, gc postpopulate.GraphCaller, graphName string) error {
-	steps, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCode, graphName, map[string]any{
-		"type":  string(kgtypes.NodeStep),
-		"limit": 0,
+	steps, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCode, graphName, map[string]any{
+		"type": string(kgtypes.NodeStep),
 	})
 	if err != nil {
 		return fmt.Errorf("LinkStepsToCode: query steps: %w", err)
 	}
 
-	fileNodes, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCode, graphName, map[string]any{
-		"type":  string(kgtypes.NodeFile),
-		"limit": 0,
+	fileNodes, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCode, graphName, map[string]any{
+		"type": string(kgtypes.NodeFile),
 	})
 	if err != nil {
 		return fmt.Errorf("LinkStepsToCode: query files: %w", err)

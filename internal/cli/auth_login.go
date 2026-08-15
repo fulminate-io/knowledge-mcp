@@ -7,11 +7,13 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/auth"
+	"github.com/fulminate-io/knowledge-mcp/internal/config"
 )
 
 // loginUsage is printed by `knowledge login --help`. Terse, factual,
@@ -123,5 +125,96 @@ func loginBrowserPKCE(ctx context.Context) error {
 	}
 
 	fmt.Fprintln(os.Stdout, "Logged in.")
+	establishOrRevalidateAccount(ctx, os.Stdout)
 	return nil
+}
+
+// establishOrRevalidateAccount makes the account this machine routes cloud
+// calls to EXPLICIT after a login, and revalidates one that is already stored.
+//
+// It follows the PublishSessionToken precedent directly above: a secondary
+// step after a successful login that warns on failure and NEVER fails the
+// login. It returns nothing, and every error path prints at most one line.
+//
+// ESTABLISH (nothing stored): a single membership is written; with several, the
+// FIRST entry is written — the list is ordered created_at ASC, so that is the
+// oldest membership, which is the account the gateway already resolves when no
+// header is sent. Writing it changes nothing about where calls land; it only
+// makes the resolution explicit and inspectable.
+//
+// REVALIDATE (something stored): the stored value is the USER'S, so login never
+// overwrites it. It only warns when the membership or the subscription is gone.
+//
+// This call site can CREATE a selection but never blank one:
+// config.WriteSelectedAccountID refuses an empty id. That is a statement about
+// THIS call site — the client has two writers that rewrite an existing config
+// (config.WriteSelectedAccountID and bootstrap.renderAndWriteConfig), and both
+// preserve the entry.
+//
+// No process side effects live here: establishing a selection moves a running
+// daemon's account identity, and the subcommand dispatcher is what restarts it,
+// because bootstrap imports cli and not the other way round.
+func establishOrRevalidateAccount(ctx context.Context, out io.Writer) {
+	path, err := config.DefaultPath()
+	if err != nil {
+		return
+	}
+	selected, err := config.ReadSelectedAccountID(path)
+	if err != nil {
+		return
+	}
+
+	accounts, err := fetchAccounts(ctx)
+	if err != nil {
+		// A login that authenticated must not be reported as failed because a
+		// secondary endpoint was down.
+		return
+	}
+
+	if selected != "" {
+		revalidateSelection(out, accounts, selected)
+		return
+	}
+	establishSelection(out, path, accounts)
+}
+
+// establishSelection writes the account this machine is already using, when no
+// selection is stored.
+func establishSelection(out io.Writer, path string, accounts []accountEntry) {
+	if len(accounts) == 0 {
+		fmt.Fprintln(out, "No accounts — your login is not a member of any Fulminate account.")
+		return
+	}
+	chosen := accounts[0]
+	if err := config.WriteSelectedAccountID(path, chosen.ID); err != nil {
+		fmt.Fprintf(out, "Could not record the selected account (%v) — run `knowledge account use <id|slug>` to set it.\n", err)
+		return
+	}
+	fmt.Fprintf(out, "Account: %s (%s) — change it with `knowledge account use <id|slug>`.\n", chosen.Slug, chosen.ID)
+
+	// Subscription state does NOT gate the establish, and the asymmetry with
+	// `account use` is deliberate: `account use` refuses an unsubscribed
+	// account because that is a user CHOOSING to route where every call is
+	// guaranteed to fail, while login is only recording the account the gateway
+	// would have resolved anyway. Declining to write it would leave the
+	// selection unset and route to the identical account — buying nothing and
+	// costing the visibility this exists for. So it is written, with a warning.
+	if !chosen.HasActiveSubscription {
+		fmt.Fprintln(out, "Warning: that account has no active subscription, so it has no cloud graph access — subscribe for that account, or run `knowledge account use <id|slug>` to pick another")
+	}
+}
+
+// revalidateSelection warns when the stored selection has lost its membership
+// or its subscription. It never writes.
+func revalidateSelection(out io.Writer, accounts []accountEntry, selected string) {
+	for _, a := range accounts {
+		if a.ID != selected {
+			continue
+		}
+		if !a.HasActiveSubscription {
+			fmt.Fprintln(out, "Warning: the account selected in ~/.knowledge/config has no active subscription, so it has no cloud graph access — subscribe for that account, or run `knowledge account use <id|slug>` to pick another")
+		}
+		return
+	}
+	fmt.Fprintln(out, "Warning: the account selected in ~/.knowledge/config is no longer one of your accounts — run `knowledge accounts` then `knowledge account use <id|slug>`")
 }

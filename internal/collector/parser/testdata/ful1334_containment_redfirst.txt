@@ -1,0 +1,182 @@
+RED-FIRST HANDOFF ARTIFACT — ful1334 Phase 2 containment invariants
+
+Captured against the tree with Phase 1 landed (containment edges already carry
+their chunk slots) but BEFORE the orphan-emission step and the slot-to-node-ID
+pre-pass. Both tests COMPILE here: they call only Populate, kgtypes and existing
+in-package helpers, no symbol this plan introduces.
+
+Command:
+  cd cmd/knowledge && CGO_ENABLED=1 go test ./internal/collector/parser/ \
+    -run '^TestInvariant_(NoCrossFileContains|EveryChunkNodeIsContained)$' -v -count=1
+
+Exit status: 1
+Subtests: 12 run, 12 FAILED, 0 passed.
+
+THE FAILURES ARE THE SPECIFIED DEFECT, NOT FIXTURE SETUP — each names a concrete
+offender, so a fixture that broke for a setup reason would be distinguishable:
+
+  TestInvariant_NoCrossFileContains — names the cross-file pair:
+    web/Banner.tsx      contains web/Banner.test.tsx:Banner  (lives in web/Banner.test.tsx)
+    svc/a.go            contains svc/b.go:init               (lives in svc/b.go)
+    cmd/alpha/main.go   contains cmd/beta/main.go:main       (lives in cmd/beta/main.go)
+    scripts/a.test.sh   contains scripts/b.test.sh:fail      (lives in scripts/b.test.sh)
+    bin/one.py          contains bin/two.py:main             (lives in bin/two.py)
+
+  Two cases trip the KNOWN-POSITIVE CONTROL instead, which is the same defect in
+  its other form — the colliding endpoint is dropped rather than mis-bound, so
+  the file ends up with no containment at all:
+    e2e/one.fixture.ts  produced no file-to-symbol CONTAINS edge at all
+    tools/one.mjs       produced no file-to-symbol CONTAINS edge at all
+
+  TestInvariant_EveryChunkNodeIsContained — names the uncontained node per cause:
+    orphans (yaml)          deploy/app.yaml:L1-1     block_mapping_pair
+    orphans (go const/var)  cfg/values.go:L3-7       const_declaration
+    orphans (bash command)  scripts/run.sh:L2-2      command
+    unnamed declaration     src/lib.c:L3-3           declaration
+    unnamed test block      spec/suite.spec.ts:L1-1  import_statement
+
+THE RAW OUTPUT BELOW IS VERBATIM EXCEPT FOR ONE SUBSTITUTION. Each of the 12
+"Error Trace:" lines carried the absolute path of the worktree the capture ran
+in; that prefix is removed and the repo-relative path testify already prints on
+the line above it is left in its place. A shipped artifact carries no personal
+identifiers or paths, and this file is copied into the public mirror. Nothing
+else was touched: every FAIL line, every subtest name, every offender pair and
+every assertion message is byte-for-byte as captured.
+
+================================ RAW OUTPUT ================================
+=== RUN   TestInvariant_NoCrossFileContains
+=== RUN   TestInvariant_NoCrossFileContains/tsx_component_and_colocated_test
+    invariant_containment_test.go:174: 
+        	Error Trace:	cmd/knowledge/internal/collector/parser/invariant_containment_test.go:174
+        	Error:      	Not equal: 
+        	            	expected: "web/Banner.tsx"
+        	            	actual  : "web/Banner.test.tsx"
+        	            	
+        	            	Diff:
+        	            	--- Expected
+        	            	+++ Actual
+        	            	@@ -1 +1 @@
+        	            	-web/Banner.tsx
+        	            	+web/Banner.test.tsx
+        	Test:       	TestInvariant_NoCrossFileContains/tsx_component_and_colocated_test
+        	Messages:   	CROSS-FILE CONTAINS: file "web/Banner.tsx" contains "web/Banner.test.tsx:Banner" which lives in "web/Banner.test.tsx"
+=== RUN   TestInvariant_NoCrossFileContains/go_same_package_init
+    invariant_containment_test.go:174: 
+        	Error Trace:	cmd/knowledge/internal/collector/parser/invariant_containment_test.go:174
+        	Error:      	Not equal: 
+        	            	expected: "svc/a.go"
+        	            	actual  : "svc/b.go"
+        	            	
+        	            	Diff:
+        	            	--- Expected
+        	            	+++ Actual
+        	            	@@ -1 +1 @@
+        	            	-svc/a.go
+        	            	+svc/b.go
+        	Test:       	TestInvariant_NoCrossFileContains/go_same_package_init
+        	Messages:   	CROSS-FILE CONTAINS: file "svc/a.go" contains "svc/b.go:init" which lives in "svc/b.go"
+=== RUN   TestInvariant_NoCrossFileContains/go_cross_directory_package_main
+    invariant_containment_test.go:174: 
+        	Error Trace:	cmd/knowledge/internal/collector/parser/invariant_containment_test.go:174
+        	Error:      	Not equal: 
+        	            	expected: "cmd/alpha/main.go"
+        	            	actual  : "cmd/beta/main.go"
+        	            	
+        	            	Diff:
+        	            	--- Expected
+        	            	+++ Actual
+        	            	@@ -1 +1 @@
+        	            	-cmd/alpha/main.go
+        	            	+cmd/beta/main.go
+        	Test:       	TestInvariant_NoCrossFileContains/go_cross_directory_package_main
+        	Messages:   	CROSS-FILE CONTAINS: file "cmd/alpha/main.go" contains "cmd/beta/main.go:main" which lives in "cmd/beta/main.go"
+=== RUN   TestInvariant_NoCrossFileContains/typescript_two_e2e_fixtures
+    invariant_containment_test.go:182: 
+        	Error Trace:	cmd/knowledge/internal/collector/parser/invariant_containment_test.go:182
+        	Error:      	"0" is not positive
+        	Test:       	TestInvariant_NoCrossFileContains/typescript_two_e2e_fixtures
+        	Messages:   	control failed: file "e2e/one.fixture.ts" produced no file-to-symbol CONTAINS edge at all
+=== RUN   TestInvariant_NoCrossFileContains/bash_two_test_scripts
+    invariant_containment_test.go:174: 
+        	Error Trace:	cmd/knowledge/internal/collector/parser/invariant_containment_test.go:174
+        	Error:      	Not equal: 
+        	            	expected: "scripts/a.test.sh"
+        	            	actual  : "scripts/b.test.sh"
+        	            	
+        	            	Diff:
+        	            	--- Expected
+        	            	+++ Actual
+        	            	@@ -1 +1 @@
+        	            	-scripts/a.test.sh
+        	            	+scripts/b.test.sh
+        	Test:       	TestInvariant_NoCrossFileContains/bash_two_test_scripts
+        	Messages:   	CROSS-FILE CONTAINS: file "scripts/a.test.sh" contains "scripts/b.test.sh:fail" which lives in "scripts/b.test.sh"
+=== RUN   TestInvariant_NoCrossFileContains/javascript_two_mjs_scripts
+    invariant_containment_test.go:182: 
+        	Error Trace:	cmd/knowledge/internal/collector/parser/invariant_containment_test.go:182
+        	Error:      	"0" is not positive
+        	Test:       	TestInvariant_NoCrossFileContains/javascript_two_mjs_scripts
+        	Messages:   	control failed: file "tools/one.mjs" produced no file-to-symbol CONTAINS edge at all
+=== RUN   TestInvariant_NoCrossFileContains/python_two_scripts
+    invariant_containment_test.go:174: 
+        	Error Trace:	cmd/knowledge/internal/collector/parser/invariant_containment_test.go:174
+        	Error:      	Not equal: 
+        	            	expected: "bin/one.py"
+        	            	actual  : "bin/two.py"
+        	            	
+        	            	Diff:
+        	            	--- Expected
+        	            	+++ Actual
+        	            	@@ -1 +1 @@
+        	            	-bin/one.py
+        	            	+bin/two.py
+        	Test:       	TestInvariant_NoCrossFileContains/python_two_scripts
+        	Messages:   	CROSS-FILE CONTAINS: file "bin/one.py" contains "bin/two.py:main" which lives in "bin/two.py"
+--- FAIL: TestInvariant_NoCrossFileContains (0.07s)
+    --- FAIL: TestInvariant_NoCrossFileContains/tsx_component_and_colocated_test (0.02s)
+    --- FAIL: TestInvariant_NoCrossFileContains/go_same_package_init (0.00s)
+    --- FAIL: TestInvariant_NoCrossFileContains/go_cross_directory_package_main (0.00s)
+    --- FAIL: TestInvariant_NoCrossFileContains/typescript_two_e2e_fixtures (0.02s)
+    --- FAIL: TestInvariant_NoCrossFileContains/bash_two_test_scripts (0.00s)
+    --- FAIL: TestInvariant_NoCrossFileContains/javascript_two_mjs_scripts (0.01s)
+    --- FAIL: TestInvariant_NoCrossFileContains/python_two_scripts (0.00s)
+=== RUN   TestInvariant_EveryChunkNodeIsContained
+=== RUN   TestInvariant_EveryChunkNodeIsContained/orphans_yaml_document
+    invariant_containment_test.go:293: 
+        	Error Trace:	cmd/knowledge/internal/collector/parser/invariant_containment_test.go:293
+        	Error:      	"[]" should have 1 item(s), but has 0
+        	Test:       	TestInvariant_EveryChunkNodeIsContained/orphans_yaml_document
+        	Messages:   	node "deploy/app.yaml:L1-1" (type block_mapping_pair, file deploy/app.yaml) must be contained by exactly one file node, got []
+=== RUN   TestInvariant_EveryChunkNodeIsContained/orphans_go_const_and_var_block
+    invariant_containment_test.go:293: 
+        	Error Trace:	cmd/knowledge/internal/collector/parser/invariant_containment_test.go:293
+        	Error:      	"[]" should have 1 item(s), but has 0
+        	Test:       	TestInvariant_EveryChunkNodeIsContained/orphans_go_const_and_var_block
+        	Messages:   	node "cfg/values.go:L3-7" (type const_declaration, file cfg/values.go) must be contained by exactly one file node, got []
+=== RUN   TestInvariant_EveryChunkNodeIsContained/orphans_bash_bare_commands
+    invariant_containment_test.go:293: 
+        	Error Trace:	cmd/knowledge/internal/collector/parser/invariant_containment_test.go:293
+        	Error:      	"[]" should have 1 item(s), but has 0
+        	Test:       	TestInvariant_EveryChunkNodeIsContained/orphans_bash_bare_commands
+        	Messages:   	node "scripts/run.sh:L2-2" (type command, file scripts/run.sh) must be contained by exactly one file node, got []
+=== RUN   TestInvariant_EveryChunkNodeIsContained/unnamed_declarations_c
+    invariant_containment_test.go:293: 
+        	Error Trace:	cmd/knowledge/internal/collector/parser/invariant_containment_test.go:293
+        	Error:      	"[]" should have 1 item(s), but has 0
+        	Test:       	TestInvariant_EveryChunkNodeIsContained/unnamed_declarations_c
+        	Messages:   	node "src/lib.c:L3-3" (type declaration, file src/lib.c) must be contained by exactly one file node, got []
+=== RUN   TestInvariant_EveryChunkNodeIsContained/unnamed_test_blocks_ts
+    invariant_containment_test.go:293: 
+        	Error Trace:	cmd/knowledge/internal/collector/parser/invariant_containment_test.go:293
+        	Error:      	"[]" should have 1 item(s), but has 0
+        	Test:       	TestInvariant_EveryChunkNodeIsContained/unnamed_test_blocks_ts
+        	Messages:   	node "spec/suite.spec.ts:L1-1" (type import_statement, file spec/suite.spec.ts) must be contained by exactly one file node, got []
+--- FAIL: TestInvariant_EveryChunkNodeIsContained (0.03s)
+    --- FAIL: TestInvariant_EveryChunkNodeIsContained/orphans_yaml_document (0.00s)
+    --- FAIL: TestInvariant_EveryChunkNodeIsContained/orphans_go_const_and_var_block (0.00s)
+    --- FAIL: TestInvariant_EveryChunkNodeIsContained/orphans_bash_bare_commands (0.00s)
+    --- FAIL: TestInvariant_EveryChunkNodeIsContained/unnamed_declarations_c (0.00s)
+    --- FAIL: TestInvariant_EveryChunkNodeIsContained/unnamed_test_blocks_ts (0.02s)
+FAIL
+FAIL	github.com/fulminate-io/knowledge/cmd/knowledge/internal/collector/parser	0.557s
+FAIL

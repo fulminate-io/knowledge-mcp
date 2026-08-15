@@ -163,6 +163,18 @@ type Config struct {
 	// var when unset here; see keys.go for the accessor functions that
 	// apply that precedence.
 	Credentials *Credentials
+	// FulminateAccountID is the Fulminate ACCOUNT (tenancy) this machine's
+	// cloud calls are routed to, written by `knowledge account use` and read
+	// by the cloud transports. Empty (the common case) means no selection:
+	// no header is sent and the gateway resolves the caller's primary account
+	// exactly as it did before this field existed.
+	//
+	// It is NOT a credential — it is a routing selection, which is why it
+	// lives here and not in the OS keychain beside the refresh token. It is
+	// also NOT the cloud-PROVIDER account named by GraphSelector.account in
+	// the proto (an AWS/GCP graph instance); the two are unrelated concepts
+	// that would collide under a `cloud_`-prefixed name.
+	FulminateAccountID string
 }
 
 // Credentials mirrors the [credentials] TOML table. Every field is

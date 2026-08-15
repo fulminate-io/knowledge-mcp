@@ -150,7 +150,7 @@ func summarizeRatios(counts map[kgtypes.NodeType]int, total int) string {
 // node-type distribution of that root's EdgeContains subtree. Per-root output
 // is opt-in (req.Extra["per_root"]=="true") because most callers want only the
 // aggregate. The subtree walk reads its CONTAINS adjacency + node types out of
-// the in-memory index built from one bulk FetchEdges, replacing the originals'
+// the in-memory index built from a bulk FetchEdges, replacing the originals'
 // per-node forward-edge + by-id queries.
 func buildPerRootRatioFindings(ctx context.Context, req foundation.Request, nodes []*knowledgev1.Node, roots []string) []foundation.Finding {
 	idx := buildNodeIndex(nodes)
@@ -194,7 +194,7 @@ func buildPerRootRatioFindings(ctx context.Context, req foundation.Request, node
 // (BFS, no depth cap — the root's full descendant set) and tallies occurrences
 // per NodeType. The root itself is NOT counted; the analyzer describes what's
 // INSIDE a container, not the container. Adjacency + node types come from the
-// in-memory index (one bulk FetchEdges + one FetchAllNodes) instead of the
+// in-memory index (a bulk FetchEdges + one FetchAllNodes) instead of the
 // originals' per-node forward-edge + by-id store queries.
 func subtreeTypeCounts(ctx context.Context, idx nodeIndex, adj containsChildrenIndex, rootID string) map[kgtypes.NodeType]int {
 	counts := make(map[kgtypes.NodeType]int)

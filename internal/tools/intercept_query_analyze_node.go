@@ -5,6 +5,8 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"log/slog"
+	"maps"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
@@ -19,11 +21,19 @@ import (
 // client-only); analyze is a generic graph walk (traverse CALLS) + a client
 // render, no code-specific server logic.
 //
-// Recipe (direct map of the server HandleAnalyzeNode,
+// Recipe (grown from the server HandleAnalyzeNode,
 // cmd/knowledge-server/internal/codegraph/analyze.go): (1) Execute ByID for the
 // subject; (2) traverse(CALLS, in, caller_depth) for callers; (3) traverse(CALLS,
-// out, callee_depth) for callees; render via engine.RenderAnalyzeNode. Depths
-// clamp 1..3, include_source defaults true — matching the server.
+// out, callee_depth) for callees; (4) the same two walks over TEST_CALLS for the
+// call traffic whose source is test code; render via engine.RenderAnalyzeNode.
+// Depths clamp 1..3, include_source defaults true — matching the server.
+//
+// The TEST_CALLS walks are the one place this arm goes beyond the server recipe.
+// They are SEPARATE walks per edge type rather than one walk requesting both,
+// because each side's group reconstruction reads its whole edge slice: a mixed
+// slice would let a test-side candidate group suppress a production caller
+// through the frontier short-circuit, and at depth above 1 a mixed walk yields
+// mixed paths with no per-node attribution to sort them back out.
 
 // analyzeNodeArgs is the analyze view of the query args. The query(graph:code,
 // id) surface maps id→node_id; caller_depth/callee_depth/include_source ride
@@ -87,47 +97,180 @@ func composeAnalyzeNode(ctx context.Context, exec engine.ExecuteFn, a analyzeNod
 	}
 
 	// (2) Callers — traverse(CALLS, in, caller_depth).
-	callers, cerr := traverseCallNodes(ctx, exec, target, a.ID, false, callerDepth)
+	callers, callerEdges, cerr := traverseCallNodes(ctx, exec, target, a.ID, kgtypes.EdgeCalls, false, callerDepth)
 	if cerr != nil {
 		return errorResult("analyze callers: " + cerr.Error())
 	}
 	// (3) Callees — traverse(CALLS, out, callee_depth).
-	callees, eerr := traverseCallNodes(ctx, exec, target, a.ID, true, calleeDepth)
+	callees, calleeEdges, eerr := traverseCallNodes(ctx, exec, target, a.ID, kgtypes.EdgeCalls, true, calleeDepth)
 	if eerr != nil {
 		return errorResult("analyze callees: " + eerr.Error())
 	}
+	// (4) The same two walks over TEST_CALLS. A failure here is an error on the
+	// same terms as the production walks: rendering an empty test section after a
+	// failed walk would be indistinguishable from a symbol that genuinely has no
+	// test callers, which is the silent exclusion this opt-in exists to remove.
+	testCallers, testCallerEdges, tcerr := traverseCallNodes(ctx, exec, target, a.ID, kgtypes.EdgeTestCalls, false, callerDepth)
+	if tcerr != nil {
+		return errorResult("analyze test callers: " + tcerr.Error())
+	}
+	testCallees, testCalleeEdges, tecerr := traverseCallNodes(ctx, exec, target, a.ID, kgtypes.EdgeTestCalls, true, calleeDepth)
+	if tecerr != nil {
+		return errorResult("analyze test callees: " + tecerr.Error())
+	}
 
-	repoLabel := repoLabelFor(a.Repo, a.Branch)
-	return textResult(engine.RenderAnalyzeNode(repoLabel, subjNodes[0], callers, callees, includeSource))
+	// (5) Reconstruct groups per side and hydrate every candidate. Unlike the
+	// traverse arm, analyze ALWAYS enriches: its candidates are not guaranteed to
+	// appear in its own node slices, so it needs the hydrate even when every group
+	// is already complete.
+	callerSide := analyzeGroupSide(ctx, exec, target, a.ID, callers, callerEdges)
+	calleeSide := analyzeGroupSide(ctx, exec, target, a.ID, callees, calleeEdges)
+	testCallerSide := analyzeGroupSide(ctx, exec, target, a.ID, testCallers, testCallerEdges)
+	testCalleeSide := analyzeGroupSide(ctx, exec, target, a.ID, testCallees, testCalleeEdges)
+
+	candidates := map[string]*knowledgev1.Node{}
+	reached := map[string]bool{}
+	incomplete := false
+	for _, side := range []analyzeSide{callerSide, calleeSide, testCallerSide, testCalleeSide} {
+		maps.Copy(candidates, side.candidates)
+		for id := range side.reached {
+			reached[id] = true
+		}
+		incomplete = incomplete || side.incomplete
+	}
+
+	return textResult(engine.RenderAnalyzeNode(engine.AnalyzeView{
+		RepoLabel:        repoLabelFor(a.Repo, a.Branch),
+		Subject:          subjNodes[0],
+		Callers:          callerSide.plain,
+		Callees:          calleeSide.plain,
+		CallerGroups:     callerSide.groups,
+		CalleeGroups:     calleeSide.groups,
+		TestCallers:      testCallerSide.plain,
+		TestCallees:      testCalleeSide.plain,
+		TestCallerGroups: testCallerSide.groups,
+		TestCalleeGroups: testCalleeSide.groups,
+		Candidates:       candidates,
+		Reached:          reached,
+		IncludeSource:    includeSource,
+		Incomplete:       incomplete,
+	}))
 }
 
-// traverseCallNodes issues ONE RETURN_MODE_TRAVERSAL Execute over the CALLS edge
-// in the given direction (forward=out=callees, !forward=in=callers) and returns
-// the traversed nodes (the start node is NOT in the result — BFS yields distance
-// ≥1 only).
-func traverseCallNodes(ctx context.Context, exec engine.ExecuteFn, target *knowledgev1.GraphSelector, id string, forward bool, depth int) ([]*knowledgev1.Node, error) {
+// analyzeSide is one direction's resolved view: the plain entries the section
+// lists, the groups it renders as blocks, and the candidate hydrate they read.
+type analyzeSide struct {
+	plain      []*knowledgev1.Node
+	groups     []engine.CandidateGroup
+	candidates map[string]*knowledgev1.Node
+	reached    map[string]bool
+	incomplete bool
+}
+
+// analyzeGroupSide reconstructs one direction's groups, applies the frontier
+// short-circuit, and removes every candidate from the plain node list.
+//
+// THE REMOVAL IS WHAT KEEPS THE SECTION COUNT HONEST: a candidate is rendered
+// inside its group block, so listing it as a plain caller too would report one
+// ambiguous reference as N callers AND as one group of N — the exact "N
+// alternatives read as N facts" defect this ticket removes.
+func analyzeGroupSide(
+	ctx context.Context,
+	exec engine.ExecuteFn,
+	target *knowledgev1.GraphSelector,
+	startID string,
+	nodes []*knowledgev1.Node,
+	edges []knowledgev1.Edge,
+) analyzeSide {
+	groups, _ := engine.GroupCandidateEdges(edges)
+	if len(groups) == 0 {
+		return analyzeSide{plain: nodes}
+	}
+
+	// The frontier rule applies here too: with caller_depth/callee_depth above 1,
+	// a node reachable only THROUGH a group must not be listed as a plain entry.
+	results := make([]engine.TraversalResult, 0, len(nodes))
+	for _, n := range nodes {
+		results = append(results, engine.TraversalResult{Node: n, Distance: 1})
+	}
+	kept, reached, incomplete := engine.FrontierFilter(startID, results, edges, groups)
+
+	// Candidate facts come from TWO sources, in this order. (1) The traversal
+	// results already in hand, which hold the candidate nodes whenever the walk
+	// reached them — free, and the common case. (2) The enrichment hydrate, which
+	// runs only when a group was observed incomplete, which is exactly the case
+	// where a candidate was NOT in the walk. Enrichment overlays the walk.
+	//
+	// Sourcing (1) locally is what lets EnrichCandidateGroups keep its zero-read
+	// early exit for complete groups: forcing a hydrate there would add an Execute
+	// to every forward traversal in the product for facts already decoded.
+	candidates := make(map[string]*knowledgev1.Node, len(nodes))
+	for _, n := range nodes {
+		if n != nil {
+			candidates[n.Id] = n
+		}
+	}
+	enriched, hydrated, err := engine.EnrichCandidateGroups(ctx, exec, groups, target)
+	if err != nil {
+		// Best-effort: render what is known and say so, rather than turning a
+		// successful analyze into an error because an enrichment nicety failed.
+		slog.Warn("analyze: candidate enrichment failed; rendering the observed members only", "error", err)
+		incomplete = true
+	} else {
+		groups = enriched
+		maps.Copy(candidates, hydrated)
+	}
+
+	isCandidate := map[string]bool{}
+	for gi := range groups {
+		for mi := range groups[gi].Members {
+			isCandidate[groups[gi].Members[mi].ToId] = true
+		}
+	}
+	plain := make([]*knowledgev1.Node, 0, len(kept))
+	for _, r := range kept {
+		if r.Node == nil || isCandidate[r.Node.Id] {
+			continue
+		}
+		plain = append(plain, r.Node)
+	}
+	return analyzeSide{plain: plain, groups: groups, candidates: candidates, reached: reached, incomplete: incomplete}
+}
+
+// traverseCallNodes issues ONE RETURN_MODE_TRAVERSAL Execute over the given call
+// edge type (EdgeCalls or EdgeTestCalls) in the given direction (forward=out=
+// callees, !forward=in=callers) and returns the traversed nodes (the start node
+// is NOT in the result — BFS yields distance ≥1 only) TOGETHER WITH the walked
+// edges. The edge type travels in the existing Selection — no wire change.
+//
+// IncludeEdgeMetadata is set unconditionally: without the per-edge Method the
+// composer cannot tell a multi-candidate group from N independent callers, and
+// this arm previously requested no edges at all — which is why a group rendered
+// here as N separate callers and no render-only change could fix it.
+func traverseCallNodes(ctx context.Context, exec engine.ExecuteFn, target *knowledgev1.GraphSelector, id string, edgeType kgtypes.EdgeType, forward bool, depth int) ([]*knowledgev1.Node, []knowledgev1.Edge, error) {
 	fwd := forward
 	resp, err := exec(ctx, &knowledgev1.ExecuteRequest{
 		Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
-			Selection:  &knowledgev1.Selection{FromId: []string{id}, EdgeTypes: []string{string(kgtypes.EdgeCalls)}},
-			Forward:    &fwd,
-			MaxHops:    int32(depth),
-			ReturnMode: knowledgev1.ReturnMode_RETURN_MODE_TRAVERSAL,
+			Selection:           &knowledgev1.Selection{FromId: []string{id}, EdgeTypes: []string{string(edgeType)}},
+			Forward:             &fwd,
+			MaxHops:             int32(depth),
+			ReturnMode:          knowledgev1.ReturnMode_RETURN_MODE_TRAVERSAL,
+			IncludeEdgeMetadata: true,
 		}},
 		Target: target,
 	})
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	results, derr := engine.DecodeTraversal(resp)
 	if derr != nil {
-		return nil, derr
+		return nil, nil, derr
 	}
 	nodes := make([]*knowledgev1.Node, 0, len(results))
 	for _, r := range results {
 		nodes = append(nodes, r.Node)
 	}
-	return nodes, nil
+	return nodes, engine.EdgesFromProto(resp.GetTraversalEdges()), nil
 }
 
 // clampDepth applies the server's 1..3 clamp (analyze.go: <=0 → 1, >3 → 3).

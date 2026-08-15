@@ -196,16 +196,17 @@ func listCloudGraphs(ctx context.Context, gc GraphCaller) ([]string, error) {
 	return fetchGraphNames(ctx, gc, "cloud")
 }
 
-// queryCloudResources returns NodeCloudResource entries from a named cloud
-// graph via the Execute carrier seam (browseNodesViaEngine → nodes_json
-// carrier). Structurally identical to the code type-browse, differing only in
-// the graph value (cloud) + the name selector.
+// queryCloudResources returns EVERY NodeCloudResource entry in a named cloud
+// graph via the Execute carrier seam (drainNodesViaEngine → keyset pages →
+// nodes_json carrier). Structurally identical to the code type-browse, differing
+// only in the graph value (cloud) + the name selector. The caller derives edges
+// from the complete resource set, so this drains rather than taking one bounded
+// page.
 func queryCloudResources(ctx context.Context, gc GraphCaller, cloudGraphName string) ([]*knowledgev1.Node, error) {
-	nodes, err := browseNodesViaEngine(ctx, gc, map[string]any{
+	nodes, err := drainNodesViaEngine(ctx, gc, map[string]any{
 		"graph": "cloud",
 		"name":  cloudGraphName,
 		"type":  string(kgtypes.NodeCloudResource),
-		"limit": 0,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("query cloud resources: %w", err)

@@ -4,6 +4,7 @@ package graphclient
 
 import (
 	"bytes"
+	"context"
 	"crypto/tls"
 	"fmt"
 	"io"
@@ -39,9 +40,11 @@ import (
 // connect-go surfaces 401 + 5xx normally and the retry budget on those classes
 // belongs to the auth-refresh logic above, not a generic backoff loop.
 func NewCloudGraphClient(baseURL string, ts auth.TokenSource) *GraphClient {
+	sel := auth.SelectedAccount()
 	httpClient := &http.Client{
 		Transport: &bearerRoundTripper{
-			ts: ts,
+			ts:  ts,
+			sel: sel,
 			base: &http.Transport{
 				ForceAttemptHTTP2: true,
 				TLSClientConfig:   &tls.Config{MinVersion: tls.VersionTLS12},
@@ -66,8 +69,17 @@ func NewCloudGraphClient(baseURL string, ts auth.TokenSource) *GraphClient {
 	// the response finally returned to the caller. This is the constructor that
 	// matters most for it — the cloud is the deployment serving a non-zero
 	// watermark today, and a miss here is silent rather than compile-caught.
+	// The account stamper is CLOUD-ONLY: it puts the selected Fulminate
+	// account on every outbound RPC and refuses a selection already known to
+	// be rejected. It is kept last in the slice so the freshness observer
+	// stays first-in-slice (outermost), as documented above.
 	gens := &atomic.Uint64{}
-	stamp := connect.WithInterceptors(newFreshnessObserver(gens), newOperationInterceptor(), newSessionInterceptor())
+	stamp := connect.WithInterceptors(
+		newFreshnessObserver(gens),
+		newOperationInterceptor(),
+		newSessionInterceptor(),
+		newAccountInterceptor(sel),
+	)
 	return &GraphClient{
 		baseURL:      baseURL,
 		httpClient:   httpClient,
@@ -90,6 +102,10 @@ func NewCloudGraphClient(baseURL string, ts auth.TokenSource) *GraphClient {
 type bearerRoundTripper struct {
 	ts   auth.TokenSource
 	base http.RoundTripper
+	// sel is the same account selection the request-side interceptor reads.
+	// This round-tripper is the one place on the Connect chain holding the raw
+	// *http.Response, so response classification lives here.
+	sel *auth.AccountSelection
 }
 
 // RoundTrip implements http.RoundTripper. It acquires a token, sends the
@@ -120,6 +136,7 @@ func (b *bearerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error
 		return nil, err
 	}
 	if resp.StatusCode != http.StatusUnauthorized {
+		b.classifyAccountRejection(ctx, resp)
 		return resp, nil
 	}
 
@@ -139,7 +156,50 @@ func (b *bearerRoundTripper) RoundTrip(req *http.Request) (*http.Response, error
 			req.Method, req.URL.Path, refreshErr)
 	}
 	retry := cloneRequestWithBearer(req, bodyBytes, newToken)
-	return b.base.RoundTrip(retry)
+	retried, retryErr := b.base.RoundTrip(retry)
+	if retryErr != nil {
+		return nil, retryErr
+	}
+	b.classifyAccountRejection(ctx, retried)
+	return retried, nil
+}
+
+// classifyAccountRejection inspects a non-401 4xx response for a gateway
+// account rejection and marks the selection invalid when the rejection settles
+// its validity, so the NEXT cloud call fails fast locally.
+//
+// This lives here rather than in the request interceptor because a Connect
+// interceptor cannot see the gateway's rejection body: connect-go parses a
+// non-200 body into a wire error declaring only code/message/details, so the
+// gateway's error/error_description/upgrade_url body unmarshals cleanly with
+// the message left EMPTY. This round-tripper is the one place on the chain
+// holding the raw *http.Response.
+//
+// It never alters routing: there is no retry-without-the-header and no retry
+// against another account. Dropping the header would route the user's writes
+// into a DIFFERENT account than the one they selected.
+//
+// The original body is DRAINED AND CLOSED before the replayable copy is
+// substituted. io.LimitReader stops at the cap WITHOUT reaching EOF, so a
+// rejection body larger than the cap would otherwise leave the original body
+// unread and unclosed and the underlying connection would never be released —
+// the same reason the 401 branch above drains and closes.
+func (b *bearerRoundTripper) classifyAccountRejection(ctx context.Context, resp *http.Response) {
+	if b.sel == nil || resp.StatusCode < 400 || resp.StatusCode >= 500 {
+		return
+	}
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, auth.MaxErrorBodyBytes))
+	_, _ = io.Copy(io.Discard, resp.Body)
+	_ = resp.Body.Close()
+	resp.Body = io.NopCloser(bytes.NewReader(raw))
+
+	reason, latch := auth.ClassifyAccountRejection(resp.StatusCode, raw)
+	if !latch {
+		return
+	}
+	if id := b.sel.ID(ctx); id != "" {
+		b.sel.MarkInvalid(id, reason)
+	}
 }
 
 // captureBody reads the request body fully into memory and replaces

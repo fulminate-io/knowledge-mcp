@@ -170,7 +170,7 @@ func memoAdjacencyAll(ctx context.Context, gc Caller, src CorpusSource) ([]strin
 	return nodeIDs, adj, nil
 }
 
-// memoKGContainsEdges serves the ONE bulk EdgeKGContains read that the
+// memoKGContainsEdges serves the single bulk EdgeKGContains read that the
 // session-sibling expansion (deriveSessionSiblings) and the session-label map
 // (FetchSessionLabelsByThought) group differently, so the edges are read once per
 // pass and grouped twice.

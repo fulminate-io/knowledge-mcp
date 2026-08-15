@@ -35,6 +35,12 @@ var (
 		OpSegmentHeal, OpSegmentHorizonSeed,
 		OpPipelineGapScan, OpPipelineGraphDiscovery, OpPipelineGenPoll,
 		OpCorpusDeltaDrain, OpPropagationReflect, OpHiveMonitor,
+
+		// The fan-out terms. Not background loops but in the same category for the
+		// same reason: they issue instance-addressed RPCs against graphs the user
+		// never named, so classifying them as admitting would let one user call
+		// admit every graph its fan-out happened to touch.
+		OpCrossGraphProbe, OpPostCollectFanout,
 	}
 
 	// (C) No graph instance addressed.
@@ -119,6 +125,32 @@ func TestManagementOperationsNeverAdmit(t *testing.T) {
 	// KNOWN-POSITIVE CONTROL: the same predicate does return true for a direct
 	// user read, so the falses above are a classification and not a dead function.
 	require.True(t, AdmitsWorkingSet(OpQuery), "control: a direct user read must admit")
+}
+
+// TestFanoutOperationsNeverAdmit pins the two fan-out terms BY NAME. Omission
+// from admittingOperations is the entire mechanism — AdmitsWorkingSet is
+// default-deny, so adding either term to the admitting set would silently make
+// the scoping fix inert while every other gate stayed green.
+//
+// These two need pinning by name rather than by category because, unlike a
+// background loop, they run under a live user call: the RPCs they issue are
+// instance-addressed and would be admitted on the caller's own stamp if the
+// re-stamp at their call sites were ever dropped.
+func TestFanoutOperationsNeverAdmit(t *testing.T) {
+	t.Parallel()
+
+	for _, op := range []Operation{OpCrossGraphProbe, OpPostCollectFanout} {
+		assert.False(t, AdmitsWorkingSet(op),
+			"%q attributes a fan-out addressing graphs the user never named, so it must never "+
+				"admit: it is issued while handling some other tool call, and admitting it would "+
+				"let one user interaction pull every graph the fan-out scanned into the working set", op)
+	}
+
+	// KNOWN-POSITIVE CONTROLS, same predicate, one read and one write — so a
+	// blanket-false stub (or a predicate whose map lookup had stopped resolving)
+	// cannot satisfy the falses above.
+	require.True(t, AdmitsWorkingSet(OpSearch), "control: a direct user read must admit")
+	require.True(t, AdmitsWorkingSet(OpCollect), "control: a user collect must admit")
 }
 
 // TestPipelineWritebackNeverAdmits pins the self-admission loophole the working

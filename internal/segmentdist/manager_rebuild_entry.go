@@ -43,6 +43,11 @@ import (
 // memoized instance a prior write constructed); for a graph never added to, the
 // lazily-constructed engine's buffer is empty and Flush is a no-op.
 func (m *Manager) Flush(ctx context.Context, gt kgtypes.GraphType, name string) error {
+	// Fail closed on an in-session account switch: shipping from a manager
+	// bound to the previous account would publish it under the new tenancy.
+	if err := m.checkAccountBinding(ctx); err != nil {
+		return err
+	}
 	hnsw := m.managerFor(gt, name)
 	if err := hnsw.engine.Flush(); err != nil {
 		return err

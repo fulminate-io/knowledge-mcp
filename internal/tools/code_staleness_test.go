@@ -225,6 +225,22 @@ func TestCodeStalenessFooter(t *testing.T) {
 		}
 	})
 
+	t.Run("branch read accepts the bare OSS overlay name", func(t *testing.T) {
+		// The OSS/local catalog reports overlay keys BARE ("feature"), not in the
+		// cloud "repo@feature" form. The branch read must accept either, or every
+		// branch-scoped staleness footer silently degrades to no footer on OSS.
+		// The two entries carry DELIBERATELY DIFFERENT concrete times so the
+		// assertion cannot be satisfied by the base entry.
+		exec := graphNamesFake([]*knowledgev1.GraphInfo{
+			{Name: repoName, CollectedCommit: head, CollectedTime: time.Now().UnixNano()},                      // base, recent
+			{Name: "feature", CollectedCommit: head, CollectedTime: time.Now().Add(-1 * time.Hour).UnixNano()}, // the BARE OSS overlay entry
+		})
+		footer := codeStalenessFooter(ctx, exec, t.TempDir(), repoName, "feature")
+		if !strings.Contains(footer, "1 hour ago") {
+			t.Fatalf("branch read must accept the BARE OSS overlay entry's collect time, got %q", footer)
+		}
+	})
+
 	t.Run("branch read with only a base entry degrades (no overlay match)", func(t *testing.T) {
 		// A branch read where only the BASE entry exists must degrade to no footer
 		// — it must NOT fall back to the base entry's meta (that's the stale-base

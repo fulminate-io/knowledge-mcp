@@ -29,7 +29,7 @@ import (
 // project parsed from the cloud graph name) we emit a non-dangling
 // proxy in the {account} cloud graph.
 func resolvePVDiskLinkage(ctx context.Context, gc postpopulate.GraphCaller, graphName string) error {
-	pvs, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, k8sResourceQuery("PersistentVolume"))
+	pvs, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, k8sResourceQuery("PersistentVolume"))
 	if err != nil {
 		return err
 	}

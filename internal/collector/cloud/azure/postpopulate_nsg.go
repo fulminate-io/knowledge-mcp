@@ -79,10 +79,9 @@ func (m nsgRuleMetadata) encode() string {
 // emit edges to stable "azure:cidr:<prefix>" sentinel nodes. ASG references
 // are skipped (not collected yet).
 func resolveNSGRules(ctx context.Context, gc postpopulate.GraphCaller, graphName string) error {
-	nsgs, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
-		"type":  string(kgtypes.NodeCloudResource),
-		"meta":  map[string]string{"resource_type": "Microsoft.Network/networkSecurityGroups"},
-		"limit": 0,
+	nsgs, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
+		"type": string(kgtypes.NodeCloudResource),
+		"meta": map[string]string{"resource_type": "Microsoft.Network/networkSecurityGroups"},
 	})
 	if err != nil {
 		return fmt.Errorf("azure nsg: query NSGs: %w", err)

@@ -163,11 +163,21 @@ func (g *fakeGcFixture) Execute(_ context.Context, req *knowledgev1.ExecuteReque
 	k := graphKey(graphType, graphName)
 
 	if q.GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_EDGES {
+		// The pivot arrives either as the node-SET form (Ids[], what the paged
+		// pivot drain sends) or as the single-node form (ById). Both select the
+		// edges incident to any pivot, matching the server's node-SET carrier.
+		pivots := map[string]bool{}
+		for _, id := range q.GetIds() {
+			pivots[id] = true
+		}
+		if id := q.GetById(); id != "" {
+			pivots[id] = true
+		}
 		var out []knowledgev1.Edge
 		bucket := g.f.edges[k]
 		for i := range bucket {
 			e := &bucket[i]
-			if e.FromId == q.GetById() || e.ToId == q.GetById() {
+			if pivots[e.FromId] || pivots[e.ToId] {
 				// Fresh literal (copylocks forbids copying an existing
 				// knowledgev1.Edge value into the slice).
 				out = append(out, knowledgev1.Edge{

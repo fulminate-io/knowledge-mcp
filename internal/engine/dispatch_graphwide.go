@@ -8,6 +8,7 @@ import (
 	"fmt"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
+	"github.com/fulminate-io/knowledge-mcp/internal/paging"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
@@ -60,11 +61,11 @@ func dispatchGraphWideEdges(ctx context.Context, exec ExecuteFn, args json.RawMe
 // them in BOUNDED keyset pages all the same — the hydration shape is why it
 // cannot use the ids-only twin, never a reason to leave the read uncapped.
 func dispatchGraphWideJSON(ctx context.Context, exec ExecuteFn, a traverseArgs, target *knowledgev1.GraphSelector) (kgtools.ToolResult, bool) {
-	nodes, err := DrainKeysetPages(func(afterID string) ([]*knowledgev1.Node, error) {
+	nodes, err := paging.DrainKeysetPages(func(afterID string) ([]*knowledgev1.Node, error) {
 		cursor := afterID
 		nodesPlan := &knowledgev1.QueryPlan{
 			Selection: &knowledgev1.Selection{},
-			Limit:     int32(BrowsePageSize),
+			Limit:     int32(paging.BrowsePageSize),
 			// SET on every page including the first, where the value is empty:
 			// presence is what selects the keyset browse.
 			AfterId:   &cursor,
@@ -83,7 +84,7 @@ func dispatchGraphWideJSON(ctx context.Context, exec ExecuteFn, a traverseArgs, 
 			return nil, fmt.Errorf("graph-wide node enumeration decode: %w", derr)
 		}
 		return page, nil
-	}, BrowsePageSize)
+	}, paging.BrowsePageSize)
 	if err != nil {
 		return renderEngineError(err), true
 	}
@@ -100,12 +101,12 @@ func dispatchGraphWideJSON(ctx context.Context, exec ExecuteFn, a traverseArgs, 
 // filter — and bare ids supply all three, so hydrating 21 columns of every node
 // to print two numbers was pure waste.
 func dispatchGraphWideText(ctx context.Context, exec ExecuteFn, a traverseArgs, target *knowledgev1.GraphSelector) (kgtools.ToolResult, bool) {
-	ids, err := DrainKeysetIDs(func(afterID string) ([]string, error) {
+	ids, err := paging.DrainKeysetIDs(func(afterID string) ([]string, error) {
 		cursor := afterID
 		plan := &knowledgev1.QueryPlan{
 			Selection:  &knowledgev1.Selection{},
 			ReturnMode: knowledgev1.ReturnMode_RETURN_MODE_IDS,
-			Limit:      int32(BrowsePageSize),
+			Limit:      int32(paging.BrowsePageSize),
 			// SET on every page including the first, where the value is empty:
 			// presence is what selects the keyset browse.
 			AfterId:   &cursor,
@@ -120,7 +121,7 @@ func dispatchGraphWideText(ctx context.Context, exec ExecuteFn, a traverseArgs, 
 			return nil, rerr
 		}
 		return resp.GetIds(), nil
-	}, BrowsePageSize)
+	}, paging.BrowsePageSize)
 	if err != nil {
 		return renderEngineError(err), true
 	}
@@ -173,7 +174,7 @@ func nodeIDsOf(nodes []*knowledgev1.Node) []string {
 // The per-page Limit and the drain's edgeCap are deliberately the same number:
 // one is what the server enforces, the other is what the drain uses to notice it.
 func graphWideEdgeUnion(ctx context.Context, exec ExecuteFn, ids []string, edgeTypes []string, graph string, target *knowledgev1.GraphSelector) ([]knowledgev1.Edge, error) {
-	return DrainPivotEdges(ids, EdgePivotPageSize, CorrelationsEdgeScanCap, func(idPage []string) ([]knowledgev1.Edge, error) {
+	return paging.DrainPivotEdges(ids, paging.EdgePivotPageSize, CorrelationsEdgeScanCap, func(idPage []string) ([]knowledgev1.Edge, error) {
 		sel := &knowledgev1.Selection{}
 		if len(edgeTypes) > 0 {
 			sel.EdgeTypes = canonicalEdgeCasings(graph, edgeTypes)
@@ -209,6 +210,16 @@ func renderGraphWideJSON(a traverseArgs, nodes []*knowledgev1.Node, edges []know
 		})
 	}
 	known := nodeIDSet(nodeIDsOf(nodes))
+
+	// Collapse multi-candidate groups; only the ungrouped remainder reaches the
+	// per-edge row loop. No frontier filter: this arm is a start-less enumeration
+	// of every node and every edge, not a walk, so there is no path to
+	// short-circuit and no distance to truncate — the short-circuit is a WALK
+	// rule. No enrichment either: this arm has already hydrated every node in the
+	// graph, so the candidate facts come from the set already in hand.
+	groups, ungrouped := GroupCandidateEdges(edges)
+	edges = ungrouped
+
 	edgeRows := make([]map[string]any, 0, len(edges))
 	for i := range edges {
 		e := &edges[i]
@@ -227,13 +238,38 @@ func renderGraphWideJSON(a traverseArgs, nodes []*knowledgev1.Node, edges []know
 		}
 		edgeRows = append(edgeRows, row)
 	}
-	return jsonResult(map[string]any{
+	payload := map[string]any{
 		"start":     "",
 		"graph":     graphWideLabel(a.Graph),
 		"direction": a.Direction,
 		"nodes":     nodeRows,
 		"edges":     edgeRows,
-	})
+	}
+	// THE DANGLING-SOURCE RULE APPLIES TO GROUPS TOO: a group whose source is not
+	// in the enumerated node set is skipped exactly as its edges would have been.
+	// Exempting groups would let this arm emit edges the node enumeration says are
+	// not there — a rule this arm already decided, which a new emitter must not
+	// quietly opt out of.
+	rooted := make([]CandidateGroup, 0, len(groups))
+	for i := range groups {
+		if _, ok := known[groups[i].FromID]; ok {
+			rooted = append(rooted, groups[i])
+		}
+	}
+	attachCandidateGroupsJSON(payload, rooted, nodeIndexByID(nodes), nil, false)
+	return jsonResult(payload)
+}
+
+// nodeIndexByID indexes already-hydrated nodes so a group block can read each
+// candidate's file and signature without a second read.
+func nodeIndexByID(nodes []*knowledgev1.Node) map[string]*knowledgev1.Node {
+	idx := make(map[string]*knowledgev1.Node, len(nodes))
+	for _, n := range nodes {
+		if n != nil {
+			idx[n.Id] = n
+		}
+	}
+	return idx
 }
 
 // renderGraphWideText is the human-readable fallback (mirrors the server
@@ -277,7 +313,18 @@ func graphWideLabel(graph string) string {
 // graphWideEdgeMetadata builds the {weight,confidence,method,evidence,
 // last_validated} map for the JSON formatter (mirrors the server edgeMetadataMap,
 // tools_traverse_edge_metadata.go:202). Zero/empty fields are elided.
+//
+// For a MULTI-CANDIDATE GROUP MEMBER the method and the raw group key are both
+// omitted: the group's own edge_groups row already carries the method and the key
+// under group_key, so repeating them per edge is redundant and the raw key
+// invites parsing an identifier this plan renders opaquely. Every other edge is
+// unchanged — a cloud or linkage edge's Evidence is a real citation.
+//
+// BELT-AND-BRACES BY DESIGN, NOT DEAD CODE: the arm passes only the ungrouped
+// remainder, so a member should never arrive. The guards exist because this is a
+// render primitive a future surface may call with an unfiltered slice.
 func graphWideEdgeMetadata(e *knowledgev1.Edge) map[string]any {
+	group := IsCandidateEdge(e)
 	m := map[string]any{}
 	if e.Weight != 0 {
 		m["weight"] = e.Weight
@@ -285,10 +332,10 @@ func graphWideEdgeMetadata(e *knowledgev1.Edge) map[string]any {
 	if e.Confidence != 0 {
 		m["confidence"] = e.Confidence
 	}
-	if e.Method != "" {
+	if e.Method != "" && !group {
 		m["method"] = e.Method
 	}
-	if e.Evidence != "" {
+	if e.Evidence != "" && !group {
 		m["evidence"] = e.Evidence
 	}
 	if !nanosToTime(e.LastValidated).IsZero() {

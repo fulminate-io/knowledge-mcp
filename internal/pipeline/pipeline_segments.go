@@ -66,6 +66,22 @@ func (p *Pipeline) AttachHealFactory(fn func(kgtypes.GraphType, string) func(con
 // permissive fallback.
 func (p *Pipeline) AttachWorkingSet(ws *workingset.Set) { p.workingSet = ws }
 
+// AttachLocalPresence wires the machine-local presence predicate: given an
+// already-admitted graph, may THIS machine do background work on it. Built in
+// bootstrap because the answer comes from the repo manifest owned by the tools
+// package, which this package must never import (tools already imports pipeline,
+// so the reverse edge would be a cycle).
+//
+// NIL IS PERMISSIVE, the OPPOSITE direction to AttachWorkingSet, and the
+// asymmetry is deliberate. The working set defaults to deny because it IS the
+// membership decision. Presence only NARROWS a set membership has already
+// chosen, so an unwired predicate must leave behavior exactly as it was —
+// otherwise every fixture that does not wire one would silently drain nothing
+// and the suite would go green on a pipeline that enriches no graph at all.
+func (p *Pipeline) AttachLocalPresence(fn func(gt kgtypes.GraphType, name string) bool) {
+	p.localPresence = fn
+}
+
 // AttachCollectGateFactory wires the per-graph collect-gate predicate factory.
 // Called once at construction (bootstrap) before Start; nil-safe — leaving it
 // unset means RegisterGraph builds a nil per-collector predicate and the scan loop

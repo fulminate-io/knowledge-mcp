@@ -15,6 +15,7 @@ import (
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/paging"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
 
@@ -200,7 +201,7 @@ func TestInterceptQueryKnowledgeSearch_BareRecentTemporalBrowse(t *testing.T) {
 	require.Empty(t, sel.GetNodeTypes(), "bare recent (no types) is a Match-empty all-types browse")
 	plan := recordedBrowsePlan(handler.recordedReqs())
 	require.NotNil(t, plan)
-	require.EqualValues(t, engine.BrowsePageSize, plan.GetLimit(),
+	require.EqualValues(t, paging.BrowsePageSize, plan.GetLimit(),
 		"the page carries the DRAIN's limit — never the caller's, which would bias which nodes are considered")
 
 	// Rendered JSON: recency order (new before mid) and limit=2 honored (old omitted).
@@ -334,7 +335,7 @@ func TestInterceptQueryKnowledgeSearch_RecentWithTypesFilter(t *testing.T) {
 
 	plan := recordedBrowsePlan(handler.recordedReqs())
 	require.NotNil(t, plan)
-	require.EqualValues(t, engine.BrowsePageSize, plan.GetLimit(),
+	require.EqualValues(t, paging.BrowsePageSize, plan.GetLimit(),
 		"the page carries the DRAIN's limit — never the caller's, which would bias which nodes are considered")
 
 	require.Equal(t, int64(0), mgr.calls.Load(), "recent+types does NOT drive Manager.Search")

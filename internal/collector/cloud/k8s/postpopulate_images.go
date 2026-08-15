@@ -51,7 +51,7 @@ func resolveWorkloadImages(ctx context.Context, gc postpopulate.GraphCaller, gra
 	seen := make(map[string]struct{}) // dedup by fromID+toID
 
 	for _, wt := range workloadTypes {
-		nodes, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, k8sResourceQuery(wt))
+		nodes, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, k8sResourceQuery(wt))
 		if err != nil {
 			return nil, fmt.Errorf("image lineage: query %s: %w", wt, err)
 		}

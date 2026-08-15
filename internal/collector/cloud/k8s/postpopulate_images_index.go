@@ -100,7 +100,7 @@ func buildRegistryIndex(ctx context.Context, gc postpopulate.GraphCaller, graphN
 
 // indexECRRepos queries ecr-repository nodes and indexes by account:region:repoName.
 func indexECRRepos(ctx context.Context, gc postpopulate.GraphCaller, graphName string, ri *registryIndex) error {
-	nodes, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, k8sResourceQuery("ecr-repository"))
+	nodes, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, k8sResourceQuery("ecr-repository"))
 	if err != nil {
 		return err
 	}
@@ -133,7 +133,7 @@ func parseECRArn(arn string) (account, region, repo string) {
 
 // indexACRRegistries queries ACR nodes and indexes by loginServer hostname.
 func indexACRRegistries(ctx context.Context, gc postpopulate.GraphCaller, graphName string, ri *registryIndex) error {
-	nodes, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, k8sResourceQuery("Microsoft.ContainerRegistry/registries"))
+	nodes, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, k8sResourceQuery("Microsoft.ContainerRegistry/registries"))
 	if err != nil {
 		return err
 	}
@@ -148,7 +148,7 @@ func indexACRRegistries(ctx context.Context, gc postpopulate.GraphCaller, graphN
 
 // indexARRepos queries Artifact Registry nodes and indexes by project/repo.
 func indexARRepos(ctx context.Context, gc postpopulate.GraphCaller, graphName string, ri *registryIndex) error {
-	nodes, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, k8sResourceQuery("gcp:artifactregistry:repository"))
+	nodes, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, k8sResourceQuery("gcp:artifactregistry:repository"))
 	if err != nil {
 		return err
 	}

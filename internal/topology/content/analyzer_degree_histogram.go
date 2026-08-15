@@ -15,7 +15,7 @@ package content
 // SOURCE changes: the original consumed the graph family's shared
 // computeDegrees pass (degree.go), but that lives in the disjoint parallel
 // graph package this one cannot import. Per the plan, degree counts here come
-// from ONE bulk edge read — the match-all read when no subset predicate narrows
+// from a bulk edge read — the whole-graph read when no subset predicate narrows
 // the node set, else a pivot read over the surviving ids — feeding a slim local
 // degree-row compute (in/out totals only; the histogram never reads the
 // per-edge-type breakdown).
@@ -90,7 +90,7 @@ type DegreeHistogramAnalyzer struct{}
 // Name returns the analyzer's stable identifier.
 func (DegreeHistogramAnalyzer) Name() string { return "degree-histogram" }
 
-// Run computes per-node degree rows from one bulk edge fetch, tallies each
+// Run computes per-node degree rows from a bulk edge fetch, tallies each
 // row's fan_in / fan_out / total into the fixed bucket grid, and emits one
 // aggregate Finding holding all three distributions.
 func (a DegreeHistogramAnalyzer) Run(ctx context.Context, req foundation.Request) ([]foundation.Finding, error) {
@@ -113,7 +113,7 @@ func (a DegreeHistogramAnalyzer) Run(ctx context.Context, req foundation.Request
 }
 
 // computeDegreeRows fetches every node in the scoped graph (applying the subset
-// filter), fetches the edges in ONE bulk Execute, and tallies in/out degree per
+// filter), fetches the edges in a bulk paged read, and tallies in/out degree per
 // node in memory. It mirrors the original
 // computeDegrees semantics exactly: an edge contributes to FanOut on its source
 // only when the source is a materialized (subset-passing) node, and to FanIn on

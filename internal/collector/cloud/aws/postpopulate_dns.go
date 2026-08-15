@@ -30,10 +30,9 @@ func resolveRoute53AliasTargets(ctx context.Context, gc postpopulate.GraphCaller
 		return nil
 	}
 
-	zones, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
-		"type":  string(kgtypes.NodeCloudResource),
-		"meta":  map[string]string{"resource_type": "route53-hostedzone"},
-		"limit": 0,
+	zones, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
+		"type": string(kgtypes.NodeCloudResource),
+		"meta": map[string]string{"resource_type": "route53-hostedzone"},
 	})
 	if err != nil {
 		return fmt.Errorf("route53 dns resolve: query zones: %w", err)
@@ -103,10 +102,9 @@ type elbContentDNS struct {
 // buildELBDNSIndex queries all elbv2-loadbalancer nodes and returns a map
 // from lowercase DNS name to the node's ARN (ID).
 func buildELBDNSIndex(ctx context.Context, gc postpopulate.GraphCaller, graphName string) (map[string]string, error) {
-	lbs, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
-		"type":  string(kgtypes.NodeCloudResource),
-		"meta":  map[string]string{"resource_type": "elbv2-loadbalancer"},
-		"limit": 0,
+	lbs, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
+		"type": string(kgtypes.NodeCloudResource),
+		"meta": map[string]string{"resource_type": "elbv2-loadbalancer"},
 	})
 	if err != nil {
 		return nil, err

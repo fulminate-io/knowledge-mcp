@@ -7,6 +7,7 @@ import (
 	"log/slog"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/paging"
 )
 
 // heartbeatLiveMembers refreshes last_seen for every live member this daemon
@@ -63,27 +64,44 @@ func (m *Monitor) heartbeatLiveMembers(ctx context.Context, snapByID map[string]
 // harness id. Mirrors banEvictedMembers' Execute+QueryPlan shape, swapping the
 // status='evicted' selection for a metadata.session==harness predicate. Read
 // failures are logged and yield no hives (the member is skipped this tick).
+//
+// The membership set is consumed COMPLETE — every hive this session belongs to
+// gets a renew — so the raw plan is DRAINED in keyset pages rather than taken in
+// one bounded read. Nothing caps how many hives a session joins, and a member
+// that fell off the read boundary would silently stop being heartbeated.
 func (m *Monitor) memberHivesFor(ctx context.Context, harnessSessionID string) []string {
 	if harnessSessionID == "" {
 		return nil
 	}
-	resp, err := m.hive.Execute(ctx, &knowledgev1.ExecuteRequest{
-		Target: &knowledgev1.GraphSelector{Graph: "knowledge"},
-		Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
-			Selection: &knowledgev1.Selection{
-				NodeTypes: []string{"hive_member"},
-				MetadataPredicates: []*knowledgev1.MetadataPredicate{
-					{Key: "session", Op: knowledgev1.MetadataPredicate_OP_EQ, Value: harnessSessionID},
+	nodes, err := paging.DrainKeysetPages(func(afterID string) ([]*knowledgev1.Node, error) {
+		cursor := afterID
+		resp, rerr := m.hive.Execute(ctx, &knowledgev1.ExecuteRequest{
+			Target: &knowledgev1.GraphSelector{Graph: "knowledge"},
+			Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
+				Selection: &knowledgev1.Selection{
+					NodeTypes: []string{"hive_member"},
+					MetadataPredicates: []*knowledgev1.MetadataPredicate{
+						{Key: "session", Op: knowledgev1.MetadataPredicate_OP_EQ, Value: harnessSessionID},
+					},
 				},
-			},
-		}},
-	})
+				Limit: int32(paging.BrowsePageSize),
+				// SET on every page including the first, where the value is empty:
+				// presence is what selects the keyset browse.
+				AfterId:   &cursor,
+				SkipTotal: true,
+			}},
+		})
+		if rerr != nil {
+			return nil, rerr
+		}
+		return resp.GetNodes(), nil
+	}, paging.BrowsePageSize)
 	if err != nil {
 		slog.Warn("hivemonitor: read member hives failed", "member", harnessSessionID, "error", err)
 		return nil
 	}
 	var hives []string
-	for _, n := range resp.GetNodes() {
+	for _, n := range nodes {
 		if h := n.GetMetadata()["hive"]; h != "" {
 			hives = append(hives, h)
 		}

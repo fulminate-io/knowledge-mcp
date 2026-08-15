@@ -26,6 +26,28 @@ import (
 // goroutine pool, mirroring searchCodeMultiRepo's WaitGroup fan-out, and each
 // repo's per-query lists stay SEPARATE (the engine's multi-query fusion would
 // collapse them). Results merge by score across repos, then cap to limit.
+//
+// Each repo's BRANCH is detected inside its own goroutine, not hoisted above the
+// fan-out: detection issues a git subprocess, so hoisting it would serialize one
+// subprocess per repo ahead of every search instead of overlapping them.
+
+// searchOneRepo runs ONE repo's leg of the fan-out: it detects that repo's own
+// branch, stamps it on that repo's selector, and runs the per-query searches
+// under it. Split out of the fan-out body so the branch a repo is searched under
+// is derived in one visible place, immediately beside the selector it lands on.
+func searchOneRepo(
+	ctx context.Context,
+	cdeps codeSearchDeps,
+	a codeSearchArgs,
+	repo string,
+	queries []string,
+	queryVecs [][]byte,
+	limit int,
+) [][]engine.CodeResolvedResult {
+	branch := multiRepoBranch(ctx, repo, cdeps.degrade)
+	target := &knowledgev1.GraphSelector{Graph: "code", Repo: repo, Branch: branch}
+	return searchAllQueries(ctx, cdeps, target, queries, queryVecs, limit, a.PathPrefix, repo)
+}
 
 // composeCodeSearchMultiRepo resolves the repo set then fans the per-repo
 // searches in PARALLEL (NumCPU-bounded pool), merges by score, and renders the
@@ -59,8 +81,7 @@ func composeCodeSearchMultiRepo(ctx context.Context, deps ClientDeps, cdeps code
 			defer wg.Done()
 			sem <- struct{}{}
 			defer func() { <-sem }()
-			target := &knowledgev1.GraphSelector{Graph: "code", Repo: repo}
-			pq := searchAllQueries(ctx, cdeps, target, queries, queryVecs, limit, a.PathPrefix, repo)
+			pq := searchOneRepo(ctx, cdeps, a, repo, queries, queryVecs, limit)
 			mu.Lock()
 			all = append(all, repoResult{repo: repo, perQuery: pq})
 			mu.Unlock()
@@ -90,7 +111,9 @@ func composeCodeSearchMultiRepo(ctx context.Context, deps ClientDeps, cdeps code
 	merged = applyCodeResultFilters(merged, a)
 
 	if a.Format == "json" {
-		return engine.RenderForCaller(strings.Join(queries, " "), flattenCodeResults(merged), "json", nil, "")
+		return appendDegradeContent(
+			engine.RenderForCaller(strings.Join(queries, " "), flattenCodeResults(merged), "json", nil, ""),
+			cdeps.degrade)
 	}
 
 	counts := make([]int, len(queries))
@@ -98,6 +121,11 @@ func composeCodeSearchMultiRepo(ctx context.Context, deps ClientDeps, cdeps code
 		counts[i] = len(merged[i])
 	}
 	var sb strings.Builder
+	// A degraded search LEADS with the warning here too — this composer has its
+	// own builder, so the single-repo one landing it proves nothing about this one.
+	if banner := cdeps.degrade.banner(); banner != "" {
+		sb.WriteString(banner + "\n\n")
+	}
 	sb.WriteString("Cross-repo search across " + strings.Join(repoNames, ", ") + "\n")
 	engine.WriteCodePerQuerySearchHeader(&sb, queries, counts, codeSearchModeLabel(queryVecs))
 	if groupByFile {

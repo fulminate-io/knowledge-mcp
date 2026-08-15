@@ -10,6 +10,7 @@ import (
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
+	"github.com/fulminate-io/knowledge-mcp/internal/paging"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 )
@@ -36,9 +37,9 @@ func copyEdge(e *knowledgev1.Edge) knowledgev1.Edge {
 // handleGenericExplain (tools_query_explain.go) and handleGenericTimeline
 // (tools_query_timeline.go) recipes over generic Execute primitives.
 //
-// BOUNDED: explain fetches the target id(s)' edges in ONE RETURN_MODE_EDGES
-// Execute (both directions) + ONE bulk endpoint-name hydrate; the pair form
-// filters to the b-peer client-side over that single fetch. Its cost is O(degree
+// BOUNDED: explain fetches the target id(s)' edges through the bounded pivot
+// drain (both directions) + ONE bulk endpoint-name hydrate; the pair form
+// filters to the b-peer client-side over that same fetch. Its cost is O(degree
 // of one node), never graph cardinality.
 //
 // timeline reads the target node set in BOUNDED KEYSET PAGES and folds each page
@@ -104,20 +105,29 @@ func composeExplain(ctx context.Context, exec engine.ExecuteFn, a queryArgs) kgt
 	}
 }
 
-// fetchNodeEdges issues ONE RETURN_MODE_EDGES Execute over the node id (both
-// directions — Forward unset) and returns the raw edges.
+// fetchNodeEdges reads the node id's edges (both directions — Forward unset)
+// through the bounded pivot drain and returns the raw edges.
+//
+// The plan Limit and the drain's edgeCap are the same number twice on purpose:
+// the Limit is what the server enforces, the cap is what the drain uses to
+// notice it was enforced. One without the other yields a drain that never
+// detects truncation, or one that splits on a threshold nobody applies.
 func fetchNodeEdges(ctx context.Context, exec engine.ExecuteFn, target *knowledgev1.GraphSelector, nodeID string) ([]knowledgev1.Edge, error) {
-	resp, err := exec(ctx, &knowledgev1.ExecuteRequest{
-		Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
-			ById:       nodeID,
-			ReturnMode: knowledgev1.ReturnMode_RETURN_MODE_EDGES,
-		}},
-		Target: target,
-	})
-	if err != nil {
-		return nil, err
-	}
-	return engine.DecodeEdges(resp)
+	return paging.DrainPivotEdges([]string{nodeID}, paging.EdgePivotPageSize, engine.CorrelationsEdgeScanCap,
+		func(idPage []string) ([]knowledgev1.Edge, error) {
+			resp, err := exec(ctx, &knowledgev1.ExecuteRequest{
+				Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
+					Ids:        idPage,
+					ReturnMode: knowledgev1.ReturnMode_RETURN_MODE_EDGES,
+					Limit:      int32(engine.CorrelationsEdgeScanCap),
+				}},
+				Target: target,
+			})
+			if err != nil {
+				return nil, err
+			}
+			return engine.DecodeEdges(resp)
+		})
 }
 
 // explainPairClient fetches a's edges (both directions) and filters to the
@@ -202,7 +212,15 @@ func renderExplainWithNames(ctx context.Context, exec engine.ExecuteFn, target *
 			}
 		}
 	}
-	return textResult(engine.RenderExplainEdges(label, edges, nameByID))
+	// Collapse multi-candidate groups: only the UNGROUPED remainder gets a
+	// per-edge "### Edge #n" block, so N alternatives are never restated as N
+	// independent facts. No enrichment here — explain reads ALL edges incident to
+	// the node in both directions, so a group whose source is that node arrives
+	// whole; a partial group means the reader asked about a candidate rather than
+	// the source, and the honest render is the partial block plus its declared
+	// count.
+	groups, ungrouped := engine.GroupCandidateEdges(edges)
+	return textResult(engine.RenderExplainEdges(label, ungrouped, nameByID, groups))
 }
 
 // composeTimeline ports handleGenericTimeline: require time_field (non-logs),

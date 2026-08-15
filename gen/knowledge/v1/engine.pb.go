@@ -1932,6 +1932,12 @@ func (x *GraphInfo) GetCollectedTime() int64 {
 // unset) for cross-carrier wire consistency and sub-second fidelity, avoiding a
 // google.protobuf.Timestamp import for one field. Type is the OPEN EdgeType
 // vocabulary as a verbatim string (no proto enum).
+//
+// An edge whose tombstoned_at is non-zero is a SHADOW ROW: it asserts that the
+// same (from_id, to_id, type) triple is deleted at this layer. Merged reads
+// resolve it by layer precedence exactly as node tombstones are resolved — a
+// tombstone in a higher-precedence layer suppresses both itself and the live
+// copy any lower layer carries for the same triple.
 type Edge struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	FromId        string                 `protobuf:"bytes,1,opt,name=from_id,json=fromId,proto3" json:"from_id,omitempty"`                       // store.Edge.FromID
@@ -1942,6 +1948,7 @@ type Edge struct {
 	Method        string                 `protobuf:"bytes,6,opt,name=method,proto3" json:"method,omitempty"`                                     // store.Edge.Method
 	Evidence      string                 `protobuf:"bytes,7,opt,name=evidence,proto3" json:"evidence,omitempty"`                                 // store.Edge.Evidence (a STRING)
 	LastValidated int64                  `protobuf:"varint,8,opt,name=last_validated,json=lastValidated,proto3" json:"last_validated,omitempty"` // store.Edge.LastValidated as unix nanos (0 = unset)
+	TombstonedAt  int64                  `protobuf:"varint,9,opt,name=tombstoned_at,json=tombstonedAt,proto3" json:"tombstoned_at,omitempty"`    // store.Edge.TombstonedAt as unix nanos (0 = unset/live)
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -2028,6 +2035,13 @@ func (x *Edge) GetEvidence() string {
 func (x *Edge) GetLastValidated() int64 {
 	if x != nil {
 		return x.LastValidated
+	}
+	return 0
+}
+
+func (x *Edge) GetTombstonedAt() int64 {
+	if x != nil {
+		return x.TombstonedAt
 	}
 	return 0
 }
@@ -5352,7 +5366,7 @@ const file_knowledge_v1_engine_proto_rawDesc = "" +
 	"\tsync_time\x18\b \x01(\x03R\bsyncTime\x12)\n" +
 	"\x10collected_commit\x18\t \x01(\tR\x0fcollectedCommit\x12%\n" +
 	"\x0ecollected_time\x18\n" +
-	" \x01(\x03R\rcollectedTime\"\xdb\x01\n" +
+	" \x01(\x03R\rcollectedTime\"\x80\x02\n" +
 	"\x04Edge\x12\x17\n" +
 	"\afrom_id\x18\x01 \x01(\tR\x06fromId\x12\x13\n" +
 	"\x05to_id\x18\x02 \x01(\tR\x04toId\x12\x12\n" +
@@ -5363,7 +5377,8 @@ const file_knowledge_v1_engine_proto_rawDesc = "" +
 	"confidence\x12\x16\n" +
 	"\x06method\x18\x06 \x01(\tR\x06method\x12\x1a\n" +
 	"\bevidence\x18\a \x01(\tR\bevidence\x12%\n" +
-	"\x0elast_validated\x18\b \x01(\x03R\rlastValidated\"\xd8\x05\n" +
+	"\x0elast_validated\x18\b \x01(\x03R\rlastValidated\x12#\n" +
+	"\rtombstoned_at\x18\t \x01(\x03R\ftombstonedAt\"\xd8\x05\n" +
 	"\x04Node\x12\x0e\n" +
 	"\x02id\x18\x01 \x01(\tR\x02id\x12\x12\n" +
 	"\x04type\x18\x02 \x01(\tR\x04type\x12\x1f\n" +

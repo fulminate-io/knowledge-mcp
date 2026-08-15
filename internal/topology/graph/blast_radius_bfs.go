@@ -15,7 +15,7 @@ import (
 // blast_radius_bfs.go implements the per-seed reverse BFS used by
 // BlastRadiusAnalyzer.Run plus the helpers that turn a completed walk
 // into a Finding. The reverse walk reads incoming dependents per frontier
-// layer in ONE bulk wire edge fetch and the node-by-id + redundancy reads
+// layer in a bulk wire edge fetch and the node-by-id + redundancy reads
 // go through the shared foundation read-helpers — there is no in-process
 // store anywhere on this path.
 
@@ -59,7 +59,7 @@ func runBlastFromSeed(
 }
 
 // expandLayer walks one BFS layer: fetch every edge incident to the whole
-// frontier in ONE bulk wire read, keep the incoming edges (ToId in the
+// frontier in a bulk wire read, keep the incoming edges (ToId in the
 // frontier → FromId is a dependent), register newly-discovered dependents
 // in the visited map (with their depth and redundancy-weighted
 // contribution), and return the next frontier. The redundancy lookup is
@@ -98,7 +98,7 @@ func expandLayer(
 
 // incomingDependents returns, for every node in the frontier, the IDs of
 // the nodes that have an incoming edge of one of the requested types
-// pointing AT it. This is the reverse direction: one bulk FetchEdges over
+// pointing AT it. This is the reverse direction: a bulk FetchEdges over
 // the frontier, keeping edges whose ToId is in the frontier and returning
 // their FromId. The per-frontier-node grouping preserves the layered BFS
 // semantics while avoiding a per-node wire round-trip within the layer.

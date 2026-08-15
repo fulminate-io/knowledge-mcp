@@ -349,7 +349,24 @@ func resolveChosenProvider(scanner *bufio.Scanner, detected config.DetectedProvi
 // credentials and writes it with the ensureFileExists shape verbatim:
 // os.MkdirAll(dir, 0o750) then os.WriteFile(path, body, 0o600). Same
 // perms, same order — no divergent write shape.
+//
+// This function REWRITES THE WHOLE FILE, so it is the second of the client's
+// two writers that can clobber an existing fulminate_account_id (the other,
+// config.WriteSelectedAccountID, only ever sets a non-empty value). The
+// starter template structurally cannot carry the key, so the selection is
+// read BEFORE the overwrite and re-applied immediately after: without that,
+// `knowledge setup --reconfigure` would silently erase the selection and the
+// next cloud call would be rerouted to the caller's primary account.
+//
+// Read-before-write is load-bearing — the read must happen while the old file
+// is still on disk. Between the write and the re-apply the file is briefly
+// present without the entry; a crash in that window leaves the pre-existing
+// legal unset state (no header, gateway resolves as before), recoverable with
+// one `knowledge account use`, not a corrupt file.
 func renderAndWriteConfig(cfgPath string, detected config.DetectedProvider, creds config.Credentials) error {
+	// "" when the file is absent or holds no selection.
+	prior, _ := config.ReadSelectedAccountID(cfgPath)
+
 	body, err := config.RenderStarter(detected, creds)
 	if err != nil {
 		return fmt.Errorf("knowledge setup: render config: %w", err)
@@ -359,6 +376,13 @@ func renderAndWriteConfig(cfgPath string, detected config.DetectedProvider, cred
 	}
 	if err := os.WriteFile(cfgPath, []byte(body), 0o600); err != nil {
 		return fmt.Errorf("knowledge setup: write %s: %w", cfgPath, err)
+	}
+	if prior != "" {
+		// A failure to re-apply is a real error: a silently dropped selection
+		// is precisely the defect this preserve-around exists to close.
+		if err := config.WriteSelectedAccountID(cfgPath, prior); err != nil {
+			return fmt.Errorf("knowledge setup: preserve account selection in %s: %w", cfgPath, err)
+		}
 	}
 	fmt.Fprintf(os.Stdout, "knowledge setup: wrote %s\n", cfgPath)
 	return nil

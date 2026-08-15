@@ -69,10 +69,16 @@ type WireClient interface {
 //     scans through it AND stamps it on every emitted work item.
 //   - LoggedIn(ctx) reports the live login state so CheckLoginFlip can compare
 //     it against the previously observed state and force a full collector
-//     rebind on a flip.
+//     rebind on a flip. It stays a separate boolean because cadenceFor needs
+//     it to choose the cloud vs local poll cadence.
+//   - SelectedAccountID(ctx) reports the Fulminate account cloud calls are
+//     routed to ("" when none is selected). It is the SECOND half of the
+//     backend identity: an account switch is cloud->cloud, so collectors bound
+//     to the previous account must be torn down exactly as a login flip does.
 type BackendResolver interface {
 	Backend(ctx context.Context) (WireClient, error)
 	LoggedIn(ctx context.Context) bool
+	SelectedAccountID(ctx context.Context) string
 }
 
 // scanGaps issues a PipelineScan RPC for one (gt, name, axis, limit).

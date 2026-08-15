@@ -10,9 +10,9 @@ import (
 	"path/filepath"
 	"runtime"
 	"runtime/debug"
+	"sort"
 	"sync"
 
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/treesitter"
 )
 
@@ -72,7 +72,14 @@ const maxChunkWorkers = 8
 func ChunkFilesParallel(ctx context.Context, repoDir string, files []string) ([]*treesitter.Result, error) {
 	workers := min(runtime.NumCPU(), len(files), maxChunkWorkers)
 	if workers <= 1 {
-		return ChunkFiles(ctx, repoDir, files)
+		// The serial path returns discovery order, not FilePath order. It is
+		// sorted here as well so ChunkFilesParallel's ordering contract is a
+		// property of the function rather than of the machine's core count.
+		results, err := ChunkFiles(ctx, repoDir, files)
+		if err != nil {
+			return nil, err
+		}
+		return sortResultsByPath(results), nil
 	}
 
 	fileCh := make(chan string, workers)
@@ -123,7 +130,25 @@ func ChunkFilesParallel(ctx context.Context, repoDir string, files []string) ([]
 	if ctx.Err() != nil {
 		return nil, ctx.Err()
 	}
-	return results, nil
+	return sortResultsByPath(results), nil
+}
+
+// sortResultsByPath orders chunk results by FilePath in place and returns the
+// same slice.
+//
+// The parallel workers append under a mutex in COMPLETION order, which the OS
+// scheduler decides afresh on every run. Sorting here is what makes resolution
+// independent of it: the declaration index is built by walking results in
+// order, so an unsorted slice would order a multi-candidate reference's emitted
+// edges differently on every collect of an unchanged repo. One sort over a few
+// thousand pointers at the end of a walk that already parsed every file is
+// immeasurable beside the parse, and this is the only placement worker
+// scheduling cannot defeat.
+func sortResultsByPath(results []*treesitter.Result) []*treesitter.Result {
+	sort.Slice(results, func(i, j int) bool {
+		return results[i].FilePath < results[j].FilePath
+	})
+	return results
 }
 
 // ChunkNodeID creates a unique node ID for a chunk.
@@ -159,19 +184,7 @@ func DeduplicateChunks(results []*treesitter.Result) {
 	}
 }
 
-// ConvertEdges converts treesitter edges to typed wire edges, propagating the
-// per-edge Weight signal so weighted analyzers (e.g. pagerank_weighted) can
-// see the tree-sitter call counts.
-func ConvertEdges(tsEdges []treesitter.Edge) []*knowledgev1.Edge {
-	edges := make([]*knowledgev1.Edge, len(tsEdges))
-	for i := range tsEdges {
-		e := &tsEdges[i]
-		edges[i] = &knowledgev1.Edge{
-			FromId: e.FromID,
-			ToId:   e.ToID,
-			Type:   string(e.Type),
-			Weight: e.Weight,
-		}
-	}
-	return edges
-}
+// Edge conversion is no longer a step of its own. resolveEdges consumes
+// treesitter edges directly and builds the wire edge itself, because the
+// reference site a treesitter.Edge carries cannot ride a wire edge — converting
+// first would strip the carrier before the resolution walk ever saw it.

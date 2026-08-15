@@ -5,11 +5,16 @@ package postpopulate
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"sort"
 	"testing"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
+	"github.com/fulminate-io/knowledge-mcp/internal/enginetest"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/paging"
 )
 
 // captureCaller records every Execute request so the wire helpers can be
@@ -249,9 +254,12 @@ func TestUnlinkEdge_CloudByAccount(t *testing.T) {
 
 func TestBrowseNodes_QueryCloudByAccount(t *testing.T) {
 	cc := &captureCaller{}
+	// A POSITIVE limit: this seam serves one bounded page and refuses a payload
+	// without one, so a limit:0 payload would never reach the routing this test is
+	// about. The subject here is the (gt, graphName) → Target translation.
 	if _, err := BrowseNodes(context.Background(), cc, kgtypes.GraphCloud, "aws-123", map[string]any{
 		"type":  string(kgtypes.NodeCloudResource),
-		"limit": 0,
+		"limit": 25,
 	}); err != nil {
 		t.Fatalf("BrowseNodes: %v", err)
 	}
@@ -264,5 +272,175 @@ func TestBrowseNodes_QueryCloudByAccount(t *testing.T) {
 	}
 	if tgt.GetName() != "" {
 		t.Errorf("browse must NOT route cloud by Name, got Name=%q", tgt.GetName())
+	}
+}
+
+// pagingCaller is a captureCaller that answers a type browse the way the server
+// does: ids ascending, cursor-exclusive, capped at the requested per-page limit.
+// A fake that ignored either knob would serve a drain and a capped read
+// identically, which is the whole thing under test.
+type pagingCaller struct {
+	captureCaller
+	nodes []*knowledgev1.Node
+}
+
+func (p *pagingCaller) Execute(ctx context.Context, req *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error) {
+	if _, err := p.captureCaller.Execute(ctx, req); err != nil {
+		return nil, err
+	}
+	q := req.GetQuery()
+	out := make([]*knowledgev1.Node, 0, len(p.nodes))
+	wantType := q.GetSelection().GetNodeType()
+	for _, n := range p.nodes {
+		if wantType != "" && n.GetType() != wantType {
+			continue
+		}
+		out = append(out, n)
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].GetId() < out[j].GetId() })
+	if cursor := q.GetAfterId(); cursor != "" {
+		kept := out[:0]
+		for _, n := range out {
+			if n.GetId() > cursor {
+				kept = append(kept, n)
+			}
+		}
+		out = kept
+	}
+	if lim := int(q.GetLimit()); lim > 0 && len(out) > lim {
+		out = out[:lim]
+	}
+	return enginetest.ResponseWithNodes(out...), nil
+}
+
+// TestBrowseAllNodes_RejectsPayloadWithoutSingularType is the catcher for the
+// drain's hang guard: a payload that never reaches the singular type-browse arm
+// threads no cursor, so every page repeats page one and the loop never ends. The
+// zero-RPC assertion is what separates a guard from a fetch failure.
+func TestBrowseAllNodes_RejectsPayloadWithoutSingularType(t *testing.T) {
+	cases := map[string]map[string]any{
+		"no type key at all": {"meta": map[string]string{"k": "v"}},
+		"blank type value":   {"type": "   "},
+		// The conjunction: a naive "type is non-blank" guard passes this and
+		// hands the plural-types arm — which threads no cursor — to the drain.
+		"type plus higher-precedence types": {
+			"type":  string(kgtypes.NodeFile),
+			"types": []string{string(kgtypes.NodeFile)},
+		},
+	}
+	for name, extra := range cases {
+		t.Run(name, func(t *testing.T) {
+			cc := &captureCaller{}
+			got, err := BrowseAllNodes(context.Background(), cc, kgtypes.GraphCode, "myrepo", extra)
+			if err == nil {
+				t.Fatalf("expected a refusal, got %d nodes and no error", len(got))
+			}
+			var unpageable *UnpageablePayloadError
+			if !errors.As(err, &unpageable) {
+				t.Fatalf("expected a typed UnpageablePayloadError, got %T: %v", err, err)
+			}
+			if unpageable.Key == "" {
+				t.Errorf("the refusal must name the disqualifying key, got %q", unpageable.Key)
+			}
+			if len(cc.reqs) != 0 {
+				t.Errorf("a refused payload must issue NO RPC, got %d", len(cc.reqs))
+			}
+		})
+	}
+}
+
+// TestBrowseAllNodes_DrainsMultiplePages seeds more than one full page and
+// asserts the drain returns every node — and that page one carried a SET BUT
+// EMPTY cursor, which is what fails if after_id is omitted or marshaled nil.
+func TestBrowseAllNodes_DrainsMultiplePages(t *testing.T) {
+	wantNodes := paging.BrowsePageSize + 3
+
+	seeded := make([]*knowledgev1.Node, 0, wantNodes)
+	for i := range wantNodes {
+		seeded = append(seeded, &knowledgev1.Node{
+			Id:   fmt.Sprintf("n%04d", i),
+			Type: string(kgtypes.NodeFile),
+		})
+	}
+	if len(seeded) != wantNodes {
+		t.Fatalf("fixture built %d nodes, want %d", len(seeded), wantNodes)
+	}
+
+	pc := &pagingCaller{nodes: seeded}
+	got, err := BrowseAllNodes(context.Background(), pc, kgtypes.GraphCode, "myrepo", map[string]any{
+		"type": string(kgtypes.NodeFile),
+		// A caller's stale limit must not defeat the drain.
+		"limit": 0,
+	})
+	if err != nil {
+		t.Fatalf("BrowseAllNodes: %v", err)
+	}
+	if len(got) != wantNodes {
+		t.Errorf("drain returned %d nodes, want %d (the fixture count, not a set-derived length)", len(got), wantNodes)
+	}
+	if len(pc.reqs) < 2 {
+		t.Fatalf("a corpus larger than one page must take at least 2 round trips, got %d", len(pc.reqs))
+	}
+	first := pc.reqs[0].GetQuery()
+	if first.AfterId == nil {
+		t.Errorf("page 1 must SET the cursor: presence is what selects the keyset browse")
+	} else if first.GetAfterId() != "" {
+		t.Errorf("page 1's cursor must be EMPTY, got %q", first.GetAfterId())
+	}
+	if first.GetLimit() != int32(paging.BrowsePageSize) {
+		t.Errorf("page limit = %d, want the shared page size %d", first.GetLimit(), paging.BrowsePageSize)
+	}
+}
+
+// TestBrowseNodes_RejectsNonPositiveLimit is the catcher for the pass-through
+// seam's bound. BrowseNodes serves ONE page, and a payload whose limit is absent
+// or non-positive is the exact shape the compiler rewrites to browseDefaultLimit
+// — so serving it hands back a silent default page instead of the set the caller
+// asked for. The ZERO-RPC assertion is what separates a guard from a transport
+// failure: a test asserting only "an error is returned" would not tell them apart.
+func TestBrowseNodes_RejectsNonPositiveLimit(t *testing.T) {
+	cases := map[string]map[string]any{
+		"limit zero": {
+			"type":  string(kgtypes.NodeCloudResource),
+			"limit": 0,
+		},
+		"limit key absent entirely": {
+			"type": string(kgtypes.NodeCloudResource),
+		},
+	}
+	for name, extra := range cases {
+		t.Run(name, func(t *testing.T) {
+			cc := &captureCaller{}
+			got, err := BrowseNodes(context.Background(), cc, kgtypes.GraphCloud, "aws-123", extra)
+			if err == nil {
+				t.Fatalf("expected a refusal, got %d nodes and no error", len(got))
+			}
+			var unbounded *UnboundedBrowseError
+			if !errors.As(err, &unbounded) {
+				t.Fatalf("expected a typed UnboundedBrowseError, got %T: %v", err, err)
+			}
+			if len(cc.reqs) != 0 {
+				t.Errorf("a refused payload must issue NO RPC, got %d", len(cc.reqs))
+			}
+		})
+	}
+}
+
+// TestBrowseNodes_AllowsByIDPayload is the catcher for the guard's by-id
+// exemption: "ids" and "id" take the bulk-ids and by-id compile arms, which never
+// reach applyBrowseLimitOffset, so no browse default applies and no limit is
+// owed. Without the exemption the k8s external-refs lookupNode read breaks in
+// production while every other test stays green. It is also the KNOWN POSITIVE
+// for the refusal test above — the case that proves the seam refuses a shape
+// rather than refusing everything.
+func TestBrowseNodes_AllowsByIDPayload(t *testing.T) {
+	cc := &captureCaller{}
+	if _, err := BrowseNodes(context.Background(), cc, kgtypes.GraphCloud, "aws-123", map[string]any{
+		"ids": []string{"i-0abc"},
+	}); err != nil {
+		t.Fatalf("a by-id payload must be served without a limit, got %v", err)
+	}
+	if len(cc.reqs) != 1 {
+		t.Fatalf("the by-id read must issue exactly 1 Execute, got %d", len(cc.reqs))
 	}
 }

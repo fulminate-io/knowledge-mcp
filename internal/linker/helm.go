@@ -139,14 +139,15 @@ func buildChartMap(ctx context.Context, gc GraphCaller) (map[string]chartInfo, e
 	return charts, nil
 }
 
-// queryCodeFiles returns NodeFile entries from a named code graph via the
-// Execute carrier seam (browseNodesViaEngine → nodes_json carrier).
+// queryCodeFiles returns EVERY NodeFile entry in a named code graph via the
+// Execute carrier seam (drainNodesViaEngine → keyset pages → nodes_json
+// carrier). The caller derives edges from the complete file set, so this drains
+// rather than taking one bounded page.
 func queryCodeFiles(ctx context.Context, gc GraphCaller, codeGraphName string) ([]*knowledgev1.Node, error) {
-	nodes, err := browseNodesViaEngine(ctx, gc, map[string]any{
+	nodes, err := drainNodesViaEngine(ctx, gc, map[string]any{
 		"graph": "code",
 		"repo":  codeGraphName,
 		"type":  string(kgtypes.NodeFile),
-		"limit": 0,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("query code files (%s): %w", codeGraphName, err)

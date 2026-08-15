@@ -35,6 +35,31 @@ func builtinCollectWork(ctx context.Context, deps ClientDeps, a collectArgs, opt
 	// fallback — never prematurely at the 60s handler return with the heap at peak.
 	defer debug.FreeOSMemory()
 
+	// Record the repo→path mapping in the machine-local manifest so the name→dir
+	// consumers (ast cross-repo walk, branch auto-detect, the correct-dir/
+	// branch-aware staleness footer) can map this repo's NAME back to where it was
+	// collected from on THIS machine. Code only: the manifest keys on the
+	// code-graph repo name (filepath.Base(id)), exactly how `collect` keys the
+	// graph. Best-effort and machine-LOCAL — never synced.
+	//
+	// BEFORE the collect, not after, because the collect's own sink admits the
+	// graph into the working set, and the background loops that wake on that
+	// admission ask the manifest whether this machine holds the checkout. Recorded
+	// afterwards, the FIRST EVER collect of a repo is evaluated as absent and
+	// registers no collector until some unrelated graph is next admitted. Ordering
+	// removes that window rather than compensating for it.
+	//
+	// It carries its OWN absolute-path guard: the previous position could rely on
+	// collector.Collect having already rejected a relative path, and this one
+	// cannot. THE COST, stated rather than hidden: a collect that subsequently
+	// FAILS now leaves a manifest entry it previously would not have. That entry
+	// maps a name to a directory that demonstrably exists, so the name→dir
+	// consumers resolve it correctly; the only effect is that a failed first
+	// collect leaves the repo eligible for background work it has no graph for,
+	// which the loops handle as an empty graph.
+	if filepath.IsAbs(a.ID) {
+		recordCollectedRepo(a.Type, a.ID)
+	}
 	if err := collector.Collect(ctx, a.Type, a.ID, opts); err != nil {
 		// collector.Collect already wraps with "collect <type>:" — adding our own
 		// "collect <type> <id>:" prefix produces a duplicate "collect <type>:"
@@ -42,14 +67,6 @@ func builtinCollectWork(ctx context.Context, deps ClientDeps, a collectArgs, opt
 		// the pipeline's wrap.
 		return err
 	}
-	// Record the repo→path mapping in the machine-local manifest so the name→dir
-	// consumers (ast cross-repo walk, branch auto-detect, the correct-dir/
-	// branch-aware staleness footer) can map this repo's NAME back to where it was
-	// collected from on THIS machine. Code only: the manifest keys on the
-	// code-graph repo name (filepath.Base(id)), exactly how `collect` keys the
-	// graph, and a.ID is already absolute here (the code collector rejects relative
-	// paths). Best-effort and machine-LOCAL — never synced.
-	recordCollectedRepo(a.Type, a.ID)
 	// Post-collect linker tail-call. Replaces the former server-side
 	// runPostCollectLinker that ran on the collect-write path. Gated on the same
 	// collector types that previously triggered the server-side path. Best-effort:

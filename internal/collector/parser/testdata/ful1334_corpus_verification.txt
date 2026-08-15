@@ -1,0 +1,201 @@
+# collector corpus verification — resolution transition
+#
+# ambiguous_groups: CLOSED, exactly one of the N targets is correct.
+# dynamic_groups: OPEN, dispatches to one of these or beyond.
+# THE TWO ARE NEVER SUMMED. A reader who adds them has reported a
+# language property (runtime dispatch) as an index gap (ambiguity).
+# dynamic_unbound counts dynamic references whose scope declares nothing
+# by that name: no edge, no group — the largest population of all.
+# dot_scope_binds / dot_scope_groups are RESOLUTION residue, not a census
+# of the construct: a corpus can carry dot imports that bind nothing, and
+# those are counted by the binds pass under dot_scopes_filled instead.
+# test_calls_edges is what the chunker EMITTED as TEST_CALLS;
+# test_calls_test_to_production is the resolved subset whose target is not
+# test code. They are their own counters, added to no row above — but they
+# do NOT make the rows above production-only. Every reference row counts
+# each edge that is neither CONTAINS nor IMPORTS, and TEST_CALLS rides the
+# same resolution walk CALLS does, so bound / external_references and the
+# per-language rows of any language with a TestBlocks query count
+# test-origin references beside production ones. Read them as ALL
+# references. The 18 languages with no TestBlocks query emit no TEST_CALLS
+# at all, which is why the go_ rows did not move when this row pair landed.
+#
+corpus_root=agent
+files_discovered=4396
+chunk_nodes=49993
+cross_file_contains=0
+same_file_contains=49993
+uncontained_node_chunks=0
+collided_key_resolutions=0
+bound=60387
+external_references=89130
+ambiguous_groups=24
+ambiguous_edges=48
+distinct_ambiguous_group_keys=24
+dynamic_groups=11300
+dynamic_edges=22090
+distinct_dynamic_group_keys=11300
+max_dynamic_group_size=27
+dynamic_unbound=31263
+dot_scope_binds=0
+dot_scope_groups=0
+test_calls_edges=20512
+test_calls_test_to_production=3694
+#
+# sibling_rung_skipped_refs is the population the per-language sibling
+# gate SUPPRESSED: bare names that would have bound to a member of their
+# own container in a language whose bare call carries no implicit
+# receiver. It is the BEFORE side of the transition, measured in the
+# after run so this generated file stays regeneration-stable.
+# ITS COUNTERPART IS <lang>_sibling_member_bound, which must read ZERO
+# for every gated language: one row says how much moved, the other says
+# the gate fired. A non-zero counterpart means it did not.
+# The ambiguous row is NEVER summed into the headline — a suppressed
+# ambiguous group leaves the ambiguous rows, not the bound ones.
+sibling_rung_skipped_refs=322
+sibling_rung_skipped_ambiguous_refs=1
+sibling_rung_skipped_go=96
+sibling_rung_skipped_javascript=2
+sibling_rung_skipped_tsx=207
+sibling_rung_skipped_typescript=17
+ecma_typescript_references=11641
+ecma_typescript_bound=3197
+ecma_typescript_collided_key_resolutions=0
+ecma_typescript_bound_rule_unqualified_import=1582
+ecma_typescript_bound_rule_qualified_import=0
+ecma_typescript_bound_rule_qualified_member=0
+ecma_typescript_bound_rule_qualified_path=0
+ecma_typescript_sibling_member_bound=0
+ecma_typescript_ambiguous_groups=0
+ecma_typescript_dynamic_groups=185
+ecma_typescript_dynamic_unbound=2978
+ecma_typescript_dynamic_member_access=185
+ecma_typescript_dynamic_computed_access=0
+ecma_typescript_rule_external_qualifier=211
+ecma_typescript_external=5281
+ecma_typescript_external_out_of_repo=2055
+ecma_typescript_external_out_of_index=263
+ecma_typescript_external_no_named_declarations=111
+ecma_typescript_external_no_binding=2852
+ecma_tsx_references=28663
+ecma_tsx_bound=6333
+ecma_tsx_collided_key_resolutions=0
+ecma_tsx_bound_rule_unqualified_import=3755
+ecma_tsx_bound_rule_qualified_import=11
+ecma_tsx_bound_rule_qualified_member=0
+ecma_tsx_bound_rule_qualified_path=0
+ecma_tsx_sibling_member_bound=0
+ecma_tsx_ambiguous_groups=0
+ecma_tsx_dynamic_groups=86
+ecma_tsx_dynamic_unbound=4624
+ecma_tsx_dynamic_member_access=86
+ecma_tsx_dynamic_computed_access=0
+ecma_tsx_rule_external_qualifier=3660
+ecma_tsx_external=17620
+ecma_tsx_external_out_of_repo=10021
+ecma_tsx_external_out_of_index=2
+ecma_tsx_external_no_named_declarations=71
+ecma_tsx_external_no_binding=7526
+ecma_javascript_references=796
+ecma_javascript_bound=103
+ecma_javascript_collided_key_resolutions=0
+ecma_javascript_bound_rule_unqualified_import=0
+ecma_javascript_bound_rule_qualified_import=0
+ecma_javascript_bound_rule_qualified_member=0
+ecma_javascript_bound_rule_qualified_path=0
+ecma_javascript_sibling_member_bound=0
+ecma_javascript_ambiguous_groups=0
+ecma_javascript_dynamic_groups=6
+ecma_javascript_dynamic_unbound=462
+ecma_javascript_dynamic_member_access=6
+ecma_javascript_dynamic_computed_access=0
+ecma_javascript_rule_external_qualifier=35
+ecma_javascript_external=225
+ecma_javascript_external_out_of_repo=76
+ecma_javascript_external_out_of_index=0
+ecma_javascript_external_no_named_declarations=0
+ecma_javascript_external_no_binding=149
+#
+# go_binds_files / go_binds_entries are the LIVENESS control: zero here
+# means the arm never ran, which reads as "no improvement" without them.
+# go_binds_scopes_unknown is the input the external-qualifier rung consumes.
+# go_external and go_r2x_terminations are RECORDED, NOT GATED: terminating
+# a reference that previously became a wrong dynamic edge RAISES external,
+# so a gate demanding it fall would be demanding the defect back.
+# go_ambiguous_group_<n> lines list each surviving group's key and the file
+# of every candidate — the input to the manual attribution criterion.
+#
+# ATTRIBUTION OF THE SURVIVING GROUPS, recorded here rather than in the
+# artifact body because the artifact is generated and a hand-edit would be
+# erased by the next regeneration. Every group listed below was checked by
+# reading the //go:build line of each candidate file, and all of them are
+# MUTUALLY-EXCLUSIVE BUILD-CONSTRAINT PAIRS — several declarations of one
+# name in one scope, which is the ticket's stated legitimately-ambiguous
+# class and the correct answer rather than residue to drive to zero. The
+# three families seen are: GOOS pairs (a _linux.go file against a _stub.go
+# carrying //go:build !linux), //go:build devendpoint against !devendpoint,
+# and //go:build internal against !internal.
+# A GROUP WHOSE CANDIDATES ARE NOT SUCH A SET IS A DEFECT TO REPORT, never
+# residue to accept — re-run this attribution when the listing changes.
+go_references=149360
+go_bound=50190
+go_external=64941
+go_ambiguous_groups=24
+go_dynamic_groups=11023
+go_dynamic_unbound=23182
+go_bound_rule_qualified_import=13297
+go_bound_rule_unqualified_import=0
+go_bound_rule_qualified_member=0
+go_bound_rule_dot_scope=0
+go_sibling_member_bound=0
+go_uses_type_bound=27851
+go_uses_type_total=52079
+go_binds_files=3090
+go_binds_entries=18121
+go_binds_scopes_unknown=14225
+go_r2x_terminations=50260
+go_dot_scope_files=0
+go_ambiguous_group_listing=24
+go_ambiguous_group_0=cmd/devhost/internal/devenvcred/transport.go:3255:CALLS:trustanchor.RootCAs|cmd/devhost/internal/trustanchor/anchor.go,cmd/devhost/internal/trustanchor/anchor_dev.go
+go_ambiguous_group_1=cmd/devhost/internal/gitcred/transport.go:3365:CALLS:trustanchor.RootCAs|cmd/devhost/internal/trustanchor/anchor.go,cmd/devhost/internal/trustanchor/anchor_dev.go
+go_ambiguous_group_2=cmd/devhost/internal/hostcert/transport.go:3346:CALLS:trustanchor.RootCAs|cmd/devhost/internal/trustanchor/anchor.go,cmd/devhost/internal/trustanchor/anchor_dev.go
+go_ambiguous_group_3=cmd/devhost/internal/knowledge/transport.go:3238:CALLS:trustanchor.RootCAs|cmd/devhost/internal/trustanchor/anchor.go,cmd/devhost/internal/trustanchor/anchor_dev.go
+go_ambiguous_group_4=cmd/devhost/internal/monitor/gather_linux.go:1327:CALLS:sandbox.ContainerStatus|cmd/devhost/internal/sandbox/runtime_stub.go,cmd/devhost/internal/sandbox/status_linux.go
+go_ambiguous_group_5=cmd/devhost/internal/monitor/gather_test.go:565:CALLS:Gather|cmd/devhost/internal/monitor/gather_linux.go,cmd/devhost/internal/monitor/gather_stub.go
+go_ambiguous_group_6=cmd/devhost/internal/monitor/harness_linux.go:1151:CALLS:sandbox.ExecCapture|cmd/devhost/internal/sandbox/execcapture_linux.go,cmd/devhost/internal/sandbox/runtime_stub.go
+go_ambiguous_group_7=cmd/devhost/internal/monitor/monitor.go:11709:CALLS:trustanchor.RootCAs|cmd/devhost/internal/trustanchor/anchor.go,cmd/devhost/internal/trustanchor/anchor_dev.go
+go_ambiguous_group_8=cmd/devhost/internal/monitor/processes_linux.go:1377:CALLS:sandbox.ExecCapture|cmd/devhost/internal/sandbox/execcapture_linux.go,cmd/devhost/internal/sandbox/runtime_stub.go
+go_ambiguous_group_9=cmd/devhost/internal/registry/registry_transport.go:3395:CALLS:trustanchor.RootCAs|cmd/devhost/internal/trustanchor/anchor.go,cmd/devhost/internal/trustanchor/anchor_dev.go
+go_ambiguous_group_10=cmd/devhost/internal/sandbox/container_linux.go:1581:CALLS:TeardownDevNetns|cmd/devhost/internal/sandbox/network_linux.go,cmd/devhost/internal/sandbox/network_stub.go
+go_ambiguous_group_11=cmd/devhost/internal/sandbox/knowledge_daemon_linux.go:10986:CALLS:ExecCapture|cmd/devhost/internal/sandbox/execcapture_linux.go,cmd/devhost/internal/sandbox/runtime_stub.go
+go_ambiguous_group_12=cmd/devhost/internal/sandbox/network_linux.go:5294:CALLS:TeardownDevNetns|cmd/devhost/internal/sandbox/network_linux.go,cmd/devhost/internal/sandbox/network_stub.go
+go_ambiguous_group_13=cmd/devhost/internal/sandbox/runtime_linux.go:5418:CALLS:SetupDevNetns|cmd/devhost/internal/sandbox/network_linux.go,cmd/devhost/internal/sandbox/network_stub.go
+go_ambiguous_group_14=cmd/devhost/internal/sandbox/runtime_status_test.go:600:CALLS:ContainerStatus|cmd/devhost/internal/sandbox/runtime_stub.go,cmd/devhost/internal/sandbox/status_linux.go
+go_ambiguous_group_15=cmd/devhost/internal/trustanchor/anchor_dev_test.go:343:CALLS:RootCAs|cmd/devhost/internal/trustanchor/anchor.go,cmd/devhost/internal/trustanchor/anchor_dev.go
+go_ambiguous_group_16=cmd/devhost/internal/trustanchor/anchor_test.go:1970:CALLS:RootCAs|cmd/devhost/internal/trustanchor/anchor.go,cmd/devhost/internal/trustanchor/anchor_dev.go
+go_ambiguous_group_17=cmd/devhost/internal/tunnel/tunnel.go:12455:CALLS:trustanchor.RootCAs|cmd/devhost/internal/trustanchor/anchor.go,cmd/devhost/internal/trustanchor/anchor_dev.go
+go_ambiguous_group_18=cmd/devhost/main.go:4107:CALLS:sandbox.Launch|cmd/devhost/internal/sandbox/runtime_linux.go,cmd/devhost/internal/sandbox/runtime_stub.go
+go_ambiguous_group_19=cmd/devhost/main.go:4107:CALLS:sandbox.NewDevNetwork|cmd/devhost/internal/sandbox/network_linux.go,cmd/devhost/internal/sandbox/network_stub.go
+go_ambiguous_group_20=cmd/devhost/main.go:4107:CALLS:sandbox.PullUserImage|cmd/devhost/internal/sandbox/pull_linux.go,cmd/devhost/internal/sandbox/runtime_stub.go
+go_ambiguous_group_21=cmd/fulminate/commands/deploy_tls.go:2657:CALLS:newExternalCAStore|cmd/fulminate/commands/deploy_ca_store_byoc.go,cmd/fulminate/commands/deploy_ca_store_internal.go
+go_ambiguous_group_22=cmd/orchestrator/main.go:8597:CALLS:sandbox.NewNetwork|cmd/orchestrator/internal/sandbox/network_linux.go,cmd/orchestrator/internal/sandbox/network_stub.go
+go_ambiguous_group_23=cmd/orchestrator/main.go:8597:CALLS:sandbox.NewRuntime|cmd/orchestrator/internal/sandbox/runtime_linux.go,cmd/orchestrator/internal/sandbox/runtime_stub.go
+edges_CALLS=47365
+edges_CONTAINS=61093
+edges_EMBEDS=185
+edges_IMPORTS=22662
+edges_TEST_CALLS=3784
+edges_USES_TYPE=31191
+files_bash=40
+files_css=2
+files_dockerfile=7
+files_go=3270
+files_html=9
+files_javascript=7
+files_protobuf=20
+files_python=2
+files_sql=126
+files_toml=1
+files_tsx=583
+files_typescript=257
+files_yaml=72

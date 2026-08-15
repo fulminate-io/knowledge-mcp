@@ -11,6 +11,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/paging"
 )
 
 // InterceptQueryKnowledgeSearch claims the query-tool knowledge text-search modes
@@ -118,12 +119,12 @@ func composeRecentBrowse(ctx context.Context, gc GraphCaller, a queryArgs) kgtoo
 	case a.Type != "":
 		selection.NodeTypes = []string{a.Type}
 	}
-	nodes, err := engine.DrainKeysetPages(func(afterID string) ([]*knowledgev1.Node, error) {
+	nodes, err := paging.DrainKeysetPages(func(afterID string) ([]*knowledgev1.Node, error) {
 		cursor := afterID
 		plan := &knowledgev1.QueryPlan{
 			Selection:         selection,
 			IncludeTombstones: a.IncludeTombstones,
-			Limit:             int32(engine.BrowsePageSize),
+			Limit:             int32(paging.BrowsePageSize),
 			// SET on every page including the first, where the value is empty:
 			// presence is what selects the keyset browse.
 			AfterId:   &cursor,
@@ -141,7 +142,7 @@ func composeRecentBrowse(ctx context.Context, gc GraphCaller, a queryArgs) kgtoo
 			return nil, fmt.Errorf("decode: %w", derr)
 		}
 		return page, nil
-	}, engine.BrowsePageSize)
+	}, paging.BrowsePageSize)
 	if err != nil {
 		return errorResult("recent browse: " + err.Error())
 	}

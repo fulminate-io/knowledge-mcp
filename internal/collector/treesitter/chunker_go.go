@@ -39,6 +39,41 @@ func findTypeIdentifier(node *sitter.Node, src []byte) string {
 	return ""
 }
 
+// qualifiedTypeName returns an embedded field's target with its package
+// qualifier intact — "pkg.Base" for a qualified embed, "Base" for a local
+// one — so the resolution walk can bind it through the file's imports.
+//
+// IT IS A SIBLING OF findTypeIdentifier, NOT A REPLACEMENT FOR IT.
+// findTypeIdentifier must keep returning the bare name because
+// extractGoReceiver derives a METHOD RECEIVER's type from it, and a receiver
+// type is always declared in the method's own package — bare is correct there,
+// and a qualified receiver is not expressible in the language. Changing the
+// shared helper would silently rewrite every Go method's ParentName and move
+// the receiver-qualified node IDs TestChunkGoEdges pins.
+func qualifiedTypeName(node *sitter.Node, src []byte) string {
+	if node == nil {
+		return ""
+	}
+	switch node.Type() {
+	case "qualified_type":
+		return node.Content(src)
+	case "pointer_type":
+		// `*pkg.Base` — the star is not part of the target name. The grammar
+		// attaches no field name to the pointee, so it is the first named
+		// child.
+		if node.NamedChildCount() > 0 {
+			return qualifiedTypeName(node.NamedChild(0), src)
+		}
+	case "generic_type":
+		// `pkg.Base[T]` embeds pkg.Base; the type arguments are references of
+		// their own and are captured separately as type references.
+		if base := node.ChildByFieldName("type"); base != nil {
+			return qualifiedTypeName(base, src)
+		}
+	}
+	return findTypeIdentifier(node, src)
+}
+
 // extractGoEmbeds finds embedded structs/interfaces in a type declaration.
 // Returns the names of embedded types (without pointer markers).
 func extractGoEmbeds(node *sitter.Node, src []byte) []string {
@@ -73,7 +108,7 @@ func extractGoEmbeds(node *sitter.Node, src []byte) []string {
 			continue
 		}
 
-		typeName := findTypeIdentifier(typeNode, src)
+		typeName := qualifiedTypeName(typeNode, src)
 		if typeName != "" {
 			embeds = append(embeds, typeName)
 		}

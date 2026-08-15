@@ -10,7 +10,6 @@ import (
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 
-	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/treesitter"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
@@ -40,7 +39,18 @@ func populateFixture(t *testing.T, files []fixtureFile) PopulateResult {
 		require.NoError(t, err, "chunking %s", f.path)
 		results = append(results, r)
 	}
-	return chunkResultsToPopulate("testrepo", "", results)
+	// THE MODULE PATH IS SUPPLIED, NOT LEFT ZERO. A registered arm that maps
+	// import paths onto repo directories needs it, and with it absent the Go
+	// arm takes its zero-result path — so every cross-package Go row would
+	// report External while the unqualified rows still passed, which is the
+	// most dangerous direction for a fixture to be wrong in. Only ModulePath is
+	// set: the harness chunks its fixtureFile list directly rather than walking
+	// a directory, so THE FIXTURE LIST IS THE DISCOVERED SET, and Go's arm
+	// reads neither Root nor Files.
+	// "example.com/fixture" is the module every fixture in this package imports
+	// through: a file under dir/ is imported as "example.com/fixture/dir".
+	return chunkResultsToPopulate("testrepo",
+		&treesitter.RepoContext{ModulePath: "example.com/fixture"}, results)
 }
 
 // edgesFrom returns the ToIDs of every edge of the given type leaving from.
@@ -140,25 +150,64 @@ func TestPopulate_PythonEdgesSurvive(t *testing.T) {
 		"pkg/animals.py:Animal.describe", "pkg/animals.py:Animal.speak"))
 	assert.True(t, hasEdge(res, kgtypes.EdgeCalls,
 		"pkg/animals.py:Dog.speak", "pkg/animals.py:bark_sound"))
-	// Cross-file, same derived namespace.
-	assert.True(t, hasEdge(res, kgtypes.EdgeCalls,
-		"pkg/main.py:run", "pkg/animals.py:make_sound"))
+	// Same-file: binds by the own-scope rule.
 	assert.True(t, hasEdge(res, kgtypes.EdgeCalls,
 		"pkg/main.py:run", "pkg/main.py:helper"))
+
+	// RESTORED, EXACTLY AS THE PREVIOUS STATE OF THIS ASSERTION PREDICTED. The
+	// cross-file call had been asserted ABSENT, because python's resolution
+	// unit is the FILE and the edge's only previous route was a name-wide
+	// search that ignored scope entirely — the same search that let references
+	// escape their own scope and bind to unrelated same-named declarations.
+	// That assertion carried its own expiry: "registering that arm is what
+	// restores this edge, and it will restore it EXACTLY rather than by name."
+	//
+	// The python BindsResolver arm is now registered, so `from pkg.animals
+	// import make_sound` binds the name into pkg/animals.py's scope and the
+	// unqualified-import rung resolves it there. THE ROUTE IS WHAT MATTERS, not
+	// merely the edge's presence: it binds through the import into ONE named
+	// file's scope, never by matching a name anywhere in the corpus.
+	assert.True(t, hasEdge(res, kgtypes.EdgeCalls,
+		"pkg/main.py:run", "pkg/animals.py:make_sound"),
+		"the import arm binds a cross-file python call by scope")
 
 	// USES_TYPE from the parameter annotation.
 	assert.True(t, hasEdge(res, kgtypes.EdgeUsesType,
 		"pkg/animals.py:make_sound", "pkg/animals.py:Animal"))
 
-	// NEGATIVE, with the four surviving CALLS above as its known positive:
-	// `a.speak()` carries no receiver context, so both candidates remain and
-	// the ambiguous edge is correctly dropped rather than guessed.
-	for _, to := range edgesFrom(res, kgtypes.EdgeCalls, "pkg/animals.py:make_sound") {
-		assert.False(t, strings.HasSuffix(to, ":Animal.speak"),
-			"ambiguous a.speak() must not resolve to Animal.speak")
-		assert.False(t, strings.HasSuffix(to, ":Dog.speak"),
-			"ambiguous a.speak() must not resolve to Dog.speak")
+	// RE-DERIVED: `a.speak()` NO LONGER LOSES ITS EDGE, and that is this
+	// ticket's point rather than a regression. The python Calls query used to
+	// reach PAST the attribute node to the bare trailing identifier, so the
+	// reference arrived as `speak`, matched no unparented declaration, and
+	// vanished. It now arrives as `a.speak`. The qualifier is a VALUE, so no
+	// declared parent matches it and the ladder falls to the dynamic rung,
+	// which emits one OPEN-SET edge per candidate at Confidence 1/N.
+	//
+	// Both methods are offered and NEITHER IS GUESSED. The distinction the
+	// method constant carries is the whole point: an open set says "one of
+	// these, or something static analysis cannot reach", which is what a
+	// dynamically dispatched receiver means — a CLOSED ambiguous group here
+	// would be the false claim that exactly one of the two is the referent.
+	//
+	// The four surviving CALLS above remain this block's known positive: they
+	// bind exactly and carry no group at all.
+	dynamic := map[string]bool{}
+	for _, e := range res.Edges {
+		if kgtypes.EdgeType(e.Type) != kgtypes.EdgeCalls || e.FromId != "pkg/animals.py:make_sound" {
+			continue
+		}
+		if !strings.HasSuffix(e.ToId, ".speak") {
+			continue
+		}
+		assert.Equal(t, kgtypes.EdgeMethodDynamic, e.Method,
+			"a value-qualified receiver is an OPEN set, never a closed ambiguous one")
+		assert.InDelta(t, 0.5, e.Confidence, 1e-9, "two candidates, so 1/N is one half")
+		dynamic[e.ToId] = true
 	}
+	assert.True(t, dynamic["pkg/animals.py:Animal.speak"],
+		"the dynamic set offers Animal.speak")
+	assert.True(t, dynamic["pkg/animals.py:Dog.speak"],
+		"the dynamic set offers Dog.speak")
 }
 
 func TestPopulate_PythonTwoClassesSameMethod(t *testing.T) {
@@ -200,40 +249,50 @@ func TestPopulate_PythonTwoClassesSameMethod(t *testing.T) {
 	assert.Empty(t, edgesFrom(res, kgtypes.EdgeContains, "pkg/main.py:helper"))
 }
 
+// TestResolveEdges_EmptySymbolMapDropsAll pins what survives when the
+// declaration index knows nothing.
+//
+// The name predates the index — the scalar symbol map it refers to is gone —
+// but the property it guards is unchanged and still worth pinning: a reference
+// the index cannot see emits NOTHING rather than a guess, while the two edge
+// shapes that never depended on name resolution survive regardless. Containment
+// is now among those: it is addressed by chunk slot, so it no longer passes
+// through name resolution at all.
 func TestResolveEdges_EmptySymbolMapDropsAll(t *testing.T) {
-	edges := []*knowledgev1.Edge{
-		{FromId: "pkg.Caller", ToId: "pkg.Callee", Type: string(kgtypes.EdgeCalls)},
-		{FromId: "pkg/a.go", ToId: "pkg.Caller", Type: string(kgtypes.EdgeContains)},
-		{FromId: "pkg.Caller", ToId: "pkg.Thing", Type: string(kgtypes.EdgeUsesType)},
-		{FromId: "pkg/a.go", ToId: "fmt", Type: string(kgtypes.EdgeImports)},
+	ref := refSiteFor("pkg/a.go", "dir:pkg", "")
+	newResults := func() []*treesitter.Result {
+		return []*treesitter.Result{{
+			FilePath: "pkg/a.go",
+			Language: treesitter.LangGo,
+			Edges: []treesitter.Edge{
+				{FromID: "pkg/a.go:Caller", ToID: "Callee", Type: treesitter.EdgeCalls, Ref: ref},
+				{FromID: "pkg/a.go", ToID: "pkg/a.go:Caller", Type: treesitter.EdgeContains},
+				{FromID: "pkg/a.go:Caller", ToID: "Thing", Type: treesitter.EdgeUsesType, Ref: ref},
+				{FromID: "pkg/a.go", ToID: "fmt", Type: treesitter.EdgeImports},
+			},
+		}}
 	}
-	nodeIDs := map[string]bool{"pkg/a.go": true}
-
-	// With no symbols recorded, only the pre-resolution IMPORTS edge survives —
-	// the shape every non-Go language had before this ticket, because their
-	// empty namespace made recordSymbol a no-op.
-	gotEmpty := resolveEdges(cloneEdges(edges), map[string]string{}, nodeIDs)
-	require.Len(t, gotEmpty, 1)
-	assert.Equal(t, string(kgtypes.EdgeImports), gotEmpty[0].Type)
-
-	// KNOWN-POSITIVE CONTROL: the identical edge set against a populated
-	// symbolMap keeps all four. Without this the test could not tell a
-	// namespace-driven drop from an unconditional one.
-	symbolMap := map[string]string{
-		"pkg.Caller": "pkg/a.go:Caller",
-		"pkg.Callee": "pkg/b.go:Callee",
-		"pkg.Thing":  "pkg/b.go:Thing",
+	nodeIDs := map[string]bool{
+		"pkg/a.go": true, "pkg/a.go:Caller": true,
+		"pkg/b.go:Callee": true, "pkg/b.go:Thing": true,
 	}
-	gotFull := resolveEdges(cloneEdges(edges), symbolMap, nodeIDs)
-	assert.Len(t, gotFull, 4, "every edge resolves once the symbols are known")
-}
 
-// cloneEdges copies the fixture edges because resolveEdges rewrites FromId and
-// ToId in place on the pointers it is handed.
-func cloneEdges(in []*knowledgev1.Edge) []*knowledgev1.Edge {
-	out := make([]*knowledgev1.Edge, 0, len(in))
-	for _, e := range in {
-		out = append(out, &knowledgev1.Edge{FromId: e.FromId, ToId: e.ToId, Type: e.Type})
-	}
-	return out
+	// An EMPTY index resolves no reference: both the CALLS and the USES_TYPE
+	// edge emit nothing. IMPORTS and the slot-addressed CONTAINS survive
+	// because neither consults the index.
+	gotEmpty := resolveEdges(newResults(), newDeclIndex(0), nodeIDs)
+	require.Len(t, gotEmpty, 2)
+	types := []string{gotEmpty[0].Type, gotEmpty[1].Type}
+	assert.ElementsMatch(t, []string{string(kgtypes.EdgeContains), string(kgtypes.EdgeImports)}, types,
+		"only the two shapes that never needed name resolution survive an empty index")
+
+	// KNOWN-POSITIVE CONTROL: the identical edge set against a POPULATED index
+	// keeps all four. Without it this test could not tell a lookup-driven drop
+	// from an unconditional one.
+	ix := indexOf(t,
+		&declRec{NodeID: "pkg/b.go:Callee", File: "pkg/b.go", Scope: "dir:pkg", Name: "Callee"},
+		&declRec{NodeID: "pkg/b.go:Thing", File: "pkg/b.go", Scope: "dir:pkg", Name: "Thing"},
+	)
+	gotFull := resolveEdges(newResults(), ix, nodeIDs)
+	assert.Len(t, gotFull, 4, "every edge resolves once the declarations are indexed")
 }

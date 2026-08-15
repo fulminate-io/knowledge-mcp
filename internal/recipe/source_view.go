@@ -26,8 +26,8 @@ const (
 
 // sourceView is the in-memory read layer the relocated interpreter reads
 // through instead of a store.DB. It is the recipe analog of
-// foundation.GonumGraph: the whole source graph is materialized ONCE — via
-// exactly two Execute RPCs (FetchAllNodes + FetchEdges) — into four indexes,
+// foundation.GonumGraph: the whole source graph is materialized ONCE — via two
+// BOUNDED PAGED DRAINS (FetchAllNodes + FetchAllEdges) — into four indexes,
 // and every eval* read (select-by-type, by-id hydrate, edge traversal) hits a
 // map, never the wire. This avoids the per-row IterEdges N+1 Execute storm the
 // server interpreter could afford against an in-process store but the client
@@ -52,15 +52,20 @@ type sourceView struct {
 }
 
 // loadSourceView materializes the source graph identified by (graphType, name)
-// into an in-memory sourceView using EXACTLY two Execute RPCs, mirroring
+// into an in-memory sourceView using two BOUNDED PAGED DRAINS, mirroring
 // foundation.newGonumGraph's materializeNodes + materializeEdges:
 //
-//  1. FetchAllNodes  — one browse Execute returning every node.
-//  2. FetchAllEdges  — one match-all RETURN_MODE_EDGES Execute (no pivot).
+//  1. FetchAllNodes  — an id-keyset browse drain over every node, one bounded
+//     page per Execute.
+//  2. FetchAllEdges  — a pivot-page edge drain over the loaded id set, one
+//     bounded page of pivots per Execute.
 //
-// No per-row Execute is issued during this load or during any subsequent
-// interpretation read; that is the load-bearing N+1-avoidance property the
-// client migration depends on.
+// The RPC count therefore scales with the graph rather than being fixed at two:
+// ceil(nodes/paging.BrowsePageSize) + ceil(ids/paging.EdgePivotPageSize)
+// sequential round trips. What still holds — and is the load-bearing
+// N+1-avoidance property the client migration depends on — is that NO PER-ROW
+// Execute is issued during this load or during any subsequent interpretation
+// read: the round trips are per PAGE, never per node or per edge.
 func loadSourceView(
 	ctx context.Context,
 	caller foundation.GraphCaller,

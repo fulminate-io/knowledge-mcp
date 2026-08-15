@@ -97,8 +97,9 @@ type queryArgs struct {
 // Selection.field_predicates entry: an exact/relational filter on a universal
 // struct field (e.g. symbol_name, created_at) the engine evaluates server-side
 // via nodeMatchesField. It is an INTERNAL compile capability only — the public
-// `query` tool schema does not advertise field_predicates; the sole caller is
-// the session resolver building args programmatically.
+// `query` tool schema does not advertise field_predicates; the callers build
+// args programmatically (the thought-session resolver and the assemble
+// by-name resolver, both narrowing a drain by symbol_name).
 type fieldPredicateArg struct {
 	Field string `json:"field"`
 	Op    string `json:"op"`

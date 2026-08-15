@@ -100,6 +100,12 @@ func (a routedWireClient) LoggedIn(ctx context.Context) bool {
 	return a.router.LoggedIn(ctx)
 }
 
+// SelectedAccountID reports the selected Fulminate account — the second half
+// of the backend identity CheckLoginFlip compares.
+func (a routedWireClient) SelectedAccountID(ctx context.Context) string {
+	return a.router.SelectedAccountID(ctx)
+}
+
 // Compile-time assertions: the adapter satisfies both pipeline contracts.
 var (
 	_ pipeline.WireClient      = routedWireClient{}
@@ -130,6 +136,43 @@ func attachCollectGate(p *pipeline.Pipeline, c *client) {
 	p.AttachCollectGateFactory(func(gt kgtypes.GraphType, name string) func() bool {
 		return func() bool { return rt.CollectInFlightForGraph(gt, name) }
 	})
+}
+
+// attachLocalPresence wires the machine-local presence predicate into the
+// pipeline, so collector registration is narrowed to the graphs this machine can
+// actually serve. It hands over the client's OWN predicate — the same one the
+// segment reconcile walks — rather than a second copy, because two definitions of
+// "present here" would be free to drift.
+//
+// Extracted as a helper for the same reason attachCollectGate is: it keeps
+// wirePipelineRuntime a list of wirings rather than a body of logic.
+//
+// NOTHING CAN OBSERVE THIS WIRING FROM A TEST, which is why the call site and
+// this body are held by a structural check instead. The predicate field and
+// wantedGraphs are unexported in package pipeline, no exported method reveals
+// whether a predicate is attached, and wirePipelineRuntime is not unit-drivable
+// (it starts five long-lived loops). A reader must not delete the call believing
+// some behavioral test covers it — none can, and because an unwired predicate is
+// PERMISSIVE by design, dropping it would ship the pipeline half of the scoping
+// fix inert with every test still green.
+func attachLocalPresence(p *pipeline.Pipeline, c *client) {
+	p.AttachLocalPresence(c.graphLocallyPresent)
+}
+
+// selectSummarizer picks the summarizer to wire from a built fallback chain, and
+// returns the chain ITSELF only when it has more than one entry — that second
+// return is what gates the selection wrapper, the background prober and the
+// live-active status readout, none of which a single entry needs. A nil chain
+// (unloaded config) yields no summarizer at all, which the caller degrades on.
+func selectSummarizer(fc *llmproviders.FallbackChain) (llmproviders.Summarizer, *llmproviders.FallbackChain) {
+	switch {
+	case fc == nil:
+		return nil, nil
+	case fc.Len() == 1:
+		return fc.FirstSummarizer(), nil
+	default:
+		return fc.Summarizer(), fc
+	}
 }
 
 // wirePipelineRuntime constructs the client-side LLM pipeline (summarize
@@ -167,20 +210,7 @@ func wirePipelineRuntime(ctx context.Context, c *client, f Config) error {
 		slog.Warn("client pipeline: summarizer build failed; skipping pipeline wire", "error", err)
 		return nil
 	}
-	// chained is the multi-entry chain (len>1): only then do we wire the
-	// selection wrapper + background prober + live-active status. A nil chain
-	// (unloaded config) or a single entry uses the plain summarizer path.
-	var sum llmproviders.Summarizer
-	var chained *llmproviders.FallbackChain
-	switch {
-	case fc == nil:
-		sum = nil
-	case fc.Len() == 1:
-		sum = fc.FirstSummarizer()
-	default:
-		sum = fc.Summarizer()
-		chained = fc
-	}
+	sum, chained := selectSummarizer(fc)
 	emb := llmproviders.BuildEmbedder()
 	if sum == nil && emb == nil {
 		slog.Info("client pipeline: no summarizer or embedder configured; skipping pipeline wire")
@@ -243,6 +273,9 @@ func wirePipelineRuntime(ctx context.Context, c *client, f Config) error {
 	// path is visible to the next pass. Attached BEFORE Start so the boot
 	// registration pass below already reads it.
 	p.AttachWorkingSet(c.workingSet)
+
+	// Narrows the wanted set to graphs this machine can serve; held by a structural check, not a test.
+	attachLocalPresence(p, c)
 
 	// Wire the auto-heal factory: on the embed drain after a collect armed
 	// the heal-check, a code graph with ZERO shipped segments triggers a one-shot

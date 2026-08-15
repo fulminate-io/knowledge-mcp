@@ -42,7 +42,7 @@ import (
 // edges show up on the workload's own traversal without a hop through the
 // linkage graph.
 func resolveWorkloadIdentity(ctx context.Context, gc postpopulate.GraphCaller, graphName string) error {
-	sas, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, k8sResourceQuery("ServiceAccount"))
+	sas, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, k8sResourceQuery("ServiceAccount"))
 	if err != nil {
 		return err
 	}

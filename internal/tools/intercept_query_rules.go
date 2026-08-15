@@ -3,8 +3,8 @@
 // Package tools — InterceptQueryRules ports the server-side
 // handleRules handler client-side. Claims query(type:"rule").
 //
-// READ SHAPE: the fetch is a keyset page drain (engine.DrainKeysetPages at
-// engine.BrowsePageSize per request), so the whole rule corpus reaches the
+// READ SHAPE: the fetch is a keyset page drain (paging.DrainKeysetPages at
+// paging.BrowsePageSize per request), so the whole rule corpus reaches the
 // client in bounded requests rather than one capped read. The order is
 // filter-before-slice: drain, apply the scope substring filter, record the
 // matching count as the TRUE TOTAL, then apply the caller's offset and the
@@ -52,6 +52,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/paging"
 )
 
 // InterceptQueryRules claims query(type:"rule").
@@ -141,7 +142,7 @@ func InterceptQueryRules(ctx context.Context, deps ClientDeps, params kgtools.Ca
 // the SCOPE-FILTERED set, which only exists client-side, and pushing them to the
 // fetch is the defect this shape replaces.
 //
-// Each page asks for engine.BrowsePageSize rows and SETS AfterId — on every
+// Each page asks for paging.BrowsePageSize rows and SETS AfterId — on every
 // page including the first, where the value is the empty string. Presence is
 // what selects the keyset browse; an omitted field pages in the backend's
 // default order, under which the cursor taken from page one skips every lower
@@ -157,12 +158,12 @@ func drainRules(ctx context.Context, gc GraphCaller, a queryArgs) ([]*knowledgev
 	}
 	sel.MetadataPredicates = engine.LowerMetaPredicates(a.Meta)
 
-	nodes, err := engine.DrainKeysetPages(func(afterID string) ([]*knowledgev1.Node, error) {
+	nodes, err := paging.DrainKeysetPages(func(afterID string) ([]*knowledgev1.Node, error) {
 		cursor := afterID
 		plan := &knowledgev1.QueryPlan{
 			Selection:         sel,
 			IncludeTombstones: a.IncludeTombstones,
-			Limit:             int32(engine.BrowsePageSize),
+			Limit:             int32(paging.BrowsePageSize),
 			AfterId:           &cursor,
 			SkipTotal:         true,
 		}
@@ -178,7 +179,7 @@ func drainRules(ctx context.Context, gc GraphCaller, a queryArgs) ([]*knowledgev
 			return nil, fmt.Errorf("decode rules: %w", derr)
 		}
 		return page, nil
-	}, engine.BrowsePageSize)
+	}, paging.BrowsePageSize)
 	if err != nil {
 		return nil, err
 	}

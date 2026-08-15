@@ -22,20 +22,89 @@ import (
 // ranked ids[] read from a shared node table. It satisfies BOTH the
 // SegmentSearcher seam (Search) and the GraphCaller seam (Execute), so one fake
 // backs cdeps.mgr and cdeps.gc.
+// It HONORS the k it is handed (truncating its canned list) and RECORDS that k.
+// Both are load-bearing for the over-fetch assertions: a fake that returned its
+// whole canned list regardless of k would satisfy a shortfall test against an
+// implementation that never over-fetched at all.
 type codeSearchEngineFake struct {
 	mu          sync.Mutex
 	searchCalls int
+	lastK       int
 	hitsByRepo  map[string][]searchengine.Hit
 	nodes       map[string]*knowledgev1.Node
+	// searchErr, when set, fails every Search — the degraded-leg probe.
+	searchErr error
+	// pools records the pool shape of EVERY search leg, in request order: a
+	// single-pool read appends just the base name, a two-pool read appends the
+	// base and the overlay it was paired with. Recording both arms in one list
+	// is what lets a test assert that repo A opened an overlay while repo B did
+	// not, rather than only that some overlay was opened somewhere.
+	pools []poolReq
+}
+
+// poolReq is one pool request the fake served. overlay is "" for a single-pool
+// read, so the two arms stay distinguishable in the recorded list.
+type poolReq struct {
+	base    string
+	overlay string
 }
 
 func (f *codeSearchEngineFake) Search(
-	_ context.Context, _ kgtypes.GraphType, name, _ string, _ []byte, _ int,
+	_ context.Context, _ kgtypes.GraphType, name, _ string, _ []byte, k int,
 ) ([]searchengine.Hit, error) {
 	f.mu.Lock()
 	f.searchCalls++
+	f.lastK = k
+	f.pools = append(f.pools, poolReq{base: name})
+	err := f.searchErr
 	f.mu.Unlock()
-	return f.hitsByRepo[name], nil
+	if err != nil {
+		return nil, err
+	}
+	hits := f.hitsByRepo[name]
+	if k > 0 && len(hits) > k {
+		hits = hits[:k]
+	}
+	return hits, nil
+}
+
+// SearchOverlay makes this fake satisfy the two-pool seam as well, so a branch
+// search reaches it instead of being rejected for an absent overlay arm. It
+// serves the BASE pool's canned hits — the fusion of two real pools is
+// segmentdist's job and is gated there; what this fake exists to observe is
+// WHICH pools each repo was asked for.
+func (f *codeSearchEngineFake) SearchOverlay(
+	_ context.Context, _ kgtypes.GraphType, base, overlay, _ string, _ []byte, k int,
+) ([]searchengine.Hit, error) {
+	f.mu.Lock()
+	f.searchCalls++
+	f.lastK = k
+	f.pools = append(f.pools, poolReq{base: base, overlay: overlay})
+	err := f.searchErr
+	f.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	hits := f.hitsByRepo[base]
+	if k > 0 && len(hits) > k {
+		hits = hits[:k]
+	}
+	return hits, nil
+}
+
+// requestedPools returns a copy of the recorded pool requests. The fan-out is
+// concurrent, so the ORDER is not meaningful and no caller should assert on it.
+func (f *codeSearchEngineFake) requestedPools() []poolReq {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]poolReq(nil), f.pools...)
+}
+
+// recordedK reports the k the most recent Search was handed.
+func (f *codeSearchEngineFake) recordedK() int {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.lastK
 }
 
 func (f *codeSearchEngineFake) Execute(
@@ -60,10 +129,12 @@ func (f *codeSearchEngineFake) calls() int {
 	return f.searchCalls
 }
 
-// cdepsFor wires a codeSearchDeps where both the Searcher and the hydrate
-// GraphCaller are the same fake.
+// cdepsFor wires a codeSearchDeps where the Searcher, the two-pool overlay arm
+// and the hydrate GraphCaller are all the same fake. Wiring ovl here does not
+// move any single-pool test: codeSearchPoolHits only reaches the overlay arm
+// when a branch makes the overlay name differ from the base.
 func cdepsFor(f *codeSearchEngineFake) codeSearchDeps {
-	return codeSearchDeps{mgr: f, gc: f, exec: f.Execute}
+	return codeSearchDeps{mgr: f, gc: f, ovl: f, exec: f.Execute}
 }
 
 // TestInterceptQueryCodeSearch covers single-repo (one client Search per query),
@@ -120,6 +191,12 @@ func TestInterceptQueryCodeSearch(t *testing.T) {
 	})
 
 	t.Run("multi-repo parallel fan-out + merge by score", func(t *testing.T) {
+		// Empty temp manifest: the fan-out detects each repo's branch from the
+		// machine-local manifest, and this subtest is about the fan-out and the
+		// merge, not about branches. Pinning both repos to the no-entry state keeps
+		// the single-pool "one client Search per repo" count deterministic instead
+		// of dependent on whichever repos this developer has collected.
+		withTestManifest(t)
 		f := &codeSearchEngineFake{
 			hitsByRepo: map[string][]searchengine.Hit{
 				"repo1": {{ID: "r1", Score: 0.7}},

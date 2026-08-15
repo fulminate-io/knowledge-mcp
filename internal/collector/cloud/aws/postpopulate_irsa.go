@@ -35,7 +35,7 @@ func resolveIRSA(ctx context.Context, gc postpopulate.GraphCaller, graphName str
 		return nil
 	}
 
-	roles, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, iamRoleQuery())
+	roles, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, iamRoleQuery())
 	if err != nil {
 		return err
 	}
@@ -62,10 +62,9 @@ type oidcMapping struct {
 // buildOIDCIssuerMap scans eks-cluster nodes and builds a map from
 // OIDC provider ARN to the issuer URL and cluster ARN.
 func buildOIDCIssuerMap(ctx context.Context, gc postpopulate.GraphCaller, graphName string) (map[string]oidcMapping, error) {
-	clusters, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
-		"type":  string(kgtypes.NodeCloudResource),
-		"meta":  map[string]string{"resource_type": "eks-cluster"},
-		"limit": 0,
+	clusters, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
+		"type": string(kgtypes.NodeCloudResource),
+		"meta": map[string]string{"resource_type": "eks-cluster"},
 	})
 	if err != nil {
 		return nil, err

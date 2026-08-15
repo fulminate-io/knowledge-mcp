@@ -21,7 +21,7 @@
 //     (situational awareness).
 //
 // DATA ACCESS — one foundation.FetchNodesByType(NodeCloudResource) browse
-// supplies the candidate nodes; one bulk foundation.FetchEdges over the
+// supplies the candidate nodes; a bulk foundation.FetchEdges over the
 // monitorable node set (filtered to MONITORS) supplies the incoming-edge
 // presence the coverage check reads in-memory. No per-node edge fetch.
 package cloud
@@ -97,7 +97,7 @@ type monitoringTypeStats struct {
 
 // collectMonitoringStats groups monitorable resources by type and checks
 // each for incoming MONITORS edges, reading the presence from an in-memory
-// index built from ONE bulk edge fetch over the monitorable node set.
+// index built from a bulk edge fetch over the monitorable node set.
 func collectMonitoringStats(
 	ctx context.Context,
 	req foundation.Request,

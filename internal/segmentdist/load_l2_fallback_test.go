@@ -85,6 +85,14 @@ func (c *failAfterWarmSource) verifiesCompletenessServerSide() bool {
 	return c.inner.verifiesCompletenessServerSide()
 }
 
+// bindTarget implements the targetBindable seam so a wrapped source still
+// re-binds per graph. Without it the wrapper hides the inner view's own
+// bindTarget (the field is named, not embedded, so nothing is promoted) and
+// every graph a multi-pool test drives would resolve through one target view.
+// It is a no-op for the single-graph uses above, which re-bind to the same
+// target.
+func (c *failAfterWarmSource) bindTarget(t *knowledgev1.GraphSelector) { bindViewTarget(c.inner, t) }
+
 var _ segmentSource = (*failAfterWarmSource)(nil)
 
 // TestLoadL2FallbackReachesCoverageWithoutServer is the headline red-green for the

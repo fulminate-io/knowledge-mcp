@@ -52,7 +52,7 @@ func resolveGatewayCloudLBLinkage(ctx context.Context, gc postpopulate.GraphCall
 		return nil
 	}
 
-	gateways, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, k8sResourceQuery("Gateway"))
+	gateways, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, k8sResourceQuery("Gateway"))
 	if err != nil {
 		return err
 	}

@@ -33,7 +33,7 @@ import (
 // minRedundancyFactor — never to 0 — to preserve the criterion that the
 // analyzer always produces a meaningful score for every reachable node.
 //
-// The edge-count reads go through one bulk foundation.FetchEdges per node
+// The edge-count reads go through a bulk foundation.FetchEdges per node
 // filtered to the relevant edge type, then count the matching direction in
 // memory — the wire twin of the prior per-node IterEdges count.
 
@@ -200,7 +200,7 @@ func incomingTargetsRedundancyRule(ctx context.Context, req foundation.Request, 
 
 // countEdges returns the number of edges of the given type incident to
 // nodeID in the requested direction ("out" → edges whose FromId is nodeID,
-// "in" → edges whose ToId is nodeID). One bulk FetchEdges over the single
+// "in" → edges whose ToId is nodeID). A bulk FetchEdges over the single
 // node filtered to edgeType, counted in memory — the wire twin of the prior
 // per-node IterEdges count.
 func countEdges(ctx context.Context, req foundation.Request, nodeID string, edgeType kgtypes.EdgeType, direction string) (int, error) {

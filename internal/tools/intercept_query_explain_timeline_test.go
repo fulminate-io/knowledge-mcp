@@ -16,6 +16,7 @@ import (
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/enginetest"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
+	"github.com/fulminate-io/knowledge-mcp/internal/paging"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 )
@@ -197,7 +198,7 @@ func TestComposeTimeline_KeysetPagedAndCapped(t *testing.T) {
 			continue
 		}
 		nodePlans++
-		assert.Equal(t, int32(engine.BrowsePageSize), p.GetLimit(), "plan[%d] carries the page limit", i)
+		assert.Equal(t, int32(paging.BrowsePageSize), p.GetLimit(), "plan[%d] carries the page limit", i)
 		assert.NotNil(t, p.AfterId, "plan[%d] SETS the keyset cursor (presence selects the keyset browse)", i)
 		assert.True(t, p.GetSkipTotal(), "plan[%d] skips Total", i)
 	}
@@ -219,7 +220,7 @@ func TestRenderExplainTimeline_Golden(t *testing.T) {
 	t.Run("explain", func(t *testing.T) {
 		edges := []knowledgev1.Edge{{FromId: "x", ToId: "y", Type: "depends-on", Confidence: 0.5}}
 		names := map[string]*knowledgev1.Node{"x": {Id: "x", SymbolName: "X"}, "y": {Id: "y", SymbolName: "Y"}}
-		got := engine.RenderExplainEdges("knowledge", edges, names)
+		got := engine.RenderExplainEdges("knowledge", edges, names, nil)
 		assert.Contains(t, got, "### Edge #1 — X -> Y")
 	})
 	t.Run("timeline flat", func(t *testing.T) {

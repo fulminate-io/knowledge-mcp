@@ -315,7 +315,7 @@ func TestOAuthTokenSource_ForceRefresh(t *testing.T) {
 // to stream megabytes of HTML into an error response; agent logs must
 // not bloat.
 func TestTransport_ErrorBodyTruncation(t *testing.T) {
-	large := strings.Repeat("x", maxErrorBodyBytes*2)
+	large := strings.Repeat("x", MaxErrorBodyBytes*2)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusBadGateway)
 		_, _ = w.Write([]byte(large))
@@ -329,8 +329,8 @@ func TestTransport_ErrorBodyTruncation(t *testing.T) {
 	if !errors.As(err, &se) {
 		t.Fatalf("expected *SyncHTTPError, got %v", err)
 	}
-	if len(se.Body) > maxErrorBodyBytes {
+	if len(se.Body) > MaxErrorBodyBytes {
 		t.Errorf("Body not truncated: got %d bytes, cap %d",
-			len(se.Body), maxErrorBodyBytes)
+			len(se.Body), MaxErrorBodyBytes)
 	}
 }

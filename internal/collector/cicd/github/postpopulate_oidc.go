@@ -55,10 +55,9 @@ func postPopulateOIDC(ctx context.Context, gc postpopulate.GraphCaller, graphNam
 // scanCloudGraphForGitHubOIDC scans a single cloud account for IAM roles
 // trusting the GitHub OIDC issuer.
 func scanCloudGraphForGitHubOIDC(ctx context.Context, gc postpopulate.GraphCaller, accountName string) ([]knowledgev1.Edge, error) {
-	roles, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, accountName, map[string]any{
-		"type":  string(kgtypes.NodeCloudResource),
-		"meta":  map[string]string{"resource_type": "iam-role"},
-		"limit": 0,
+	roles, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, accountName, map[string]any{
+		"type": string(kgtypes.NodeCloudResource),
+		"meta": map[string]string{"resource_type": "iam-role"},
 	})
 	if err != nil {
 		return nil, err

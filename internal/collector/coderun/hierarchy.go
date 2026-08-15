@@ -80,18 +80,19 @@ func BuildHierarchy(ctx context.Context, gc postpopulate.GraphCaller, graphName 
 	return nil
 }
 
-// collectHierarchyFileNodes gathers the NodeFile nodes from the code graph via a
-// typed wire browse (routed by kgtypes.GraphCode → Target.Repo==graphName). File
-// nodes already exist (created by the pipeline's buildGraph).
+// collectHierarchyFileNodes gathers EVERY NodeFile node from the code graph via a
+// typed wire drain (routed by kgtypes.GraphCode → Target.Repo==graphName), which
+// reads bounded id-keyset pages. A single browse would be capped at the browse
+// default, so a repo of any real size would build its hierarchy from one page.
+// File nodes already exist (created by the pipeline's buildGraph).
 func collectHierarchyFileNodes(ctx context.Context, gc postpopulate.GraphCaller, graphName string, start time.Time) ([]*knowledgev1.Node, error) {
-	browsed, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCode, graphName, map[string]any{
-		"type":  string(kgtypes.NodeFile),
-		"limit": 0,
+	browsed, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCode, graphName, map[string]any{
+		"type": string(kgtypes.NodeFile),
 	})
 	if err != nil {
 		return nil, err
 	}
-	// BrowseNodes returns []*knowledgev1.Node (the typed wire node the client
+	// BrowseAllNodes returns []*knowledgev1.Node (the typed wire node the client
 	// decode layer yields); the hierarchy builder + LinkNodesAndEdgesBatch
 	// consume the slice directly.
 	slog.Info("hierarchy: collected file nodes", "count", len(browsed), "elapsed", time.Since(start).Round(time.Millisecond))

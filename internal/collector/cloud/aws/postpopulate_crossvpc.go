@@ -100,9 +100,8 @@ func buildAllAccountNodeSets(ctx context.Context, gc postpopulate.GraphCaller) m
 		if name == "" {
 			continue
 		}
-		nodes, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, name, map[string]any{
-			"type":  string(kgtypes.NodeCloudResource),
-			"limit": 0,
+		nodes, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, name, map[string]any{
+			"type": string(kgtypes.NodeCloudResource),
 		})
 		if err != nil {
 			slog.Debug("aws crossvpc: browse account failed", "account", name, "err", err)
@@ -123,10 +122,9 @@ func buildAllAccountNodeSets(ctx context.Context, gc postpopulate.GraphCaller) m
 // has an active peering with — callers use it to validate cross-VPC
 // SG references.
 func buildPeeringEdges(ctx context.Context, gc postpopulate.GraphCaller, graphName string, accountNodeIDs map[string]map[string]struct{}) ([]knowledgev1.Edge, map[string]map[string]bool, error) {
-	peerings, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
-		"type":  string(kgtypes.NodeCloudResource),
-		"meta":  map[string]string{"resource_type": "vpc-peering-connection"},
-		"limit": 0,
+	peerings, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
+		"type": string(kgtypes.NodeCloudResource),
+		"meta": map[string]string{"resource_type": "vpc-peering-connection"},
 	})
 	if err != nil {
 		return nil, nil, fmt.Errorf("aws crossvpc: query peerings: %w", err)
@@ -286,10 +284,9 @@ func vpcNodeExists(accountNodeIDs map[string]map[string]struct{}, vpcAccount, vp
 // rules whose UserIdGroupPair references a peer in a different VPC,
 // validates the peering, and emits cross-VPC reachability edges.
 func buildCrossVpcSgEdges(ctx context.Context, gc postpopulate.GraphCaller, graphName string, peerIndex map[string]map[string]bool) ([]knowledgev1.Edge, error) {
-	sgs, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
-		"type":  string(kgtypes.NodeCloudResource),
-		"meta":  map[string]string{"resource_type": "security-group"},
-		"limit": 0,
+	sgs, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
+		"type": string(kgtypes.NodeCloudResource),
+		"meta": map[string]string{"resource_type": "security-group"},
 	})
 	if err != nil {
 		return nil, fmt.Errorf("aws crossvpc: query sgs: %w", err)

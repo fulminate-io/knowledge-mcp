@@ -322,16 +322,44 @@ func containerKeys(chunks []Chunk, kinds ...string) map[string]bool {
 	return keys
 }
 
-// parentEdgeFroms returns the FromID of every parent-to-member CONTAINS edge —
-// the edges whose FromID is not the file path.
-func parentEdgeFroms(result *Result, filePath string) []string {
-	var froms []string
+// assertMembersAddressTheirEnclosingContainer is the RE-DERIVED form of the
+// container-collision invariant.
+//
+// It used to be checked on the edge's FromID: the parent-to-member CONTAINS
+// edge carried the container's hash-SUFFIXED name, so two reopened blocks of
+// one namespace could be told apart by name. The disambiguation now rides
+// FromChunk — the container's chunk slot — and the FromID carries the plain
+// base name, which the parser's slot pre-pass overwrites from that slot before
+// anything resolves. The property being protected is unchanged and the check is
+// strictly more exact than the name ever was: a slot identifies ONE chunk,
+// while a name identified one only as long as the suffixing scheme held.
+//
+// WHAT WOULD FAIL HERE: every member piling onto one container (the original
+// bug), a member addressing a container that does not enclose it, or a member
+// addressing nothing at all.
+func assertMembersAddressTheirEnclosingContainer(t *testing.T, result *Result, filePath string) {
+	t.Helper()
+
+	edges := 0
 	for _, e := range result.Edges {
-		if e.Type == EdgeContains && e.FromID != filePath {
-			froms = append(froms, e.FromID)
+		if e.Type != EdgeContains || e.FromID == filePath {
+			continue
 		}
+		edges++
+		require.NotZero(t, e.FromChunk,
+			"parent-to-member edge %q → %q carries no container slot", e.FromID, e.ToID)
+		require.NotZero(t, e.ToChunk, "parent-to-member edge %q → %q carries no member slot", e.FromID, e.ToID)
+
+		container := result.Chunks[e.FromChunk-1]
+		member := result.Chunks[e.ToChunk-1]
+		assert.True(t,
+			container.StartByte <= member.StartByte && container.EndByte >= member.EndByte,
+			"member %q (bytes %d-%d) is addressed to container %q (bytes %d-%d), which does not enclose it",
+			member.Name, member.StartByte, member.EndByte,
+			container.Name, container.StartByte, container.EndByte)
+		assert.NotEqual(t, e.FromChunk, e.ToChunk, "a member must not contain itself")
 	}
-	return froms
+	require.NotEmpty(t, edges, "control: the parent-to-member edge is still emitted")
 }
 
 func chunkFile(t *testing.T, path, src string) *Result {
@@ -346,16 +374,16 @@ func chunkFile(t *testing.T, path, src string) *Result {
 // TestContainerCollision pins the FIXED behavior when two containers in one
 // file share a (ParentName, Name) pair: the disambiguating hash is appended to
 // the CONTAINER'S OWN name, a member's ParentName stays unsuffixed so the
-// member's node ID never moves, and the parent-to-member CONTAINS edge carries
-// the disambiguated name of the block that lexically encloses that member.
+// member's node ID never moves, and the parent-to-member CONTAINS edge
+// ADDRESSES BY SLOT the block that lexically encloses that member.
 //
 // READ THIS BEFORE "FIXING" A FAILURE HERE. cpp_single_namespace is the
 // no-collision control and carries no suffix at all, so a failure there and
 // nowhere else points at the parent-to-member edge in general rather than at
 // the collision path. A failure in any of the other three is a REGRESSION in
-// the collision fix — the edge has stopped naming the container that encloses
-// the member — rather than a fix landing, which is what these subtests
-// described while they still asserted the edge was dropped.
+// the collision fix — the edge has stopped addressing the container that
+// encloses the member — rather than a fix landing, which is what these
+// subtests described while they still asserted the edge was dropped.
 func TestContainerCollision(t *testing.T) {
 	t.Run("cpp_reopened_namespace", func(t *testing.T) {
 		// Reopening a namespace in one file is routine C++, not an exotic shape.
@@ -377,14 +405,9 @@ func TestContainerCollision(t *testing.T) {
 		assert.Equal(t, 2, containers)
 		assert.Equal(t, 2, members)
 
-		// The edge is emitted, and it resolves: its FromID is the suffixed name
-		// of the one block that lexically encloses the member.
-		froms := parentEdgeFroms(result, path)
-		require.NotEmpty(t, froms, "the parent-to-member edge is still emitted")
-		keys := containerKeys(result.Chunks, "namespace_definition")
-		for _, from := range froms {
-			assert.True(t, keys[from], "FromID %q must equal the container chunk key %v", from, keys)
-		}
+		// The edge is emitted, and it addresses the ONE block that lexically
+		// encloses the member.
+		assertMembersAddressTheirEnclosingContainer(t, result, path)
 	})
 
 	t.Run("cpp_single_namespace", func(t *testing.T) {
@@ -399,12 +422,7 @@ func TestContainerCollision(t *testing.T) {
 				assert.Equal(t, "app", c.Name, "a lone container keeps its plain name")
 			}
 		}
-		froms := parentEdgeFroms(result, path)
-		require.Len(t, froms, 2)
-		keys := containerKeys(result.Chunks, "namespace_definition")
-		for _, from := range froms {
-			assert.True(t, keys[from], "FromID %q must equal the container chunk key %v", from, keys)
-		}
+		assertMembersAddressTheirEnclosingContainer(t, result, path)
 	})
 
 	t.Run("rust_struct_and_impl", func(t *testing.T) {
@@ -426,12 +444,7 @@ func TestContainerCollision(t *testing.T) {
 		}
 		assert.Equal(t, 2, containers)
 
-		froms := parentEdgeFroms(result, path)
-		require.NotEmpty(t, froms)
-		keys := containerKeys(result.Chunks, "struct_item", "impl_item")
-		for _, from := range froms {
-			assert.True(t, keys[from], "FromID %q must equal the container chunk key %v", from, keys)
-		}
+		assertMembersAddressTheirEnclosingContainer(t, result, path)
 	})
 
 	t.Run("php_repeated_namespace_block", func(t *testing.T) {
@@ -456,12 +469,8 @@ func TestContainerCollision(t *testing.T) {
 		}
 		assert.Equal(t, 2, containers)
 
-		froms := parentEdgeFroms(result, path)
-		require.NotEmpty(t, froms)
-		keys := containerKeys(result.Chunks, "namespace_definition")
-		require.Len(t, keys, 2, "both containers are keyed, each under its suffixed name")
-		for _, from := range froms {
-			assert.True(t, keys[from], "FromID %q must equal the container chunk key %v", from, keys)
-		}
+		require.Len(t, containerKeys(result.Chunks, "namespace_definition"), 2,
+			"both containers are named, each under its own suffixed name")
+		assertMembersAddressTheirEnclosingContainer(t, result, path)
 	})
 }

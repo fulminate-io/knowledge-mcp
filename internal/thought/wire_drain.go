@@ -8,6 +8,7 @@ import (
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
+	"github.com/fulminate-io/knowledge-mcp/internal/paging"
 )
 
 // wire_drain.go holds the paged id-KEYSET browse drain: the shared cursor core and
@@ -16,17 +17,17 @@ import (
 // dedup) distinct from the single-shot read helpers wire.go carries.
 
 // browsePageSize is the per-page row count for the keyset drain, aliased to the
-// engine constant so the page size has exactly one definition. 500 ≈ 13 pages
-// for the current ~6102-thought corpus. See engine.BrowsePageSize for why a
+// paging constant so the page size has exactly one definition. 500 ≈ 13 pages
+// for the current ~6102-thought corpus. See paging.BrowsePageSize for why a
 // positive limit is load-bearing rather than merely a tuning choice.
-const browsePageSize = engine.BrowsePageSize
+const browsePageSize = paging.BrowsePageSize
 
-// drainPages delegates to engine.DrainKeysetPages, which owns the shared id-KEYSET
+// drainPages delegates to paging.DrainKeysetPages, which owns the shared id-KEYSET
 // drain core and its rationale. Kept as an unexported package-local name because
 // both call sites (drainThoughtBrowse below, and the all_types adjacency drain in
 // wire_adjacency.go) read more clearly against the thought graph's vocabulary.
 func drainPages(fetchPage func(afterID string) ([]*knowledgev1.Node, error), pageSize int) ([]*knowledgev1.Node, error) {
-	return engine.DrainKeysetPages(fetchPage, pageSize)
+	return paging.DrainKeysetPages(fetchPage, pageSize)
 }
 
 // drainThoughtBrowse drains every node of nodeType in bounded id-KEYSET pages via

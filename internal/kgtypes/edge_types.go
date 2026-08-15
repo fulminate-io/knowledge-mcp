@@ -9,6 +9,25 @@ const (
 	EdgeContains EdgeType = "CONTAINS"
 	EdgeUsesType EdgeType = "USES_TYPE"
 
+	// EdgeTestCalls is a CALLS edge whose SOURCE is test code: the body of a
+	// test_block chunk, or a declaration lexically inside one. It is a distinct
+	// type rather than a flag on EdgeCalls so that every existing CALLS
+	// consumer — centrality, blast radius, the god-object metrics — keeps
+	// seeing production call structure only, and so a consumer that WANTS test
+	// traffic opts into it explicitly. EdgeType is a defined string type and
+	// the vocabulary is open, so this constant needs no proto change.
+	//
+	// IT MEANS "test-origin AND identifiable as such", NOT "all test-origin".
+	// Identifiability is range containment inside a test_block chunk, so the 18
+	// languages with no TestBlocks query have no test_block range for their
+	// test declarations to sit inside and their edges stay EdgeCalls. A
+	// consumer that opts out of TEST_CALLS still sees that residue as CALLS.
+	//
+	// The producer mirrors this constant as treesitter.EdgeTestCalls (the
+	// chunker carries its own EdgeType vocabulary); the two are pinned in
+	// lockstep by TestTestCallsConsumerCensus.
+	EdgeTestCalls EdgeType = "TEST_CALLS"
+
 	// EdgeLanguage links a code symbol to its per-language hub node
 	// (NodeLanguage with deterministic ID lang:<repo>:<lang>). Emitted
 	// once per non-comment chunk during indexing so topology analyzers
@@ -59,6 +78,24 @@ const (
 	// EdgeReferences (generic node references) so traverse filters can
 	// isolate metadata edges cleanly.
 	EdgeMetaValue EdgeType = "meta_value" // node → value-node (metadata key on Edge.Method)
+
+	// EdgeMethodAmbiguousName and EdgeMethodDynamic are Edge.Method VALUES, not
+	// edge types: the collector's reference resolution stamps one of them on
+	// every member of a multi-bind edge group, and every member of one group
+	// also shares a key in Edge.Evidence.
+	//
+	// THE TWO KINDS ARE NOT INTERCHANGEABLE. An "ambiguous-name" group is
+	// CLOSED — the reference means exactly one of these candidates, and a
+	// consumer that later learns which may collapse the group to it. A
+	// "dynamic" group is OPEN — the reference dispatches to one of these
+	// candidates OR to something no static enumeration can reach, so a
+	// consumer must never read it as closed and must never collapse it.
+	//
+	// They live here rather than in the collector because Edge.Method is a
+	// persisted wire field: a reader deciding whether a group may be collapsed
+	// needs the vocabulary without importing the producer.
+	EdgeMethodAmbiguousName = "ambiguous-name" // CLOSED group: exactly one of the members is the referent
+	EdgeMethodDynamic       = "dynamic"        // OPEN group: one of the members, or something beyond static reach
 
 	// Hive work-queue edge types (cloud-only feature). NEW edges — NOT reuse of
 	// EdgeKGContains: EdgeKGContains="contains" is parent→child (plan→phase),

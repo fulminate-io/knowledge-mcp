@@ -164,9 +164,9 @@ func TestPopulate_JavaScriptEdgesSurvive(t *testing.T) {
 }
 
 // The polyglot fixture. Every detail of the layout is load-bearing and must
-// not be tidied: helper lives in a DIFFERENT Go package from its caller, so
-// the Go call to it can only resolve through the bare-name index that a
-// same-named Python symbol would otherwise dilute; the Python file's directory
+// not be tidied: helper lives in a DIFFERENT Go package from its caller, which
+// no longer resolves at all now that a bare name is looked up in its own scope
+// unit (see the re-derived assertion below); the Python file's directory
 // basename is deliberately "svc", equal to the Go package name, so an
 // unprefixed namespace would put Python's symbols on the exact keys Go's
 // same-package lookup reads; and local exists in both languages so the
@@ -183,10 +183,10 @@ var polyglotPyFile = fixtureFile{
 }
 
 func TestPopulate_PolyglotGoNotDegraded(t *testing.T) {
-	// recordSymbol writes into the shared symbolMap with no collision check, so
-	// the LATER writer wins the slot. Run both orderings and require the same
-	// outcome: asserting only the reproducing order would leave the gate
-	// betting on an arrangement, and a map-keyed fixture would randomize it.
+	// The declaration index cannot represent a collision at all, so no writer
+	// can take another's slot. Both orderings are still run and still required
+	// to agree: asserting only one arrangement would leave the gate betting on
+	// it, and a map-keyed fixture would randomize it.
 	orders := map[string][]fixtureFile{
 		"python_last":  append(append([]fixtureFile{}, polyglotGoFiles...), polyglotPyFile),
 		"python_first": append([]fixtureFile{polyglotPyFile}, polyglotGoFiles...),
@@ -195,13 +195,21 @@ func TestPopulate_PolyglotGoNotDegraded(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			res := populateFixture(t, files)
 
-			// Cross-package: resolvable only through the bare-name index, which
-			// a same-named Python symbol would dilute to two candidates.
-			assert.True(t, hasEdge(res, kgtypes.EdgeCalls, "a/svc.go:run", "b/util.go:helper"),
-				"the Go cross-package call must still resolve to the Go callee")
+			// RE-DERIVED. This used to require the cross-package call to bind,
+			// and it bound only because the resolver searched the whole
+			// language partition by bare name. A Go bare name is now looked up
+			// in its OWN scope unit — the caller's directory — and helper is
+			// declared in another one, so it lands External. Go's own rule
+			// agrees: `helper()` unqualified never refers to another package.
+			// Restoring this edge means binding it through the IMPORT, which
+			// is what a registered BindsResolver arm will do.
+			assert.False(t, hasEdge(res, kgtypes.EdgeCalls, "a/svc.go:run", "b/util.go:helper"),
+				"an unqualified Go call must not reach another package by name")
 
-			// Same-package: reads the namespace-qualified key that an unprefixed
-			// Python namespace would occupy.
+			// Same-package: the call that SHOULD bind, and the one a same-named
+			// Python declaration could have hijacked. It is also the
+			// known-positive control for the negative above — without it, a
+			// build that resolved nothing at all would satisfy that assertion.
 			assert.True(t, hasEdge(res, kgtypes.EdgeCalls, "a/svc.go:run", "a/local.go:local"),
 				"the Go same-package call must not be hijacked")
 
@@ -259,4 +267,48 @@ func TestPopulate_GoControlPackageNamespace(t *testing.T) {
 	// Plain functions have no parent, so they emit no parent CONTAINS.
 	assert.Empty(t, edgesFrom(res, kgtypes.EdgeContains, "pkg/svc.go:run"))
 	assert.Empty(t, edgesFrom(res, kgtypes.EdgeContains, "pkg/svc.go:barkSound"))
+}
+
+// jsMemberCallSrc pits a class's STATIC member against a top-level function of
+// the same name, so the two spellings of the javascript CALLS capture resolve
+// to DIFFERENT declarations and the difference is observable as an edge target.
+//
+// `Box.make()` is a member expression. Captured as the whole expression it
+// arrives at resolution as "Box.make", splits at its last dot, and binds
+// through the qualified-parent rung to the static member. Captured as the
+// property identifier alone it arrives as the bare "make", cannot reach any
+// qualified rung at all, and binds through the own-scope rung to the top-level
+// function — a WRONG edge that no assertion in this package caught before.
+const jsMemberCallSrc = `import * as ns from './other';
+
+export class Box {
+  static make() { return 1; }
+}
+
+function make() { return 2; }
+
+export function run() { return Box.make(); }
+`
+
+// TestPopulate_JavaScriptMemberCallQualified is the reproduction AND the
+// regression guard for the javascript member-expression capture.
+//
+// EXPECTED FAILURE AGAINST THE UNFIXED TREE, so a fixture error is
+// distinguishable from the real red: with the property-identifier capture the
+// FIRST assertion fails (no edge to Box.make, because the callee text is the
+// bare "make") and the SECOND fails too (an edge to the top-level make exists).
+// Any other failure shape means the fixture is wrong, not the query.
+func TestPopulate_JavaScriptMemberCallQualified(t *testing.T) {
+	res := populateFixture(t, []fixtureFile{{path: "web/membercall.js", src: jsMemberCallSrc}})
+
+	assert.True(t, hasEdge(res, kgtypes.EdgeCalls, "web/membercall.js:run", "web/membercall.js:Box.make"),
+		"a qualified member call binds to the member its qualifier names")
+	assert.False(t, hasEdge(res, kgtypes.EdgeCalls, "web/membercall.js:run", "web/membercall.js:make"),
+		"and never to the same-named top-level function, which is what the bare "+
+			"property-identifier capture bound it to")
+
+	// KNOWN-POSITIVE CONTROL for the two assertions above: both would also hold
+	// if this fixture emitted no CALLS edges whatsoever.
+	assert.NotEmpty(t, edgesFrom(res, kgtypes.EdgeCalls, "web/membercall.js:run"),
+		"the fixture must actually emit a call edge")
 }

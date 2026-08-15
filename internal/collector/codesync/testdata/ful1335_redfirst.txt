@@ -1,0 +1,46 @@
+=== RUN   TestAugmentWithPreciseCallGraph_BindsByDeclaringFileAndKeepsNonGoCalls
+2026/08/13 22:52:38 WARN git ls-files failed, falling back to filesystem walk error="exit status 128"
+GENFILE_NODES 0
+2026/08/13 22:52:38 INFO BuildGoCallGraph callers=3 funcs=6
+2026/08/13 22:52:38 INFO precise call graph: replaced tree-sitter CALLS edges removed=5 added=3 rta_callers=3
+POSTPAIRS go->go=1 go->typescript=1 typescript->go=1
+POSTCALLS svc/api/handler.go:Dispatch -> web/api/client.ts:genOnly w=1
+POSTCALLS svc/api/handler.go:Reach -> svc/api/handler.go:Server.Handle w=1
+POSTCALLS web/api/client.ts:Serve -> svc/api/handler.go:goOnlyTarget w=1
+    reindex_langbind_test.go:128: post-merge CALLS set mismatch
+        want: scripts/run.sh:main -> scripts/run.sh:helper w=1 | svc/api/handler.go:Reach -> svc/api/handler.go:Server.Handle w=1 | svc/api/handler.go:Serve -> svc/api/handler.go:goOnlyTarget w=2 | svc/api/handler.go:Server.Handle -> svc/api/handler.go:goOnlyTarget w=1 | web/api/client.ts:Render -> web/api/client.ts:Helper w=1
+        got:  svc/api/handler.go:Dispatch -> web/api/client.ts:genOnly w=1 | svc/api/handler.go:Reach -> svc/api/handler.go:Server.Handle w=1 | web/api/client.ts:Serve -> svc/api/handler.go:goOnlyTarget w=1
+    reindex_langbind_test.go:136: cross-language CALLS edge: from svc/api/handler.go:Dispatch (go) to web/api/client.ts:genOnly (typescript)
+    reindex_langbind_test.go:136: cross-language CALLS edge: from web/api/client.ts:Serve (typescript) to svc/api/handler.go:goOnlyTarget (go)
+    reindex_langbind_test.go:142: 
+        	Error Trace:	/Users/jonathan/code/knowledge/.claude/worktrees/agent-a6a5d232c61f45eed/cmd/knowledge/internal/collector/codesync/reindex_langbind_test.go:142
+        	Error:      	Not equal: 
+        	            	expected: map[string]int{"bash":1, "go":3, "typescript":1}
+        	            	actual  : map[string]int{"go":2, "typescript":1}
+        	            	
+        	            	Diff:
+        	            	--- Expected
+        	            	+++ Actual
+        	            	@@ -1,4 +1,3 @@
+        	            	-(map[string]int) (len=3) {
+        	            	- (string) (len=4) "bash": (int) 1,
+        	            	- (string) (len=2) "go": (int) 3,
+        	            	+(map[string]int) (len=2) {
+        	            	+ (string) (len=2) "go": (int) 2,
+        	            	  (string) (len=10) "typescript": (int) 1
+        	Test:       	TestAugmentWithPreciseCallGraph_BindsByDeclaringFileAndKeepsNonGoCalls
+        	Messages:   	per-caller-language CALLS census changed
+    reindex_langbind_test.go:155: 
+        	Error Trace:	/Users/jonathan/code/knowledge/.claude/worktrees/agent-a6a5d232c61f45eed/cmd/knowledge/internal/collector/codesync/reindex_langbind_test.go:155
+        	Error:      	Max difference between 2 and 0 allowed is 0, but difference was 2
+        	Test:       	TestAugmentWithPreciseCallGraph_BindsByDeclaringFileAndKeepsNonGoCalls
+        	Messages:   	want: Serve->goOnlyTarget weight 2 (tree-sitter saw two call sites); got: 0
+    reindex_langbind_test.go:169: 
+        	Error Trace:	/Users/jonathan/code/knowledge/.claude/worktrees/agent-a6a5d232c61f45eed/cmd/knowledge/internal/collector/codesync/reindex_langbind_test.go:169
+        	Error:      	Should be true
+        	Test:       	TestAugmentWithPreciseCallGraph_BindsByDeclaringFileAndKeepsNonGoCalls
+        	Messages:   	no CALLS edge has svc/api/handler.go:Server.Handle as its FROM endpoint — methods are not being analyzed as callers
+--- FAIL: TestAugmentWithPreciseCallGraph_BindsByDeclaringFileAndKeepsNonGoCalls (0.06s)
+FAIL
+FAIL	github.com/fulminate-io/knowledge/cmd/knowledge/internal/collector/codesync	0.655s
+FAIL

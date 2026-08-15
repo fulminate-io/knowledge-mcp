@@ -172,7 +172,7 @@ type podEntry struct {
 //     labels are present with an empty (non-nil) map so selector matchers
 //     can distinguish "unlabeled" from "missing"
 func buildPodIndex(ctx context.Context, gc postpopulate.GraphCaller, graphName string) ([]podEntry, map[string]map[string]string, error) {
-	podNodes, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, k8sResourceQuery("Pod"))
+	podNodes, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, k8sResourceQuery("Pod"))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -187,7 +187,7 @@ func buildPodIndex(ctx context.Context, gc postpopulate.GraphCaller, graphName s
 		})
 	}
 
-	nsNodes, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, k8sResourceQuery("Namespace"))
+	nsNodes, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, k8sResourceQuery("Namespace"))
 	if err != nil {
 		return nil, nil, err
 	}
@@ -213,13 +213,13 @@ func buildPodIndex(ctx context.Context, gc postpopulate.GraphCaller, graphName s
 	return pods, nsLabels, nil
 }
 
-// k8sResourceQuery is the BrowseNodes filter for a K8s cloud node by its
-// resource_type (Pod / Namespace / Service / NetworkPolicy / ...).
+// k8sResourceQuery is the browse filter for a K8s cloud node by its
+// resource_type (Pod / Namespace / Service / NetworkPolicy / ...). It carries no
+// limit: its callers drain, and the drain sets the per-page limit itself.
 func k8sResourceQuery(resourceType string) map[string]any {
 	return map[string]any{
-		"type":  string(kgtypes.NodeCloudResource),
-		"meta":  map[string]string{"resource_type": resourceType},
-		"limit": 0,
+		"type": string(kgtypes.NodeCloudResource),
+		"meta": map[string]string{"resource_type": resourceType},
 	}
 }
 
@@ -240,7 +240,7 @@ func extractLabels(meta map[string]string) map[string]string {
 // All matching edges accumulate into a single slice and ride ONE LinkEdgesBatch
 // — no per-pod Link inside the loop (the batched-write requirement).
 func resolveServiceSelectors(ctx context.Context, gc postpopulate.GraphCaller, graphName string, pods []podEntry) error {
-	services, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, k8sResourceQuery("Service"))
+	services, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, k8sResourceQuery("Service"))
 	if err != nil {
 		return err
 	}
@@ -290,7 +290,7 @@ func resolveServiceSelectors(ctx context.Context, gc postpopulate.GraphCaller, g
 // to populate podInfo.IngressRestricted / EgressRestricted; the generic
 // EdgeRestricts had no consumer and is gone.
 func resolveNetworkPolicySelectors(ctx context.Context, gc postpopulate.GraphCaller, graphName string, pods []podEntry) error {
-	policies, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, k8sResourceQuery("NetworkPolicy"))
+	policies, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, k8sResourceQuery("NetworkPolicy"))
 	if err != nil {
 		return err
 	}

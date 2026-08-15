@@ -86,7 +86,14 @@ var admittingOperations = map[Operation]struct{}{
 //     self-admitting and the whole gate a no-op. The recorder sits on the routed
 //     call chokepoint that background and user traffic share, so this partition
 //     is the SOLE mechanism keeping writeback out — there is no second,
-//     structural exclusion behind it.
+//     structural exclusion behind it. OpCrossGraphProbe and OpPostCollectFanout
+//     are load-bearing in the same way, for the mirror-image reason: they are
+//     fan-outs that run WHILE a user call is being handled, addressing graphs the
+//     user never named — the cross-graph composer probing every loaded foreign
+//     graph, and the post-collect tails walking every graph of a family. Their
+//     RPCs address concrete instances, so the instance-key half of the gate does
+//     not stop them; being stamped with these terms instead of inheriting the
+//     caller's is what keeps one user call from admitting the whole account.
 //
 //   - NO GRAPH INSTANCE ADDRESSED — hive coordination, static help text and the
 //     local transcript cache address no graph, and the unknown/unstamped

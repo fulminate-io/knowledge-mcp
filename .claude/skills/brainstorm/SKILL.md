@@ -126,6 +126,24 @@ The context pack surfaces related decisions, findings, tickets, prior thoughts, 
     searched for.
   </researcher-brief-is-discovery-not-confirmation>
 
+  <causal-claims-need-ground-truth>
+    The same poisoning rule, applied to INVESTIGATIONS. Ground truth and
+    reproduction are the only things that prove a cause; a theory is a
+    hypothesis to test, never to prove — anything else is bad science. When
+    the brainstorm topic is a defect or incident, the brief states measured
+    facts and instruments — never candidate mechanisms; a hypothesis menu
+    makes the researcher confirm from the menu instead of observing. A root
+    cause is an OBSERVED mechanism: the failure reproduced under
+    instrumentation, or watched in progress at the layer where the cause
+    lives. A correlation fitted to logs one layer removed is a LEAD, and it
+    enters the ticket labeled "unproven lead", never as the cause; no ticket
+    freezes a design against an unproven mechanism unless the user explicitly
+    accepts that trade. Theories are welcome as hypotheses handed to
+    falsification tests. The tell you've slipped: successive "causes"
+    replacing each other as each new measurement lands — that is curve-fitting,
+    not root-causing. Stop, instrument, reproduce.
+  </causal-claims-need-ground-truth>
+
 </constraint>
 
 <constraint id="intent-fidelity" severity="hard">

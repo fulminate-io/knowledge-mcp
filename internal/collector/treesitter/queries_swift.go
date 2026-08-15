@@ -9,9 +9,13 @@ func swiftQueries() *QuerySet {
 			(class_declaration name: (type_identifier) @name) @decl
 			(protocol_declaration name: (type_identifier) @name) @decl
 		]`,
+		// The navigation_expression is captured WHOLE rather than reaching past
+		// it to the suffix's identifier: the wrapper's own text IS the
+		// qualified callee (`obj.doThing`, `a.b.c`), and capturing the suffix
+		// alone discarded the qualifier.
 		Calls: `(call_expression [
 			(simple_identifier) @callee
-			(navigation_expression (navigation_suffix (simple_identifier) @callee))
+			(navigation_expression) @callee
 		])`,
 		Imports:  `(import_declaration) @import`,
 		TypeRefs: `(type_identifier) @typeref`,

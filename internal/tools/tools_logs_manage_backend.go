@@ -10,7 +10,6 @@ import (
 	"strings"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
-	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
@@ -144,30 +143,26 @@ func backendK8sIdentity(r logBackendRecord) string {
 	return strings.TrimSpace(r.value("url"))
 }
 
-// findLogBackendByName resolves a NodeLogBackend record by its name via
-// gc.Call("query", type:"log-backend", format:"json"). Returns (record,
+// findLogBackendByName resolves a NodeLogBackend record by its name from the
+// type-browse of every configured backend, matched client-side. Returns (record,
 // true, nil) when found, (zero, false, nil) when absent, (zero, false,
 // err) on transport failure.
+//
+// The match is client-side, so the browse must return the COMPLETE backend set:
+// it drains keyset pages rather than taking one bounded page, or a user with
+// more than a page of backends would silently lose the tail.
 func findLogBackendByName(ctx context.Context, gc GraphCaller, name string) (logBackendRecord, bool, error) {
 	trimmed := strings.TrimSpace(name)
 	if trimmed == "" {
 		return logBackendRecord{}, false, nil
 	}
-	args, err := json.Marshal(map[string]any{
-		"type":  "log-backend",
-		"limit": 0,
+	nodes, err := drainQueryNodes(ctx, gc, map[string]any{
+		"type": string(kgtypes.NodeLogBackend),
 	})
-	if err != nil {
-		return logBackendRecord{}, false, fmt.Errorf("marshal query args: %w", err)
-	}
-	resp, err := executeQuery(ctx, gc, args)
 	if err != nil {
 		return logBackendRecord{}, false, fmt.Errorf("query log_backends: %w", err)
 	}
-	records, derr := decodeLogBackendNodes(resp)
-	if derr != nil {
-		return logBackendRecord{}, false, fmt.Errorf("decode log_backends: %w", derr)
-	}
+	records := logBackendRecordsFromNodes(nodes)
 	for _, r := range records {
 		if r.symbolName == trimmed || r.id == trimmed {
 			return r, true, nil
@@ -176,15 +171,11 @@ func findLogBackendByName(ctx context.Context, gc GraphCaller, name string) (log
 	return logBackendRecord{}, false, nil
 }
 
-// decodeLogBackendNodes builds logBackendRecords from the log-backend
-// type-browse nodes_json carrier (engine.DecodeNodes). The log-backend nodes
-// are knowledge-graph records; SymbolName is the name, the provider/url/
-// auth_type/credential/kube_context fields ride node Metadata.
-func decodeLogBackendNodes(resp *knowledgev1.ExecuteResponse) ([]logBackendRecord, error) {
-	nodes, err := engine.DecodeNodes(resp)
-	if err != nil {
-		return nil, err
-	}
+// logBackendRecordsFromNodes builds logBackendRecords from the drained
+// log-backend type-browse nodes. The log-backend nodes are knowledge-graph
+// records; SymbolName is the name, the provider/url/auth_type/credential/
+// kube_context fields ride node Metadata.
+func logBackendRecordsFromNodes(nodes []*knowledgev1.Node) []logBackendRecord {
 	out := make([]logBackendRecord, 0, len(nodes))
 	for _, n := range nodes {
 		out = append(out, logBackendRecord{
@@ -197,7 +188,7 @@ func decodeLogBackendNodes(resp *knowledgev1.ExecuteResponse) ([]logBackendRecor
 			kubeCtx:    kgtypes.Value(n, "kube_context"),
 		})
 	}
-	return out, nil
+	return out
 }
 
 // upsertLogBackend writes the log_backend node via gc.Call("mutate",
@@ -277,28 +268,22 @@ func redactCredential(v string) string {
 // the env var reference, so audit callers can see what would be loaded at
 // query time without leaking any secret material.
 //
-// Client-side handler. The list is fetched via gc.Call("query",
-// type:"log-backend", format:"json") and rendered locally.
+// Client-side handler. The list is drained from a log-backend type-browse over
+// the Execute carrier seam and rendered locally. "All configured records" means
+// every one of them, so the browse drains keyset pages rather than taking one
+// bounded page.
 func (h *Handler) handleListLogBackends(ctx context.Context, format string) kgtools.ToolResult {
 	gc := h.graphCaller()
 	if gc == nil {
 		return kgtools.ErrorResult("list_log_backends: no GraphCaller configured")
 	}
-	args, err := json.Marshal(map[string]any{
-		"type":  "log-backend",
-		"limit": 0,
+	nodes, err := drainQueryNodes(ctx, gc, map[string]any{
+		"type": string(kgtypes.NodeLogBackend),
 	})
-	if err != nil {
-		return kgtools.ErrorResult("list log_backends marshal: " + err.Error())
-	}
-	resp, err := executeQuery(ctx, gc, args)
 	if err != nil {
 		return kgtools.ErrorResult("list log_backends: " + err.Error())
 	}
-	records, derr := decodeLogBackendNodes(resp)
-	if derr != nil {
-		return kgtools.ErrorResult("list log_backends decode: " + derr.Error())
-	}
+	records := logBackendRecordsFromNodes(nodes)
 
 	sort.Slice(records, func(i, j int) bool {
 		return records[i].symbolName < records[j].symbolName

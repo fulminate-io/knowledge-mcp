@@ -205,7 +205,7 @@ func resolveNetworkPolicyReachabilityEdges(
 	nsLabelIndex map[string]map[string]string,
 	podPortIndex map[string][]podContainerPort,
 ) error {
-	policies, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, k8sResourceQuery("NetworkPolicy"))
+	policies, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, k8sResourceQuery("NetworkPolicy"))
 	if err != nil {
 		return err
 	}

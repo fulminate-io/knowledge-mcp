@@ -453,3 +453,43 @@ model = "claude-haiku-5"
 		t.Errorf("Default.Provider = %q", cfg.Default.Provider)
 	}
 }
+
+// TestParse_FulminateAccountID pins the top-level fulminate_account_id key:
+// present lands verbatim on Config.FulminateAccountID, absent leaves it empty.
+// The known-positive (a set id) and the zero case (absent) run in the same test
+// so an empty result can never be mistaken for a field that was never wired.
+func TestParse_FulminateAccountID(t *testing.T) {
+	const want = "acct_01JQZ8Y3K7NRXV6M2H4TBD9WEF"
+
+	body := `
+fulminate_account_id = "` + want + `"
+
+[default]
+provider = "anthropic"
+model = "claude-haiku-5"
+`
+	cfg, err := Parse([]byte(body))
+	if err != nil {
+		t.Fatalf("Parse(with key): %v", err)
+	}
+	if cfg.FulminateAccountID != want {
+		t.Errorf("FulminateAccountID = %q, want %q", cfg.FulminateAccountID, want)
+	}
+	// The key must not disturb the rest of the document.
+	if cfg.Default.Provider != ProviderAnthropic {
+		t.Errorf("Default.Provider = %q, want %q", cfg.Default.Provider, ProviderAnthropic)
+	}
+
+	absent := `
+[default]
+provider = "anthropic"
+model = "claude-haiku-5"
+`
+	cfg2, err := Parse([]byte(absent))
+	if err != nil {
+		t.Fatalf("Parse(without key): %v", err)
+	}
+	if cfg2.FulminateAccountID != "" {
+		t.Errorf("absent key: FulminateAccountID = %q, want empty", cfg2.FulminateAccountID)
+	}
+}

@@ -109,6 +109,20 @@ const (
 	OpInstructionBootstrap Operation = "instruction.bootstrap"
 	OpPropagationReflect   Operation = "propagation.reflect"
 	OpHiveMonitor          Operation = "hive.monitor"
+	// OpCrossGraphProbe attributes the cross-graph composer's foreign-node scan:
+	// the by-id probe issued against each loaded foreign graph in turn, plus the
+	// graph-name enumeration that feeds it. It fires while handling some other
+	// tool call, so without its own term its fan-out would be attributed to
+	// whichever user operation happened to be on the stack.
+	OpCrossGraphProbe Operation = "crossgraph.probe"
+	// OpPostCollectFanout attributes the post-collect tails — the postpopulate
+	// hook and the linker run — whose all-graphs walk addresses every graph of a
+	// family rather than the one graph that was collected. Kept distinct from
+	// OpCrossGraphProbe for the same reason OpSegmentDeltaMerge is kept distinct
+	// from OpRebuildSegments: a probe scan and a post-collect enrichment are
+	// different load shapes against different graphs, and folding them would hide
+	// one inside the other's numbers.
+	OpPostCollectFanout Operation = "collect.postpopulate"
 )
 
 // AllOperations enumerates every declared term. TestOperationVocabulary walks
@@ -133,6 +147,7 @@ var AllOperations = []Operation{
 	OpCorpusDeltaDrain, OpRebuildSegments, OpSegmentDeltaMerge,
 	OpSegmentHeal, OpSegmentReconcile, OpSegmentRepair, OpSegmentHorizonSeed,
 	OpInstructionBootstrap, OpPropagationReflect, OpHiveMonitor,
+	OpCrossGraphProbe, OpPostCollectFanout,
 
 	OpToolUnknown, OpUnstamped,
 }

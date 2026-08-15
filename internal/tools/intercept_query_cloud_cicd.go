@@ -407,14 +407,19 @@ func ListGraphNamesOfType(ctx context.Context, deps ClientDeps, graphType string
 }
 
 // listOverlayKeysOfBase enumerates the OVERLAY keys of a single base graph via
-// the same Execute seam (RETURN_MODE_GRAPH_NAMES) with overlay_of set to the
-// base. Per the ListGraphsLite overlayOf contract (store/db.go:333-335, OSS
-// registry_lookup.go listOverlays, cloud lifecycle.go overlayPrefix filter), the
-// returned GraphInfo.Name values are the FULL "base@overlay" keys — NOT the base
-// graph itself and NOT every graph. The base name comes from the separate
-// listGraphNamesOfType enumeration, so this returns ONLY the overlay keys. Empty
-// names are dropped. It is a distinct call shape from listGraphNamesOfType (which
-// returns base names and filters @-keys), hence a sibling rather than an extension.
+// the same Execute seam (RETURN_MODE_GRAPH_NAMES) with overlay_of set to the base.
+//
+// THE RETURNED NAME FORM IS BACKEND-DEPENDENT: the returned GraphInfo.Name values
+// are the FULL "base@overlay" key on the CLOUD backend and the BARE overlay name on the OSS/local backend, whose registry_lookup.go listOverlays sets gi.Name to the overlay with the base prefix already stripped.
+// CALLERS MUST THEREFORE NORMALIZE WITH bareOverlayName rather than assuming
+// either form — assuming the composed one drops every OSS overlay, assuming the
+// bare one composes a doubled base prefix.
+//
+// What holds on BOTH backends: this returns ONLY the overlay keys — NOT the base
+// graph itself and NOT every graph (the base name comes from the separate
+// listGraphNamesOfType enumeration) — and empty names are dropped. It is a
+// distinct call shape from listGraphNamesOfType (which returns base names and
+// filters @-keys), hence a sibling rather than an extension.
 func listOverlayKeysOfBase(ctx context.Context, deps ClientDeps, graphType, base string) ([]string, error) {
 	gc := deps.GraphCaller()
 	if gc == nil {

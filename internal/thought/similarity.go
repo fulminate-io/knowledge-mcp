@@ -320,7 +320,7 @@ func unorderedPairKey(a, b string) string {
 // MaterializeLinks writes a relates-to edge between the medoids of each link
 // candidate that does not already share one, tagging every new edge with
 // Method="topic-similarity" (provenance). It bulk-reads the existing relates-to
-// edges among the candidate medoids ONCE up front (one round-trip, not per-pair),
+// edges among the candidate medoids ONCE up front (a single bulk read, not per-pair),
 // skips pairs that are already linked (idempotent), and reports both the newly
 // created links and the already-linked count. A candidate missing a medoid (no
 // vector-backed identity) is skipped.

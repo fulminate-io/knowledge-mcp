@@ -45,7 +45,7 @@ type thoughtChargeCache struct {
 }
 
 // buildChargeCache fetches all charges and their evidence mappings
-// once upfront. Calls chargeMapForThoughts (one bulk thought→charges
+// once upfront. Calls chargeMapForThoughts (a bulk thought→charges
 // read over the Execute seam) for the bulk thought→charges map; it does
 // NOT fetch a separate adjacency — instead, evidence resolution uses the
 // prebuilt thoughtToCluster map (so a charge's EvidencedBy edge is mapped

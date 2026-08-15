@@ -333,6 +333,8 @@ var postPopulateGraphType = map[string]kgtypes.GraphType{
 // graph CONTENT (the resolveClusterLinkage-style silent no-op), so firing across
 // all graphs of the type is safe — it enriches the graphs it owns and no-ops on
 // the rest. All-graphs enumeration + idempotent re-run mirrors clientlinker.RunAll.
+// The fan-out also runs under a non-admitting operation, so firing across every
+// graph of the type cannot earn any of them a place in the working set.
 func runPostCollectPostPopulate(ctx context.Context, deps ClientDeps, collectorType string) {
 	hook, ok := postpopulate.Lookup(collectorType)
 	if !ok {
@@ -356,6 +358,7 @@ func runPostCollectPostPopulate(ctx context.Context, deps ClientDeps, collectorT
 		slog.Warn("post-collect postpopulate: GraphCaller unavailable (skipping)", "collector", collectorType)
 		return
 	}
+	ctx = graphclient.WithOperation(ctx, graphclient.OpPostCollectFanout)
 	names, err := postpopulate.ListGraphNames(ctx, gc, graphType)
 	if err != nil {
 		slog.Warn("post-collect postpopulate: enumerate graphs failed", "collector", collectorType, "graphType", graphType, "error", err)
@@ -386,7 +389,9 @@ var postCollectLinkerTypes = map[string]bool{
 // → which is itself client-intercepted → the same RunAll), pure round-trip
 // overhead. Best-effort: slog.Warn on nil-caller, run error, or per-sub-linker
 // errors, but the caller's textResult is returned unchanged so the linker tail
-// never fails an otherwise-successful collect.
+// never fails an otherwise-successful collect. Like the postpopulate tail it runs
+// under a non-admitting operation, so walking every graph of the families it
+// links cannot earn any of them a place in the working set.
 func runPostCollectLinker(ctx context.Context, deps ClientDeps, collectorType string) {
 	if !postCollectLinkerTypes[collectorType] {
 		return
@@ -400,6 +405,7 @@ func runPostCollectLinker(ctx context.Context, deps ClientDeps, collectorType st
 		slog.Warn("post-collect linker: GraphCaller unavailable (skipping)", "collector", collectorType)
 		return
 	}
+	ctx = graphclient.WithOperation(ctx, graphclient.OpPostCollectFanout)
 	res, err := clientlinker.RunAll(ctx, gc, clientlinker.LinkOptions{})
 	if err != nil {
 		slog.Warn("post-collect linker failed", "collector", collectorType, "error", err)

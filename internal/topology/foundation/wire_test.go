@@ -12,6 +12,7 @@ import (
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/paging"
 )
 
 // fakeCaller is a scripted GraphCaller that routes each inbound ExecuteRequest
@@ -211,7 +212,7 @@ func TestFetchAllNodes(t *testing.T) {
 		// several full pages plus a short final one. A single-page fixture would
 		// let an unpaged read pass this test unnoticed.
 		const extra = 7
-		total := engine.BrowsePageSize*2 + extra
+		total := paging.BrowsePageSize*2 + extra
 		nodes := make([]*knowledgev1.Node, 0, total)
 		for i := range total {
 			nodes = append(nodes, node(fmt.Sprintf("n-%05d", i), "function"))
@@ -229,8 +230,8 @@ func TestFetchAllNodes(t *testing.T) {
 			t.Fatalf("the drained union must be COMPLETE: want %d nodes, got %d", total, len(out))
 		}
 		for i, p := range fp.lastPlans {
-			if p.GetLimit() != int32(engine.BrowsePageSize) {
-				t.Fatalf("page %d limit = %d, want %d", i, p.GetLimit(), engine.BrowsePageSize)
+			if p.GetLimit() != int32(paging.BrowsePageSize) {
+				t.Fatalf("page %d limit = %d, want %d", i, p.GetLimit(), paging.BrowsePageSize)
 			}
 		}
 	})
@@ -330,7 +331,7 @@ func TestFetchAllEdges(t *testing.T) {
 	t.Run("drains_every_pivot_page_of_a_multi_page_id_set", func(t *testing.T) {
 		// Larger than one page, so a single-page fixture cannot satisfy this.
 		const extra = 10
-		total := engine.EdgePivotPageSize + extra
+		total := paging.EdgePivotPageSize + extra
 		fp := &fakeCaller{edgesByPivot: map[string][]*knowledgev1.Edge{}}
 		ids := make([]string, 0, total)
 		for i := range total {
@@ -347,8 +348,8 @@ func TestFetchAllEdges(t *testing.T) {
 			t.Fatalf("an id set larger than one page must issue more than one Execute, got %d", fp.calls)
 		}
 		for _, p := range fp.lastPlans {
-			if len(p.GetIds()) > engine.EdgePivotPageSize {
-				t.Fatalf("page carries %d pivots, over the bound %d", len(p.GetIds()), engine.EdgePivotPageSize)
+			if len(p.GetIds()) > paging.EdgePivotPageSize {
+				t.Fatalf("page carries %d pivots, over the bound %d", len(p.GetIds()), paging.EdgePivotPageSize)
 			}
 		}
 		if len(out) != total {

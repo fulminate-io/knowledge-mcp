@@ -5,6 +5,8 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"slices"
+	"strings"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
@@ -14,35 +16,77 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 	"github.com/fulminate-io/knowledge-mcp/internal/enginetest"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
 // analyzeFake routes Execute over a fixture call graph: ByID → subject;
-// traverse(CALLS,in) → callers; traverse(CALLS,out) → callees. Records the
-// MaxHops of each traversal so the depth clamp can be asserted.
+// traverse(CALLS,in) → callers; traverse(CALLS,out) → callees; and the same two
+// directions over TEST_CALLS → testCallers/testCallees. Records the MaxHops of
+// each production traversal so the depth clamp can be asserted, and the edge
+// types of every traversal so the opt-in itself is assertable.
+//
+// IT HONORS Selection.EdgeTypes, exactly as the server does. A fake that served
+// the same fixture to every edge type would hand the production call graph back
+// to the TEST_CALLS walk and render every group twice.
 type analyzeFake struct {
 	subject    knowledgev1.Node
 	callers    []knowledgev1.Node
 	callees    []knowledgev1.Node
 	callerHops int32
 	calleeHops int32
+	// callerEdges/calleeEdges ride the traversal responses as the edge-metadata
+	// carrier; siblings answers the enrichment's pivot read and hydrate answers
+	// its bulk node read. All four default to empty, so every pre-existing test
+	// keeps the exact behavior it had before groups existed.
+	callerEdges []knowledgev1.Edge
+	calleeEdges []knowledgev1.Edge
+	siblings    []knowledgev1.Edge
+	hydrate     []*knowledgev1.Node
+	// The TEST_CALLS side, empty by default — which is what every graph looks
+	// like until it is re-collected against a collector that emits the edge.
+	testCallers     []knowledgev1.Node
+	testCallees     []knowledgev1.Node
+	testCallerEdges []knowledgev1.Edge
+	testCalleeEdges []knowledgev1.Edge
+	// requestedEdgeTypes records one entry per traversal Execute, in order.
+	requestedEdgeTypes [][]string
 }
 
 func (f *analyzeFake) exec(_ context.Context, req *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error) {
 	q := req.GetQuery()
 	if q.GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_TRAVERSAL {
+		types := q.GetSelection().GetEdgeTypes()
+		f.requestedEdgeTypes = append(f.requestedEdgeTypes, slices.Clone(types))
+		testSide := slices.Contains(types, string(kgtypes.EdgeTestCalls))
+
 		var nodes []knowledgev1.Node
-		if q.GetForward() {
+		var edges []knowledgev1.Edge
+		switch {
+		case testSide && q.GetForward():
+			nodes, edges = f.testCallees, f.testCalleeEdges
+		case testSide:
+			nodes, edges = f.testCallers, f.testCallerEdges
+		case q.GetForward():
 			f.calleeHops = q.GetMaxHops()
-			nodes = f.callees
-		} else {
+			nodes, edges = f.callees, f.calleeEdges
+		default:
 			f.callerHops = q.GetMaxHops()
-			nodes = f.callers
+			nodes, edges = f.callers, f.callerEdges
 		}
 		results := make([]engine.TraversalResult, len(nodes))
 		for i := range nodes {
 			results[i] = engine.TraversalResult{Node: &nodes[i], Distance: 1}
 		}
-		return &knowledgev1.ExecuteResponse{TraversalResults: traversalResultsToProtoForTest(results)}, nil
+		return &knowledgev1.ExecuteResponse{
+			TraversalResults: traversalResultsToProtoForTest(results),
+			TraversalEdges:   edgesToProtoForTest(edges),
+		}, nil
+	}
+	if q.GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_EDGES {
+		return &knowledgev1.ExecuteResponse{Edges: edgesToProtoForTest(f.siblings)}, nil
+	}
+	if len(q.GetIds()) > 0 {
+		return &knowledgev1.ExecuteResponse{Nodes: f.hydrate}, nil
 	}
 	// ByID subject.
 	resp := enginetest.ResponseWithNodes([]*knowledgev1.Node{&f.subject}...)
@@ -107,4 +151,60 @@ func TestInterceptQueryAnalyzeNode_Gate(t *testing.T) {
 	// graph=code no id → not claimed (that's code search).
 	handled, _ = InterceptQueryAnalyzeNode(opCtx(), nil, kgtools.CallToolParams{Name: "query", Arguments: json.RawMessage(`{"graph":"code","text":"x"}`)})
 	assert.False(t, handled)
+}
+
+// TestComposeAnalyzeNode_CandidateGroups pins the analyze arm's group rendering:
+// one block per group, candidates never ALSO listed as plain callers, and a
+// section count that counts what it lists.
+func TestComposeAnalyzeNode_CandidateGroups(t *testing.T) {
+	const subjectID = "f.go:Foo"
+	const ambSource = "f.go:Amb"
+	const groupKey = "f.go:99:CALLS:Run"
+
+	// One PLAIN caller and one THREE-candidate group, so a header that summed
+	// both (N=4) is distinguishable from the correct N=1.
+	newFake := func() *analyzeFake {
+		return &analyzeFake{
+			subject: knowledgev1.Node{Id: subjectID, SymbolName: "Foo", Type: "function", FilePath: "f.go", StartLine: 10, EndLine: 20},
+			callers: []knowledgev1.Node{
+				{Id: "f.go:Plain", SymbolName: "Plain", Type: "function", FilePath: "f.go", StartLine: 30},
+				{Id: "p/a.go:Run", SymbolName: "Run", Type: "function", FilePath: "p/a.go", StartLine: 10, Signature: "func Run() error"},
+				{Id: "p/b.go:Run", SymbolName: "Run", Type: "function", FilePath: "p/b.go", StartLine: 20, Signature: "func Run(n int)"},
+				{Id: "p/c.go:Run", SymbolName: "Run", Type: "function", FilePath: "p/c.go", StartLine: 30, Signature: "func Run(s string)"},
+			},
+			callerEdges: []knowledgev1.Edge{
+				{FromId: "f.go:Plain", ToId: subjectID, Type: "CALLS"},
+				{FromId: ambSource, ToId: "p/a.go:Run", Type: "CALLS", Method: kgtypes.EdgeMethodAmbiguousName, Evidence: groupKey, Confidence: 1.0 / 3.0},
+				{FromId: ambSource, ToId: "p/b.go:Run", Type: "CALLS", Method: kgtypes.EdgeMethodAmbiguousName, Evidence: groupKey, Confidence: 1.0 / 3.0},
+				{FromId: ambSource, ToId: "p/c.go:Run", Type: "CALLS", Method: kgtypes.EdgeMethodAmbiguousName, Evidence: groupKey, Confidence: 1.0 / 3.0},
+			},
+		}
+	}
+
+	t.Run("group_renders_as_one_block", func(t *testing.T) {
+		f := newFake()
+		res := composeAnalyzeNode(context.Background(), f.exec, analyzeNodeArgs{Graph: "code", ID: subjectID, Repo: "knowledge"})
+		require.False(t, res.IsError, textBodyTools(res))
+		body := textBodyTools(res)
+		assert.Equal(t, 1, strings.Count(body, "one of 3 candidates"), "exactly ONE group block")
+		assert.Contains(t, body, "exactly one is the real target")
+	})
+
+	t.Run("candidates_are_not_also_plain_callers", func(t *testing.T) {
+		// THE DOUBLE-COUNT CATCHER.
+		f := newFake()
+		body := textBodyTools(composeAnalyzeNode(context.Background(), f.exec, analyzeNodeArgs{Graph: "code", ID: subjectID, Repo: "knowledge"}))
+		for _, cand := range []string{"p/a.go", "p/b.go", "p/c.go"} {
+			assert.NotContains(t, body, "### Run (function) — "+cand,
+				"candidate %s is rendered inside its group block, never as a plain caller entry", cand)
+		}
+		assert.Contains(t, body, "### Plain (function) — f.go:30", "the genuine plain caller still renders")
+	})
+
+	t.Run("callers_count_matches_plain_callers", func(t *testing.T) {
+		f := newFake()
+		body := textBodyTools(composeAnalyzeNode(context.Background(), f.exec, analyzeNodeArgs{Graph: "code", ID: subjectID, Repo: "knowledge"}))
+		assert.Contains(t, body, "## Callers (1)", "the count counts the entries listed, not those plus the group's candidates")
+		assert.NotContains(t, body, "## Callers (4)")
+	})
 }

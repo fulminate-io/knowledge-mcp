@@ -26,9 +26,8 @@ func resolveNamespaceMembership(ctx context.Context, gc postpopulate.GraphCaller
 	// candidate — there is no single resource_type filter that captures
 	// every namespaced kind (Pod, Service, Deployment, ConfigMap, Secret,
 	// Ingress, NetworkPolicy, PDB, HPA, namespaced CRDs, ...).
-	resources, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
-		"type":  string(kgtypes.NodeCloudResource),
-		"limit": 0,
+	resources, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
+		"type": string(kgtypes.NodeCloudResource),
 	})
 	if err != nil {
 		return err
@@ -37,7 +36,7 @@ func resolveNamespaceMembership(ctx context.Context, gc postpopulate.GraphCaller
 	// Load existing Namespace nodes separately so we can skip edges whose
 	// target doesn't exist. IDs use resourceID("", "Namespace", name) =
 	// "Namespace/<name>", so we index by the same ID we'd emit.
-	nsNodes, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, k8sResourceQuery("Namespace"))
+	nsNodes, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, k8sResourceQuery("Namespace"))
 	if err != nil {
 		return err
 	}

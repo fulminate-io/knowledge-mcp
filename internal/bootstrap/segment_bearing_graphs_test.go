@@ -36,6 +36,12 @@ func (e *reconcileEngine) graphNameCallCount() int {
 func TestSegmentBearingGraphs_IsTheWorkingSet(t *testing.T) {
 	c, eng := buildReconcileClient(t)
 
+	// This test's subject is the working set, not local presence: it asks which
+	// graphs an INTERACTION earns, so the second membership condition is stubbed
+	// present rather than left to depend on whether this machine happens to have a
+	// checkout named admittedRepo. The presence condition has its own test.
+	c.localPresence = func(kgtypes.GraphType, string) bool { return true }
+
 	// Register instances the RETIRED per-type enumeration would have discovered. A
 	// walk that still enumerated would find these and return them, so their absence
 	// below is a claim about the mechanism, not about an empty backend.

@@ -28,10 +28,9 @@ func resolveDNSRecordTargets(ctx context.Context, gc postpopulate.GraphCaller, g
 		return nil
 	}
 
-	records, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
-		"type":  string(kgtypes.NodeCloudResource),
-		"meta":  map[string]string{"resource_type": "Microsoft.Network/dnsZones/recordSets"},
-		"limit": 0,
+	records, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
+		"type": string(kgtypes.NodeCloudResource),
+		"meta": map[string]string{"resource_type": "Microsoft.Network/dnsZones/recordSets"},
 	})
 	if err != nil {
 		return fmt.Errorf("azure dns resolve: query records: %w", err)
@@ -111,10 +110,9 @@ func buildAzureIPIndex(ctx context.Context, gc postpopulate.GraphCaller, graphNa
 // indexLBFrontendIPs extracts private IPs from Azure Load Balancer frontend
 // configurations stored in Content JSON.
 func indexLBFrontendIPs(ctx context.Context, gc postpopulate.GraphCaller, graphName string, index map[string]string) error {
-	lbs, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
-		"type":  string(kgtypes.NodeCloudResource),
-		"meta":  map[string]string{"resource_type": "Microsoft.Network/loadBalancers"},
-		"limit": 0,
+	lbs, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
+		"type": string(kgtypes.NodeCloudResource),
+		"meta": map[string]string{"resource_type": "Microsoft.Network/loadBalancers"},
 	})
 	if err != nil {
 		return err

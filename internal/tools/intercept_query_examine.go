@@ -9,6 +9,7 @@ import (
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/paging"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 )
@@ -19,7 +20,7 @@ import (
 // BOUNDED number of calls:
 //
 //   - subject ByID                                       (1 Execute)
-//   - edge-neighborhood RETURN_MODE_EDGES over the id     (1 Execute)
+//   - edge-neighborhood RETURN_MODE_EDGES over the id     (bounded pages)
 //   - ancestry: up to 5 single-hop CONTAINS-backward      (≤5 Execute, bounded)
 //     traversals collecting parent IDs in order
 //   - ONE bulk ids[] hydrate over peers ∪ ancestors       (1 Execute)
@@ -104,17 +105,29 @@ func composeInspectData(ctx context.Context, exec engine.ExecuteFn, id string) (
 	}
 	data := engine.InspectData{Node: subjNodes[0]}
 
-	// (2) Edge neighborhood — RETURN_MODE_EDGES over the subject (both directions).
-	edgesResp, err := exec(ctx, &knowledgev1.ExecuteRequest{
-		Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
-			ById:       id,
-			ReturnMode: knowledgev1.ReturnMode_RETURN_MODE_EDGES,
-		}},
-	})
+	// (2) Edge neighborhood — RETURN_MODE_EDGES over the subject (both
+	// directions), drained in bounded pages. The plan Limit and the drain's
+	// edgeCap are the same number twice on purpose: the Limit is what the server
+	// enforces, the cap is what the drain uses to notice it was enforced. One
+	// without the other yields a drain that never detects truncation, or one
+	// that splits on a threshold nobody applies.
+	rawEdges, err := paging.DrainPivotEdges([]string{id}, paging.EdgePivotPageSize, engine.CorrelationsEdgeScanCap,
+		func(idPage []string) ([]knowledgev1.Edge, error) {
+			edgesResp, rerr := exec(ctx, &knowledgev1.ExecuteRequest{
+				Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
+					Ids:        idPage,
+					ReturnMode: knowledgev1.ReturnMode_RETURN_MODE_EDGES,
+					Limit:      int32(engine.CorrelationsEdgeScanCap),
+				}},
+			})
+			if rerr != nil {
+				return nil, rerr
+			}
+			return examineDecodeEdges(edgesResp), nil
+		})
 	if err != nil {
 		return engine.InspectData{}, false, err
 	}
-	rawEdges := examineDecodeEdges(edgesResp)
 
 	// (3) Ancestry — up to 5 single-hop CONTAINS-backward traversals collecting
 	// parent IDs in depth order.

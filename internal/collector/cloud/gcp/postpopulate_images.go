@@ -29,10 +29,9 @@ func resolveCloudRunImageLineage(ctx context.Context, gc postpopulate.GraphCalle
 		return nil
 	}
 
-	services, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
-		"type":  string(kgtypes.NodeCloudResource),
-		"meta":  map[string]string{"resource_type": "gcp:run:service"},
-		"limit": 0,
+	services, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
+		"type": string(kgtypes.NodeCloudResource),
+		"meta": map[string]string{"resource_type": "gcp:run:service"},
 	})
 	if err != nil {
 		return fmt.Errorf("cloud run image lineage: query services: %w", err)
@@ -109,10 +108,9 @@ type cloudRunContainer struct {
 
 // buildARIndex queries Artifact Registry nodes and indexes by project/repo.
 func buildARIndex(ctx context.Context, gc postpopulate.GraphCaller, graphName string) (map[string]string, error) {
-	repos, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
-		"type":  string(kgtypes.NodeCloudResource),
-		"meta":  map[string]string{"resource_type": "gcp:artifactregistry:repository"},
-		"limit": 0,
+	repos, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
+		"type": string(kgtypes.NodeCloudResource),
+		"meta": map[string]string{"resource_type": "gcp:artifactregistry:repository"},
 	})
 	if err != nil {
 		return nil, err

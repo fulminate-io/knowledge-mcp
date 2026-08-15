@@ -210,7 +210,7 @@ func writeResult(ctx context.Context, sink collector.Sink, target TargetSpec, re
 //  1. FetchNodesByType (one Execute per emit type) lists the candidate target
 //     nodes — only the types the recipe could have emitted are examined, never
 //     unrelated nodes in the same target graph.
-//  2. FetchEdges (one Execute) reads the candidates' translated-from edges as
+//  2. FetchEdges (bounded pivot pages) reads the candidates' translated-from edges as
 //     []knowledgev1.Edge. A node is doomed when ANY of its OUTGOING
 //     translated-from edges carries Evidence JSON whose source == sourceSlug.
 //     NOTE: this READ edge (knowledgev1.Edge, with .Evidence) is distinct from

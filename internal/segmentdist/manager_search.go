@@ -36,9 +36,12 @@ import (
 // empty fused list (not an error) and the hydrator renders zero rows. No
 // redundant empty-set guard is needed.
 //
-// The HNSW arm is skipped when queryVec is empty (a text-only query), in which
-// case the fused result is just the BM25 ranking unchanged (RRF over a single
-// list is the identity ranking).
+// The HNSW arm is skipped when queryVec is empty (a text-only query). For THIS
+// method that then makes the fused result just the BM25 ranking unchanged (RRF
+// over a single list is the identity ranking). The claim is scoped to
+// Manager.Search deliberately: SearchOverlay (manager_search_overlay.go) fuses a
+// BM25 list that is itself a merge of two pools' hits, so on the same text-only
+// query its result is that merged ranking — not an unchanged single-pool one.
 func (m *Manager) Search(
 	ctx context.Context,
 	gt kgtypes.GraphType,
@@ -48,6 +51,34 @@ func (m *Manager) Search(
 ) ([]searchengine.Hit, error) {
 	if k <= 0 {
 		return nil, nil
+	}
+
+	hnswHits, bm25Hits, err := m.searchPoolArms(ctx, gt, name, queryText, queryVec, k)
+	if err != nil {
+		return nil, err
+	}
+
+	return reciprocalRankFusion([][]searchengine.Hit{hnswHits, bm25Hits}, k), nil
+}
+
+// searchPoolArms runs one POOL's half of a search: the per-graph preamble
+// (account binding, merge nudge, admission, both engine loads) followed by the
+// concurrent HNSW + BM25 arms, returning the two arms' raw hit lists unfused.
+// Fusing is the caller's job, which is what lets SearchOverlay merge a second
+// pool's arms in before the single fusion.
+func (m *Manager) searchPoolArms(
+	ctx context.Context,
+	gt kgtypes.GraphType,
+	name, queryText string,
+	queryVec []byte,
+	k int,
+) ([]searchengine.Hit, []searchengine.Hit, error) {
+	// Fail closed on an in-session account switch: this Manager's cacheDir and
+	// per-graph sources belong to the account it was built under, so serving
+	// from them after the selection moved would hand account A's segments to a
+	// session the user has told the client is account B.
+	if err := m.checkAccountBinding(ctx); err != nil {
+		return nil, nil, err
 	}
 
 	// A user just searched this graph, so ask the reconcile loop to pull its delta
@@ -76,10 +107,10 @@ func (m *Manager) Search(
 	// (bootstrap), not by a List(0) on every search. recoverIfDegenerate remains for
 	// the reconcile's direct use + its dedicated tests.
 	if err := dm.load(ctx); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	if err := bm.load(ctx); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	// Run the two engine searches concurrently — each is independent and
@@ -120,7 +151,7 @@ func (m *Manager) Search(
 	})
 	wg.Wait()
 
-	return reciprocalRankFusion([][]searchengine.Hit{hnswHits, bm25Hits}, k), nil
+	return hnswHits, bm25Hits, nil
 }
 
 // VectorByID resolves a node's STORED binary vector from this graph's client-local

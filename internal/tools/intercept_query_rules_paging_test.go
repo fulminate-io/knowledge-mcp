@@ -27,7 +27,7 @@ package tools
 // read.
 //
 // ALL FOUR OF THOSE OBSERVATIONS ARE NOW FALSE, which is the point. The fetch is
-// a keyset drain at engine.BrowsePageSize with the cursor SET on page one, the
+// a keyset drain at paging.BrowsePageSize with the cursor SET on page one, the
 // two paging params are consumed client-side against the scope-filtered set, and
 // the render reports the page beside the matching total. Each subtest below
 // names the value it used to see next to the value it asserts now.
@@ -45,6 +45,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/paging"
 )
 
 // seedPagingRules returns n rule nodes under the knowledge graphKey the rule
@@ -100,14 +101,14 @@ func driveRules(t *testing.T, fc *fakeGraphCaller, payload string) kgtools.ToolR
 func TestInterceptQueryRules_PagesTheWholeCorpusAndSlicesAfterFilter(t *testing.T) {
 	t.Run("plan_limit_is_the_drain_page_size_not_the_engine_default", func(t *testing.T) {
 		// WAS 10 (the arm's own fixed payload compiled through
-		// applyBrowseLimitOffset). IS engine.BrowsePageSize: the fetch asks for a
+		// applyBrowseLimitOffset). IS paging.BrowsePageSize: the fetch asks for a
 		// full page at a time, so the corpus size no longer decides what the client
 		// gets to see.
 		fc := seedPagingRules(3)
 		res := driveRules(t, fc, `{"type":"rule","format":"json"}`)
 		require.False(t, res.IsError, "a bare rule browse succeeds: %s", toolResultText(res))
 		require.NotEmpty(t, fc.execRequests, "the bare browse issues its fetch")
-		assert.EqualValues(t, engine.BrowsePageSize, fc.execRequests[0].GetQuery().GetLimit(),
+		assert.EqualValues(t, paging.BrowsePageSize, fc.execRequests[0].GetQuery().GetLimit(),
 			"the drain asks for one page per request")
 
 		// WAS a pre-read refusal naming limit. IS a served call whose limit is
@@ -117,7 +118,7 @@ func TestInterceptQueryRules_PagesTheWholeCorpusAndSlicesAfterFilter(t *testing.
 		res = driveRules(t, capped, `{"type":"rule","limit":1,"format":"json"}`)
 		require.False(t, res.IsError, "a caller limit is routed now, not refused: %s", toolResultText(res))
 		require.NotEmpty(t, capped.execRequests, "and the fetch still runs")
-		assert.EqualValues(t, engine.BrowsePageSize, capped.execRequests[0].GetQuery().GetLimit(),
+		assert.EqualValues(t, paging.BrowsePageSize, capped.execRequests[0].GetQuery().GetLimit(),
 			"the caller's limit does not shrink the fetch — it selects a page of the filtered set")
 		var env browseJSONEnvelope
 		require.NoError(t, json.Unmarshal([]byte(toolResultText(res)), &env))
@@ -169,7 +170,7 @@ func TestInterceptQueryRules_PagesTheWholeCorpusAndSlicesAfterFilter(t *testing.
 		require.False(t, res.IsError, toolResultText(res))
 		require.NotEmpty(t, fc.execRequests, "the drain issues at least its first page")
 		plan := fc.execRequests[0].GetQuery()
-		assert.EqualValues(t, engine.BrowsePageSize, plan.GetLimit(), "each page is bounded")
+		assert.EqualValues(t, paging.BrowsePageSize, plan.GetLimit(), "each page is bounded")
 		require.NotNil(t, plan.AfterId, "the cursor is SET on page one — presence selects the keyset browse")
 		assert.Empty(t, *plan.AfterId, "and page one's cursor value is the empty string")
 		assert.True(t, plan.GetSkipTotal(), "no page pays for a COUNT the drain never reads")

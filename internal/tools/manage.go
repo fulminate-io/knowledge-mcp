@@ -124,6 +124,8 @@ func InterceptManage(ctx context.Context, deps ClientDeps, params kgtools.CallTo
 		return true, handleClientPruneCache(ctx, deps, a)
 	case "drop_graph":
 		return true, handleClientDropGraph(ctx, deps, a)
+	case "repair_edges":
+		return true, handleClientRepairEdges(ctx, deps, a)
 	case "register_repo":
 		return true, handleRegisterRepo(a)
 	default:

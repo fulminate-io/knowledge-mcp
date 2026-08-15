@@ -77,6 +77,8 @@ func buildHealProbeClient(t *testing.T, embedded int32, codeRepos ...string) (*c
 		authState:  authState,
 		segmentMgr: segmentdist.NewManager(router, t.TempDir(), 0, segmentdist.WithSegmentTransport(backend.transportBuilder())),
 		workingSet: fixtureWorkingSet(codeRepos...),
+
+		localPresence: fixturePresence(),
 	}
 	return c, backend
 }

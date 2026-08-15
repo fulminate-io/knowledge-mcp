@@ -24,7 +24,7 @@
 // AWS ACM only for v1.
 //
 // DATA ACCESS — one foundation.FetchNodesByType(NodeCloudResource) browse
-// supplies the candidate nodes; one bulk foundation.FetchEdges over the
+// supplies the candidate nodes; a bulk foundation.FetchEdges over the
 // certificate node set (filtered to USES_CERT) supplies the dependent counts
 // in-memory. No per-cert edge fetch.
 package cloud
@@ -116,7 +116,7 @@ func (CertExpiryAnalyzer) Run(ctx context.Context, req foundation.Request) ([]fo
 }
 
 // buildCertIndex fetches every USES_CERT edge incident to the certificate set
-// in ONE bulk read and returns the in-memory index used to count dependents.
+// in a bulk paged read and returns the in-memory index used to count dependents.
 func buildCertIndex(ctx context.Context, req foundation.Request, certs []*knowledgev1.Node) (*edgeIndex, error) {
 	ids := make([]string, 0, len(certs))
 	for _, n := range certs {

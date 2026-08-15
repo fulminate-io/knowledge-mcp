@@ -26,7 +26,7 @@ type podContainerPort struct {
 // rule. Pods with no declared ports are simply absent from the map — the
 // caller must tolerate lookup misses.
 func buildPodPortIndex(ctx context.Context, gc postpopulate.GraphCaller, graphName string) (map[string][]podContainerPort, error) {
-	pods, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, k8sResourceQuery("Pod"))
+	pods, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, k8sResourceQuery("Pod"))
 	if err != nil {
 		return nil, err
 	}

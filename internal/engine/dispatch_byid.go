@@ -10,14 +10,15 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgwire"
+	"github.com/fulminate-io/knowledge-mcp/internal/paging"
 )
 
 // dispatch_byid.go holds the client-side composition of the
 // query(id, include_edges) / query(id, include_cross_links) reads. The engine
 // does not absorb those carriers, so the client orchestrates the edge-summary +
-// cross-link sections via a BOUNDED number of generic Execute calls — never a
-// per-peer N+1. Split into a sibling file so dispatch.go stays under the 500-line
-// cap.
+// cross-link sections over generic Execute calls, every one of them bounded and
+// none of them a per-peer N+1. Split into a sibling file so dispatch.go stays
+// under the 500-line cap.
 
 // dispatchQueryByID intercepts a query(id) read that carries include_edges
 // and/or include_cross_links — the absorption shapes the engine does not
@@ -26,13 +27,13 @@ import (
 // with neither flag) it returns handled=false so Dispatch proceeds to the
 // generic Compile/exec/Render flow unchanged.
 //
-// BOUNDEDNESS (the load-bearing invariant): the orchestration issues a CONSTANT
-// number of Execute calls independent of edge/peer cardinality:
-//   - base node read (1)
-//   - include_edges: RETURN_MODE_EDGES read (1) + ONE bulk ids[] peer hydrate
-//     (1) — NOT a per-peer round-trip. Total for include_edges = 3.
-//   - include_cross_links: a by-id linkage proxy lookup + a foreign_id browse +
-//     per-proxy edge reads + ONE bulk peer hydrate (step 4.4).
+// BOUNDEDNESS (the load-bearing invariant): every read the orchestration issues
+// carries an explicit bound, and none of them fans out per peer:
+//   - base node read: one by-id read
+//   - include_edges: the pivot edge read in bounded pages + ONE bulk ids[] peer
+//     hydrate — NOT a per-peer round-trip
+//   - include_cross_links: a by-id linkage proxy lookup + a paged foreign_id
+//     browse + per-proxy paged edge reads + ONE bulk peer hydrate
 func dispatchQueryByID(ctx context.Context, exec ExecuteFn, args json.RawMessage) (kgtools.ToolResult, bool) {
 	var a queryArgs
 	if err := json.Unmarshal(args, &a); err != nil {
@@ -63,7 +64,7 @@ func dispatchQueryByID(ctx context.Context, exec ExecuteFn, args json.RawMessage
 		return errorResult(nodeNotFoundMsg(a.ID, label)), true
 	}
 
-	// Edge summary (include_edges): RETURN_MODE_EDGES read + ONE bulk peer hydrate.
+	// Edge summary (include_edges): paged pivot edge read + ONE bulk peer hydrate.
 	var edges []nodeEdgeInfo
 	if wantEdges {
 		edges, err = composeEdgeSummary(ctx, exec, a.ID, a.IncludeTombstones, target)
@@ -117,35 +118,32 @@ func byIDNodeRead(ctx context.Context, exec ExecuteFn, id string, includeTombsto
 	return nodes[0], true, nil
 }
 
-// composeEdgeSummary issues the RETURN_MODE_EDGES read for the node's raw edges
-// and ONE bulk ids[] peer hydrate, shaping the result into the []nodeEdgeInfo
-// the render_node.go renderers consume. This replaces the server's per-peer
-// N+1 BuildEdgeInfo (tools_query_edges.go:51) with exactly TWO Execute calls
-// regardless of edge/peer cardinality. Returns nil (the renderer omits the
-// Edges section) when the node has no edges.
+// composeEdgeSummary reads the node's raw edges through the bounded pivot drain
+// and hydrates their peers in ONE bulk ids[] read, shaping the result into the
+// []nodeEdgeInfo the render_node.go renderers consume. This replaces the
+// server's per-peer N+1 BuildEdgeInfo (tools_query_edges.go:51): the peer
+// hydrate is a single call whatever the peer count, and the edge read is paged
+// rather than per-peer. Returns nil (the renderer omits the Edges section) when
+// the node has no edges.
+//
+// A node whose edge count exceeds the drain's per-page ceiling cannot be served
+// completely, and paging.DrainPivotEdges errors by name rather than returning a short
+// summary — the by-id render must not present a silent sample as the whole.
 func composeEdgeSummary(ctx context.Context, exec ExecuteFn, id string, includeTombstones bool, target *knowledgev1.GraphSelector) ([]nodeEdgeInfo, error) {
 	if id == "" {
 		// An edges plan with no pivot means "every edge of the graph" — never what
 		// an empty by-id summary wants.
 		return nil, nil
 	}
-	// (2) RETURN_MODE_EDGES: raw []knowledgev1.Edge for the by-id pivot, both
-	// directions (Forward unset → BothEdges in collectEdgesForReturnMode).
-	edgesPlan := &knowledgev1.QueryPlan{
-		ById:       id,
-		ReturnMode: knowledgev1.ReturnMode_RETURN_MODE_EDGES,
-	}
-	applyTombstones(edgesPlan, includeTombstones)
-	edgesResp, err := exec(ctx, &knowledgev1.ExecuteRequest{
-		Plan:   &knowledgev1.ExecuteRequest_Query{Query: edgesPlan},
-		Target: target,
-	})
+	// (2) RETURN_MODE_EDGES: raw []knowledgev1.Edge for the pivot, both
+	// directions (Forward unset → BothEdges in collectEdgesForReturnMode), read
+	// in bounded pages.
+	rawEdges, err := paging.DrainPivotEdges([]string{id}, paging.EdgePivotPageSize, CorrelationsEdgeScanCap,
+		func(idPage []string) ([]knowledgev1.Edge, error) {
+			return pivotEdgePage(ctx, exec, idPage, includeTombstones, target)
+		})
 	if err != nil {
 		return nil, err
-	}
-	rawEdges, derr := decodeEdgesRaw(edgesResp)
-	if derr != nil {
-		return nil, derr
 	}
 	if len(rawEdges) == 0 {
 		return nil, nil
@@ -195,6 +193,35 @@ func composeEdgeSummary(ctx context.Context, exec ExecuteFn, id string, includeT
 	return infos, nil
 }
 
+// pivotEdgePage issues ONE bounded RETURN_MODE_EDGES read over a page of pivot
+// ids for the drains above. The plan Limit and the drain's edgeCap are the same
+// number twice on purpose: the Limit is what the server enforces, the cap is
+// what the drain uses to notice it was enforced. One without the other yields a
+// drain that never detects truncation, or one that splits on a threshold nobody
+// applies.
+func pivotEdgePage(
+	ctx context.Context,
+	exec ExecuteFn,
+	idPage []string,
+	includeTombstones bool,
+	target *knowledgev1.GraphSelector,
+) ([]knowledgev1.Edge, error) {
+	plan := &knowledgev1.QueryPlan{
+		Ids:        idPage,
+		ReturnMode: knowledgev1.ReturnMode_RETURN_MODE_EDGES,
+		Limit:      int32(CorrelationsEdgeScanCap),
+	}
+	applyTombstones(plan, includeTombstones)
+	resp, err := exec(ctx, &knowledgev1.ExecuteRequest{
+		Plan:   &knowledgev1.ExecuteRequest_Query{Query: plan},
+		Target: target,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return decodeEdgesRaw(resp)
+}
+
 // bulkHydratePeers issues ONE Execute (QueryPlan{Ids: peerIDs} → []*knowledgev1.Node)
 // and returns a peerID→Node map. An empty id set is a no-op (no Execute, empty
 // map). This is the single bulk read that replaces the per-peer N+1.
@@ -230,17 +257,19 @@ var linkageTarget = &knowledgev1.GraphSelector{Graph: "linkage"}
 //
 //   - FindLinkageProxies: (1) a by-id read against linkage — if the node IS a
 //     proxy (deterministic-ID O(1) path), it is the match; (2) else a foreign_id
-//     OP_EQ metadata-predicate BROWSE for proxy nodes — this REPLACES the
-//     server's Match(NodeProxy).Limit(0) full-scan + in-memory filter with a
-//     predicate-pushed browse (a strict improvement).
-//   - CollectProxyCrossLinks: per proxy, a RETURN_MODE_EDGES read for the
+//     OP_EQ metadata-predicate BROWSE for proxy nodes, DRAINED in keyset pages —
+//     this REPLACES the server's Match(NodeProxy).Limit(0) full-scan + in-memory
+//     filter with a predicate-pushed browse (a strict improvement).
+//   - CollectProxyCrossLinks: per proxy, a paged RETURN_MODE_EDGES read for the
 //     proxy's edges, then ONE bulk peer hydrate (no per-peer N+1), building
 //     []crossLink with proxyInfoWire(peer) for the peer's graph label.
 //
 // An absent linkage graph yields no rows (NOT an error) — mirroring the legacy
 // collectCrossLinks degrade-to-empty (a node with no cross-graph proxies simply
-// has none). Bounded: 1 by-id + (at most) 1 foreign_id browse + per-proxy
-// (1 edges read + 1 bulk peer hydrate); the proxy count is low single digits.
+// has none). The by-id lookup asks for one node, the foreign_id browse and the
+// per-proxy edge reads drain bounded pages, and the peer hydrate is one bulk
+// ids[] read rather than a per-peer round trip. The proxy count is low single
+// digits in practice.
 func composeCrossLinks(ctx context.Context, exec ExecuteFn, nodeID string) ([]crossLink, error) {
 	proxies, err := findLinkageProxies(ctx, exec, nodeID)
 	if err != nil {
@@ -278,49 +307,66 @@ func findLinkageProxies(ctx context.Context, exec ExecuteFn, nodeID string) ([]*
 	}
 
 	// (2) foreign_id OP_EQ browse for proxy nodes — replaces the server full-scan.
-	browseResp, err := exec(ctx, &knowledgev1.ExecuteRequest{
-		Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
-			Selection: &knowledgev1.Selection{
-				NodeType: string(kgtypes.NodeProxy),
-				MetadataPredicates: []*knowledgev1.MetadataPredicate{
-					{Key: "foreign_id", Op: knowledgev1.MetadataPredicate_OP_EQ, Value: nodeID},
+	// DRAINED in keyset pages: every proxy referencing the node is a cross-link
+	// section the render must carry, and the proxy count is bounded only by how
+	// many foreign graphs hold a proxy for that node (one per indexed repo or
+	// account), so a single bounded read could cut the section short.
+	// A DECODE failure is a real error and stays one; only a failed READ degrades
+	// to empty. The drain collapses both into one return value, so the decode
+	// error is carried out separately rather than silently becoming "no proxies".
+	var decodeErr error
+	proxies, err := paging.DrainKeysetPages(func(afterID string) ([]*knowledgev1.Node, error) {
+		cursor := afterID
+		browseResp, rerr := exec(ctx, &knowledgev1.ExecuteRequest{
+			Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
+				Selection: &knowledgev1.Selection{
+					NodeType: string(kgtypes.NodeProxy),
+					MetadataPredicates: []*knowledgev1.MetadataPredicate{
+						{Key: "foreign_id", Op: knowledgev1.MetadataPredicate_OP_EQ, Value: nodeID},
+					},
 				},
-			},
-		}},
-		Target: linkageTarget,
-	})
+				Limit: int32(paging.BrowsePageSize),
+				// SET on every page including the first, where the value is empty:
+				// presence is what selects the keyset browse.
+				AfterId:   &cursor,
+				SkipTotal: true,
+			}},
+			Target: linkageTarget,
+		})
+		if rerr != nil {
+			return nil, rerr
+		}
+		page, derr := decodeNodes(browseResp)
+		if derr != nil {
+			decodeErr = derr
+		}
+		return page, derr
+	}, paging.BrowsePageSize)
+	if decodeErr != nil {
+		return nil, decodeErr
+	}
 	if err != nil {
 		return nil, nil //nolint:nilerr // absent linkage graph = no proxies, not an error
-	}
-	proxies, derr := decodeNodes(browseResp)
-	if derr != nil {
-		return nil, derr
 	}
 	return proxies, nil
 }
 
 // collectProxyCrossLinks reproduces the server CollectProxyCrossLinks for one
-// proxy: a RETURN_MODE_EDGES read for the proxy's edges (both directions) + ONE
-// bulk peer hydrate, building []crossLink with proxyInfoWire for each peer.
+// proxy: the proxy's edges (both directions) read through the bounded pivot
+// drain + ONE bulk peer hydrate, building []crossLink with proxyInfoWire for
+// each peer.
 func collectProxyCrossLinks(ctx context.Context, exec ExecuteFn, proxy *knowledgev1.Node) ([]crossLink, error) {
 	if proxy.GetId() == "" {
 		// An edges plan with no pivot means "every edge of the graph" — never what
 		// a per-proxy cross-link read wants.
 		return nil, nil
 	}
-	edgesResp, err := exec(ctx, &knowledgev1.ExecuteRequest{
-		Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
-			ById:       proxy.Id,
-			ReturnMode: knowledgev1.ReturnMode_RETURN_MODE_EDGES,
-		}},
-		Target: linkageTarget,
-	})
+	rawEdges, err := paging.DrainPivotEdges([]string{proxy.Id}, paging.EdgePivotPageSize, CorrelationsEdgeScanCap,
+		func(idPage []string) ([]knowledgev1.Edge, error) {
+			return pivotEdgePage(ctx, exec, idPage, false, linkageTarget)
+		})
 	if err != nil {
 		return nil, err
-	}
-	rawEdges, derr := decodeEdgesRaw(edgesResp)
-	if derr != nil {
-		return nil, derr
 	}
 	if len(rawEdges) == 0 {
 		return nil, nil

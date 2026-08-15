@@ -44,6 +44,7 @@ var manageOperations = []string{
 	"rebuild_cache",
 	"rebuild_segments",
 	"register_repo",
+	"repair_edges",
 	"resume_pipeline",
 	"set_metadata_overrides",
 	"status",

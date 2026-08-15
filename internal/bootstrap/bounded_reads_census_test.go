@@ -369,7 +369,7 @@ func TestBoundedReadsCensus(t *testing.T) {
 				}
 				t.Errorf("unbounded read (%s) at %s in %s:%s\n"+
 					"  Only two responses are legitimate: bound the read with a keyset drain\n"+
-					"  (engine.DrainKeysetPages / DrainKeysetIDs), or add it to censusSurvivors with a written reason.",
+					"  (paging.DrainKeysetPages / paging.DrainKeysetIDs), or add it to censusSurvivors with a written reason.",
 					kind, s.pos, s.file, s.fn)
 			}
 		})

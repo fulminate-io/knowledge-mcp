@@ -88,7 +88,7 @@ func TestChunkResultsToPopulate_OneLanguageOneNode(t *testing.T) {
 			Chunks:   []treesitter.Chunk{goChunk("Bar", "b.go", true)},
 		},
 	}
-	pop := chunkResultsToPopulate("myrepo", "", results)
+	pop := chunkResultsToPopulate("myrepo", &treesitter.RepoContext{}, results)
 
 	langNodes := nodesByType(pop.Nodes, kgtypes.NodeLanguage)
 	if len(langNodes) != 1 {
@@ -120,7 +120,7 @@ func TestChunkResultsToPopulate_TwoLanguagesTwoNodes(t *testing.T) {
 		{FilePath: "a.go", Language: treesitter.LangGo, Chunks: []treesitter.Chunk{goChunk("Foo", "a.go", true)}},
 		{FilePath: "x.ts", Language: treesitter.LangTypeScript, Chunks: []treesitter.Chunk{tsChunk}},
 	}
-	pop := chunkResultsToPopulate("knowledge", "", results)
+	pop := chunkResultsToPopulate("knowledge", &treesitter.RepoContext{}, results)
 
 	langNodes := nodesByType(pop.Nodes, kgtypes.NodeLanguage)
 	if len(langNodes) != 2 {
@@ -150,7 +150,7 @@ func TestChunkResultsToPopulate_EmitsLanguageEdgePerSymbol(t *testing.T) {
 			},
 		},
 	}
-	pop := chunkResultsToPopulate("myrepo", "", results)
+	pop := chunkResultsToPopulate("myrepo", &treesitter.RepoContext{}, results)
 
 	langEdges := findEdges(pop.Edges, kgtypes.EdgeLanguage)
 	if len(langEdges) != 2 {
@@ -176,7 +176,7 @@ func TestChunkResultsToPopulate_NoLanguageEdgeForComments(t *testing.T) {
 			},
 		},
 	}
-	pop := chunkResultsToPopulate("myrepo", "", results)
+	pop := chunkResultsToPopulate("myrepo", &treesitter.RepoContext{}, results)
 
 	langEdges := findEdges(pop.Edges, kgtypes.EdgeLanguage)
 	if len(langEdges) != 0 {
@@ -232,7 +232,7 @@ func TestChunkResultsToPopulate_FoldsCommentsIntoDescription(t *testing.T) {
 			Chunks: []treesitter.Chunk{decl, docComment},
 		},
 	}
-	pop := chunkResultsToPopulate("myrepo", "", results)
+	pop := chunkResultsToPopulate("myrepo", &treesitter.RepoContext{}, results)
 
 	declID := "a.go:Authenticate"
 	n := nodeByID(pop.Nodes, declID)
@@ -271,7 +271,7 @@ func TestChunkResultsToPopulate_PromotesIsExported(t *testing.T) {
 			},
 		},
 	}
-	pop := chunkResultsToPopulate("myrepo", "", results)
+	pop := chunkResultsToPopulate("myrepo", &treesitter.RepoContext{}, results)
 
 	pubID := ChunkNodeID(goChunk("Public", "a.go", true))
 	privID := ChunkNodeID(goChunk("private", "a.go", false))
@@ -329,7 +329,7 @@ func TestChunkResultsToPopulate_PromotesIsTest(t *testing.T) {
 			},
 		},
 	}
-	pop := chunkResultsToPopulate("myrepo", "", results)
+	pop := chunkResultsToPopulate("myrepo", &treesitter.RepoContext{}, results)
 
 	testID := ChunkNodeID(goTestChunk("TestFoo", "foo_test.go", true, treesitter.TestKindTest))
 	benchID := ChunkNodeID(goTestChunk("BenchmarkFoo", "foo_test.go", true, treesitter.TestKindBenchmark))

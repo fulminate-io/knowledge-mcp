@@ -16,6 +16,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/graphclient"
 	"github.com/fulminate-io/knowledge-mcp/internal/graphtypecrud"
 	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/pipeline"
 	"github.com/fulminate-io/knowledge-mcp/internal/segmentdist"
 	clientthought "github.com/fulminate-io/knowledge-mcp/internal/thought"
@@ -245,6 +246,22 @@ type client struct {
 	// It is nil for a directly-built test fixture, and nil reads as EMPTY —
 	// default-deny, never unrestricted.
 	workingSet *workingset.Set
+
+	// localPresence answers whether background work may touch this graph on THIS
+	// machine. nil means the production default (graphLocallyPresent below), and
+	// production never sets it — it exists so a fixture can state presence
+	// directly instead of having to plant a repo manifest on the test machine.
+	// Same bootstrap-supplied-closure shape as the auto-heal arm's
+	// healIfSegmentless.
+	localPresence func(gt kgtypes.GraphType, name string) bool
+
+	// presenceSkipMu guards presenceSkipLogged, the set of code graphs already
+	// reported as declined for background work. The predicate runs on every
+	// reconcile tick and every catalog pass, so the line is latched to once per
+	// graph per process — the same edge-triggered shape AdmitGraph uses for its
+	// first-admission line.
+	presenceSkipMu     sync.Mutex
+	presenceSkipLogged map[string]struct{}
 
 	// Tool-schema cache: built once by loadSchemas on the first
 	// tools/list request from the client-owned catalog

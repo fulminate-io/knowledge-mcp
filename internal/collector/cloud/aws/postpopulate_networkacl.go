@@ -63,10 +63,9 @@ type naclPortRange struct {
 // Edge metadata marks is_nacl=true and stamps rule_number on the
 // Evidence so the analyzer can rank rules by their numeric priority.
 func resolveNetworkACLRules(ctx context.Context, gc postpopulate.GraphCaller, graphName string) error {
-	nacls, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
-		"type":  string(kgtypes.NodeCloudResource),
-		"meta":  map[string]string{"resource_type": "network-acl"},
-		"limit": 0,
+	nacls, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
+		"type": string(kgtypes.NodeCloudResource),
+		"meta": map[string]string{"resource_type": "network-acl"},
 	})
 	if err != nil {
 		return fmt.Errorf("aws nacl: query network acls: %w", err)

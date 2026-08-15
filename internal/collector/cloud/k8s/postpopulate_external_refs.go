@@ -331,6 +331,9 @@ func loadConfigMapData(ctx context.Context, gc postpopulate.GraphCaller, graphNa
 // The server's by-id read returns fmt.Errorf("node %s not found", id) on
 // miss — other errors are propagated.
 func lookupNode(ctx context.Context, gc postpopulate.GraphCaller, graphName, id string) (*knowledgev1.Node, bool, error) {
+	// A by-id read, NOT a drain: the ids payload takes the bulk-ids arm, which
+	// returns before any browse limit is applied, so no page cap engages and the
+	// keyset drain has nothing to page.
 	nodes, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{"ids": []string{id}})
 	if err != nil {
 		if isNotFoundErr(err) {

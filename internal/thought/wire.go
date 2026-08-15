@@ -11,6 +11,7 @@ import (
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/paging"
 	"github.com/fulminate-io/knowledge-mcp/internal/topology/graph"
 )
 
@@ -153,12 +154,13 @@ func fetchChargesFor(ctx context.Context, gc Caller, thoughtIDs []string, src Co
 }
 
 // fetchChargesUncached is the composition itself — the read memoCharges falls back
-// to on a miss. AT MOST two Execute calls regardless of |thoughtIDs|, and no hydrate
-// at all when the resident charge snapshot covers the set:
+// to on a miss. Two bounded stages, and no hydrate at all when the resident charge
+// snapshot covers the set:
 //
-//  1. ONE bulk RETURN_MODE_EDGES read over the thought-id node set filtered to
-//     EdgeChargedBy; collect the ToID charge IDs per thought (FromID is the
-//     thought, ToID the charge — EdgeChargedBy is thought_parent→charge).
+//  1. a bulk RETURN_MODE_EDGES read over the thought-id node set filtered to
+//     EdgeChargedBy, drained in bounded pivot pages; collect the ToID charge IDs
+//     per thought (FromID is the thought, ToID the charge — EdgeChargedBy is
+//     thought_parent→charge).
 //  2. ONE memoCorpusNodes hydrate of the collected charge IDs — served from the
 //     resident charge snapshot with a residual-only wire read.
 //
@@ -284,8 +286,9 @@ func FetchChargesFor(ctx context.Context, gc Caller, thoughtIDs []string) map[st
 
 // FetchEdgesForNodeSet is the exported bulk-edge wrapper around
 // fetchEdgesForNodeSet for cmd/knowledge/internal/tools/ — the context-pack
-// composer needs the ONE-round-trip both-direction edge read over a node set
-// (the N+1-avoidance bulk read) without re-exposing the unexported helper.
+// composer needs the both-direction edge read over a node set (the
+// N+1-avoidance bulk read, drained in bounded pivot pages) without re-exposing
+// the unexported helper.
 func FetchEdgesForNodeSet(ctx context.Context, gc Caller, ids []string, edgeTypes []kgtypes.EdgeType) ([]knowledgev1.Edge, error) {
 	return fetchEdgesForNodeSet(ctx, gc, ids, edgeTypes)
 }
@@ -356,8 +359,9 @@ func fetchTraversalPeerIDs(ctx context.Context, gc Caller, startID, direction st
 
 // fetchEdgesForNode returns outgoing + incoming edges for a single node,
 // each as a slice of knowledgev1.Edge with Type/FromID/ToID populated. Two
-// traverse wire calls (one per direction) to keep the parse simple — the
-// caller routinely needs to distinguish the two directions for rendering.
+// separate directional reads rather than one shared fetch, to keep the parse
+// simple — the caller routinely needs to distinguish the two directions for
+// rendering.
 func fetchEdgesForNode(ctx context.Context, gc Caller, nodeID string) (outgoing, incoming []knowledgev1.Edge, err error) {
 	if gc == nil {
 		return nil, nil, nil
@@ -373,8 +377,8 @@ func fetchEdgesForNode(ctx context.Context, gc Caller, nodeID string) (outgoing,
 	return outgoing, incoming, nil
 }
 
-// fetchEdgesOneDirection returns the node's edges in the requested direction via
-// one Execute round-trip: a by-id RETURN_MODE_EDGES query → the typed edges
+// fetchEdgesOneDirection returns the node's edges in the requested direction:
+// a pivot RETURN_MODE_EDGES query drained in bounded pages → the typed edges
 // carrier ([]knowledgev1.Edge, both directions) → direction filter client-side. An
 // edge is outgoing when its FromID == nodeID, else incoming (the same relative-
 // direction rule render.filterEdges uses).
@@ -384,19 +388,27 @@ func fetchEdgesOneDirection(ctx context.Context, gc Caller, nodeID string, forwa
 		// a single node's directional read wants.
 		return nil, nil
 	}
-	resp, err := gc.Execute(ctx, &knowledgev1.ExecuteRequest{
-		Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
-			ById:              nodeID,
-			ReturnMode:        knowledgev1.ReturnMode_RETURN_MODE_EDGES,
-			IncludeTombstones: true,
-		}},
-	})
+	// The plan Limit and the drain's edgeCap are the same number twice on
+	// purpose: the Limit is what the server enforces, the cap is what the drain
+	// uses to notice it was enforced. One without the other yields a drain that
+	// never detects truncation, or one that splits on a threshold nobody applies.
+	rawEdges, err := paging.DrainPivotEdges([]string{nodeID}, paging.EdgePivotPageSize, engine.CorrelationsEdgeScanCap,
+		func(idPage []string) ([]knowledgev1.Edge, error) {
+			resp, rerr := gc.Execute(ctx, &knowledgev1.ExecuteRequest{
+				Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
+					Ids:               idPage,
+					ReturnMode:        knowledgev1.ReturnMode_RETURN_MODE_EDGES,
+					IncludeTombstones: true,
+					Limit:             int32(engine.CorrelationsEdgeScanCap),
+				}},
+			})
+			if rerr != nil {
+				return nil, rerr
+			}
+			return engine.DecodeEdges(resp)
+		})
 	if err != nil {
 		return nil, err
-	}
-	rawEdges, derr := engine.DecodeEdges(resp)
-	if derr != nil {
-		return nil, derr
 	}
 	collected := make([]knowledgev1.Edge, 0, len(rawEdges))
 	for i := range rawEdges {
@@ -410,35 +422,45 @@ func fetchEdgesOneDirection(ctx context.Context, gc Caller, nodeID string, forwa
 	return collected, nil
 }
 
-// fetchEdgesForNodeSet returns every edge incident to ANY node in the ids set,
-// in ONE Execute round-trip: a node-SET RETURN_MODE_EDGES query (ids[] +
-// Forward=nil → both-direction union per the engine node-SET carrier,
-// engine.proto:164-171), optionally filtered to edgeTypes. This is the
-// N+1-avoidance the D1 composition relies on — ONE bulk edges read over the
-// whole node set rather than N per-node traverses. Empty ids → no call.
+// fetchEdgesForNodeSet returns every edge incident to ANY node in the ids set:
+// a node-SET RETURN_MODE_EDGES query (ids[] + Forward=nil → both-direction
+// union per the engine node-SET carrier, engine.proto:164-171), optionally
+// filtered to edgeTypes, read in bounded pivot pages and deduped into one
+// union. This is the N+1-avoidance the D1 composition relies on — a bulk edges
+// read over the whole node set rather than N per-node traverses. Empty ids → no
+// call.
+//
+// The plan Limit and the drain's edgeCap are the same number twice on purpose:
+// the Limit is what the server enforces, the cap is what the drain uses to
+// notice it was enforced. One without the other yields a drain that never
+// detects truncation, or one that splits on a threshold nobody applies.
 func fetchEdgesForNodeSet(ctx context.Context, gc Caller, ids []string, edgeTypes []kgtypes.EdgeType) ([]knowledgev1.Edge, error) {
 	if gc == nil || len(ids) == 0 {
 		return nil, nil
 	}
-	plan := &knowledgev1.QueryPlan{
-		Ids:               ids,
-		ReturnMode:        knowledgev1.ReturnMode_RETURN_MODE_EDGES,
-		IncludeTombstones: true,
-	}
-	if len(edgeTypes) > 0 {
-		ets := make([]string, len(edgeTypes))
-		for i, et := range edgeTypes {
-			ets[i] = string(et)
-		}
-		plan.Selection = &knowledgev1.Selection{EdgeTypes: ets}
-	}
-	resp, err := gc.Execute(ctx, &knowledgev1.ExecuteRequest{
-		Plan: &knowledgev1.ExecuteRequest_Query{Query: plan},
-	})
-	if err != nil {
-		return nil, err
-	}
-	return engine.DecodeEdges(resp)
+	return paging.DrainPivotEdges(ids, paging.EdgePivotPageSize, engine.CorrelationsEdgeScanCap,
+		func(idPage []string) ([]knowledgev1.Edge, error) {
+			plan := &knowledgev1.QueryPlan{
+				Ids:               idPage,
+				ReturnMode:        knowledgev1.ReturnMode_RETURN_MODE_EDGES,
+				IncludeTombstones: true,
+				Limit:             int32(engine.CorrelationsEdgeScanCap),
+			}
+			if len(edgeTypes) > 0 {
+				ets := make([]string, len(edgeTypes))
+				for i, et := range edgeTypes {
+					ets[i] = string(et)
+				}
+				plan.Selection = &knowledgev1.Selection{EdgeTypes: ets}
+			}
+			resp, err := gc.Execute(ctx, &knowledgev1.ExecuteRequest{
+				Plan: &knowledgev1.ExecuteRequest_Query{Query: plan},
+			})
+			if err != nil {
+				return nil, err
+			}
+			return engine.DecodeEdges(resp)
+		})
 }
 
 // runLeidenLocal wraps the relocated topology/graph RunLeiden so callers

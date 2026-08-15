@@ -16,13 +16,14 @@ import (
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/engine"
+	"github.com/fulminate-io/knowledge-mcp/internal/paging"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
 // fetchAllLogEdges reads the log graph's edges in TWO bounded drains over the
-// Execute carrier seam: a keyset drain (engine.DrainKeysetIDs) enumerates the
-// graph's node ids a page at a time, then a pivot drain (engine.DrainPivotEdges)
+// Execute carrier seam: a keyset drain (paging.DrainKeysetIDs) enumerates the
+// graph's node ids a page at a time, then a pivot drain (paging.DrainPivotEdges)
 // reads the edges incident to those ids a page at a time and unions them. The
 // RETURN_MODE_EDGES carrier (engine.DecodeEdges) carries full edge metadata
 // (weight/confidence/method/evidence/last_validated), so the round trip preserves
@@ -48,13 +49,13 @@ func fetchAllLogEdges(
 	}
 	target := &knowledgev1.GraphSelector{Graph: "logs", Name: graphName}
 
-	ids, err := engine.DrainKeysetIDs(func(afterID string) ([]string, error) {
+	ids, err := paging.DrainKeysetIDs(func(afterID string) ([]string, error) {
 		cursor := afterID
 		resp, rerr := ex.Execute(ctx, &knowledgev1.ExecuteRequest{
 			Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
 				Selection:  &knowledgev1.Selection{},
 				ReturnMode: knowledgev1.ReturnMode_RETURN_MODE_IDS,
-				Limit:      int32(engine.BrowsePageSize),
+				Limit:      int32(paging.BrowsePageSize),
 				// SET on every page including the first, where the value is
 				// empty: presence is what selects the keyset browse.
 				AfterId:   &cursor,
@@ -66,7 +67,7 @@ func fetchAllLogEdges(
 			return nil, fmt.Errorf("graph-wide node id enumeration: %w", rerr)
 		}
 		return resp.GetIds(), nil
-	}, engine.BrowsePageSize)
+	}, paging.BrowsePageSize)
 	if err != nil {
 		return nil, err
 	}
@@ -77,7 +78,7 @@ func fetchAllLogEdges(
 	for i, t := range edgeTypes {
 		edgeStrs[i] = string(t)
 	}
-	return engine.DrainPivotEdges(ids, engine.EdgePivotPageSize, engine.CorrelationsEdgeScanCap,
+	return paging.DrainPivotEdges(ids, paging.EdgePivotPageSize, engine.CorrelationsEdgeScanCap,
 		func(idPage []string) ([]knowledgev1.Edge, error) {
 			edgesResp, rerr := ex.Execute(ctx, &knowledgev1.ExecuteRequest{
 				Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{

@@ -33,10 +33,9 @@ func resolveECSImageLineage(ctx context.Context, gc postpopulate.GraphCaller, gr
 		return nil
 	}
 
-	services, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
-		"type":  string(kgtypes.NodeCloudResource),
-		"meta":  map[string]string{"resource_type": "ecs-service"},
-		"limit": 0,
+	services, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
+		"type": string(kgtypes.NodeCloudResource),
+		"meta": map[string]string{"resource_type": "ecs-service"},
 	})
 	if err != nil {
 		return fmt.Errorf("ecs image lineage: query services: %w", err)
@@ -136,10 +135,9 @@ type ecsContainerImage struct {
 
 // buildECRIndex queries ECR repository nodes and indexes by account:region:repo.
 func buildECRIndex(ctx context.Context, gc postpopulate.GraphCaller, graphName string) (map[string]string, error) {
-	repos, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
-		"type":  string(kgtypes.NodeCloudResource),
-		"meta":  map[string]string{"resource_type": "ecr-repository"},
-		"limit": 0,
+	repos, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
+		"type": string(kgtypes.NodeCloudResource),
+		"meta": map[string]string{"resource_type": "ecr-repository"},
 	})
 	if err != nil {
 		return nil, err

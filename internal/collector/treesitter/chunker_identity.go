@@ -17,6 +17,25 @@ import (
 // separates the language prefix from the directory below.
 var namespaceSanitizer = strings.NewReplacer(".", "_", ":", "_")
 
+// NamespaceToken builds the declared-namespace token from a namespace as the
+// SOURCE spells it — a PHP `Foo\Bar`, a C# `App.Models`, a java `com.acme.foo`.
+//
+// IT IS THE ONE PLACE THE TOKEN IS BUILT, and that is the whole point of
+// exporting it. Three producers must agree on the byte string or the scope they
+// name silently matches nothing: declaredFileNamespace, which stamps a file's
+// own scope; declaredNamespaceBinds, which stamps an import's target scope; and
+// the parser's qualifierScope, which derives a fully-qualified reference's target
+// scope from the qualifier. A well-formed token assembled a second way is the
+// worst failure shape available here — every gate stays green while the rung
+// that reads it does nothing at all.
+//
+// The sanitiser is load-bearing on this input: edge resolution reads everything
+// before the FIRST '.' as the namespace token, so a C# "App.Models" assembled
+// any other way is split in half.
+func NamespaceToken(lang Language, namespace string) string {
+	return string(lang) + ":" + namespaceSanitizer.Replace(namespace)
+}
+
 // fileNamespace derives the per-file symbol namespace from the file's
 // parent directory. Non-Go namespaces carry a language prefix so a Go
 // package name can never collide with a directory basename; the ':' is
@@ -367,16 +386,6 @@ var nonTypeContainerKinds = map[string]bool{
 type collisionNames struct {
 	// final is each pendingDecl's emitted name, positionally.
 	final []string
-	// suffixed maps a disambiguated declaration's node to its suffixed name.
-	//
-	// Keying by *sitter.Node POINTER identity is sound only because
-	// go-tree-sitter does node interning — Tree.cachedNode hands back one
-	// interned *Node per position per Tree, so the node an ancestor walk
-	// reaches is the same pointer collectTopLevelDecls stored. Verified at the
-	// vendored pin v0.0.0-20240827094217-dd81d9e9be82. A re-vendor returning a
-	// fresh wrapper per call would make every lookup miss SILENTLY, degrading
-	// this to the unfixed behavior with no test failing.
-	suffixed map[*sitter.Node]string
 	// typeRefAlias maps a collided base name to the suffixed name of the one
 	// declaration a type reference to it may mean. A base name is absent when
 	// the answer is ambiguous.
@@ -391,8 +400,12 @@ type collisionNames struct {
 // belongs to no container deny set, so a deny-set-only rule would hand it the
 // alias. The rule is therefore ambiguity abstention — claim the alias only when
 // EXACTLY ONE colliding declaration survives nonTypeContainerKinds, and claim
-// nothing when two or more survive or none does, leaving the reference to drop
-// as it would without the rule. A wrong edge is worse than a missing one.
+// nothing when two or more survive or none does.
+//
+// ABSTAINING NO LONGER DROPS THE REFERENCE. It reaches the resolution walk
+// unsuffixed, finds the whole collided set under its base name, and becomes a
+// multi-candidate edge group: one edge per candidate, each saying "exactly one
+// of these". Abstention now means declining to NARROW, not declining to emit.
 func resolveCollisionNames(pending []pendingDecl, counts map[[2]string]int) collisionNames {
 	c := collisionNames{final: make([]string, len(pending))}
 	survivors := make(map[string]int)
@@ -405,10 +418,6 @@ func resolveCollisionNames(pending []pendingDecl, counts map[[2]string]int) coll
 		}
 		suffixed := p.name + "#" + astPathHash(p.declNode)
 		c.final[i] = suffixed
-		if c.suffixed == nil {
-			c.suffixed = make(map[*sitter.Node]string)
-		}
-		c.suffixed[p.declNode] = suffixed
 		// chunkType rather than the raw node kind: resolveChunkType unwraps an
 		// export_statement, so an exported TypeScript declaration is weighed as
 		// the interface or function it declares.
@@ -428,25 +437,6 @@ func resolveCollisionNames(pending []pendingDecl, counts map[[2]string]int) coll
 		c.typeRefAlias[base] = winner[base]
 	}
 	return c
-}
-
-// parentEdgeName returns the container name a member's parent-to-member edge
-// must carry: p.parentName when nothing collided, otherwise the disambiguated
-// name of the nearest enclosing declaration that took a suffix on that base
-// name. The ascent mirrors findEnclosingScope in SHAPE — the walk that produced
-// p.parentName in the first place — but keys on node identity rather than node
-// kind, so it finds the same container that walk named.
-func (c collisionNames) parentEdgeName(p pendingDecl) string {
-	if p.parentName == "" || len(c.suffixed) == 0 {
-		return p.parentName
-	}
-	prefix := p.parentName + "#"
-	for n := p.declNode.Parent(); n != nil; n = n.Parent() {
-		if s, ok := c.suffixed[n]; ok && strings.HasPrefix(s, prefix) {
-			return s
-		}
-	}
-	return p.parentName
 }
 
 // aliasTypeRefTargets repoints every USES_TYPE edge whose target is a collided

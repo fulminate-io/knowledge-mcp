@@ -27,10 +27,9 @@ const methodGCPSharedVPC = "gcp-shared-vpc"
 // Per decision: edges are written to both the current (service) project's
 // graph and the host project's graph when both are collected.
 func resolveSharedVPCEdges(ctx context.Context, gc postpopulate.GraphCaller, graphName string) error {
-	subnets, err := postpopulate.BrowseNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
-		"type":  string(kgtypes.NodeCloudResource),
-		"meta":  map[string]string{"resource_type": "gcp:compute:subnetwork"},
-		"limit": 0,
+	subnets, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCloud, graphName, map[string]any{
+		"type": string(kgtypes.NodeCloudResource),
+		"meta": map[string]string{"resource_type": "gcp:compute:subnetwork"},
 	})
 	if err != nil {
 		return err

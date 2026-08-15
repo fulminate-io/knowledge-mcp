@@ -13,6 +13,7 @@ import (
 	"time"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/paging"
 )
 
 // machineDownThreshold is the staleness window past which a member's last_seen
@@ -178,6 +179,10 @@ func (r *HiveReaper) sweep(ctx context.Context, now time.Time) {
 // rather than one: the wire has no OP_IN, and the alternative (a bare whole-type
 // hive_member browse) reads every member ever registered in the account, a set
 // that only grows because eviction is a status UPDATE and never a delete.
+//
+// Each per-session browse is DRAINED in keyset pages: the returned members are
+// consumed as the complete set, and a member that fell off the read boundary is
+// a hive this reaper would silently stop managing.
 func (r *HiveReaper) reaperHives(ctx context.Context) []string {
 	if r.hive == nil || r.snapshots == nil {
 		return nil
@@ -199,22 +204,34 @@ func (r *HiveReaper) reaperHives(ctx context.Context) []string {
 	seen := map[string]bool{}
 	var hives []string
 	for _, session := range mySessions {
-		resp, err := r.hive.Execute(ctx, &knowledgev1.ExecuteRequest{
-			Target: &knowledgev1.GraphSelector{Graph: "knowledge"},
-			Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
-				Selection: &knowledgev1.Selection{
-					NodeTypes: []string{"hive_member"},
-					MetadataPredicates: []*knowledgev1.MetadataPredicate{
-						{Key: "session", Op: knowledgev1.MetadataPredicate_OP_EQ, Value: session},
+		nodes, err := paging.DrainKeysetPages(func(afterID string) ([]*knowledgev1.Node, error) {
+			cursor := afterID
+			resp, rerr := r.hive.Execute(ctx, &knowledgev1.ExecuteRequest{
+				Target: &knowledgev1.GraphSelector{Graph: "knowledge"},
+				Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
+					Selection: &knowledgev1.Selection{
+						NodeTypes: []string{"hive_member"},
+						MetadataPredicates: []*knowledgev1.MetadataPredicate{
+							{Key: "session", Op: knowledgev1.MetadataPredicate_OP_EQ, Value: session},
+						},
 					},
-				},
-			}},
-		})
+					Limit: int32(paging.BrowsePageSize),
+					// SET on every page including the first, where the value is
+					// empty: presence is what selects the keyset browse.
+					AfterId:   &cursor,
+					SkipTotal: true,
+				}},
+			})
+			if rerr != nil {
+				return nil, rerr
+			}
+			return resp.GetNodes(), nil
+		}, paging.BrowsePageSize)
 		if err != nil {
 			slog.Warn("hive reaper: read members for role gate failed", "session", session, "error", err)
 			continue
 		}
-		for _, n := range resp.GetNodes() {
+		for _, n := range nodes {
 			md := n.GetMetadata()
 			// The predicate narrows server-side; a server that ignored it must not
 			// widen this daemon's reap set, so the session is re-checked here.
@@ -249,23 +266,38 @@ func hasReaperRole(roles string) bool {
 // empty or unparseable last_seen is SKIPPED (missing data never triggers a DNF).
 // An evict RPC error is logged and the sweep continues to the next member — one
 // dead member must not abort the sweep.
+//
+// The hive's members are DRAINED in keyset pages: eviction must consider every
+// member, and a member that fell off the read boundary would never be evicted.
 func (r *HiveReaper) sweepHive(ctx context.Context, hive string, now time.Time) {
-	resp, err := r.hive.Execute(ctx, &knowledgev1.ExecuteRequest{
-		Target: &knowledgev1.GraphSelector{Graph: "knowledge"},
-		Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
-			Selection: &knowledgev1.Selection{
-				NodeTypes: []string{"hive_member"},
-				MetadataPredicates: []*knowledgev1.MetadataPredicate{
-					{Key: "hive", Op: knowledgev1.MetadataPredicate_OP_EQ, Value: hive},
+	nodes, err := paging.DrainKeysetPages(func(afterID string) ([]*knowledgev1.Node, error) {
+		cursor := afterID
+		resp, rerr := r.hive.Execute(ctx, &knowledgev1.ExecuteRequest{
+			Target: &knowledgev1.GraphSelector{Graph: "knowledge"},
+			Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
+				Selection: &knowledgev1.Selection{
+					NodeTypes: []string{"hive_member"},
+					MetadataPredicates: []*knowledgev1.MetadataPredicate{
+						{Key: "hive", Op: knowledgev1.MetadataPredicate_OP_EQ, Value: hive},
+					},
 				},
-			},
-		}},
-	})
+				Limit: int32(paging.BrowsePageSize),
+				// SET on every page including the first, where the value is empty:
+				// presence is what selects the keyset browse.
+				AfterId:   &cursor,
+				SkipTotal: true,
+			}},
+		})
+		if rerr != nil {
+			return nil, rerr
+		}
+		return resp.GetNodes(), nil
+	}, paging.BrowsePageSize)
 	if err != nil {
 		slog.Warn("hive reaper: read members failed", "hive", hive, "error", err)
 		return
 	}
-	for _, n := range resp.GetNodes() {
+	for _, n := range nodes {
 		md := n.GetMetadata()
 		// Cheap idempotency pre-filter: an already-evicted member is gone, no work.
 		if n.GetStatus() == "evicted" || md["status"] == "evicted" {

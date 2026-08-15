@@ -24,7 +24,7 @@ import (
 )
 
 // buildPackageGraph fetches every NodeFile in the code graph (one wire
-// browse) plus every IMPORTS edge incident to that file set (one bulk wire
+// browse) plus every IMPORTS edge incident to that file set (a bulk wire
 // edge read), resolves owning packages via filepath.Dir, and aggregates the
 // forward IMPORTS edges to the package level. Returns:
 //
@@ -71,7 +71,7 @@ func buildPackageGraph(ctx context.Context, req foundation.Request, modulePath s
 		return nil, nil, nil, err
 	}
 
-	// One bulk IMPORTS-edge read over the whole file set, then group each
+	// A bulk IMPORTS-edge read over the whole file set, then group each
 	// forward edge into the per-package accumulators — the wire twin of the
 	// prior per-file IterEdges walk.
 	edges, err := foundation.FetchEdges(ctx, req.Caller, req.Graph, req.Name, fileIDs, []kgtypes.EdgeType{kgtypes.EdgeImports})

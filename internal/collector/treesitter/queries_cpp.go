@@ -14,15 +14,31 @@ func cppQueries() *QuerySet {
 			(template_declaration) @decl
 			(enum_specifier name: (type_identifier) @name) @decl
 		]`,
+		// The qualified_identifier arm is what makes `ns::g(3)` emit a callee at
+		// all. The field_expression node spans the arrow form too, so `ptr->m2`
+		// needs no separate arm; capturing it whole is what keeps the receiver
+		// in the callee text.
 		Calls: `(call_expression function: [
 			(identifier) @callee
-			(field_expression field: (field_identifier) @callee)
+			(field_expression) @callee
+			(qualified_identifier) @callee
 		])`,
 		Imports: `(preproc_include path: [
 			(string_literal) @path
 			(system_lib_string) @path
 		])`,
-		TypeRefs: `(type_identifier) @typeref`,
+		// TypeRefs is ANCHORED TO TYPE POSITIONS. An unanchored
+		// `(qualified_identifier) @typeref` arm also fires in CALL position and
+		// would emit a USES_TYPE edge to the FUNCTION `ns::g` — a type-reference
+		// query must not claim a call target as a type. The Calls query's own
+		// qualified_identifier arm sits under `call_expression function:` and
+		// these sit under declaration/field/parameter `type:`, which is what
+		// keeps the two apart.
+		TypeRefs: `[
+			(declaration type: [(type_identifier) @typeref (qualified_identifier) @typeref])
+			(field_declaration type: [(type_identifier) @typeref (qualified_identifier) @typeref])
+			(parameter_declaration type: [(type_identifier) @typeref (qualified_identifier) @typeref])
+		]`,
 		// TestBlocks: gtest TEST/TEST_F/TEST_P macros, Catch2 TEST_CASE,
 		// Boost.Test, Google-Benchmark BENCHMARK, MOCK_METHOD declarations.
 		//
