@@ -12,6 +12,7 @@ import (
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/paging"
 )
 
 // tension_universe_equivalence_test.go is the correctness gate for the
@@ -54,7 +55,7 @@ func (f *tensionEquivFake) Execute(ctx context.Context, req *knowledgev1.Execute
 				e.Method = m
 			}
 		}
-		return &knowledgev1.ExecuteResponse{Edges: edges}, nil
+		return &knowledgev1.ExecuteResponse{Edges: bandNarrow(edges, q)}, nil
 	}
 	if q == nil || q.GetById() != "" || len(q.GetIds()) > 0 {
 		return f.reflectEquivFake.Execute(ctx, req)
@@ -260,10 +261,16 @@ func TestReflectTensions_ChargedUniverseEquivalence(t *testing.T) {
 }
 
 // TestReflectTensions_NoClaimCorpusDrain proves the cost half of the inversion: on
-// the warm path the claim corpus is NEVER browsed, and the whole pass costs at most
-// three Execute calls — (1) the EdgeChargedBy read over the charge ids, (2) the
-// charged-parent hydrate, (3) fetchTensionEdges' own tensionEdgeTypes read, which the
-// inversion leaves untouched. The cold path browses exactly one type: charge.
+// the warm path the claim corpus is NEVER browsed, and the whole pass costs a
+// bounded, enumerable set of reads — (1) the EdgeChargedBy read over the charge ids,
+// (2) the charged-parent hydrate, (3) fetchTensionEdges' own tensionEdgeTypes read,
+// which the inversion leaves untouched. The cold path browses exactly one type: charge.
+//
+// READ (1) IS NOW A BANDED SWEEP, so it costs paging.EdgeBandCount Executes rather
+// than one, and the ceiling is EdgeBandCount+2 rather than 3. The bound is DERIVED
+// from that structure, not fitted to an observation: reads (2) and (3) are still one
+// Execute each and neither is banded. Expressed against the constant so a change to
+// the band count moves this ceiling with it instead of silently breaking the test.
 func TestReflectTensions_NoClaimCorpusDrain(t *testing.T) {
 	ctx := context.Background()
 
@@ -279,8 +286,9 @@ func TestReflectTensions_NoClaimCorpusDrain(t *testing.T) {
 			"the warm path must never browse the claim corpus")
 	}
 	assert.Empty(t, warmFake.browsedTypes, "a warm charge source issues no browse at all")
-	assert.LessOrEqual(t, warmFake.execCalls, 3,
-		"warm pass = charged-by edges + parent hydrate + tension edges, and nothing else")
+	assert.LessOrEqual(t, warmFake.execCalls, paging.EdgeBandCount+2,
+		"warm pass = the BANDED charged-by sweep (EdgeBandCount Executes) + parent hydrate + "+
+			"tension edges, and nothing else")
 
 	coldFake := newTensionEquivFake()
 	coldTensions, err := ReflectTensions(ctx, coldFake, nil)

@@ -19,6 +19,7 @@ import (
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1/knowledgev1connect"
+	"github.com/fulminate-io/knowledge-mcp/internal/collector/contribhash"
 	"github.com/fulminate-io/knowledge-mcp/internal/collectorwire"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
@@ -54,6 +55,17 @@ func (e *countingIngest) Finalize(
 // FinalizeStatus completes the handler interface. This fake does all its work in
 // Finalize and returns no finalize_id, so the sink never polls it; UNKNOWN is the
 // honest answer for a server that tracks nothing.
+// CollectManifest answers as a genuinely EMPTY graph — see recordingIngest's
+// twin for why the empty shape is the right fake default.
+func (e *countingIngest) CollectManifest(
+	context.Context,
+	*connect.Request[knowledgev1.CollectManifestRequest],
+) (*connect.Response[knowledgev1.CollectManifestResponse], error) {
+	return connect.NewResponse(&knowledgev1.CollectManifestResponse{
+		ManifestId: "test-manifest", HashSchemeVersion: contribhash.ContributionHashSchemeVersion,
+	}), nil
+}
+
 func (e *countingIngest) FinalizeStatus(
 	context.Context,
 	*connect.Request[knowledgev1.FinalizeStatusRequest],
@@ -117,6 +129,9 @@ func TestUploadSink_PickerRepicksPerCall(t *testing.T) {
 		GraphType: kgtypes.GraphCode,
 		GraphName: "picker-repick-repo",
 		Nodes:     []*knowledgev1.Node{{Id: "n1", Type: "func", Summary: "n1"}},
+		// Stamped as a real code collect is: an empty fingerprint aborts.
+		DiscoveryFingerprint:   "fingerprint-picker-fixture",
+		CollectorOutputVersion: testCollectorOutputVersion,
 	}
 
 	ctx := context.Background()

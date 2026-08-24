@@ -69,7 +69,7 @@ func TestManagerSearchFusesBothEngines(t *testing.T) {
 
 	docs, targetID, targetVec, uniqueTerm := searchCorpus(7)
 
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 
 	// Ship both formats for one graph.
 	seedShipped(t, ctx, mgr, kgtypes.GraphKnowledge, "kg", docs)
@@ -98,7 +98,7 @@ func TestManagerSearchTextOnlyArm(t *testing.T) {
 
 	docs, targetID, _, uniqueTerm := searchCorpus(3)
 
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 	seedShipped(t, ctx, mgr, kgtypes.GraphKnowledge, "kg", docs)
 	seedShippedFields(t, ctx, mgr, kgtypes.GraphKnowledge, "kg", docs)
 
@@ -116,7 +116,7 @@ func TestManagerSearchEmptyGraph(t *testing.T) {
 	_, gc := newSegmentHarness(t)
 	ctx := context.Background()
 
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 	fused, err := mgr.Search(ctx, kgtypes.GraphKnowledge, "never-shipped", "anything", make([]byte, 32), 10)
 	require.NoError(t, err)
 	require.Empty(t, fused, "search over an unbuilt graph returns empty, not error")

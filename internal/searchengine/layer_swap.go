@@ -119,6 +119,11 @@ func (e *SegmentedIndex[Q, S]) BuildLayer(work []BucketWork) (*BuiltLayer[Q, S],
 			Format:   e.format.Name(),
 			DocCount: entry.meta.DocCount,
 			Bytes:    blob,
+			// Bytes come from a resident entry's payload. BuiltLayer happens to
+			// hold the entries alongside the blobs today, but that is a
+			// coincidence of this struct's shape rather than a guarantee, and
+			// Blobs() hands out a copied slice that shares these bytes.
+			keepAlive: entry,
 		})
 	}
 	return built, nil

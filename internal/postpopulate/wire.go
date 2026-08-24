@@ -367,9 +367,13 @@ func execCreateBatchNodes(ctx context.Context, gc GraphCaller, gt kgtypes.GraphT
 	}
 	// Mark this as a TRUSTED collector CREATE so the server skips the user-facing
 	// system-managed-type guard (decodeCreate → validateCreateNodeBody rejects
-	// type=package|file|branch as "created by the code indexer, not by hand"). The
-	// postpopulate (BuildHierarchy) IS the code indexer, so its package/branch/file
-	// creates are legitimate. We set the flag PROGRAMMATICALLY on the compiled proto
+	// type=package|file|branch as "created by the code indexer, not by hand").
+	// Writes on this path come from collectors, not from a user's mutate call, so
+	// their package/branch/file creates are legitimate — the cloud and CI/CD
+	// resource hooks are the callers that create such nodes here. (The code
+	// graph's own package/repo-root nodes no longer ride this path at all: the
+	// collector emits them in the collect payload.) We set the flag
+	// PROGRAMMATICALLY on the compiled proto
 	// (not via a create_batch arg key) so it is UNFORGEABLE through the user mutate
 	// tool — the LLM supplies args, never proto fields, and no arg maps to it.
 	if mp := req.GetMutation(); mp != nil {

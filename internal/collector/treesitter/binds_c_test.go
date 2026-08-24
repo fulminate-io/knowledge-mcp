@@ -14,8 +14,19 @@ func cIncludeFixture(path string, lang Language, includes ...string) *Result {
 	return &Result{
 		FilePath: path,
 		Language: lang,
-		Chunks:   []Chunk{{Context: ChunkContext{Imports: includes}}},
+		Chunks:   []Chunk{{Context: ChunkContext{Imports: importSitesOf(includes...)}}},
 	}
+}
+
+// importSitesOf lifts bare specifier strings into import sites. The C arm reads
+// only the specifier, so the local stays empty exactly as it does in production
+// for a language with no registered import arm.
+func importSitesOf(specs ...string) []ImportSite {
+	sites := make([]ImportSite, len(specs))
+	for i, s := range specs {
+		sites[i] = ImportSite{Specifier: s}
+	}
+	return sites
 }
 
 // TestCIncludeSearchLadder pins the four rungs a quoted include is searched

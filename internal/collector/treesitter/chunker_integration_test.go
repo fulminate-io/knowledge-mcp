@@ -128,36 +128,42 @@ func TestChunkQualitySpot(t *testing.T) {
 	chunker := NewChunker()
 	defer chunker.Close()
 
-	t.Run("GoFile_MemoryWriter", func(t *testing.T) {
-		path := filepath.Join(root, "core", "domains", "memory", "writer.go")
+	t.Run("GoFile_ChunkerIdentity", func(t *testing.T) {
+		// THIS TEST WAS DEAD AND SILENTLY SO, exactly like BenchmarkChunkFile
+		// below and for the same reason: it read core/domains/memory/writer.go,
+		// a pre-migration path that exists nowhere in this repository, so every
+		// run hit a Skipf while `go test` still exited 0. A quality spot-check
+		// that silently checks nothing is worse than no spot-check, because it
+		// reads as coverage. It now reads a real, declaration-dense file inside
+		// this module, and a miss is FATAL rather than a skip.
+		path := filepath.Join(root, "internal", "collector", "treesitter", "chunker_identity.go")
 		src, err := os.ReadFile(path)
-		if err != nil {
-			t.Skipf("file not found: %s", path)
-		}
+		require.NoErrorf(t, err, "spot-check input not found: %s", path)
 
 		result, err := chunker.ChunkFile(context.Background(), path, src)
 		require.NoError(t, err)
 
-		// Should find CreateMemory — either as a named method chunk or as a split
-		// chunk containing the signature (large methods get split at AST boundaries).
+		// Should find containerName — either as a named chunk or as a split
+		// chunk containing the signature (large declarations get split at AST
+		// boundaries).
 		found := false
 		for _, chunk := range result.Chunks {
-			if chunk.Name == "CreateMemory" || strings.Contains(chunk.Content, "func") && strings.Contains(chunk.Content, "CreateMemory") {
+			if chunk.Name == "containerName" || strings.Contains(chunk.Content, "func") && strings.Contains(chunk.Content, "containerName") {
 				found = true
 				break
 			}
 		}
-		assert.True(t, found, "should find CreateMemory chunk (named or split) in writer.go")
+		assert.True(t, found, "should find containerName chunk (named or split) in chunker_identity.go")
 
 		// Should have CALLS edges.
 		callEdges := filterEdges(result.Edges, EdgeCalls)
-		assert.NotEmpty(t, callEdges, "should have CALLS edges in writer.go")
+		assert.NotEmpty(t, callEdges, "should have CALLS edges in chunker_identity.go")
 
 		// Should have CONTAINS edges.
 		containsEdges := filterEdges(result.Edges, EdgeContains)
-		assert.NotEmpty(t, containsEdges, "should have CONTAINS edges in writer.go")
+		assert.NotEmpty(t, containsEdges, "should have CONTAINS edges in chunker_identity.go")
 
-		t.Logf("writer.go: %d chunks, %d edges", len(result.Chunks), len(result.Edges))
+		t.Logf("chunker_identity.go: %d chunks, %d edges", len(result.Chunks), len(result.Edges))
 		for _, chunk := range result.Chunks {
 			t.Logf("  [%s] %s (lines %d-%d)", chunk.ChunkType, chunk.Name, chunk.StartLine, chunk.EndLine)
 		}
@@ -167,13 +173,71 @@ func TestChunkQualitySpot(t *testing.T) {
 func BenchmarkChunkFile(b *testing.B) {
 	root := repoRoot(b)
 
-	// Read a representative Go file.
-	path := filepath.Join(root, "core", "domains", "memory", "writer.go")
+	// A representative, declaration-dense Go file that lives INSIDE this
+	// module, so repoRoot's walk to the nearest go.mod — which lands on
+	// cmd/knowledge — actually reaches it.
+	//
+	// THIS BENCHMARK WAS DEAD AND SILENTLY SO. It previously read
+	// core/domains/memory/writer.go, a pre-migration path that exists nowhere
+	// in this repository, so every run hit the skip below while `go test` still
+	// exited 0 — which makes any perf guard built on it permanently vacuous.
+	// The skip is now a FATAL for exactly that reason: a benchmark that quietly
+	// measures nothing is the defect, not a tolerable degradation.
+	path := filepath.Join(root, "internal", "collector", "treesitter", "chunker_identity.go")
 	src, err := os.ReadFile(path)
 	if err != nil {
-		b.Skipf("file not found: %s", path)
+		b.Fatalf("benchmark input not found: %s: %v", path, err)
 	}
 
+	// BOTH SIDES ARE MEASURED IN ONE INVOCATION, and that is the whole point of
+	// the sub-benchmark shape. The chunk-time guard previously compared two
+	// files in /tmp that the criterion READ but never PRODUCED, so a leftover
+	// pair from an earlier attempt scored as the current run — and the two
+	// sides could be captured from different trees without anything noticing.
+	// Regenerating both here makes the comparison self-contained: there is no
+	// window in which a stale artifact can be read as a fresh measurement.
+	b.Run("arm_off", func(b *testing.B) {
+		UnregisterQualifierTypes(LangGo)
+		UnregisterTypeFacts(LangGo)
+		// RESTORE THE PRODUCTION ARMS. An arm left unregistered would silently
+		// disarm the feature for every later test in this binary — the hazard
+		// UnregisterBindsResolver documents.
+		b.Cleanup(func() {
+			RegisterQualifierTypes(LangGo, goQualifierTypes)
+			RegisterTypeFacts(LangGo, goTypeFacts)
+		})
+		// KNOWN-POSITIVE CONTROL: without this, an unregister that silently did
+		// nothing would make both sides measure the SAME code, and the ratio
+		// would sit at 1.0 forever while proving nothing at all.
+		if _, ok := qualifierTypeResolvers[LangGo]; ok {
+			b.Fatal("control: the Go qualifier-type arm is still registered, so this side is not the arm-off measurement")
+		}
+		if _, ok := typeFactsResolvers[LangGo]; ok {
+			b.Fatal("control: the Go type-facts arm is still registered, so this side is not the arm-off measurement")
+		}
+		benchmarkChunkPath(b, path, src)
+	})
+
+	b.Run("arm_on", func(b *testing.B) {
+		// The production registration, restored by the arm_off cleanup above.
+		// BOTH registries are checked, mirroring arm_off exactly: arm_off turns
+		// two arms off, so a one-registry check here would let a cleanup that
+		// restored only the qualifier arm pass while this side silently
+		// measured a half-armed chunker.
+		if _, ok := qualifierTypeResolvers[LangGo]; !ok {
+			b.Fatal("control: the Go qualifier-type arm is NOT registered, so this side is not the arm-on measurement")
+		}
+		if _, ok := typeFactsResolvers[LangGo]; !ok {
+			b.Fatal("control: the Go type-facts arm is NOT registered, so this side is not the arm-on measurement")
+		}
+		benchmarkChunkPath(b, path, src)
+	})
+}
+
+// benchmarkChunkPath is the measured loop both sides share, so the only
+// difference between them is the registry state.
+func benchmarkChunkPath(b *testing.B, path string, src []byte) {
+	b.Helper()
 	chunker := NewChunker()
 	defer chunker.Close()
 

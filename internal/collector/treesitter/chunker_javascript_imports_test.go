@@ -77,7 +77,7 @@ function useIt() { return A; }
 		assert.Equal(t, "./x", b.Specifier)
 		assert.Empty(t, b.Imported, "a default import names no member of the module")
 		assert.False(t, b.TypeOnly)
-		assert.Equal(t, []string{"./x"}, ctx.Imports)
+		assert.Equal(t, []string{"./x"}, importSpecifiers(ctx.Imports))
 	})
 
 	t.Run("named", func(t *testing.T) {
@@ -128,7 +128,7 @@ function useIt() { return 1; }
 		assert.Equal(t, ImportSideEffect, b.Kind)
 		assert.Equal(t, "./side", b.Specifier)
 		assert.Empty(t, b.Local, "a side-effect import binds no name")
-		assert.Equal(t, []string{"./side"}, ctx.Imports,
+		assert.Equal(t, []string{"./side"}, importSpecifiers(ctx.Imports),
 			"it is still a dependency and still earns its one Imports entry")
 	})
 
@@ -153,7 +153,7 @@ function useIt() { return 1; }
 		require.Len(t, ctx.ReExports, 1)
 		assert.Equal(t, ReExport{Specifier: "./z", Local: "B", Imported: "A"}, ctx.ReExports[0])
 		assert.Empty(t, ctx.ImportBindings, "a re-export binds nothing in THIS file")
-		assert.Equal(t, []string{"./z"}, ctx.Imports,
+		assert.Equal(t, []string{"./z"}, importSpecifiers(ctx.Imports),
 			"a re-export specifier IS a dependency")
 	})
 
@@ -232,9 +232,9 @@ public class Foo {
     public void run() {}
 }
 `)
-		require.Len(t, ctx.Imports, 2,
+		require.Len(t, importSpecifiers(ctx.Imports), 2,
 			"an @import language records one entry per import statement")
-		joined := strings.Join(ctx.Imports, "\n")
+		joined := strings.Join(importSpecifiers(ctx.Imports), "\n")
 		assert.Contains(t, joined, "com.example.alpha.Thing")
 		assert.Contains(t, joined, "com.example.beta.Other")
 		assert.Len(t, ctx.ImportBindings, 2,
@@ -247,7 +247,7 @@ class Foo {
     def run() {}
 }
 `)
-		require.NotEmpty(t, groovy.Imports,
+		require.NotEmpty(t, importSpecifiers(groovy.Imports),
 			"the default dispatch arm stays name-blind for a language with no arm")
 		assert.Empty(t, groovy.ImportBindings,
 			"a language with no registered arm records no bindings")

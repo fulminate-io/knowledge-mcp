@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// lifecycle.go — server-discovery + spawn helpers for the stdio MCP
-// client and the knowledge start/stop/status CLI subcommands.
+// lifecycle.go — server-discovery + spawn helpers for the `knowledge` client
+// binary and the knowledge start/stop/status CLI subcommands.
 //
 // findServerBinary locates the knowledge-server executable (same-dir
 // then $PATH); spawnServer launches it with a bare exec.Command and
@@ -14,17 +14,22 @@
 // leader creation rides. spawning with Setsid: true reproducibly
 // crashed the dev laptop (Apple Community thread 256222481). Plain
 // fork+exec rides a different code path and works fine. We don't
-// actually need Setsid for our use case anyway — the stdio client
-// has no controlling terminal (it's invoked via stdio pipes from MCP
-// hosts like Claude Code), so SIGHUP-on-TTY-close can't fire, and
-// when the parent exits the kernel reparents the child to launchd
-// for free without any session-detachment ceremony.
+// actually need Setsid for our use case anyway: when the parent exits
+// the kernel reparents the child to launchd for free, without any
+// session-detachment ceremony. That holds however the parent was
+// started — from a terminal for the CLI subcommands, or from a service
+// manager. (An earlier form of this note also argued the parent has no
+// controlling terminal because it is driven over stdio pipes; that was
+// a stdio-era claim, and it is not true of the CLI subcommands.)
 //
-// MCP-stdio-discipline (the stdio binary speaks JSON-RPC over stdout):
-// helpers in this file route ALL diagnostics through slog (which writes
-// to stderr by default). NO fmt.Print*, os.Stdout.Write*, or log.Print*.
-// CLI-subcommand callers (knowledge start/stop/status) write to stdout
-// from their own files (lifecycle_subcommand.go) — that's the carve-out.
+// STDOUT-DISCIPLINE, stated as the observable rather than as architecture:
+// this binary's stdout carries USER-FACING CLI OUTPUT — human-readable text
+// people read and pipe. So helpers in this file route ALL diagnostics through
+// slog (which writes to stderr by default). NO fmt.Print*, os.Stdout.Write*,
+// or log.Print* in this file; `grep -nE 'os\.Stdout|fmt\.Print' lifecycle.go`
+// returns this line and nothing else. CLI-subcommand callers (knowledge
+// start/stop/status) write to stdout from their own files
+// (lifecycle_subcommand.go) — that's the carve-out.
 
 package bootstrap
 
@@ -51,7 +56,7 @@ const serverBinaryName = "knowledge-server"
 // SearchedDir + LookPathErr in the recovery message.
 type ServerBinaryNotFoundError struct {
 	// SearchedDir is the directory we tried first (the directory of the
-	// running stdio binary). Empty when os.Executable() itself failed.
+	// running knowledge binary). Empty when os.Executable() itself failed.
 	SearchedDir string
 	// ExecutableErr is the error returned by os.Executable when
 	// discovery of the running binary's path failed. Nil when
@@ -67,18 +72,18 @@ func (e *ServerBinaryNotFoundError) Error() string {
 	if e.ExecutableErr != nil {
 		return fmt.Sprintf("knowledge-server not found: os.Executable failed (%v) and $PATH lookup failed (%v); run `knowledge install` to download it", e.ExecutableErr, e.LookPathErr)
 	}
-	return fmt.Sprintf("knowledge-server not found in same directory as stdio binary (%s) or in $PATH (%v); run `knowledge install` to download it", e.SearchedDir, e.LookPathErr)
+	return fmt.Sprintf("knowledge-server not found in same directory as the knowledge binary (%s) or in $PATH (%v); run `knowledge install` to download it", e.SearchedDir, e.LookPathErr)
 }
 
 // getExecutable is a stubbable alias for os.Executable. Tests override
-// it to point findServerBinary at a fake stdio binary in a tempdir
+// it to point findServerBinary at a fake knowledge binary in a tempdir
 // without re-execing the test binary itself.
 var getExecutable = os.Executable
 
 // findServerBinary returns the absolute path to knowledge-server.
 // Lookup order:
 //
-//  1. Same directory as the running stdio binary (os.Executable() →
+//  1. Same directory as the running knowledge binary (os.Executable() →
 //     filepath.Dir → join "knowledge-server" + ".exe" on Windows).
 //     The canonical install layout puts both binaries side-by-side
 //     in bin/ or under a Homebrew prefix.
@@ -156,18 +161,51 @@ type SpawnArgs struct {
 	Port int
 	// Root is the project root the server should consider its default
 	// active repo. Defaults to "." but the CLI passes through whatever
-	// --root the stdio client got.
+	// --root the knowledge client got.
 	Root string
 	// GraphStorage is the directory where graph .bin files live. The
 	// server-spawn log file lands inside this directory too so test
 	// runs with t.TempDir() roots don't pollute the dev's real log.
 	GraphStorage string
+	// Pprof appends --pprof to the spawned server's argv, mounting its
+	// /debug/pprof/ handlers on the server's OWN main mux (the --port
+	// listener), which binds loopback. The server has no separate profiling
+	// port: cmd/knowledge-server/internal/server/server.go mountRoutes
+	// registers the handlers beside the Connect services.
+	//
+	// It is threaded from the daemon's own --pprof rather than being a
+	// second knob, so one flag describes one intent — "profile this
+	// installation" — across both processes.
+	Pprof bool
 }
 
 // spawnServer launches knowledge-server as a regular subprocess of the
-// caller. Stdio is redirected to a log file under GraphStorage so the
-// child's writes never reach the parent's MCP-stdio protocol stream;
-// stdin is /dev/null. NO SysProcAttr is set — the child is a regular
+// caller. BOTH of the child's streams are pointed at THIS PROCESS'S STDERR and
+// stdin is /dev/null.
+//
+// STDERR, NEVER STDOUT, and that is the original invariant preserved rather than
+// a detail. THIS PROCESS WRITES USER-FACING CLI OUTPUT TO STDOUT — `knowledge
+// start/stop/status` and `knowledge setup` print human-readable text people read
+// and pipe (lifecycle_subcommand.go and setup_restart.go, both callers of this
+// function; 16 non-test files under internal/bootstrap write to stdout). A
+// child's log lines interleaved into that would corrupt what the user sees and
+// anything parsing it. Pointing at stderr keeps the child's output off that
+// channel while still delivering it somewhere a supervisor or container runtime
+// can read.
+//
+// A DIFFERENT BINARY has a stricter form of the same constraint, and it is
+// cmd/frontend rather than this one: in --stdio mode ONLY, the frontend's own
+// stdout IS a newline-framed JSON-RPC channel, and it protects it the same way
+// (cmd/frontend/daemon.go). `knowledge` itself does not serve MCP over stdio at
+// all — bootstrap.Run returns an error saying exactly that.
+//
+// The child's DURABLE log file is no longer opened here: the server opens it
+// itself via --log-file and TEES it with its inherited stderr, so both sinks get
+// every line. That direction is required, not stylistic — a tee on this side
+// would mean a non-*os.File writer on exec.Cmd, hence a pipe with a
+// parent-lifetime copier, which a child designed to outlive us cannot survive.
+//
+// NO SysProcAttr is set — the child is a regular
 // fork+exec child of the parent. When the parent exits, the kernel
 // reparents the child to launchd (or systemd / init on other Unixes)
 // without any session-detachment work from us.
@@ -183,38 +221,67 @@ type SpawnArgs struct {
 // capturing the PID here before Release keeps the value usable for the
 // caller's diagnostic output. Errors from Start are wrapped with the
 // binary path so the recovery message names what we tried to launch.
-func spawnServer(args SpawnArgs) (int, error) {
-	logPath := filepath.Join(expandTilde(args.GraphStorage), "server.log")
-	logF, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600) //nolint:gosec // logPath is derived from validated --graph-storage flag
-	if err != nil {
-		return 0, fmt.Errorf("open spawn log %s: %w", logPath, err)
-	}
-	devNull, err := os.OpenFile(os.DevNull, os.O_RDONLY, 0)
-	if err != nil {
-		_ = logF.Close()
-		return 0, fmt.Errorf("open devnull: %w", err)
-	}
+// serverSpawnArgv is the exact argv the client starts knowledge-server with.
+//
+// IT IS A NAMED FUNCTION SO A TEST CAN ASSERT EVERY TOKEN. Inline, the profiling
+// opt-in below is invisible to any check short of running a real spawn: an argv
+// that never gains --pprof and one that always carries it both compile, both
+// start a working server, and the difference shows up only as a profiling
+// endpoint that is missing when asked for or open when it was not.
+// serverLogPath is the server's durable log file, inside GraphStorage so a test
+// run with a t.TempDir() root never writes to the dev's real log.
+//
+// The SERVER opens it, via --log-file, rather than this process opening it and
+// handing over the fd — see spawnServer for why that direction is load-bearing.
+func serverLogPath(graphStorage string) string {
+	return filepath.Join(expandTilde(graphStorage), "server.log")
+}
 
+func serverSpawnArgv(args SpawnArgs) []string {
 	argv := []string{
 		"--port", fmt.Sprintf("%d", args.Port),
 		"--root", args.Root,
 		"--graph-storage", args.GraphStorage,
+		// The server tees this file WITH its stderr; it does not replace stderr.
+		// Both sinks matter: the file is the durable record, and the inherited
+		// stderr is what a supervisor or container runtime captures.
+		"--log-file", serverLogPath(args.GraphStorage),
 	}
-	cmd := exec.Command(args.BinPath, argv...) //nolint:gosec // BinPath resolved via findServerBinary; argv constructed from validated flags
+	// Appended only when asked for, so the default spawn argv stays exactly the
+	// three flags above.
+	if args.Pprof {
+		argv = append(argv, "--pprof")
+	}
+	return argv
+}
+
+func spawnServer(args SpawnArgs) (int, error) {
+	devNull, err := os.OpenFile(os.DevNull, os.O_RDONLY, 0)
+	if err != nil {
+		return 0, fmt.Errorf("open devnull: %w", err)
+	}
+
+	cmd := exec.Command(args.BinPath, serverSpawnArgv(args)...) //nolint:gosec // BinPath resolved via findServerBinary; argv constructed from validated flags
 	cmd.Stdin = devNull
-	cmd.Stdout = logF
-	cmd.Stderr = logF
+	// BOTH STREAMS ARE THIS PROCESS'S OWN STDERR, AND BOTH MUST STAY *os.File.
+	// exec.Cmd hands the child a RAW FD only for an *os.File; for any other
+	// io.Writer it creates a pipe and drains it with a PARENT-LIFETIME copier
+	// goroutine. This child is spawned to OUTLIVE us (see the docstring above),
+	// so such a pipe would kill it the moment we exit — measured: the child died
+	// on its first write and the log file ended up empty too. Do not "improve"
+	// this into an io.MultiWriter to get a second sink; the server tees its own
+	// log file internally via --log-file, which is the only place a tee is safe.
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
 	// NO SysProcAttr. See file docstring — bare fork+exec is sufficient
 	// and avoids the Setsid kernel-bug path on macOS Tahoe.
 
 	if err := cmd.Start(); err != nil {
-		_ = logF.Close()
 		_ = devNull.Close()
 		return 0, fmt.Errorf("start %s: %w", args.BinPath, err)
 	}
 	// Parent no longer needs the devnull handle — child has its own
-	// dup at the kernel level. Log handle stays open; in practice the
-	// parent never writes to it again.
+	// dup at the kernel level.
 	_ = devNull.Close()
 
 	// Capture PID BEFORE Release — Release zeros the Pid field.
@@ -297,7 +364,13 @@ type closer interface {
 // (TCP open but Check times out) — spawning a second server on the
 // same port would just fail with "address already in use." Caller
 // gets a "server is unhealthy" error in that case.
-func ensureServerReachable(port int, root, graphStorage string) error {
+// pprof rides through to the spawned server's argv. It applies ONLY to a server
+// this call spawns: a server already healthy on the port returns at the probe
+// above, and its profiling state is whatever it was started with. That is the
+// honest behaviour — this function cannot re-flag a process it did not start —
+// and it is why the OSS gate starts its container cold rather than adopting a
+// running one.
+func ensureServerReachable(port int, root, graphStorage string, pprof bool) error {
 	gc := graphclient.NewGraphClient(port)
 	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
 	healthy := gc.HealthyCtx(ctx)
@@ -316,6 +389,7 @@ func ensureServerReachable(port int, root, graphStorage string) error {
 		Port:         port,
 		Root:         root,
 		GraphStorage: graphStorage,
+		Pprof:        pprof,
 	}); err != nil {
 		return fmt.Errorf("spawn knowledge-server: %w", err)
 	} //nolint:wsl // single-statement block is fine here

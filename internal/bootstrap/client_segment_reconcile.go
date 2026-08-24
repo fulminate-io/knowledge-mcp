@@ -250,6 +250,9 @@ func (c *client) reconcileSegmentCoverageScoped(ctx context.Context, deltaScope 
 		}
 		c.reconcileOneGraph(ctx, g, deltaScope)
 	}
+
+	// Once per SWEEP, never per graph — see EnforceResidencyBudget's own doc.
+	c.segmentMgr.EnforceResidencyBudget()
 }
 
 // segmentBearingGraphs is the graph set every arm of this pass walks: the graphs

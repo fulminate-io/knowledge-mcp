@@ -33,6 +33,16 @@ import (
 // BEFORE they were made adapters — which is a property of the tree it ran in,
 // recorded in the file's captured-at header, not of anything a later run can
 // re-derive.
+// ONE LINE OF THE EXPECTATION WAS TRANSCRIBED BY HAND, NOT RE-CAPTURED.
+// The reference group key went position-independent, so the go_ambiguous_group_0
+// listing re-spells the SAME group under its new identity:
+// `dup/use.go:13:CALLS:Twin` became `Twin:CALLS:dup/use.go:UseTwin:0`. Same
+// group, same candidate files, every COUNT in the file untouched. It was edited
+// by hand rather than re-captured for the reason stated above — the file's
+// validity comes from the tree the capture ran in, so re-running the capture
+// against the adapters would destroy the property it exists to prove. The
+// expectation body is compared BYTE-IDENTICALLY and only line 1 is a header, so
+// this note lives here rather than in the artifact.
 const (
 	censusFixtureCaptureEnv = "FUL1351_CAPTURE"
 	censusLegacyRowsFile    = "testdata/ful1351_legacy_rows.txt"

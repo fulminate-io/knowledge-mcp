@@ -21,22 +21,11 @@ import (
 // replacing both the N per-node neighbor walks the server ran internally AND the
 // former per-thought session-sibling traversal.
 
-// FetchThoughtAdjacency is the exported wrapper around fetchAdjacency
-// for cmd/knowledge/internal/tools/ — InterceptThoughts needs the
-// adjacency map to drive ReflectBlindSpots' bridge-detection pass
-// without exporting fetchAdjacency itself (which is the lower-level
-// helper the reflective bodies use internally).
-func FetchThoughtAdjacency(ctx context.Context, gc Caller, src CorpusSource) ([]string, map[string][]string, error) {
-	return fetchAdjacency(ctx, gc, "all", nil, src)
-}
-
 // FetchAdjacency is the exported wrapper that thoughts(adjacency) drives:
 // it forwards the op's variable scope ("all" or "all_types") and optional
 // thought_ids subset projection straight to fetchAdjacency, which validates
 // the scope, does the bulk edges read, runs session-sibling expansion for
-// scope="all", and projects the subset. Kept distinct from FetchThoughtAdjacency
-// (which hardcodes scope="all", subset=nil for the blind-spots fixed-shape call)
-// so the op's variable shape and the reflection call stay un-conflated.
+// scope="all", and projects the subset.
 func FetchAdjacency(ctx context.Context, gc Caller, scope string, subset []string, src CorpusSource) ([]string, map[string][]string, error) {
 	return fetchAdjacency(ctx, gc, scope, subset, src)
 }
@@ -158,12 +147,25 @@ func fetchAdjacencyUncached(ctx context.Context, gc Caller, scope string, src Co
 	if scope == "all" {
 		edgeFilter = adjacencyEdgeTypes
 	}
-	edges, err := fetchEdgesForNodeSet(ctx, gc, nodeIDs, edgeFilter)
+
+	// scope="all" rides the ONE unified pivot-edge read, shared with the session and
+	// charge consumers; the type filter above is applied when the adjacency map is
+	// built rather than at the wire.
+	//
+	// scope="all_types" MUST STAY ON THE DIRECT READ. It is an every-type read, and
+	// the unified memo carries only the 7 types in unifiedPivotEdgeTypes, so serving
+	// all_types from it would silently narrow a full-graph surface.
+	var edges []knowledgev1.Edge
+	if scope == "all" {
+		edges, err = memoPivotEdges(ctx, gc, nodeIDs, src)
+	} else {
+		edges, err = fetchEdgesForNodeSet(ctx, gc, nodeIDs, nil)
+	}
 	if err != nil {
 		return nil, nil, err
 	}
 
-	adj := buildAdjacencyFromEdges(edges, idSet)
+	adj := buildAdjacencyFromEdges(edges, idSet, edgeFilter)
 
 	// scope="all": session-sibling expansion via a bulk EdgeKGContains read +
 	// pure client-side group-by-session (deriveSessionSiblings), regardless of
@@ -265,10 +267,32 @@ func keepInAllTypesIDSet(nodeType kgtypes.NodeType) bool {
 // backward for the typed "all" walk, and store.From(id).IDs() with forward==nil
 // returns both directions for the "all_types" walk — store/query.go:83). Both
 // endpoints must be in the in-scope idSet so no dangling references survive.
-func buildAdjacencyFromEdges(edges []knowledgev1.Edge, idSet map[string]bool) map[string][]string {
+//
+// keepTypes is an explicit allow-list, and A NIL keepTypes MEANS KEEP EVERY TYPE.
+// That nil is not a convenience default — it is exactly what the all_types path
+// needs, which reads every edge type by definition, so do not "tighten" it later.
+//
+// THE FILTER IS EXPLICIT RATHER THAN INCIDENTAL. The scope="all" caller now feeds
+// this the UNIFIED pivot-edge read, which carries kg-contains and charged-by on top
+// of the five clustering types. Those two happen to be dropped by the idSet test
+// anyway — kg-contains runs session→thought so its From is outside a thought idSet,
+// and charged-by runs thought→charge so its To is — but that is a COINCIDENCE of
+// which node types the pivot holds, not a property anyone stated. Filtering by type
+// here states it.
+func buildAdjacencyFromEdges(edges []knowledgev1.Edge, idSet map[string]bool, keepTypes []kgtypes.EdgeType) map[string][]string {
+	var keep map[kgtypes.EdgeType]bool
+	if len(keepTypes) > 0 {
+		keep = make(map[kgtypes.EdgeType]bool, len(keepTypes))
+		for _, et := range keepTypes {
+			keep[et] = true
+		}
+	}
 	adj := make(map[string][]string, len(idSet))
 	for i := range edges {
 		e := &edges[i]
+		if keep != nil && !keep[kgtypes.EdgeType(e.Type)] {
+			continue
+		}
 		if idSet[e.FromId] && idSet[e.ToId] {
 			adj[e.FromId] = append(adj[e.FromId], e.ToId)
 			adj[e.ToId] = append(adj[e.ToId], e.FromId)

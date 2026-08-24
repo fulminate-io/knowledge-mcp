@@ -31,22 +31,29 @@ const codeRefMethod = "code-ref"
 // source as it stands today. Exported because that gate lives in package tools,
 // which imports package thought (no cycle: thought imports nothing from tools).
 //
-// It mirrors FetchSessionLabelsByThought (genre.go:82) step-for-step — a bulk
+// It mirrors FetchSessionLabelsByThought (genre.go:87) step-for-step — a bulk
 // edge read, group, bulk hydrate, fold — and is genuinely distinct only in that
 // it filters a different edge Method and crosses into the CODE graph grouped by
-// repo. Performance is first-class: exactly ONE edge read + ONE knowledge-graph
+// repo. Performance is first-class: AT MOST ONE edge read + ONE knowledge-graph
 // proxy hydrate + ONE code-graph hydrate per DISTINCT cited repo (small N) — every
 // read is a bulk ids[] read, NO N+1 over the cited nodes. Best-effort: any read
 // error or empty stage yields an empty map (no flag, never a panic).
-func ResolveCitedCodeNodes(ctx context.Context, gc Caller, thoughtIDs []string) map[string][]*knowledgev1.Node {
+//
+// src is the per-pass read memo. When it covers these thought ids the relates-to
+// edges are served from the pass's ONE unified pivot-edge read and this issues NO
+// edge read of its own; a nil src (the on-demand single-thought path) takes the
+// narrow read exactly as before.
+func ResolveCitedCodeNodes(ctx context.Context, gc Caller, thoughtIDs []string, src CorpusSource) map[string][]*knowledgev1.Node {
 	out := map[string][]*knowledgev1.Node{}
 	if gc == nil || len(thoughtIDs) == 0 {
 		return out
 	}
 
-	// (1) Bulk edge read over the thought set, relates-to only. Method survives
-	// the decode (engine.EdgesFromProto copies e.GetMethod()).
-	edges, err := fetchEdgesForNodeSet(ctx, gc, thoughtIDs, []kgtypes.EdgeType{kgtypes.EdgeRelatesTo})
+	// (1) Bulk edge read over the thought set, relates-to only — served from the
+	// pass's unified pivot read when src covers these ids. Method survives the
+	// decode (engine.EdgesFromProto copies e.GetMethod()), which is what lets
+	// codeRefProxiesByThought below filter a wider input down to the born-links.
+	edges, err := memoTypedEdges(ctx, gc, thoughtIDs, []kgtypes.EdgeType{kgtypes.EdgeRelatesTo}, src)
 	if err != nil {
 		return out
 	}
@@ -160,9 +167,9 @@ func codeRefsFromProxies(proxyNodes map[string]*knowledgev1.Node) (map[string]co
 // chain exactly ONCE (in ResolveCitedCodeNodes) and only folds here — no second
 // resolution. A thought whose cited code all hydrated with a zero UpdatedAt (or
 // that cites no resolvable code) is simply absent from the map (no flag).
-func buildCitedCodeUpdatedAt(ctx context.Context, gc Caller, thoughtIDs []string) map[string]int64 {
+func buildCitedCodeUpdatedAt(ctx context.Context, gc Caller, thoughtIDs []string, src CorpusSource) map[string]int64 {
 	out := map[string]int64{}
-	nodesByThought := ResolveCitedCodeNodes(ctx, gc, thoughtIDs)
+	nodesByThought := ResolveCitedCodeNodes(ctx, gc, thoughtIDs, src)
 	for tid, nodes := range nodesByThought {
 		var newest int64
 		for _, n := range nodes {

@@ -44,6 +44,19 @@ func TestResolve_AgentCorpus(t *testing.T) {
 	if err != nil || !info.IsDir() {
 		t.Skipf("acceptance corpus %s not present; set %s to run this probe", root, corpusEnv)
 	}
+	// PRESENT MEANS USABLE, NOT MERELY THERE. Every read below goes through git, so
+	// a path that exists but is not a working repository — a half-removed or
+	// partially-cloned checkout, which leaves a .git directory that git itself
+	// rejects — is a corpus that is absent for this probe's purposes. Guarding on
+	// os.Stat alone let such a path through and turned an absent corpus into a hard
+	// failure at the first git call, which reads as a broken resolver rather than a
+	// missing fixture. The reason is quoted into the skip so it stays diagnosable.
+	probe := exec.Command("git", "rev-parse", "--git-dir")
+	probe.Dir = root
+	if out, gitErr := probe.CombinedOutput(); gitErr != nil {
+		t.Skipf("acceptance corpus %s is not a usable git repository (%s); set %s to run this probe",
+			root, strings.TrimSpace(string(out)), corpusEnv)
+	}
 
 	files := corpusFiles(t, root)
 	require.NotEmpty(t, files, "the corpus must yield a discovered file set")

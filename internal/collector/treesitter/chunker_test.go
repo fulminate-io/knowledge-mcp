@@ -42,7 +42,7 @@ func hello(name string) string {
 
 	// Context should include imports and package name.
 	assert.Equal(t, "main", chunk.Context.PackageName)
-	assert.Contains(t, chunk.Context.Imports, "fmt")
+	assert.Contains(t, importSpecifiers(chunk.Context.Imports), "fmt")
 	assert.NotEmpty(t, chunk.Context.Signature)
 }
 
@@ -121,9 +121,9 @@ func main() {
 	require.NotEmpty(t, funcChunks)
 
 	ctx := funcChunks[0].Context
-	assert.Contains(t, ctx.Imports, "fmt")
-	assert.Contains(t, ctx.Imports, "os")
-	assert.Contains(t, ctx.Imports, "strings")
+	assert.Contains(t, importSpecifiers(ctx.Imports), "fmt")
+	assert.Contains(t, importSpecifiers(ctx.Imports), "os")
+	assert.Contains(t, importSpecifiers(ctx.Imports), "strings")
 	assert.Equal(t, "main", ctx.PackageName)
 }
 
@@ -233,7 +233,7 @@ export default App;
 	assert.Contains(t, appChunk.Content, "function App")
 
 	// Imports.
-	assert.Contains(t, appChunk.Context.Imports, "react")
+	assert.Contains(t, importSpecifiers(appChunk.Context.Imports), "react")
 }
 
 func TestChunkTSClass(t *testing.T) {
@@ -368,7 +368,7 @@ func hello() {
 	require.NotEmpty(t, funcChunks)
 
 	// Context should be empty when context is disabled.
-	assert.Empty(t, funcChunks[0].Context.Imports)
+	assert.Empty(t, importSpecifiers(funcChunks[0].Context.Imports))
 	assert.Empty(t, funcChunks[0].Context.PackageName)
 }
 

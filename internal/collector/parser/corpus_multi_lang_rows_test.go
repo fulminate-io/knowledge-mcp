@@ -67,6 +67,20 @@ type multiLangRow struct {
 	// population it is a split of.
 	AmbiguousRefs   int            `json:"ambiguous_refs"`
 	AmbiguousByRule map[string]int `json:"ambiguous_by_rule"`
+	// ImplementsEdges and ImplementsMethodEdges count the DECLARED-CONFORMANCE
+	// relationships this language's declarations produced: the type-level pairs
+	// and, beneath them, the member pairs.
+	//
+	// THEY ARE ATTRIBUTED TO THE SUBTYPE'S LANGUAGE, not the supertype's,
+	// because the subtype is the declaration that WROTE the clause and whose
+	// capture arm read it — which is the thing a per-language column here is
+	// measuring.
+	//
+	// THEY ARE COUNTS AND NOTHING ELSE. The edge's Method vocabulary is the
+	// emitter's, and a copy of it here would be a second definition free to
+	// drift from the first.
+	ImplementsEdges       int `json:"implements_edges"`
+	ImplementsMethodEdges int `json:"implements_method_edges"`
 }
 
 // multiLangRows joins the landed per-language resolution columns to this
@@ -82,6 +96,7 @@ func multiLangRows(
 	t.Helper()
 	census := censusByLanguage(results, ix)
 	base := perLanguageRows(t, results, ix, edges, ownerLang)
+	types, members := conformanceCounts(ix, ownerLang)
 	out := make([]multiLangRow, 0, len(base))
 	for _, row := range base {
 		c := census[row.Language]
@@ -89,17 +104,38 @@ func multiLangRows(
 			c = newCensusRow()
 		}
 		out = append(out, multiLangRow{
-			corpusLangRow:      row,
-			References:         c.references,
-			BindsFiles:         c.bindsFiles,
-			BindsEntries:       c.bindsEntries,
-			BindsScopesUnknown: c.bindsScopesUnknown,
-			BoundByRule:        c.boundByRule,
-			AmbiguousRefs:      c.ambiguous,
-			AmbiguousByRule:    c.ambiguousByRule,
+			corpusLangRow:         row,
+			References:            c.references,
+			BindsFiles:            c.bindsFiles,
+			BindsEntries:          c.bindsEntries,
+			BindsScopesUnknown:    c.bindsScopesUnknown,
+			BoundByRule:           c.boundByRule,
+			AmbiguousRefs:         c.ambiguous,
+			AmbiguousByRule:       c.ambiguousByRule,
+			ImplementsEdges:       types[row.Language],
+			ImplementsMethodEdges: members[row.Language],
 		})
 	}
 	return out
+}
+
+// conformanceCounts derives the per-language declared-conformance pair counts
+// from the COMPLETE index.
+//
+// It calls the production derivation rather than counting emitted edges,
+// because the derivation is where the type level and the member level are still
+// distinguishable — the emitter flattens them into one slice whose entries
+// carry byte-identical Method values by design.
+func conformanceCounts(ix *declIndex, ownerLang map[string]string) (types, members map[string]int) {
+	types = map[string]int{}
+	members = map[string]int{}
+	pairs, _ := deriveDeclaredConformance(ix)
+	for _, p := range pairs {
+		lang := ownerLang[p.subtype.NodeID]
+		types[lang]++
+		members[lang] += len(p.members)
+	}
+	return types, members
 }
 
 // censusByLanguage is an ADAPTER over censusWalk

@@ -66,13 +66,14 @@ func BrowseEdges(ctx context.Context, gc GraphCaller, gt kgtypes.GraphType, grap
 	// uses to notice it was enforced. One without the other yields a drain that
 	// never detects truncation, or one that splits on a threshold nobody applies.
 	return paging.DrainPivotEdges([]string{nodeID}, paging.EdgePivotPageSize, engine.CorrelationsEdgeScanCap,
-		func(idPage []string) ([]knowledgev1.Edge, error) {
+		func(idPage []string, fromIDGte, fromIDLt string) ([]knowledgev1.Edge, bool, error) {
 			plan := &knowledgev1.QueryPlan{
-				Ids:        idPage,
-				Selection:  sel,
-				Forward:    &fwd,
-				ReturnMode: knowledgev1.ReturnMode_RETURN_MODE_EDGES,
-				Limit:      int32(engine.CorrelationsEdgeScanCap),
+				Ids:          idPage,
+				Selection:    sel,
+				Forward:      &fwd,
+				ReturnMode:   knowledgev1.ReturnMode_RETURN_MODE_EDGES,
+				Limit:        int32(engine.CorrelationsEdgeScanCap),
+				EdgeFromBand: paging.EdgeFromBandOrNil(fromIDGte, fromIDLt),
 			}
 			req := &knowledgev1.ExecuteRequest{
 				Plan:   &knowledgev1.ExecuteRequest_Query{Query: plan},
@@ -80,9 +81,10 @@ func BrowseEdges(ctx context.Context, gc GraphCaller, gt kgtypes.GraphType, grap
 			}
 			resp, err := gc.Execute(ctx, req)
 			if err != nil {
-				return nil, fmt.Errorf("postpopulate: browse edges %s/%s from %s: %w", gt, graphName, nodeID, err)
+				return nil, false, fmt.Errorf("postpopulate: browse edges %s/%s from %s: %w", gt, graphName, nodeID, err)
 			}
-			return engine.DecodeEdges(resp)
+			edges, derr := engine.DecodeEdges(resp)
+			return edges, resp.GetTruncated(), derr
 		})
 }
 

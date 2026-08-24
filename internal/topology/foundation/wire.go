@@ -213,8 +213,12 @@ func FetchNodeByID(ctx context.Context, caller GraphCaller, graphType kgtypes.Gr
 // The id set is chunked into bounded pivot pages and deduped into one union by
 // paging.DrainPivotEdges, so a set larger than one page costs
 // ceil(len(ids)/paging.EdgePivotPageSize) sequential round trips rather than
-// one. A SATURATED SINGLE PIVOT ABORTS: if one node alone fills a ceiling page
-// the drain cannot split further and errors naming it, because an analyzer
+// one. A SATURATED SINGLE PIVOT IS BAND-SPLIT, NOT ABORTED: if one node alone
+// fills a ceiling page, the drain re-reads that pivot as a tiling of half-open
+// from_id bands and unions the pieces, so the read completes. The abort survives
+// only for a pivot NO BAND CAN DIVIDE — an outgoing-heavy node, whose every edge
+// carries the node's own id as from_id and therefore lands in one band — and for
+// that case the drain still errors naming the pivot, because an analyzer
 // consuming a silently short edge set emits confidently WRONG rankings rather
 // than degrading visibly.
 func FetchEdges(ctx context.Context, caller GraphCaller, graphType kgtypes.GraphType, name string, ids []string, edgeTypes []kgtypes.EdgeType) ([]knowledgev1.Edge, error) {
@@ -226,12 +230,13 @@ func FetchEdges(ctx context.Context, caller GraphCaller, graphType kgtypes.Graph
 	// uses to notice it was enforced. One without the other yields a drain that
 	// never detects truncation, or one that splits on a threshold nobody applies.
 	edges, err := paging.DrainPivotEdges(ids, paging.EdgePivotPageSize, engine.CorrelationsEdgeScanCap,
-		func(idPage []string) ([]knowledgev1.Edge, error) {
+		func(idPage []string, fromIDGte, fromIDLt string) ([]knowledgev1.Edge, bool, error) {
 			plan := &knowledgev1.QueryPlan{
 				Ids:               idPage,
 				ReturnMode:        knowledgev1.ReturnMode_RETURN_MODE_EDGES,
 				IncludeTombstones: true,
 				Limit:             int32(engine.CorrelationsEdgeScanCap),
+				EdgeFromBand:      paging.EdgeFromBandOrNil(fromIDGte, fromIDLt),
 			}
 			if len(edgeTypes) > 0 {
 				ets := make([]string, len(edgeTypes))
@@ -245,13 +250,13 @@ func FetchEdges(ctx context.Context, caller GraphCaller, graphType kgtypes.Graph
 				Target: graphTarget(graphType, name),
 			})
 			if rerr != nil {
-				return nil, fmt.Errorf("topology/wire: execute bulk edges: %w", rerr)
+				return nil, false, fmt.Errorf("topology/wire: execute bulk edges: %w", rerr)
 			}
 			page, derr := engine.DecodeEdges(resp)
 			if derr != nil {
-				return nil, fmt.Errorf("topology/wire: decode bulk edges: %w", derr)
+				return nil, false, fmt.Errorf("topology/wire: decode bulk edges: %w", derr)
 			}
-			return page, nil
+			return page, resp.GetTruncated(), nil
 		})
 	if err != nil {
 		return nil, err
@@ -285,9 +290,19 @@ func FetchEdges(ctx context.Context, caller GraphCaller, graphType kgtypes.Graph
 // set. The match-all read surfaced those; nothing that consumes this function
 // can map them to nodes anyway.
 //
-// A SATURATED SINGLE PIVOT ABORTS, and callers must propagate the error rather
-// than degrade. If one node alone returns a full ceiling page, the drain cannot
-// split further and returns an error naming it. This function feeds whole-graph
+// A SATURATED SINGLE PIVOT IS BAND-SPLIT FIRST. If one node alone returns a full
+// ceiling page, the drain re-reads that pivot as a tiling of half-open from_id
+// bands and unions the pieces, so the read COMPLETES where it used to abort. That
+// is what makes a whole-graph load of a corpus containing such a node possible at
+// all; it is the mechanism, not a mitigation.
+//
+// THE ABORT SURVIVES, NARROWED, AND CALLERS MUST STILL PROPAGATE IT RATHER THAN
+// DEGRADE. A from_id band subdivides a pivot's INCOMING edges, whose sources vary
+// across the graph; it cannot subdivide the OUTGOING ones, because every edge
+// leaving the pivot carries the pivot's own id as from_id and so lands whole in a
+// single band. A node saturated by out-degree alone is therefore genuinely
+// unsplittable, and for it the drain returns an error naming the pivot. This
+// function feeds whole-graph
 // analyzers — centrality, community detection, degree histograms, structural
 // motifs — which consume an edge SET and emit rankings; a silently short edge
 // set does not degrade those gracefully, it produces confidently WRONG rankings
@@ -308,12 +323,13 @@ func FetchAllEdges(ctx context.Context, caller GraphCaller, graphType kgtypes.Gr
 	// uses to notice it was enforced. One without the other yields a drain that
 	// never detects truncation, or one that splits on a threshold nobody applies.
 	edges, err := paging.DrainPivotEdges(ids, paging.EdgePivotPageSize, engine.CorrelationsEdgeScanCap,
-		func(idPage []string) ([]knowledgev1.Edge, error) {
+		func(idPage []string, fromIDGte, fromIDLt string) ([]knowledgev1.Edge, bool, error) {
 			plan := &knowledgev1.QueryPlan{
 				Ids:               idPage,
 				ReturnMode:        knowledgev1.ReturnMode_RETURN_MODE_EDGES,
 				IncludeTombstones: true,
 				Limit:             int32(engine.CorrelationsEdgeScanCap),
+				EdgeFromBand:      paging.EdgeFromBandOrNil(fromIDGte, fromIDLt),
 			}
 			if len(edgeTypes) > 0 {
 				ets := make([]string, len(edgeTypes))
@@ -327,13 +343,13 @@ func FetchAllEdges(ctx context.Context, caller GraphCaller, graphType kgtypes.Gr
 				Target: graphTarget(graphType, name),
 			})
 			if rerr != nil {
-				return nil, fmt.Errorf("topology/wire: execute all edges: %w", rerr)
+				return nil, false, fmt.Errorf("topology/wire: execute all edges: %w", rerr)
 			}
 			page, derr := engine.DecodeEdges(resp)
 			if derr != nil {
-				return nil, fmt.Errorf("topology/wire: decode all edges: %w", derr)
+				return nil, false, fmt.Errorf("topology/wire: decode all edges: %w", derr)
 			}
-			return page, nil
+			return page, resp.GetTruncated(), nil
 		})
 	if err != nil {
 		return nil, fmt.Errorf("topology/wire: all edges %s/%s: %w", graphType, name, err)

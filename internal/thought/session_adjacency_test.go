@@ -62,7 +62,7 @@ func (f *sessionAdjacencyFake) Execute(_ context.Context, req *knowledgev1.Execu
 				}
 			}
 		}
-		return &knowledgev1.ExecuteResponse{Edges: edges}, nil
+		return &knowledgev1.ExecuteResponse{Edges: bandNarrow(edges, q)}, nil
 	}
 
 	return &knowledgev1.ExecuteResponse{}, nil

@@ -29,7 +29,7 @@ func TestAddSealAndSupersedeDuplicateSeal(t *testing.T) {
 	}
 
 	t.Run("identical_re_add_keeps_corpus_searchable", func(t *testing.T) {
-		e := newTestEngine(bigMinSeg)
+		e := newTestEngine(t, bigMinSeg)
 		defer e.Close()
 		docs := buildDocs("alpha beta")
 
@@ -59,7 +59,7 @@ func TestAddSealAndSupersedeDuplicateSeal(t *testing.T) {
 	})
 
 	t.Run("delete_then_identical_re_add_revives_id", func(t *testing.T) {
-		e := newTestEngine(bigMinSeg)
+		e := newTestEngine(t, bigMinSeg)
 		defer e.Close()
 		docs := buildDocs("alpha beta")
 
@@ -94,7 +94,7 @@ func TestAddSealAndSupersedeDuplicateSeal(t *testing.T) {
 		// red-first. It exists so the other two legs cannot be made green by
 		// disabling the kill: a genuinely-new payload must still retire the copy
 		// it supersedes.
-		e := newTestEngine(bigMinSeg)
+		e := newTestEngine(t, bigMinSeg)
 		defer e.Close()
 
 		if _, err := e.AddSealAndSupersede(buildDocs("alpha beta")); err != nil {

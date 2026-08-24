@@ -48,7 +48,7 @@ func TestReconcileResidentDegenerate_IntactCorpusLoadsInOnePass(t *testing.T) {
 	// searchCorpusN (== MinSegmentDocs) vectors with a distinct per-batch id prefix
 	// is force-sealed, and the tick re-emits and ships the accumulated corpus.
 	const corpusSegs = 3
-	producer := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	producer := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 	for b := range corpusSegs {
 		batch := hnswVecDocs(searchCorpusN)
 		for i := range batch {
@@ -65,7 +65,7 @@ func TestReconcileResidentDegenerate_IntactCorpusLoadsInOnePass(t *testing.T) {
 
 	// Process 2 (restart): a FRESH consumer Manager starts cold (resident 0) — it has
 	// loaded nothing yet this run.
-	consumer := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	consumer := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 	require.Equal(t, 0, consumer.ResidentDocCount(kgtypes.GraphCode, "restartFastloadRepo"),
 		"the fresh consumer has not loaded the corpus yet")
 

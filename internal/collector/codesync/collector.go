@@ -62,13 +62,58 @@ func (c *CodeCollector) Collect(ctx context.Context, id string, opts collector.C
 	if err != nil {
 		return nil, err
 	}
-
-	// Optionally replace tree-sitter CALLS with RTA-precise call graph edges.
-	pop = augmentWithPreciseCallGraph(ctx, pop, rootDir)
+	// AN INCOMPLETE WALK FAILS THE COLLECT, here, client-side. A file chunking
+	// could not read or parse SHOULD have nodes and its absence is TRANSIENT, so
+	// proceeding would either under-index the repository or — once the diff names
+	// deletions — assert that live file was deleted. There is no degraded lane for
+	// it: the failure is raised before the sink runs, so it precedes every upload,
+	// the manifest render and any server contact, and costs nothing.
+	//
+	// THE REPORT IS THE ERROR'S PAYLOAD rather than a flag's input, so the
+	// operator gets the per-reason counts and the offending paths at the point of
+	// the mistake. Rule-based discovery declines are NOT counted here — those are
+	// a scoped walk, consistently absent from every collect, and this repository
+	// alone reports hundreds of them on an ordinary walk.
+	//
+	// It is raised in the collector rather than inside ChunkFilesParallel because
+	// that function's other consumers legitimately chunk partial sets; the policy
+	// belongs to the collect.
+	if dropped := pop.ChunkReport.Dropped(); dropped > 0 {
+		return nil, fmt.Errorf("code: incomplete walk — chunking dropped %d file(s) of %q: %s",
+			dropped, repoName, pop.ChunkReport.Describe())
+	}
 
 	if opts.OnProgress != nil {
 		opts.OnProgress(len(pop.Nodes), len(pop.Nodes), "collection complete")
 	}
+
+	// The directory/package hierarchy and the repo-root node are part of the
+	// collect PAYLOAD, computed from the file nodes this collect already holds.
+	// Riding the payload is what gets them epoch-stamped by the collect path's
+	// existing single stamping site, into the seen set, and through their own
+	// finalize — the post-collect write they replace landed them unstamped, so
+	// the next collect's sweep tombstoned them and the write after that
+	// recreated them, blanking their summaries each time.
+	//
+	// Placement is load-bearing: the append happens BEFORE the edge conversion
+	// below, so hierarchy edges cross the same seam as every other edge and
+	// inherit ID-addressed (-1/-1) endpoints. The progress report above
+	// deliberately stays ahead of the append — it counts parsed chunks, not
+	// hierarchy.
+	//
+	// PRECONDITION worth stating because nothing enforces it: making a package
+	// node a collect SOURCE hands its ENTIRE outbound edge set to the collect
+	// edge GC, which clears a first-landing source's outbound collector-owned
+	// edges without filtering by edge type or writer. That is safe only while
+	// every outbound edge a package/repo-root node has is a CONTAINS edge this
+	// same builder re-emits in the same collect. A future package-level edge
+	// from some other writer — a package→package DEPENDS_ON, say — would be
+	// silently eaten on the next collect, with no error and no log; its writer
+	// must either re-emit it in the payload or be excluded from the
+	// collector-owned set.
+	pkgNodes, hierEdges := coderun.HierarchyFromNodes(pop.Nodes)
+	pop.Nodes = append(pop.Nodes, pkgNodes...)
+	pop.Edges = append(pop.Edges, hierEdges...)
 
 	// Convert pre-resolved *knowledgev1.Edge to kgwire.BatchEdge for the collector
 	// pipeline (BatchEdge stays the gap carrier the wire-send chain consumes).
@@ -111,6 +156,27 @@ func (c *CodeCollector) Collect(ctx context.Context, id string, opts collector.C
 		SyncTime:      syncTime,
 		ModulePath:    modulePath,
 		LayerConfig:   layerConfig,
+		// Carried from the discovery pass, which is the only place that knows the
+		// answer: a file discovery never visited leaves no trace in the nodes or
+		// edges above, so a consumer downstream of here cannot tell a scoped
+		// collect from one whose files were deleted. The incremental-collect path
+		// compares this against the previous collect's value and degrades to a
+		// full collect when it moved, rather than naming out-of-scope files as
+		// deletions.
+		DiscoveryFingerprint: pop.DiscoveryFingerprint,
+		// Carried from the parser for the same reason: it is the producer's own
+		// identity, and a consumer holding only the rows cannot tell a collector
+		// that changed what it emits from one that did not. The incremental path
+		// compares this against the value it last recorded for this graph@branch
+		// and forces one decline-suppressed full re-land when it moved.
+		CollectorOutputVersion: pop.CollectorOutputVersion,
+		// COMPUTED FROM THE SAME ChunkReport the failure above reads, so the wire
+		// assertion and the client-side refusal can never disagree. A well-behaved
+		// client cannot reach here with a dropped file, but the field is computed
+		// rather than hardcoded true: the server's guard 2 stays armed against the
+		// untrusted case, and a literal here would be a lie the moment this
+		// collector grew a second path to the return.
+		WalkComplete: pop.ChunkReport.Dropped() == 0,
 	}, nil
 }
 
@@ -251,16 +317,18 @@ func hasTopLevelSourceFile(rootDir string) bool {
 	return false
 }
 
-// codePostPopulate runs BuildHierarchy + LinkStepsToCode against the per-repo
-// code graph after collection, entirely over the postpopulate wire seam.
-// graphName is the code repo graph; both helpers route their reads/writes via
-// kgtypes.GraphCode (→ Target.Repo==graphName). Registered by
-// codesync/register_postpopulate.go under the "code" collector key so the
-// live-path orchestrator fires it after a code collect.
+// codePostPopulate runs LinkStepsToCode against the per-repo code graph after
+// collection, entirely over the postpopulate wire seam. graphName is the code
+// repo graph; the helper routes its reads/writes via kgtypes.GraphCode
+// (→ Target.Repo==graphName). Registered by codesync/register_postpopulate.go
+// under the "code" collector key so the live-path orchestrator fires it after a
+// code collect.
+//
+// The package/repo-root hierarchy is NOT built here. The collector emits it in
+// the collect payload itself (see Collect above), so it is epoch-stamped and
+// survives its own finalize instead of being written after the sweep that would
+// otherwise tombstone it.
 func codePostPopulate(ctx context.Context, gc postpopulate.GraphCaller, graphName string) error {
-	if err := coderun.BuildHierarchy(ctx, gc, graphName); err != nil {
-		return fmt.Errorf("codePostPopulate: BuildHierarchy: %w", err)
-	}
 	if err := coderun.LinkStepsToCode(ctx, gc, graphName); err != nil {
 		return fmt.Errorf("codePostPopulate: LinkStepsToCode: %w", err)
 	}

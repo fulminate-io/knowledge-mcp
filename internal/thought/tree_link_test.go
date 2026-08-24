@@ -60,7 +60,7 @@ func (f *treeLinkFake) Execute(_ context.Context, req *knowledgev1.ExecuteReques
 		return &knowledgev1.ExecuteResponse{}, nil
 	}
 	if q.GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_EDGES {
-		return &knowledgev1.ExecuteResponse{Edges: f.edges}, nil
+		return &knowledgev1.ExecuteResponse{Edges: bandNarrow(f.edges, q)}, nil
 	}
 	if len(q.GetIds()) > 0 {
 		var out []*knowledgev1.Node

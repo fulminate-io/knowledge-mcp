@@ -126,8 +126,40 @@ type CollectChunkRequest struct {
 	Promote       bool                   `protobuf:"varint,9,opt,name=promote,proto3" json:"promote,omitempty"` // code-only: force base + repoint default branch to current_branch
 	// client_context carries the per-request client provenance. See ClientContext.
 	ClientContext *ClientContext `protobuf:"bytes,10,opt,name=client_context,json=clientContext,proto3" json:"client_context,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// diff_mode is the CLIENT'S RESOLVED MODE for this collect, stamped
+	// identically on every chunk of it — the mode is a property of the collect,
+	// not of the chunk.
+	//
+	// IT EXISTS FOR ONE READER: the collect-path edge GC's resident-floor valve.
+	// That valve declines to touch a chunk whose ids are absent from both layers
+	// and alarms, because absence is the shape a mis-keyed chunk produces. Under
+	// diff mode an ALL-NEW chunk is instead the ordinary shape of a collect that
+	// uploaded only new files, and the valve needs to tell the two apart.
+	//
+	// SHADOW SETS FALSE, because shadow mode uploads the full set — only the
+	// resolved diff-on mode changes what a chunk's residence means. An absent or
+	// false value is the LOUD reading: the valve keeps its Error severity and its
+	// counter increment, so a client that never sets this is noisier, never
+	// quieter.
+	//
+	// IT IS ALSO THE SERVER'S FULL-VERSUS-DIFF TRAFFIC OBSERVABLE. Once clients
+	// resolve to diff mode as a matter of course, a run of full-path uploads is a
+	// distinguishable and attributable shape rather than an indistinguishable one,
+	// which is what lets a server tell ordinary write volume from a write storm.
+	DiffMode bool `protobuf:"varint,11,opt,name=diff_mode,json=diffMode,proto3" json:"diff_mode,omitempty"`
+	// manifest_id echoes CollectManifestResponse.manifest_id. It is the VALIDITY
+	// TOKEN for the per-file early decline: the server declines a file only
+	// against a hash IT rendered under the manifest identity it last served.
+	ManifestId string `protobuf:"bytes,12,opt,name=manifest_id,json=manifestId,proto3" json:"manifest_id,omitempty"`
+	// file_contributions carries this chunk's owning files and their
+	// client-computed per-file hashes (the same ManifestEntry shape the manifest
+	// response uses). Advisory only — absence costs work, never correctness.
+	FileContributions []*ManifestEntry `protobuf:"bytes,13,rep,name=file_contributions,json=fileContributions,proto3" json:"file_contributions,omitempty"`
+	// node_contribution_hashes is INDEX-ALIGNED with nodes. A length mismatch is
+	// BAD INPUT and the RPC is refused naming both lengths.
+	NodeContributionHashes [][]byte `protobuf:"bytes,14,rep,name=node_contribution_hashes,json=nodeContributionHashes,proto3" json:"node_contribution_hashes,omitempty"`
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
 }
 
 func (x *CollectChunkRequest) Reset() {
@@ -230,6 +262,34 @@ func (x *CollectChunkRequest) GetClientContext() *ClientContext {
 	return nil
 }
 
+func (x *CollectChunkRequest) GetDiffMode() bool {
+	if x != nil {
+		return x.DiffMode
+	}
+	return false
+}
+
+func (x *CollectChunkRequest) GetManifestId() string {
+	if x != nil {
+		return x.ManifestId
+	}
+	return ""
+}
+
+func (x *CollectChunkRequest) GetFileContributions() []*ManifestEntry {
+	if x != nil {
+		return x.FileContributions
+	}
+	return nil
+}
+
+func (x *CollectChunkRequest) GetNodeContributionHashes() [][]byte {
+	if x != nil {
+		return x.NodeContributionHashes
+	}
+	return nil
+}
+
 type CollectChunkResponse struct {
 	state protoimpl.MessageState `protogen:"open.v1"`
 	// account-scoped freshness watermark; see engine.proto ExecuteResponse.freshness_gen for the full contract.
@@ -275,6 +335,243 @@ func (x *CollectChunkResponse) GetFreshnessGen() uint64 {
 	return 0
 }
 
+// CollectManifestRequest asks the server for its per-file contribution hashes
+// for one graph, so the client can upload only the files whose contribution
+// changed.
+//
+// It carries the SAME selector quintuple CollectChunkRequest carries, and for
+// the same reason: the manifest must describe the layer the chunks will land
+// in, so the overlay-vs-base decision has to be derivable identically from
+// both requests. A manifest rendered against a different layer than the one
+// the chunks target would let the client name a deletion the server cannot
+// resolve, or can only resolve against the wrong graph.
+type CollectManifestRequest struct {
+	state         protoimpl.MessageState `protogen:"open.v1"`
+	GraphType     string                 `protobuf:"bytes,1,opt,name=graph_type,json=graphType,proto3" json:"graph_type,omitempty"`
+	GraphName     string                 `protobuf:"bytes,2,opt,name=graph_name,json=graphName,proto3" json:"graph_name,omitempty"`
+	CurrentBranch string                 `protobuf:"bytes,3,opt,name=current_branch,json=currentBranch,proto3" json:"current_branch,omitempty"`
+	Promote       bool                   `protobuf:"varint,4,opt,name=promote,proto3" json:"promote,omitempty"` // code-only: same base-forcing override CollectChunkRequest.promote applies
+	// client_context carries the per-request client provenance. See ClientContext.
+	ClientContext *ClientContext `protobuf:"bytes,5,opt,name=client_context,json=clientContext,proto3" json:"client_context,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CollectManifestRequest) Reset() {
+	*x = CollectManifestRequest{}
+	mi := &file_knowledge_v1_ingest_proto_msgTypes[2]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CollectManifestRequest) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CollectManifestRequest) ProtoMessage() {}
+
+func (x *CollectManifestRequest) ProtoReflect() protoreflect.Message {
+	mi := &file_knowledge_v1_ingest_proto_msgTypes[2]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CollectManifestRequest.ProtoReflect.Descriptor instead.
+func (*CollectManifestRequest) Descriptor() ([]byte, []int) {
+	return file_knowledge_v1_ingest_proto_rawDescGZIP(), []int{2}
+}
+
+func (x *CollectManifestRequest) GetGraphType() string {
+	if x != nil {
+		return x.GraphType
+	}
+	return ""
+}
+
+func (x *CollectManifestRequest) GetGraphName() string {
+	if x != nil {
+		return x.GraphName
+	}
+	return ""
+}
+
+func (x *CollectManifestRequest) GetCurrentBranch() string {
+	if x != nil {
+		return x.CurrentBranch
+	}
+	return ""
+}
+
+func (x *CollectManifestRequest) GetPromote() bool {
+	if x != nil {
+		return x.Promote
+	}
+	return false
+}
+
+func (x *CollectManifestRequest) GetClientContext() *ClientContext {
+	if x != nil {
+		return x.ClientContext
+	}
+	return nil
+}
+
+// CollectManifestResponse is the server's rendering of what it currently holds
+// for the selected graph, one entry per file the collector owns.
+//
+// entries EXCLUDE nodes with no owning file and rows the collector does not
+// own. The predicate is declared ONCE in docs/collect-contribution-hash.md
+// section G and is deliberately not restated here — the manifest's unit is a
+// file, so a node belonging to no file cannot be an entry, and a row the
+// collector does not own cannot be one either.
+//
+// AN EMPTY entries LIST IS NOT A DIAGNOSIS, and nothing here separates its two
+// causes: a genuinely empty graph on a first collect, and a populated graph
+// whose every live collector-owned row is FILELESS. The response carried a
+// live_node_count field to tell them apart, for a client trigger that has since
+// been deleted — contribution hashes are DERIVED from the rows on both flavors,
+// so "live rows whose hash state is missing" cannot occur, and the remaining
+// state is served correctly by the armed diff proceeding. Both causes are now
+// the same wire shape ON PURPOSE; the distinction lives server-side, where the
+// rows are, and is pinned per flavor by the fileless render tests.
+type CollectManifestResponse struct {
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// manifest_id is server-minted and opaque. The client echoes it on Finalize,
+	// and the server refuses the deletion phase for any manifest it did not last
+	// serve — which is what makes a concurrent collect non-destructive.
+	ManifestId string `protobuf:"bytes,1,opt,name=manifest_id,json=manifestId,proto3" json:"manifest_id,omitempty"`
+	// hash_scheme_version is the server's contribution-hash scheme version. A
+	// client holding a different value degrades to one full collect. This field
+	// IS the sync mechanism for a scheme that is deliberately declared three
+	// times (no package may be shared across the module boundary), so drift is
+	// fail-closed by construction rather than by discipline.
+	HashSchemeVersion uint32           `protobuf:"varint,2,opt,name=hash_scheme_version,json=hashSchemeVersion,proto3" json:"hash_scheme_version,omitempty"`
+	Entries           []*ManifestEntry `protobuf:"bytes,3,rep,name=entries,proto3" json:"entries,omitempty"`
+	// account-scoped freshness watermark; see engine.proto ExecuteResponse.freshness_gen for the full contract.
+	FreshnessGen  uint64 `protobuf:"varint,5,opt,name=freshness_gen,json=freshnessGen,proto3" json:"freshness_gen,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
+}
+
+func (x *CollectManifestResponse) Reset() {
+	*x = CollectManifestResponse{}
+	mi := &file_knowledge_v1_ingest_proto_msgTypes[3]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *CollectManifestResponse) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*CollectManifestResponse) ProtoMessage() {}
+
+func (x *CollectManifestResponse) ProtoReflect() protoreflect.Message {
+	mi := &file_knowledge_v1_ingest_proto_msgTypes[3]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use CollectManifestResponse.ProtoReflect.Descriptor instead.
+func (*CollectManifestResponse) Descriptor() ([]byte, []int) {
+	return file_knowledge_v1_ingest_proto_rawDescGZIP(), []int{3}
+}
+
+func (x *CollectManifestResponse) GetManifestId() string {
+	if x != nil {
+		return x.ManifestId
+	}
+	return ""
+}
+
+func (x *CollectManifestResponse) GetHashSchemeVersion() uint32 {
+	if x != nil {
+		return x.HashSchemeVersion
+	}
+	return 0
+}
+
+func (x *CollectManifestResponse) GetEntries() []*ManifestEntry {
+	if x != nil {
+		return x.Entries
+	}
+	return nil
+}
+
+func (x *CollectManifestResponse) GetFreshnessGen() uint64 {
+	if x != nil {
+		return x.FreshnessGen
+	}
+	return 0
+}
+
+// ManifestEntry is one file's contribution hash. The hash rides as raw bytes
+// rather than hex: at 32 bytes against 64 it halves the hash half of a
+// response that runs to hundreds of kilobytes on a large repo.
+type ManifestEntry struct {
+	state            protoimpl.MessageState `protogen:"open.v1"`
+	FilePath         string                 `protobuf:"bytes,1,opt,name=file_path,json=filePath,proto3" json:"file_path,omitempty"`
+	ContributionHash []byte                 `protobuf:"bytes,2,opt,name=contribution_hash,json=contributionHash,proto3" json:"contribution_hash,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
+}
+
+func (x *ManifestEntry) Reset() {
+	*x = ManifestEntry{}
+	mi := &file_knowledge_v1_ingest_proto_msgTypes[4]
+	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+	ms.StoreMessageInfo(mi)
+}
+
+func (x *ManifestEntry) String() string {
+	return protoimpl.X.MessageStringOf(x)
+}
+
+func (*ManifestEntry) ProtoMessage() {}
+
+func (x *ManifestEntry) ProtoReflect() protoreflect.Message {
+	mi := &file_knowledge_v1_ingest_proto_msgTypes[4]
+	if x != nil {
+		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
+		if ms.LoadMessageInfo() == nil {
+			ms.StoreMessageInfo(mi)
+		}
+		return ms
+	}
+	return mi.MessageOf(x)
+}
+
+// Deprecated: Use ManifestEntry.ProtoReflect.Descriptor instead.
+func (*ManifestEntry) Descriptor() ([]byte, []int) {
+	return file_knowledge_v1_ingest_proto_rawDescGZIP(), []int{4}
+}
+
+func (x *ManifestEntry) GetFilePath() string {
+	if x != nil {
+		return x.FilePath
+	}
+	return ""
+}
+
+func (x *ManifestEntry) GetContributionHash() []byte {
+	if x != nil {
+		return x.ContributionHash
+	}
+	return nil
+}
+
 // FinalizeRequest ends a collection. epoch matches the CollectChunk epoch;
 // the server tombstones every node whose collect_epoch differs (the
 // prior-collection set). graph_type/graph_name/current_branch select the
@@ -291,13 +588,89 @@ type FinalizeRequest struct {
 	Promote       bool                   `protobuf:"varint,5,opt,name=promote,proto3" json:"promote,omitempty"` // code-only: select base completion arm + delete the same-name overlay
 	// client_context carries the per-request client provenance. See ClientContext.
 	ClientContext *ClientContext `protobuf:"bytes,6,opt,name=client_context,json=clientContext,proto3" json:"client_context,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	// deleted_files names what this collect asserts is GONE. It is the carrier
+	// that replaces inference: no server arm may conclude a node is deleted from
+	// its ABSENCE from the upload — a node is destroyed only because the client
+	// NAMED it here and the server VALIDATED the naming.
+	//
+	// TWO ENTRY KINDS RIDE THIS ONE FIELD. Each entry is either:
+	//   - a collector-owned FILE PATH, repo-relative; or
+	//   - a DIRECTORY ID, which is literally a package node's id — the directory
+	//     path itself, with the repo root spelled as ".".
+	//
+	// A package or repo-root node has no file of its own, so naming its directory
+	// is the only way to delete it, and that naming is explicit rather than
+	// inferred. The field name is therefore narrower than its contents; the
+	// semantics here are authoritative.
+	//
+	// The server validates EVERY entry against the manifest it served and its own
+	// live set, and refuses the WHOLE deletion phase if any single entry fails —
+	// partial application of a set the server does not fully understand is exactly
+	// the failure mode this design exists to remove.
+	DeletedFiles []string `protobuf:"bytes,7,rep,name=deleted_files,json=deletedFiles,proto3" json:"deleted_files,omitempty"`
+	// manifest_id echoes the identity of the manifest this collect was served
+	// (CollectManifestResponse.manifest_id). The server refuses the deletion phase
+	// for any manifest it did not LAST serve, which is what makes two concurrent
+	// collects non-destructive: the second render overwrites the stored identity,
+	// so the first collect's echo no longer matches and its deletions are refused
+	// rather than applied against a graph that moved underneath it.
+	ManifestId string `protobuf:"bytes,8,opt,name=manifest_id,json=manifestId,proto3" json:"manifest_id,omitempty"`
+	// walk_complete asserts that discovery AND chunking read every file they set
+	// out to read.
+	//
+	// ITS ABSENCE MEANS OFF, AND THAT IS ONE MECHANISM SERVING TWO PURPOSES.
+	// proto3 scalar defaults make an older client's request decode with
+	// walk_complete=false, which disables the deletion phase — so backward
+	// compatibility and fail-safety are the same property rather than two.
+	//
+	// It also carries the protection the deletion set arithmetic cannot provide on
+	// its own: a file that failed to READ is in neither the chunked nor the
+	// verified-unchanged set, so the arithmetic alone would name it. This flag is
+	// what stops that.
+	WalkComplete bool `protobuf:"varint,9,opt,name=walk_complete,json=walkComplete,proto3" json:"walk_complete,omitempty"`
+	// diff_mode is the collect's resolved mode, the same value CollectChunkRequest
+	// carries, and it is what tells the server THIS COLLECT UPLOADED ONLY PART OF
+	// THE GRAPH.
+	//
+	// IT EXISTS BECAUSE LENGTH IS NOT A MODE. Without it the server can only infer
+	// the mode from deleted_files being non-empty, and a diff collect that edits
+	// two files and deletes NONE — the common case — is then indistinguishable
+	// from a full collect. Every legacy arm would infer destruction from absence
+	// against a partial upload and tombstone the entire unchanged remainder of the
+	// graph; the presence valve does not save it, because that valve only trips
+	// when residence falls under one percent.
+	//
+	// THE INVARIANT IT BUYS: a diff collect that names ZERO deletions still reaches
+	// the deletion arms with a NON-NIL, EMPTY named set, which destroys nothing.
+	// nil means full-collect mode and ONLY full-collect mode.
+	DiffMode bool `protobuf:"varint,10,opt,name=diff_mode,json=diffMode,proto3" json:"diff_mode,omitempty"`
+	// deletion_ratio_override opts this collect out of the deletion-ratio bound —
+	// guard 3 — AND NOTHING ELSE.
+	//
+	// WHY IT EXISTS: the bound refuses a named set larger than a fixed percentage
+	// of the live node count, which a small repository with naturally large churn
+	// trips on a LEGITIMATE collect. The floor below which the ratio is not
+	// consulted exempts only very small graphs, so a modest repo just above it is
+	// refused for doing something ordinary.
+	//
+	// WHAT IT DOES NOT RELAX, and the list is the point: the set is still bounded
+	// by what the client NAMED (nothing is inferred from absence), still refused
+	// unless walk_complete is asserted, still refused on a stale manifest
+	// identity, still validated entry by entry, and still lands as quarantined
+	// tombstones that stay recoverable. This flag decides one thing only —
+	// whether an already-validated set is additionally refused for being large
+	// relative to a small graph.
+	//
+	// UNSET IS OFF, the opposite default from diff_mode above, deliberately: an
+	// override that armed itself would be the hack it exists to remove.
+	DeletionRatioOverride bool `protobuf:"varint,11,opt,name=deletion_ratio_override,json=deletionRatioOverride,proto3" json:"deletion_ratio_override,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *FinalizeRequest) Reset() {
 	*x = FinalizeRequest{}
-	mi := &file_knowledge_v1_ingest_proto_msgTypes[2]
+	mi := &file_knowledge_v1_ingest_proto_msgTypes[5]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -309,7 +682,7 @@ func (x *FinalizeRequest) String() string {
 func (*FinalizeRequest) ProtoMessage() {}
 
 func (x *FinalizeRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_knowledge_v1_ingest_proto_msgTypes[2]
+	mi := &file_knowledge_v1_ingest_proto_msgTypes[5]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -322,7 +695,7 @@ func (x *FinalizeRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FinalizeRequest.ProtoReflect.Descriptor instead.
 func (*FinalizeRequest) Descriptor() ([]byte, []int) {
-	return file_knowledge_v1_ingest_proto_rawDescGZIP(), []int{2}
+	return file_knowledge_v1_ingest_proto_rawDescGZIP(), []int{5}
 }
 
 func (x *FinalizeRequest) GetEpoch() uint64 {
@@ -367,6 +740,41 @@ func (x *FinalizeRequest) GetClientContext() *ClientContext {
 	return nil
 }
 
+func (x *FinalizeRequest) GetDeletedFiles() []string {
+	if x != nil {
+		return x.DeletedFiles
+	}
+	return nil
+}
+
+func (x *FinalizeRequest) GetManifestId() string {
+	if x != nil {
+		return x.ManifestId
+	}
+	return ""
+}
+
+func (x *FinalizeRequest) GetWalkComplete() bool {
+	if x != nil {
+		return x.WalkComplete
+	}
+	return false
+}
+
+func (x *FinalizeRequest) GetDiffMode() bool {
+	if x != nil {
+		return x.DiffMode
+	}
+	return false
+}
+
+func (x *FinalizeRequest) GetDeletionRatioOverride() bool {
+	if x != nil {
+		return x.DeletionRatioOverride
+	}
+	return false
+}
+
 // FinalizeResponse acknowledges the collection. Its return means the DURABLE
 // half of the finalize is committed — the epoch-tombstone sweep that records
 // this collection's deletions — NOT that every follow-up has finished.
@@ -382,14 +790,24 @@ type FinalizeResponse struct {
 	state      protoimpl.MessageState `protogen:"open.v1"`
 	FinalizeId string                 `protobuf:"bytes,1,opt,name=finalize_id,json=finalizeId,proto3" json:"finalize_id,omitempty"`
 	// account-scoped freshness watermark; see engine.proto ExecuteResponse.freshness_gen for the full contract.
-	FreshnessGen  uint64 `protobuf:"varint,2,opt,name=freshness_gen,json=freshnessGen,proto3" json:"freshness_gen,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	FreshnessGen uint64 `protobuf:"varint,2,opt,name=freshness_gen,json=freshnessGen,proto3" json:"freshness_gen,omitempty"`
+	// deletion_refused_reason is EMPTY when the deletion phase ran, and names the
+	// guard that stopped it when it did not.
+	//
+	// WITHOUT IT A REFUSAL IS INVISIBLE. The collect returns successfully, the
+	// graph quietly keeps nodes the client believes it deleted, and the operator
+	// has nothing to act on — a refused deletion and a graph with nothing to delete
+	// are indistinguishable. This field is what keeps a refusal from becoming
+	// unobservable permanent staleness: the client logs it at Error and names the
+	// full-collect escape that resolves it.
+	DeletionRefusedReason string `protobuf:"bytes,3,opt,name=deletion_refused_reason,json=deletionRefusedReason,proto3" json:"deletion_refused_reason,omitempty"`
+	unknownFields         protoimpl.UnknownFields
+	sizeCache             protoimpl.SizeCache
 }
 
 func (x *FinalizeResponse) Reset() {
 	*x = FinalizeResponse{}
-	mi := &file_knowledge_v1_ingest_proto_msgTypes[3]
+	mi := &file_knowledge_v1_ingest_proto_msgTypes[6]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -401,7 +819,7 @@ func (x *FinalizeResponse) String() string {
 func (*FinalizeResponse) ProtoMessage() {}
 
 func (x *FinalizeResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_knowledge_v1_ingest_proto_msgTypes[3]
+	mi := &file_knowledge_v1_ingest_proto_msgTypes[6]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -414,7 +832,7 @@ func (x *FinalizeResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FinalizeResponse.ProtoReflect.Descriptor instead.
 func (*FinalizeResponse) Descriptor() ([]byte, []int) {
-	return file_knowledge_v1_ingest_proto_rawDescGZIP(), []int{3}
+	return file_knowledge_v1_ingest_proto_rawDescGZIP(), []int{6}
 }
 
 func (x *FinalizeResponse) GetFinalizeId() string {
@@ -431,6 +849,13 @@ func (x *FinalizeResponse) GetFreshnessGen() uint64 {
 	return 0
 }
 
+func (x *FinalizeResponse) GetDeletionRefusedReason() string {
+	if x != nil {
+		return x.DeletionRefusedReason
+	}
+	return ""
+}
+
 // FinalizeStatusRequest asks after a previously returned finalize_id.
 type FinalizeStatusRequest struct {
 	state      protoimpl.MessageState `protogen:"open.v1"`
@@ -443,7 +868,7 @@ type FinalizeStatusRequest struct {
 
 func (x *FinalizeStatusRequest) Reset() {
 	*x = FinalizeStatusRequest{}
-	mi := &file_knowledge_v1_ingest_proto_msgTypes[4]
+	mi := &file_knowledge_v1_ingest_proto_msgTypes[7]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -455,7 +880,7 @@ func (x *FinalizeStatusRequest) String() string {
 func (*FinalizeStatusRequest) ProtoMessage() {}
 
 func (x *FinalizeStatusRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_knowledge_v1_ingest_proto_msgTypes[4]
+	mi := &file_knowledge_v1_ingest_proto_msgTypes[7]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -468,7 +893,7 @@ func (x *FinalizeStatusRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FinalizeStatusRequest.ProtoReflect.Descriptor instead.
 func (*FinalizeStatusRequest) Descriptor() ([]byte, []int) {
-	return file_knowledge_v1_ingest_proto_rawDescGZIP(), []int{4}
+	return file_knowledge_v1_ingest_proto_rawDescGZIP(), []int{7}
 }
 
 func (x *FinalizeStatusRequest) GetFinalizeId() string {
@@ -498,7 +923,7 @@ type FinalizeStatusResponse struct {
 
 func (x *FinalizeStatusResponse) Reset() {
 	*x = FinalizeStatusResponse{}
-	mi := &file_knowledge_v1_ingest_proto_msgTypes[5]
+	mi := &file_knowledge_v1_ingest_proto_msgTypes[8]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -510,7 +935,7 @@ func (x *FinalizeStatusResponse) String() string {
 func (*FinalizeStatusResponse) ProtoMessage() {}
 
 func (x *FinalizeStatusResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_knowledge_v1_ingest_proto_msgTypes[5]
+	mi := &file_knowledge_v1_ingest_proto_msgTypes[8]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -523,7 +948,7 @@ func (x *FinalizeStatusResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FinalizeStatusResponse.ProtoReflect.Descriptor instead.
 func (*FinalizeStatusResponse) Descriptor() ([]byte, []int) {
-	return file_knowledge_v1_ingest_proto_rawDescGZIP(), []int{5}
+	return file_knowledge_v1_ingest_proto_rawDescGZIP(), []int{8}
 }
 
 func (x *FinalizeStatusResponse) GetState() FinalizeState {
@@ -554,24 +979,34 @@ func (x *FinalizeStatusResponse) GetFreshnessGen() uint64 {
 // convention, preserving sub-second fidelity without a Timestamp import. Type is
 // the OPEN EdgeType vocabulary as a verbatim string (no proto enum).
 type BatchEdge struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	FromIdx       int32                  `protobuf:"varint,1,opt,name=from_idx,json=fromIdx,proto3" json:"from_idx,omitempty"`                    // store.BatchEdge.FromIdx (slot index; -1 → use from_id)
-	ToIdx         int32                  `protobuf:"varint,2,opt,name=to_idx,json=toIdx,proto3" json:"to_idx,omitempty"`                          // store.BatchEdge.ToIdx (slot index; -1 → use to_id)
-	FromId        string                 `protobuf:"bytes,3,opt,name=from_id,json=fromId,proto3" json:"from_id,omitempty"`                        // store.BatchEdge.FromID (used when from_idx == -1)
-	ToId          string                 `protobuf:"bytes,4,opt,name=to_id,json=toId,proto3" json:"to_id,omitempty"`                              // store.BatchEdge.ToID (used when to_idx == -1)
-	Type          string                 `protobuf:"bytes,5,opt,name=type,proto3" json:"type,omitempty"`                                          // store.BatchEdge.Type (EdgeType — open vocabulary, verbatim string)
-	Weight        float64                `protobuf:"fixed64,6,opt,name=weight,proto3" json:"weight,omitempty"`                                    // store.BatchEdge.Weight (float64)
-	Confidence    float64                `protobuf:"fixed64,7,opt,name=confidence,proto3" json:"confidence,omitempty"`                            // store.BatchEdge.Confidence (float64, 0.0-1.0)
-	Method        string                 `protobuf:"bytes,8,opt,name=method,proto3" json:"method,omitempty"`                                      // store.BatchEdge.Method
-	Evidence      string                 `protobuf:"bytes,9,opt,name=evidence,proto3" json:"evidence,omitempty"`                                  // store.BatchEdge.Evidence (a STRING)
-	LastValidated int64                  `protobuf:"varint,10,opt,name=last_validated,json=lastValidated,proto3" json:"last_validated,omitempty"` // store.BatchEdge.LastValidated as unix nanos (0 = unset)
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	state      protoimpl.MessageState `protogen:"open.v1"`
+	FromIdx    int32                  `protobuf:"varint,1,opt,name=from_idx,json=fromIdx,proto3" json:"from_idx,omitempty"` // store.BatchEdge.FromIdx (slot index; -1 → use from_id)
+	ToIdx      int32                  `protobuf:"varint,2,opt,name=to_idx,json=toIdx,proto3" json:"to_idx,omitempty"`       // store.BatchEdge.ToIdx (slot index; -1 → use to_id)
+	FromId     string                 `protobuf:"bytes,3,opt,name=from_id,json=fromId,proto3" json:"from_id,omitempty"`     // store.BatchEdge.FromID (used when from_idx == -1)
+	ToId       string                 `protobuf:"bytes,4,opt,name=to_id,json=toId,proto3" json:"to_id,omitempty"`           // store.BatchEdge.ToID (used when to_idx == -1)
+	Type       string                 `protobuf:"bytes,5,opt,name=type,proto3" json:"type,omitempty"`                       // store.BatchEdge.Type (EdgeType — open vocabulary, verbatim string)
+	Weight     float64                `protobuf:"fixed64,6,opt,name=weight,proto3" json:"weight,omitempty"`                 // store.BatchEdge.Weight (float64)
+	Confidence float64                `protobuf:"fixed64,7,opt,name=confidence,proto3" json:"confidence,omitempty"`         // store.BatchEdge.Confidence (float64, 0.0-1.0)
+	Method     string                 `protobuf:"bytes,8,opt,name=method,proto3" json:"method,omitempty"`                   // store.BatchEdge.Method
+	// GROUP KEY, NOT EPISTEMIC EVIDENCE. Despite the name, resolution stamps this
+	// with the multi-bind GROUP KEY that ties the N edges of one ambiguous
+	// reference together — not with a justification for the edge. It is one of the
+	// fields the per-row contribution hash covers, so two edges sharing a
+	// (from_id, to_id, type) key but carrying different group keys are a
+	// differing-bytes tie the landing statement has to break deterministically.
+	Evidence      string `protobuf:"bytes,9,opt,name=evidence,proto3" json:"evidence,omitempty"`                                  // store.BatchEdge.Evidence (a STRING)
+	LastValidated int64  `protobuf:"varint,10,opt,name=last_validated,json=lastValidated,proto3" json:"last_validated,omitempty"` // store.BatchEdge.LastValidated as unix nanos (0 = unset)
+	// contribution_hash is the CLIENT-COMPUTED per-row digest of
+	// docs/collect-contribution-hash.md section D, stored by the server AS-IS.
+	// Exactly 32 bytes on a collect; a different length is BAD INPUT.
+	ContributionHash []byte `protobuf:"bytes,11,opt,name=contribution_hash,json=contributionHash,proto3" json:"contribution_hash,omitempty"`
+	unknownFields    protoimpl.UnknownFields
+	sizeCache        protoimpl.SizeCache
 }
 
 func (x *BatchEdge) Reset() {
 	*x = BatchEdge{}
-	mi := &file_knowledge_v1_ingest_proto_msgTypes[6]
+	mi := &file_knowledge_v1_ingest_proto_msgTypes[9]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -583,7 +1018,7 @@ func (x *BatchEdge) String() string {
 func (*BatchEdge) ProtoMessage() {}
 
 func (x *BatchEdge) ProtoReflect() protoreflect.Message {
-	mi := &file_knowledge_v1_ingest_proto_msgTypes[6]
+	mi := &file_knowledge_v1_ingest_proto_msgTypes[9]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -596,7 +1031,7 @@ func (x *BatchEdge) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use BatchEdge.ProtoReflect.Descriptor instead.
 func (*BatchEdge) Descriptor() ([]byte, []int) {
-	return file_knowledge_v1_ingest_proto_rawDescGZIP(), []int{6}
+	return file_knowledge_v1_ingest_proto_rawDescGZIP(), []int{9}
 }
 
 func (x *BatchEdge) GetFromIdx() int32 {
@@ -669,6 +1104,13 @@ func (x *BatchEdge) GetLastValidated() int64 {
 	return 0
 }
 
+func (x *BatchEdge) GetContributionHash() []byte {
+	if x != nil {
+		return x.ContributionHash
+	}
+	return nil
+}
+
 // FetchCloudSubgraphRequest asks the server for an in-memory slice of
 // cloud graphs the client uses to drive logs.CloudResolver and
 // logs.DependencyChecker locally. Empty graph_names = every loaded
@@ -688,7 +1130,7 @@ type FetchCloudSubgraphRequest struct {
 
 func (x *FetchCloudSubgraphRequest) Reset() {
 	*x = FetchCloudSubgraphRequest{}
-	mi := &file_knowledge_v1_ingest_proto_msgTypes[7]
+	mi := &file_knowledge_v1_ingest_proto_msgTypes[10]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -700,7 +1142,7 @@ func (x *FetchCloudSubgraphRequest) String() string {
 func (*FetchCloudSubgraphRequest) ProtoMessage() {}
 
 func (x *FetchCloudSubgraphRequest) ProtoReflect() protoreflect.Message {
-	mi := &file_knowledge_v1_ingest_proto_msgTypes[7]
+	mi := &file_knowledge_v1_ingest_proto_msgTypes[10]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -713,7 +1155,7 @@ func (x *FetchCloudSubgraphRequest) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FetchCloudSubgraphRequest.ProtoReflect.Descriptor instead.
 func (*FetchCloudSubgraphRequest) Descriptor() ([]byte, []int) {
-	return file_knowledge_v1_ingest_proto_rawDescGZIP(), []int{7}
+	return file_knowledge_v1_ingest_proto_rawDescGZIP(), []int{10}
 }
 
 func (x *FetchCloudSubgraphRequest) GetGraphNames() []string {
@@ -754,7 +1196,7 @@ type FetchCloudSubgraphResponse struct {
 
 func (x *FetchCloudSubgraphResponse) Reset() {
 	*x = FetchCloudSubgraphResponse{}
-	mi := &file_knowledge_v1_ingest_proto_msgTypes[8]
+	mi := &file_knowledge_v1_ingest_proto_msgTypes[11]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -766,7 +1208,7 @@ func (x *FetchCloudSubgraphResponse) String() string {
 func (*FetchCloudSubgraphResponse) ProtoMessage() {}
 
 func (x *FetchCloudSubgraphResponse) ProtoReflect() protoreflect.Message {
-	mi := &file_knowledge_v1_ingest_proto_msgTypes[8]
+	mi := &file_knowledge_v1_ingest_proto_msgTypes[11]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -779,7 +1221,7 @@ func (x *FetchCloudSubgraphResponse) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use FetchCloudSubgraphResponse.ProtoReflect.Descriptor instead.
 func (*FetchCloudSubgraphResponse) Descriptor() ([]byte, []int) {
-	return file_knowledge_v1_ingest_proto_rawDescGZIP(), []int{8}
+	return file_knowledge_v1_ingest_proto_rawDescGZIP(), []int{11}
 }
 
 func (x *FetchCloudSubgraphResponse) GetSlices() []*CloudSubgraphSlice {
@@ -807,7 +1249,7 @@ type CloudSubgraphSlice struct {
 
 func (x *CloudSubgraphSlice) Reset() {
 	*x = CloudSubgraphSlice{}
-	mi := &file_knowledge_v1_ingest_proto_msgTypes[9]
+	mi := &file_knowledge_v1_ingest_proto_msgTypes[12]
 	ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 	ms.StoreMessageInfo(mi)
 }
@@ -819,7 +1261,7 @@ func (x *CloudSubgraphSlice) String() string {
 func (*CloudSubgraphSlice) ProtoMessage() {}
 
 func (x *CloudSubgraphSlice) ProtoReflect() protoreflect.Message {
-	mi := &file_knowledge_v1_ingest_proto_msgTypes[9]
+	mi := &file_knowledge_v1_ingest_proto_msgTypes[12]
 	if x != nil {
 		ms := protoimpl.X.MessageStateOf(protoimpl.Pointer(x))
 		if ms.LoadMessageInfo() == nil {
@@ -832,7 +1274,7 @@ func (x *CloudSubgraphSlice) ProtoReflect() protoreflect.Message {
 
 // Deprecated: Use CloudSubgraphSlice.ProtoReflect.Descriptor instead.
 func (*CloudSubgraphSlice) Descriptor() ([]byte, []int) {
-	return file_knowledge_v1_ingest_proto_rawDescGZIP(), []int{9}
+	return file_knowledge_v1_ingest_proto_rawDescGZIP(), []int{12}
 }
 
 func (x *CloudSubgraphSlice) GetGraphName() string {
@@ -860,7 +1302,7 @@ var File_knowledge_v1_ingest_proto protoreflect.FileDescriptor
 
 const file_knowledge_v1_ingest_proto_rawDesc = "" +
 	"\n" +
-	"\x19knowledge/v1/ingest.proto\x12\fknowledge.v1\x1a\x19knowledge/v1/engine.proto\"\x85\x03\n" +
+	"\x19knowledge/v1/ingest.proto\x12\fknowledge.v1\x1a\x19knowledge/v1/engine.proto\"\xc9\x04\n" +
 	"\x13CollectChunkRequest\x12\x14\n" +
 	"\x05epoch\x18\x01 \x01(\x04R\x05epoch\x12\x1d\n" +
 	"\n" +
@@ -875,9 +1317,31 @@ const file_knowledge_v1_ingest_proto_rawDesc = "" +
 	"\x05edges\x18\b \x03(\v2\x17.knowledge.v1.BatchEdgeR\x05edges\x12\x18\n" +
 	"\apromote\x18\t \x01(\bR\apromote\x12B\n" +
 	"\x0eclient_context\x18\n" +
-	" \x01(\v2\x1b.knowledge.v1.ClientContextR\rclientContext\";\n" +
+	" \x01(\v2\x1b.knowledge.v1.ClientContextR\rclientContext\x12\x1b\n" +
+	"\tdiff_mode\x18\v \x01(\bR\bdiffMode\x12\x1f\n" +
+	"\vmanifest_id\x18\f \x01(\tR\n" +
+	"manifestId\x12J\n" +
+	"\x12file_contributions\x18\r \x03(\v2\x1b.knowledge.v1.ManifestEntryR\x11fileContributions\x128\n" +
+	"\x18node_contribution_hashes\x18\x0e \x03(\fR\x16nodeContributionHashes\";\n" +
 	"\x14CollectChunkResponse\x12#\n" +
-	"\rfreshness_gen\x18\x01 \x01(\x04R\ffreshnessGen\"\xea\x01\n" +
+	"\rfreshness_gen\x18\x01 \x01(\x04R\ffreshnessGen\"\xdb\x01\n" +
+	"\x16CollectManifestRequest\x12\x1d\n" +
+	"\n" +
+	"graph_type\x18\x01 \x01(\tR\tgraphType\x12\x1d\n" +
+	"\n" +
+	"graph_name\x18\x02 \x01(\tR\tgraphName\x12%\n" +
+	"\x0ecurrent_branch\x18\x03 \x01(\tR\rcurrentBranch\x12\x18\n" +
+	"\apromote\x18\x04 \x01(\bR\apromote\x12B\n" +
+	"\x0eclient_context\x18\x05 \x01(\v2\x1b.knowledge.v1.ClientContextR\rclientContext\"\xc6\x01\n" +
+	"\x17CollectManifestResponse\x12\x1f\n" +
+	"\vmanifest_id\x18\x01 \x01(\tR\n" +
+	"manifestId\x12.\n" +
+	"\x13hash_scheme_version\x18\x02 \x01(\rR\x11hashSchemeVersion\x125\n" +
+	"\aentries\x18\x03 \x03(\v2\x1b.knowledge.v1.ManifestEntryR\aentries\x12#\n" +
+	"\rfreshness_gen\x18\x05 \x01(\x04R\ffreshnessGen\"Y\n" +
+	"\rManifestEntry\x12\x1b\n" +
+	"\tfile_path\x18\x01 \x01(\tR\bfilePath\x12+\n" +
+	"\x11contribution_hash\x18\x02 \x01(\fR\x10contributionHash\"\xaa\x03\n" +
 	"\x0fFinalizeRequest\x12\x14\n" +
 	"\x05epoch\x18\x01 \x01(\x04R\x05epoch\x12\x1d\n" +
 	"\n" +
@@ -886,11 +1350,19 @@ const file_knowledge_v1_ingest_proto_rawDesc = "" +
 	"graph_name\x18\x03 \x01(\tR\tgraphName\x12%\n" +
 	"\x0ecurrent_branch\x18\x04 \x01(\tR\rcurrentBranch\x12\x18\n" +
 	"\apromote\x18\x05 \x01(\bR\apromote\x12B\n" +
-	"\x0eclient_context\x18\x06 \x01(\v2\x1b.knowledge.v1.ClientContextR\rclientContext\"X\n" +
+	"\x0eclient_context\x18\x06 \x01(\v2\x1b.knowledge.v1.ClientContextR\rclientContext\x12#\n" +
+	"\rdeleted_files\x18\a \x03(\tR\fdeletedFiles\x12\x1f\n" +
+	"\vmanifest_id\x18\b \x01(\tR\n" +
+	"manifestId\x12#\n" +
+	"\rwalk_complete\x18\t \x01(\bR\fwalkComplete\x12\x1b\n" +
+	"\tdiff_mode\x18\n" +
+	" \x01(\bR\bdiffMode\x126\n" +
+	"\x17deletion_ratio_override\x18\v \x01(\bR\x15deletionRatioOverride\"\x90\x01\n" +
 	"\x10FinalizeResponse\x12\x1f\n" +
 	"\vfinalize_id\x18\x01 \x01(\tR\n" +
 	"finalizeId\x12#\n" +
-	"\rfreshness_gen\x18\x02 \x01(\x04R\ffreshnessGen\"|\n" +
+	"\rfreshness_gen\x18\x02 \x01(\x04R\ffreshnessGen\x126\n" +
+	"\x17deletion_refused_reason\x18\x03 \x01(\tR\x15deletionRefusedReason\"|\n" +
 	"\x15FinalizeStatusRequest\x12\x1f\n" +
 	"\vfinalize_id\x18\x01 \x01(\tR\n" +
 	"finalizeId\x12B\n" +
@@ -898,7 +1370,7 @@ const file_knowledge_v1_ingest_proto_rawDesc = "" +
 	"\x16FinalizeStatusResponse\x121\n" +
 	"\x05state\x18\x01 \x01(\x0e2\x1b.knowledge.v1.FinalizeStateR\x05state\x12\x14\n" +
 	"\x05error\x18\x02 \x01(\tR\x05error\x12#\n" +
-	"\rfreshness_gen\x18\x03 \x01(\x04R\ffreshnessGen\"\x92\x02\n" +
+	"\rfreshness_gen\x18\x03 \x01(\x04R\ffreshnessGen\"\xbf\x02\n" +
 	"\tBatchEdge\x12\x19\n" +
 	"\bfrom_idx\x18\x01 \x01(\x05R\afromIdx\x12\x15\n" +
 	"\x06to_idx\x18\x02 \x01(\x05R\x05toIdx\x12\x17\n" +
@@ -912,7 +1384,8 @@ const file_knowledge_v1_ingest_proto_rawDesc = "" +
 	"\x06method\x18\b \x01(\tR\x06method\x12\x1a\n" +
 	"\bevidence\x18\t \x01(\tR\bevidence\x12%\n" +
 	"\x0elast_validated\x18\n" +
-	" \x01(\x03R\rlastValidated\"\xa5\x01\n" +
+	" \x01(\x03R\rlastValidated\x12+\n" +
+	"\x11contribution_hash\x18\v \x01(\fR\x10contributionHash\"\xa5\x01\n" +
 	"\x19FetchCloudSubgraphRequest\x12\x1f\n" +
 	"\vgraph_names\x18\x01 \x03(\tR\n" +
 	"graphNames\x12#\n" +
@@ -932,11 +1405,12 @@ const file_knowledge_v1_ingest_proto_rawDesc = "" +
 	"\x16FINALIZE_STATE_RUNNING\x10\x01\x12\x17\n" +
 	"\x13FINALIZE_STATE_DONE\x10\x02\x12\x19\n" +
 	"\x15FINALIZE_STATE_FAILED\x10\x03\x12\x1a\n" +
-	"\x16FINALIZE_STATE_UNKNOWN\x10\x042\xf7\x02\n" +
+	"\x16FINALIZE_STATE_UNKNOWN\x10\x042\xd7\x03\n" +
 	"\rIngestService\x12U\n" +
 	"\fCollectChunk\x12!.knowledge.v1.CollectChunkRequest\x1a\".knowledge.v1.CollectChunkResponse\x12I\n" +
 	"\bFinalize\x12\x1d.knowledge.v1.FinalizeRequest\x1a\x1e.knowledge.v1.FinalizeResponse\x12[\n" +
-	"\x0eFinalizeStatus\x12#.knowledge.v1.FinalizeStatusRequest\x1a$.knowledge.v1.FinalizeStatusResponse\x12g\n" +
+	"\x0eFinalizeStatus\x12#.knowledge.v1.FinalizeStatusRequest\x1a$.knowledge.v1.FinalizeStatusResponse\x12^\n" +
+	"\x0fCollectManifest\x12$.knowledge.v1.CollectManifestRequest\x1a%.knowledge.v1.CollectManifestResponse\x12g\n" +
 	"\x12FetchCloudSubgraph\x12'.knowledge.v1.FetchCloudSubgraphRequest\x1a(.knowledge.v1.FetchCloudSubgraphResponseB@Z>github.com/fulminate-io/knowledge/gen/knowledge/v1;knowledgev1b\x06proto3"
 
 var (
@@ -952,46 +1426,54 @@ func file_knowledge_v1_ingest_proto_rawDescGZIP() []byte {
 }
 
 var file_knowledge_v1_ingest_proto_enumTypes = make([]protoimpl.EnumInfo, 1)
-var file_knowledge_v1_ingest_proto_msgTypes = make([]protoimpl.MessageInfo, 10)
+var file_knowledge_v1_ingest_proto_msgTypes = make([]protoimpl.MessageInfo, 13)
 var file_knowledge_v1_ingest_proto_goTypes = []any{
 	(FinalizeState)(0),                 // 0: knowledge.v1.FinalizeState
 	(*CollectChunkRequest)(nil),        // 1: knowledge.v1.CollectChunkRequest
 	(*CollectChunkResponse)(nil),       // 2: knowledge.v1.CollectChunkResponse
-	(*FinalizeRequest)(nil),            // 3: knowledge.v1.FinalizeRequest
-	(*FinalizeResponse)(nil),           // 4: knowledge.v1.FinalizeResponse
-	(*FinalizeStatusRequest)(nil),      // 5: knowledge.v1.FinalizeStatusRequest
-	(*FinalizeStatusResponse)(nil),     // 6: knowledge.v1.FinalizeStatusResponse
-	(*BatchEdge)(nil),                  // 7: knowledge.v1.BatchEdge
-	(*FetchCloudSubgraphRequest)(nil),  // 8: knowledge.v1.FetchCloudSubgraphRequest
-	(*FetchCloudSubgraphResponse)(nil), // 9: knowledge.v1.FetchCloudSubgraphResponse
-	(*CloudSubgraphSlice)(nil),         // 10: knowledge.v1.CloudSubgraphSlice
-	(*Node)(nil),                       // 11: knowledge.v1.Node
-	(*ClientContext)(nil),              // 12: knowledge.v1.ClientContext
-	(*Edge)(nil),                       // 13: knowledge.v1.Edge
+	(*CollectManifestRequest)(nil),     // 3: knowledge.v1.CollectManifestRequest
+	(*CollectManifestResponse)(nil),    // 4: knowledge.v1.CollectManifestResponse
+	(*ManifestEntry)(nil),              // 5: knowledge.v1.ManifestEntry
+	(*FinalizeRequest)(nil),            // 6: knowledge.v1.FinalizeRequest
+	(*FinalizeResponse)(nil),           // 7: knowledge.v1.FinalizeResponse
+	(*FinalizeStatusRequest)(nil),      // 8: knowledge.v1.FinalizeStatusRequest
+	(*FinalizeStatusResponse)(nil),     // 9: knowledge.v1.FinalizeStatusResponse
+	(*BatchEdge)(nil),                  // 10: knowledge.v1.BatchEdge
+	(*FetchCloudSubgraphRequest)(nil),  // 11: knowledge.v1.FetchCloudSubgraphRequest
+	(*FetchCloudSubgraphResponse)(nil), // 12: knowledge.v1.FetchCloudSubgraphResponse
+	(*CloudSubgraphSlice)(nil),         // 13: knowledge.v1.CloudSubgraphSlice
+	(*Node)(nil),                       // 14: knowledge.v1.Node
+	(*ClientContext)(nil),              // 15: knowledge.v1.ClientContext
+	(*Edge)(nil),                       // 16: knowledge.v1.Edge
 }
 var file_knowledge_v1_ingest_proto_depIdxs = []int32{
-	11, // 0: knowledge.v1.CollectChunkRequest.nodes:type_name -> knowledge.v1.Node
-	7,  // 1: knowledge.v1.CollectChunkRequest.edges:type_name -> knowledge.v1.BatchEdge
-	12, // 2: knowledge.v1.CollectChunkRequest.client_context:type_name -> knowledge.v1.ClientContext
-	12, // 3: knowledge.v1.FinalizeRequest.client_context:type_name -> knowledge.v1.ClientContext
-	12, // 4: knowledge.v1.FinalizeStatusRequest.client_context:type_name -> knowledge.v1.ClientContext
-	0,  // 5: knowledge.v1.FinalizeStatusResponse.state:type_name -> knowledge.v1.FinalizeState
-	12, // 6: knowledge.v1.FetchCloudSubgraphRequest.client_context:type_name -> knowledge.v1.ClientContext
-	10, // 7: knowledge.v1.FetchCloudSubgraphResponse.slices:type_name -> knowledge.v1.CloudSubgraphSlice
-	13, // 8: knowledge.v1.CloudSubgraphSlice.edges:type_name -> knowledge.v1.Edge
-	1,  // 9: knowledge.v1.IngestService.CollectChunk:input_type -> knowledge.v1.CollectChunkRequest
-	3,  // 10: knowledge.v1.IngestService.Finalize:input_type -> knowledge.v1.FinalizeRequest
-	5,  // 11: knowledge.v1.IngestService.FinalizeStatus:input_type -> knowledge.v1.FinalizeStatusRequest
-	8,  // 12: knowledge.v1.IngestService.FetchCloudSubgraph:input_type -> knowledge.v1.FetchCloudSubgraphRequest
-	2,  // 13: knowledge.v1.IngestService.CollectChunk:output_type -> knowledge.v1.CollectChunkResponse
-	4,  // 14: knowledge.v1.IngestService.Finalize:output_type -> knowledge.v1.FinalizeResponse
-	6,  // 15: knowledge.v1.IngestService.FinalizeStatus:output_type -> knowledge.v1.FinalizeStatusResponse
-	9,  // 16: knowledge.v1.IngestService.FetchCloudSubgraph:output_type -> knowledge.v1.FetchCloudSubgraphResponse
-	13, // [13:17] is the sub-list for method output_type
-	9,  // [9:13] is the sub-list for method input_type
-	9,  // [9:9] is the sub-list for extension type_name
-	9,  // [9:9] is the sub-list for extension extendee
-	0,  // [0:9] is the sub-list for field type_name
+	14, // 0: knowledge.v1.CollectChunkRequest.nodes:type_name -> knowledge.v1.Node
+	10, // 1: knowledge.v1.CollectChunkRequest.edges:type_name -> knowledge.v1.BatchEdge
+	15, // 2: knowledge.v1.CollectChunkRequest.client_context:type_name -> knowledge.v1.ClientContext
+	5,  // 3: knowledge.v1.CollectChunkRequest.file_contributions:type_name -> knowledge.v1.ManifestEntry
+	15, // 4: knowledge.v1.CollectManifestRequest.client_context:type_name -> knowledge.v1.ClientContext
+	5,  // 5: knowledge.v1.CollectManifestResponse.entries:type_name -> knowledge.v1.ManifestEntry
+	15, // 6: knowledge.v1.FinalizeRequest.client_context:type_name -> knowledge.v1.ClientContext
+	15, // 7: knowledge.v1.FinalizeStatusRequest.client_context:type_name -> knowledge.v1.ClientContext
+	0,  // 8: knowledge.v1.FinalizeStatusResponse.state:type_name -> knowledge.v1.FinalizeState
+	15, // 9: knowledge.v1.FetchCloudSubgraphRequest.client_context:type_name -> knowledge.v1.ClientContext
+	13, // 10: knowledge.v1.FetchCloudSubgraphResponse.slices:type_name -> knowledge.v1.CloudSubgraphSlice
+	16, // 11: knowledge.v1.CloudSubgraphSlice.edges:type_name -> knowledge.v1.Edge
+	1,  // 12: knowledge.v1.IngestService.CollectChunk:input_type -> knowledge.v1.CollectChunkRequest
+	6,  // 13: knowledge.v1.IngestService.Finalize:input_type -> knowledge.v1.FinalizeRequest
+	8,  // 14: knowledge.v1.IngestService.FinalizeStatus:input_type -> knowledge.v1.FinalizeStatusRequest
+	3,  // 15: knowledge.v1.IngestService.CollectManifest:input_type -> knowledge.v1.CollectManifestRequest
+	11, // 16: knowledge.v1.IngestService.FetchCloudSubgraph:input_type -> knowledge.v1.FetchCloudSubgraphRequest
+	2,  // 17: knowledge.v1.IngestService.CollectChunk:output_type -> knowledge.v1.CollectChunkResponse
+	7,  // 18: knowledge.v1.IngestService.Finalize:output_type -> knowledge.v1.FinalizeResponse
+	9,  // 19: knowledge.v1.IngestService.FinalizeStatus:output_type -> knowledge.v1.FinalizeStatusResponse
+	4,  // 20: knowledge.v1.IngestService.CollectManifest:output_type -> knowledge.v1.CollectManifestResponse
+	12, // 21: knowledge.v1.IngestService.FetchCloudSubgraph:output_type -> knowledge.v1.FetchCloudSubgraphResponse
+	17, // [17:22] is the sub-list for method output_type
+	12, // [12:17] is the sub-list for method input_type
+	12, // [12:12] is the sub-list for extension type_name
+	12, // [12:12] is the sub-list for extension extendee
+	0,  // [0:12] is the sub-list for field type_name
 }
 
 func init() { file_knowledge_v1_ingest_proto_init() }
@@ -1006,7 +1488,7 @@ func file_knowledge_v1_ingest_proto_init() {
 			GoPackagePath: reflect.TypeOf(x{}).PkgPath(),
 			RawDescriptor: unsafe.Slice(unsafe.StringData(file_knowledge_v1_ingest_proto_rawDesc), len(file_knowledge_v1_ingest_proto_rawDesc)),
 			NumEnums:      1,
-			NumMessages:   10,
+			NumMessages:   13,
 			NumExtensions: 0,
 			NumServices:   1,
 		},

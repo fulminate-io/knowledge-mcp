@@ -38,6 +38,24 @@ type Segment[Q, S any] interface {
 	IDs() []ExternalID
 	// Encode serializes the segment to bytes for shipping/persistence.
 	Encode() ([]byte, error)
+	// HeapBytes reports the Go heap this payload holds, in bytes.
+	//
+	// THE NUMBER IS A MODELED ESTIMATE, NOT A MEASUREMENT. Go exposes no
+	// per-object heap query, so every implementation returns a documented
+	// formula over what it knows it holds. A caller reading it as an exact
+	// byte count would be wrong; it is accurate in ORDER, not to the byte.
+	//
+	// A MAPPED payload returns its own fixed struct size and nothing more:
+	// its blob lives in the page cache, which is evictable, shared and
+	// invisible to the garbage collector, so charging those bytes to a heap
+	// budget would meter memory the heap does not hold.
+	//
+	// It is on the interface rather than behind a type-assert on purpose. An
+	// optional accessor lets a new format contribute heap while reporting
+	// zero, and a silent zero in a memory budget is precisely the failure this
+	// method exists to prevent — the compiler now refuses a payload that has
+	// not declared its cost.
+	HeapBytes() int64
 }
 
 // SegmentID is the content hash that names a segment blob.
@@ -54,6 +72,19 @@ type SegmentBlob struct {
 	Generation uint64
 	DocCount   int
 	Bytes      []byte
+	// Release frees the resources backing Bytes when they are a MAPPING rather
+	// than a heap copy. Nil means Bytes are heap-owned and nothing needs
+	// freeing. It is NOT called by whoever receives the blob: the engine hands
+	// it to a cleanup keyed on the entry's reachability, because a reader can
+	// still be walking a pre-swap snapshot when an entry is swapped out.
+	Release func()
+	// keepAlive pins the resident entry whose mapping backs Bytes, and is nil
+	// when Bytes are heap-owned. The cleanup that frees a mapping observes the
+	// ENTRY's reachability, and holding a byte slice does not make the entry
+	// reachable — so a blob that outlives its entry would otherwise be reading
+	// unmapped memory. Keeping the reference IN the struct means every copy of
+	// the blob carries the guarantee with it.
+	keepAlive any
 }
 
 // SegmentMeta is the lightweight descriptor the distribution layer lists without

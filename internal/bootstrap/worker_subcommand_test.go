@@ -38,9 +38,9 @@ func withArgs(t *testing.T, args []string) {
 
 // TestRunWorkerSubcommand_NotWorkerFallsThrough pins that
 // RunWorkerSubcommand returns (false, 0) when os.Args[1] is not
-// "worker" so main() falls through to the auth subcommand chain or the
-// MCP stdio path. Mirrors RunSubcommand's "default: return false, 0"
-// semantics.
+// "worker" so main() falls through to the remaining dispatch (version
+// flags, ParseFlags, bootstrap.Run). Mirrors RunSubcommand's
+// "default: return false, 0" semantics.
 func TestRunWorkerSubcommand_NotWorkerFallsThrough(t *testing.T) {
 	cases := [][]string{
 		{"knowledge"},                // no subcommand → fall through

@@ -6,8 +6,8 @@
 // Relocated client-side from pkg/topology/. The
 // mapping pass reads the scoped code graph via the Execute carrier seam
 // (fetchNodeIndex → engine.Compile/Execute/DecodeNodes) rather than
-// holding a direct server-side graph handle, because the client stdio
-// binary doesn't link the persistence layer.
+// holding a direct server-side graph handle, because the client
+// binary (cmd/knowledge) doesn't link the persistence layer.
 package topology
 
 import (

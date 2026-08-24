@@ -21,7 +21,7 @@ func TestLoadL2Only_OSSPath(t *testing.T) {
 	ctx := context.Background()
 
 	t.Run("empty L2: load returns nil, imports nothing, local source (no server Fetch)", func(t *testing.T) {
-		mgr := NewManager(loginStateStub{loggedIn: false}, t.TempDir(), 0)
+		mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: false}, t.TempDir(), 0))
 		dm := mgr.managerFor(kgtypes.GraphCode, "empty")
 		require.IsType(t, (*localSegmentSource)(nil), dm.source, "OSS caller selects the local source")
 
@@ -34,12 +34,12 @@ func TestLoadL2Only_OSSPath(t *testing.T) {
 		dir := t.TempDir()
 		// Warm the shared L2 dir via an OSS producer Manager: the write + tick seal a
 		// real HNSW segment and warm the L2 cache (shipNew cache.Put) with zero network.
-		prod := NewManager(loginStateStub{loggedIn: false}, dir, 0)
+		prod := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: false}, dir, 0))
 		seedShipped(t, ctx, prod, kgtypes.GraphCode, "warm", hnswVecDocs(96))
 		require.NoError(t, prod.Flush(ctx, kgtypes.GraphCode, "warm"))
 
 		// A FRESH consumer Manager at the SAME dir loads from L2 alone.
-		cons := NewManager(loginStateStub{loggedIn: false}, dir, 0)
+		cons := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: false}, dir, 0))
 		dm := cons.managerFor(kgtypes.GraphCode, "warm")
 		require.IsType(t, (*localSegmentSource)(nil), dm.source, "OSS caller selects the local source")
 		require.NoError(t, dm.load(ctx))
@@ -58,21 +58,21 @@ func TestManagerAccessors_L2AuthoritativeAndLoadResidentDocCount(t *testing.T) {
 
 	// IsL2Authoritative: true for a not-logged-in caller, false for a logged-in
 	// caller (whose source is the GCS source / errorSegmentSource sentinel).
-	ossMgr := NewManager(loginStateStub{loggedIn: false}, t.TempDir(), 0)
+	ossMgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: false}, t.TempDir(), 0))
 	require.True(t, ossMgr.IsL2Authoritative(kgtypes.GraphCode, "g"),
 		"a not-logged-in Manager is L2-authoritative")
-	cloudMgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0)
+	cloudMgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0))
 	require.False(t, cloudMgr.IsL2Authoritative(kgtypes.GraphCode, "g"),
 		"a logged-in Manager is not L2-authoritative")
 
 	// LoadResidentDocCount over an OSS Manager with a WARM L2 returns the L2 resident
 	// count, matching ResidentDocCount after the load.
 	dir := t.TempDir()
-	prod := NewManager(loginStateStub{loggedIn: false}, dir, 0)
+	prod := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: false}, dir, 0))
 	seedShipped(t, ctx, prod, kgtypes.GraphCode, "warm", hnswVecDocs(80))
 	require.NoError(t, prod.Flush(ctx, kgtypes.GraphCode, "warm"))
 
-	cons := NewManager(loginStateStub{loggedIn: false}, dir, 0)
+	cons := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: false}, dir, 0))
 	got, err := cons.LoadResidentDocCount(ctx, kgtypes.GraphCode, "warm")
 	require.NoError(t, err)
 	require.Equal(t, 80, got, "LoadResidentDocCount loads L2 and returns the resident count")

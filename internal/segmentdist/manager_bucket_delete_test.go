@@ -49,7 +49,7 @@ func TestDeletedNodeLeavesTheSearchableCorpus(t *testing.T) {
 
 	dir := t.TempDir()
 	_, gc := newSegmentHarness(t)
-	mgr := NewManager(loginStateStub{loggedIn: true}, dir, 0, withSegmentSource(gc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, dir, 0, withSegmentSource(gc)))
 
 	docs := bothFormatDocs(deleteFixtureN, "del-")
 	require.NoError(t, mgr.AddAndMarkDirty(ctx, gt, name, docs))
@@ -74,7 +74,7 @@ func residentInFreshEngine(
 	gt kgtypes.GraphType, name string, doc searchengine.Document,
 ) bool {
 	t.Helper()
-	fresh := NewManager(loginStateStub{loggedIn: true}, dir, 0, withSegmentSource(src))
+	fresh := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, dir, 0, withSegmentSource(src)))
 	_, ok, err := fresh.VectorByID(ctx, gt, name, doc.ID)
 	require.NoError(t, err)
 	return ok
@@ -94,7 +94,7 @@ func TestDeleteCoversBothFormats(t *testing.T) {
 	gt := kgtypes.GraphCode
 
 	_, gc := newSegmentHarness(t)
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 
 	docs := bothFormatDocs(deleteFixtureN, "delboth-")
 	require.NoError(t, mgr.AddAndMarkDirty(ctx, gt, name, docs))

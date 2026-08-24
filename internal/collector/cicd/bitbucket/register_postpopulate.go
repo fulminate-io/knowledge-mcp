@@ -25,5 +25,5 @@ func bitbucketPostPopulate(ctx context.Context, gc postpopulate.GraphCaller, gra
 }
 
 func init() {
-	postpopulate.Register("bitbucket", bitbucketPostPopulate)
+	postpopulate.Register("bitbucket", postpopulate.BreadthFamilyBroad, bitbucketPostPopulate)
 }

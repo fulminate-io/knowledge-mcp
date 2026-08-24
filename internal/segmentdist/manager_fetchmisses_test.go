@@ -77,8 +77,8 @@ func (c *recordingFetchSource) callCounts() []int {
 func newFetchMissesManager(t *testing.T, src *recordingFetchSource) *distManager[mockQuery, mockStats] {
 	t.Helper()
 	target := &knowledgev1.GraphSelector{Graph: "code", Repo: "fetchmisses"}
-	cache := newDiskSegmentCache(t.TempDir(), 0)
-	return newDistManager(newMockEngine(), src, cache, target, "")
+	cache := newDiskSegmentCache(t.TempDir(), 0, adviceRandom)
+	return newDistManager(newMockEngine(t), src, cache, target, "")
 }
 
 func segIDs(n int) []searchengine.SegmentID {

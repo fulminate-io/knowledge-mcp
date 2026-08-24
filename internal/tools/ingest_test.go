@@ -20,6 +20,8 @@ import (
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1/knowledgev1connect"
+	"github.com/fulminate-io/knowledge-mcp/internal/collector/contribhash"
+	"github.com/fulminate-io/knowledge-mcp/internal/collector/parser"
 	"github.com/fulminate-io/knowledge-mcp/internal/collector/remote"
 	"github.com/fulminate-io/knowledge-mcp/internal/collectorwire"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
@@ -95,6 +97,18 @@ func newTestIngestHandler() *testIngestHandler {
 		metaByEpoch:  map[uint64]*knowledgev1.CollectChunkRequest{},
 		sink:         &capturingSink{},
 	}
+}
+
+// CollectManifest answers as a genuinely EMPTY graph: no entries and zero live
+// nodes is the first-collect shape, so this fake never pushes a test onto the
+// fail-closed path for a reason the test did not choose.
+func (h *testIngestHandler) CollectManifest(
+	context.Context,
+	*connect.Request[knowledgev1.CollectManifestRequest],
+) (*connect.Response[knowledgev1.CollectManifestResponse], error) {
+	return connect.NewResponse(&knowledgev1.CollectManifestResponse{
+		ManifestId: "test-manifest", HashSchemeVersion: contribhash.ContributionHashSchemeVersion,
+	}), nil
 }
 
 func (h *testIngestHandler) CollectChunk(
@@ -177,8 +191,17 @@ func TestIngest_CollectChunkFinalize_Roundtrip(t *testing.T) {
 	client := knowledgev1connect.NewIngestServiceClient(h2cClient(), srv.URL, connect.WithGRPC())
 	sink := remote.NewUploadSink(client)
 
+	// A KNOWLEDGE GRAPH, NOT A CODE ONE, and the family is load-bearing for what
+	// this test asserts. It pins that an INDEX-ADDRESSED edge (FromIdx/ToIdx rather
+	// than FromID/ToID) crosses the wire intact. Only code graphs reach the
+	// incremental diff, whose filter keeps an edge by looking its FROM NODE up by
+	// ID — an index-addressed edge carries no FromID, so on a code graph the armed
+	// lane would drop it and this test would be measuring the diff rather than the
+	// roundtrip. The code collector only ever emits ID-addressed edges
+	// (parser.ToBatchEdges sets -1/-1 with both IDs), so the shape under test here
+	// belongs to the families outside that gate.
 	result := &collectorwire.CollectResult{
-		GraphType: kgtypes.GraphCode,
+		GraphType: kgtypes.GraphKnowledge,
 		GraphName: "ingest-roundtrip-repo",
 		Nodes: []*knowledgev1.Node{
 			{Id: "rt-1", Type: string(kgtypes.NodeFile), SymbolName: "a.go", FilePath: "a.go", Content: "package a"},
@@ -193,7 +216,7 @@ func TestIngest_CollectChunkFinalize_Roundtrip(t *testing.T) {
 	// flushing to the capturing sink on Finalize.
 	captured := handler.sink.last()
 	require.NotNil(t, captured, "Finalize must have captured a CollectResult")
-	assert.Equal(t, kgtypes.GraphCode, captured.GraphType)
+	assert.Equal(t, kgtypes.GraphKnowledge, captured.GraphType)
 	assert.Equal(t, "ingest-roundtrip-repo", captured.GraphName)
 
 	require.Len(t, captured.Nodes, 2, "both NodeFile nodes must have crossed the wire")
@@ -246,6 +269,10 @@ func TestIngest_MultiChunk_EdgesResolveAcrossChunks(t *testing.T) {
 	}}
 	result := &collectorwire.CollectResult{
 		GraphType: kgtypes.GraphCode, GraphName: "multichunk-repo", Nodes: nodes, Edges: edges,
+		// Stamped as a real code collect is: an empty fingerprint aborts, and so
+		// does an unstamped collector output version.
+		DiscoveryFingerprint:   "fingerprint-ingest-multichunk",
+		CollectorOutputVersion: parser.CollectorOutputVersion,
 	}
 	require.NoError(t, sink.WriteResult(context.Background(), "test-collector", result))
 

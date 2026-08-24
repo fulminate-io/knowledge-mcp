@@ -14,8 +14,8 @@ import (
 
 // TEST_CALLS is silently excluded by every consumer keyed on the string
 // "CALLS", and that exclusion is the RULED DEFAULT: centrality and every CALLS
-// consumer stay safe, and dropGoCallerCallEdges keyed on EdgeCalls never
-// touches test traffic. THE RULED RISK IS THE OTHER SIDE OF THAT TRADE — an
+// consumer stay safe, and no consumer keyed on EdgeCalls ever touches test
+// traffic. THE RULED RISK IS THE OTHER SIDE OF THAT TRADE — an
 // un-updated renderer shows NO test coverage rather than wrong coverage, and a
 // silent exclusion is indistinguishable from an oversight.
 //
@@ -76,14 +76,6 @@ var testCallsConsumerCensus = []testCallsConsumerRow{
 		Disposition: dispositionProducer,
 		Reason: "extractCallEdges BUILDS the call edges; the Type is stamped by its two callers " +
 			"(emitDeclarationEdges and emitTestBlockCallEdges), so this file decides nothing about test traffic.",
-	},
-	{
-		Path:        "cmd/knowledge/internal/collector/codesync/reindex.go",
-		Disposition: dispositionExcluded,
-		Reason: "dropGoCallerCallEdges and captureCallEdgeWeights both key on kgtypes.EdgeCalls " +
-			"(reindex.go:366,410,460), so neither sees a TEST_CALLS edge. The exclusion is also " +
-			"vacuous in practice: the precise Go call graph owns Go callers, and Go has no " +
-			"TestBlocks query, so no Go edge is ever labeled TEST_CALLS. Nothing changes here.",
 	},
 	{
 		Path:        "cmd/knowledge/internal/topology/graph/blast_radius.go",

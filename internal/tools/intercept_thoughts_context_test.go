@@ -7,7 +7,6 @@ import (
 	"encoding/json"
 	"errors"
 	"maps"
-	"slices"
 	"testing"
 	"time"
 
@@ -45,15 +44,30 @@ func (s *ctxSearcher) Search(
 // ctxCaller is a scripted GraphCaller answering exactly the read shapes the
 // composer issues, routed by QueryPlan shape:
 //   - RETURN_MODE_NODES + Ids → bulk hydrate: nodesByID for each requested id.
-//   - RETURN_MODE_EDGES + Ids → bulk edges: edgesForSet (the FetchEdgesForNodeSet
-//     expansion read) when an expand edge-type filter is present, else the
-//     FetchChargesFor EdgeChargedBy read served from chargeEdges.
+//   - RETURN_MODE_EDGES + Ids → bulk edges: the UNION of the requested edge types
+//     over the whole seeded corpus (edgesForSet + chargeEdges, or unionSeed when a
+//     test sets it), served through unionEdgesForRequest. Each read still gets
+//     exactly what it asked for, because every seeded edge carries its real type.
 //   - Selection.NodeTypes (ticket browse) → ticketNodes.
 type ctxCaller struct {
 	nodesByID   map[string]*knowledgev1.Node // bulk ids[] hydrate source
 	edgesForSet []*knowledgev1.Edge          // expand edges (informed-by/relates-to/...)
 	chargeEdges []*knowledgev1.Edge          // EdgeChargedBy edges (thought→charge)
 	ticketNodes []*knowledgev1.Node          // type:ticket browse result
+	// unionSeed, when set, replaces the two split slices above as the single seeded
+	// edge set served through unionEdgesForRequest. The split fields remain for the
+	// tests that drive the two reads separately.
+	unionSeed []*knowledgev1.Edge
+}
+
+// seedEdges is the fake's whole edge corpus: unionSeed when a test sets it, otherwise
+// the two historical split slices combined. The helper does the type filtering, so the
+// split no longer has to be expressed as a dispatch.
+func (c *ctxCaller) seedEdges() []*knowledgev1.Edge {
+	if len(c.unionSeed) > 0 {
+		return c.unionSeed
+	}
+	return append(append([]*knowledgev1.Edge(nil), c.edgesForSet...), c.chargeEdges...)
 }
 
 func (c *ctxCaller) Execute(_ context.Context, req *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error) {
@@ -70,13 +84,12 @@ func (c *ctxCaller) Execute(_ context.Context, req *knowledgev1.ExecuteRequest) 
 	}
 	switch q.GetReturnMode() {
 	case knowledgev1.ReturnMode_RETURN_MODE_EDGES:
-		// Distinguish the expand read (filtered to the expand edge types) from the
-		// FetchChargesFor read (filtered to EdgeChargedBy) by the Selection filter.
-		ets := q.GetSelection().GetEdgeTypes()
-		if edgeTypesContain(ets, string(kgtypes.EdgeChargedBy)) {
-			return &knowledgev1.ExecuteResponse{Edges: c.chargeEdges}, nil
-		}
-		return &knowledgev1.ExecuteResponse{Edges: c.edgesForSet}, nil
+		// UNION, via the shared helper. The previous arm picked ONE bucket by first
+		// match — "mentions charged-by, so return only chargeEdges" — which drops every
+		// expand edge from a multi-type request. Serving the combined seed through the
+		// helper keeps the single-type reads answering exactly as before, because each
+		// seeded edge carries its real type.
+		return &knowledgev1.ExecuteResponse{Edges: bandNarrow(unionEdgesForRequest(c.seedEdges(), q), q)}, nil
 	default:
 		// Bulk ids[] hydrate (RETURN_MODE_NODES): return every requested id present
 		// in nodesByID, in request order.
@@ -88,10 +101,6 @@ func (c *ctxCaller) Execute(_ context.Context, req *knowledgev1.ExecuteRequest) 
 		}
 		return &knowledgev1.ExecuteResponse{Nodes: out}, nil
 	}
-}
-
-func edgeTypesContain(ets []string, want string) bool {
-	return slices.Contains(ets, want)
 }
 
 // ctxPackDeps wires the three accessors the context composer reads (gc, segMgr,

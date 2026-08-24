@@ -12,15 +12,6 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
-// PersonalityProfile holds per-cluster-pair scalars derived from external
-// charge accuracy.
-type PersonalityProfile struct {
-	// Scalars[clusterA][clusterB] = how much cluster A trusts influence
-	// from cluster B. > 1.0 = gullible, < 1.0 = stubborn.
-	Scalars       map[string]map[string]float64
-	ClusterLabels map[string]string
-}
-
 // ScalarSnapshot captures the personality scalar at a point in time.
 type ScalarSnapshot struct {
 	Timestamp       time.Time
@@ -130,6 +121,12 @@ func buildChargeEvidenceMap(chargeMap map[string][]*knowledgev1.Node, thoughtToC
 	return out
 }
 
+// evidenceAdjEdgeTypes is BuildEvidenceAdj's charge-pivot read filter, hoisted from an
+// inline literal so the per-pass read inventory (loop_pass.go) can cite it by name. It
+// is declared ABOVE the doc block below rather than between that block and its
+// function, which would detach the doc comment from the exported symbol it documents.
+var evidenceAdjEdgeTypes = []kgtypes.EdgeType{kgtypes.EdgeEvidencedBy}
+
 // BuildEvidenceAdj builds the charge→evidence-target adjacency map that
 // ComputePersonalityScalars / ComputeScalarEvolution consume as evidenceAdj:
 // map[chargeID][]evidenceTargetID. It is the cross-cluster ATTRIBUTION leg —
@@ -138,12 +135,17 @@ func buildChargeEvidenceMap(chargeMap map[string][]*knowledgev1.Node, thoughtToC
 // charged-by leg needs no evidenceAdj, so trust differentiation holds even when
 // the corpus has near-zero thought-targeted evidence edges.
 //
-// Two bounded bulk Execute round-trips, no per-node traversal (fits the live
-// 180s ceiling): (1) chargeMapForThoughts over every clustered thought ID (the
-// same bulk charges_for the scalar compute runs), then (2) ONE
-// fetchEdgesForNodeSet over the collected charge IDs filtered to EdgeEvidencedBy.
-// EdgeEvidencedBy is charge→evidence, so FromId is the charge and ToId the
-// evidence target.
+// Two bounded bulk legs, no per-node traversal (fits the live 180s ceiling):
+// (1) chargeMapForThoughts over every clustered thought ID (the same bulk
+// charges_for the scalar compute runs), then (2) fetchAllEdgesBanded over the
+// collected charge IDs filtered to EdgeEvidencedBy — a BANDED match-all read, so
+// the charge ids derive its band boundaries rather than being sent as pivots, and
+// it costs one Execute per band. EdgeEvidencedBy is charge→evidence, so FromId is
+// the charge and ToId the evidence target.
+//
+// THE RESULT IS A SUPERSET and that is safe HERE for a reason worth stating: the
+// map is consumed only by buildChargeEvidenceMap, which walks the pivot-derived
+// chargeMap and looks up evidenceAdj[ch.Id] by KEY. Extra keys are never reached.
 //
 // src is the per-pass read memo: the charge map leg is shared with every other
 // stage of the pass rather than composed again here. A nil/non-memo src composes it
@@ -167,7 +169,7 @@ func BuildEvidenceAdj(ctx context.Context, gc Caller, clusters []ThoughtCluster,
 	if len(chargeIDs) == 0 {
 		return out
 	}
-	edges, err := fetchEdgesForNodeSet(ctx, gc, chargeIDs, []kgtypes.EdgeType{kgtypes.EdgeEvidencedBy})
+	edges, err := fetchAllEdgesBanded(ctx, gc, chargeIDs, evidenceAdjEdgeTypes)
 	if err != nil {
 		return out
 	}
@@ -183,6 +185,14 @@ func BuildEvidenceAdj(ctx context.Context, gc Caller, clusters []ThoughtCluster,
 
 // ComputePersonalityScalars derives per-cluster-pair trust scalars
 // from the track record of cross-cluster charge accuracy.
+//
+// The returned profile is SPARSE: each cluster contributes one RowDefault entry
+// carrying the value shared by that row's columns, plus a Deviations entry only
+// when some column genuinely differs. Rows with no differing column — the great
+// majority — add nothing to Deviations at all. Read a pair back through
+// PersonalityProfile.Scalar rather than indexing the maps directly; it is what
+// resolves a default against a deviation and reports the absent cases.
+//
 // evidenceAdj is the optional charge→evidence-target adjacency map
 // (callers may have it from a prior adjacency fetch); pass nil for
 // the degraded mode (zero evidence resolution). src is the per-pass read memo, so
@@ -190,8 +200,9 @@ func BuildEvidenceAdj(ctx context.Context, gc Caller, clusters []ThoughtCluster,
 // with no loop in hand passes nil and takes the uncached read.
 func ComputePersonalityScalars(ctx context.Context, gc Caller, clusters []ThoughtCluster, evidenceAdj map[string][]string, src CorpusSource) (PersonalityProfile, error) {
 	profile := PersonalityProfile{
-		Scalars:       make(map[string]map[string]float64),
-		ClusterLabels: make(map[string]string),
+		RowDefault:    make(map[string]float64, len(clusters)),
+		Deviations:    make(map[string]map[string]float64),
+		ClusterLabels: make(map[string]string, len(clusters)),
 	}
 
 	thoughtToCluster := make(map[string]string)
@@ -205,13 +216,10 @@ func ComputePersonalityScalars(ctx context.Context, gc Caller, clusters []Though
 	cache := buildChargeCache(ctx, gc, clusters, thoughtToCluster, evidenceAdj, src)
 
 	for _, clusterA := range clusters {
-		profile.Scalars[clusterA.ID] = make(map[string]float64)
-		for _, clusterB := range clusters {
-			if clusterA.ID == clusterB.ID {
-				continue
-			}
-			scalar := computeClusterPairScalar(clusterA, clusterB.ID, cache, time.Time{})
-			profile.Scalars[clusterA.ID][clusterB.ID] = scalar
+		rowDefault, deviations := computeSparseRow(clusterA, cache)
+		profile.RowDefault[clusterA.ID] = rowDefault
+		if len(deviations) > 0 {
+			profile.Deviations[clusterA.ID] = deviations
 		}
 	}
 
@@ -306,7 +314,7 @@ func ComputeScalarEvolution(ctx context.Context, gc Caller, clusters []ThoughtCl
 	}
 	if len(clusters) == 0 {
 		var err error
-		clusters, err = DetectThoughtClusters(ctx, gc, 0.5)
+		clusters, err = DetectThoughtClusters(ctx, gc, 0.5, src)
 		if err != nil {
 			return nil, fmt.Errorf("detect clusters: %w", err)
 		}
@@ -449,8 +457,7 @@ func applyPersonalityScalarsToRow(matrix TrustMatrix, i int, thoughtToCluster ma
 	if clusterI == "" {
 		return
 	}
-	scalars, ok := profile.Scalars[clusterI]
-	if !ok {
+	if _, ok := profile.RowDefault[clusterI]; !ok {
 		return
 	}
 	row := matrix.Rows[i]
@@ -463,7 +470,7 @@ func applyPersonalityScalarsToRow(matrix TrustMatrix, i int, thoughtToCluster ma
 		if clusterJ == "" || clusterJ == clusterI {
 			continue
 		}
-		if s2, ok := scalars[clusterJ]; ok {
+		if s2, ok := profile.Scalar(clusterI, clusterJ); ok {
 			row[k].Val *= s2
 		}
 	}

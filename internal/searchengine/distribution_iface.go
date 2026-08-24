@@ -50,4 +50,15 @@ type SegmentSource interface {
 type SegmentCache interface {
 	Get(id SegmentID) ([]byte, bool)
 	Put(id SegmentID, b []byte)
+	// GetMapped returns the cached blob as a read-only MEMORY MAPPING plus the
+	// closure that frees it, rather than as a heap copy. It is what keeps a
+	// resident segment's bytes in the OS page cache instead of the Go heap.
+	//
+	// The two failure modes are deliberately distinct, and conflating them is
+	// the bug this signature exists to prevent. ok=false with a nil error is a
+	// genuine MISS — the id is not cached, and the caller should fetch it. A
+	// non-nil error means the id IS cached but could not be mapped, which is a
+	// condition to report: answering it as a miss would send the caller down a
+	// heap-reading path and hide a broken mapping seam behind a slow one.
+	GetMapped(id SegmentID) (data []byte, release func(), ok bool, err error)
 }

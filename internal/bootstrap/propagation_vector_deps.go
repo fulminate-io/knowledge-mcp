@@ -91,6 +91,20 @@ func (a coverageGateAdapter) HNSWCoverageTrustworthy(ctx context.Context) (bool,
 	if v.Err != nil {
 		return false, "hnsw arm unmeasured", v.Err
 	}
+	// AN EVICTED ARM IS NOT A MEASURED ARM, and this branch must stay AHEAD of the
+	// Degenerate test: an evicted arm reports Degenerate false, so without it the
+	// fall-through below would call the pool trustworthy and route the leaf
+	// attachment to VectorByID — materializing the whole HNSW pool on every hourly
+	// pass. VectorByID deliberately does not stamp the search touch, so the next
+	// budget pass evicts it again: reload, evict, reload, forever.
+	//
+	// DECLINING SENDS THIS PASS DOWN THE SERVER-DRAIN PATH for an evicted knowledge
+	// graph, which costs more per pass than a resident by-id read would. That is the
+	// ticket's own ruling applied rather than a new trade: a background arm must not
+	// re-load an evicted pool.
+	if v.Evicted {
+		return false, "hnsw arm evicted — not measured", nil
+	}
 	if v.Degenerate {
 		return false, "hnsw arm degenerate", nil
 	}

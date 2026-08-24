@@ -169,11 +169,19 @@ func TestCollect_Overlay_HappyPath(t *testing.T) {
 	assert.Len(t, got.Nodes, 3)
 }
 
-func TestCollect_Overlay_NoEqualFunc(t *testing.T) {
+// TestCollect_Overlay_BranchPayloadReachesTheSink asserts what this test actually
+// exercises: a collector emitting a branch payload drives the client pipeline to
+// completion and hands the sink every node it produced. The client never classified
+// overlay rows and never had a comparison function of its own — that decision has
+// always belonged to the server — so the name and comment this test used to carry
+// described a server-side mechanism the client does not have, and which no longer
+// exists on either side.
+func TestCollect_Overlay_BranchPayloadReachesTheSink(t *testing.T) {
 	installCaptureSink(t)
 	resetRegistry(t)
 
-	// When EqualFunc is nil, all nodes should be treated as changed (no proxying).
+	// The client uploads what the collector emitted; nothing here decides whether a
+	// node is changed.
 	Register(&fakeCollector{
 		name: "overlay-nil-eq",
 		result: &collectorwire.CollectResult{

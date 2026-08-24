@@ -39,14 +39,33 @@ const incompletePublishWarnStreak = 3
 // that sees every publish outcome.
 
 // hasUnshippedExport reports whether a SEALED unshipped export exists: there is at
-// least one exported segment whose id is not yet in shippedIDs (or the seed has not
+// least one resident segment whose id is not yet in shippedIDs (or the seed has not
 // yet run). It is a read-only projection of the ship-new diff loop in shipAndPublish
 // — same shippedIDs-membership test, returning a bool instead of building the diff.
-// Export() is read OUTSIDE shipMu (exactly as shipAndPublish does) because Export
-// takes its own engine lock; the shippedIDs membership walk then takes shipMu.
+// The id snapshot is read OUTSIDE shipMu (exactly as shipAndPublish reads Export)
+// because it takes its own engine snapshot; the shippedIDs membership walk then
+// takes shipMu.
+//
+// IT ASKS ResidentSegmentIDs, NOT Export, AND THAT IS THE POINT OF THIS PREDICATE
+// BEING CHEAP. This is a BOOLEAN consulted on every embed ship point, and Export
+// re-serializes every resident payload to answer it — tens of megabytes of Encode on
+// a full corpus to decide a set-membership question. ResidentSegmentIDs is the
+// id-only counterpart its own doc prescribes for exactly this caller: one atomic
+// snapshot load and a walk of the entry metas, no per-segment Encode and no blob
+// slice allocated and thrown away.
+//
+// THE TWO SNAPSHOTS DIFFER IN ONE CASE, and it is named rather than glossed: Export
+// SKIPS any entry whose payload fails to Encode, while ResidentSegmentIDs lists every
+// resident entry. So a segment that cannot encode was invisible here before and is
+// visible now — this gate can newly return true for it, and the ship pass that
+// follows finds nothing to ship because shipAndPublish still diffs over Export. The
+// cost of that case is one no-progress ship pass; the cost of the OPPOSITE reading
+// would be a genuinely unshipped segment the gate never reports, which is a corpus
+// that silently stops converging. An unencodable segment is a defect either way, and
+// this is the direction to be wrong in.
 func (m *distManager[Q, S]) hasUnshippedExport() bool {
-	exported := m.engine.Export()
-	if len(exported) == 0 {
+	resident := m.engine.ResidentSegmentIDs()
+	if len(resident) == 0 {
 		return false
 	}
 	m.shipMu.Lock()
@@ -54,8 +73,8 @@ func (m *distManager[Q, S]) hasUnshippedExport() bool {
 	if !m.seeded {
 		return true
 	}
-	for _, b := range exported {
-		if _, sent := m.shippedIDs[b.ID]; !sent {
+	for _, id := range resident {
+		if _, sent := m.shippedIDs[id]; !sent {
 			return true
 		}
 	}

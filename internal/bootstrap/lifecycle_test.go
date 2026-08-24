@@ -84,7 +84,7 @@ func TestFindServerBinary_SiblingFound(t *testing.T) {
 }
 
 func TestFindServerBinary_PATHFallback(t *testing.T) {
-	binDir := t.TempDir() // dir of "stdio binary" — NO sibling here
+	binDir := t.TempDir() // dir of the running-binary stub — NO sibling here
 	pathDir := t.TempDir()
 
 	stubExe := filepath.Join(binDir, "stdio_stub")

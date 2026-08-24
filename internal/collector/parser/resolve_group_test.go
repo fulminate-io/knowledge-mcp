@@ -86,11 +86,19 @@ func TestAmbiguousReferenceMultiBinds(t *testing.T) {
 // rule about callee shape: go produced 11,917 dynamic groups and bash produced
 // none, so a bash fixture here would very likely be a vacuous catcher.
 func TestDynamicReferenceEmitsOpenSetGroup(t *testing.T) {
-	// A qualified call on a VALUE — the qualifier binds under neither an import
-	// nor a declared parent, so the language dispatches it at runtime.
+	// A qualified call on a VALUE whose method is NOT an indexed declaration, so
+	// the typed rung cannot bind it and the language dispatches it at runtime.
+	//
+	// THE METHOD IS PROMOTED FROM OUTSIDE THE INDEXED SCOPE, and that choice is
+	// load-bearing rather than incidental. An IN-REPO interface used to be the
+	// natural example here, but an interface's method specs are now chunked and
+	// indexed under Parent=<Interface>, so such a fixture binds through the typed
+	// rung and produces no dynamic group at all — it would silently stop being a
+	// dispatch fixture. A method promoted through an embed of an unindexed type
+	// is undecidable by construction and stays that way.
 	dispatchCaller := fixtureFile{path: "svc/invoke.go", src: "" +
-		"package svc\n\ntype runnable interface{ Run() int }\n\n" +
-		"func Invoke(x runnable) int {\n\treturn x.Run()\n}\n"}
+		"package svc\n\nimport \"example.com/ext\"\n\ntype holder struct{ ext.Base }\n\n" +
+		"func Invoke(x holder) int {\n\treturn x.Run()\n}\n"}
 
 	t.Run("emits_open_set_group", func(t *testing.T) {
 		res := populateFixture(t, []fixtureFile{
@@ -180,7 +188,8 @@ func TestAmbiguousGroupKeyIsStableAndExactlyOneOf(t *testing.T) {
 			if e.ToId == "svc/unique.go:UniqueOnce" && kgtypes.EdgeType(e.Type) == kgtypes.EdgeCalls {
 				bound++
 				assert.Empty(t, e.Evidence, "a bound edge carries no group key")
-				assert.Empty(t, e.Method)
+				assert.Equal(t, string(RuleOwnScope), e.Method,
+					"a bound edge carries the rung that resolved it")
 			}
 		}
 		require.Equal(t, 1, bound, "control: the singly-declared callee must bind to exactly one edge")
@@ -260,12 +269,17 @@ func TestAmbiguousGroupKeyIsStableAndExactlyOneOf(t *testing.T) {
 
 	t.Run("key_shape", func(t *testing.T) {
 		res := populateFixture(t, twoAmbiguousNames)
-		shape := regexp.MustCompile(`^svc/caller\.go:\d+:CALLS:(Alpha|Beta)$`)
+		// verbatim target + ':' + edge type + ':' + enclosing declaration id +
+		// ':' + within-file ordinal. NO BYTE OFFSET, NO LINE, NO COLUMN — the
+		// shape this regex used to pin (`svc/caller.go:<digits>:CALLS:<target>`)
+		// was the position-derived key whose re-stamping on every unrelated edit
+		// orphaned a row per site.
+		shape := regexp.MustCompile(`^(Alpha|Beta):CALLS:svc/caller\.go:[A-Za-z0-9_.]+:\d+$`)
 		got := groupEdgesOf(res, kgtypes.EdgeMethodAmbiguousName)
 		require.NotEmpty(t, got)
 		for _, e := range got {
 			assert.Regexp(t, shape, e.Evidence,
-				"key is file + ':' + declaration byte + ':' + edge type + ':' + verbatim target")
+				"key is target + ':' + edge type + ':' + enclosing declaration id + ':' + ordinal")
 		}
 	})
 }

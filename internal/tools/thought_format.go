@@ -51,14 +51,19 @@ func handleReflectPersonality(ctx context.Context, deps ClientDeps, a queryRefle
 	// slice/pointer (reassigned under p.mu each tick), so mutating them here would
 	// race the loop + a concurrent map write on ClusterLabels. Copy the slice (struct
 	// elements → independent Label fields) and clone the profile's ClusterLabels map.
-	// Scalars is read-only on this path (ReflectPersonality reads it, never writes), so
-	// the cloned profile shares the Scalars reference — only ClusterLabels needs a fresh map.
+	// RowDefault and Deviations are read-only on this path (ReflectPersonality reads
+	// them, never writes), so the cloned profile SHARES both by reference — copying
+	// them would reintroduce the per-call duplication of the very thing kept sparse.
 	clusters := append([]clientthought.ThoughtCluster(nil), cachedClusters...)
 	var profile *clientthought.PersonalityProfile
 	if cachedProfile != nil {
 		labels := make(map[string]string, len(cachedProfile.ClusterLabels))
 		maps.Copy(labels, cachedProfile.ClusterLabels)
-		profile = &clientthought.PersonalityProfile{Scalars: cachedProfile.Scalars, ClusterLabels: labels}
+		profile = &clientthought.PersonalityProfile{
+			RowDefault:    cachedProfile.RowDefault,
+			Deviations:    cachedProfile.Deviations,
+			ClusterLabels: labels,
+		}
 	}
 	// Prefer persisted topic-summary text over the member-SymbolName label wherever
 	// a topic doc exists (lever-produced); unsummarized clusters keep their label.
@@ -414,7 +419,7 @@ func handleReflectClusters(ctx context.Context, deps ClientDeps, a queryReflectA
 // handleRecallClusters serves thoughts(recall, mode:"clusters"[,
 // all_types]). For all_types, runs DetectAllClusters (every node type
 // minus proxies). For the thought-only variant, runs
-// DetectThoughtClusters. The prior implementation overlaid server
+// DetectPersistedClusters. The prior implementation overlaid server
 // recall results on the cluster topology; the current path is
 // cluster-only — clients call thoughts(recall) (no mode) for text-mode
 // recall and use cluster IDs from this output to cross-reference.

@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package graph holds the gonum-backed topology analyzer family that runs on
-// the stdio client: PageRank / HITS / SCC / cycles / articulation / degree /
+// the client (cmd/knowledge): PageRank / HITS / SCC / cycles / articulation / degree /
 // community + the Leiden community-detection algorithm, plus the
 // betweenness and god_object analyzers and the dsm layering analyzer. Every
 // analyzer self-registers via init() into the foundation registry and reads

@@ -62,7 +62,12 @@ func resolveThoughtCurrentSource(ctx context.Context, gc GraphCaller, thoughtID 
 
 	// (1) Code-ref path: read live Content off the boundary-resolved code nodes.
 	// tools.GraphCaller (Execute-only) satisfies thought.Caller structurally.
-	byThought := clientthought.ResolveCitedCodeNodes(ctx, gc, []string{thoughtID})
+	//
+	// The trailing nil read-memo is DELIBERATE. This is a single-thought on-demand
+	// resolution with no propagation pass in hand, so there is no per-pass memo to
+	// consult and it takes the narrow relates-to read exactly as it always has.
+	// Do not "helpfully" thread a source here.
+	byThought := clientthought.ResolveCitedCodeNodes(ctx, gc, []string{thoughtID}, nil)
 	var sources []currentSource
 	for _, n := range byThought[thoughtID] {
 		if n == nil {

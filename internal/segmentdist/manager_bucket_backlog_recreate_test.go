@@ -37,7 +37,7 @@ func TestTombstonedPendingWriteIDs(t *testing.T) {
 
 	t.Run("reports_write_after_delete", func(t *testing.T) {
 		const name = "reportAfterDelete"
-		mgr := NewManager(loginStateStub{}, t.TempDir(), 0)
+		mgr := closeOnCleanup(t, NewManager(loginStateStub{}, t.TempDir(), 0))
 
 		docs := bothFormatDocs(2, "recreate-")
 		victim := docs[0]
@@ -56,7 +56,7 @@ func TestTombstonedPendingWriteIDs(t *testing.T) {
 		// A write can land on one engine and fail on the other, because the field-engine
 		// call is best-effort at its production call site.
 		const name = "reportFieldOnly"
-		mgr := NewManager(loginStateStub{}, t.TempDir(), 0)
+		mgr := closeOnCleanup(t, NewManager(loginStateStub{}, t.TempDir(), 0))
 
 		docs := bothFormatDocs(2, "fieldonly-")
 		victim := docs[0]
@@ -76,7 +76,7 @@ func TestTombstonedPendingWriteIDs(t *testing.T) {
 		// cannot fail for the three routes that tombstone without purging, which is
 		// exactly why the next two subtests exist.
 		const name = "reportPurged"
-		mgr := NewManager(loginStateStub{}, t.TempDir(), 0)
+		mgr := closeOnCleanup(t, NewManager(loginStateStub{}, t.TempDir(), 0))
 
 		docs := bothFormatDocs(2, "purged-")
 		victim := docs[0]
@@ -95,7 +95,7 @@ func TestTombstonedPendingWriteIDs(t *testing.T) {
 		// DeleteFromBuckets when the id was already in the record — so only the stamp can
 		// tell the reporter that the queued write is now stale.
 		const name = "reportRedelete"
-		mgr := NewManager(loginStateStub{}, t.TempDir(), 0)
+		mgr := closeOnCleanup(t, NewManager(loginStateStub{}, t.TempDir(), 0))
 
 		docs := bothFormatDocs(2, "redelete-")
 		victim := docs[0]
@@ -116,7 +116,7 @@ func TestTombstonedPendingWriteIDs(t *testing.T) {
 		// document is dropped by the drain and consumed from the backlog — the ticket's
 		// headline scenario, defeated by its own fix.
 		const name = "reportUnrelated"
-		mgr := NewManager(loginStateStub{}, t.TempDir(), 0)
+		mgr := closeOnCleanup(t, NewManager(loginStateStub{}, t.TempDir(), 0))
 
 		docs := bothFormatDocs(2, "unrelated-")
 		victim, bystander := docs[0], docs[1]
@@ -143,7 +143,7 @@ func TestTombstonedPendingWriteIDs(t *testing.T) {
 		// middle. Driven directly here rather than with goroutines, so the interleaving
 		// is exact rather than hoped for.
 		const name = "reportSealRace"
-		mgr := NewManager(loginStateStub{}, t.TempDir(), 0)
+		mgr := closeOnCleanup(t, NewManager(loginStateStub{}, t.TempDir(), 0))
 
 		docs := bothFormatDocs(2, "sealrace-")
 		victim := docs[0]
@@ -175,7 +175,7 @@ func TestDrainKeepsRecreatedNodeAfterUntombstone(t *testing.T) {
 		const name = "recreateAgree"
 		dir := t.TempDir()
 		_, gc := newSegmentHarness(t)
-		mgr := NewManager(loginStateStub{loggedIn: true}, dir, 0, withSegmentSource(gc))
+		mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, dir, 0, withSegmentSource(gc)))
 
 		docs := bothFormatDocs(deleteFixtureN, "recreate-")
 		require.NoError(t, mgr.AddAndMarkDirty(ctx, gt, name, docs))
@@ -223,7 +223,7 @@ func TestDrainKeepsRecreatedNodeAfterUntombstone(t *testing.T) {
 		const name = "recreateSuperset"
 		dir := t.TempDir()
 		_, gc := newSegmentHarness(t)
-		mgr := NewManager(loginStateStub{loggedIn: true}, dir, 0, withSegmentSource(gc))
+		mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, dir, 0, withSegmentSource(gc)))
 
 		docs := bothFormatDocs(deleteFixtureN, "superset-")
 		require.NoError(t, mgr.AddAndMarkDirty(ctx, gt, name, docs))
@@ -280,7 +280,7 @@ func TestDeleteRecreateLifecycleStaysCoherent(t *testing.T) {
 	_, gc := newSegmentHarness(t)
 	// A real cache root, so the REAL persisted record file is exercised rather than an
 	// in-memory stand-in.
-	mgr := NewManager(loginStateStub{loggedIn: true}, dir, 0, withSegmentSource(gc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, dir, 0, withSegmentSource(gc)))
 
 	// 1. Write and drain a corpus on both formats.
 	docs := bothFormatDocs(deleteFixtureN, "lifecycle-")

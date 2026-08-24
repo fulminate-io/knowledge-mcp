@@ -22,6 +22,11 @@ func (e *SegmentedIndex[Q, S]) Export() []SegmentBlob {
 			Generation: entry.meta.Generation,
 			DocCount:   entry.meta.DocCount,
 			Bytes:      bytes,
+			// The exported blob OUTLIVES this call, and on a mapped segment
+			// Encode returns the mapping itself rather than a copy. Pinning the
+			// entry keeps the mapping's cleanup from running while a caller
+			// still holds these bytes.
+			keepAlive: entry,
 		})
 	}
 	return blobs
@@ -112,7 +117,7 @@ func (e *SegmentedIndex[Q, S]) entryFromDecoded(seg Segment[Q, S], blob SegmentB
 	// DISTINCT, exactly as newEntry counts it — this is the IMPORT path, and a
 	// blob built before the count was corrected carries duplicate ids, so it is
 	// precisely the path that would otherwise re-inflate the corpus size on load.
-	return &segmentEntry[Q, S]{
+	entry := &segmentEntry[Q, S]{
 		payload: seg,
 		live:    live,
 		members: members,
@@ -124,6 +129,10 @@ func (e *SegmentedIndex[Q, S]) entryFromDecoded(seg Segment[Q, S], blob SegmentB
 			DeadCount:  distinctDeadCount(members, live),
 		},
 	}
+	// When the blob arrived as a mapping rather than a heap copy, the mapping's
+	// lifetime is now this entry's reachability.
+	attachBlobCleanup(entry, blob.Release)
+	return entry
 }
 
 // publishImport CAS-appends the imported entries to the current set in one swap,
@@ -164,7 +173,8 @@ func (e *SegmentedIndex[Q, S]) publishImport(entries []*segmentEntry[Q, S]) {
 }
 
 // Unload drops the named segments from the searchable set via one CAS swap. The
-// reload path (driven by a SegmentSource) is a later ticket.
+// reload path that puts them back — driven by a SegmentSource, L2 cache first —
+// lives in the client's segmentdist/manager_load.go (reload).
 func (e *SegmentedIndex[Q, S]) Unload(ids []SegmentID) {
 	if len(ids) == 0 {
 		return

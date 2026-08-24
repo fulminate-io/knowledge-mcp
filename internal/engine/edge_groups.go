@@ -22,6 +22,14 @@ import (
 // depends on how many components it has; it is only ever compared for equality
 // and printed verbatim. The producer is free to change its composition without
 // touching a renderer.
+//
+// Edge.Method POPULATIONS ARE KEYED BY EDGE TYPE.
+//
+// A group kind is one population of that field and not the whole of it: a BOUND
+// reference edge carries the resolution rung that bound it, and other edge types
+// carry populations of their own. kgtypes (edge_types.go) is the vocabulary
+// source for all of them. Nothing in this file may treat "Method is non-empty"
+// as "this edge is a group member" — see IsCandidateEdge.
 
 // CandidateGroup is the render-time reconstruction of one multi-candidate
 // reference: N edges that together mean ONE reference whose target could not be
@@ -77,6 +85,15 @@ func copyGroupEdge(e *knowledgev1.Edge) knowledgev1.Edge {
 // cmd/knowledge/internal/collector/treesitter/types.go, and a render package must
 // not import the collector. Method-keying makes the detector edge-type agnostic,
 // which is what lets CALLS, USES_TYPE and EMBEDS groups all work here.
+//
+// THE EXACT-EQUALITY TEST IS LOAD-BEARING AND MUST NOT BECOME A NON-EMPTY TEST.
+// Edge.Method holds several populations keyed by edge type, so a value outside
+// the two group constants is a DIFFERENT population rather than an unrecognized
+// group: a bound reference edge's resolution rung today, another edge type's
+// value tomorrow. Equality against a named set is what makes each of those
+// correctly NOT a candidate edge, so it passes through as an ordinary edge and
+// every render surface downstream stays right as the set grows. A non-empty test
+// would swallow each new population into the group machinery silently.
 func IsCandidateEdge(e *knowledgev1.Edge) bool {
 	if e == nil {
 		return false

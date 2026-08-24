@@ -48,7 +48,7 @@ func TestUncoveredMembersLoadsAndReportsPerFormat(t *testing.T) {
 		t.Helper()
 		ctx := context.Background()
 		_, gc := newSegmentHarness(t)
-		mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+		mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 		hdocs := make([]searchengine.Document, 0, len(hnswIDs))
 		for _, id := range hnswIDs {
 			hdocs = append(hdocs, mkDoc(id))
@@ -113,12 +113,12 @@ func TestUncoveredMembersLoadsAndReportsPerFormat(t *testing.T) {
 		ctx := context.Background()
 		_, gc := newSegmentHarness(t)
 		dir := t.TempDir()
-		writer := NewManager(loginStateStub{loggedIn: true}, dir, 0, withSegmentSource(gc))
+		writer := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, dir, 0, withSegmentSource(gc)))
 		docs := []searchengine.Document{mkDoc("persisted-a"), mkDoc("persisted-b")}
 		require.NoError(t, writer.ReplaceBucket(ctx, gt, name, nil, docs))
 		require.NoError(t, writer.ReplaceBucketFields(ctx, gt, name, nil, docs))
 
-		cold := NewManager(loginStateStub{loggedIn: true}, dir, 0, withSegmentSource(gc))
+		cold := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, dir, 0, withSegmentSource(gc)))
 		require.Zero(t, cold.LiveResidentDocCount(gt, name),
 			"fixture precondition: the second manager's engine must start cold, or this arm proves nothing")
 

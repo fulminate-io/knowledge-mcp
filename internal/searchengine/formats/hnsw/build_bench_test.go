@@ -99,8 +99,14 @@ func TestDeterministicSerialIsReproducible(t *testing.T) {
 	items := randomVectors(2000)
 	a := buildSerialDeterministic(items)
 	c := buildSerialDeterministic(items)
-	ba := a.encode()
-	bc := c.encode()
+	ba, err := encodeGraphV3(a)
+	if err != nil {
+		t.Fatalf("encodeGraphV3(a): %v", err)
+	}
+	bc, err := encodeGraphV3(c)
+	if err != nil {
+		t.Fatalf("encodeGraphV3(c): %v", err)
+	}
 	if len(ba) != len(bc) {
 		t.Fatalf("encoded length mismatch: %d vs %d", len(ba), len(bc))
 	}

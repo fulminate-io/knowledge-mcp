@@ -99,7 +99,7 @@ func TestFUL1338CorpusPerLanguage(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, files, "control: discovery found no files under %s", root)
 
-	results, err := ChunkFilesParallel(ctx, root, files)
+	results, _, err := ChunkFilesParallel(ctx, root, files)
 	require.NoError(t, err)
 	require.NotEmpty(t, results, "control: chunking produced no results")
 

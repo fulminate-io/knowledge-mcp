@@ -84,9 +84,9 @@ func TestEncodeStableAcrossManyBuilds(t *testing.T) {
 
 // buildBM25 seals a BM25 segment from docs (the convergence tests only inspect the
 // serialized bytes, so corpus stats are not needed).
-func buildBM25(t *testing.T, docs []searchengine.Document) *bm25Segment {
+func buildBM25(t *testing.T, docs []searchengine.Document) *mappedSegment {
 	t.Helper()
 	segIface, err := Format{}.Build(docs)
 	require.NoError(t, err)
-	return segIface.(*bm25Segment)
+	return segIface.(*mappedSegment)
 }

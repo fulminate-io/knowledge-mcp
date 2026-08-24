@@ -10,6 +10,7 @@ import (
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/searchengine/formats/hnsw"
 )
 
 // (corpora helpers convergeDocs / restartFleetMember / writerManifest / blobRefCount
@@ -64,7 +65,7 @@ func TestMultiWriterRestartReapsNothing(t *testing.T) {
 	for s := range aSegs {
 		addFlushSeg(t, a.Manager, gt, name, s)
 	}
-	aPriorManifest := writerManifest(svc, target, a.writerID, "hnsw")
+	aPriorManifest := writerManifest(svc, target, a.writerID, hnsw.New().Name())
 	require.Len(t, aPriorManifest, aSegs, "A's manifest references its whole corpus")
 
 	// B independently ships + publishes its own distinct segment.
@@ -106,7 +107,7 @@ func TestMultiWriterRestartReapsNothing(t *testing.T) {
 	// did NOT create a second manifest for the same writer_id). The replacement
 	// references at least all of A's original ids (the restart re-imported them), and
 	// the server holds exactly 2 distinct writer manifests (A + B).
-	aNow := writerManifest(svc, target, a.writerID, "hnsw")
+	aNow := writerManifest(svc, target, a.writerID, hnsw.New().Name())
 	for _, id := range aPriorManifest {
 		require.Contains(t, aNow, id, "A's restarted manifest still references its original corpus (replaced, not lost)")
 	}
@@ -151,7 +152,7 @@ func TestMultiWriterGoldenGraphSurvival(t *testing.T) {
 		// Golden's blob is NEVER reaped by the churner's publish-driven refcount-GC.
 		require.True(t, serverHasBlob(svc, target, goldenSeg),
 			"golden's blob survives churner cycle %d — no other writer's GC reaps a referenced blob", c)
-		require.Contains(t, writerManifest(svc, target, golden.writerID, "hnsw"), goldenSeg,
+		require.Contains(t, writerManifest(svc, target, golden.writerID, hnsw.New().Name()), goldenSeg,
 			"golden's manifest still references its blob after churner cycle %d", c)
 		require.True(t, serverHasBlob(svc, target, churnSeg), "the churner's own latest blob is present")
 	}

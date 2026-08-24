@@ -77,7 +77,7 @@ func newCollapsedBM25Fixture(t *testing.T, repo string) *Manager {
 
 	// Ship a real HNSW corpus (1024 docs == one sealed segment) via a producer
 	// Manager pointed at the same server, so the HNSW arm has something to load.
-	producer := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	producer := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 	seedShipped(t, ctx, producer, kgtypes.GraphCode, repo, hnswVecDocs(1024))
 
 	// Ship the BM25 manifest AFTER the producer's publish — a publish refcount-GCs
@@ -86,7 +86,7 @@ func newCollapsedBM25Fixture(t *testing.T, repo string) *Manager {
 	bm25IDs := shipBM25Metas(t, gc, target, collapsedBM25Shipped)
 	gc.setDrop(bm25IDs[0], true)
 
-	return NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	return closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 }
 
 // TestPerFormatVerdict_BM25ArmFlagged pins the per-format verdict: one format's arm
@@ -142,7 +142,7 @@ func TestPerFormatVerdict_ArmDisarms(t *testing.T) {
 		// denominator untrustworthy → disarm rather than churn.
 		shipBM25Metas(t, gc, target, 0)
 
-		mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+		mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 		verdicts, err := mgr.ReconcileResidentDegenerateByFormat(ctx, kgtypes.GraphCode, "unknownBM25Repo")
 		require.NoError(t, err)
 		require.Len(t, verdicts, 2)
@@ -167,7 +167,7 @@ func TestPerFormatVerdict_ArmDisarms(t *testing.T) {
 		// mean anything → disarm.
 		shipBM25Metas(t, gc, target, 2, 2)
 
-		mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+		mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 		verdicts, err := mgr.ReconcileResidentDegenerateByFormat(ctx, kgtypes.GraphCode, "tinyBM25Repo")
 		require.NoError(t, err)
 		require.Len(t, verdicts, 2)
@@ -199,13 +199,13 @@ func TestPerFormatVerdict_ArmErrorIsolated(t *testing.T) {
 
 	t.Run("one arm errors, the other stays usable", func(t *testing.T) {
 		_, gc := newSegmentHarness(t)
-		producer := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+		producer := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 		seedShipped(t, ctx, producer, kgtypes.GraphCode, "isolatedRepo", hnswVecDocs(1024))
 
 		// Warm the HNSW arm FIRST so its resident set is already imported. Only then
 		// break the List, so the HNSW arm still answers server-independently while the
 		// cold BM25 arm cannot read at all — that asymmetry is the contract.
-		consumer := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+		consumer := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 		require.NoError(t, consumer.managerFor(kgtypes.GraphCode, "isolatedRepo").load(ctx))
 		gc.listErr = errors.New("segment list unavailable")
 
@@ -228,7 +228,7 @@ func TestPerFormatVerdict_ArmErrorIsolated(t *testing.T) {
 		_, gc := newSegmentHarness(t)
 		gc.listErr = errors.New("segment list unavailable")
 
-		mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+		mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 		verdicts, err := mgr.ReconcileResidentDegenerateByFormat(ctx, kgtypes.GraphCode, "allFailRepo")
 		require.Error(t, err, "nothing was measurable, so the failure surfaces")
 		require.Len(t, verdicts, 2)
@@ -357,7 +357,7 @@ func TestPerFormatVerdict_RecoveredAboveFloorBelowRatio(t *testing.T) {
 	// is already imported and the load once-guard is latched, so load() short-circuits
 	// and the post-load resident is BELOW the floor — which is what forces execution
 	// past the entry gate into the verdict.
-	consumer := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	consumer := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 	dm := consumer.managerFor(kgtypes.GraphCode, "bandRepo")
 	partial := buildHNSWSegment(t, vecContentDocsSeed(10, 5000))
 	partialBlobs := make([]searchengine.SegmentBlob, 0, len(partial))

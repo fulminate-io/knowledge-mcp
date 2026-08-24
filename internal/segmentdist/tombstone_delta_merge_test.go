@@ -75,7 +75,7 @@ func TestDeltaTombstoneMergesWithAccumulatedSet(t *testing.T) {
 
 	// The blob on the server and in L2 predates BOTH deletes and contains every
 	// victim — the precondition the whole test rests on, since nothing rewrites it.
-	producer := NewManager(loginStateStub{loggedIn: true}, dir, 0, withSegmentSource(gc))
+	producer := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, dir, 0, withSegmentSource(gc)))
 	docs := prefixIDs(hnswVecDocs(corpusN), "merge-")
 	require.NoError(t, producer.AddAndMarkDirty(ctx, gt, name, docs))
 	require.NoError(t, producer.ReEmitDirtyBuckets(ctx, gt, name))
@@ -84,7 +84,7 @@ func TestDeltaTombstoneMergesWithAccumulatedSet(t *testing.T) {
 
 	// The accumulated state an earlier pass left: the durable record carries `known`
 	// and the engines are seeded from it.
-	consumer := NewManager(loginStateStub{loggedIn: true}, dir, 0, withSegmentSource(gc))
+	consumer := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, dir, 0, withSegmentSource(gc)))
 	require.NoError(t, consumer.SaveRebuildState(gt, name, priorWatermark, []searchengine.ExternalID{known.ID}))
 	consumer.SetGraphTombstones(gt, name, []searchengine.ExternalID{known.ID})
 

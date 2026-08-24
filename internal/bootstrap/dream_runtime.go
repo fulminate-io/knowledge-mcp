@@ -62,7 +62,7 @@ type runtimeLister interface {
 // runner(reg, bus, client, graphStorage) — stays in one place.
 //
 // gc is the login-aware Execute seam (runtimeLister). wireWorkerRuntime
-// passes the stdio client's c.router so the dream Registry's worker-list
+// passes the client's c.router so the dream Registry's worker-list
 // loopback routes per-call to cloud when logged in (no local server) and
 // to the local graph otherwise. The CLI subcommand path runs BEFORE the
 // MCP client is built and so constructs its own local *graphclient.GraphClient

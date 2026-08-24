@@ -35,7 +35,7 @@ func TestSearch_RecordsGraphAdmission(t *testing.T) {
 		return append([]string(nil), admitted...)
 	}
 
-	mgr := NewManager(loginStateStub{loggedIn: false}, t.TempDir(), 0, WithGraphAdmitter(record))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: false}, t.TempDir(), 0, WithGraphAdmitter(record)))
 
 	// A k<=0 call is not a user search. Asserted BEFORE the real search so the
 	// positive case below cannot mask an admission recorded here.

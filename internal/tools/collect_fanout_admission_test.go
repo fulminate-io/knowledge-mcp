@@ -96,7 +96,7 @@ func TestPostCollectFanoutDoesNotAdmit(t *testing.T) {
 
 	// A hook that reads through the caller, so the per-graph hook calls — not
 	// just the enumeration — are subject to the admission gate.
-	postpopulate.Register(tailType, func(ctx context.Context, gc postpopulate.GraphCaller, name string) error {
+	postpopulate.Register(tailType, postpopulate.BreadthFamilyBroad, func(ctx context.Context, gc postpopulate.GraphCaller, name string) error {
 		_, err := gc.Execute(ctx, &knowledgev1.ExecuteRequest{
 			Target: &knowledgev1.GraphSelector{Graph: "cloud", Account: name},
 			Plan:   &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{ById: "probe"}},
@@ -135,7 +135,8 @@ func TestPostCollectFanoutDoesNotAdmit(t *testing.T) {
 	// re-stamps would leave the test green.
 	ctx := graphclient.WithOperation(context.Background(), graphclient.OpCollect)
 
-	runPostCollectPostPopulate(ctx, deps, tailType)
+	// Admission, not enrichment success, is this test's subject — discard the error.
+	_ = runPostCollectPostPopulate(ctx, deps, tailType, "")
 	ppAdmitted, ppExecutes := caller.snapshot()
 	require.Positive(t, ppExecutes,
 		"the postpopulate tail must actually have issued reads — a tail that never ran admits nothing trivially")

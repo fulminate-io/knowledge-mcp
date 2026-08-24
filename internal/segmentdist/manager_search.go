@@ -58,6 +58,27 @@ func (m *Manager) Search(
 		return nil, err
 	}
 
+	// TRIGGER SITE for the residency budget: a completed search, on the path that
+	// just made a pool resident. It runs HERE rather than inside searchPoolArms
+	// because that function still holds both pools' read locks — enforceResidencyBudget
+	// evicts under a write lock, and Go's RWMutex is not reentrant. The graph just
+	// served is excluded for the same reason, as the second belt.
+	m.enforceResidencyBudget([]graphKey{{graphType: gt, graphName: name}})
+
+	// NEXT-TOUCH CONVERGENCE for any segment whose mapping republication failed.
+	// BOTH ARMS, and that is a CORRECTNESS requirement rather than tidiness:
+	// reclaimMerged is wired through Options.OnMerge for both formats, so both
+	// families accumulate pending remaps, while managerFor returns only the HNSW
+	// instantiation and bm25ManagerFor the other. A single delegated call would
+	// leave every BM25 pending remap undrained forever — the same silent forfeit
+	// this drain exists to remove.
+	//
+	// Scope is the SEARCHED graph, not a global walk: a budget is global, a remap
+	// repair is not, and an eager sweep would be a new operational surface.
+	for _, arm := range []remapArm{m.managerFor(gt, name), m.bm25ManagerFor(gt, name)} {
+		arm.drainRemapPending()
+	}
+
 	return reciprocalRankFusion([][]searchengine.Hit{hnswHits, bm25Hits}, k), nil
 }
 
@@ -96,6 +117,29 @@ func (m *Manager) searchPoolArms(
 
 	dm := m.managerFor(gt, name)
 	bm := m.bm25ManagerFor(gt, name)
+
+	// HOLD THE RESIDENCY READ LOCK ACROSS BOTH LOADS AND BOTH ENGINE SEARCHES. The
+	// deferred unlocks release at function return, i.e. after wg.Wait below, and
+	// THAT SPAN MUST NOT BE NARROWED TO THE LOADS ALONE. load() and engine.Search
+	// are two separate statements: an eviction landing between them leaves Search
+	// reading an empty snapshot — zero hits, no error — which is a silent miss no
+	// property of the engine's CAS publish prevents. Mutual exclusion is what closes
+	// it; a minimum-idle-age heuristic would not.
+	//
+	// LOCK ORDER: a search takes TWO read locks (dm then bm) and eviction takes ONE
+	// write lock at a time, so no cycle exists. The overlay path runs this function
+	// for two graphs concurrently; each goroutine takes its own two read locks and
+	// the argument is unchanged.
+	dm.residencyMu.RLock()
+	defer dm.residencyMu.RUnlock()
+	bm.residencyMu.RLock()
+	defer bm.residencyMu.RUnlock()
+
+	// Stamp BOTH pools as searched. A search queries a graph's HNSW and BM25 arms
+	// together, so evicting one format of a graph the user is actively searching
+	// would be a half-eviction whose next search pays a reload anyway.
+	dm.noteSearchTouch()
+	bm.noteSearchTouch()
 
 	// Load both engines' L2-resident set L2-first (server-independent on a populated
 	// cache; cold L2 falls through to the server). Load is idempotent — the l2Loaded
@@ -173,12 +217,23 @@ func (m *Manager) searchPoolArms(
 //     vector has been embedded and shipped, and attachment proceeds for the rest.
 //
 // Only the HNSW engine is consulted (BM25 has no vectors).
+//
+// IT MATERIALIZES AN EVICTED POOL BUT DOES NOT STAMP THE SEARCH TOUCH, and the
+// asymmetry is ticket constraint 2's "define hot/cold by last-search-touch" applied
+// literally. Materializing is right for both callers — ok=false is a load-bearing
+// answer the similar-mode claim turns into a loud error, so a silently-empty read
+// here would be a wrong answer rather than a degradation — but neither caller is a
+// user search, and the background propagation caller in particular must not be able
+// to keep a pool hot. It takes the residency read lock across load+VectorByID for
+// the same reason searchPoolArms does: the two are separate statements.
 func (m *Manager) VectorByID(
 	ctx context.Context,
 	gt kgtypes.GraphType,
 	name, externalID string,
 ) ([]byte, bool, error) {
 	dm := m.managerFor(gt, name)
+	dm.residencyMu.RLock()
+	defer dm.residencyMu.RUnlock()
 	if err := dm.load(ctx); err != nil {
 		return nil, false, err
 	}

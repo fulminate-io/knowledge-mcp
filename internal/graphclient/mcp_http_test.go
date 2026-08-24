@@ -188,7 +188,7 @@ func TestSessionValidation(t *testing.T) {
 // TestHTTPDispatchStampsSessionCwd is the end-to-end assertion: two HTTP
 // sessions with different injected cwds each issue a tools/call, and the
 // intercept chain (which on the HTTP path receives the session-stamped ctx)
-// sees each session's own workspace cwd. A nil-cwd ctx (stdio) sees "".
+// sees each session's own workspace cwd. A ctx without a session cwd sees "".
 func TestHTTPDispatchStampsSessionCwd(t *testing.T) {
 	injectPeerCwd(t, map[int]string{
 		54321: "/Users/jonathan/code/knowledge",

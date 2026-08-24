@@ -67,74 +67,10 @@ var functionLikeTypes = map[string]bool{
 	"singleton_method":     true, // Ruby
 }
 
-// classLikeTypes are AST node types that represent a named container whose
-// members another query pattern chunks separately — a class, interface, trait,
-// protocol, module or namespace. Membership is a census of the 32 queries_*.go
-// TopLevel queries: a kind belongs here when that language's query chunks a
-// member declaration nested inside it and containerName can resolve the
-// container's own name from one of its three sources.
-//
-// NO GO NODE KIND APPEARS HERE. Go's containers are type_declaration,
-// type_spec, struct_type and interface_type; their absence is what makes Go's
-// behavior unchanged by construction rather than by measurement. Note that
-// method_definition and method_declaration are function-like, not class-like,
-// and stay in functionLikeTypes.
-//
-// A kind admitted for one language is admitted for every language that uses
-// it: "class" is Ruby's class declaration and also the kind of a
-// TypeScript/JavaScript class expression, which is correct here — a member of
-// a named class expression takes the class's name, and a member of an
-// anonymous one takes nothing. ADDING A KIND HERE THEREFORE REQUIRES A CENSUS
-// OF EVERY GRAMMAR THAT USES IT, derived by reading the queries_*.go TopLevel
-// patterns rather than by probing one language and inferring the rest: a
-// passing test suite cannot reveal that an added kind also appears in a
-// grammar nobody wrote a fixture for.
-//
-// Containment is SINGLE-ANCESTOR: a member takes the name of its nearest named
-// container, never a dotted chain of every container above it. A C++ member of
-// `namespace outer { namespace inner { ... } }` therefore carries "inner"
-// alone. Where a grammar itself hands over a qualified spelling as one name
-// node — C#'s `namespace App.Models`, C++17's `namespace a::b` — that full
-// path is kept, because it arrives as the container's own name.
-//
-// Deliberately excluded, with the grammar reason: Elixir's container and
-// member are both the call kind, so no kind-based rule can tell defmodule from
-// def; C#'s file_scoped_namespace_declaration and PHP's semicolon-form
-// namespace are SIBLINGS of the declarations they name rather than ancestors,
-// so no upward walk reaches them and they are resolved from the file's own
-// declaration instead.
-var classLikeTypes = map[string]bool{
-	"class_definition":      true, // Python, Scala
-	"class_declaration":     true, // TypeScript/TSX, Java, C#, PHP, Swift; Kotlin (see below)
-	"class_specifier":       true, // C++
-	"struct_specifier":      true, // C++
-	"struct_declaration":    true, // C#
-	"interface_declaration": true, // Java, C#, PHP
-	"enum_declaration":      true, // Java, C#
-	"trait_declaration":     true, // PHP
-	"trait_definition":      true, // Scala
-	"object_definition":     true, // Scala
-	"protocol_declaration":  true, // Swift
-	"class":                 true, // Ruby; also JS/TS class expressions
-	"module":                true, // Ruby
-	// Kotlin's class_declaration and object_declaration bind their name
-	// POSITIONALLY — ChildByFieldName("name") returns nil on both, so their
-	// names come from containerName's third source, the scan of direct named
-	// children.
-	"object_declaration": true, // Kotlin (no name field — see containerName)
-	// Namespace-style containers. Each is admitted because a probe measured it
-	// as a true named ancestor of the declarations its language's query chunks.
-	"mod_item":              true, // Rust module — binds name:, true ancestor
-	"impl_item":             true, // Rust impl — binds type:, see containerName
-	"namespace_definition":  true, // C++; PHP braced form only
-	"namespace_declaration": true, // C#, block form only
-	"module_binding":        true, // OCaml — module_definition has no fields
-}
-
 // containerName resolves a class-like container's name. Grammars disagree
 // about where they put it, so three sources are tried in order:
 //
-//  1. the name: field — every kind in classLikeTypes except the two below,
+//  1. the name: field — every kind in classLikeByLang except the two below,
 //     proven because each language's own TopLevel query compiles a name:
 //     pattern against that kind;
 //  2. the type: field, accepted ONLY when it binds a type_identifier —
@@ -183,14 +119,19 @@ func containerName(p *sitter.Node, src []byte) string {
 // methods, returns "Receiver.Method". For anonymous functions assigned to
 // variables (e.g., const handler = () => {}), uses the variable name. Returns
 // "" if the node is at top-level scope.
-func findEnclosingScope(node *sitter.Node, src []byte) string {
+func findEnclosingScope(node *sitter.Node, src []byte, lang Language) string {
+	// The language's admission row is loop-invariant, so it is read ONCE here
+	// rather than per ancestor hop. A language with no row reads a nil map,
+	// and indexing a nil map yields false — the class-like branch is simply
+	// never taken.
+	admit := classLikeByLang[lang]
 	for p := node.Parent(); p != nil; p = p.Parent() {
 		// Class-like containers get their own branch and CONTINUE when
 		// unnamed, so a nameless container never reaches the
 		// function-oriented fallbacks below — anonymousFuncName would
 		// otherwise name it after the variable it is assigned to and parent
 		// every member to a thing that is not its class.
-		if classLikeTypes[p.Type()] {
+		if admit[p.Type()] {
 			if nm := containerName(p, src); nm != "" {
 				return nm
 			}
@@ -236,7 +177,14 @@ func declParentName(declNode *sitter.Node, src []byte, lang Language, chunkType 
 			return r
 		}
 	}
-	return findEnclosingScope(declNode, src)
+	// A Go interface's method spec takes the interface as its parent, by the
+	// same rule and for the same reason a method takes its receiver.
+	if lang == LangGo && chunkType == "method_elem" {
+		if n := goInterfaceParentName(declNode, src); n != "" {
+			return n
+		}
+	}
+	return findEnclosingScope(declNode, src, lang)
 }
 
 // anonymousFuncName resolves the name for an anonymous function node by checking
@@ -363,12 +311,30 @@ func firstStringArg(callNode *sitter.Node, src []byte) string {
 	return ""
 }
 
-// nonTypeContainerKinds are the classLikeTypes members a type reference never
-// names: an implementation, module, namespace or companion-object block that
-// shares its name with the type it accompanies. Every entry is a member of the
-// classLikeTypes census above, so this is a FILTER over that list rather than a
-// second census — derived by asking of each admitted kind "is this a type, or a
-// block that implements or scopes one?", and checkable by diffing the two.
+// nonTypeContainerKinds are the class-like container kinds a type reference
+// never names: an implementation, module, namespace or companion-object block
+// that shares its name with the type it accompanies.
+//
+// IT STAYS KEYED ON THE BARE SPELLING, and that is deliberate rather than an
+// oversight of the language dimension classLikeByLang carries. This map answers
+// a question about the KIND itself — is this a type, or a block that implements
+// or scopes one — and every grammar sharing one of these spellings answers it
+// the same way: a Ruby module, a TypeScript module block, a C++ namespace and a
+// PHP namespace are each a non-type block a type reference never names. The
+// census that established this recorded no spelling here whose answer differs
+// by language.
+//
+// Every entry is admitted by at least one classLikeByLang row, so this is a
+// FILTER over the union of those rows rather than a second census — derived by
+// asking of each admitted kind "is this a type, or a block that implements or
+// scopes one?", and checkable by diffing this map against that union.
+//
+// THE RELATION IS SUBSET, NOT EQUALITY, AND `module` IS WHY. The (typescript,
+// module) and (tsx, module) pairs belong HERE while carrying NO class-like
+// admission: a TypeScript module block is a namespace rather than a class-like
+// container, so it must not parent its members, and it is equally not a type a
+// reference can name. TestNonTypeContainerKindsSubsetOfClassLike asserts the
+// subset relation that does hold.
 var nonTypeContainerKinds = map[string]bool{
 	"impl_item":             true, // Rust impl
 	"mod_item":              true, // Rust module

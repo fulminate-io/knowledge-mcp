@@ -3,8 +3,6 @@
 package paging
 
 import (
-	"fmt"
-
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 )
 
@@ -110,14 +108,19 @@ func DrainKeysetPagesFunc(fetchPage func(afterID string) ([]*knowledgev1.Node, e
 // EdgePivotPageSize is the pivot-id count per bounded edges read.
 const EdgePivotPageSize = 500
 
-// edgeDedupKey identifies an edge for the pivot drain's union. The pivot SET
-// form yields the union over EACH pivot with no cross-pivot dedup, so an edge
-// whose two endpoints both sit in the pivot set arrives twice within one page,
-// and an edge straddling two pages arrives once per page.
+// edgeDedupKey identifies one MEMBERSHIP for the pivot drain's union. The pivot
+// SET form yields the union over EACH pivot with no cross-pivot dedup, so an
+// edge whose two endpoints both sit in the pivot set arrives twice within one
+// page, and an edge straddling two pages arrives once per page.
+//
+// `evidence` is the group key. Without it every paged edge read on the client
+// collapses two candidate-group memberships of one triple into one, which is a
+// drop rather than the intended cross-pivot dedup.
 type edgeDedupKey struct {
 	fromID   string
 	toID     string
 	edgeType string
+	evidence string
 }
 
 // DrainPivotEdges is the EDGE sibling of the keyset drains above: it reads every
@@ -138,15 +141,24 @@ type edgeDedupKey struct {
 //
 // A saturated page HALVES: a smaller pivot set selects strictly fewer edges, so
 // each half is retried independently until the pages come in under the cap.
-// Recursion bottoms out at a single pivot — if one pivot alone still saturates,
-// no further split exists, and the drain returns an error naming that pivot
-// rather than a short union. A node with more edges than the cap cannot be
-// served completely by this primitive, and its caller must learn that instead of
-// ranking a silent sample.
+// Recursion bottoms out at a single pivot, and THAT is where the band-split
+// escape takes over: the pivot is re-read as a tiling of half-open from_id
+// bands (drainPivotByBands, band_drain.go) and only a pivot no band can divide
+// still errors. A node whose OUT-degree alone exceeds the cap is that case —
+// every edge leaving it shares its id as from_id — and its caller must learn
+// that instead of ranking a silent sample.
+//
+// fetchPage RECEIVES THE BAND, and every production caller wires it into the
+// plan it builds through paging.EdgeFromBandOrNil. Two empty bounds mean an
+// unbanded page and the constructor returns nil for them, which matters: the
+// server refuses a non-nil band alongside two or more pivots, and an ordinary
+// chunk-loop page carries up to pageSize of them. Its bool return is the
+// response's truncated flag, the saturation signal a decoder-dropped row set
+// cannot hide.
 //
 // Serial by necessity: the dedup map is shared across pages and the round trips
 // are the cost, not CPU.
-func DrainPivotEdges(ids []string, pageSize, edgeCap int, fetchPage func(idPage []string) ([]knowledgev1.Edge, error)) ([]knowledgev1.Edge, error) {
+func DrainPivotEdges(ids []string, pageSize, edgeCap int, fetchPage func(idPage []string, fromIDGte, fromIDLt string) ([]knowledgev1.Edge, bool, error)) ([]knowledgev1.Edge, error) {
 	if len(ids) == 0 {
 		return nil, nil
 	}
@@ -157,7 +169,7 @@ func DrainPivotEdges(ids []string, pageSize, edgeCap int, fetchPage func(idPage 
 	out := make([]knowledgev1.Edge, 0, len(ids))
 	for start := 0; start < len(ids); start += pageSize {
 		end := min(start+pageSize, len(ids))
-		if err := drainPivotPage(ids[start:end], edgeCap, fetchPage, seen, &out); err != nil {
+		if err := drainPivotPage(ids[start:end], ids, edgeCap, fetchPage, seen, &out); err != nil {
 			return nil, err
 		}
 	}
@@ -166,32 +178,40 @@ func DrainPivotEdges(ids []string, pageSize, edgeCap int, fetchPage func(idPage 
 
 // drainPivotPage reads ONE pivot page into the shared union, halving the page
 // and retrying when the server's answer comes back at the per-page edge cap.
+//
+// allIDs is the drain's FULL id list, not this page's slice, and the difference
+// is load-bearing: the halved slice is the pivot subset being retried, while the
+// escape's band boundaries must be quantiles of the whole caller-supplied set —
+// that set is where a saturating pivot's INCOMING from_ids are drawn from. The
+// recursive calls below therefore pass allIDs through unchanged.
 func drainPivotPage(
 	pivots []string,
+	allIDs []string,
 	edgeCap int,
-	fetchPage func(idPage []string) ([]knowledgev1.Edge, error),
+	fetchPage bandFetchFn,
 	seen map[edgeDedupKey]bool,
 	out *[]knowledgev1.Edge,
 ) error {
-	edges, err := fetchPage(pivots)
+	edges, truncated, err := fetchPage(pivots, "", "")
 	if err != nil {
 		return err
 	}
-	if edgeCap > 0 && len(edges) >= edgeCap {
+	if (edgeCap > 0 && len(edges) >= edgeCap) || truncated {
 		if len(pivots) == 1 {
-			return fmt.Errorf(
-				"paging: pivot %q alone returns at least %d edges, the per-page ceiling — its edge set cannot be read completely by a pivot drain",
-				pivots[0], edgeCap)
+			// THE ESCAPE, in place of the unconditional abort this path used to be.
+			// Its error preserves the pivot-naming wording that abort carried, so a
+			// pivot no band can divide still fails loudly and recognizably.
+			return drainPivotByBands(pivots[0], allIDs, edgeCap, fetchPage, seen, out)
 		}
 		mid := len(pivots) / 2
-		if err := drainPivotPage(pivots[:mid], edgeCap, fetchPage, seen, out); err != nil {
+		if err := drainPivotPage(pivots[:mid], allIDs, edgeCap, fetchPage, seen, out); err != nil {
 			return err
 		}
-		return drainPivotPage(pivots[mid:], edgeCap, fetchPage, seen, out)
+		return drainPivotPage(pivots[mid:], allIDs, edgeCap, fetchPage, seen, out)
 	}
 	for i := range edges {
 		e := &edges[i]
-		key := edgeDedupKey{fromID: e.FromId, toID: e.ToId, edgeType: e.Type}
+		key := edgeDedupKey{fromID: e.FromId, toID: e.ToId, edgeType: e.Type, evidence: e.Evidence}
 		if seen[key] {
 			continue
 		}

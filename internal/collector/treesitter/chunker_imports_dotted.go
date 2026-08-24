@@ -40,9 +40,12 @@ func namedChildrenOfType(node *sitter.Node, kind string) []*sitter.Node {
 	return out
 }
 
-// hasAnonymousChild reports whether node carries an anonymous child of the given
-// token type — the way a modifier keyword with no field name is read, as the
-// ECMAScript arm reads `type` on an import statement.
+// hasAnonymousChild reports whether node carries ANY direct child — named or
+// anonymous — of the given token type. The common caller reads an anonymous
+// modifier keyword with no field name, as the ECMAScript arm reads `type` on an
+// import statement, but the walk deliberately covers all children: named kinds
+// are legitimate arguments too, and narrowing the body to anonymous-only would
+// silently break such callers.
 func hasAnonymousChild(node *sitter.Node, kind string) bool {
 	for i := range int(node.ChildCount()) {
 		if node.Child(i).Type() == kind {
@@ -72,7 +75,7 @@ func splitLastSegment(path, sep string) (prefix, last string) {
 // or a type — is resolved downstream by trying both candidate paths, so no
 // modifier keyword has to be read to tell them apart.
 func parseJavaImport(node *sitter.Node, src []byte, ctx *ChunkContext) {
-	ctx.Imports = append(ctx.Imports, node.Content(src))
+	ctx.Imports = append(ctx.Imports, ImportSite{Specifier: node.Content(src)})
 
 	path := ""
 	if ids := namedChildrenOfType(node, "scoped_identifier"); len(ids) > 0 {
@@ -105,7 +108,7 @@ func parseKotlinImport(node *sitter.Node, src []byte, ctx *ChunkContext) {
 		return
 	}
 	path := ids[0].Content(src)
-	ctx.Imports = append(ctx.Imports, path)
+	ctx.Imports = append(ctx.Imports, ImportSite{Specifier: path})
 
 	if prefix, wildcard := strings.CutSuffix(path, ".*"); wildcard {
 		ctx.ImportBindings = append(ctx.ImportBindings, ImportBinding{
@@ -132,7 +135,7 @@ func parseKotlinImport(node *sitter.Node, src []byte, ctx *ChunkContext) {
 // than nesting them, so the specifier is the join of the leading identifier
 // children and the trailing one is the imported name.
 func parseScalaImport(node *sitter.Node, src []byte, ctx *ChunkContext) {
-	ctx.Imports = append(ctx.Imports, node.Content(src))
+	ctx.Imports = append(ctx.Imports, ImportSite{Specifier: node.Content(src)})
 
 	ids := namedChildrenOfType(node, "identifier")
 	segments := make([]string, 0, len(ids))
@@ -189,7 +192,7 @@ func parseScalaImport(node *sitter.Node, src []byte, ctx *ChunkContext) {
 // recorded as a wildcard — the same shape as java's `import x.y.*`. Only the
 // DECLARATION-import forms, which carry a kind keyword, name something.
 func parseSwiftImport(node *sitter.Node, src []byte, ctx *ChunkContext) {
-	ctx.Imports = append(ctx.Imports, node.Content(src))
+	ctx.Imports = append(ctx.Imports, ImportSite{Specifier: node.Content(src)})
 
 	ids := namedChildrenOfType(node, "identifier")
 	if len(ids) == 0 {
@@ -225,7 +228,7 @@ func parseSwiftImport(node *sitter.Node, src []byte, ctx *ChunkContext) {
 // form does, and recording `Bar` from `using Foo.Bar;` would assert a member
 // the source never named.
 func parseCSharpImport(node *sitter.Node, src []byte, ctx *ChunkContext) {
-	ctx.Imports = append(ctx.Imports, node.Content(src))
+	ctx.Imports = append(ctx.Imports, ImportSite{Specifier: node.Content(src)})
 
 	quals := namedChildrenOfType(node, "qualified_name")
 	if len(quals) == 0 {
@@ -257,7 +260,7 @@ func parseCSharpImport(node *sitter.Node, src []byte, ctx *ChunkContext) {
 // `strings.Contains(s, "import pytest")`), so dropping the second would lose
 // detection for `from pytest import fixture`.
 func parsePythonImport(node *sitter.Node, src []byte, ctx *ChunkContext) {
-	ctx.Imports = append(ctx.Imports, node.Content(src))
+	ctx.Imports = append(ctx.Imports, ImportSite{Specifier: node.Content(src)})
 
 	if node.Type() == "import_from_statement" {
 		parsePythonFromImport(node, src, ctx)
@@ -291,7 +294,7 @@ func parsePythonFromImport(node *sitter.Node, src []byte, ctx *ChunkContext) {
 		return
 	}
 	module := dotted[0].Content(src)
-	ctx.Imports = append(ctx.Imports, module)
+	ctx.Imports = append(ctx.Imports, ImportSite{Specifier: module})
 
 	// `from x import *` binds an unbounded set under no local name.
 	if hasAnonymousChild(node, "*") {

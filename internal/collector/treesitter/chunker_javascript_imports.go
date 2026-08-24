@@ -72,7 +72,7 @@ func parseECMAScriptImportStatement(node *sitter.Node, src []byte, ctx *ChunkCon
 	if spec == "" {
 		return
 	}
-	ctx.Imports = append(ctx.Imports, spec)
+	ctx.Imports = append(ctx.Imports, ImportSite{Specifier: spec})
 
 	// A `type` modifier on the STATEMENT is an anonymous child, so it is read
 	// by node type rather than by field: `import type {A} from './x'`.
@@ -157,7 +157,7 @@ func parseECMAScriptExportStatement(node *sitter.Node, src []byte, ctx *ChunkCon
 		recordDefaultExportName(node, src, ctx)
 		return
 	}
-	ctx.Imports = append(ctx.Imports, spec)
+	ctx.Imports = append(ctx.Imports, ImportSite{Specifier: spec})
 
 	clause := namedChildOfType(node, "export_clause")
 	if clause == nil {

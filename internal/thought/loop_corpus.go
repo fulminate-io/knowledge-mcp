@@ -133,8 +133,14 @@ func (p *PropagationLoop) warmLoadCorpusOnce() (adopted bool) {
 	switch {
 	case err != nil:
 		// LOUD: a record that exists and does not decode is a fault, not a state.
+		// The Warn comes FIRST so the reason is logged before the evidence is
+		// destroyed, then the record is removed immediately rather than left on
+		// disk until some later tick happens to overwrite it. A record we have
+		// already ruled unusable is readable content we have no reason to keep,
+		// and if this tick's drain fails nothing else deletes it.
 		slog.Warn("thought: persisted corpus cache rejected — falling back to a full cold drain",
 			"err", err, "path", p.corpusCachePath)
+		p.removePersistedCorpusRecord()
 		return false
 	case !ok:
 		// QUIET: absence is the ordinary first-run / wiped-cache state.
@@ -408,20 +414,27 @@ func (p *PropagationLoop) persistCorpusCache() {
 	}
 }
 
-// removePersistedCorpusRecord deletes a record whose cache has been PROVEN divergent
-// by a failed reconciliation, and reports whether a file was actually removed.
+// removePersistedCorpusRecord deletes a record the loop has decided not to use, and
+// reports whether a file was actually removed.
 //
-// This is not destroy-before-persist: the record's absence is exactly the state its
-// divergence calls for (a cold drain), and it can be regenerated from the server on
-// any tick. An absent record is the intended end state, so a not-exist error is
-// success rather than a fault.
+// TWO CALLERS, both reaching the same conclusion by different routes:
+//   - a reconciliation that PROVED the cache divergent;
+//   - a record REJECTED at load, because it did not open or did not decode.
+//
+// This is not destroy-before-persist for either of them. The record's absence is
+// exactly the state both conditions call for (a cold drain), and it can be
+// regenerated from the server on any tick. For the divergent caller the cache has
+// been proven wrong; for the rejected caller the loader has already ruled the file
+// unusable, so keeping it would preserve nothing but readable bytes. An absent
+// record is the intended end state, so a not-exist error is success rather than a
+// fault.
 func (p *PropagationLoop) removePersistedCorpusRecord() bool {
 	if p == nil || p.corpusCachePath == "" {
 		return false
 	}
 	if err := os.Remove(p.corpusCachePath); err != nil {
 		if !os.IsNotExist(err) {
-			slog.Warn("thought: failed to remove the divergent persisted corpus cache",
+			slog.Warn("thought: failed to remove the rejected or divergent persisted corpus cache",
 				"err", err, "path", p.corpusCachePath)
 		}
 		return false

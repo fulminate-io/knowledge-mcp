@@ -4,6 +4,7 @@ package segmentdist
 
 import (
 	"container/list"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -31,6 +32,12 @@ import (
 type diskSegmentCache struct {
 	root    string
 	maxByte int64
+	// advice is the read-ahead hint every mapping this cache opens carries. It
+	// is per-cache because a cache is constructed per (graph, format), so the
+	// instance already knows its format — which is why GetMapped does NOT take
+	// it: widening that would change the searchengine.SegmentCache interface and
+	// every test double for no gain.
+	advice readAdvice
 
 	mu     sync.Mutex
 	ll     *list.List               // front = MRU, back = LRU; element value = *cacheEntry
@@ -56,10 +63,11 @@ var _ segmentL2Cache = (*diskSegmentCache)(nil)
 // On construction it scans the root once so a restart recovers the prior cache
 // state (size + LRU membership) and re-loads blobs from disk rather than the
 // network. The dir is created lazily on the first Put.
-func newDiskSegmentCache(root string, maxBytes int64) *diskSegmentCache {
+func newDiskSegmentCache(root string, maxBytes int64, advice readAdvice) *diskSegmentCache {
 	c := &diskSegmentCache{
 		root:    root,
 		maxByte: maxBytes,
+		advice:  advice,
 		ll:      list.New(),
 		index:   make(map[string]*list.Element),
 	}
@@ -114,6 +122,37 @@ func (c *diskSegmentCache) Get(id searchengine.SegmentID) ([]byte, bool) {
 	}
 	c.ll.MoveToFront(el)
 	return data, true
+}
+
+// GetMapped returns the cached blob as a read-only MEMORY MAPPING plus the
+// closure that releases it, and updates recency exactly as Get does. It is the
+// variant the resident read path uses: the bytes become OS page cache the
+// kernel can reclaim rather than Go heap the collector must scan.
+//
+// A miss (ok=false, nil error) means the id is not cached. A non-nil error means
+// the id IS cached but its file could not be mapped, and the caller must surface
+// that rather than treat it as a miss — answering it as a miss would route the
+// caller to a heap-reading path and hide a broken mapping seam behind a slow one.
+// A stale index entry whose file has vanished is dropped and reported as a plain
+// miss, matching Get: that is index/disk reconciliation, not a mapping failure.
+func (c *diskSegmentCache) GetMapped(id searchengine.SegmentID) ([]byte, func(), bool, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	el, ok := c.index[id]
+	if !ok {
+		return nil, nil, false, nil
+	}
+	path := c.path(id)
+	if _, err := os.Stat(path); err != nil {
+		c.removeElement(el)
+		return nil, nil, false, nil
+	}
+	m, err := mapBlobFile(path, c.advice)
+	if err != nil {
+		return nil, nil, false, fmt.Errorf("segmentdist: map cached segment %s: %w", id, err)
+	}
+	c.ll.MoveToFront(el)
+	return m.data, func() { _ = m.release() }, true, nil
 }
 
 // Put writes b under id (content-addressed) with an atomic temp+rename, updates
@@ -206,6 +245,28 @@ func (c *diskSegmentCache) Keys() []searchengine.SegmentID {
 		keys = append(keys, id)
 	}
 	return keys
+}
+
+// sizeOf reports the stored byte size of one cached id, and whether the id is
+// resident at all.
+//
+// It reads the SAME in-memory accounting the eviction budget is kept in, so a
+// caller sizing a copy before making it measures exactly what that copy will
+// charge against the destination's budget — and it costs no disk read. Like
+// Keys, it is recency-neutral: sizing a set must not reorder the LRU, or asking
+// how big something is would change what gets evicted next.
+func (c *diskSegmentCache) sizeOf(id searchengine.SegmentID) (int64, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	el, ok := c.index[id]
+	if !ok {
+		return 0, false
+	}
+	entry, ok := el.Value.(*cacheEntry)
+	if !ok {
+		return 0, false
+	}
+	return entry.bytes, true
 }
 
 // atomicWriteFile writes b to path via a temp file + rename. This rolls its OWN

@@ -21,7 +21,6 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/externalcollector"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	clientlinker "github.com/fulminate-io/knowledge-mcp/internal/linker"
-	"github.com/fulminate-io/knowledge-mcp/internal/postpopulate"
 	"github.com/fulminate-io/knowledge-mcp/internal/recipe"
 )
 
@@ -299,77 +298,6 @@ func tryRegisteredCollect(ctx context.Context, deps ClientDeps, a collectArgs) (
 // required ClientDeps method so the many test fakes that run no pipeline are
 // unaffected; the production *client implements it over Pipeline.WakeAll.
 type pipelineWaker interface{ WakePipeline() }
-
-// postPopulateGraphType maps a collector type onto the store graph type whose
-// named graphs the family's PostPopulate hook reads + writes. cloud providers
-// (aws/gcp/azure/k8s) all back onto GraphCloud; CICD providers (github/
-// bitbucket/gitlab) onto GraphCICD; the codesync collector ("code") onto GraphCode.
-// A collector type with no entry has no postpopulate hook and is a no-op.
-var postPopulateGraphType = map[string]kgtypes.GraphType{
-	"aws":       kgtypes.GraphCloud,
-	"gcp":       kgtypes.GraphCloud,
-	"azure":     kgtypes.GraphCloud,
-	"k8s":       kgtypes.GraphCloud,
-	"github":    kgtypes.GraphCICD,
-	"bitbucket": kgtypes.GraphCICD,
-	"gitlab":    kgtypes.GraphCICD,
-	"code":      kgtypes.GraphCode,
-}
-
-// runPostCollectPostPopulate fires the registered PostPopulate hook for the
-// collector family after a successful collect, mirroring runPostCollectLinker's
-// shape EXACTLY: it gates on the families that register a hook (the cloud/cicd/
-// code collector types), grabs the GraphCaller wire seam, nil-skips with a
-// slog.Warn, and is best-effort (hook failure → slog.Warn, the caller's
-// user-facing textResult is unchanged).
-//
-// The hook key is the COLLECTOR TYPE (a.Type) — the registered keys are exactly
-// the collector Name() values (aws/gcp/azure/k8s/github/bitbucket/gitlab/code), NOT a
-// graph-name prefix (cloud graph names carry no family prefix: aws=accountID,
-// gcp=projectID, azure=subscriptionID, k8s=contextName — all share GraphCloud).
-// The orchestrator enumerates every graph of the family's graph type via
-// postpopulate.ListGraphNames and fires the hook against each: a single cloud
-// collect can cascade multiple provider graphs, and each hook self-filters by
-// graph CONTENT (the resolveClusterLinkage-style silent no-op), so firing across
-// all graphs of the type is safe — it enriches the graphs it owns and no-ops on
-// the rest. All-graphs enumeration + idempotent re-run mirrors clientlinker.RunAll.
-// The fan-out also runs under a non-admitting operation, so firing across every
-// graph of the type cannot earn any of them a place in the working set.
-func runPostCollectPostPopulate(ctx context.Context, deps ClientDeps, collectorType string) {
-	hook, ok := postpopulate.Lookup(collectorType)
-	if !ok {
-		// No hook registered for this collector type (e.g. web, pdf, logs, or
-		// any sub-collector type) — nothing to enrich.
-		return
-	}
-	graphType, ok := postPopulateGraphType[collectorType]
-	if !ok {
-		// A hook is registered but we have no graph-type mapping — defensive
-		// skip (should not happen for the in-scope families).
-		slog.Warn("post-collect postpopulate: no graph-type mapping (skipping)", "collector", collectorType)
-		return
-	}
-	// Post-collect postpopulate follows the data: under the locked model the
-	// collect sink wrote to cloud when logged in (local otherwise), so the
-	// enrichment re-reads through the SAME login-routed GraphCaller — the
-	// just-collected nodes live wherever the sink put them.
-	gc := deps.GraphCaller()
-	if gc == nil {
-		slog.Warn("post-collect postpopulate: GraphCaller unavailable (skipping)", "collector", collectorType)
-		return
-	}
-	ctx = graphclient.WithOperation(ctx, graphclient.OpPostCollectFanout)
-	names, err := postpopulate.ListGraphNames(ctx, gc, graphType)
-	if err != nil {
-		slog.Warn("post-collect postpopulate: enumerate graphs failed", "collector", collectorType, "graphType", graphType, "error", err)
-		return
-	}
-	for _, name := range names {
-		if err := hook(ctx, gc, name); err != nil {
-			slog.Warn("post-collect postpopulate hook failed", "collector", collectorType, "graph", name, "error", err)
-		}
-	}
-}
 
 // postCollectLinkerTypes is the set of collector types that trigger the
 // post-collect cross-graph linker. Mirrors the prior server-side

@@ -125,7 +125,10 @@ func armVerdictFor(verdicts []segmentdist.ArmVerdict, format string) (segmentdis
 // OWN ArmVerdict.Err, which preserves the caller's existing semantics exactly: an
 // HNSW arm that could not be read takes the probe-error path (warn, keep the
 // existing resident, do not rebuild) rather than being mistaken for an arm whose
-// load restored coverage.
+// load restored coverage. AN EVICTED ARM TAKES THAT SAME PATH, because an evicted
+// arm was not read: the residency budget unloaded its pool and the probe declined
+// to resurrect it, so its Degenerate false is the absence of a measurement rather
+// than a healthy one.
 func (c *client) hnswArmProbe(
 	ctx context.Context, gt kgtypes.GraphType, name string,
 ) ([]segmentdist.ArmVerdict, bool, error) {
@@ -139,6 +142,9 @@ func (c *client) hnswArmProbe(
 	}
 	if v.Err != nil {
 		return verdicts, false, v.Err
+	}
+	if v.Evicted {
+		return verdicts, false, errors.New("hnsw arm is evicted — its segment pool was unloaded and not measured")
 	}
 	return verdicts, v.Degenerate, nil
 }
@@ -188,6 +194,15 @@ func (c *client) healNeedsRebuildBM25(
 		// Unmeasured arm: best-effort, matching the probe-error convention above —
 		// an arm that could not be read must never drive a rebuild.
 		return false, nil //nolint:nilerr // an unmeasured arm declines rather than propagating
+	}
+	// AN EVICTED ARM DECLINES WITHOUT CLEARING, and it must be tested BEFORE the
+	// Degenerate branch below. An evicted arm reports Degenerate false, so falling
+	// into that branch would call clearBM25HealProgress and drop the no-progress
+	// bound — the only thing stopping check 3's endless per-tick rebuild — on the
+	// strength of a measurement nobody took. This is the same decline the unmeasured
+	// arm above performs, for the same reason.
+	if v.Evicted {
+		return false, nil
 	}
 	if !v.Degenerate {
 		clearBM25HealProgress(gt, name)

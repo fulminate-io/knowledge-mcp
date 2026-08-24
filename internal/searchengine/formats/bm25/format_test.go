@@ -38,13 +38,49 @@ func sampleDocs() []searchengine.Document {
 }
 
 // buildOne builds a single sealed segment from docs and its matching corpus stats.
-func buildOne(t *testing.T, docs []searchengine.Document) (*bm25Segment, *CorpusStats) {
+func buildOne(t *testing.T, docs []searchengine.Document) (*mappedSegment, *CorpusStats) {
 	t.Helper()
 	segIface, err := Format{}.Build(docs)
 	require.NoError(t, err)
-	seg := segIface.(*bm25Segment)
+	seg := segIface.(*mappedSegment)
 	stats := Format{}.AggregateStats([]searchengine.Segment[Query, *CorpusStats]{seg})
 	return seg, stats
+}
+
+// buildAccumulator seals the BUILD-TIME map-shaped accumulator without publishing
+// it. Build normally encodes this and hands back the offset reader; the tests
+// that need the map form — the independent scoring oracle, and the equality proof
+// the offset reader is held to — reach it through here.
+func buildAccumulator(t *testing.T, docs []searchengine.Document) *bm25Segment {
+	t.Helper()
+	return buildSegment(tokenizeDocsParallel(docs, numWorkers()))
+}
+
+// staticDocFreq answers document-frequency probes from a fixed map, so a test can
+// pin corpus statistics without building a segment to hold them.
+type staticDocFreq map[string]int64
+
+func (s staticDocFreq) segmentDocFreq(term string) int64 { return s[term] }
+
+// docFreqSnapshot resolves every term's corpus-global frequency through the lazy
+// path, giving a comparable map for two stats objects that must agree.
+func docFreqSnapshot(stats *CorpusStats, terms []string) map[string]int64 {
+	out := make(map[string]int64, len(terms))
+	for _, term := range terms {
+		out[term] = stats.docFreqOf(term)
+	}
+	return out
+}
+
+// corpusTerms lists every term the docs index, via the build-time accumulator's
+// own docFreq map. It is the fixture-derived term set the DF comparisons run
+// over — deriving it from one of the two stats objects under comparison would
+// make the assertion an identity.
+func corpusTerms(t *testing.T, docs []searchengine.Document) []string {
+	t.Helper()
+	acc := buildAccumulator(t, docs)
+	require.NotEmpty(t, acc.docFreq, "fixture indexes no terms — a DF comparison over it would be vacuous")
+	return sortedKeys(acc.docFreq)
 }
 
 // referenceScore recomputes the BM25F score for one (doc, query) pair directly
@@ -78,6 +114,10 @@ func referenceScore(seg *bm25Segment, stats *CorpusStats, q Query, docID uint32)
 func TestSingleSegmentSearchMatchesReference(t *testing.T) {
 	docs := sampleDocs()
 	seg, stats := buildOne(t, docs)
+	// The oracle reads posting lists directly, so it runs off the build-time
+	// accumulator; both are scored under the SAME stats object so document
+	// frequency cannot differ between them.
+	acc := buildAccumulator(t, docs)
 
 	for _, qText := range []string{"cluster", "json parser", "score query", "membership cluster"} {
 		q := NewQuery(qText)
@@ -89,9 +129,9 @@ func TestSingleSegmentSearchMatchesReference(t *testing.T) {
 			id    string
 			score float64
 		}
-		ref := make([]sd, 0, len(seg.members))
-		for docID, id := range seg.members {
-			sc := referenceScore(seg, stats, q, uint32(docID))
+		ref := make([]sd, 0, len(acc.members))
+		for docID, id := range acc.members {
+			sc := referenceScore(acc, stats, q, uint32(docID))
 			if sc > 0 {
 				ref = append(ref, sd{id: id, score: sc})
 			}
@@ -121,13 +161,14 @@ func TestEncodeDecodeRoundTrip(t *testing.T) {
 	require.NoError(t, err)
 	decIface, err := Format{}.Decode(blob)
 	require.NoError(t, err)
-	dec := decIface.(*bm25Segment)
+	dec := decIface.(*mappedSegment)
 
 	require.ElementsMatch(t, seg.IDs(), dec.IDs())
 	// Re-aggregate over the decoded segment; stats must be identical.
 	decStats := Format{}.AggregateStats([]searchengine.Segment[Query, *CorpusStats]{dec})
 	require.Equal(t, stats.TotalDocs, decStats.TotalDocs)
-	require.Equal(t, stats.DocFreq, decStats.DocFreq)
+	terms := corpusTerms(t, docs)
+	require.Equal(t, docFreqSnapshot(stats, terms), docFreqSnapshot(decStats, terms))
 	for name, avg := range stats.FieldAvgLen {
 		require.InDelta(t, avg, decStats.FieldAvgLen[name], 1e-12, "field %s avg len", name)
 	}
@@ -158,7 +199,7 @@ func TestNewQueryTokenizesOnce(t *testing.T) {
 func TestEmptyAndDefensive(t *testing.T) {
 	segIface, err := Format{}.Build(nil)
 	require.NoError(t, err)
-	seg := segIface.(*bm25Segment)
+	seg := segIface.(*mappedSegment)
 	require.Empty(t, seg.IDs())
 	require.Nil(t, seg.Search(NewQuery("anything"), newCorpusStats(), 10, nil))
 
@@ -191,7 +232,7 @@ func TestMergeUnionMatchesScratch(t *testing.T) {
 	mergedIface, err := Format{}.Merge(
 		[]searchengine.Segment[Query, *CorpusStats]{seg1Iface, seg2Iface}, accept)
 	require.NoError(t, err)
-	merged := mergedIface.(*bm25Segment)
+	merged := mergedIface.(*mappedSegment)
 
 	// Member set == union of accepted ids (a, c, d — b dropped).
 	require.ElementsMatch(t, []string{"a", "c", "d"}, merged.IDs())
@@ -203,7 +244,8 @@ func TestMergeUnionMatchesScratch(t *testing.T) {
 
 	// Stats must be identical (same N, DF, field avg lengths).
 	require.Equal(t, scratchStats.TotalDocs, mergedStats.TotalDocs)
-	require.Equal(t, scratchStats.DocFreq, mergedStats.DocFreq)
+	survivingTerms := corpusTerms(t, surviving)
+	require.Equal(t, docFreqSnapshot(scratchStats, survivingTerms), docFreqSnapshot(mergedStats, survivingTerms))
 	for name, avg := range scratchStats.FieldAvgLen {
 		require.InDelta(t, avg, mergedStats.FieldAvgLen[name], 1e-12, "field %s avg len", name)
 	}
@@ -245,7 +287,9 @@ func TestBM25EmptySegmentRoundTrip(t *testing.T) {
 // idfSanity guards the IDF formula against silent drift: a term in every doc has
 // near-zero idf, a rare term has higher idf.
 func TestIDFMonotonic(t *testing.T) {
-	stats := &CorpusStats{TotalDocs: 100, DocFreq: map[string]int64{"common": 100, "rare": 1}}
+	stats := newCorpusStats()
+	stats.TotalDocs = 100
+	stats.attach(staticDocFreq{"common": 100, "rare": 1})
 	common := idf("common", stats.TotalDocs, stats)
 	rare := idf("rare", stats.TotalDocs, stats)
 	require.Greater(t, rare, common, "rare term must have higher idf than common term")

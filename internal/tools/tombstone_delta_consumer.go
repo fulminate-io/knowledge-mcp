@@ -86,8 +86,15 @@ func MergeSegmentDelta(
 	// ONE scan carries both halves. This is the only server axis that carries the
 	// delete flag, and reading both through the existing seam keeps a single
 	// definition of what "changed since" means.
+	// Sends the FLOOR across the consumers that hold a position, for the reason
+	// rebuild_segments_driver.go states at its own call: the ahead consumer must not
+	// raise the server's retention watermark past what the lagging one has read.
+	// The one field carries both meanings, so where the floor sits below this
+	// merge's own position the window widens and re-serves rows already merged —
+	// idempotent, and the direction that costs work rather than losing a deletion.
 	items, tombstoned, horizon, err := scanRebuildSegmentsAs(
-		ctx, graphclient.OpSegmentDeltaMerge, scanner, gt, name, sinceNanos)
+		ctx, graphclient.OpSegmentDeltaMerge, scanner, gt, name,
+		retentionFloorFor(shipper, gt, name, sinceNanos))
 	if err != nil {
 		return SegmentDelta{}, fmt.Errorf("segment delta scan failed: %w", err)
 	}

@@ -94,8 +94,11 @@ func TestDeclNameRegistry(t *testing.T) {
 	// pass. Elixir is the sixth and is asserted by name in
 	// TestDeclNameRegistryWithElixir; it registers separately because its
 	// resolver is unreachable until the Elixir TopLevel query stops binding a
-	// name of its own.
-	assert.Len(t, declNameResolvers, 6)
+	// name of its own. C is the SEVENTH: its resolver names a variable
+	// declaration, whose declarator shapes are open-ended enough that no closed
+	// query alternation can cover them.
+	assert.Contains(t, declNameResolvers, LangC, "C must register a declNameResolver")
+	assert.Len(t, declNameResolvers, 7)
 }
 
 // TestDeclNameChunkSetUnchanged is the parity gate: the resolvers may add a

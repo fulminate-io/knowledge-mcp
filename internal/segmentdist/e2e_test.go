@@ -34,7 +34,7 @@ func TestSegmentDistributionE2E(t *testing.T) {
 	ctx := context.Background()
 
 	// Producer: Add docs to the engine and ship.
-	prodEng := newMockEngine()
+	prodEng := newMockEngine(t)
 	require.NoError(t, prodEng.Add([]searchengine.Document{doc("d1", "alpha alpha")}))
 	require.NoError(t, prodEng.Add([]searchengine.Document{doc("d2", "alpha beta")}))
 	require.NoError(t, prodEng.Add([]searchengine.Document{doc("d3", "gamma")}))
@@ -55,7 +55,7 @@ func TestSegmentDistributionE2E(t *testing.T) {
 	svc.mu.Unlock()
 
 	// Consumer: a fresh engine + cache loads the delta cold.
-	consEng := newMockEngine()
+	consEng := newMockEngine(t)
 	consMgr, consCC := buildManager(consEng, gc, target, t.TempDir())
 	require.NoError(t, consMgr.load(ctx))
 	require.Equal(t, int64(1), consCC.fetchCalls.Load(), "cold load: one batched Fetch")
@@ -102,7 +102,7 @@ func buildManagerWithWriter(
 	cacheDir, writerID string,
 ) *distManager[mockQuery, mockStats] {
 	src := svc.viewFor(target, writerID)
-	cache := newDiskSegmentCache(cacheDir, 0)
+	cache := newDiskSegmentCache(cacheDir, 0, adviceRandom)
 	return newDistManager(engine, src, cache, target, "")
 }
 
@@ -123,10 +123,10 @@ func TestRegistryReclaimE2E(t *testing.T) {
 
 	// A producer with a merging engine: MinSegmentDocs=1 seals one segment per Add;
 	// SegmentCountTarget=4 consolidates once >4 accumulate.
-	prodEng := searchengine.New[mockQuery, mockStats](mockFormat{}, searchengine.Options{
+	prodEng := closeOnCleanup(t, searchengine.New[mockQuery, mockStats](mockFormat{}, searchengine.Options{
 		MinSegmentDocs:     1,
 		SegmentCountTarget: 4,
-	})
+	}))
 	defer prodEng.Close()
 	prodMgr := buildManagerWithWriter(prodEng, svc, target, t.TempDir(), writer)
 
@@ -167,7 +167,7 @@ func TestRegistryReclaimE2E(t *testing.T) {
 	// MID-STREAM RESTART: a fresh manager fully reloads the corpus, then publishes —
 	// the fully-reloaded resident set passes the coverage gate, so the publish
 	// references the WHOLE corpus and reaps nothing (restart-tail guard).
-	restartEng := searchengine.New[mockQuery, mockStats](mockFormat{}, searchengine.Options{MinSegmentDocs: 1})
+	restartEng := closeOnCleanup(t, searchengine.New[mockQuery, mockStats](mockFormat{}, searchengine.Options{MinSegmentDocs: 1}))
 	defer restartEng.Close()
 	restartMgr := buildManagerWithWriter(restartEng, svc, target, t.TempDir(), writer)
 	require.NoError(t, restartMgr.load(ctx))

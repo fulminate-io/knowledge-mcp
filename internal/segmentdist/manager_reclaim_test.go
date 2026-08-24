@@ -19,8 +19,8 @@ func newReclaimManager(t *testing.T, dir string) (*distManager[mockQuery, mockSt
 	_, gc := newSegmentHarness(t)
 	target := &knowledgev1.GraphSelector{Graph: "code", Repo: "reclaim"}
 	gc.target = target
-	ic := newInstrumentedCache(newDiskSegmentCache(dir, 0))
-	dm := newDistManager[mockQuery, mockStats](newMockEngine(), gc, ic, target, "")
+	ic := newInstrumentedCache(newDiskSegmentCache(dir, 0, adviceRandom))
+	dm := newDistManager[mockQuery, mockStats](newMockEngine(t), gc, ic, target, "")
 	return dm, ic
 }
 
@@ -114,7 +114,7 @@ func TestReclaimMergedLeavesBookkeepingUntouched(t *testing.T) {
 	dm.locallyShipped["constituent-1"] = struct{}{}
 	dm.shipMu.Unlock()
 	dm.resMu.Lock()
-	dm.resident["constituent-1"] = residentSeg{bytes: 8, format: "mock", generation: 3}
+	dm.resident["constituent-1"] = residentSeg{mappedBytes: 8, format: "mock", generation: 3}
 	dm.resMu.Unlock()
 
 	dm.cache.Put("constituent-1", []byte("c1-bytes"))

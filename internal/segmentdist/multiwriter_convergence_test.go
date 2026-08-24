@@ -11,6 +11,7 @@ import (
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
+	"github.com/fulminate-io/knowledge-mcp/internal/searchengine/formats/hnsw"
 )
 
 // multiwriter_convergence_test.go proves the registry's convergence property is a
@@ -84,8 +85,8 @@ func TestMultiWriterConvergenceRefcount(t *testing.T) {
 	// a property a deduped server count CANNOT prove.
 	require.Equal(t, 2, blobRefCount(svc, target, x),
 		"shared id X is referenced by both writers' manifests (refcount 2), not just deduped once")
-	require.Contains(t, writerManifest(svc, target, w0.writerID, "hnsw"), x, "writer0's manifest references X")
-	require.Contains(t, writerManifest(svc, target, w1.writerID, "hnsw"), x, "writer1's manifest references X")
+	require.Contains(t, writerManifest(svc, target, w0.writerID, hnsw.New().Name()), x, "writer0's manifest references X")
+	require.Contains(t, writerManifest(svc, target, w1.writerID, hnsw.New().Name()), x, "writer1's manifest references X")
 	require.True(t, serverHasBlob(svc, target, x), "X present on the server while referenced")
 
 	// NEGATIVE ARM part 1 — writer0 DROPS X. A fresh Manager with the SAME writer_id
@@ -96,7 +97,7 @@ func TestMultiWriterConvergenceRefcount(t *testing.T) {
 	y := addShipFlush(t, w0b.Manager, gt, name, convergeDocs(16, 1))
 	require.NotEqual(t, x, y, "writer0's replacement corpus mints a DIFFERENT id")
 
-	require.NotContains(t, writerManifest(svc, target, w0.writerID, "hnsw"), x,
+	require.NotContains(t, writerManifest(svc, target, w0.writerID, hnsw.New().Name()), x,
 		"writer0's manifest no longer references X after the republish")
 	require.Equal(t, 1, blobRefCount(svc, target, x),
 		"X refcount drops to 1 — still referenced by writer1")
@@ -138,7 +139,7 @@ func TestMultiWriterSafeCoexistence(t *testing.T) {
 	require.Equal(t, 1, blobRefCount(svc, target, b), "b referenced only by writer1")
 
 	// Each writer's manifest references ONLY its own blob — no cross-writer reap.
-	require.ElementsMatch(t, []string{a}, writerManifest(svc, target, w0.writerID, "hnsw"))
-	require.ElementsMatch(t, []string{b}, writerManifest(svc, target, w1.writerID, "hnsw"))
+	require.ElementsMatch(t, []string{a}, writerManifest(svc, target, w0.writerID, hnsw.New().Name()))
+	require.ElementsMatch(t, []string{b}, writerManifest(svc, target, w1.writerID, hnsw.New().Name()))
 	require.Equal(t, 2, serverSegCount(t, svc, target), "both distinct blobs coexist on the server")
 }

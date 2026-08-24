@@ -126,6 +126,10 @@ fun topLevel() {}
             fn speak(&self) {}
         }
 
+        pub trait Quiet {
+            fn hush(&self);
+        }
+
         pub fn helper() {}
     }
 
@@ -144,16 +148,25 @@ impl<T> Gen<T> {
 
 fn main() {}
 `)
-		// `fn speak(&self);` inside the trait is a function_signature_item, not
-		// a function_item, so the query never matches it and it is correctly
-		// absent from this table.
+		// A trait's `fn hush(&self);` is a function_signature_item, and the
+		// TopLevel query matches it, so a trait's method SPECS are chunks and
+		// take the trait as their container. `Quiet`/`hush` carries that
+		// assertion rather than `Speak`/`speak`, because the two speak chunks
+		// share a name — rust requires it — and this table is keyed by name.
 		want := map[string]string{
-			"outer":    "",
-			"inner":    "outer",
-			"Thing#":   "inner", // struct_item + both impl_items, all three disambiguated
-			"method":   "Thing", // the impl wins over the enclosing mod
-			"Speak":    "inner",
-			"speak":    "Thing", // impl Speak for Thing: type: binds the TYPE, not the trait
+			"outer":  "",
+			"inner":  "outer",
+			"Thing#": "inner", // struct_item + both impl_items, all three disambiguated
+			"method": "Thing", // the impl wins over the enclosing mod
+			"Speak":  "inner",
+			// TWO CHUNKS SHARE THIS KEY: the trait's spec, parented to Speak,
+			// and the impl's method, parented to Thing. The table records the
+			// later one in SOURCE ORDER, which is the impl's — and that value
+			// is the one worth pinning here, since it is what proves
+			// `impl Speak for Thing` parents by the TYPE rather than the trait.
+			"speak":    "Thing",
+			"Quiet":    "inner",
+			"hush":     "Quiet", // a spec takes its trait, which is why the trait is a container
 			"helper":   "inner",
 			"outer_fn": "outer",
 			"Gen":      "",
@@ -167,9 +180,10 @@ fn main() {}
 			"": "",
 		}
 		assert.Equal(t, want, got)
-		// Count and map size differ because "Thing" occurs three times.
-		assert.Equal(t, 14, count)
-		assert.Len(t, want, 12)
+		// Count and map size differ because "Thing" occurs three times and
+		// "speak" twice.
+		assert.Equal(t, 17, count)
+		assert.Len(t, want, 14)
 	})
 
 	t.Run("cpp", func(t *testing.T) {

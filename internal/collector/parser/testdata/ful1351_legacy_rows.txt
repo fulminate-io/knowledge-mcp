@@ -97,4 +97,4 @@ go_binds_scopes_unknown=0
 go_r2x_terminations=0
 go_dot_scope_files=0
 go_ambiguous_group_listing=1
-go_ambiguous_group_0=dup/use.go:13:CALLS:Twin|dup/a.go,dup/b.go
+go_ambiguous_group_0=Twin:CALLS:dup/use.go:UseTwin:0|dup/a.go,dup/b.go

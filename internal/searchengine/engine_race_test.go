@@ -15,11 +15,11 @@ import (
 // panic, and Search must only ever return live, added ids.
 func TestConcurrentInsertSearch(t *testing.T) {
 	// Low thresholds so segments seal and merges fire during the run.
-	e := New[mockQuery, mockStats](mockFormat{}, Options{
+	e := closeOnCleanup(t, New[mockQuery, mockStats](mockFormat{}, Options{
 		MinSegmentDocs:     4,
 		DeletesPctAllowed:  0.33,
 		SegmentCountTarget: 8,
-	})
+	}))
 	defer e.Close()
 
 	const (

@@ -35,7 +35,7 @@ func (f *citedCodeFake) Execute(_ context.Context, req *knowledgev1.ExecuteReque
 	q := req.GetQuery()
 	if q.GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_EDGES {
 		f.edgeFetches++
-		return &knowledgev1.ExecuteResponse{Edges: f.edges}, nil
+		return &knowledgev1.ExecuteResponse{Edges: bandNarrow(f.edges, q)}, nil
 	}
 	if req.GetTarget().GetGraph() == string(kgtypes.GraphCode) {
 		f.codeHydra++
@@ -81,7 +81,7 @@ func TestResolveCitedCodeNodes(t *testing.T) {
 		},
 	}
 
-	out := ResolveCitedCodeNodes(context.Background(), fake, []string{thoughtID})
+	out := ResolveCitedCodeNodes(context.Background(), fake, []string{thoughtID}, nil)
 
 	nodes := out[thoughtID]
 	require.NotEmpty(t, nodes, "the cited thought resolves to a non-empty code-node slice")
@@ -124,13 +124,13 @@ func TestResolveCitedCodeNodes_UpdatedAtFold(t *testing.T) {
 	}
 
 	// Code newer than the charge → fold value > chargeNanos (would flag).
-	newer := buildCitedCodeUpdatedAt(context.Background(), newFake(chargeNanos+int64(3600)*1_000_000_000), []string{thoughtID})
+	newer := buildCitedCodeUpdatedAt(context.Background(), newFake(chargeNanos+int64(3600)*1_000_000_000), []string{thoughtID}, nil)
 	require.Contains(t, newer, thoughtID)
 	assert.Greater(t, newer[thoughtID], chargeNanos,
 		"cited code newer than the newest charge yields a fold value the gate flags")
 
 	// Code older-or-equal → fold value <= chargeNanos (no flag).
-	older := buildCitedCodeUpdatedAt(context.Background(), newFake(chargeNanos-int64(3600)*1_000_000_000), []string{thoughtID})
+	older := buildCitedCodeUpdatedAt(context.Background(), newFake(chargeNanos-int64(3600)*1_000_000_000), []string{thoughtID}, nil)
 	require.Contains(t, older, thoughtID)
 	assert.LessOrEqual(t, older[thoughtID], chargeNanos,
 		"cited code older than the newest charge yields a fold value the gate does not flag")

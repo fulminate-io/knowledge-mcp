@@ -101,8 +101,11 @@ func TestSerializeRoundTripIdenticalSearch(t *testing.T) {
 	items := randomVectors(n)
 	orig := buildBinaryHNSWSerialDeterministic(items, defaultVecBytes, defaultM, defaultEfConstruction)
 
-	blob := orig.encode()
-	if len(blob) == 0 || blob[0] != serialVersionWithVectors {
+	blob, err := encodeGraphV3(orig)
+	if err != nil {
+		t.Fatalf("encodeGraphV3: %v", err)
+	}
+	if len(blob) == 0 || blob[0] != serialVersionOffsets {
 		t.Fatalf("encode produced bad blob: len=%d version=%d", len(blob), blob[0])
 	}
 

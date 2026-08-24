@@ -78,7 +78,7 @@ func TestChunkFilesParallelOrderIsDeterministic(t *testing.T) {
 	const runs = 5
 	var first []string
 	for run := range runs {
-		results, err := ChunkFilesParallel(context.Background(), dir, files)
+		results, _, err := ChunkFilesParallel(context.Background(), dir, files)
 		if err != nil {
 			t.Fatalf("run %d: ChunkFilesParallel: %v", run, err)
 		}

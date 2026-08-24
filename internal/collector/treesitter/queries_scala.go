@@ -4,8 +4,16 @@ package treesitter
 
 func scalaQueries() *QuerySet {
 	return &QuerySet{
+		// A TRAIT'S ABSTRACT MEMBERS ARE function_declaration, A DIFFERENT KIND
+		// FROM function_definition, so a query set carrying only the definition
+		// arm leaves every contract member invisible to the graph. Without those
+		// nodes a call through a trait-typed value has no member declaration to
+		// target and no supertype member for a member-level conformance edge to
+		// start from. The two kinds are disjoint — a concrete def matches
+		// exactly one arm — so nothing is double-counted.
 		TopLevel: `[
 			(function_definition name: (identifier) @name) @decl
+			(function_declaration name: (identifier) @name) @decl
 			(class_definition name: (identifier) @name) @decl
 			(trait_definition name: (identifier) @name) @decl
 			(object_definition name: (identifier) @name) @decl

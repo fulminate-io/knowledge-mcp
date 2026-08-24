@@ -57,7 +57,11 @@ func segmentCacheDirFor(root string) string {
 // to the producer (AttachSegmentManager) for shipping. The router guard leaves a
 // router-less headless client at nil (the only remaining nil-Manager state); the
 // `== nil` guard makes a repeat call a no-op.
-func (c *client) ensureSegmentManager(graphStorage string) {
+// residencyBudgetBytes is the RESIDENT BLOB BYTE ceiling every per-graph segment
+// pool shares before the coldest are unloaded (segmentdist manager_residency.go);
+// 0 disables eviction entirely. It comes from
+// --segment-residency-budget-bytes / KNOWLEDGE_SEGMENT_RESIDENCY_BUDGET_BYTES.
+func (c *client) ensureSegmentManager(graphStorage string, residencyBudgetBytes int64) {
 	if c.router != nil && c.segmentMgr == nil {
 		// WithSegmentTransport supplies the lazy agent /v1/segments control transport
 		// (c.buildCloudSyncTransport → *auth.Transport) so the source factory selects the
@@ -77,8 +81,37 @@ func (c *client) ensureSegmentManager(graphStorage string) {
 			}),
 			segmentdist.WithGraphAdmitter(func(gt kgtypes.GraphType, name string) {
 				c.AdmitGraph(gt, name, "search")
-			}))
+			}),
+			// WithResidencyBudget bounds the RESIDENT HEAP BYTES every per-graph pool
+			// occupies together; crossing it unloads the coldest pools, which reload
+			// from the local L2 disk cache on their next CONSUMER touch. 0 disables
+			// eviction entirely. Arming it is safe only because every background arm
+			// declines an evicted pool and every ArmVerdict consumer branches on
+			// Evicted — without those, the next reconcile tick would resurrect each
+			// eviction at full network cost and the local heal decider would read an
+			// evicted pool's resident==0 as a reason to rebuild from scratch.
+			segmentdist.WithResidencyBudget(residencyBudgetBytes))
 	}
+}
+
+// PoolEvicted reports whether EITHER format's segment pool for this graph is
+// currently evicted from memory by the residency budget. It is THE client-side
+// residency predicate: the heal decider, the repair arm and the manage(status)
+// coverage band all read this one method rather than deriving their own answer.
+//
+// A client with no Manager returns false, which is correct rather than a default:
+// such a client has no pools, so none of them are evicted.
+//
+// WHY DECIDERS NEED IT. An evicted pool reports a residency count of ZERO, and a
+// decider that reads that zero as evidence about the CORPUS concludes the graph is
+// uncovered — handing it to a full rebuild or a corpus-scale re-ship, on the
+// strength of a measurement nobody took. Consulting this first is what turns that
+// into a decline.
+func (c *client) PoolEvicted(gt kgtypes.GraphType, name string) bool {
+	if c == nil || c.segmentMgr == nil {
+		return false
+	}
+	return c.segmentMgr.PoolEvicted(gt, name)
 }
 
 // SegmentManager returns the SAME *segmentdist.Manager the client holds — the one
@@ -142,6 +175,19 @@ func (a segmentCoverageAdapter) ShippedSegmentDocCount(
 
 func (a segmentCoverageAdapter) ResidentDocCount(gt kgtypes.GraphType, name string) int {
 	return a.mgr.ResidentDocCount(gt, name)
+}
+
+// LoadRebuildState / LoadMergeWatermark forward this client's own consumer
+// positions, which the status row renders as "how long since each advanced".
+// Both are local record reads on the Manager — no RPC.
+func (a segmentCoverageAdapter) LoadRebuildState(
+	gt kgtypes.GraphType, name string,
+) (int64, []searchengine.ExternalID, error) {
+	return a.mgr.LoadRebuildState(gt, name)
+}
+
+func (a segmentCoverageAdapter) LoadMergeWatermark(gt kgtypes.GraphType, name string) (int64, error) {
+	return a.mgr.LoadMergeWatermark(gt, name)
 }
 
 func (a segmentCoverageAdapter) LiveResidentDocCount(gt kgtypes.GraphType, name string) int {

@@ -128,6 +128,17 @@ func (c *client) healNeedsRebuild(ctx context.Context, gt kgtypes.GraphType, nam
 // on the OSS path instead of a server List(0), so the whole OSS segment surface
 // (heal AND status) is server-free.
 func (c *client) healNeedsRebuildLocal(ctx context.Context, gt kgtypes.GraphType, name string) (bool, error) {
+	// 0. AN EVICTED POOL IS DECLINED FIRST, ahead of BOTH operands, so the decline
+	// costs zero RPC and — the point — zero LOAD. LoadResidentDocCount below
+	// deliberately MATERIALIZES an evicted pool (it is consumer-side; its OSS branch
+	// also feeds the search-visible unified-search verdict), so a background heal tick
+	// reaching it would re-materialize the whole pool on every pass just to ask
+	// whether it needs a rebuild — the background arms' prohibition violated at the
+	// decider rather than at the probe. Declining here is what makes that probe
+	// unreachable for an evicted pool.
+	if c.PoolEvicted(gt, name) {
+		return false, nil
+	}
 	// Both operands are LOCAL (zero SegmentService RPC). GraphEmbeddedCount is the
 	// node-graph denominator (same one segmentPoolDegenerate uses); on error return
 	// (false, err), matching segmentPoolDegenerate's convention.

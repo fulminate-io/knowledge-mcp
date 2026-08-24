@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/searchengine/formats/hnsw"
 )
 
 // TestShippedManifestSnapshot_CloudArmReadsGCSManifest proves the cloud (logged-in)
@@ -20,18 +21,18 @@ func TestShippedManifestSnapshot_CloudArmReadsGCSManifest(t *testing.T) {
 	t.Parallel()
 
 	backend := newFakeSegmentBackend(t)
-	backend.seedManifest(string(kgtypes.GraphCode), "repo", "hnsw", map[string]int{"h1": 12, "h2": 30})
+	backend.seedManifest(string(kgtypes.GraphCode), "repo", hnsw.New().Name(), map[string]int{"h1": 12, "h2": 30})
 
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0,
-		WithSegmentTransport(func() (SegmentControlTransport, error) { return backend, nil }))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0,
+		WithSegmentTransport(func() (SegmentControlTransport, error) { return backend, nil })))
 
-	snap, err := mgr.ShippedManifestSnapshot(context.Background(), kgtypes.GraphCode, "repo", "hnsw")
+	snap, err := mgr.ShippedManifestSnapshot(context.Background(), kgtypes.GraphCode, "repo", hnsw.New().Name())
 	require.NoError(t, err)
 	require.Len(t, snap, 2)
 
 	byID := map[string]int{}
 	for _, m := range snap {
-		require.Equal(t, "hnsw", m.Format)
+		require.Equal(t, hnsw.New().Name(), m.Format)
 		require.Equal(t, uint64(0), m.Generation)
 		byID[m.ID] = m.DocCount
 	}
@@ -42,7 +43,7 @@ func TestShippedManifestSnapshot_CloudArmReadsGCSManifest(t *testing.T) {
 
 	// Derived answers over the snapshot.
 	require.True(t, mgr.HasShippedFromSnapshot(snap), "presence is true — the manifest holds segments")
-	covered, anyUnknown := mgr.ShippedDocCountFromSnapshot(snap, "hnsw")
+	covered, anyUnknown := mgr.ShippedDocCountFromSnapshot(snap, hnsw.New().Name())
 	require.Equal(t, 42, covered, "summed HNSW doc count = 12 + 30")
 	require.False(t, anyUnknown, "no doc_count==0 digest, so anyUnknown is false")
 }
@@ -60,12 +61,12 @@ func TestShippedManifestSnapshot_OSSArmIsL2Sourced(t *testing.T) {
 	ctx := context.Background()
 
 	// A NOT-logged-in producer/consumer: its engines run on the L2-local source.
-	mgr := NewManager(loginStateStub{loggedIn: false}, t.TempDir(), 0)
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: false}, t.TempDir(), 0))
 	require.NoError(t, mgr.AddAndMarkDirty(ctx, kgtypes.GraphCode, "repo", hnswVecDocs(searchCorpusN)))
 	require.NoError(t, mgr.Flush(ctx, kgtypes.GraphCode, "repo"))
 
 	// The snapshot resolves to the L2-local set (presence true, DocCounts stamped 0).
-	snap, err := mgr.ShippedManifestSnapshot(ctx, kgtypes.GraphCode, "repo", "hnsw")
+	snap, err := mgr.ShippedManifestSnapshot(ctx, kgtypes.GraphCode, "repo", hnsw.New().Name())
 	require.NoError(t, err)
 	require.True(t, mgr.HasShippedFromSnapshot(snap), "the L2 snapshot holds the shipped segments (presence true)")
 

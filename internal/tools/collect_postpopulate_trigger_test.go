@@ -115,7 +115,7 @@ func TestInterceptCollect_FiresPostPopulateHookOnLivePath(t *testing.T) {
 		gotGraphName string
 		gotNilCaller bool
 	)
-	postpopulate.Register(ppTriggerStubName, func(ctx context.Context, gc postpopulate.GraphCaller, graphName string) error {
+	postpopulate.Register(ppTriggerStubName, postpopulate.BreadthFamilyBroad, func(ctx context.Context, gc postpopulate.GraphCaller, graphName string) error {
 		mu.Lock()
 		fired++
 		gotGraphName = graphName

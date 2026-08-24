@@ -22,6 +22,7 @@ import (
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1/knowledgev1connect"
+	"github.com/fulminate-io/knowledge-mcp/internal/collector/contribhash"
 	"github.com/fulminate-io/knowledge-mcp/internal/collectorwire"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgwire"
@@ -31,9 +32,34 @@ import (
 // CollectChunkRequest it receives so a test can assert per-request size + full
 // node/edge reassembly across all chunks. It clones each request (the connect
 // runtime may recycle the message) and guards the slice for concurrency safety.
+// It also captures the single FinalizeRequest, because the deletion carrier and
+// both guard fields ride Finalize rather than any chunk — a test asserting on
+// them has nowhere else to read them from.
+//
+// manifest / manifestErr let one test choose the served manifest. BOTH NIL is the
+// empty-graph default described below, so every test written before these fields
+// existed keeps its exact prior behavior.
 type recordingIngest struct {
-	mu     sync.Mutex
-	chunks []*knowledgev1.CollectChunkRequest
+	mu       sync.Mutex
+	chunks   []*knowledgev1.CollectChunkRequest
+	finalize *knowledgev1.FinalizeRequest
+
+	manifest    *knowledgev1.CollectManifestResponse
+	manifestErr error
+	// manifestCalls counts CollectManifest RPCs, so a test can assert an abort
+	// happened BEFORE the round trip rather than merely before the upload.
+	manifestCalls int
+	// chunkErr, when set, fails every CollectChunk and records none, so a test can
+	// drive the upload-failure early return.
+	chunkErr error
+	// finalizeID, when non-empty, is what Finalize returns — which is what makes
+	// the sink POLL the tail at all. Empty (the default) keeps every existing test
+	// on the no-id path it was written against.
+	finalizeID string
+	// tailState is what FinalizeStatus reports once polled. Only consulted when
+	// finalizeID is set. UNSPECIFIED (the default) is reported as UNKNOWN, the
+	// honest answer for a server that tracks nothing.
+	tailState knowledgev1.FinalizeState
 }
 
 var _ knowledgev1connect.IngestServiceHandler = (*recordingIngest)(nil)
@@ -43,28 +69,75 @@ func (e *recordingIngest) CollectChunk(
 	req *connect.Request[knowledgev1.CollectChunkRequest],
 ) (*connect.Response[knowledgev1.CollectChunkResponse], error) {
 	e.mu.Lock()
-	e.chunks = append(e.chunks, proto.Clone(req.Msg).(*knowledgev1.CollectChunkRequest))
+	failWith := e.chunkErr
+	if failWith == nil {
+		e.chunks = append(e.chunks, proto.Clone(req.Msg).(*knowledgev1.CollectChunkRequest))
+	}
 	e.mu.Unlock()
+	if failWith != nil {
+		return nil, failWith
+	}
 	return connect.NewResponse(&knowledgev1.CollectChunkResponse{}), nil
 }
 
 func (e *recordingIngest) Finalize(
-	context.Context,
-	*connect.Request[knowledgev1.FinalizeRequest],
+	_ context.Context,
+	req *connect.Request[knowledgev1.FinalizeRequest],
 ) (*connect.Response[knowledgev1.FinalizeResponse], error) {
-	return connect.NewResponse(&knowledgev1.FinalizeResponse{}), nil
+	e.mu.Lock()
+	e.finalize = proto.Clone(req.Msg).(*knowledgev1.FinalizeRequest)
+	id := e.finalizeID
+	e.mu.Unlock()
+	return connect.NewResponse(&knowledgev1.FinalizeResponse{FinalizeId: id}), nil
 }
 
-// FinalizeStatus completes the handler interface. This fake does all its work in
-// Finalize and returns no finalize_id, so the sink never polls it; UNKNOWN is the
-// honest answer for a server that tracks nothing.
+// finalizeRequest returns the captured FinalizeRequest, failing the test if the
+// sink never sent one.
+func (e *recordingIngest) finalizeRequest(t *testing.T) *knowledgev1.FinalizeRequest {
+	t.Helper()
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	require.NotNil(t, e.finalize, "the sink must have sent a Finalize")
+	return e.finalize
+}
+
+// FinalizeStatus reports the tail state the test asked for. BY DEFAULT this fake
+// does all its work in Finalize and returns NO finalize_id, so the sink never
+// polls at all and UNKNOWN is the honest answer for a server that tracks nothing;
+// a test that needs the tail observed sets finalizeID and tailState.
+// CollectManifest answers as a genuinely EMPTY graph: no entries, zero live
+// nodes, a fresh identity. That is the first-collect shape, so a fake never
+// pushes a test onto the fail-closed path for a reason the test did not choose.
+func (e *recordingIngest) CollectManifest(
+	context.Context,
+	*connect.Request[knowledgev1.CollectManifestRequest],
+) (*connect.Response[knowledgev1.CollectManifestResponse], error) {
+	e.mu.Lock()
+	e.manifestCalls++
+	resp, err := e.manifest, e.manifestErr
+	e.mu.Unlock()
+	if err != nil {
+		return nil, err
+	}
+	if resp != nil {
+		return connect.NewResponse(resp), nil
+	}
+	return connect.NewResponse(&knowledgev1.CollectManifestResponse{
+		ManifestId: "test-manifest", HashSchemeVersion: contribhash.ContributionHashSchemeVersion,
+	}), nil
+}
+
 func (e *recordingIngest) FinalizeStatus(
 	context.Context,
 	*connect.Request[knowledgev1.FinalizeStatusRequest],
 ) (*connect.Response[knowledgev1.FinalizeStatusResponse], error) {
-	return connect.NewResponse(&knowledgev1.FinalizeStatusResponse{
-		State: knowledgev1.FinalizeState_FINALIZE_STATE_UNKNOWN,
-	}), nil
+	e.mu.Lock()
+	st := e.tailState
+	e.mu.Unlock()
+	if st == knowledgev1.FinalizeState_FINALIZE_STATE_UNSPECIFIED {
+		st = knowledgev1.FinalizeState_FINALIZE_STATE_UNKNOWN
+	}
+	return connect.NewResponse(&knowledgev1.FinalizeStatusResponse{State: st}), nil
 }
 
 func (e *recordingIngest) FetchCloudSubgraph(
@@ -149,12 +222,26 @@ func TestWriteResult_PartitionsOversizedEdgesAndReassembles(t *testing.T) {
 		{Id: "n2", Type: "func", Summary: "n2"},
 		{Id: "n3", Type: "func", Summary: "n3"},
 	}
+	// EVERY EDGE'S FROM NODE RIDES THE PAYLOAD, as it does in a real collect:
+	// resolveEdges only emits an edge between node IDs the same collect produced.
+	// It matters here because an armed diff keeps an edge only when its FROM node
+	// survives the filter, so edges pointing at nodes nothing declares would be
+	// dropped and this test would measure one chunk of nodes rather than a
+	// partitioned edge tail.
+	for i := range edges {
+		nodes = append(nodes, &knowledgev1.Node{
+			Id: edges[i].FromID, Type: "func", Summary: edges[i].FromID,
+		})
+	}
 
 	result := &collectorwire.CollectResult{
 		GraphType: kgtypes.GraphCode,
 		GraphName: "chunksize-repo",
 		Nodes:     nodes,
 		Edges:     edges,
+		// Stamped as a real code collect is: an empty fingerprint aborts.
+		DiscoveryFingerprint:   "fingerprint-chunksize-fixture",
+		CollectorOutputVersion: testCollectorOutputVersion,
 	}
 
 	require.NoError(t, sink.WriteResult(context.Background(), "", result))

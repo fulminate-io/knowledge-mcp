@@ -86,9 +86,9 @@ func (c *tensionCorpus) Execute(_ context.Context, req *knowledgev1.ExecuteReque
 					Type: string(kgtypes.EdgeChargedBy), FromId: tid, ToId: c.chargeOf[tid],
 				})
 			}
-			return &knowledgev1.ExecuteResponse{Edges: ce}, nil
+			return &knowledgev1.ExecuteResponse{Edges: bandNarrow(ce, q)}, nil
 		}
-		return &knowledgev1.ExecuteResponse{Edges: c.tensionEdges}, nil
+		return &knowledgev1.ExecuteResponse{Edges: bandNarrow(c.tensionEdges, q)}, nil
 	}
 	if q.GetById() != "" {
 		return &knowledgev1.ExecuteResponse{}, nil

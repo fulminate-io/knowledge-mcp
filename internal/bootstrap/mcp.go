@@ -32,7 +32,7 @@ func maybeSpawnLocalServer(c *client, f Config) {
 	if c.router.LoggedIn(context.Background()) {
 		return
 	}
-	if err := ensureServerReachable(f.Port, f.RootDir, f.GraphStorage); err != nil {
+	if err := ensureServerReachable(f.Port, f.RootDir, f.GraphStorage, f.Pprof); err != nil {
 		slog.Warn("knowledge-server not reachable and spawn failed; tool calls will return errors until the server is started", "error", err)
 	}
 }

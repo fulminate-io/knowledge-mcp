@@ -11,7 +11,7 @@ func csharpQueries() *QuerySet {
 		// carries the same name shapes, hence the same alternation.
 		//
 		// It is a SIBLING of the types below it, never their ancestor, so it
-		// deliberately does NOT belong in classLikeTypes: adding it there would
+		// deliberately does NOT belong in classLikeByLang's C# row: adding it would
 		// not parent those types, because no upward walk from a class reaches a
 		// node beside it. Their namespace reaches them through the file's
 		// symbol namespace instead.

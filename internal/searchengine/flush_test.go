@@ -12,7 +12,7 @@ import (
 // Export returns no segments; after Flush the sub-threshold buffer is sealed, so
 // Export returns exactly one segment and Search returns the buffered docs.
 func TestFlushSealsSubThresholdBuffer(t *testing.T) {
-	e := newTestEngine(1024) // MinSegmentDocs=1024, far above the 3 docs below
+	e := newTestEngine(t, 1024) // MinSegmentDocs=1024, far above the 3 docs below
 	defer e.Close()
 
 	if err := e.Add([]Document{doc("d1", "alpha"), doc("d2", "alpha beta"), doc("d3", "gamma")}); err != nil {
@@ -44,7 +44,7 @@ func TestFlushSealsSubThresholdBuffer(t *testing.T) {
 
 // TestFlushEmptyBufferIsNoOp asserts Flush over an empty buffer seals nothing.
 func TestFlushEmptyBufferIsNoOp(t *testing.T) {
-	e := newTestEngine(1024)
+	e := newTestEngine(t, 1024)
 	defer e.Close()
 
 	if err := e.Flush(); err != nil {
@@ -58,7 +58,7 @@ func TestFlushEmptyBufferIsNoOp(t *testing.T) {
 // TestFlushAfterThresholdSealOnlySealsTail asserts Flush seals only the trailing
 // sub-threshold tail, not the already-sealed segments (no double-seal).
 func TestFlushAfterThresholdSealOnlySealsTail(t *testing.T) {
-	e := newTestEngine(2) // seals every 2 docs
+	e := newTestEngine(t, 2) // seals every 2 docs
 	defer e.Close()
 
 	// Two docs → one sealed segment; a third stays buffered.

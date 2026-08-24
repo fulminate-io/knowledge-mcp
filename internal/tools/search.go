@@ -16,7 +16,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/rerank"
 )
 
-// InterceptSearch is the cmd/knowledge stdio client's "search" interceptor.
+// InterceptSearch is the cmd/knowledge client's "search" interceptor.
 //
 // Responsibilities, layered:
 //

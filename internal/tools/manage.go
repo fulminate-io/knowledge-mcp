@@ -70,7 +70,7 @@ type cloudStatusInfo interface {
 
 // InterceptManage dispatches manage operations that run client-side:
 //   - status: liveness + server stats.
-//   - pprof_start / pprof_stop: bracket a CPU profile of the stdio client
+//   - pprof_start / pprof_stop: bracket a CPU profile of the knowledge client
 //     (collector work runs here), retrievable from the loopback pprof
 //     endpoint. See package profiling.
 //
@@ -257,7 +257,7 @@ type manageArgs struct {
 //
 // Pipeline counters (summary_*/embed_*) come from the CLIENT-side
 // pipeline via overlayPipelineMetrics. The server's response always
-// returns zero for those fields — the LLM pipeline moved to the stdio
+// returns zero for those fields — the LLM pipeline runs in the
 // client so its live counts only exist here. When the
 // pipeline is disabled (--no-llm-pipeline, or neither summarizer nor
 // embedder configured), the counters render as "(pipeline disabled)"

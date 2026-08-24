@@ -6,5 +6,5 @@ import "github.com/fulminate-io/knowledge-mcp/internal/postpopulate"
 
 // init registers the "github" PostPopulate hook (OIDC federation).
 func init() {
-	postpopulate.Register("github", postPopulateOIDC)
+	postpopulate.Register("github", postpopulate.BreadthFamilyBroad, postPopulateOIDC)
 }

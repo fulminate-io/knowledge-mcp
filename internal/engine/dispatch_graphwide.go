@@ -174,25 +174,27 @@ func nodeIDsOf(nodes []*knowledgev1.Node) []string {
 // The per-page Limit and the drain's edgeCap are deliberately the same number:
 // one is what the server enforces, the other is what the drain uses to notice it.
 func graphWideEdgeUnion(ctx context.Context, exec ExecuteFn, ids []string, edgeTypes []string, graph string, target *knowledgev1.GraphSelector) ([]knowledgev1.Edge, error) {
-	return paging.DrainPivotEdges(ids, paging.EdgePivotPageSize, CorrelationsEdgeScanCap, func(idPage []string) ([]knowledgev1.Edge, error) {
+	return paging.DrainPivotEdges(ids, paging.EdgePivotPageSize, CorrelationsEdgeScanCap, func(idPage []string, fromIDGte, fromIDLt string) ([]knowledgev1.Edge, bool, error) {
 		sel := &knowledgev1.Selection{}
 		if len(edgeTypes) > 0 {
 			sel.EdgeTypes = canonicalEdgeCasings(graph, edgeTypes)
 		}
 		edgesPlan := &knowledgev1.QueryPlan{
-			Ids:        idPage,
-			Selection:  sel,
-			ReturnMode: knowledgev1.ReturnMode_RETURN_MODE_EDGES,
-			Limit:      int32(CorrelationsEdgeScanCap),
+			Ids:          idPage,
+			Selection:    sel,
+			ReturnMode:   knowledgev1.ReturnMode_RETURN_MODE_EDGES,
+			Limit:        int32(CorrelationsEdgeScanCap),
+			EdgeFromBand: paging.EdgeFromBandOrNil(fromIDGte, fromIDLt),
 		}
 		resp, err := exec(ctx, &knowledgev1.ExecuteRequest{
 			Plan:   &knowledgev1.ExecuteRequest_Query{Query: edgesPlan},
 			Target: target,
 		})
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
-		return DecodeEdges(resp)
+		edges, derr := DecodeEdges(resp)
+		return edges, resp.GetTruncated(), derr
 	})
 }
 
@@ -311,14 +313,21 @@ func graphWideLabel(graph string) string {
 }
 
 // graphWideEdgeMetadata builds the {weight,confidence,method,evidence,
-// last_validated} map for the JSON formatter (mirrors the server edgeMetadataMap,
-// tools_traverse_edge_metadata.go:202). Zero/empty fields are elided.
+// last_validated} map for the JSON formatter. Zero/empty fields are elided.
+//
+// Edge.Method POPULATIONS ARE KEYED BY EDGE TYPE.
 //
 // For a MULTI-CANDIDATE GROUP MEMBER the method and the raw group key are both
-// omitted: the group's own edge_groups row already carries the method and the key
-// under group_key, so repeating them per edge is redundant and the raw key
-// invites parsing an identifier this plan renders opaquely. Every other edge is
-// unchanged — a cloud or linkage edge's Evidence is a real citation.
+// omitted: the group's own edge_groups row already carries the group kind and
+// the key under group_key, so repeating them per edge is redundant and the raw
+// key invites parsing an identifier this plan renders opaquely. THAT IS A
+// STATEMENT ABOUT GROUP MEMBERS AND NOT ABOUT THE FIELD. Method holds several
+// populations keyed by the edge type carrying them — kgtypes (edge_types.go) is
+// the vocabulary source — so every value outside the two group constants is
+// emitted here as an ordinary method: a bound reference edge's resolution rung
+// today, and whatever population a further edge type gains, with no edit here.
+// Every other edge is unchanged — a cloud or linkage edge's Evidence is a real
+// citation.
 //
 // BELT-AND-BRACES BY DESIGN, NOT DEAD CODE: the arm passes only the ungrouped
 // remainder, so a member should never arrive. The guards exist because this is a

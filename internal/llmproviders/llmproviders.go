@@ -3,7 +3,7 @@
 // Package llmproviders constructs the client-side LLM provider stack used
 // by the client pipeline (summarize + embed). Mirrors the pre-split
 // server-side buildSummarizer / buildEmbedder logic in
-// domains/store/singleton.go, but runs in the stdio client process so
+// domains/store/singleton.go, but runs in the client process (cmd/knowledge) so
 // the server stays LLM-key-free.
 //
 // Resolution order matches the server-side path:

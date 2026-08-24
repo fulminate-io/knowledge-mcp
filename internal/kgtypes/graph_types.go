@@ -142,6 +142,48 @@ func IsBuiltinGraphType(name string) bool {
 	return false
 }
 
+// collectorOwnedGraphTypes is the subset of allGraphTypes that a COLLECTOR
+// fills — graphs whose contents are produced wholesale by a collect run and
+// swept by that run's epoch, so any writer that ships a PARTIAL node set into
+// one removes everything it did not emit.
+//
+// Deliberately a static list rather than a collector.Lookup call: the collector
+// registry is populated by init() in each collector subpackage, so a
+// registry-based predicate reads "not collector-owned" for every type in any
+// package that does not import the collectors — a fence built on it would be a
+// silent no-op exactly where it is tested.
+//
+// The complement (knowledge / practice / linkage / transformers) is authored by
+// mutate-style writers rather than a collect epoch.
+var collectorOwnedGraphTypes = []GraphType{
+	GraphCode,
+	GraphCloud,
+	GraphCICD,
+	GraphLogs,
+	GraphWebRaw,
+	GraphPDFRaw,
+}
+
+// IsCollectorOwnedGraphType reports whether name matches a built-in graph type
+// that a collector owns and epoch-sweeps (code / cloud / cicd / logs / web /
+// pdf). It is the target-side guard for non-collector writers that ship a
+// CollectResult through the shared Sink: recipe.RunRecipe refuses a recipe whose
+// target_graph_type names one of these, because a recipe's partial emission set
+// would become a full-replace collect that wipes the rest of a real collector
+// graph.
+//
+// This is NARROWER than IsBuiltinGraphType on purpose — practice is a built-in
+// AND the only shipped recipe target, so a builtin-wide refusal would reject
+// every working recipe.
+func IsCollectorOwnedGraphType(name string) bool {
+	for _, gt := range collectorOwnedGraphTypes {
+		if string(gt) == name {
+			return true
+		}
+	}
+	return false
+}
+
 // Status values for work nodes. Internal vocabulary, NOT a closed enum —
 // see mutateRequestArgs.Status comment for the open-string contract.
 const (

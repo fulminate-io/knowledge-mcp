@@ -5,6 +5,7 @@ package thought
 import (
 	"context"
 	"maps"
+	"slices"
 	"sync"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
@@ -17,9 +18,17 @@ import (
 
 // passReads is the PER-UNIT-OF-WORK full-corpus read memo — one propagation pass,
 // or one on-demand reflect handler call (see NewReadMemo). That work reads the same
-// three full-corpus sets from several stages (adjacency, session membership, the
-// thought->charges map); passReads makes the FIRST reader pay and every later reader
-// in the same unit free, without changing what any of them sees.
+// full-corpus sets from several stages; passReads makes the FIRST reader pay and
+// every later reader in the same unit free, without changing what any of them sees.
+//
+// THE EDGE READS ARE UNIFIED. Four stages once issued four full-corpus edge reads
+// that pivoted on the IDENTICAL id set and differed only by type filter — the
+// clustering adjacency, session membership, the thought->charges map, and the
+// cited-code chain. They are now ONE read over unifiedPivotEdgeTypes (memoPivotEdges),
+// with each narrower consumer served a type subset of it (memoTypedEdges) and doing
+// its own type filtering. Reads that pivot on a DIFFERENT set — the tension universe's
+// charge-pivot reads and its four-type edge read — are deliberately NOT folded in;
+// see memoTypedEdges for the superset rule that keeps that honest.
 //
 // It IS a CorpusSource: it delegates CorpusSnapshot / ChargeSnapshot /
 // SessionSnapshot to the underlying loop, so it can be passed anywhere a
@@ -64,10 +73,13 @@ type passReads struct {
 	adjNodeIDs []string
 	adj        map[string][]string
 
-	// the bulk EdgeKGContains session-membership edges + the id set they cover.
-	kgBuilt bool
-	kgIDs   map[string]bool
-	kgEdges []knowledgev1.Edge
+	// the ONE unified edge read. Carries every type in unifiedPivotEdgeTypes, so the
+	// narrower typed reads are served from it. IT CARRIES NO ID SET — the one
+	// EXCEPTION to THE SUBSET RULE above, because the entry is built from a MATCH-ALL
+	// banded read, so it covers every id set by construction. The TYPE dimension is
+	// unaffected and memoTypedEdges still checks it.
+	pivotEdgesBuilt bool
+	pivotEdges      []knowledgev1.Edge
 
 	// the thought-pivot charge map + the thought-id set it covers.
 	chargesBuilt bool
@@ -170,41 +182,140 @@ func memoAdjacencyAll(ctx context.Context, gc Caller, src CorpusSource) ([]strin
 	return nodeIDs, adj, nil
 }
 
-// memoKGContainsEdges serves the single bulk EdgeKGContains read that the
-// session-sibling expansion (deriveSessionSiblings) and the session-label map
-// (FetchSessionLabelsByThought) group differently, so the edges are read once per
-// pass and grouped twice.
+// unifiedPivotEdgeTypes is the edge-type set of the ONE unified pivot-edge read:
+// the five thought-cluster types plus session membership plus the thought-pivot
+// charge edge. Four full-corpus reads used to pivot on the identical thought-id set
+// and differ only by type filter; this set is their union, so one read serves them
+// all and each consumer filters the wider result for what it wants.
 //
-// FAILURE IS NOT MEMOIZED — stated here specifically because this accessor's
-// underlying read swallows its error: fetchEdgesForNodeSet failing makes
-// deriveSessionSiblings return an empty sibling map and FetchSessionLabelsByThought
-// an empty label map. Setting the built flag on that path would hand every later
-// consumer in the pass an empty result it cannot distinguish from a genuinely
-// session-less corpus; instead nothing is stored and the next consumer RETRIES the
-// read exactly as it does today.
+// BUILT FROM adjacencyEdgeTypes, never re-spelling the five, so a change to the
+// clustering edge set cannot silently desynchronise the two. adjacencyEdgeTypes is
+// itself pinned by a landed criterion asserting it still carries both temporal types.
+//
+// THE DOUBLE append IS THE NON-ALIASING FORM AND IS DELIBERATE. A bare
+// append(adjacencyEdgeTypes, ...) is safe only incidentally — today that slice is a
+// 5-element composite literal with len==cap, so append is forced to allocate. Add a
+// sixth clustering type with any spare capacity and the bare form would write THROUGH
+// into adjacencyEdgeTypes' backing array and corrupt the clustering edge set at init
+// time. Copy first, unconditionally.
+var unifiedPivotEdgeTypes = append(append([]kgtypes.EdgeType(nil), adjacencyEdgeTypes...),
+	kgtypes.EdgeKGContains, kgtypes.EdgeChargedBy)
+
+// memoPivotEdges serves the ONE unified full-corpus edge read per pass. It is
+// modeled on memoKGContainsEdges' shape with one difference: it RETURNS its error
+// rather than swallowing it, because its caller — the adjacency composition — already
+// propagates edge-read errors.
+//
+// THE UNDERLYING READ IS MATCH-ALL, NOT PIVOTED. nodeIDs derive the from_id band
+// boundaries rather than selecting rows, so the result is a strict SUPERSET and every
+// consumer must apply its own id-membership test (buildAdjacencyFromEdges and
+// deriveSessionSiblings both do, each pinned by a criterion).
+//
+// FAILURE IS NOT MEMOIZED: on error nothing is stored and no flag is set, so the next
+// consumer in the pass retries the read.
 //
 // The returned slice is the memo's own: DO NOT MUTATE.
-func memoKGContainsEdges(ctx context.Context, gc Caller, thoughtIDs []string, src CorpusSource) []knowledgev1.Edge {
+func memoPivotEdges(ctx context.Context, gc Caller, nodeIDs []string, src CorpusSource) ([]knowledgev1.Edge, error) {
 	r, _ := src.(*passReads)
 	if r != nil {
 		r.mu.Lock()
-		if r.kgBuilt && idSetCovers(r.kgIDs, thoughtIDs) {
-			edges := r.kgEdges
+		// NO ID-COVERAGE TEST: the entry is a MATCH-ALL read, so it covers every id
+		// set by construction. DELETED, not left in place returning true.
+		if r.pivotEdgesBuilt {
+			edges := r.pivotEdges
 			r.mu.Unlock()
-			return edges
+			return edges, nil
 		}
 		r.mu.Unlock()
 	}
-	edges, err := fetchEdgesForNodeSet(ctx, gc, thoughtIDs, []kgtypes.EdgeType{kgtypes.EdgeKGContains})
+	edges, err := fetchAllEdgesBanded(ctx, gc, nodeIDs, unifiedPivotEdgeTypes)
 	if err != nil {
-		return nil // FAILURE IS NOT MEMOIZED — the next consumer retries the read.
+		return nil, err // FAILURE IS NOT MEMOIZED.
 	}
 	if r != nil {
 		r.mu.Lock()
-		if !r.kgBuilt {
-			r.kgIDs, r.kgEdges, r.kgBuilt = newIDSet(thoughtIDs), edges, true
+		if !r.pivotEdgesBuilt {
+			r.pivotEdges, r.pivotEdgesBuilt = edges, true
 		}
 		r.mu.Unlock()
+	}
+	return edges, nil
+}
+
+// memoTypedEdges serves a type SUBSET of the unified edge read. It serves from the
+// memo only when TWO conditions hold: src is a *passReads, and unifiedPivotEdgeTypes
+// is a SUPERSET of wantTypes. Otherwise it falls through to the exact narrow read it
+// replaces, WITHOUT overwriting the memo.
+//
+// THERE WERE THREE. The id-coverage condition was removed when the unified read
+// became match-all — it could only ever be true. The FALLTHROUGH below is
+// deliberately NOT converted: it is reached exactly by the narrow, uncovered reads
+// that must not become whole-graph reads.
+//
+// IT RETURNS THE MEMOIZED SLICE UNFILTERED, WHICH IS A REQUIREMENT ON CALLERS, NOT AN
+// OBSERVATION: every caller must filter the result by edge type itself. That holds
+// today — deriveSessionSiblings skips any type that is not kg-contains,
+// fetchChargesUncached skips anything that is not charged-by from a requested thought,
+// and codeRefProxiesByThought skips anything that is not relates-to with Method
+// "code-ref" — and a future caller that does not filter must not use this accessor.
+//
+// THE TYPE-SUPERSET CHECK IS A REAL CHECK. Every consumer wired today asks only for
+// types the unified read carries, so an omitted check would pass every other gate in
+// this package while handing a future caller a silently short answer.
+//
+// The returned slice is the memo's own: DO NOT MUTATE.
+func memoTypedEdges(ctx context.Context, gc Caller, ids []string, wantTypes []kgtypes.EdgeType, src CorpusSource) ([]knowledgev1.Edge, error) {
+	r, _ := src.(*passReads)
+	if r != nil && edgeTypesCovered(wantTypes) {
+		r.mu.Lock()
+		// No id-coverage test (see memoPivotEdges). The TYPE-superset check above is
+		// untouched — the ID dimension became vacuous, the TYPE dimension did not.
+		if r.pivotEdgesBuilt {
+			edges := r.pivotEdges
+			r.mu.Unlock()
+			return edges, nil
+		}
+		r.mu.Unlock()
+	}
+	return fetchEdgesForNodeSet(ctx, gc, ids, wantTypes)
+}
+
+// edgeTypesCovered reports whether unifiedPivotEdgeTypes carries every requested
+// type — the superset predicate memoTypedEdges gates on. An EMPTY wantTypes means
+// "every type" at the wire, which the 7-type unified read cannot satisfy, so it is
+// NOT covered.
+func edgeTypesCovered(wantTypes []kgtypes.EdgeType) bool {
+	if len(wantTypes) == 0 {
+		return false
+	}
+	for _, want := range wantTypes {
+		found := slices.Contains(unifiedPivotEdgeTypes, want)
+		if !found {
+			return false
+		}
+	}
+	return true
+}
+
+// memoKGContainsEdges serves the single bulk EdgeKGContains read that the
+// session-sibling expansion (deriveSessionSiblings) and the session-label map
+// (FetchSessionLabelsByThought) group differently, so the edges are read once per
+// pass and grouped twice. It is now a thin wrapper over memoTypedEdges — the
+// kg-contains edges ride the unified pivot read — and exists to keep its two
+// consumers' error contract in one place.
+//
+// FAILURE IS NOT MEMOIZED — stated here specifically because this accessor's
+// underlying read swallows its error: the read failing makes deriveSessionSiblings
+// return an empty sibling map and FetchSessionLabelsByThought an empty label map.
+// Setting a built flag on that path would hand every later consumer in the pass an
+// empty result it cannot distinguish from a genuinely session-less corpus; instead
+// nothing is stored and the next consumer RETRIES the read exactly as it does today.
+//
+// The returned slice is the memo's own: DO NOT MUTATE.
+func memoKGContainsEdges(ctx context.Context, gc Caller, thoughtIDs []string, src CorpusSource) []knowledgev1.Edge {
+	edges, err := memoTypedEdges(ctx, gc, thoughtIDs, []kgtypes.EdgeType{kgtypes.EdgeKGContains}, src)
+	if err != nil {
+		return nil // FAILURE IS NOT MEMOIZED — the next consumer retries the read.
 	}
 	return edges
 }

@@ -4,6 +4,7 @@ package parser
 
 import (
 	"log/slog"
+	"sort"
 	"strings"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
@@ -34,7 +35,8 @@ const maxAmbiguousGroup = 8
 // a correct description of only the last of them:
 //
 //   - BOUND — exactly one declaration satisfies the rule that fired. One edge,
-//     carrying none of the residue fields.
+//     carrying the RESOLVING RULE on Method and none of the group fields: no
+//     Confidence, no Evidence.
 //   - AMBIGUOUS — several surviving declarations satisfy it. NOT silently
 //     narrowed to one: one edge per candidate, each at Confidence 1/N, all
 //     sharing one group key in Evidence, each stamped Method ambiguous-name.
@@ -49,9 +51,20 @@ const maxAmbiguousGroup = 8
 //     group would represent nothing, and for a stdlib call it is a correct
 //     report of no in-repo target rather than the loss of a known one.
 //
-// The two Method values above are written here as the LITERAL strings a reader
-// of the graph sees; the emitters use kgtypes.EdgeMethodAmbiguousName and
-// kgtypes.EdgeMethodDynamic, which carry exactly those values.
+// The two group Method values above are named by the constants the emitters use,
+// kgtypes.EdgeMethodAmbiguousName and kgtypes.EdgeMethodDynamic.
+//
+// Edge.Method POPULATIONS ARE KEYED BY EDGE TYPE.
+//
+// This arm emits two of them and they must not be conflated. On a GROUP MEMBER
+// Method names the group KIND — the two constants above, on reference edges and
+// on the ambiguous Go-receiver containment case alike. On a BOUND reference edge
+// it names the RESOLVING RUNG, the RefRule that fired, which is what makes a
+// surprising edge attributable at read time without re-running resolution.
+// kgtypes (edge_types.go) is the vocabulary source a reader reaches without
+// importing this package; the rung vocabulary itself is the RefRule constant set
+// in resolve_walk.go. Other edge types carry populations of their own, so a
+// consumer must key on the edge type rather than assume this arm's two.
 func resolveEdges(results []*treesitter.Result, ix *declIndex, nodeIDs map[string]bool) []*knowledgev1.Edge {
 	resolved, stats := resolveEdgesWithStats(results, ix, nodeIDs)
 	stats.log()
@@ -87,6 +100,90 @@ type resolveStats struct {
 	// what an arm reported is not a resolution outcome.
 	DotScopeBinds  int
 	DotScopeGroups int
+
+	// TypedQualifierBinds and TypedQualifierGroups are the R2T residue:
+	// references whose QUALIFIER IS A VALUE and whose declared type carried the
+	// member. A bind is one exact answer; a group is one closed ambiguous set,
+	// counted once per group rather than once per member.
+	//
+	// THIS PAIR IS THE RUNG'S AGGREGATE RECORDING, and it is not the rung's only
+	// per-edge trace: every bound edge carries the rule that resolved it on
+	// Method, R2T's included, so a single edge is attributable on its own while
+	// these counters answer how many references the rung decided over a whole
+	// run. The two are different questions and neither replaces the other.
+	// RuleDotScope directly above is the precedent this pair copies.
+	TypedQualifierBinds  int
+	TypedQualifierGroups int
+
+	// TypedQualifierByRoute splits the binds above by the CALLER'S LANGUAGE and
+	// WHICH ENTRY ROUTE reached the answer, keyed "<language>/<route>".
+	//
+	// THE SPLIT IS NOT DERIVABLE ANYWHERE ELSE, which is the whole reason it is
+	// recorded. A bound edge stamps its RUNG on Method and carries no route, so
+	// three mechanisms with three different cross-file reaches are indexed under
+	// one label — and a reader asking how far the rung actually gets cannot
+	// separate the route that resolves across files from the two that do not.
+	// The pair above answers "how many references did this rung decide"; this
+	// answers "by which mechanism", and neither replaces the other.
+	//
+	// IT COUNTS BINDS ONLY, not groups: a group is one reference whose answer is
+	// a set, and its route is a property of the same single reference, so mixing
+	// the two populations into one map would double-count nothing but would make
+	// the total unreadable against TypedQualifierBinds.
+	// THE LANGUAGE IS PART OF THE KEY because the routes are not evenly used
+	// across languages and a whole-corpus total is dominated by whichever
+	// language contributes most binds — which tells a reader nothing about the
+	// language they are asking after.
+	TypedQualifierByRoute map[string]int
+}
+
+// countRoute records one typed-qualifier bind against its caller's language and
+// its entry route.
+func (s *resolveStats) countRoute(lang string, route qualRoute) {
+	if route == qualRouteNone {
+		return
+	}
+	if lang == "" {
+		lang = "unknown"
+	}
+	if s.TypedQualifierByRoute == nil {
+		// Allocated on the first typed-qualifier bind only, so a run over a
+		// corpus with no armed language pays nothing.
+		s.TypedQualifierByRoute = map[string]int{}
+	}
+	s.TypedQualifierByRoute[lang+"/"+route.String()]++
+}
+
+// routeAttrs renders the per-language route counters as one slog attr each, in
+// sorted key order.
+//
+// ONE ATTR PER KEY RATHER THAN A RENDERED MAP, so a consumer reads them the way
+// it reads every other counter on the line instead of parsing a compound string
+// back apart.
+func (s resolveStats) routeAttrs() []any {
+	keys := make([]string, 0, len(s.TypedQualifierByRoute))
+	for k := range s.TypedQualifierByRoute {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	out := make([]any, 0, len(keys)*2)
+	for _, k := range keys {
+		out = append(out, tqRouteLogPrefix+strings.ReplaceAll(k, "/", "_"), s.TypedQualifierByRoute[k])
+	}
+	return out
+}
+
+// tqRouteLogPrefix marks every per-language typed-qualifier route counter on the
+// resolution log line. A consumer selects the whole family by this prefix.
+const tqRouteLogPrefix = "tq_route_"
+
+// callerLang returns the language of the declaration a reference was emitted
+// from, or "" when the index does not hold it.
+func callerLang(ix *declIndex, fromID string) string {
+	if rec, ok := ix.byID[fromID]; ok {
+		return string(rec.Lang)
+	}
+	return ""
 }
 
 // log emits the run's residue picture. The two group kinds are reported on
@@ -103,7 +200,16 @@ func (s resolveStats) log() {
 		"dynamic_unbound", s.DynamicUnbound,
 		"max_dynamic_group_size", s.MaxDynamicGroup,
 		"dot_scope_binds", s.DotScopeBinds,
-		"dot_scope_groups", s.DotScopeGroups)
+		"dot_scope_groups", s.DotScopeGroups,
+		"typed_qualifier_binds", s.TypedQualifierBinds,
+		"typed_qualifier_groups", s.TypedQualifierGroups)
+	if len(s.TypedQualifierByRoute) > 0 {
+		// A SECOND LINE rather than more keys on the first: the family is
+		// per-language and therefore unbounded in width, and folding an
+		// unbounded set into the fixed residue line would make that line's
+		// shape depend on which languages the corpus happens to contain.
+		slog.Info("collector: typed-qualifier routes", s.routeAttrs()...)
+	}
 }
 
 // resolveEdgesWithStats is resolveEdges plus the residue counts. It is the arm
@@ -115,18 +221,27 @@ func resolveEdgesWithStats(
 	var resolved []*knowledgev1.Edge
 	var stats resolveStats
 	for _, result := range results {
+		// ONE ORDINAL COUNTER PER FILE, minted here and never shared across
+		// results: the group key's ordinal is defined over the sites of ONE file,
+		// so a counter surviving into the next result would make a file's edge
+		// identities depend on which files preceded it in this walk.
+		ordinals := make(groupOrdinals)
 		for i := range result.Edges {
 			e := &result.Edges[i]
 			switch kgtypes.EdgeType(e.Type) {
 			case kgtypes.EdgeImports:
-				// File path → import path; nothing to resolve.
+				// File path → import path; nothing to resolve. THE GROUP KEY IS
+				// CARRIED THROUGH rather than built here: an import's key names its
+				// SITE, which only the chunker sees, and dropping it would fold two
+				// import statements of one specifier back onto one row.
 				resolved = append(resolved, &knowledgev1.Edge{
 					FromId: e.FromID, ToId: e.ToID, Type: string(e.Type), Weight: e.Weight,
+					Evidence: e.Evidence,
 				})
 			case kgtypes.EdgeContains:
-				resolved = append(resolved, resolveContainment(e, ix, nodeIDs)...)
+				resolved = append(resolved, resolveContainment(e, ix, nodeIDs, ordinals)...)
 			default:
-				resolved = append(resolved, resolveReference(e, ix, nodeIDs, &stats)...)
+				resolved = append(resolved, resolveReference(e, ix, nodeIDs, &stats, ordinals)...)
 			}
 		}
 	}
@@ -141,7 +256,9 @@ func resolveEdgesWithStats(
 // admits comment nodes, but populate folds comment text into the following
 // symbol's description and never creates a node for one, so that edge points at
 // an ID no node carries.
-func resolveContainment(e *treesitter.Edge, ix *declIndex, nodeIDs map[string]bool) []*knowledgev1.Edge {
+func resolveContainment(
+	e *treesitter.Edge, ix *declIndex, nodeIDs map[string]bool, ordinals groupOrdinals,
+) []*knowledgev1.Edge {
 	if !nodeIDs[e.ToID] {
 		return nil
 	}
@@ -180,7 +297,15 @@ func resolveContainment(e *treesitter.Edge, ix *declIndex, nodeIDs map[string]bo
 		// to know which.
 		slog.Warn("collector: ambiguous Go receiver containment",
 			"scope", e.Ref.Scope, "receiver", receiver, "candidates", len(candidates))
-		key := groupKey(e.Ref.File, e.RefByte, string(e.Type), e.FromID)
+		// THIS ARM KEYS ON e.ToID, NOT ON AN ENCLOSING DECLARATION, and it does
+		// not compose with the ordinary rule above. The edge's own FROM is the
+		// candidate receiver type and the candidates are exactly what is
+		// ambiguous, so there is no single enclosing declaration to name. The
+		// stable identity is the CONTAINED METHOD: one specific node, invariant
+		// across the candidates. The old key's file+byte contributed nothing this
+		// does not, since one method belongs to one file.
+		disc := e.ToID + ":" + string(e.Type)
+		key := groupKey(e.ToID, string(e.Type), "", ordinals.next(disc))
 		return groupEdges(candidates, e.ToID, string(e.Type), kgtypes.EdgeMethodAmbiguousName, key, true)
 	}
 }
@@ -193,8 +318,14 @@ func resolveContainment(e *treesitter.Edge, ix *declIndex, nodeIDs map[string]bo
 // included, which resolves exactly as CALLS does and differs only in the type
 // the emitted edge carries.
 func resolveReference(
-	e *treesitter.Edge, ix *declIndex, nodeIDs map[string]bool, stats *resolveStats,
+	e *treesitter.Edge, ix *declIndex, nodeIDs map[string]bool, stats *resolveStats, ordinals groupOrdinals,
 ) []*knowledgev1.Edge {
+	// The ordinary arms' discriminator: what the site references, of what type,
+	// inside which declaration. e.FromID is the ENCLOSING declaration's node id —
+	// the component that survives edits to that declaration's own body.
+	refDiscriminator := func() string {
+		return e.ToID + ":" + string(e.Type) + ":" + e.FromID
+	}
 	if !nodeIDs[e.FromID] {
 		return nil
 	}
@@ -205,8 +336,13 @@ func resolveReference(
 		if res.Rule == RuleDotScope {
 			stats.DotScopeBinds++
 		}
+		if res.Rule == RuleTypedQualifier {
+			stats.TypedQualifierBinds++
+			stats.countRoute(callerLang(ix, e.FromID), res.Route)
+		}
 		return []*knowledgev1.Edge{{
 			FromId: e.FromID, ToId: res.Candidates[0].NodeID, Type: string(e.Type), Weight: e.Weight,
+			Method: string(res.Rule),
 		}}
 	case RefAmbiguous:
 		if len(res.Candidates) >= maxAmbiguousGroup {
@@ -221,7 +357,11 @@ func resolveReference(
 			// reference whose answer is a set.
 			stats.DotScopeGroups++
 		}
-		key := groupKey(e.Ref.File, e.RefByte, string(e.Type), e.ToID)
+		if res.Rule == RuleTypedQualifier {
+			// Once per group, for the identical reason.
+			stats.TypedQualifierGroups++
+		}
+		key := groupKey(e.ToID, string(e.Type), e.FromID, ordinals.next(refDiscriminator()))
 		return groupEdges(res.Candidates, e.FromID, string(e.Type), kgtypes.EdgeMethodAmbiguousName, key, false)
 	case RefDynamic:
 		if len(res.Candidates) == 0 {
@@ -239,7 +379,7 @@ func resolveReference(
 			// fires on this kind, because large dynamic sets are normal.
 			stats.MaxDynamicGroup = len(res.Candidates)
 		}
-		key := groupKey(e.Ref.File, e.RefByte, string(e.Type), e.ToID)
+		key := groupKey(e.ToID, string(e.Type), e.FromID, ordinals.next(refDiscriminator()))
 		return groupEdges(res.Candidates, e.FromID, string(e.Type), kgtypes.EdgeMethodDynamic, key, false)
 	default:
 		stats.External++
@@ -249,6 +389,20 @@ func resolveReference(
 
 // groupEdges emits one edge per candidate, each carrying Confidence 1/N, the
 // group's Method, and the group's shared key in Evidence.
+//
+// GROUP KEY, NOT EPISTEMIC EVIDENCE. The Evidence field carries the group key,
+// not a justification for the edge, and the name is the one thing about this
+// function most likely to mislead. It matters beyond naming: TWO reference sites
+// in one declaration whose names resolve to the SAME candidate set each form
+// their own group here, so each candidate receives one edge per group — edges
+// that share a (FromID, ToID, Type) primary key while carrying DIFFERENT group
+// keys. Evidence is one of the fields the per-row contribution hash covers, so
+// those edges are a differing-bytes tie, measured at 1,921 keys on this
+// repository. NOTHING COLLAPSES THEM: ToBatchEdges converts 1:1, and the edges
+// identity now carries the group key, so BOTH memberships land as separate rows
+// rather than one being dropped. An earlier revision of this comment described
+// the retired behavior — a collapse keeping one membership — which this same
+// changeset reversed.
 //
 // When reverse is true the candidates are the edge SOURCES — the containment
 // case, where the ambiguity is in which declaration CONTAINS the target — and

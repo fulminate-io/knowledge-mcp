@@ -80,11 +80,11 @@ func TestDuplicateLayerLedger(t *testing.T) {
 	// One engine holding TWO layers over the SAME ids with different content — what
 	// two rebuilds at different times leave behind. MinSegmentDocs is above the
 	// corpus so only the explicit Flush seals, giving one segment per layer.
-	e := New[mockQuery, mockStats](mockFormat{}, Options{
+	e := closeOnCleanup(t, New[mockQuery, mockStats](mockFormat{}, Options{
 		MinSegmentDocs:     corpus * 4,
 		DeletesPctAllowed:  MergeDisabledDeadRatio,
 		SegmentCountTarget: MergeDisabledCountTarget,
-	})
+	}))
 	defer e.Close()
 
 	oneSegmentPerLayer(t, e, ids, "layerA")

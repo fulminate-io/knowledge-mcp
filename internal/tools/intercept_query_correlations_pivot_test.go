@@ -42,7 +42,7 @@ func (f *corrFake) exec(_ context.Context, req *knowledgev1.ExecuteRequest) (*kn
 		if lim := int(q.GetLimit()); lim > 0 && len(edges) > lim {
 			edges = edges[:lim]
 		}
-		return &knowledgev1.ExecuteResponse{Edges: edges}, nil
+		return &knowledgev1.ExecuteResponse{Edges: bandNarrow(edges, q)}, nil
 	}
 	f.nodeFetches++
 	ptrs := make([]*knowledgev1.Node, len(f.nodes))

@@ -25,10 +25,9 @@ import (
 // (rt==nil fallback) or on the standing runtime's detached goroutine — identical
 // work on both paths — and returns collector.Collect's error verbatim.
 func builtinCollectWork(ctx context.Context, deps ClientDeps, a collectArgs, opts collector.CollectOptions) error {
-	// A collect spikes the heap hard — the chunker holds every file's results
-	// until upload, and the precise Go call-graph build loads a whole module + its
-	// dependency closure (ASTs + type info + SSA) live at once. This is a
-	// long-lived stdio daemon, so once the collect is done that working set is pure
+	// A collect spikes the heap hard — the chunker holds every file's parse
+	// results live until upload. This is a
+	// long-lived daemon process, so once the collect is done that working set is pure
 	// garbage; force a GC + scavenge on the way out so RSS drops back to baseline
 	// immediately. Deferred HERE (not at the InterceptCollect return) so it fires
 	// at ACTUAL completion on BOTH the detached goroutine and the synchronous
@@ -76,18 +75,29 @@ func builtinCollectWork(ctx context.Context, deps ClientDeps, a collectArgs, opt
 	// registered postpopulate hook for the collector family over the wire,
 	// enriching the per-account/per-repo graph with the structural edges the linker
 	// does not own (SG/NACL rules, cross-account trust, image lineage, k8s
-	// selector/cluster linkage, CICD OIDC federation, codesync hierarchy).
-	// Best-effort, like the linker.
-	runPostCollectPostPopulate(ctx, deps, a.Type)
+	// selector/cluster linkage, CICD OIDC federation, step→code links).
+	//
+	// UNLIKE the linker above, this is NOT best-effort: its error is captured and
+	// returned below, so a collect whose enrichment failed reports failure to the
+	// caller instead of succeeding with a warn in the log.
+	//
+	// The collected graph name rides along because a hook that declared
+	// BreadthScoped fires against THAT graph alone rather than every graph of the
+	// family's type; CollectGateGraphName yields "" for every non-code collector
+	// type, and every such hook declares BreadthFamilyBroad, whose arm ignores the
+	// name.
+	ppErr := runPostCollectPostPopulate(ctx, deps, a.Type, CollectGateGraphName(a.Type, a.ID))
 	// Wake the LLM pipeline: the just-collected graph may have idle-backed-off its
 	// scan cadence toward the hour-long ceiling, so nudge every collector to re-scan
 	// now and discover + enrich the freshly-uploaded nodes instead of waiting out
 	// its idle interval. Best-effort, optional capability (no pipeline wired →
-	// skipped).
+	// skipped). Deliberately fired BEFORE the error return: a failed enrichment
+	// hook must not also suppress the pipeline nudge, since the nodes the collect
+	// DID upload still need summarizing.
 	if w, ok := deps.(pipelineWaker); ok {
 		w.WakePipeline()
 	}
-	return nil
+	return ppErr
 }
 
 // collectRuntimeProvider is the OPTIONAL deps capability the collect interceptor

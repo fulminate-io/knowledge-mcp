@@ -172,7 +172,7 @@ func (c *Chunker) walkTestBlocks(
 			ToChunk: slot,
 		})
 
-		c.emitTestBlockCallEdges(site, src, fileCtx, symbolName, cqs, slot, ref, result)
+		c.emitTestBlockCallEdges(site, src, lang, fileCtx, symbolName, cqs, slot, ref, result)
 	}
 }
 

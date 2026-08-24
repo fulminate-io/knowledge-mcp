@@ -10,6 +10,7 @@ import (
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
+	"github.com/fulminate-io/knowledge-mcp/internal/searchengine/formats/hnsw"
 )
 
 // multiwriter_publish_reclaim_test.go proves writer A's merge-driven republish
@@ -26,7 +27,7 @@ func assertLiveSetPublished(t *testing.T, svc *sharedServerFake, mgr *fleetMembe
 	t.Helper()
 	target := graphSelector(gt, name)
 	manifest := map[string]bool{}
-	for _, id := range writerManifest(svc, target, mgr.writerID, "hnsw") {
+	for _, id := range writerManifest(svc, target, mgr.writerID, hnsw.New().Name()) {
 		manifest[id] = true
 	}
 	for _, b := range mgr.managerFor(gt, name).engine.Export() {

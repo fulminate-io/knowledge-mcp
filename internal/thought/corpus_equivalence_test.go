@@ -180,7 +180,7 @@ func (f *reflectEquivFake) Execute(_ context.Context, req *knowledgev1.ExecuteRe
 	}
 
 	if q.GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_EDGES {
-		return &knowledgev1.ExecuteResponse{Edges: f.edgesFor(q)}, nil
+		return &knowledgev1.ExecuteResponse{Edges: bandNarrow(f.edgesFor(q), q)}, nil
 	}
 	if q.GetById() != "" {
 		return &knowledgev1.ExecuteResponse{}, nil // watermark / singleton reads: empty.
@@ -229,6 +229,10 @@ func (f *reflectEquivFake) edgesFor(q *knowledgev1.QueryPlan) []*knowledgev1.Edg
 			out = append(out, &knowledgev1.Edge{Type: string(et), FromId: p[0], ToId: p[1]})
 		}
 	}
+	// The band is NOT applied here: this function's only caller wraps its result in
+	// bandNarrow, and that wrap is the uniform rule every fake return in this package
+	// follows. Narrowing twice would be harmless (the predicate is idempotent) but it
+	// would put the band in two places, which is how the two copies drift apart.
 	return out
 }
 

@@ -34,9 +34,10 @@ func (f *scriptedEdgesFakeCaller) Call(_ context.Context, _ string, _ json.RawMe
 
 func (f *scriptedEdgesFakeCaller) Execute(_ context.Context, req *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error) {
 	f.execs = append(f.execs, req)
-	switch req.GetQuery().GetReturnMode() {
+	q := req.GetQuery()
+	switch q.GetReturnMode() {
 	case knowledgev1.ReturnMode_RETURN_MODE_EDGES:
-		return &knowledgev1.ExecuteResponse{Edges: f.edges}, nil
+		return &knowledgev1.ExecuteResponse{Edges: bandNarrow(f.edges, q)}, nil
 	case knowledgev1.ReturnMode_RETURN_MODE_IDS:
 		// A single page: the fixtures are far smaller than the drain's page
 		// size, so the first short page ends the drain.

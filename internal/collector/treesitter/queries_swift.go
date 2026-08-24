@@ -8,6 +8,8 @@ func swiftQueries() *QuerySet {
 			(function_declaration (simple_identifier) @name) @decl
 			(class_declaration name: (type_identifier) @name) @decl
 			(protocol_declaration name: (type_identifier) @name) @decl
+			(class_declaration name: (user_type (type_identifier) @name)) @decl
+			(protocol_function_declaration (simple_identifier) @name) @decl
 		]`,
 		// The navigation_expression is captured WHOLE rather than reaching past
 		// it to the suffix's identifier: the wrapper's own text IS the

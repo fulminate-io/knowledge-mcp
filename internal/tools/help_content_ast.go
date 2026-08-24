@@ -260,7 +260,7 @@ Debug a snippet to see how tree-sitter parses it:
 ## Sibling-form alternation — patterns: [...]
 
 When one logical rule has multiple syntactic shapes (e.g., 'log.Print',
-'log.Println', 'log.Printf' all sharing the "no stdout in stdio mode"
+'log.Println', 'log.Printf' all sharing the "no ad-hoc stdout logging"
 rule), pass an array of patterns instead of a single pattern. Results are
 unioned; the same where-tree applies to each pattern's matches.
 

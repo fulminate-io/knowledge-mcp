@@ -6,7 +6,9 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/binary"
+	"errors"
 	"fmt"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -14,6 +16,7 @@ import (
 	"google.golang.org/protobuf/proto"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/filecrypt"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
@@ -172,6 +175,13 @@ func decodeCorpusRecord(raw []byte, wantTypes []string) (*knowledgev1.CorpusDelt
 // is exactly the pre-existing behavior this record exists to make the exception
 // rather than the norm. What transfers from that precedent is the duty to make
 // absence distinguishable from damage and to decide it deliberately.
+//
+// THE RECORD IS OPENED BEFORE IT IS DECODED, and that order is what keeps the
+// diagnoses apart. A record written before this cache was encrypted carries the
+// old frame magic, so handing it straight to decodeCorpusRecord would report a
+// generic bad-magic failure; opening first names it as a legacy plaintext record
+// instead. The operator needs that difference: one is a file to drop and rebuild,
+// the other is damage.
 func loadCorpusRecord(path string, wantTypes []string) (*knowledgev1.CorpusDeltaResponse, bool, error) {
 	raw, err := os.ReadFile(path) //nolint:gosec // path is derived from the configured client data root.
 	if err != nil {
@@ -180,27 +190,48 @@ func loadCorpusRecord(path string, wantTypes []string) (*knowledgev1.CorpusDelta
 		}
 		return nil, false, fmt.Errorf("corpus record: read %q: %w", path, err)
 	}
-	resp, derr := decodeCorpusRecord(raw, wantTypes)
+	plain, oerr := filecrypt.Open(path, raw)
+	if oerr != nil {
+		if errors.Is(oerr, filecrypt.ErrLegacyPlaintext) {
+			return nil, false, fmt.Errorf("corpus record: %q is a legacy plaintext record from before this cache was encrypted; it is dropped and rebuilt, never converted: %w", path, oerr)
+		}
+		return nil, false, fmt.Errorf("corpus record: open %q: %w", path, oerr)
+	}
+	resp, derr := decodeCorpusRecord(plain, wantTypes)
 	if derr != nil {
 		return nil, false, derr
 	}
 	return resp, true, nil
 }
 
-// saveCorpusRecord frames the node set and cursors and writes them atomically.
+// saveCorpusRecord frames the node set and cursors, seals the frame, and writes
+// the sealed bytes atomically.
+//
+// THE RECORD IS CIPHERTEXT ON DISK, unconditionally. No branch writes the frame
+// in the clear: a seal failure returns an error and nothing reaches disk, so a
+// caller cannot leave readable node content behind by ignoring one. The atomic
+// writer below neither knows nor cares that the bytes it commits are ciphertext.
 func saveCorpusRecord(path string, nodeTypes []string, items []*knowledgev1.Node, cursors []*knowledgev1.LayerCursor) error {
 	raw, err := encodeCorpusRecord(nodeTypes, items, cursors)
 	if err != nil {
 		return err
 	}
-	return atomicWriteCorpusRecord(path, raw)
+	sealed, serr := filecrypt.Seal(path, raw)
+	if serr != nil {
+		return fmt.Errorf("corpus record: seal: %w", serr)
+	}
+	return atomicWriteCorpusRecord(path, sealed)
 }
 
 // atomicWriteCorpusRecord writes the record through a temp file in the same
-// directory, fsyncs it, and renames it into place — so a crash mid-write leaves the
-// PREVIOUS record intact rather than a truncated one. A truncated record would be
-// rejected at load and cost one cold drain, which is survivable; the rename makes
-// even that unnecessary.
+// directory, fsyncs it, renames it into place, and fsyncs the parent directory —
+// so a crash mid-write leaves the PREVIOUS record intact rather than a truncated
+// one. A truncated record would be rejected at load and cost one cold drain,
+// which is survivable; the rename makes even that unnecessary.
+//
+// All four steps are present deliberately. Stopping after the rename leaves the
+// directory ENTRY possibly not durable, so a crash right after a successful
+// rename can lose the record even though its bytes are on disk.
 func atomicWriteCorpusRecord(path string, raw []byte) (err error) {
 	dir := filepath.Dir(path)
 	// 0o750 matches the mode the sibling client-side cache records take: this is
@@ -232,6 +263,21 @@ func atomicWriteCorpusRecord(path string, raw []byte) (err error) {
 	}
 	if rerr := os.Rename(tmpName, path); rerr != nil {
 		return fmt.Errorf("corpus record: commit temp into place: %w", rerr)
+	}
+	// Fsync the parent directory so the rename is durable across a crash.
+	// Non-critical: the rename itself already succeeded, so the file is on disk;
+	// the directory fsync is only needed for crash durability guarantees. Warn
+	// rather than fail so a durability shortfall is visible without turning a
+	// completed write into a reported failure.
+	if d, openErr := os.Open(dir); openErr == nil { //nolint:gosec // dir is the parent of the configured record path.
+		if syncErr := d.Sync(); syncErr != nil {
+			slog.Warn("corpus record: parent directory fsync failed (rename is durable, crash recovery may lag)",
+				"path", path, "error", syncErr)
+		}
+		_ = d.Close()
+	} else {
+		slog.Warn("corpus record: could not open parent directory for fsync",
+			"path", path, "error", openErr)
 	}
 	return nil
 }

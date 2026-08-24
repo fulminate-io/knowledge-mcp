@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package tools holds the client-side MCP tool intercepts for the knowledge
-// stdio binary: the manage(status), collect, and backend-write-through
+// client binary: the manage(status), collect, and backend-write-through
 // paths that must run in-process. Collectors stream chunks to the graph
 // server rather than running server-side; backend writes (Linear, Jira,
 // GitHub) hit the third-party API inline from this package BEFORE the
@@ -49,7 +49,7 @@ type BackendResolver interface {
 // InterceptCreateTicket / InterceptMutate use to forward the local
 // portion of a backend-backed call back into the MCP tool dispatch.
 // Production wires this to a thin adapter over the same
-// *graphclient.GraphClient the rest of the stdio client uses; tests inject
+// *graphclient.GraphClient the rest of the client uses; tests inject
 // a fake that records the (name, args) pair so assertions can verify
 // the forward shape without an over-the-wire test.
 //

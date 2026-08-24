@@ -45,8 +45,8 @@ func TestSnapshotPerFormat(t *testing.T) {
 	// A second graph shipped in ONE format only, for the absent-manifest case.
 	backend.seedManifest(string(kgtypes.GraphCode), "oneformat", hnswFormat, map[string]int{"h9": 40})
 
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0,
-		WithSegmentTransport(func() (SegmentControlTransport, error) { return backend, nil }))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0,
+		WithSegmentTransport(func() (SegmentControlTransport, error) { return backend, nil })))
 
 	t.Run("each format reads and sums its own manifest", func(t *testing.T) {
 		hnswSnap, err := mgr.ShippedManifestSnapshot(ctx, kgtypes.GraphCode, "repo", hnswFormat)

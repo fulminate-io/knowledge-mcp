@@ -36,9 +36,9 @@ import (
 // is exactly one, and marking it is what makes the block readable from the far
 // side. Surfaces with no walk pass reached=nil and the marker never appears.
 //
-// ZERO GROUPS PRODUCE ZERO BYTES, mirroring writeEdgeMetadataSection's empty
-// early return — that is what keeps a group-free response byte-identical to
-// today's output.
+// ZERO GROUPS PRODUCE ZERO BYTES: an empty slice returns before anything is
+// written, which is what keeps a group-free response byte-identical to today's
+// output.
 func writeCandidateGroups(sb *strings.Builder, groups []CandidateGroup, nodes map[string]*knowledgev1.Node, reached map[string]bool) {
 	if len(groups) == 0 {
 		return

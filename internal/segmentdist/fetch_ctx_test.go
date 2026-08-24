@@ -30,14 +30,14 @@ func TestSearchFetchHonorsCallerCtx(t *testing.T) {
 
 	// A producer ships a real corpus so the consumer's cold List returns misses to
 	// Fetch (the path that must be cancellable).
-	producer := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(svc.viewFor(target, "")))
+	producer := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(svc.viewFor(target, ""))))
 	seedShipped(t, context.Background(), producer, gt, name, hnswVecDocs(1024))
 
 	// Consumer points at a view that hangs Fetch; its L2 is cold (fresh TempDir),
 	// so load() falls through to loadFromServer → fetchMisses → the hung Fetch.
 	hangView := svc.viewFor(target, "")
 	hangView.hangFetch = true
-	consumer := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(hangView))
+	consumer := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(hangView)))
 	dm := consumer.managerFor(gt, name)
 
 	ctx, cancel := context.WithCancel(context.Background())

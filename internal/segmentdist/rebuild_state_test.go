@@ -22,7 +22,7 @@ func TestRebuildStateRoundTrip(t *testing.T) {
 	const horizon = int64(1_700_000_000_123_456_789)
 
 	t.Run("absent record is a zero watermark, not an error", func(t *testing.T) {
-		mgr := NewManager(loginStateStub{}, t.TempDir(), 0)
+		mgr := closeOnCleanup(t, NewManager(loginStateStub{}, t.TempDir(), 0))
 
 		watermark, tombstoned, err := mgr.LoadRebuildState(kgtypes.GraphCode, "neverRebuilt")
 		require.NoError(t, err, "a graph that has never been rebuilt is the ordinary case, not a failure")
@@ -32,14 +32,14 @@ func TestRebuildStateRoundTrip(t *testing.T) {
 
 	t.Run("saved values survive a reload", func(t *testing.T) {
 		dir := t.TempDir()
-		mgr := NewManager(loginStateStub{}, dir, 0)
+		mgr := closeOnCleanup(t, NewManager(loginStateStub{}, dir, 0))
 		ids := []searchengine.ExternalID{"gone-1", "gone-2"}
 
 		require.NoError(t, mgr.SaveRebuildState(kgtypes.GraphCode, "repo", horizon, ids))
 
 		// A SECOND Manager over the same directory is the daemon restart: the record
 		// exists to spare it a full re-emit, so it must read what the first wrote.
-		restarted := NewManager(loginStateStub{}, dir, 0)
+		restarted := closeOnCleanup(t, NewManager(loginStateStub{}, dir, 0))
 		watermark, tombstoned, err := restarted.LoadRebuildState(kgtypes.GraphCode, "repo")
 		require.NoError(t, err)
 		require.Equal(t, horizon, watermark)
@@ -48,7 +48,7 @@ func TestRebuildStateRoundTrip(t *testing.T) {
 
 	t.Run("records are per graph", func(t *testing.T) {
 		dir := t.TempDir()
-		mgr := NewManager(loginStateStub{}, dir, 0)
+		mgr := closeOnCleanup(t, NewManager(loginStateStub{}, dir, 0))
 
 		require.NoError(t, mgr.SaveRebuildState(kgtypes.GraphCode, "repoA", horizon, nil))
 
@@ -63,7 +63,7 @@ func TestRebuildStateRoundTrip(t *testing.T) {
 
 	t.Run("wiping the cache root resets to a full rebuild", func(t *testing.T) {
 		dir := t.TempDir()
-		mgr := NewManager(loginStateStub{}, dir, 0)
+		mgr := closeOnCleanup(t, NewManager(loginStateStub{}, dir, 0))
 		require.NoError(t, mgr.SaveRebuildState(kgtypes.GraphCode, "repo", horizon, nil))
 
 		// The record lives under the L2 cache root deliberately: it describes those
@@ -92,7 +92,7 @@ func TestFinalizeRebuildReportsCompletedSwap(t *testing.T) {
 
 	// A full reset rebuild: one complete partition carrying both formats, which is what
 	// the driver produces from a full-corpus scan.
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 	require.NoError(t, mgr.StageRebuildPartition(ctx, kgtypes.GraphCode, "swapRepo",
 		hnswVecDocs(searchCorpusN), bm25FieldDocs(searchCorpusN)))
 
@@ -107,7 +107,7 @@ func TestFinalizeRebuildReportsCompletedSwap(t *testing.T) {
 	// BOTH formats are staged, thinly. Swapped is the AND of the two legs, so staging
 	// only the vector share would leave the field leg reporting not-swapped for its own
 	// reasons and the assertion below would hold without the coverage gate ever firing.
-	partial := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	partial := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 	require.NoError(t, partial.StageRebuildPartition(ctx, kgtypes.GraphCode, "swapRepo",
 		hnswVecDocs(4), bm25FieldDocs(4)))
 

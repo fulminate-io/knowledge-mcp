@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 
-// Package profiling hosts the knowledge stdio client's pprof HTTP endpoint
+// Package profiling hosts the knowledge client's pprof HTTP endpoint
 // and the bracketed CPU-capture control wired to the `manage` MCP ops
 // pprof_start / pprof_stop.
 //
 // The endpoint binds loopback-only on DefaultPort (15021, one below the
-// server's default 15022) — the stdio client has no HTTP server of its
-// own, so it gets a dedicated port. Override via SetPort before first
-// use. It is started eagerly when the client runs with --pprof, or
+// server's default 15022) — profiling gets a dedicated port rather than
+// riding any other listener the process runs. Override via SetPort before
+// first use. It is started eagerly when the client runs with --pprof, or
 // lazily on the first manage(pprof_start). Standard
 // net/http/pprof routes (/debug/pprof/{heap,goroutine,profile,trace,...})
 // are always mounted once the server is up; /debug/pprof/capture serves

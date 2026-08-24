@@ -58,9 +58,18 @@ func TestPopulate_TypeScriptEdgesSurvive(t *testing.T) {
 	res := populateFixture(t, []fixtureFile{{path: "web/shapes.ts", src: tsShapesSrc}})
 	ids := nodeIDSet(res)
 
-	// Five top-level declarations, six Box members and one Circle member.
+	// Five top-level declarations, six Box members, one Circle member and TWO
+	// Point members. The interface's members are declarations in their own right
+	// — a TypeScript contract's members are what a call through an
+	// interface-typed value targets, so they need node IDs to be targetable.
 	fileContains := edgesFrom(res, kgtypes.EdgeContains, "web/shapes.ts")
-	assert.Len(t, fileContains, 12)
+	assert.Len(t, fileContains, 14)
+
+	// INTERFACE → MEMBER CONTAINS, named rather than left to the count above, so
+	// a change that moved these members somewhere else could not be absorbed by
+	// the total staying right for the wrong reason.
+	assert.Equal(t, []string{"web/shapes.ts:Point.x", "web/shapes.ts:Point.y"},
+		edgesFrom(res, kgtypes.EdgeContains, "web/shapes.ts:Point"))
 
 	// CLASS → MEMBER CONTAINS, counted from fixture-derived constants.
 	assert.Len(t, edgesFrom(res, kgtypes.EdgeContains, "web/shapes.ts:Box"), 6)

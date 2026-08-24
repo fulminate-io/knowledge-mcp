@@ -241,5 +241,3 @@ When user says done (or after `none`):
     <pattern>Writing to practice/knowledge-architecture.bin — that's the per-project catalog, hand-maintained; only design-patterns for library ingestion</pattern>
     <pattern>Discarding recipe-emitted body when refining — move to metadata.source_excerpt so verbatim text remains accessible</pattern>
   </anti-patterns>
-
-</constraint>

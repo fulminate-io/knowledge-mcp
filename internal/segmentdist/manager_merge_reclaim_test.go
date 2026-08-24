@@ -50,11 +50,11 @@ func vecContentDocsSeed(n, seed int) []searchengine.Document {
 // exactly one segment.
 func consolidatedHNSWBlob(t *testing.T, survivors []searchengine.Document) searchengine.SegmentBlob {
 	t.Helper()
-	eng := searchengine.New[[]byte, struct{}](hnsw.New(), searchengine.Options{
+	eng := closeOnCleanup(t, searchengine.New[[]byte, struct{}](hnsw.New(), searchengine.Options{
 		MinSegmentDocs:     len(survivors),
 		DeletesPctAllowed:  searchengine.MergeDisabledDeadRatio,
 		SegmentCountTarget: searchengine.MergeDisabledCountTarget,
-	})
+	}))
 	defer eng.Close()
 	require.NoError(t, eng.Add(survivors))
 	require.NoError(t, eng.Flush())
@@ -66,11 +66,11 @@ func consolidatedHNSWBlob(t *testing.T, survivors []searchengine.Document) searc
 // consolidatedBM25Blob is the BM25 counterpart of consolidatedHNSWBlob.
 func consolidatedBM25Blob(t *testing.T, survivors []searchengine.Document) searchengine.SegmentBlob {
 	t.Helper()
-	eng := searchengine.New[bm25.Query, *bm25.CorpusStats](bm25.New(), searchengine.Options{
+	eng := closeOnCleanup(t, searchengine.New[bm25.Query, *bm25.CorpusStats](bm25.New(), searchengine.Options{
 		MinSegmentDocs:     len(survivors),
 		DeletesPctAllowed:  searchengine.MergeDisabledDeadRatio,
 		SegmentCountTarget: searchengine.MergeDisabledCountTarget,
-	})
+	}))
 	defer eng.Close()
 	require.NoError(t, eng.Add(survivors))
 	require.NoError(t, eng.Flush())
@@ -159,7 +159,7 @@ func TestManagerMergeReclaim(t *testing.T) {
 
 	t.Run("hnsw", func(t *testing.T) {
 		_, gc := newSegmentHarness(t)
-		mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+		mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 		gt, name := kgtypes.GraphCode, "mergereclaim-hnsw"
 
 		// The write force-seals the batch and the tick ships the re-emitted partition,
@@ -188,7 +188,7 @@ func TestManagerMergeReclaim(t *testing.T) {
 
 	t.Run("bm25", func(t *testing.T) {
 		_, gc := newSegmentHarness(t)
-		mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+		mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 		gt, name := kgtypes.GraphCode, "mergereclaim-bm25"
 
 		require.NoError(t, mgr.AddAndMarkDirtyFields(ctx, gt, name, docs))

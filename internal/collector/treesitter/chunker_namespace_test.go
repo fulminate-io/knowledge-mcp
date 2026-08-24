@@ -42,26 +42,40 @@ func TestFileNamespace_DerivedFromDir(t *testing.T) {
 }
 
 func TestClassLikeTypes_ExcludesGoNodeKinds(t *testing.T) {
-	// Present: the kinds the parent-to-member edge depends on.
-	for _, kind := range []string{
-		"class",             // Ruby, and JS/TS class expressions
-		"module",            // Ruby
-		"class_definition",  // Python, Scala
-		"class_declaration", // TypeScript/TSX, Java, C#, PHP, Swift
+	// Present: the kinds the parent-to-member edge depends on, each named
+	// with the LANGUAGE that owns it — the admission is per (language, kind),
+	// so a bare kind is no longer a question the table can answer.
+	for _, tc := range []struct {
+		lang Language
+		kind string
+	}{
+		{LangRuby, "class"},
+		{LangRuby, "module"},
+		{LangPython, "class_definition"},
+		{LangTypeScript, "class_declaration"},
 	} {
-		assert.True(t, classLikeTypes[kind], "classLikeTypes must hold %q", kind)
+		assert.True(t, classLikeByLang[tc.lang][tc.kind],
+			"classLikeByLang[%q] must hold %q", tc.lang, tc.kind)
 	}
 
-	// Absent: Go's containers. Their exclusion is what makes Go unchanged by
-	// construction rather than by measurement.
-	for _, kind := range []string{"type_declaration", "type_spec", "struct_type", "interface_type"} {
-		assert.False(t, classLikeTypes[kind], "classLikeTypes must not hold Go's %q", kind)
-	}
+	// Absent: Go's containers, in EVERY language's row. Their exclusion is
+	// what makes Go unchanged by construction rather than by measurement, and
+	// checking every row is what keeps a future admission of one of these
+	// kinds under some other language from reaching Go's declarations.
+	for _, lang := range RegisteredLanguages() {
+		for _, kind := range []string{"type_declaration", "type_spec", "struct_type", "interface_type"} {
+			assert.False(t, classLikeByLang[lang][kind],
+				"classLikeByLang[%q] must not hold Go's %q", lang, kind)
+		}
 
-	// method_definition and method_declaration are function-like, not
-	// class-like, and are shared with Go — moving either would change Go.
+		// method_definition and method_declaration are function-like, not
+		// class-like, and are shared with Go — moving either would change Go.
+		for _, kind := range []string{"method_definition", "method_declaration"} {
+			assert.False(t, classLikeByLang[lang][kind],
+				"%q belongs in functionLikeTypes only, but classLikeByLang[%q] holds it", kind, lang)
+		}
+	}
 	for _, kind := range []string{"method_definition", "method_declaration"} {
-		assert.False(t, classLikeTypes[kind], "%q belongs in functionLikeTypes only", kind)
 		assert.True(t, functionLikeTypes[kind], "%q must stay function-like", kind)
 	}
 }

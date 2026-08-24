@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"context"
 	"log/slog"
-	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -69,7 +68,7 @@ func (f *leafAttachE2EFake) Execute(_ context.Context, req *knowledgev1.ExecuteR
 		return &knowledgev1.ExecuteResponse{}, nil
 	}
 	if q.GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_EDGES {
-		return &knowledgev1.ExecuteResponse{Edges: f.edgesForFilter(q.GetSelection())}, nil
+		return &knowledgev1.ExecuteResponse{Edges: bandNarrow(f.edgesForFilter(q.GetSelection()), q)}, nil
 	}
 	// ids[] hydrate (label/charge resolution) — nothing.
 	if len(q.GetIds()) > 0 {
@@ -90,10 +89,23 @@ func (f *leafAttachE2EFake) edgesForFilter(sel *knowledgev1.Selection) []*knowle
 	if sel == nil || len(sel.GetEdgeTypes()) == 0 {
 		return f.edges // provenance read (nil filter) → all incident edges.
 	}
-	if slices.Contains(sel.GetEdgeTypes(), string(kgtypes.EdgeKGContains)) {
-		return nil // session-sibling read → no contains edges seeded.
+	// UNION, not first-match: the wire returns every edge matching ANY requested
+	// type. Bailing to nil as soon as the request MENTIONED kg-contains was adequate
+	// only while each caller asked for a single type; the unified pivot read asks for
+	// seven at once, kg-contains among them. Filtering by type reproduces the old
+	// behavior for a kg-contains-only read — no contains edges are seeded, so it
+	// still yields nothing — without starving a multi-type request.
+	want := make(map[string]bool, len(sel.GetEdgeTypes()))
+	for _, et := range sel.GetEdgeTypes() {
+		want[et] = true
 	}
-	return f.edges // adjacency read (relates-to et al.) → the seeded edge.
+	var out []*knowledgev1.Edge
+	for _, e := range f.edges {
+		if want[e.GetType()] {
+			out = append(out, e)
+		}
+	}
+	return out
 }
 
 func (f *leafAttachE2EFake) captureMutation(m *knowledgev1.MutationPlan) {

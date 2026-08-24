@@ -126,7 +126,7 @@ func TestCoverageSkipNudgesOnce(t *testing.T) {
 	// every suppressing skip, and green on one that fires on the edge.
 	t.Run("no_second_record_within_one_episode", func(t *testing.T) {
 		_, gc := newSegmentHarness(t)
-		mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+		mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 		gt, name := kgtypes.GraphCode, "oneEpisodeRepo"
 		dm := mgr.managerFor(gt, name)
 
@@ -222,7 +222,7 @@ func TestCoverageSkipNudgesOnce(t *testing.T) {
 func TestCoverageSkip_StampsSuppressionEdge(t *testing.T) {
 	ctx := context.Background()
 	_, gc := newSegmentHarness(t)
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 	gt, name := kgtypes.GraphCode, "stampRepo"
 	dm := mgr.managerFor(gt, name)
 
@@ -272,7 +272,7 @@ func TestCoverageSkip_StampsSuppressionEdge(t *testing.T) {
 	// under-report a graph whose BM25 engine gave up first.
 	t.Run("earliest_of_two_engines", func(t *testing.T) {
 		_, gc := newSegmentHarness(t)
-		mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+		mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 		gt, name := kgtypes.GraphCode, "twoStampRepo"
 		hnswDM := mgr.managerFor(gt, name)
 		bm25DM := mgr.bm25ManagerFor(gt, name)

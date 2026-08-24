@@ -49,7 +49,7 @@ func TestManagerAddAndMarkDirtySealsOneBlob(t *testing.T) {
 	const n = 1024
 	docs := hnswVecDocs(n)
 
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(cc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(cc)))
 
 	require.NoError(t, mgr.AddAndMarkDirty(ctx, kgtypes.GraphCode, "repoHNSW", docs))
 	require.Equal(t, int64(0), cc.shipCalls.Load(), "the write path force-seals but never ships")
@@ -67,7 +67,7 @@ func TestManagerAddAndMarkDirtySealsOneBlob(t *testing.T) {
 	require.NotEmpty(t, exported, "the tick leaves the corpus resident as partitions")
 	covered := 0
 	for _, blob := range exported {
-		require.Equal(t, "hnsw", blob.Format, "shipped blob is tagged hnsw")
+		require.Equal(t, hnsw.New().Name(), blob.Format, "shipped blob is tagged with the versioned HNSW format name")
 		seg, err := hnsw.New().Decode(blob.Bytes)
 		require.NoError(t, err)
 		covered += len(seg.IDs())
@@ -111,7 +111,7 @@ func TestManagerFlushSealsSubThresholdTail(t *testing.T) {
 	// 500 < MinSegmentDocs(1024): the incremental backlog never seals a segment.
 	const n = 500
 	docs := hnswVecDocs(n)
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(cc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(cc)))
 
 	dm := mgr.managerFor(kgtypes.GraphCode, "smallRepo")
 	require.NoError(t, dm.engine.Add(docs))
@@ -124,7 +124,7 @@ func TestManagerFlushSealsSubThresholdTail(t *testing.T) {
 
 	exported := dm.engine.Export()
 	require.Len(t, exported, 1, "Flush seals the sub-threshold tail into exactly ONE segment")
-	require.Equal(t, "hnsw", exported[0].Format, "the sealed tail is an hnsw segment")
+	require.Equal(t, hnsw.New().Name(), exported[0].Format, "the sealed tail is an hnsw segment")
 	seg, err := hnsw.New().Decode(exported[0].Bytes)
 	require.NoError(t, err)
 	require.Len(t, seg.IDs(), n, "the one sealed segment indexes every embedded id — searchable")
@@ -151,7 +151,7 @@ func TestManagerRoutesPerGraph(t *testing.T) {
 	docsA := hnswVecDocs(1024)
 	docsB := hnswVecDocs(1024)
 
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(cc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(cc)))
 	seedShipped(t, ctx, mgr, kgtypes.GraphCode, "repoA", docsA)
 	seedShipped(t, ctx, mgr, kgtypes.GraphKnowledge, "kg", docsB)
 
@@ -197,7 +197,7 @@ func TestManagerAddAndMarkDirtyFieldsSealsBM25Blob(t *testing.T) {
 	const n = 1024
 	docs := bm25FieldDocs(n)
 
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(cc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(cc)))
 
 	require.NoError(t, mgr.AddAndMarkDirtyFields(ctx, kgtypes.GraphKnowledge, "kgBM25", docs))
 	require.Equal(t, int64(0), cc.shipCalls.Load(), "the field write path force-seals but never ships")
@@ -213,7 +213,7 @@ func TestManagerAddAndMarkDirtyFieldsSealsBM25Blob(t *testing.T) {
 	require.NotEmpty(t, exported, "the tick leaves the corpus resident as partitions")
 	covered := 0
 	for _, blob := range exported {
-		require.Equal(t, "bm25", blob.Format, "shipped blob is tagged bm25")
+		require.Equal(t, bm25.New().Name(), blob.Format, "shipped blob is tagged with this engine's format")
 		seg, err := bm25.New().Decode(blob.Bytes)
 		require.NoError(t, err)
 		covered += len(seg.IDs())
@@ -239,7 +239,7 @@ func TestManagerHoldsBothFormatMaps(t *testing.T) {
 	t.Parallel()
 
 	_, gc := newSegmentHarness(t)
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 
 	hnswDM := mgr.managerFor(kgtypes.GraphKnowledge, "kg")
 	bm25DM := mgr.bm25ManagerFor(kgtypes.GraphKnowledge, "kg")
@@ -264,8 +264,8 @@ func TestGraphCacheDirsAreFormatDistinct(t *testing.T) {
 	hnswDir := graphCacheDirFor(base, kgtypes.GraphCode, "repo", hnsw.New().Name())
 	bm25Dir := graphCacheDirFor(base, kgtypes.GraphCode, "repo", bm25.New().Name())
 	require.NotEqual(t, hnswDir, bm25Dir, "HNSW and BM25 caches must root under format-distinct dirs")
-	require.Contains(t, hnswDir, "hnsw")
-	require.Contains(t, bm25Dir, "bm25")
+	require.Contains(t, hnswDir, hnsw.New().Name())
+	require.Contains(t, bm25Dir, bm25.New().Name())
 }
 
 // TestHasShippedSegments is the auto-heal presence-probe criterion: the cheap
@@ -279,7 +279,7 @@ func TestHasShippedSegments(t *testing.T) {
 	_, gc := newSegmentHarness(t)
 	cc := gc
 	ctx := context.Background()
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(cc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(cc)))
 
 	// Empty graph: zero metas → (false, nil), and no Fetch.
 	has, err := mgr.HasShippedSegments(ctx, kgtypes.GraphCode, "emptyRepo")
@@ -291,7 +291,7 @@ func TestHasShippedSegments(t *testing.T) {
 	// one+ metas → (true, nil), still no Fetch.
 	gc.server.ship(&knowledgev1.GraphSelector{Graph: "code", Repo: "populatedRepo"}, "",
 		[]*knowledgev1.SegmentBlobProto{
-			blobToProto(searchengine.SegmentBlob{ID: "s1", Format: "hnsw", Bytes: []byte("seg")}),
+			blobToProto(searchengine.SegmentBlob{ID: "s1", Format: hnsw.New().Name(), Bytes: []byte("seg")}),
 		})
 
 	has, err = mgr.HasShippedSegments(ctx, kgtypes.GraphCode, "populatedRepo")
@@ -310,14 +310,14 @@ func TestShippedSegmentDocCount(t *testing.T) {
 	_, gc := newSegmentHarness(t)
 	cc := gc
 	ctx := context.Background()
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(cc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(cc)))
 
 	// Graph A: two HNSW segments (doc_count 1000 + 24) + one BM25 segment (doc_count
 	// 2048 — must be EXCLUDED). All non-zero HNSW → covered=1024, anyUnknown=false.
 	gc.server.ship(&knowledgev1.GraphSelector{Graph: "code", Repo: "covRepo"}, "",
 		[]*knowledgev1.SegmentBlobProto{
-			blobToProto(searchengine.SegmentBlob{ID: "h1", Format: "hnsw", DocCount: 1000, Bytes: []byte("a")}),
-			blobToProto(searchengine.SegmentBlob{ID: "h2", Format: "hnsw", DocCount: 24, Bytes: []byte("b")}),
+			blobToProto(searchengine.SegmentBlob{ID: "h1", Format: hnsw.New().Name(), DocCount: 1000, Bytes: []byte("a")}),
+			blobToProto(searchengine.SegmentBlob{ID: "h2", Format: hnsw.New().Name(), DocCount: 24, Bytes: []byte("b")}),
 			blobToProto(searchengine.SegmentBlob{ID: "b1", Format: "bm25", DocCount: 2048, Bytes: []byte("c")}),
 		})
 
@@ -331,8 +331,8 @@ func TestShippedSegmentDocCount(t *testing.T) {
 	// anyUnknown=true, covered counts only the non-zero HNSW metas.
 	gc.server.ship(&knowledgev1.GraphSelector{Graph: "code", Repo: "unknownRepo"}, "",
 		[]*knowledgev1.SegmentBlobProto{
-			blobToProto(searchengine.SegmentBlob{ID: "h3", Format: "hnsw", DocCount: 512, Bytes: []byte("d")}),
-			blobToProto(searchengine.SegmentBlob{ID: "h4", Format: "hnsw", DocCount: 0, Bytes: []byte("e")}),
+			blobToProto(searchengine.SegmentBlob{ID: "h3", Format: hnsw.New().Name(), DocCount: 512, Bytes: []byte("d")}),
+			blobToProto(searchengine.SegmentBlob{ID: "h4", Format: hnsw.New().Name(), DocCount: 0, Bytes: []byte("e")}),
 		})
 	require.NoError(t, err)
 
@@ -351,7 +351,7 @@ func TestManagerResidentDocCount(t *testing.T) {
 
 	_, gc := newSegmentHarness(t)
 	ctx := context.Background()
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 
 	// Seal exactly one segment (1024 docs == MinSegmentDocs) locally — the write
 	// seals it into the engine (resident) and the tick ships it.

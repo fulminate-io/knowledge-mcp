@@ -54,10 +54,11 @@ individual subsystem off for offline or low-noise development.
 | `--no-worker-runtime` | `false` | Skip dream Runner wiring. Run knowledge purely to serve/exercise the graph (e.g. the bench harness) without starting its own background worker runtime. |
 | `--pipeline-tick` | `250ms` | Client-side LLM pipeline: per-graph collector poll interval |
 | `--port` | `15022` | TCP port the graph server listens on |
-| `--pprof` | `true` | Start the pprof profiling HTTP endpoint on 127.0.0.1:15021 (/debug/pprof/) at boot. Also reachable on demand via manage(pprof_start). Use to profile client-side work such as collect. Default-on during the general-stability investigation window; flip to false once the startup-timeout flake is diagnosed. |
-| `--pprof-port` | `15021` | TCP port for the pprof profiling HTTP endpoint (loopback only) |
+| `--pprof` | `false` | Start the pprof profiling HTTP endpoint on 127.0.0.1:15021 (/debug/pprof/) at boot, AND pass --pprof to the knowledge-server this daemon spawns so its own /debug/pprof/ mounts too. Both endpoints bind loopback only. Also reachable on demand for this process via manage(pprof_start). Use to profile client-side work such as collect. |
+| `--pprof-port` | `15021` | TCP port for this process's pprof profiling HTTP endpoint (loopback only). Applied when --pprof is set; the spawned knowledge-server serves its own /debug/pprof/ on --port instead. |
 | `--reflect-backstop-interval` | `24h0m0s` | Client-side reflection: cadence of the full-corpus reflection backstop pass that resets DF-Leiden incremental drift. The hourly loop runs incrementally; once this interval elapses since the last full pass, the next tick forces a full Leiden recompute. Default 24h (nightly). |
 | `--root` | `.` | Project root the client walks for ast + topology, and the current-tree fallback for resolving a bare repo name (default ".") |
+| `--segment-residency-budget-bytes` | `1073741824` | Client-side segment residency ceiling, in RESIDENT HEAP BYTES summed across every per-graph segment pool: once the total crosses it, the coldest pools are unloaded from memory and reload from the local L2 disk cache on their next search. 0 disables eviction entirely. This counts modeled Go-heap bytes — the per-segment membership index, the liveness bitset, and whatever each payload declares it holds. A mapped segment's blob is page cache and is NOT counted, so the budget is not a bound on a pool's on-disk size. Defaults to the KNOWLEDGE_SEGMENT_RESIDENCY_BUDGET_BYTES environment variable and otherwise to 1073741824; an explicit flag value wins. |
 | `--skip-llm-precheck` | `false` | Skip the live-ping check that runs against every configured (provider, model) tuple at client startup. Use for offline development or CI sandboxes; default is to fail-fast at boot rather than at first tool call. |
 | `--summary-batch-size` | `20` | Client-side LLM pipeline: items per summary worker batch |
 | `--summary-channel-size` | `10000` | Client-side LLM pipeline: SummaryWork channel buffer size (full = collector blocks) |
@@ -97,10 +98,11 @@ outlives any single session.
 | `--no-worker-runtime` | `false` | Skip dream Runner wiring. Run knowledge purely to serve/exercise the graph (e.g. the bench harness) without starting its own background worker runtime. |
 | `--pipeline-tick` | `250ms` | Client-side LLM pipeline: per-graph collector poll interval |
 | `--port` | `15022` | TCP port the graph server listens on |
-| `--pprof` | `true` | Start the pprof profiling HTTP endpoint on 127.0.0.1:15021 (/debug/pprof/) at boot. Also reachable on demand via manage(pprof_start). Use to profile client-side work such as collect. Default-on during the general-stability investigation window; flip to false once the startup-timeout flake is diagnosed. |
-| `--pprof-port` | `15021` | TCP port for the pprof profiling HTTP endpoint (loopback only) |
+| `--pprof` | `false` | Start the pprof profiling HTTP endpoint on 127.0.0.1:15021 (/debug/pprof/) at boot, AND pass --pprof to the knowledge-server this daemon spawns so its own /debug/pprof/ mounts too. Both endpoints bind loopback only. Also reachable on demand for this process via manage(pprof_start). Use to profile client-side work such as collect. |
+| `--pprof-port` | `15021` | TCP port for this process's pprof profiling HTTP endpoint (loopback only). Applied when --pprof is set; the spawned knowledge-server serves its own /debug/pprof/ on --port instead. |
 | `--reflect-backstop-interval` | `24h0m0s` | Client-side reflection: cadence of the full-corpus reflection backstop pass that resets DF-Leiden incremental drift. The hourly loop runs incrementally; once this interval elapses since the last full pass, the next tick forces a full Leiden recompute. Default 24h (nightly). |
 | `--root` | `.` | Project root the client walks for ast + topology, and the current-tree fallback for resolving a bare repo name (default ".") |
+| `--segment-residency-budget-bytes` | `1073741824` | Client-side segment residency ceiling, in RESIDENT HEAP BYTES summed across every per-graph segment pool: once the total crosses it, the coldest pools are unloaded from memory and reload from the local L2 disk cache on their next search. 0 disables eviction entirely. This counts modeled Go-heap bytes — the per-segment membership index, the liveness bitset, and whatever each payload declares it holds. A mapped segment's blob is page cache and is NOT counted, so the budget is not a bound on a pool's on-disk size. Defaults to the KNOWLEDGE_SEGMENT_RESIDENCY_BUDGET_BYTES environment variable and otherwise to 1073741824; an explicit flag value wins. |
 | `--skip-llm-precheck` | `false` | Skip the live-ping check that runs against every configured (provider, model) tuple at client startup. Use for offline development or CI sandboxes; default is to fail-fast at boot rather than at first tool call. |
 | `--summary-batch-size` | `20` | Client-side LLM pipeline: items per summary worker batch |
 | `--summary-channel-size` | `10000` | Client-side LLM pipeline: SummaryWork channel buffer size (full = collector blocks) |
@@ -120,6 +122,7 @@ needs to find and bind the graph: `--graph-storage`, `--port`, and `--root`.
 | --- | --- | --- |
 | `--graph-storage` | `~/.knowledge/` | Directory for graph storage |
 | `--port` | `15022` | TCP port the graph server listens on |
+| `--pprof` | `false` | Start the server with its /debug/pprof/ handlers mounted on the --port listener (loopback only) |
 | `--root` | `.` | Project root directory |
 <!-- END GENERATED: flags-start -->
 
@@ -186,7 +189,7 @@ a quick way to see whether an update is available.
 | --- | --- | --- |
 | `--allow-downgrade` | `false` | Permit installing a release OLDER than the currently-installed version (default: refuse) |
 | `--check` | `false` | Compare installed server version against latest release without writing |
-| `--dest` |  | Destination directory for knowledge-server (default: sibling of running stdio binary) |
+| `--dest` |  | Destination directory for knowledge-server (default: sibling of the running knowledge binary) |
 <!-- END GENERATED: flags-install -->
 
 ## `knowledge doctor`

@@ -124,7 +124,7 @@ func TestPublishPendingRetry(t *testing.T) {
 	// the bit clear and nothing dirty skips entirely.
 	t.Run("transport_error_retries_and_clears", func(t *testing.T) {
 		_, gc := newSegmentHarness(t)
-		mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+		mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 		dm := mgr.managerFor(kgtypes.GraphCode, "retryRepo")
 
 		gc.publishErr = errors.New("boom")
@@ -153,7 +153,7 @@ func TestPublishPendingRetry(t *testing.T) {
 	// logged SKIP (the tick returns nil) that still sets the retry bit.
 	t.Run("incomplete_409_skip_retries", func(t *testing.T) {
 		_, gc := newSegmentHarness(t)
-		mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+		mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 		dm := mgr.managerFor(kgtypes.GraphCode, "i409Repo")
 
 		gc.publishErr = &manifestIncompleteError{Missing: []string{"seg-x"}}
@@ -177,7 +177,7 @@ func TestPublishPendingRetry(t *testing.T) {
 	// this set the publish would never retry.
 	t.Run("coverage_read_error_retries_and_clears", func(t *testing.T) {
 		_, gc := newSegmentHarness(t)
-		mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+		mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 		dm := mgr.managerFor(kgtypes.GraphCode, "covRepo")
 
 		// First batch seeds + ships + publishes cleanly (seeded latches).
@@ -420,7 +420,7 @@ func TestPublishSkipWarnsCarryGraphIdentity(t *testing.T) {
 		warns := installCapturingSlog(t)
 		ctx := context.Background()
 		_, gc := newSegmentHarness(t)
-		mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+		mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 
 		gc.publishErr = &manifestIncompleteError{Missing: []string{"seg-x"}}
 		require.NoError(t, mgr.AddAndMarkDirty(ctx, kgtypes.GraphKnowledge, "kgWarnGraph", hnswVecDocs(1024)))

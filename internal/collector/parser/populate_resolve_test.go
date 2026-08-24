@@ -175,39 +175,44 @@ func TestPopulate_PythonEdgesSurvive(t *testing.T) {
 	assert.True(t, hasEdge(res, kgtypes.EdgeUsesType,
 		"pkg/animals.py:make_sound", "pkg/animals.py:Animal"))
 
-	// RE-DERIVED: `a.speak()` NO LONGER LOSES ITS EDGE, and that is this
-	// ticket's point rather than a regression. The python Calls query used to
-	// reach PAST the attribute node to the bare trailing identifier, so the
-	// reference arrived as `speak`, matched no unparented declaration, and
-	// vanished. It now arrives as `a.speak`. The qualifier is a VALUE, so no
-	// declared parent matches it and the ladder falls to the dynamic rung,
-	// which emits one OPEN-SET edge per candidate at Confidence 1/N.
+	// RE-DERIVED AGAIN, and this time the OPEN SET COLLAPSES TO ONE EXACT EDGE.
+	// The history is worth keeping because each step was this fixture's point in
+	// turn. The python Calls query once reached PAST the attribute node to the
+	// bare trailing identifier, so `a.speak()` arrived as `speak`, matched no
+	// unparented declaration and vanished. It then arrived as `a.speak`, whose
+	// qualifier is a VALUE that no declared parent matches, so the ladder fell to
+	// the dynamic rung and offered BOTH speak methods at Confidence 1/N — one
+	// open-set edge per candidate, deliberately not guessing between them.
 	//
-	// Both methods are offered and NEITHER IS GUESSED. The distinction the
-	// method constant carries is the whole point: an open set says "one of
-	// these, or something static analysis cannot reach", which is what a
-	// dynamically dispatched receiver means — a CLOSED ambiguous group here
-	// would be the false claim that exactly one of the two is the referent.
+	// A REGISTERED PYTHON QUALIFIER-TYPE ARM ANSWERS THE QUESTION THE FAN-OUT WAS
+	// ADMITTING IT COULD NOT. `make_sound(a: Animal)` DECLARES the receiver's
+	// type, so the typed-qualifier rung binds `a` to Animal and resolves the call
+	// to Animal.speak exactly — one edge, full confidence, no group. Dog.speak is
+	// no longer offered, and its absence is the improvement rather than a loss:
+	// the source said Animal, and a set containing Dog said only that nobody had
+	// read the annotation.
 	//
-	// The four surviving CALLS above remain this block's known positive: they
-	// bind exactly and carry no group at all.
-	dynamic := map[string]bool{}
+	// The four surviving CALLS above remain this block's known positive.
+	var speakTargets, speakMethods []string
+	var speakConfidence []float64
 	for _, e := range res.Edges {
 		if kgtypes.EdgeType(e.Type) != kgtypes.EdgeCalls || e.FromId != "pkg/animals.py:make_sound" {
 			continue
 		}
-		if !strings.HasSuffix(e.ToId, ".speak") {
-			continue
+		if strings.HasSuffix(e.ToId, ".speak") {
+			speakTargets = append(speakTargets, e.ToId)
+			speakMethods = append(speakMethods, e.Method)
+			speakConfidence = append(speakConfidence, float64(e.Confidence))
 		}
-		assert.Equal(t, kgtypes.EdgeMethodDynamic, e.Method,
-			"a value-qualified receiver is an OPEN set, never a closed ambiguous one")
-		assert.InDelta(t, 0.5, e.Confidence, 1e-9, "two candidates, so 1/N is one half")
-		dynamic[e.ToId] = true
 	}
-	assert.True(t, dynamic["pkg/animals.py:Animal.speak"],
-		"the dynamic set offers Animal.speak")
-	assert.True(t, dynamic["pkg/animals.py:Dog.speak"],
-		"the dynamic set offers Dog.speak")
+	require.Len(t, speakTargets, 1, "the annotation resolves the receiver exactly, so there is no fan-out")
+	assert.Equal(t, "pkg/animals.py:Animal.speak", speakTargets[0],
+		"the declared parameter type decides the target")
+	assert.Equal(t, string(RuleTypedQualifier), speakMethods[0],
+		"and it is the typed-qualifier rung that decided it, not a name match")
+	assert.InDelta(t, float64(0), speakConfidence[0], 1e-9,
+		"an exactly-bound edge emits no group and so carries no 1/N confidence at all — "+
+			"the 0.5 this fixture used to assert was the fan-out's share, and its absence is the point")
 }
 
 func TestPopulate_PythonTwoClassesSameMethod(t *testing.T) {

@@ -12,6 +12,7 @@ func rustQueries() *QuerySet {
 			(trait_item name: (type_identifier) @name) @decl
 			(mod_item name: (identifier) @name) @decl
 			(type_item name: (type_identifier) @name) @decl
+			(function_signature_item name: (identifier) @name) @decl
 		]`,
 		// The scoped_identifier arm is what makes `foo::bar(2)` emit a callee at
 		// all — it produced no CALLS edge in any earlier state of this file.

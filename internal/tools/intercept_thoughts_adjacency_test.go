@@ -14,19 +14,24 @@ import (
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtools"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/paging"
 )
 
 // adjFakeCaller is a scripted GraphCaller for the thoughts(adjacency) tests at
 // scope="all". It answers the two read shapes fetchAdjacency issues:
 //   - a type=thought browse (Selection.NodeTypes carries "thought") → the seeded
 //     thought nodes on the first page, empty thereafter so the drain terminates.
-//   - RETURN_MODE_EDGES → the cluster-edge read returns the seeded adjacency
-//     edges; the EdgeKGContains sibling read (scope="all" session expansion)
-//     returns nothing (no sessions seeded), so adjacency is exactly the seeded
-//     edge set.
+//   - RETURN_MODE_EDGES → the edges matching the requested type set. scope="all"
+//     now issues ONE unified read covering both the clustering types and
+//     kg-contains, so there is no longer a separate session-expansion read; no
+//     sessions are seeded, so adjacency is exactly the seeded edge set either way.
 type adjFakeCaller struct {
 	thoughts []*knowledgev1.Node
 	edges    []*knowledgev1.Edge
+	// edgeCalls records the requested edge-type filter of every RETURN_MODE_EDGES
+	// request, so a test can assert HOW MANY wire reads the handler issued rather
+	// than only what it rendered.
+	edgeCalls [][]string
 }
 
 func (c *adjFakeCaller) Execute(_ context.Context, req *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error) {
@@ -36,12 +41,23 @@ func (c *adjFakeCaller) Execute(_ context.Context, req *knowledgev1.ExecuteReque
 	}
 	if q.GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_EDGES {
 		ets := q.GetSelection().GetEdgeTypes()
-		// The session-sibling expansion read filters to EdgeKGContains; no
-		// sessions are seeded, so it contributes nothing.
-		if edgeTypesContain(ets, string(kgtypes.EdgeKGContains)) {
-			return &knowledgev1.ExecuteResponse{}, nil
+		c.edgeCalls = append(c.edgeCalls, append([]string(nil), ets...))
+		// UNION, not first-match: the wire returns every edge matching ANY requested
+		// type (an empty set means every type). No sessions are seeded, so the
+		// kg-contains membership contributes nothing — but bailing out as soon as the
+		// request MENTIONED kg-contains was adequate only while each caller asked for
+		// a single type, and the unified pivot read asks for seven at once.
+		want := make(map[string]bool, len(ets))
+		for _, et := range ets {
+			want[et] = true
 		}
-		return &knowledgev1.ExecuteResponse{Edges: c.edges}, nil
+		var out []*knowledgev1.Edge
+		for _, e := range c.edges {
+			if len(want) == 0 || want[e.GetType()] {
+				out = append(out, e)
+			}
+		}
+		return &knowledgev1.ExecuteResponse{Edges: bandNarrow(out, q)}, nil
 	}
 	// type=thought browse: first page carries the seeded thoughts, later
 	// offset pages are empty (the drain stops on the first short page anyway).
@@ -165,4 +181,51 @@ func TestAdjacency_TextArmSummarizesByCount(t *testing.T) {
 	// a JSON array literal of neighbor ids; the count summary never does.
 	assert.False(t, strings.Contains(body, `["tB"]`) || strings.Contains(body, `"adjacency"`),
 		"text arm must NOT dump the adjacency map, only counts: %s", body)
+}
+
+// TestAdjacency_ColdPathIssuesOneEdgeRead pins the WIDTH of the on-demand surface's
+// wire traffic, which nothing previously observed.
+//
+// This handler is the cold path: corpusSourceFromDeps returns the ClusterProvider or
+// nil, never a *passReads, so without an explicit per-call read memo the unified
+// pivot-edge read memoizes NOTHING and the session-sibling expansion issues a SECOND
+// wire read over the very same pivot. Wrapping the source in NewReadMemo makes one
+// read serve both — strictly FEWER READS than the two this surface issued before the
+// collapse. Rows are a separate axis and are NOT claimed to improve: the unified type
+// set is shared with the loop deliberately, so this path reads charged-by rows it
+// then discards. Reads are what this gate measures.
+//
+// The assertion is on the WIRE CALLS, not the rendered output: every rendering
+// assertion in this file passes at one read and at two, which is exactly why the
+// regression was invisible here.
+func TestAdjacency_ColdPathIssuesOneEdgeRead(t *testing.T) {
+	t.Parallel()
+	fake := seededAdjFixture()
+	deps := ctxPackDeps{gc: fake}
+
+	handled, res := callAdjacency(t, deps,
+		map[string]any{"operation": "adjacency", "scope": "all", "format": "json"})
+	require.True(t, handled)
+	require.False(t, res.IsError, "adjacency errored: %s", toolResultText(res))
+
+	// ONE LOGICAL read, issued as exactly paging.EdgeBandCount banded Executes: the
+	// unified read is a banded match-all sweep now and this counter counts round-trips.
+	// Asserted against the CONSTANT rather than a literal so the two cannot drift.
+	require.Len(t, fake.edgeCalls, paging.EdgeBandCount,
+		"scope=all must issue exactly ONE edge read for the whole call (EdgeBandCount banded "+
+			"Executes) — the unified read serving both the adjacency and the session-membership expansion")
+
+	// KNOWN-POSITIVE: the one read is the UNIFIED set, not a narrowed leftover. A
+	// single read carrying only kg-contains would satisfy the count above while
+	// having lost the adjacency edges entirely.
+	assert.Contains(t, fake.edgeCalls[0], string(kgtypes.EdgeRelatesTo),
+		"the single read carries the clustering types")
+	assert.Contains(t, fake.edgeCalls[0], string(kgtypes.EdgeKGContains),
+		"and the session-membership type it now also serves")
+
+	// WORK STILL HAPPENED: the seeded edge is still in the rendered adjacency.
+	var got adjJSON
+	require.NoError(t, json.Unmarshal([]byte(toolResultText(res)), &got))
+	assert.Contains(t, got.Adjacency["tA"], "tB",
+		"one read, same answer — the seeded edge still reaches the caller")
 }

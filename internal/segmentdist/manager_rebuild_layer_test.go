@@ -151,7 +151,7 @@ func TestResetRebuildPublishesOnlyThisRunsLayer(t *testing.T) {
 		corpusA, bucketsA, corpusB, bucketsB)
 
 	svc, view := newSegmentHarness(t)
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(view))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(view)))
 	gt, name := kgtypes.GraphCode, "reset-layer"
 	target := graphSelector(gt, name)
 
@@ -236,7 +236,7 @@ func TestRebuildDeltaReEmitsOwningBucketOnly(t *testing.T) {
 		"the fixture must derive at least 2 buckets or the owning-bucket assertion is vacuous (got %d)", buckets)
 
 	svc, view := newSegmentHarness(t)
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(view))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(view)))
 	gt, name := kgtypes.GraphCode, "delta-bucket"
 	target := graphSelector(gt, name)
 

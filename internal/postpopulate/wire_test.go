@@ -120,15 +120,15 @@ func TestLinkNodesAndEdgesBatch_NodesAndEdgesOneMutation(t *testing.T) {
 }
 
 // TestExecCreateBatchNodes_SetsSystemManagedCreate pins the trusted-collector
-// signal: every postpopulate create_batch write (the code indexer's
-// BuildHierarchy package/file/branch creates ride this path) must produce a plan
-// with SystemManagedCreate==true so the server skips the user-facing
+// signal: every postpopulate create_batch write (the collector-owned
+// package/file/branch creates ride this path) must produce a plan with
+// SystemManagedCreate==true so the server skips the user-facing
 // system-managed-type guard. Without it, the relocated validation rejects
-// every package create on every collect.
+// every such create.
 func TestExecCreateBatchNodes_SetsSystemManagedCreate(t *testing.T) {
 	cc := &captureCaller{}
-	// A package node — the exact shape BuildHierarchy emits, which the server's
-	// systemManagedType guard rejects for unflagged user creates.
+	// A package node — a system-managed shape the server's systemManagedType
+	// guard rejects for unflagged user creates.
 	nodes := []*knowledgev1.Node{
 		{Id: "pkg:domains/store", Type: string(kgtypes.NodePackage), SymbolName: "domains/store"},
 	}

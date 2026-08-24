@@ -139,8 +139,8 @@ func composeEdgeSummary(ctx context.Context, exec ExecuteFn, id string, includeT
 	// directions (Forward unset → BothEdges in collectEdgesForReturnMode), read
 	// in bounded pages.
 	rawEdges, err := paging.DrainPivotEdges([]string{id}, paging.EdgePivotPageSize, CorrelationsEdgeScanCap,
-		func(idPage []string) ([]knowledgev1.Edge, error) {
-			return pivotEdgePage(ctx, exec, idPage, includeTombstones, target)
+		func(idPage []string, fromIDGte, fromIDLt string) ([]knowledgev1.Edge, bool, error) {
+			return pivotEdgePage(ctx, exec, idPage, paging.EdgeFromBandOrNil(fromIDGte, fromIDLt), includeTombstones, target)
 		})
 	if err != nil {
 		return nil, err
@@ -199,17 +199,32 @@ func composeEdgeSummary(ctx context.Context, exec ExecuteFn, id string, includeT
 // what the drain uses to notice it was enforced. One without the other yields a
 // drain that never detects truncation, or one that splits on a threshold nobody
 // applies.
+//
+// THE BAND ARRIVES ALREADY CONSTRUCTED, as a parameter, because this function is
+// where the three forwarding closures' plan is actually built. That makes it the
+// one place an intermediate name is correct: its callers construct the band with
+// paging.EdgeFromBandOrNil in argument position, and it assigns what it was given.
+// A nil band is the ordinary unbanded page and MUST stay nil — the server refuses
+// a non-nil band alongside two or more pivots, and an ordinary page carries up to
+// paging.EdgePivotPageSize of them.
+//
+// The second return is the response's truncated flag, threaded verbatim from
+// resp.GetTruncated() and never derived from len(): the server can drop rows
+// between its scan and the count it returns, so a saturated read can come back
+// short and a length test alone would be blind to it.
 func pivotEdgePage(
 	ctx context.Context,
 	exec ExecuteFn,
 	idPage []string,
+	band *knowledgev1.EdgeFromBand,
 	includeTombstones bool,
 	target *knowledgev1.GraphSelector,
-) ([]knowledgev1.Edge, error) {
+) ([]knowledgev1.Edge, bool, error) {
 	plan := &knowledgev1.QueryPlan{
-		Ids:        idPage,
-		ReturnMode: knowledgev1.ReturnMode_RETURN_MODE_EDGES,
-		Limit:      int32(CorrelationsEdgeScanCap),
+		Ids:          idPage,
+		ReturnMode:   knowledgev1.ReturnMode_RETURN_MODE_EDGES,
+		Limit:        int32(CorrelationsEdgeScanCap),
+		EdgeFromBand: band,
 	}
 	applyTombstones(plan, includeTombstones)
 	resp, err := exec(ctx, &knowledgev1.ExecuteRequest{
@@ -217,9 +232,10 @@ func pivotEdgePage(
 		Target: target,
 	})
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
-	return decodeEdgesRaw(resp)
+	edges, derr := decodeEdgesRaw(resp)
+	return edges, resp.GetTruncated(), derr
 }
 
 // bulkHydratePeers issues ONE Execute (QueryPlan{Ids: peerIDs} → []*knowledgev1.Node)
@@ -362,8 +378,8 @@ func collectProxyCrossLinks(ctx context.Context, exec ExecuteFn, proxy *knowledg
 		return nil, nil
 	}
 	rawEdges, err := paging.DrainPivotEdges([]string{proxy.Id}, paging.EdgePivotPageSize, CorrelationsEdgeScanCap,
-		func(idPage []string) ([]knowledgev1.Edge, error) {
-			return pivotEdgePage(ctx, exec, idPage, false, linkageTarget)
+		func(idPage []string, fromIDGte, fromIDLt string) ([]knowledgev1.Edge, bool, error) {
+			return pivotEdgePage(ctx, exec, idPage, paging.EdgeFromBandOrNil(fromIDGte, fromIDLt), false, linkageTarget)
 		})
 	if err != nil {
 		return nil, err

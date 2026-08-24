@@ -83,7 +83,7 @@ func (f *analyzeFake) exec(_ context.Context, req *knowledgev1.ExecuteRequest) (
 		}, nil
 	}
 	if q.GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_EDGES {
-		return &knowledgev1.ExecuteResponse{Edges: edgesToProtoForTest(f.siblings)}, nil
+		return &knowledgev1.ExecuteResponse{Edges: bandNarrow(edgesToProtoForTest(f.siblings), q)}, nil
 	}
 	if len(q.GetIds()) > 0 {
 		return &knowledgev1.ExecuteResponse{Nodes: f.hydrate}, nil

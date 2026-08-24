@@ -6,5 +6,5 @@ import "github.com/fulminate-io/knowledge-mcp/internal/postpopulate"
 
 // init registers the "gcp" PostPopulate hook.
 func init() {
-	postpopulate.Register("gcp", postPopulate)
+	postpopulate.Register("gcp", postpopulate.BreadthFamilyBroad, postPopulate)
 }

@@ -23,7 +23,7 @@ func buildManager(
 	cacheDir string,
 ) (*distManager[mockQuery, mockStats], *fakeSegmentSource) {
 	src.target = target
-	cache := newDiskSegmentCache(cacheDir, 0)
+	cache := newDiskSegmentCache(cacheDir, 0, adviceRandom)
 	return newDistManager(engine, src, cache, target, ""), src
 }
 
@@ -65,7 +65,7 @@ func TestManagerShipDiffIdempotent(t *testing.T) {
 	target := &knowledgev1.GraphSelector{Graph: "code", Repo: "shipdiff"}
 	ctx := context.Background()
 
-	eng := newMockEngine()
+	eng := newMockEngine(t)
 	require.NoError(t, eng.Add([]searchengine.Document{doc("d1", "alpha")}))
 	require.NoError(t, eng.Add([]searchengine.Document{doc("d2", "beta")}))
 
@@ -105,7 +105,7 @@ func TestManagerShipWarmsCacheAndGen(t *testing.T) {
 	target := &knowledgev1.GraphSelector{Graph: "code", Repo: "warmcache"}
 	ctx := context.Background()
 
-	eng := newMockEngine()
+	eng := newMockEngine(t)
 	require.NoError(t, eng.Add([]searchengine.Document{doc("d1", "alpha")}))
 	require.NoError(t, eng.Add([]searchengine.Document{doc("d2", "beta")}))
 
@@ -140,7 +140,7 @@ func TestManagerLoadDeltaCacheAndImport(t *testing.T) {
 	ctx := context.Background()
 
 	// Shipper engine ships 3 segments to the server.
-	shipEng := newMockEngine()
+	shipEng := newMockEngine(t)
 	require.NoError(t, shipEng.Add([]searchengine.Document{doc("d1", "alpha")}))
 	require.NoError(t, shipEng.Add([]searchengine.Document{doc("d2", "alpha beta")}))
 	require.NoError(t, shipEng.Add([]searchengine.Document{doc("d3", "gamma")}))
@@ -149,7 +149,7 @@ func TestManagerLoadDeltaCacheAndImport(t *testing.T) {
 	require.NoError(t, err)
 
 	// Loader engine (distinct cache dir) loads cold.
-	loadEng := newMockEngine()
+	loadEng := newMockEngine(t)
 	loadMgr, loadCC := buildManager(loadEng, gc, target, t.TempDir())
 
 	require.NoError(t, loadMgr.loadFromServer(ctx))
@@ -172,7 +172,7 @@ func TestManagerLoadDeltaCacheAndImport(t *testing.T) {
 	require.Equal(t, uint64(4), svc.gen)
 	svc.mu.Unlock()
 
-	partialEng := newMockEngine()
+	partialEng := newMockEngine(t)
 	partialMgr, partialCC := buildManager(partialEng, gc, target, t.TempDir())
 	// Warm the partial cache with 3 of the 4 server segments so only one is a
 	// miss. The server orders segments by ascending generation; cache the 3
@@ -202,7 +202,7 @@ func TestManagerUnloadReloadFromL2(t *testing.T) {
 	target := &knowledgev1.GraphSelector{Graph: "code", Repo: "unloadreload"}
 	ctx := context.Background()
 
-	shipEng := newMockEngine()
+	shipEng := newMockEngine(t)
 	require.NoError(t, shipEng.Add([]searchengine.Document{doc("d1", "alpha")}))
 	require.NoError(t, shipEng.Add([]searchengine.Document{doc("d2", "alpha")}))
 	require.NoError(t, shipEng.Add([]searchengine.Document{doc("d3", "alpha")}))
@@ -210,7 +210,7 @@ func TestManagerUnloadReloadFromL2(t *testing.T) {
 	_, err := shipMgr.ship(ctx, shipMgr.locallyShipped)
 	require.NoError(t, err)
 
-	loadEng := newMockEngine()
+	loadEng := newMockEngine(t)
 	loadMgr, loadCC := buildManager(loadEng, gc, target, t.TempDir())
 	require.NoError(t, loadMgr.load(ctx))
 	require.Len(t, loadEng.Search(mockQuery{term: "alpha"}, 10), 3)

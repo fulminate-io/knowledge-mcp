@@ -39,6 +39,22 @@ const (
 	// THE PATH IS READ BY A SECOND TICKET'S ACCEPTANCE, so it is a fixed
 	// constant rather than a configurable one.
 	multiLangArtifact = "/tmp/f1347_multi_language_corpus.json"
+
+	// multiLangArmOffEnv produces the BASELINE COLUMN for the nominal-static
+	// capture arms: the same measurement with those arms removed BEFORE any
+	// file is chunked, which is the only point at which removing them matters.
+	//
+	// A BASELINE IS REQUIRED RATHER THAN OPTIONAL because the acceptance is a
+	// COMPARISON — the rungs above the typed-qualifier one must be identical
+	// across the two columns while the typed-qualifier rung appears only in the
+	// arm-on one. Comparing against numbers written into a document would go
+	// false the first time anyone re-pins a corpus.
+	multiLangArmOffEnv = "FUL1396_ARM_OFF"
+
+	// multiLangArmOffArtifact keeps the baseline out of the arm-on artifact:
+	// the acceptance gates read the arm-ENABLED numbers, and a baseline written
+	// over them would report the pre-arm picture as the shipped one.
+	multiLangArmOffArtifact = "/tmp/f1396_multi_language_corpus_arm_off.json"
 )
 
 // corpusEntry is one measured root.
@@ -87,6 +103,12 @@ func TestFUL1347MultiLanguageCorpus(t *testing.T) {
 			multiLangRootsEnv, os.PathListSeparator)
 	}
 
+	artifact := multiLangArtifact
+	if os.Getenv(multiLangArmOffEnv) != "" {
+		artifact = multiLangArmOffArtifact
+		disarmNominalArms(t)
+	}
+
 	out := multiLangJSON{Commit: knowledgeHeadCommit(t)}
 	for _, root := range filepath.SplitList(raw) {
 		if root == "" {
@@ -98,8 +120,67 @@ func TestFUL1347MultiLanguageCorpus(t *testing.T) {
 
 	body, err := json.MarshalIndent(out, "", "  ")
 	require.NoError(t, err)
-	require.NoError(t, os.WriteFile(multiLangArtifact, append(body, '\n'), 0o600))
-	t.Logf("wrote %s (%d corpora, knowledge commit %s)", multiLangArtifact, len(out.Corpora), out.Commit)
+	require.NoError(t, os.WriteFile(artifact, append(body, '\n'), 0o600))
+	t.Logf("wrote %s (%d corpora, knowledge commit %s)", artifact, len(out.Corpora), out.Commit)
+}
+
+// disarmNominalArms removes BOTH halves of every nominal-static language's arm
+// pair before any chunking, and restores the production registrations after.
+//
+// BOTH HALVES, NOT ONE. Each armed language registers a qualifier-type arm AND
+// a type-facts arm, and leaving either registered would make that half of the
+// baseline identical to the arm-on column — a number compared against itself.
+//
+// THE RESTORE IS NOT OPTIONAL. An arm left unregistered silently disarms the
+// feature for every later test in the same binary, and the symptom would not be
+// a missing arm; it would be references quietly resolving through a lower rung
+// in whatever ran next.
+func disarmNominalArms(t *testing.T) {
+	t.Helper()
+	for _, lang := range treesitter.NominalArmedLanguages() {
+		treesitter.UnregisterQualifierTypes(lang)
+		treesitter.UnregisterTypeFacts(lang)
+	}
+	t.Cleanup(func() {
+		treesitter.RegisterJavaQualifierTypes()
+		treesitter.RegisterJavaTypeFacts()
+		treesitter.RegisterKotlinQualifierTypes()
+		treesitter.RegisterKotlinTypeFacts()
+		treesitter.RegisterScalaQualifierTypes()
+		treesitter.RegisterScalaTypeFacts()
+		treesitter.RegisterCSharpQualifierTypes()
+		treesitter.RegisterCSharpTypeFacts()
+		treesitter.RegisterPHPQualifierTypes()
+		treesitter.RegisterPHPTypeFacts()
+		treesitter.RegisterGroovyQualifierTypes()
+		treesitter.RegisterGroovyTypeFacts()
+	})
+
+	// KNOWN-POSITIVE CONTROL, AT THE OUTPUT RATHER THAN AT THE REGISTRY.
+	// Without it, an unregister that silently did nothing would make both
+	// columns measure the same code and every equality in the comparison would
+	// hold forever while proving nothing. It is asserted through the production
+	// chunk path because that is what the measurement itself reads.
+	chunker := treesitter.NewChunker()
+	t.Cleanup(chunker.Close)
+	for _, lang := range treesitter.NominalArmedLanguages() {
+		fx, ok := nominalGuardFixtures[lang]
+		require.Truef(t, ok, "%s is armed but carries no fixture to prove the arm is off", lang)
+		res, err := chunker.ChunkFile(context.Background(), fx.path, []byte(fx.src))
+		require.NoError(t, err)
+		require.NotEmptyf(t, res.Chunks, "control: the %s fixture produced chunks at all", lang)
+		for i := range res.Chunks {
+			require.Nilf(t, res.Chunks[i].TypeFacts,
+				"%s still carries type facts, so this side is not the arm-off measurement", lang)
+		}
+		for i := range res.Edges {
+			if res.Edges[i].Ref == nil {
+				continue
+			}
+			require.Nilf(t, res.Edges[i].Ref.QualifierTypes,
+				"%s still carries qualifier types, so this side is not the arm-off measurement", lang)
+		}
+	}
 }
 
 // measureCorpus runs one root through the production pipeline in the production
@@ -126,7 +207,7 @@ func measureCorpus(t *testing.T, root string) corpusEntry {
 	require.NoError(t, err)
 	require.NotEmpty(t, files, "control: discovery found no files under %s", root)
 
-	results, err := ChunkFilesParallel(ctx, root, files)
+	results, _, err := ChunkFilesParallel(ctx, root, files)
 	require.NoError(t, err)
 	require.NotEmpty(t, results, "control: chunking produced no results under %s", root)
 
@@ -154,6 +235,11 @@ func measureCorpus(t *testing.T, root string) corpusEntry {
 			indexDeclaration(ix, r, chunk, id)
 		}
 	}
+
+	// Stamped where the production path stamps them, after the index is
+	// complete: the conformance columns this artifact carries read them, so a
+	// harness that skipped this would report pre-fix numbers.
+	stampDeclOwners(ix, results)
 
 	edges, _ := resolveEdgesWithStats(results, ix, nodeIDs)
 

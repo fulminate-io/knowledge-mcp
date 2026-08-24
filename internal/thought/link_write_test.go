@@ -27,7 +27,7 @@ type linkWrite struct {
 func (c *linkRecordingCaller) Execute(_ context.Context, req *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error) {
 	if q := req.GetQuery(); q != nil {
 		if q.GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_EDGES {
-			return &knowledgev1.ExecuteResponse{Edges: c.existingEdges}, nil
+			return &knowledgev1.ExecuteResponse{Edges: bandNarrow(c.existingEdges, q)}, nil
 		}
 		return &knowledgev1.ExecuteResponse{}, nil
 	}

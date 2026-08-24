@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/searchengine/formats/bm25"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine/formats/hnsw"
 )
 
@@ -37,10 +38,10 @@ func plantCacheFile(t *testing.T, path string, size int) {
 func TestDropGraphCache_RemovesEveryFormatDir(t *testing.T) {
 	t.Parallel()
 
-	mgr := NewManager(loginStateStub{}, t.TempDir(), 0)
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{}, t.TempDir(), 0))
 
 	hnswDir := graphCacheDirFor(mgr.cacheDir, kgtypes.GraphCode, "dropRepo", hnsw.New().Name())
-	bm25Dir := graphCacheDirFor(mgr.cacheDir, kgtypes.GraphCode, "dropRepo", "bm25")
+	bm25Dir := graphCacheDirFor(mgr.cacheDir, kgtypes.GraphCode, "dropRepo", bm25.New().Name())
 	statePath := rebuildStatePathFor(mgr.cacheDir, kgtypes.GraphCode, "dropRepo")
 	decoyDir := graphCacheDirFor(mgr.cacheDir, kgtypes.GraphCode, "dropRepo@branch", hnsw.New().Name())
 
@@ -62,7 +63,7 @@ func TestDropGraphCache_RemovesEveryFormatDir(t *testing.T) {
 
 	assert.Equal(t, 4, report.Files, "every planted file for the graph is counted")
 	assert.Equal(t, int64(100+250+30+7), report.Bytes, "the byte total is the summed sizes")
-	assert.ElementsMatch(t, []string{hnsw.New().Name(), "bm25", rebuildStateFormat}, report.Formats,
+	assert.ElementsMatch(t, []string{hnsw.New().Name(), bm25.New().Name(), rebuildStateFormat}, report.Formats,
 		"all three format dirs are reported")
 }
 
@@ -72,7 +73,7 @@ func TestDropGraphCache_RemovesEveryFormatDir(t *testing.T) {
 func TestDropGraphCache_NeverLoadedGraphIsCleanNoOp(t *testing.T) {
 	t.Parallel()
 
-	mgr := NewManager(loginStateStub{}, t.TempDir(), 0)
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{}, t.TempDir(), 0))
 
 	otherDir := graphCacheDirFor(mgr.cacheDir, kgtypes.GraphCode, "keepRepo", hnsw.New().Name())
 	plantCacheFile(t, filepath.Join(otherDir, "keep.seg"), 42)

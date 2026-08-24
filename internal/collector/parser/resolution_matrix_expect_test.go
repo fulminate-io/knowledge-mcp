@@ -53,18 +53,21 @@ func assertRowExpect(
 		"%s: the fixture emitted no reference with target %q, so this row proves nothing",
 		lang, row.expect.Ref)
 
-	// The group key ends with the verbatim target, so the edges belonging to
-	// this reference are the ones whose Evidence carries that suffix.
+	// The group key BEGINS with the verbatim target, so the edges belonging to
+	// this reference are the ones whose Evidence carries that prefix. It used to
+	// end with the target and this selector used to match a suffix; the key is
+	// position-independent now and its last field is the within-file ordinal
+	// (parser.groupKey), so a suffix match would select nothing at all.
 	//
 	// THEY ARE COUNTED PER GROUP, NEVER IN TOTAL. A container chunk and its
 	// member chunk both walk the member's body, so one source token routinely
 	// emits the SAME reference twice — two groups of N rather than one — and a
 	// total would be a multiple of the cardinality the fixture actually
 	// declares. Per group, the count is the fixture-derived constant.
-	suffix := ":" + row.expect.Ref
+	prefix := row.expect.Ref + ":"
 	groups := map[string][]string{}
 	for _, e := range res.Edges {
-		if e.Evidence != "" && strings.HasSuffix(e.Evidence, suffix) {
+		if e.Evidence != "" && strings.HasPrefix(e.Evidence, prefix) {
 			groups[e.Evidence] = append(groups[e.Evidence], e.Method)
 		}
 	}
@@ -72,6 +75,7 @@ func assertRowExpect(
 	if row.expect.Method == "" {
 		assert.Empty(t, groups,
 			"%s: a single-candidate outcome emits no group, so no edge carries a group key", lang)
+		assertBoundRungStamped(t, lang, row, res)
 		return
 	}
 	require.NotEmpty(t, groups,
@@ -84,6 +88,38 @@ func assertRowExpect(
 				"%s: group %q carries the wrong Method", lang, key)
 		}
 	}
+}
+
+// assertBoundRungStamped is the SINGLE-CANDIDATE half of the Method assertion:
+// a row that emits no group must still emit at least one edge carrying the rung
+// that bound it. Without it the single-candidate branch asserts only an absence
+// — no group key — and a bound edge losing its attribution would red nothing in
+// the whole 32-language matrix.
+//
+// IT SELECTS BY THE RUNG, NEVER BY NODE IDS, AND THE ID SELECTOR CANNOT BE MADE
+// TO WORK HERE. res comes from populateFixture, which runs DeduplicateChunks and
+// so rewrites chunk names and the ids derived from them, while assertRowExpect's
+// loop above walks a FRESH chunkFixture pass whose ids are un-deduplicated. A
+// selector keying on (FromId, candidate NodeID, Type) therefore matches zero
+// edges on every single-candidate row even when the stamp is present — measured,
+// not assumed. Do not "tighten" this back into one. The group half one function
+// up has the same constraint and answers it the same way, by selecting on a
+// field the emitted edge carries directly; a bound edge has no Evidence to
+// select on, so its rung is that field.
+func assertBoundRungStamped(
+	t *testing.T, lang treesitter.Language, row matrixRow, res PopulateResult,
+) {
+	t.Helper()
+
+	stamped := 0
+	for _, e := range res.Edges {
+		if e.Method == string(row.expect.Rule) {
+			stamped++
+		}
+	}
+	assert.Positive(t, stamped,
+		"%s: no edge carries the resolving rung %q, so the bound reference is unattributed",
+		lang, row.expect.Rule)
 }
 
 // importedPackageName returns the symbol namespace the chunker recorded for one

@@ -145,13 +145,14 @@ func TestEmptyGraphRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Encode: %v", err)
 	}
-	// [v2][7×uint32 header, nodeCount=0] = 1 + 28 = 29 bytes, no node records, no
-	// trailing vectors.
-	if len(blob) != 29 {
-		t.Fatalf("empty-graph blob len = %d, want 29", len(blob))
+	// A v3 empty blob is the 64-byte header, the single layer-offset sentinel that
+	// closes a zero-run arena, and the 4-byte footer CRC: 64 + 4 + 4 = 72 bytes.
+	// Every other section is zero-length at nodeCount=0.
+	if len(blob) != v3EmptyBlobLen {
+		t.Fatalf("empty-graph blob len = %d, want %d", len(blob), v3EmptyBlobLen)
 	}
-	if blob[0] != serialVersionWithVectors {
-		t.Fatalf("empty-graph version byte = %d, want v%d", blob[0], serialVersionWithVectors)
+	if blob[0] != serialVersionOffsets {
+		t.Fatalf("empty-graph version byte = %d, want v%d", blob[0], serialVersionOffsets)
 	}
 
 	decoded, err := Format{}.Decode(blob)
@@ -183,8 +184,8 @@ func TestBuildEmptyBatchRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Encode: %v", err)
 	}
-	if blob[0] != serialVersionWithVectors {
-		t.Fatalf("Build-path empty blob version byte = %d, want v%d", blob[0], serialVersionWithVectors)
+	if blob[0] != serialVersionOffsets {
+		t.Fatalf("Build-path empty blob version byte = %d, want v%d", blob[0], serialVersionOffsets)
 	}
 
 	decoded, err := Format{}.Decode(blob)

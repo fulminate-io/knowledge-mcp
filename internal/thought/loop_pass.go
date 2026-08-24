@@ -15,9 +15,11 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"strings"
 	"time"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
 
 // runPass is the shared reflection-pass body: cluster detection + scoped (or, when
@@ -223,6 +225,95 @@ func (p *PropagationLoop) quietTickShouldSkip(ctx context.Context, forceFull boo
 	return currentGen, probeOK, false
 }
 
+// perPassEdgeRead is one entry in the per-pass edge-read inventory: a stable label
+// and the edge-type filter that read actually passes to the wire.
+type perPassEdgeRead struct {
+	name  string
+	types []kgtypes.EdgeType
+}
+
+// perPassUnconditionalEdgeReads is the inventory of edge reads a non-quiet pass
+// ALWAYS issues, and it is corroborated by measurement rather than by reading: it is
+// the (edge_types, pivots) table recorded in the post-collapse census, and nothing
+// else. Each entry cites the SAME var its read passes to fetchEdgesForNodeSet, so a
+// read whose filter changes moves the accounting line with it.
+//
+// WHAT THE len()==4 TEST DOES AND DOES NOT CATCH, stated precisely because the
+// obvious reading is wrong. It fires when THIS INVENTORY is edited — it is a lock on
+// the declaration, not on the pass. Adding a fifth edge read to the pass without
+// touching this slice leaves the count at 4 and the test green, so this is NOT an
+// anti-rot mechanism against new reads.
+//
+// WHAT THE OTHER GATE CATCHES, stated as narrowly as it was proven rather than as
+// broadly as it reads. TestPassReads_OnePivotEdgeReadPerPass drives a real runPass
+// through countingWireFake and pins one unified read plus four narrow reads at zero by
+// equality, so it catches the REAPPEARANCE of any read this collapse removed, and a
+// second unified read. It does NOT catch a read over a type set countingWireFake has
+// no bucket for: such a read lands in no counter and every leg stays green. Verified
+// by injection — seven novel-type-set reads left all five legs green, while a single
+// reappearing kg-contains read fired its counter.
+//
+// That gap is closed on the recorder side by its otherEdgeReads default bucket, which
+// is asserted at zero with a known-positive control. Between the two, a read is caught
+// whether it reappears, duplicates, or is entirely new.
+//
+// This inventory's own test remains the weaker, complementary check: that the RENDERED
+// LINE tracks whatever this slice says.
+var perPassUnconditionalEdgeReads = []perPassEdgeRead{
+	{name: "unified-pivot", types: unifiedPivotEdgeTypes},
+	{name: "evidenced-by", types: evidenceAdjEdgeTypes},
+	{name: "tension-charges", types: tensionChargeEdgeTypes},
+	{name: "tension-universe", types: tensionEdgeTypes},
+}
+
+// perPassConditionalEdgeReads is the inventory of edge reads a pass issues only under
+// a condition — buildLeafProvenance runs only when a member-vector scanner is wired
+// AND singleton leaf candidates exist this tick. Kept separate so the unconditional
+// count above stays an equality rather than a range.
+var perPassConditionalEdgeReads = []perPassEdgeRead{
+	{name: "leaf-provenance", types: nil},
+}
+
+// perPassConditionalTerms are the pass's non-edge-read terms, and every one of them is
+// CONDITIONAL — which is why they render under conditional_reads rather than being
+// appended to rpcs_issued as the old literal did.
+//
+// The retired line claimed a warm pass issues a node browse and a writeback. It issues
+// NEITHER as a matter of course: fetchAllThoughtNodes serves the resident snapshot when
+// the corpus cache is warm and only drains the type=thought browse when it is cold, and
+// the cluster-assignment writeback is diff-gated so an unchanged label writes no row.
+// The censused pass logged a warm corpus, so both terms were absent from exactly the
+// pass the old line described.
+var perPassConditionalTerms = []string{
+	"node-browse(cold-corpus-only)",
+	"diffed-writeback(changed-labels-only)",
+}
+
+// renderConditionalTerms renders the non-edge conditional terms. They carry no
+// edge-type set, so they are rendered as bare names rather than through
+// renderRPCsIssued, which would label them with a type filter they do not have.
+func renderConditionalTerms(terms []string) string { return strings.Join(terms, " ") }
+
+// renderRPCsIssued renders a read inventory as `name=<label>` pairs joined by single
+// spaces, where the label comes from edgeTypesLabel — THE SAME renderer the per-read
+// census log line uses. Sharing it is what makes the accounting line and the census
+// spell every type set identically instead of describing the same read two ways.
+//
+// edgeTypesLabel returns the EMPTY string for a nil filter (its documented contract:
+// nil means every type at the wire), so a nil entry renders as <every-type> rather
+// than as a bare trailing '='.
+func renderRPCsIssued(reads []perPassEdgeRead) string {
+	parts := make([]string, 0, len(reads))
+	for _, r := range reads {
+		label := edgeTypesLabel(r.types)
+		if label == "" {
+			label = "<every-type>"
+		}
+		parts = append(parts, r.name+"="+label)
+	}
+	return strings.Join(parts, " ")
+}
+
 // logScopedPassAccounting emits the loud per-warm-pass accounting line: the dirty
 // seed size, the closure size (the nodes actually recomputed), the components
 // touched, and the full-pass-equivalent cost of the terms the scoping avoided.
@@ -238,7 +329,8 @@ func (p *PropagationLoop) logScopedPassAccounting(result PropagationResult, dirt
 		"dirty_seed_size", len(dirtySeed),
 		"closure_size", closureSize,
 		"total_components", result.Components,
-		"rpcs_issued", "node-browse + adjacency-edges + bulk-kgcontains + charges + 1 diffed writeback (O(1) in N)",
+		"rpcs_issued", renderRPCsIssued(perPassUnconditionalEdgeReads),
+		"conditional_reads", renderRPCsIssued(perPassConditionalEdgeReads)+" "+renderConditionalTerms(perPassConditionalTerms),
 		"full_pass_equivalent", "retired 2N session-sibling traversals + recompute over all components + O(N) writeback rows",
 		"scoped", dirtySeed != nil,
 		"corpus_size", n)

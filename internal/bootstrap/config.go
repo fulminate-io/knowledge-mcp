@@ -13,6 +13,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -155,6 +156,14 @@ type Config struct {
 	EmbedRPM           int
 	PipelineTick       time.Duration
 
+	// SegmentResidencyBudgetBytes caps the RESIDENT HEAP BYTES the client's
+	// per-graph segment pools may occupy together before the coldest of them are
+	// evicted from memory and left to reload from the local L2 disk cache on their
+	// next search. 0 disables eviction entirely. Populated from
+	// --segment-residency-budget-bytes / KNOWLEDGE_SEGMENT_RESIDENCY_BUDGET_BYTES;
+	// consumed by ensureSegmentManager (client_segment.go).
+	SegmentResidencyBudgetBytes int64
+
 	// ReflectBackstopInterval is the cadence of the full-corpus reflection
 	// backstop pass that resets DF-Leiden incremental drift. The hourly
 	// PropagationLoop runs incrementally; once this interval elapses since the last
@@ -189,8 +198,8 @@ func registerConfigFlags(fs *flag.FlagSet, cfg *Config) {
 	fs.BoolVar(&cfg.NoAuth, "no-auth", false, "Force the client local-only: suppress BOTH cloud-selection triggers at the Router.pick chokepoint (machineAuth forced false WITHOUT consulting --auth-token/KNOWLEDGE_AUTH_TOKEN, and the keychain replaced with a no-op store so a live `knowledge login` refresh token reports IsLoggedIn==false). Fail-closed: no routed op can reach a fulminate.io host regardless of credentials present. Capability reduction only — the cloud endpoint is never overridden. Use for offline/OSS mode and as the safety floor for the bug-hunt harness.")
 	fs.BoolVar(&cfg.NoWorkerRuntime, "no-worker-runtime", false, "Skip dream Runner wiring. Run knowledge purely to serve/exercise the graph (e.g. the bench harness) without starting its own background worker runtime.")
 	fs.BoolVar(&cfg.NoPropagationRuntime, "no-propagation-runtime", false, "Skip client-side PropagationLoop wiring. The MCP daemon continues to serve and reflective tools still run on demand, but the hourly background cluster detection + valence propagation stops. Use for offline development or to silence background log noise.")
-	fs.BoolVar(&cfg.Pprof, "pprof", true, fmt.Sprintf("Start the pprof profiling HTTP endpoint on %s (/debug/pprof/) at boot. Also reachable on demand via manage(pprof_start). Use to profile client-side work such as collect. Default-on during the general-stability investigation window; flip to false once the startup-timeout flake is diagnosed.", profiling.Addr()))
-	fs.IntVar(&cfg.PprofPort, "pprof-port", profiling.DefaultPort, "TCP port for the pprof profiling HTTP endpoint (loopback only)")
+	fs.BoolVar(&cfg.Pprof, "pprof", false, fmt.Sprintf("Start the pprof profiling HTTP endpoint on %s (/debug/pprof/) at boot, AND pass --pprof to the knowledge-server this daemon spawns so its own /debug/pprof/ mounts too. Both endpoints bind loopback only. Also reachable on demand for this process via manage(pprof_start). Use to profile client-side work such as collect.", profiling.Addr()))
+	fs.IntVar(&cfg.PprofPort, "pprof-port", profiling.DefaultPort, "TCP port for this process's pprof profiling HTTP endpoint (loopback only). Applied when --pprof is set; the spawned knowledge-server serves its own /debug/pprof/ on --port instead.")
 	fs.BoolVar(&cfg.SkipLLMPrecheck, "skip-llm-precheck", false, "Skip the live-ping check that runs against every configured (provider, model) tuple at client startup. Use for offline development or CI sandboxes; default is to fail-fast at boot rather than at first tool call.")
 	fs.BoolVar(&cfg.NoLLMPipeline, "no-llm-pipeline", false, "Skip client-side LLM pipeline (summarize + embed) wiring. The MCP daemon and other tools continue to work; only background summarization/embedding stops.")
 	fs.BoolVar(&cfg.Headless, "headless", false, "Run as an embedded/supervisor-managed daemon: serve the loopback /mcp endpoint and resolve query embeddings, but skip every background content + coordination loop. Implies --no-worker-runtime, --no-propagation-runtime, --skip-llm-precheck and --no-llm-pipeline, and additionally disables the hive monitor, hive reaper, and transcript upload loops. Still loads ~/.knowledge/config (so [credentials] resolve config-first) and still seeds .claude agents/skills. Does not change auth.")
@@ -206,6 +215,66 @@ func registerConfigFlags(fs *flag.FlagSet, cfg *Config) {
 	fs.IntVar(&cfg.EmbedRPM, "embed-rpm", 0, "Client-side LLM pipeline: max embed (Voyage) API requests per MINUTE across all embed workers; 0 = unlimited (default, preserves current 20-worker behavior). Proactive throttle for low-tier Voyage accounts — paces the opening burst so it respects the account RPM before the first 429. Companion to the reactive Retry-After backoff.")
 	fs.DurationVar(&cfg.PipelineTick, "pipeline-tick", 250*time.Millisecond, "Client-side LLM pipeline: per-graph collector poll interval")
 	fs.DurationVar(&cfg.ReflectBackstopInterval, "reflect-backstop-interval", 24*time.Hour, "Client-side reflection: cadence of the full-corpus reflection backstop pass that resets DF-Leiden incremental drift. The hourly loop runs incrementally; once this interval elapses since the last full pass, the next tick forces a full Leiden recompute. Default 24h (nightly).")
+	fs.Int64Var(&cfg.SegmentResidencyBudgetBytes, "segment-residency-budget-bytes", segmentResidencyBudgetDefault(), "Client-side segment residency ceiling, in RESIDENT HEAP BYTES summed across every per-graph segment pool: once the total crosses it, the coldest pools are unloaded from memory and reload from the local L2 disk cache on their next search. 0 disables eviction entirely. This counts modeled Go-heap bytes — the per-segment membership index, the liveness bitset, and whatever each payload declares it holds. A mapped segment's blob is page cache and is NOT counted, so the budget is not a bound on a pool's on-disk size. Defaults to the KNOWLEDGE_SEGMENT_RESIDENCY_BUDGET_BYTES environment variable and otherwise to 1073741824; an explicit flag value wins.")
+}
+
+// defaultSegmentResidencyBudgetBytes is 1 GiB of RESIDENT HEAP BYTES. Written as a
+// decimal literal rather than 1<<30 so a plain text search for the number finds it.
+const defaultSegmentResidencyBudgetBytes int64 = 1073741824
+
+// segmentResidencyBudgetDefault resolves --segment-residency-budget-bytes's
+// default: KNOWLEDGE_SEGMENT_RESIDENCY_BUDGET_BYTES when set, otherwise
+// defaultSegmentResidencyBudgetBytes. Mirrors how --auth-token defaults from
+// KNOWLEDGE_AUTH_TOKEN above; an explicit flag value wins over both.
+//
+// AN UNPARSEABLE ENV VALUE IS FATAL rather than quietly falling back to the
+// literal. A budget the operator meant to set and mistyped would otherwise become
+// "the default" with nothing saying the knob was ignored, and the symptom —
+// residency growing to a ceiling nobody chose — looks nothing like a typo. This is
+// the same treatment the flag package gives an unparseable flag value, applied to
+// the environment form of the same knob, and it happens at process start before
+// anything is serving.
+func segmentResidencyBudgetDefault() int64 {
+	raw := os.Getenv("KNOWLEDGE_SEGMENT_RESIDENCY_BUDGET_BYTES")
+	if raw == "" {
+		return defaultSegmentResidencyBudgetBytes
+	}
+	parsed, err := strconv.ParseInt(raw, 10, 64)
+	if err != nil {
+		fmt.Fprintf(os.Stderr,
+			"knowledge: KNOWLEDGE_SEGMENT_RESIDENCY_BUDGET_BYTES=%q is not a base-10 int64 "+
+				"(expected a byte count, e.g. 1073741824, or 0 to disable eviction): %v\n", raw, err)
+		os.Exit(2)
+	}
+	return parsed
+}
+
+// applyPprof starts this process's loopback pprof endpoint when --pprof is set,
+// on the port --pprof-port names. It is the SOLE consumer of cfg.Pprof /
+// cfg.PprofPort on the client side, and it is called from runServe — the only
+// live path that serves anything, since bare `knowledge` now returns the
+// "run the daemon" error rather than serving MCP over stdio (run.go Run).
+//
+// IT EXISTS BECAUSE THE FLAGS DID NOT WORK. --pprof and --pprof-port were
+// registered and never read: there was no profiling.EnsureServer or
+// profiling.SetPort call anywhere in the repository, so a daemon started with
+// --pprof bound nothing and reported nothing, and --pprof-port could not move a
+// port that was never opened. The endpoint reached a listening state only
+// through manage(pprof_start), which starts a CPU capture as a side effect. The
+// flag's default moved true -> false in the same change that made it real: a
+// knob that never functioned must not begin opening a port on every daemon the
+// day it starts functioning, and the endpoint's handlers expose process
+// internals.
+//
+// SetPort BEFORE EnsureServer is required, not stylistic — SetPort's own
+// contract (profiling.go) is that it must precede the first EnsureServer/StartCPU,
+// because the address is read once when the listener binds.
+func applyPprof(cfg *Config) {
+	if !cfg.Pprof {
+		return
+	}
+	profiling.SetPort(cfg.PprofPort)
+	profiling.EnsureServer()
 }
 
 // applyRootDirSet records whether --root was explicitly passed on fs. It is the

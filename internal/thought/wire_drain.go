@@ -22,6 +22,26 @@ import (
 // positive limit is load-bearing rather than merely a tuning choice.
 const browsePageSize = paging.BrowsePageSize
 
+// reflectionEdgePivotPageSize is the pivot page size for the REFLECTION node-set
+// edge read (fetchEdgesForNodeSet) alone. It is a package-local override of the
+// shared paging.EdgePivotPageSize rather than a change to it: the shared default
+// stays 500 for the other readers, none of which pivot on a set this wide.
+//
+// THE PER-PAGE COST IS FLAT IN THE PIVOT COUNT, which is what makes a larger page
+// free rather than a trade. Measured on a production-scale graph, the same read
+// costs 3,764 buffers at 500 pivots and 3,764 buffers at 5,000 — the work is the
+// edge scan, not the pivot list, so the only thing page size changes is the
+// number of round trips. On the widest reflection read that takes the burst from
+// 28 statements to 6.
+//
+// THE CAP HAS ROOM AT THIS SIZE: the widest read returns 23,927 rows against the
+// 50,000-row scan cap, and a page that DOES hit the cap converges rather than
+// failing — DrainPivotEdges halves the page and re-reads.
+//
+// NOT 5,000, AND THE REASON IS MEASURED: at 5,000 pivots planning time rises from
+// 7.8 ms to 32.1 ms per statement, which spends more than the saved round trips.
+const reflectionEdgePivotPageSize = 2500
+
 // drainPages delegates to paging.DrainKeysetPages, which owns the shared id-KEYSET
 // drain core and its rationale. Kept as an unexported package-local name because
 // both call sites (drainThoughtBrowse below, and the all_types adjacency drain in

@@ -24,6 +24,12 @@
 // returns a clear error. The keychain / not-logged-in / transport-failure cases
 // render the chat-visible "run knowledge login" guidance verbatim (the legacy
 // is_error shape).
+//
+// THE PUSH FLOW LIVES IN intercept_sync_push.go. This file holds the router
+// (InterceptSync), the shared syncable gate, and the PULL half; push moved out when the
+// unchanged-graph pull short-circuit took this file past the 500-line cap. The split is by
+// direction, the seam the bullet list above already draws, and the push half is the one
+// that moved so the pull flow stays where its watermark-ordering gate reads for it.
 
 package tools
 
@@ -34,7 +40,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"time"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/auth"
@@ -43,62 +48,50 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/syncgcs"
 )
 
-// syncObjectContentType is the content-type the GCS PUT sends, matching what the
-// agent presign signs the upload URL with (a Bearer header is NOT sent — that
-// would break the GCS V4 signature; see syncgcs.PutObject).
-const syncObjectContentType = "application/octet-stream"
-
 // Control-plane JSON DTOs for the presigned-GCS sync flow. These mirror the
 // agent-side request/response shapes (cmd/agent/internal/http/server/
 // sync_presign.go, sync_confirm.go, sync_pull.go). The two repos cannot share a
-// Go package, so the shapes are deliberately mirrored on each side.
-
-// syncPresignRequest is the body of POST /v1/sync/presign.
-type syncPresignRequest struct {
-	GraphType string `json:"graph_type"`
-	Name      string `json:"name"`
-}
-
-// syncPresignResponse is the response of POST /v1/sync/presign.
-type syncPresignResponse struct {
-	UploadURL      string `json:"upload_url"`
-	ObjectPath     string `json:"object_path"`
-	AgentPublicKey string `json:"agent_public_key"`
-	Expiry         string `json:"expiry"`
-}
-
-// syncConfirmRequest is the body of POST /v1/sync/confirm.
-type syncConfirmRequest struct {
-	ObjectPath string `json:"object_path"`
-	GraphType  string `json:"graph_type"`
-	Name       string `json:"name"`
-}
+// Go package, so the shapes are deliberately mirrored on each side. The PUSH-side
+// DTOs (presign / confirm) live in intercept_sync_push.go beside the flow that is
+// their only consumer; the PULL-side pair stays here with pullGraph.
 
 // syncPullRequest is the body of POST /v1/sync/pull.
 type syncPullRequest struct {
 	GraphType string `json:"graph_type"`
 	Name      string `json:"name"`
+
+	// Watermark is the OPAQUE token this machine last received for (GraphType, Name),
+	// read from the machine-local store (sync_watermark.go). The client never parses or
+	// compares it — it forwards the bytes and the server that minted it compares by
+	// exact string equality. Omitted when empty, which means "send everything".
+	Watermark string `json:"watermark,omitempty"`
 }
 
 // syncPullResponse is the response of POST /v1/sync/pull. The DEK is
 // base64-StdEncoded and the GCS object it unlocks is ciphertext. ObjectPath is
 // the agent-minted GCS object path; the client feeds it into OpenEnvelope so the
 // pull-direction AAD it computes matches what the agent sealed with.
+//
+// On an UNCHANGED pull the object fields are absent: Unchanged is true and there is
+// nothing to download, decrypt or apply.
 type syncPullResponse struct {
 	DownloadURL string `json:"download_url"`
 	DEK         string `json:"dek"`
 	ObjectPath  string `json:"object_path"`
 	Expiry      string `json:"expiry"`
+
+	// Unchanged true means the graph's export image matches the Watermark this client
+	// sent, so no object was produced and the client must apply nothing.
+	Unchanged bool `json:"unchanged"`
+
+	// Watermark is the token describing the state this response reflects, stored after
+	// a successful apply and presented on the next pull. EMPTY means the server could
+	// not answer; storing it is what the watermark store's empty-token delete prevents.
+	Watermark string `json:"watermark"`
 }
 
-// Exporter is the narrow ExportGraph-RPC seam the push intercept drives. The
-// production graphClientCaller implements it (Call + Execute + Index + ... +
-// ExportGraph); tests inject a recording fake. Mirrors Indexer — type-asserted
-// from the GraphCaller so the Call-only tools.GraphCaller interface stays
-// unwidened.
-type Exporter interface {
-	ExportGraph(ctx context.Context, req *knowledgev1.ExportGraphRequest) (*knowledgev1.ExportGraphResponse, error)
-}
+// The Exporter seam (the LOCAL ExportGraph source) lives in intercept_sync_push.go
+// beside the push flow that drives it.
 
 // Overwriter is the narrow OverwriteGraph-RPC seam the pull intercept drives to
 // apply fetched cloud bytes to the LOCAL graph. The production graphClientCaller
@@ -229,14 +222,25 @@ func handlePull(ctx context.Context, deps ClientDeps, graph, name string) kgtool
 // inverse of pushGraph: push reads local + writes cloud; pull reads cloud +
 // writes local. Not-logged-in surfaces from the pull control call with
 // caller-actionable login guidance.
+//
+// IT SENDS THE MACHINE-LOCAL WATERMARK AND RETURNS EARLY WHEN THE GRAPH HAS NOT MOVED.
+// The control call carries the token this machine last stored for (graph, name); when the
+// response reports unchanged, the download, the decrypt and the apply are ALL skipped and
+// the stored token is left exactly as it was. On the changed path the new token is stored
+// AFTER the apply succeeds — never before it and never in a defer, because a token stored
+// for bytes that were not applied makes every later pull answer "unchanged" for a graph
+// this machine does not hold.
 func pullGraph(
 	ctx context.Context,
 	ov Overwriter,
 	transport *auth.Transport,
 	graph, name string,
 ) kgtools.ToolResult {
-	// (1) Request the agent-orchestrated pull: download URL + the DEK.
-	pullReqBody, err := json.Marshal(syncPullRequest{GraphType: graph, Name: name})
+	// (1) Request the agent-orchestrated pull: download URL + the DEK. The stored
+	// watermark rides along so an unchanged graph can be answered without producing an
+	// object at all.
+	stored := defaultSyncWatermarkStore.Load(graph, name)
+	pullReqBody, err := json.Marshal(syncPullRequest{GraphType: graph, Name: name, Watermark: stored})
 	if err != nil {
 		return errorResult(fmt.Sprintf("sync pull: marshal pull request: %v", err))
 	}
@@ -248,6 +252,16 @@ func pullGraph(
 	if err := json.Unmarshal(pullRaw, &pull); err != nil {
 		return errorResult(fmt.Sprintf("sync pull: decode pull response: %v", err))
 	}
+
+	// UNCHANGED: return before the download, the decrypt and the apply. Skipping those
+	// three steps IS the feature — a version that downloaded and then discarded would
+	// save nothing. The text deliberately says "unchanged" and deliberately omits the
+	// "bytes;" the applied path reports, so an operator can never read a skipped pull as
+	// an applied one.
+	if pull.Unchanged {
+		return textResult(fmt.Sprintf("pulled %s/%s: unchanged (nothing applied)", graph, name))
+	}
+
 	dek, err := base64.StdEncoding.DecodeString(pull.DEK)
 	if err != nil {
 		return errorResult(fmt.Sprintf("sync pull: decode DEK: %v", err))
@@ -275,100 +289,19 @@ func pullGraph(
 		return errorResult(fmt.Sprintf("sync pull: apply %s/%s: %v", graph, name, err))
 	}
 
+	// (5) Advance the stored watermark ONLY AFTER the apply succeeded, and NEVER in a
+	// defer. A watermark saved before (or regardless of) a successful apply means this
+	// machine believes it holds bytes it never applied, and every later pull is answered
+	// "unchanged" — silent, permanent staleness. The error above returns before reaching
+	// here, which is exactly the point: a failed apply must leave the stored token alone.
+	//
+	// An EMPTY pull.Watermark is the server's "cannot answer" signal and reaches Save
+	// deliberately: Save deletes the key on an empty token, so the next pull sends
+	// nothing and receives a full export.
+	_ = defaultSyncWatermarkStore.Save(graph, name, pull.Watermark)
+
 	return textResult(fmt.Sprintf("pulled %s/%s (%d bytes; %d nodes, %d edges)",
 		graph, name, len(body), ovResp.GetNodes(), ovResp.GetEdges()))
-}
-
-// pushGraph serializes the LOCAL (graph, name) bytes via the ExportGraph RPC,
-// then routes the bulk bytes to Fulminate Cloud through GCS (off Cloudflare's
-// ~100 MB body cap): it requests a presigned PUT + the agent public key via the
-// Bearer-authenticated /v1/sync control channel, asymmetric-envelope-encrypts the
-// bytes (a fresh per-request DEK, AES-256-GCM, RSA-OAEP-SHA256-wrapped to the
-// agent key), PUTs the ciphertext straight to GCS with NO auth header, then calls
-// confirm so the agent downloads, decrypts, and ingests it. Only the small
-// presign/confirm control requests cross Cloudflare; the bulk ciphertext goes
-// direct to GCS. The DEK lives only inside SealEnvelope and is discarded with the
-// ciphertext buffer on return. Errors are wrapped for caller-actionable login
-// guidance.
-func pushGraph(
-	ctx context.Context,
-	exp Exporter,
-	transport *auth.Transport,
-	graph, name string,
-) kgtools.ToolResult {
-	serializeStart := time.Now()
-	resp, err := exp.ExportGraph(ctx, &knowledgev1.ExportGraphRequest{
-		Target: manageGraphSelector(graph, name),
-	})
-	if err != nil {
-		return errorResult(fmt.Sprintf("sync push: export %s/%s: %v", graph, name, err))
-	}
-	serializeDur := time.Since(serializeStart)
-	body := resp.GetGraphBytes()
-
-	uploadStart := time.Now()
-
-	// (1) Request a presigned GCS PUT URL + the agent public key.
-	presignReqBody, err := json.Marshal(syncPresignRequest{GraphType: graph, Name: name})
-	if err != nil {
-		return errorResult(fmt.Sprintf("sync push: marshal presign request: %v", err))
-	}
-	presignRaw, err := transport.SyncControlJSON(ctx, "presign", presignReqBody)
-	if err != nil {
-		return errorResult(wrapPushErr(graph, name, err))
-	}
-	var presign syncPresignResponse
-	if err := json.Unmarshal(presignRaw, &presign); err != nil {
-		return errorResult(fmt.Sprintf("sync push: decode presign response: %v", err))
-	}
-
-	// (2) Asymmetric-envelope-encrypt the serialized graph; the DEK is wrapped to
-	// the agent public key and never leaves SealEnvelope.
-	envelope, err := syncgcs.SealEnvelope(body, presign.AgentPublicKey, presign.ObjectPath)
-	if err != nil {
-		return errorResult(fmt.Sprintf("sync push: encrypt %s/%s: %v", graph, name, err))
-	}
-
-	// (3) PUT the ciphertext straight to GCS with NO auth header (octet-stream,
-	// matching the content-type the presign signed).
-	if err := syncgcs.PutObject(ctx, presign.UploadURL, envelope, syncObjectContentType); err != nil {
-		return errorResult(fmt.Sprintf("sync push: upload %s/%s to GCS: %v", graph, name, err))
-	}
-
-	// (4) Confirm: the agent downloads, decrypts, bomb-checks, and ingests it.
-	confirmReqBody, err := json.Marshal(syncConfirmRequest{
-		ObjectPath: presign.ObjectPath,
-		GraphType:  graph,
-		Name:       name,
-	})
-	if err != nil {
-		return errorResult(fmt.Sprintf("sync push: marshal confirm request: %v", err))
-	}
-	if _, err := transport.SyncControlJSON(ctx, "confirm", confirmReqBody); err != nil {
-		return errorResult(wrapPushErr(graph, name, err))
-	}
-	uploadDur := time.Since(uploadStart)
-
-	return textResult(fmt.Sprintf("pushed %s/%s (%d bytes; serialize=%s upload=%s)",
-		graph, name, len(body),
-		serializeDur.Round(time.Millisecond), uploadDur.Round(time.Millisecond)))
-}
-
-// exporterSeam upgrades deps.LocalGraphCaller() to the Exporter seam, or
-// returns a typed error so the missing seam is loud (degraded headless mode).
-// Sync push reads bytes from the LOCAL graph (the destination is cloud via
-// the auth.Transport), so the routing-aware GraphCaller would be wrong here —
-// the source must always be local. Mirrors manageIndexer in shape.
-func exporterSeam(deps ClientDeps) (Exporter, error) {
-	gc := deps.LocalGraphCaller()
-	if gc == nil {
-		return nil, fmt.Errorf("local graph caller unavailable — no local server is wired (cloud-first user without `knowledge install`)")
-	}
-	exp, ok := gc.(Exporter)
-	if !ok {
-		return nil, fmt.Errorf("sync requires an ExportGraph-capable graph client")
-	}
-	return exp, nil
 }
 
 // syncableGateRejection returns a non-empty rejection message when a push/pull of
@@ -378,6 +311,9 @@ func exporterSeam(deps ClientDeps) (Exporter, error) {
 // GraphTypeDef resolves (crud.ByName found) AND its behavior cascade declares
 // syncable=true; an unregistered type, a missing registry (degraded client), or a
 // syncable false/unset def is rejected. Mirrors the collect.go:192 ByName gate.
+//
+// It stays HERE rather than moving with either direction's flow: InterceptSync
+// applies it to push AND pull alike, so it belongs with the router, not a half.
 func syncableGateRejection(ctx context.Context, deps ClientDeps, graph string) string {
 	if kgtypes.IsBuiltinGraphType(graph) {
 		return ""
@@ -409,30 +345,6 @@ func overwriterSeam(deps ClientDeps) (Overwriter, error) {
 		return nil, fmt.Errorf("sync requires an OverwriteGraph-capable graph client")
 	}
 	return ov, nil
-}
-
-// wrapPushErr produces a caller-actionable message for common auth failure modes
-// on top of the underlying transport error. 401 means the refresh flow could not
-// re-auth; 403 usually means the OAuth session lacks the `sync` scope.
-// auth.ErrNotFound surfaces as "not logged in". Other errors are surfaced
-// verbatim. Ported from the legacy server-side wrapSyncErr (engine_sync.go) so
-// the chat-visible login guidance survives the move to the client.
-func wrapPushErr(graph, name string, err error) string {
-	if errors.Is(err, auth.ErrNotFound) {
-		return fmt.Sprintf("sync push %s/%s: not logged in — run 'knowledge login' to authenticate",
-			graph, name)
-	}
-	if se, ok := errors.AsType[*auth.SyncHTTPError](err); ok {
-		switch se.StatusCode {
-		case http.StatusUnauthorized:
-			return fmt.Sprintf("sync push %s/%s: authentication failed — run 'knowledge login' to refresh credentials (HTTP 401)",
-				graph, name)
-		case http.StatusForbidden:
-			return fmt.Sprintf("sync push %s/%s: server rejected request — your login may lack the 'sync' scope (HTTP 403)",
-				graph, name)
-		}
-	}
-	return fmt.Sprintf("sync push %s/%s: %v", graph, name, err)
 }
 
 // wrapPullErr produces a caller-actionable message for the cloud-fetch failure

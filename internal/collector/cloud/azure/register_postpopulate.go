@@ -6,5 +6,5 @@ import "github.com/fulminate-io/knowledge-mcp/internal/postpopulate"
 
 // init registers the "azure" PostPopulate hook.
 func init() {
-	postpopulate.Register("azure", postPopulate)
+	postpopulate.Register("azure", postpopulate.BreadthFamilyBroad, postPopulate)
 }

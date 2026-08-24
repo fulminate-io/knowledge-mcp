@@ -199,7 +199,7 @@ func (p *PropagationLoop) runClusterDetectionWith(pr *passReads) {
 // extra per-thought fetch); clusters come from the tick's Leiden partition. No
 // per-thought fan-out, no N+1 — every read is a single bulk call.
 //
-// src is the per-pass memo, threaded into ALL FOUR reads, so the node map is PINNED
+// src is the per-pass memo, threaded into ALL FIVE reads, so the node map is PINNED
 // to this pass's snapshot — safe because classifyBlindSpots reads nodeByID only for
 // SymbolName and the source/origin genre facets, never for cluster_id.
 func (p *PropagationLoop) computeBlindSpots(ctx context.Context, nodeIDs []string, clusters []ThoughtCluster, src CorpusSource) BlindSpotReport {
@@ -210,7 +210,7 @@ func (p *PropagationLoop) computeBlindSpots(ctx context.Context, nodeIDs []strin
 	// Cited-code staleness precompute for facetCodeChanged: one bulk cross-graph
 	// read (1 edge read + 1 proxy hydrate + 1 code hydrate per distinct cited repo,
 	// no per-thought fan-out) → thoughtID→newest cited-code UpdatedAt.
-	citedCodeUpdatedAt := buildCitedCodeUpdatedAt(ctx, p.gc, nodeIDs)
+	citedCodeUpdatedAt := buildCitedCodeUpdatedAt(ctx, p.gc, nodeIDs, src)
 	// Topic rollup for the cluster-level reversal unit: one bulk topic-doc browse,
 	// loop-safe (in-package, Caller-based, no handler deps). Clusters sharing a
 	// topic-summary doc roll into one unit; topicless clusters stay raw.

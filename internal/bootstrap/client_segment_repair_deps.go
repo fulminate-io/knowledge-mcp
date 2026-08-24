@@ -33,6 +33,20 @@ type repairArmDeps interface {
 	// unloaded engine reads zero live members, which would drop the graph below the
 	// band and hand it to a heal that is not the right owner.
 	LiveResidentCount(ctx context.Context, g segmentGraphRef) (int, error)
+	// Evicted is that same rule one step further along, and it is the gate that stops
+	// an EVICTED pool being read as uncovered. LiveResidentCount declines for an
+	// evicted pool and reports 0 — deliberately, because a background probe must not
+	// resurrect what the residency budget unloaded — so without this gate the arm
+	// would read that zero, drop the graph below the band, and re-ship its entire
+	// corpus on the strength of a count nobody took.
+	//
+	// A GRAPH DECLINED FOR EVICTION EARNS NO STEP 4a REPAIR-STATE RECORD, and that
+	// is not an omission. That seed exists to stop the backstop re-reading a graph
+	// the arm has JUDGED; an evicted pool has not been judged, it has not been
+	// looked at, and seeding one would make an unexamined pool read as verified. The
+	// graph is picked up unchanged on the first pass after its next consumer search
+	// re-materializes it.
+	Evicted(g segmentGraphRef) bool
 	// Repair runs one pass, shipping only the difference.
 	Repair(ctx context.Context, g segmentGraphRef) (tools.RepairOutcome, error)
 	// BreakerAllows is a PURE READ of the shared auto-heal breaker. The arm consults
@@ -73,6 +87,10 @@ func (d clientRepairDeps) EmbeddedCount(ctx context.Context, g segmentGraphRef) 
 
 func (d clientRepairDeps) LiveResidentCount(ctx context.Context, g segmentGraphRef) (int, error) {
 	return d.c.segmentMgr.LoadLiveResidentDocCount(ctx, g.gt, g.name)
+}
+
+func (d clientRepairDeps) Evicted(g segmentGraphRef) bool {
+	return d.c.PoolEvicted(g.gt, g.name)
 }
 
 func (d clientRepairDeps) Repair(ctx context.Context, g segmentGraphRef) (tools.RepairOutcome, error) {

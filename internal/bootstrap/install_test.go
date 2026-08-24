@@ -32,7 +32,7 @@ func withHTTPClient(t *testing.T, c *http.Client) {
 	t.Cleanup(func() { httpClient = prev })
 }
 
-// withVersion overrides bootstrap.Version (the running stdio
+// withVersion overrides bootstrap.Version (the running knowledge
 // binary's version) and restores on Cleanup. Tests use this to
 // drive resolveReleaseTag — Version=="dev" → /releases/latest,
 // anything else → /releases/tags/<version>.
@@ -253,7 +253,7 @@ func makeChecksums(files map[string][]byte) []byte {
 // withStubInstalledServer writes a fake knowledge-server shell
 // script at tmpdir/knowledge-server (or .exe on windows) that
 // echoes the supplied version line, chmods it executable, and
-// stubs getExecutable to point at a sibling stdio binary path so
+// stubs getExecutable to point at a sibling running-binary path so
 // findServerBinary's sibling lookup resolves to our stub.
 func withStubInstalledServer(t *testing.T, dir, version string) {
 	t.Helper()

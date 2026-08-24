@@ -136,7 +136,21 @@ const helpNodeTypes = `# Node Types
 const helpEdgeTypes = `# Edge Types
 
 ## Code edges (uppercase, from static analysis)
-  CALLS, IMPORTS, CONTAINS, USES_TYPE
+  CALLS           — caller → callee (Weight is the call count)
+  TEST_CALLS      — same, but the CALLER is test code; a distinct type so every
+                    CALLS consumer keeps seeing production structure only
+  IMPORTS         — file → dependency path
+  CONTAINS        — file → symbol, and container → member
+  USES_TYPE       — declaration → a type it references
+  EMBEDS          — a struct's embedded fields and an interface's embedded
+                    elements → the embedded type
+  IMPLEMENTS      — interface → concrete type, and interface method spec → the
+                    method satisfying it. Callers of an interface method are a
+                    direct CALLS walk; its implementers are ONE hop out over
+                    IMPLEMENTS. Method carries "method-set:<N>", the interface's
+                    expanded method-set size, so a one-method edge can be
+                    weighted as low-information
+  LANGUAGE        — symbol → its per-language hub node
 
 ## Knowledge edges (lowercase)
   contains        — parent → child (plan→phase, phase→step, step→criterion)

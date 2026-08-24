@@ -25,5 +25,5 @@ func gitlabPostPopulate(ctx context.Context, gc postpopulate.GraphCaller, graphN
 }
 
 func init() {
-	postpopulate.Register("gitlab", gitlabPostPopulate)
+	postpopulate.Register("gitlab", postpopulate.BreadthFamilyBroad, gitlabPostPopulate)
 }

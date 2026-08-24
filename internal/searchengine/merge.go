@@ -150,6 +150,12 @@ func (e *SegmentedIndex[Q, S]) doMerge(chosen []*segmentEntry[Q, S]) {
 				Generation: entry.meta.Generation,
 				DocCount:   entry.meta.DocCount,
 				Bytes:      bytes,
+				// Bytes come from a resident entry's payload, which on a mapped
+				// segment IS the mapping. The entry is reachable from the
+				// published set for this hook's duration, but only incidentally
+				// and not by anything the compiler enforces — pinning it states
+				// the guarantee instead of relying on the coincidence.
+				keepAlive: entry,
 			},
 		})
 	}

@@ -28,10 +28,13 @@ import (
 // go_registered_row_still_splits keeps go's own outcome pinned beside it,
 // because the row that replaced its defaulting is exactly what could break it.
 //
-// c_never_splits and bash_never_splits are the opposite property on the same
-// mechanism: an explicitly EMPTY separator set is not the same as an absent
-// row, and collapsing the two would tear a bash command name such as
-// `./deploy.sh` into a bogus qualifier and name.
+// bash_never_splits is the opposite property on the same mechanism: an
+// explicitly EMPTY separator set is not the same as an absent row, and
+// collapsing the two would tear a bash command name such as `./deploy.sh` into
+// a bogus qualifier and name. C USED TO CARRY THAT PROPERTY TOO and no longer
+// does — its dispatch through function-pointer struct fields is a real
+// qualified reference form — so its cases assert the split instead, and bash is
+// now the sole holder of the empty-set property.
 func TestSplitQualifierPerLanguage(t *testing.T) {
 	cases := []struct {
 		name          string
@@ -93,8 +96,24 @@ func TestSplitQualifierPerLanguage(t *testing.T) {
 			target: "obj:meth", wantQualifier: "obj", wantName: "meth",
 		},
 		{
-			name: "c_never_splits", lang: treesitter.LangC,
-			target: "a.b", wantQualifier: "", wantName: "a.b",
+			// C DOES SPLIT NOW, and this case used to assert the opposite. Its
+			// dispatch is written through function-pointer struct fields, so
+			// `h->flush` is a genuine qualified reference and the arrow is a
+			// genuine separator.
+			name: "c_arrow_splits", lang: treesitter.LangC,
+			target: "h->flush", wantQualifier: "h", wantName: "flush",
+		},
+		{
+			name: "c_dot_splits", lang: treesitter.LangC,
+			target: "ops.flush", wantQualifier: "ops", wantName: "flush",
+		},
+		{
+			// THE LAST SEPARATOR WINS, which is what makes a nested dispatch
+			// unbindable rather than wrongly bound: the qualifier it yields
+			// still contains a separator, and the field hop requires exactly
+			// two segments.
+			name: "c_nested_qualifier_keeps_its_separator", lang: treesitter.LangC,
+			target: "c->ops->flush", wantQualifier: "c->ops", wantName: "flush",
 		},
 		{
 			name: "bash_never_splits", lang: treesitter.LangBash,

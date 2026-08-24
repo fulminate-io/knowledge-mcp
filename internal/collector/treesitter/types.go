@@ -52,17 +52,85 @@ type Chunk struct {
 	// the same node ID (e.g., same variable name in sibling scopes).
 	PathHash string
 
+	// IDOrdinal disambiguates UNNAMED chunks whose content is byte-identical
+	// within one file — the only case a content-derived id cannot separate on its
+	// own. Zero means "no ordinal", which is every chunk that does not collide;
+	// DeduplicateChunks assigns 2, 3, … to the second and later occurrences, so the
+	// first keeps the bare id and appending a duplicate does not disturb it.
+	//
+	// IT EXISTS BECAUSE THE NAME MUST STAY EMPTY. The pre-existing collision
+	// breaker appends PathHash to Name, which for an unnamed chunk would move it to
+	// the NAMED branch of ChunkNodeID and give its node a non-empty SymbolName —
+	// turning an unnamed span into something every symbol-addressed consumer reads
+	// as a named declaration. A separate field keeps that bound intact.
+	IDOrdinal int
+
 	// Context provides surrounding information for retrieval quality.
 	Context ChunkContext
 
 	// ParentName is the containing type/class name, if any.
 	ParentName string
+
+	// TypeFacts are the declaration's syntax-visible type facts — a function's
+	// declared result types, a struct's field types — for the typed-qualifier
+	// resolution rung. It is nil for every language with no registered
+	// TypeFactsResolver, and nil for any declaration whose kind carries none.
+	//
+	// IT DOES NOT REACH THE WIRE. appendChunkNode builds the protobuf node
+	// field by field and is deliberately not given this one: these facts are
+	// consumed by the parser's declaration index during resolution and have no
+	// reader on the server side.
+	TypeFacts *TypeFacts
+}
+
+// ImportSite is ONE import statement as the source wrote it — the unit the
+// IMPORTS edge is emitted per, which is why this is a per-SITE record rather
+// than the bare specifier string it replaced.
+//
+// WHY A SITE AND NOT A SPECIFIER. Every entry here becomes one IMPORTS edge, and
+// an edge's identity is (from, to, type, evidence). Two import statements naming
+// the SAME specifier in one file — Python's two `from x import ...` lines are the
+// measured case — produced two edges identical in all four parts, so the schema
+// stored them as one and one membership was silently lost. Carrying the site lets
+// the emission stamp a distinguishing group key, so two statements stay two rows.
+type ImportSite struct {
+	// Specifier is exactly what the bare string entry carried before this type
+	// existed — the package path or module specifier, quote-stripped — and it is
+	// still what the IMPORTS edge's ToID is built from. Framework detection reads
+	// only this.
+	Specifier string
+
+	// Local is the name bound in this file, carried VERBATIM, and EMPTY when this
+	// language has no registered import arm to know it. Empty means "not known
+	// here", never "no alias": the same rule ImportBinding.Local states at length,
+	// including Go's distinct "." and "_" forms, applies unchanged.
+	//
+	// Only four languages register an arm that can fill this (Go, TypeScript, TSX,
+	// JavaScript), which is precisely why the group key cannot be alias-keyed
+	// alone — Python, one of the two languages exhibiting the defect, has no arm.
+	Local string
+}
+
+// importSpecifiers projects import sites down to the bare specifier strings, for
+// the consumers that ask only which modules a file depends on. It preserves
+// ORDER and DUPLICATES: two sites naming one specifier project to two entries,
+// exactly as the bare-string field carried them before ImportSite existed, so no
+// consumer's counting changes.
+func importSpecifiers(sites []ImportSite) []string {
+	if len(sites) == 0 {
+		return nil
+	}
+	out := make([]string, len(sites))
+	for i, s := range sites {
+		out[i] = s.Specifier
+	}
+	return out
 }
 
 // ChunkContext holds contextual information attached to a chunk for better embeddings.
 type ChunkContext struct {
-	// Imports relevant to this chunk (package paths or module specifiers).
-	Imports []string
+	// Imports relevant to this chunk, one entry per import SITE (see ImportSite).
+	Imports []ImportSite
 
 	// Frameworks is the per-file set of test frameworks detected from imports
 	// at chunk time. Populated by DetectFrameworks(lang, Imports) inside
@@ -162,6 +230,17 @@ const (
 	// follow — the chunker carries its own EdgeType vocabulary because no
 	// hand-written package is shared across the two binaries.
 	EdgeTestCalls EdgeType = "TEST_CALLS"
+
+	// EdgeImplements records that a concrete type satisfies an interface.
+	//
+	// THE CHUNKER DOES NOT EMIT IT. Interface satisfaction is derived over the
+	// declaration index, which only the parser holds, and the parser emits the
+	// edge through kgtypes.EdgeImplements. This constant exists so the two client
+	// vocabularies stay COMPLETE and pinned against each other — the same
+	// per-module-duplicate idiom this file's other constants follow, since no
+	// hand-written package is shared across the two binaries — not because
+	// anything in this package produces the edge.
+	EdgeImplements EdgeType = "IMPLEMENTS"
 )
 
 // Edge represents a directed relationship between two code entities.
@@ -170,9 +249,15 @@ type Edge struct {
 	ToID   string
 	Type   EdgeType
 
-	// Weight is the call count for CALLS edges (number of times caller
-	// invokes callee inside the function body) or 0 for edge types where
-	// aggregation does not apply (CONTAINS, IMPORTS, USES_TYPE, EMBEDS).
+	// Weight is the call count for CALLS and TEST_CALLS edges (the number of
+	// times the caller invokes the callee inside the body) or 0 for edge types
+	// where aggregation does not apply (CONTAINS, IMPORTS, USES_TYPE, EMBEDS).
+	//
+	// TEST_CALLS IS WEIGHTED, NOT ZERO, and the distinction is easy to get
+	// backwards. A test-origin call edge is built by the same weighted producer a
+	// production one is, and the two sites that retype it to TEST_CALLS mutate
+	// ONLY the Type field — nothing between production and append touches Weight
+	// — so a TEST_CALLS edge carries the call count exactly as a CALLS edge does.
 	Weight float64
 
 	// FromChunk and ToChunk address a chunk POSITIONALLY: a 1-BASED index
@@ -190,12 +275,25 @@ type Edge struct {
 	FromChunk int
 	ToChunk   int
 
-	// RefByte is the StartByte of the DECLARATION that emitted this
-	// reference, and the second component of the ambiguity group key. It is
-	// 0 on containment and IMPORTS edges, which are not references. Byte 0
-	// needs no unset encoding: it is the file's first byte, and no
-	// declaration whose reference we resolve starts there.
-	RefByte int
+	// Evidence is the GROUP KEY, not a justification for the edge — the same
+	// field-with-a-misleading-name the resolved edge carries, populated here for
+	// the one edge kind the parser passes through without resolving.
+	//
+	// SET on IMPORTS, where it names the import SITE (`import:<local>:<n>`) so two
+	// statements naming one specifier stay two rows under the four-part edge
+	// identity. Empty on every other kind emitted here: a reference's key can only
+	// be built once resolution knows the candidate set, so the parser stamps it.
+	Evidence string
+
+	// NO POSITION FIELD LIVES HERE, and its absence is load-bearing rather than
+	// an omission. This carried RefByte — the emitting declaration's StartByte,
+	// once the second component of the ambiguity group key — until the key went
+	// position-independent. A write-only position field is exactly the affordance
+	// that invites a future author to re-derive an identity from a byte offset,
+	// which is the defect measured on the reference key: an
+	// edit shifts the offset, the shifted key is a NEW edge identity, the pre-edit
+	// row is never reclaimed and the file's contribution hash can never agree.
+	// The group key names the enclosing DECLARATION instead (parser.groupKey).
 
 	// Ref is the reference site: one per file, shared by every edge whose
 	// declaration has no parent, plus one derived copy per parented

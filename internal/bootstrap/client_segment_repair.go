@@ -92,6 +92,32 @@ func (c *client) repairUncoveredGraph(ctx context.Context, g segmentGraphRef, pe
 	c.repairUncoveredGraphWith(ctx, g, clientRepairDeps{c: c}, periodic)
 }
 
+// repairCoverageReads is STEPS 2 and 3 of the detector: the band's denominator
+// (embedded) and its load-first numerator (live resident). They are extracted
+// together because they share ONE convention — either read failing SKIPS this graph
+// for this pass rather than letting the band arithmetic run on a number the arm does
+// not have — and because a decider must never conclude "uncovered" from a read it
+// could not make.
+//
+// ok=false means "not read", never "read as zero": every caller must decline on it.
+func repairCoverageReads(
+	ctx context.Context, g segmentGraphRef, deps repairArmDeps,
+) (embedded, covered int, ok bool) {
+	embedded, err := deps.EmbeddedCount(ctx, g)
+	if err != nil {
+		slog.Warn("bootstrap: segment repair could not read the embedded count (skipping this graph this pass)",
+			"graph_type", g.gt, "name", g.name, "error", err)
+		return 0, 0, false
+	}
+	covered, err = deps.LiveResidentCount(ctx, g)
+	if err != nil {
+		slog.Warn("bootstrap: segment repair could not read the live resident count (skipping this graph this pass)",
+			"graph_type", g.gt, "name", g.name, "error", err)
+		return 0, 0, false
+	}
+	return embedded, covered, true
+}
+
 // repairUncoveredGraphWith is the body, parameterized on its dependencies.
 func (c *client) repairUncoveredGraphWith(
 	ctx context.Context, g segmentGraphRef, deps repairArmDeps, periodic bool,
@@ -122,25 +148,23 @@ func (c *client) repairUncoveredGraphWith(
 		return
 	}
 
+	// STEP 0b — THE RESIDENCY GATE (see repairArmDeps.Evicted for why a zero from an
+	// evicted pool must not reach STEP 4's band, and why this writes NO STEP 4a
+	// record). Ahead of the claim below for STEP 0's reason: the claim advances the
+	// rotation cursor for every graph it is offered.
+	if deps.Evicted(g) {
+		return
+	}
+
 	// STEP 1 — the round-robin slot, taken BEFORE any probe read, so a graph without
 	// the slot costs nothing at all: not a scan, not even the two reads.
 	if !c.claimRepairSlot() {
 		return
 	}
 
-	// STEP 2 — the denominator.
-	embedded, err := deps.EmbeddedCount(ctx, g)
-	if err != nil {
-		slog.Warn("bootstrap: segment repair could not read the embedded count (skipping this graph this pass)",
-			"graph_type", g.gt, "name", g.name, "error", err)
-		return
-	}
-
-	// STEP 3 — the numerator, load-first.
-	covered, err := deps.LiveResidentCount(ctx, g)
-	if err != nil {
-		slog.Warn("bootstrap: segment repair could not read the live resident count (skipping this graph this pass)",
-			"graph_type", g.gt, "name", g.name, "error", err)
+	// STEPS 2 and 3 — the denominator and the load-first numerator.
+	embedded, covered, read := repairCoverageReads(ctx, g, deps)
+	if !read {
 		return
 	}
 

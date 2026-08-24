@@ -28,11 +28,11 @@ func (e *SegmentedIndex[Q, S]) searchSerial(q Q, k int) []Hit {
 // docs, so cross-segment fan-out has work to parallelize.
 func benchEngine(b *testing.B, segments, docsPerSeg int) *SegmentedIndex[mockQuery, mockStats] {
 	b.Helper()
-	e := New[mockQuery, mockStats](mockFormat{}, Options{
+	e := closeOnCleanup(b, New[mockQuery, mockStats](mockFormat{}, Options{
 		MinSegmentDocs:     docsPerSeg,
 		DeletesPctAllowed:  2.0, // no merge interference
 		SegmentCountTarget: 1 << 30,
-	})
+	}))
 	id := 0
 	for range segments {
 		batch := make([]Document, docsPerSeg)

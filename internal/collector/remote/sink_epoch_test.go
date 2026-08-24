@@ -111,7 +111,7 @@ func TestMintEpoch_SurvivesABackwardsClock(t *testing.T) {
 
 func TestMintEpoch_DistinctSinksDoNotCollide(t *testing.T) {
 	// Two UploadSinks stand in for two client PROCESSES — the real-world shape,
-	// since each stdio client constructs its own sink and they all write the same
+	// since each client process constructs its own sink and they all write the same
 	// shared graphs. Under the old zero-seeded counter both would mint 1, then 2,
 	// then 3, colliding on every single collect.
 	a, b := &UploadSink{}, &UploadSink{}

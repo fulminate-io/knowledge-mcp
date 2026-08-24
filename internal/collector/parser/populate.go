@@ -27,6 +27,27 @@ type PopulateResult struct {
 	Nodes   []*knowledgev1.Node
 	Edges   []*knowledgev1.Edge
 	Entries []NodeEntry
+	// DiscoveryFingerprint is the canonical digest of the discovery
+	// CONFIGURATION this result was produced under (DiscoveryFingerprint,
+	// indexer_discover_report.go). It is surfaced here because the configuration
+	// is UNRECOVERABLE from the result: a file discovery never visited leaves no
+	// trace in Nodes or Edges, so a downstream consumer cannot tell a scoped
+	// collect from a collect whose files vanished. Carrying it is what lets the
+	// incremental-collect path refuse to name out-of-scope files as deletions.
+	DiscoveryFingerprint string
+	// CollectorOutputVersion is the identity of the collector that produced this
+	// result (CollectorOutputVersion, collector_output_version.go). It rides this
+	// carrier for the same reason DiscoveryFingerprint does: it is a property of
+	// the PRODUCER rather than of the rows, so no consumer downstream can recover
+	// it by inspecting Nodes or Edges — a collector that changed what it emits
+	// looks, row for row, like a collector that did not.
+	CollectorOutputVersion uint32
+	// ChunkReport attributes every discovered file chunking failed to produce a
+	// result for. It rides this existing carrier for the same reason
+	// DiscoveryFingerprint does: the loss is UNRECOVERABLE from Nodes and Edges,
+	// where a dropped file and a file that genuinely holds no symbols look
+	// identical. The code collector fails the whole collect when it is non-empty.
+	ChunkReport ChunkReport
 }
 
 // NodeEntry tracks a node and its source chunk content for summarization.
@@ -47,11 +68,17 @@ type NodeEntry struct {
 // so language-hub nodes collide across full-reindex / partial-reindex of
 // the SAME repo but never across different repos.
 func Populate(ctx context.Context, repoName, repoDir string) (PopulateResult, error) {
-	files, err := DiscoverFiles(ctx, repoDir)
+	// The REPORTING form is used rather than the discarding DiscoverFiles (which
+	// is literally this call with the report thrown away) because the discovery
+	// PATH that actually ran is half the configuration fingerprint below, and it
+	// is knowable only here.
+	discOpts := DiscoveryOptions{}
+	files, rep, err := DiscoverFilesReporting(ctx, repoDir, discOpts)
 	if err != nil {
 		return PopulateResult{}, err
 	}
-	results, err := ChunkFilesParallel(ctx, repoDir, files)
+	fingerprint := DiscoveryFingerprint(rep.DiscoveryPath, discOpts)
+	results, chunkRep, err := ChunkFilesParallel(ctx, repoDir, files)
 	if err != nil {
 		return PopulateResult{}, err
 	}
@@ -71,7 +98,11 @@ func Populate(ctx context.Context, repoName, repoDir string) (PopulateResult, er
 		ModulePath: mp,
 		Files:      files,
 	}
-	return chunkResultsToPopulate(repoName, rc, results), nil
+	out := chunkResultsToPopulate(repoName, rc, results)
+	out.DiscoveryFingerprint = fingerprint
+	out.CollectorOutputVersion = CollectorOutputVersion
+	out.ChunkReport = chunkRep
+	return out, nil
 }
 
 // PopulateForExternalGraph runs the parser collector flow (Populate) and
@@ -242,8 +273,34 @@ func chunkResultsToPopulate(repoName string, rc *treesitter.RepoContext, results
 	// resolution consumes the chunk results directly so the reference site each
 	// edge carries survives to the walk.
 	//
-	// allEdges holds only the language-hub edges built above — they name node
-	// IDs on both ends already and never enter resolution.
+	// allEdges holds the language-hub edges built above and the IMPLEMENTS edges
+	// derived below — both classes name node IDs on both ends already and never
+	// enter resolution.
+	//
+	// THE DERIVATION RUNS HERE FOR THE SAME REASON RESOLUTION DOES: it reads the
+	// declaration index, and the index is complete across every file only at this
+	// point. Running it earlier would yield false negatives indistinguishable
+	// from real ones.
+	//
+	// Signature keys are rendered FIRST, for that same reason one step earlier:
+	// a leaf's ext:-or-scope rendering asks whether its scope is in the index, so
+	// it too is only answerable now. The derivation reads SigKey, so this call
+	// must precede it.
+	ix.resolveSigKeys()
+	// Owners are stamped here for the same reason the derivations run here: the
+	// pass addresses records by node ID, so every record must already be in the
+	// index. It reads the containment edges resolveSlotEdges already resolved
+	// and adds no traversal of its own.
+	stampDeclOwners(ix, results)
+	allEdges = append(allEdges, emitImplementsEdges(ix)...)
+	// The DECLARED half of the same edge type, and it runs here for the same
+	// reason: it resolves each declared supertype spelling against the index,
+	// which is complete across every file only at this point.
+	allEdges = append(allEdges, emitDeclaredConformanceEdges(ix)...)
+	// C's own analog of the same edge type, and it runs here for the same
+	// reason again: it resolves a struct spelling and a target spelling against
+	// the index, which is complete across every file only at this point.
+	allEdges = append(allEdges, emitSlotBindEdges(ix)...)
 	resolvedEdges := append(allEdges, resolveEdges(results, ix, nodeIDs)...)
 	return PopulateResult{
 		Nodes:   nodes,
@@ -257,6 +314,10 @@ func chunkResultsToPopulate(repoName string, rc *treesitter.RepoContext, results
 // caller-supplied description (folded preceding comments) populates the node's
 // Description. IsExported is promoted from chunk.Exported into a denormalized
 // struct field; the legacy "exported" metadata key is no longer written.
+// Summary and Keywords are composed deterministically by
+// deterministicChunkFields for the closed allowlist of low-information chunk
+// types, and are EMPTY for every other type — which is what today's nodes
+// already carry, so nothing outside the allowlist changes.
 // Comment chunks never reach this function — chunkResultsToPopulate filters
 // them out and folds their text into the following symbol's Description.
 //
@@ -266,6 +327,12 @@ func chunkResultsToPopulate(repoName string, rc *treesitter.RepoContext, results
 func appendChunkNode(chunk treesitter.Chunk, description string, nodes *[]*knowledgev1.Node) string {
 	nodeID := ChunkNodeID(chunk)
 	nodeType := kgtypes.NodeType(chunk.ChunkType)
+	// ASSIGNED UNCONDITIONALLY ON PURPOSE: deterministicChunkFields returns
+	// ("", "") for every ineligible chunk, so writing both fields leaves those
+	// nodes byte-identical to today's output. An `if summary != ""` guard would
+	// add a branch that changes nothing and invite a reader to think the empty
+	// case is special.
+	summary, keywords := deterministicChunkFields(chunk)
 	*nodes = append(*nodes, &knowledgev1.Node{
 		Id:          nodeID,
 		Type:        string(nodeType),
@@ -277,6 +344,8 @@ func appendChunkNode(chunk treesitter.Chunk, description string, nodes *[]*knowl
 		Content:     chunk.Content,
 		Signature:   chunk.Context.Signature,
 		Description: description,
+		Summary:     summary,
+		Keywords:    keywords,
 		IsExported:  chunk.Exported,
 		IsTest:      chunk.IsTest,
 		TestKind:    string(chunk.TestKind),
@@ -311,15 +380,47 @@ func indexDeclaration(ix *declIndex, result *treesitter.Result, chunk treesitter
 	if chunk.Name == "" {
 		return
 	}
-	err := ix.add(&declRec{
+	rec := &declRec{
 		NodeID: nodeID,
 		File:   result.FilePath,
 		Scope:  treesitter.ScopeID(result.FilePath, result.Language, chunk.Context.PackageName),
+		Ref:    result.Ref,
+		Lang:   result.Language,
 		Parent: baseDeclName(chunk.ParentName),
 		Name:   baseDeclName(chunk.Name),
-	})
+	}
+	// The declaration's own type facts, resolved against THIS FILE'S imports —
+	// the declaring file's, never a referencing file's. fillBinds runs strictly
+	// before the index build, so result.Ref already carries those binds by the
+	// time this runs; do not move either call.
+	if chunk.TypeFacts != nil {
+		rec.ResultTypes = resolveTypeTexts(result.Ref, chunk.TypeFacts.Results)
+		rec.FieldTypes = resolveTypeTextMap(result.Ref, chunk.TypeFacts.Fields)
+		rec.Embeds, rec.ExtEmbed = resolveDeclEmbeds(result.Ref, chunk.TypeFacts.Embeds)
+		// CAPTURE ONLY — no index is read on this path. The spellings are
+		// carried verbatim and resolved in the emitter, where the index is
+		// complete and the answer no longer depends on file order.
+		rec.Conforms = captureDeclConforms(chunk.TypeFacts.Conforms)
+		// CARRIED VERBATIM, both of them, for the reason the field above is:
+		// the slot-bind emitter resolves each spelling against a COMPLETE
+		// index, and there is nothing here that could resolve one correctly.
+		rec.SlotBinds = chunk.TypeFacts.SlotBinds
+		rec.FieldOrder = chunk.TypeFacts.FieldOrder
+		rec.IsInterface = chunk.TypeFacts.IsInterface
+		rec.PartialBody = chunk.TypeFacts.PartialBody
+		rec.IsGeneric = chunk.TypeFacts.IsGeneric
+	}
+	err := ix.add(rec)
 	if err != nil {
 		slog.Error("collector: duplicate declaration node ID", "file", result.FilePath, "error", err)
+		return
+	}
+	// THE SIGNATURE KEY IS THE ONE FIELD THAT CANNOT BE RESOLVED HERE. Its leaves
+	// render ext: for anything outside the indexed universe, and "outside" is only
+	// decidable once every file has contributed its scopes — see pendingSigs.
+	// Deferred after the add, so a record rejected as a duplicate never gets one.
+	if chunk.TypeFacts != nil {
+		ix.deferSigKey(rec, result.Ref, chunk.TypeFacts.Sig)
 	}
 }
 

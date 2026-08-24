@@ -25,6 +25,12 @@ func LinkStepsToCode(ctx context.Context, gc postpopulate.GraphCaller, graphName
 	if err != nil {
 		return fmt.Errorf("LinkStepsToCode: query steps: %w", err)
 	}
+	// With no steps the derived edge set is necessarily empty, and
+	// postpopulate.LinkEdgesBatch already no-ops at len(edges)==0 — so the only
+	// thing this return skips is the full file-node drain below.
+	if len(steps) == 0 {
+		return nil
+	}
 
 	fileNodes, err := postpopulate.BrowseAllNodes(ctx, gc, kgtypes.GraphCode, graphName, map[string]any{
 		"type": string(kgtypes.NodeFile),

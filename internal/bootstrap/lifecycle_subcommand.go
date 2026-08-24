@@ -2,9 +2,9 @@
 
 // lifecycle_subcommand.go — `knowledge start / stop / status` CLI
 // subcommands. These are user-facing terminal commands that DO write
-// to stdout — that's the explicit carve-out from the MCP-stdio-only
-// rule that lifecycle.go enforces. Output here is human-readable; no
-// JSON-RPC framing.
+// to stdout — that's the explicit carve-out from the stdout-discipline
+// lifecycle.go enforces, whose helpers keep stdout clear for exactly
+// this. Output here is human-readable text users read and pipe.
 //
 // `start`  — spawn knowledge-server (idempotent: if already running,
 //            prints status and exits 0).
@@ -38,6 +38,7 @@ type lifecycleFlags struct {
 	root         string
 	graphStorage string
 	timeout      time.Duration // stop-only: how long to wait for drain
+	pprof        bool          // start-only: mount the spawned server's /debug/pprof/
 }
 
 // registerLifecycleFlags registers the lifecycle-subcommand flags on fs,
@@ -47,12 +48,20 @@ type lifecycleFlags struct {
 // flag tables. The `name` param drives the stop-only --timeout branch so the
 // generator can request the start/status (no --timeout) vs stop (--timeout)
 // variant. Mirrors how registerConfigFlags is shared by ParseFlags + runServe.
+//
+// --pprof is START-ONLY on the same per-name branch, because it is an argument
+// to a SPAWN: stop and status act on a server that is already running and whose
+// argv is settled, so offering them the flag would advertise a knob that could
+// not take effect.
 func registerLifecycleFlags(fs *flag.FlagSet, f *lifecycleFlags, name string) {
 	fs.IntVar(&f.port, "port", graphclient.DefaultPort, "TCP port the graph server listens on")
 	fs.StringVar(&f.root, "root", ".", "Project root directory")
 	fs.StringVar(&f.graphStorage, "graph-storage", "~/.knowledge/", "Directory for graph storage")
 	if name == "stop" {
 		fs.DurationVar(&f.timeout, "timeout", 30*time.Second, "Max wait for graceful shutdown")
+	}
+	if name == "start" {
+		fs.BoolVar(&f.pprof, "pprof", false, "Start the server with its /debug/pprof/ handlers mounted on the --port listener (loopback only)")
 	}
 }
 
@@ -103,6 +112,7 @@ func runStart(args []string) error {
 		Port:         f.port,
 		Root:         f.root,
 		GraphStorage: f.graphStorage,
+		Pprof:        f.pprof,
 	})
 	if err != nil {
 		return err

@@ -124,8 +124,8 @@ func TestElixirDecls(t *testing.T) {
 // resolver is unreachable until the query change lands and so cannot be caught
 // by any Elixir naming assertion on its own.
 func TestDeclNameRegistryWithElixir(t *testing.T) {
-	for _, lang := range []Language{LangGroovy, LangLua, LangOCaml, LangElm, LangPHP, LangElixir} {
+	for _, lang := range []Language{LangGroovy, LangLua, LangOCaml, LangElm, LangPHP, LangElixir, LangC} {
 		assert.Contains(t, declNameResolvers, lang, "%s must register a declNameResolver", lang)
 	}
-	assert.Len(t, declNameResolvers, 6)
+	assert.Len(t, declNameResolvers, 7)
 }

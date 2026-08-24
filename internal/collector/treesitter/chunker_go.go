@@ -26,6 +26,42 @@ func extractGoReceiver(node *sitter.Node, src []byte) string {
 	return findTypeIdentifier(receiverNode, src)
 }
 
+// goInterfaceParentName returns the name of the interface a method spec belongs
+// to, ascending method_elem → interface_type → type_spec and reading that spec's
+// `name:` field. Returns "" if any link in that chain is absent.
+//
+// IT IS THE SIBLING OF extractGoReceiver: that helper answers "which type does
+// this method_declaration hang off", and this one answers the same question for
+// a method_elem. The ascent is EXACT rather than a search — every link is
+// checked by kind — so an anonymous interface, whose interface_type has no
+// type_spec parent, yields "" and never borrows an unrelated name.
+//
+// findEnclosingScope is deliberately NOT reused: classLikeByLang's Go row is
+// empty, and admitting a kind there would change parent resolution for every Go
+// declaration.
+//
+// A GENERIC INTERFACE STILL RESOLVES. `type Gen[T any] interface{...}` puts a
+// type_parameter_list beside the name, but the `name:` FIELD still binds the
+// type_identifier, so the field read is unaffected by the sibling.
+func goInterfaceParentName(declNode *sitter.Node, src []byte) string {
+	if declNode == nil || declNode.Type() != "method_elem" {
+		return ""
+	}
+	ifaceNode := declNode.Parent()
+	if ifaceNode == nil || ifaceNode.Type() != "interface_type" {
+		return ""
+	}
+	specNode := ifaceNode.Parent()
+	if specNode == nil || specNode.Type() != "type_spec" {
+		return ""
+	}
+	nameNode := specNode.ChildByFieldName("name")
+	if nameNode == nil {
+		return ""
+	}
+	return nameNode.Content(src)
+}
+
 // findTypeIdentifier recursively finds the first type_identifier in a subtree.
 func findTypeIdentifier(node *sitter.Node, src []byte) string {
 	if node.Type() == "type_identifier" {
@@ -74,12 +110,30 @@ func qualifiedTypeName(node *sitter.Node, src []byte) string {
 	return findTypeIdentifier(node, src)
 }
 
-// extractGoEmbeds finds embedded structs/interfaces in a type declaration.
-// Returns the names of embedded types (without pointer markers).
+// extractGoEmbeds finds the embedded fields of a STRUCT type declaration and
+// returns their type spellings, pointer markers stripped.
+//
+// THE STRUCT BODY IS BOUND FROM THE type_spec's `type` FIELD, NEVER SEARCHED
+// FOR. A depth-first descent for a struct_type finds one nested ANYWHERE in the
+// declaration, so `type IfaceWithAnonStructParam interface { F(x struct{ Base })
+// error }` yielded [Base] — an embed credited to an interface that embeds
+// nothing, and a false EMBEDS edge on the graph. Proven by executing both walks
+// over that fixture: the descent returns [Base], the field read returns nothing.
+// The field read is also the CHEAPER of the two, and it is generic-safe: `type
+// Gen[T any] struct { EmbG }` binds its struct_type through the `type` field
+// despite the sibling type_parameter_list.
+//
+// A GROUPED DECLARATION DECLINES. See goSoleTypeSpec: several type_specs share
+// one type_declaration node, so an extractor handed only the declaration cannot
+// tell which spec it is serving, and crediting every spec with the first one's
+// embeds is a confident wrong answer where nil is an honest one.
 func extractGoEmbeds(node *sitter.Node, src []byte) []string {
-	// Find the struct_type or interface_type within the type_declaration.
-	structNode := findNodeByType(node, "struct_type")
-	if structNode == nil {
+	spec := goSoleTypeSpec(node)
+	if spec == nil {
+		return nil
+	}
+	structNode := spec.ChildByFieldName("type")
+	if structNode == nil || structNode.Type() != "struct_type" {
 		return nil
 	}
 

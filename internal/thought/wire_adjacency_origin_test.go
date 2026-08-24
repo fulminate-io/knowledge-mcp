@@ -3,13 +3,93 @@
 package thought
 
 import (
+	"context"
 	"testing"
 
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
+
+// allTypesFake serves the two reads the scope="all_types" composition makes: the
+// keyset node browse over EVERY type, and the edge read. It records the edge read's
+// requested type filter so a test can assert on the WIRE CALL rather than inferring
+// the path from the result.
+type allTypesFake struct {
+	nodes     []*knowledgev1.Node
+	edges     []*knowledgev1.Edge
+	edgeCalls [][]string
+}
+
+func (f *allTypesFake) Execute(_ context.Context, req *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error) {
+	q := req.GetQuery()
+	if q == nil {
+		return &knowledgev1.ExecuteResponse{}, nil
+	}
+	if q.GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_EDGES {
+		types := q.GetSelection().GetEdgeTypes()
+		f.edgeCalls = append(f.edgeCalls, append([]string(nil), types...))
+		want := map[string]bool{}
+		for _, et := range types {
+			want[et] = true
+		}
+		var out []*knowledgev1.Edge
+		for _, e := range f.edges {
+			if len(want) == 0 || want[e.GetType()] {
+				out = append(out, e)
+			}
+		}
+		return &knowledgev1.ExecuteResponse{Edges: bandNarrow(out, q)}, nil
+	}
+	if q.GetAfterId() != "" {
+		return &knowledgev1.ExecuteResponse{}, nil // one short page terminates the drain.
+	}
+	return &knowledgev1.ExecuteResponse{Nodes: f.nodes}, nil
+}
+
+// TestFetchAdjacency_AllTypesNotNarrowedByMemo guards a LIVE PRODUCTION SURFACE that
+// had no end-to-end coverage: thoughts(adjacency, scope:"all_types") is advertised as
+// the cross-type bulk read and reaches this composition. The unified pivot-edge memo
+// carries only the 7 types in unifiedPivotEdgeTypes, so wiring all_types to it would
+// silently narrow an every-type read — and nothing else in the suite would notice.
+//
+// PASSING A *passReads AS src IS THE WHOLE POINT. The memo is what would do the
+// narrowing, so a version of this test with a nil src could not detect it: with no
+// memo present there is nothing to narrow and the test would pass either way.
+func TestFetchAdjacency_AllTypesNotNarrowedByMemo(t *testing.T) {
+	ctx := context.Background()
+	const thoughtID, findingID = "th-1", "fnd-1"
+
+	// EdgeSupports sits OUTSIDE unifiedPivotEdgeTypes, so it is exactly the edge a
+	// memo-narrowed read would lose.
+	gc := &allTypesFake{
+		nodes: []*knowledgev1.Node{
+			{Id: thoughtID, Type: string(kgtypes.NodeThought)},
+			{Id: findingID, Type: string(kgtypes.NodeFinding)},
+		},
+		edges: []*knowledgev1.Edge{
+			{FromId: thoughtID, ToId: findingID, Type: string(kgtypes.EdgeSupports)},
+		},
+	}
+
+	nodeIDs, adj, err := fetchAdjacency(ctx, gc, "all_types", nil, newPassReads(nil))
+	require.NoError(t, err)
+	require.ElementsMatch(t, []string{thoughtID, findingID}, nodeIDs,
+		"all_types keeps both node types")
+
+	assert.Contains(t, adj[thoughtID], findingID,
+		"an edge whose type is OUTSIDE unifiedPivotEdgeTypes must survive the all_types read")
+	assert.Contains(t, adj[findingID], thoughtID,
+		"and bidirectionally, as buildAdjacencyFromEdges projects it")
+
+	// The direct wire evidence: all_types asks for NO type filter. A 7-type request
+	// here would mean the memo path had captured this read.
+	require.Len(t, gc.edgeCalls, 1, "all_types issues exactly one edge read")
+	assert.Empty(t, gc.edgeCalls[0],
+		"all_types reads with a NIL type filter — every type — not the 7-type unified set")
+}
 
 // TestAllTypesAdjacency_ExcludesAgentSkillHubs is the structural guard for the
 // load-bearing invariant: origin/agent + skill edges must NEVER enter the
@@ -59,7 +139,9 @@ func TestAllTypesAdjacency_ExcludesAgentSkillHubs(t *testing.T) {
 		{FromId: "agent-planner", ToId: "th-1", Type: string(kgtypes.EdgeProduced)},
 		{FromId: "th-1", ToId: "th-2", Type: string(kgtypes.EdgeRelatesTo)},
 	}
-	adj := buildAdjacencyFromEdges(edges, idSet)
+	// nil keepTypes: this is the all_types path, which reads every edge type. It is
+	// also what exercises the keep-everything branch of the new type predicate.
+	adj := buildAdjacencyFromEdges(edges, idSet, nil)
 
 	// The agent hub is excluded entirely.
 	assert.NotContains(t, adj, "agent-planner",

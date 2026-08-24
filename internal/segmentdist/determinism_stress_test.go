@@ -38,7 +38,7 @@ func shipDeterministicAndExport(t *testing.T, docs []searchengine.Document) sear
 	t.Helper()
 	_, gc := newSegmentHarness(t)
 	// The embed ship path builds deterministically by default now — no seam to set.
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 
 	require.NoError(t, mgr.AddAndMarkDirty(context.Background(), kgtypes.GraphKnowledge, "kg", docs))
 
@@ -100,7 +100,7 @@ func TestDeterministicExactTop1Recovery500(t *testing.T) {
 	ctx := context.Background()
 
 	_, gc := newSegmentHarness(t)
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 
 	// n < MinSegmentDocs(1024). The write force-seals the batch and the tick ships
 	// it; the trailing Flush is a no-op on the now-empty buffer and is kept as the

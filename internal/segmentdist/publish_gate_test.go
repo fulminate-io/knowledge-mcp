@@ -33,8 +33,10 @@ import (
 // dependence is exactly the class of defect this package's ticket is about.
 //
 // The builder outlives every test, so nothing else will clean up after it; it owns
-// its cache directory and removes it on the way out. That is safe because Export
-// returns in-memory blobs and the on-disk files are never read again.
+// its cache directory and removes it on the way out, and it closes its own Manager
+// for the same reason — there is no test to register either cleanup with. Both are
+// safe because Export returns in-memory blobs: the on-disk files are never read
+// again, and Close retires the engines' background mergers only.
 var sharedCorpusBlobs = sync.OnceValue(func() []searchengine.SegmentBlob {
 	ctx := context.Background()
 	dir, err := os.MkdirTemp("", "segmentdist-sharedcorpus-")
@@ -46,6 +48,7 @@ var sharedCorpusBlobs = sync.OnceValue(func() []searchengine.SegmentBlob {
 	svc := newSharedServerFake()
 	gc := svc.viewFor(&knowledgev1.GraphSelector{}, "")
 	owner := NewManager(loginStateStub{loggedIn: true}, dir, 0, withSegmentSource(gc))
+	defer owner.Close()
 	const corpusSegs = 4
 	for b := range corpusSegs {
 		batch := prefixIDs(hnswVecDocs(searchCorpusN), fmt.Sprintf("shared-b%d-", b))
@@ -73,7 +76,7 @@ func seedSharedCorpus(t *testing.T, svc *sharedServerFake, gc *fakeSegmentSource
 ) (*Manager, *distManager[[]byte, struct{}], map[searchengine.SegmentID]struct{}) {
 	t.Helper()
 	ctx := context.Background()
-	owner := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	owner := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 	dm := owner.managerFor(kgtypes.GraphCode, name)
 	require.NoError(t, dm.engine.Import(sharedCorpusBlobs(), nil))
 	warmExported(dm)
@@ -147,7 +150,7 @@ func TestPublishSubsetGate(t *testing.T) {
 
 		// A FRESH manager that has NOT loaded the corpus: its resident set is tiny
 		// (zero / one tail) relative to the shipped corpus → below the coverage ratio.
-		fresh := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+		fresh := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 		fdm := fresh.managerFor(kgtypes.GraphCode, "ratioRepo")
 		// Single shipped id as a stand-in resident live set — far below the ratio.
 		var anyID searchengine.SegmentID
@@ -192,7 +195,7 @@ func newMemoFixture(t *testing.T, name string) memoFixture {
 
 	// A FRESH manager that has NOT loaded the corpus: its resident set is 0, far
 	// below the coverage ratio, so its publishCoverageOK always returns the skip.
-	fresh := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	fresh := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 	var anyID searchengine.SegmentID
 	for id := range prior {
 		anyID = id

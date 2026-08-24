@@ -12,6 +12,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"connectrpc.com/connect"
 	"github.com/stretchr/testify/assert"
@@ -21,6 +22,7 @@ import (
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1/knowledgev1connect"
+	"github.com/fulminate-io/knowledge-mcp/internal/collector/contribhash"
 	"github.com/fulminate-io/knowledge-mcp/internal/collectorwire"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 )
@@ -53,6 +55,17 @@ type scriptedIngest struct {
 }
 
 var _ knowledgev1connect.IngestServiceHandler = (*scriptedIngest)(nil)
+
+// CollectManifest answers as a genuinely EMPTY graph — see recordingIngest's
+// twin for why the empty shape is the right fake default.
+func (s *scriptedIngest) CollectManifest(
+	context.Context,
+	*connect.Request[knowledgev1.CollectManifestRequest],
+) (*connect.Response[knowledgev1.CollectManifestResponse], error) {
+	return connect.NewResponse(&knowledgev1.CollectManifestResponse{
+		ManifestId: "test-manifest", HashSchemeVersion: contribhash.ContributionHashSchemeVersion,
+	}), nil
+}
 
 func (s *scriptedIngest) CollectChunk(
 	context.Context,
@@ -126,6 +139,36 @@ func startScriptedIngest(t *testing.T, eng *scriptedIngest) knowledgev1connect.I
 	return knowledgev1connect.NewIngestServiceClient(cl, srv.URL, connect.WithGRPC())
 }
 
+// startScriptedIngestProto is startScriptedIngest with the PROTOCOL chosen by the
+// caller, so a test can exercise the wire format PRODUCTION uses.
+//
+// WHY IT EXISTS: both production constructors (graphclient/client.go and
+// cloud_auth.go) build the ingest client with NO protocol option — the DEFAULT
+// connect protocol — while the helper above pins gRPC. Error METADATA travels
+// differently across the two (gRPC trailers vs connect's error body), so a
+// Retry-After proven only over gRPC proves nothing about the path prod takes.
+// Pass no options for the default protocol.
+func startScriptedIngestProto(
+	t *testing.T, eng *scriptedIngest, opts ...connect.ClientOption,
+) knowledgev1connect.IngestServiceClient {
+	t.Helper()
+	mux := http.NewServeMux()
+	path, hdlr := knowledgev1connect.NewIngestServiceHandler(eng)
+	mux.Handle(path, hdlr)
+	srv := httptest.NewServer(h2c.NewHandler(mux, &http2.Server{}))
+	t.Cleanup(srv.Close)
+
+	cl := &http.Client{
+		Transport: &http2.Transport{
+			AllowHTTP: true,
+			DialTLSContext: func(_ context.Context, network, addr string, _ *tls.Config) (net.Conn, error) {
+				return net.Dial(network, addr)
+			},
+		},
+	}
+	return knowledgev1connect.NewIngestServiceClient(cl, srv.URL, opts...)
+}
+
 // oneChunkResult is a CollectResult small enough to pack into exactly one
 // CollectChunk, so a call count is unambiguously an ATTEMPT count.
 func oneChunkResult(graph string) *collectorwire.CollectResult {
@@ -133,6 +176,10 @@ func oneChunkResult(graph string) *collectorwire.CollectResult {
 		GraphType: kgtypes.GraphCode,
 		GraphName: graph,
 		Nodes:     []*knowledgev1.Node{{Id: "n1", Type: "func", Summary: "n1"}},
+		// A code collect always carries one — codesync stamps it from the discovery
+		// pass — and an EMPTY value now aborts the collect as a producer regression.
+		DiscoveryFingerprint:   "fingerprint-retry-fixture",
+		CollectorOutputVersion: testCollectorOutputVersion,
 	}
 }
 
@@ -225,4 +272,89 @@ func TestFinalizeRetry_AmbiguousUnknownRetriedOnce(t *testing.T) {
 	require.NotEmpty(t, eng.polled, "the sink must poll the finalize tail")
 	assert.Equal(t, "finalize-attempt-2", eng.polled[0],
 		"the polled id comes from the attempt that actually succeeded, not the lost one")
+}
+
+// TestFinalizeRetry_ShedThenSucceeds is the END-TO-END proof of the shedding
+// pair: the server sheds a Finalize with ResourceExhausted + Retry-After, and the
+// collect completes anyway because the client backs off for the stated delay and
+// re-sends.
+//
+// IT IS THE TREE'S FIRST WIRE ROUND-TRIP PROOF THAT Retry-After SURVIVES THE
+// PRODUCTION PROTOCOL. Both production ingest clients are built with NO protocol
+// option — the default connect protocol — while every other test here pins gRPC.
+// Error metadata travels differently across the two, so the `connect` row is the
+// one that matters and the `grpc` row preserves the existing file's coverage.
+//
+// THE ELAPSED-TIME BOUND IS NOT OPTIONAL. Counting attempts alone cannot tell a
+// backoff from a hot loop, and honoring the server's stated number is the whole
+// contract. One second is the smallest usable value: the shared parser rejects
+// anything <= 0 and reads only integer seconds or an HTTP date.
+//
+// WHAT IT DOES AND DOES NOT PROVE: it proves the abort this ticket caught — a shed
+// Finalize killing a collect whose payload was already fully uploaded — no longer
+// happens. It does NOT prove the server sheds at the floor; that is the admission
+// test's job, and the live pgdog check's.
+func TestFinalizeRetry_ShedThenSucceeds(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		opts []connect.ClientOption
+	}{
+		{name: "connect"}, // the protocol production actually uses
+		{name: "grpc", opts: []connect.ClientOption{connect.WithGRPC()}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			eng := &scriptedIngest{
+				onFinalize: func(n int32) error {
+					if n == 1 {
+						// Byte-for-byte the shape the server's shed paths produce.
+						e := connect.NewError(connect.CodeResourceExhausted,
+							errors.New("server at capacity: retry shortly"))
+						e.Meta().Set("Retry-After", "1")
+						return e
+					}
+					return nil
+				},
+				finalizeIDFor: func(n int32) string {
+					if n == 1 {
+						return "finalize-shed-1"
+					}
+					return "finalize-shed-2"
+				},
+			}
+			client := startScriptedIngestProto(t, eng, tc.opts...)
+			sink := NewUploadSink(client)
+
+			start := time.Now()
+			require.NoError(t, sink.WriteResult(context.Background(), "", oneChunkResult("finalize-shed-repo")),
+				"a shed Finalize must be retried to success, not aborted after a full upload")
+			elapsed := time.Since(start)
+
+			assert.Equal(t, int32(2), eng.finalize.Load(), "exactly one Finalize re-send")
+			assert.GreaterOrEqual(t, elapsed, time.Second,
+				"the client returned faster than the server's stated Retry-After: it retried in a hot loop "+
+					"instead of honoring the delay")
+		})
+	}
+}
+
+// TestFinalizeRetry_ShedWithoutRetryAfterStillSurfaces is the twin guard on the
+// predicate's CONJUNCTION: ResourceExhausted alone is not a shed.
+//
+// It is a CHARACTERIZATION GUARD, green before and after — but for opposite
+// reasons. Before the shed class nothing retried the code at all; now it must stay
+// green because the HEADER is absent, which is what keeps the new class from
+// swallowing a permanent refusal that happens to share the code.
+func TestFinalizeRetry_ShedWithoutRetryAfterStillSurfaces(t *testing.T) {
+	eng := &scriptedIngest{
+		onFinalize: func(int32) error {
+			return connect.NewError(connect.CodeResourceExhausted, errors.New("permanent refusal"))
+		},
+	}
+	client := startScriptedIngestProto(t, eng)
+	sink := NewUploadSink(client)
+
+	require.Error(t, sink.WriteResult(context.Background(), "", oneChunkResult("finalize-noheader-repo")),
+		"a ResourceExhausted with NO Retry-After is not a shed and must surface")
+	assert.Equal(t, int32(1), eng.finalize.Load(),
+		"exactly one attempt: the header is the discriminator, so a headerless refusal must not be retried")
 }

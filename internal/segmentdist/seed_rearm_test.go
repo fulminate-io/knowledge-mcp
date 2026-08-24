@@ -76,10 +76,10 @@ func TestEnsureShippedSeeded_RetriesAfterTransientFailure(t *testing.T) {
 
 	svc := newSharedServerFake()
 	src := &failFirstListSource{inner: svc.viewFor(target, "")}
-	eng := newMockEngine()
+	eng := newMockEngine(t)
 	require.NoError(t, eng.Add([]searchengine.Document{doc("d1", "alpha")}))
 	require.NoError(t, eng.Add([]searchengine.Document{doc("d2", "beta")}))
-	mgr := newDistManager(eng, src, newDiskSegmentCache(t.TempDir(), 0), target, "")
+	mgr := newDistManager(eng, src, newDiskSegmentCache(t.TempDir(), 0, adviceRandom), target, "")
 
 	// First ship: the seed's List(0) trips on the transient failure → ship bails.
 	_, err := mgr.ship(ctx, mgr.locallyShipped)

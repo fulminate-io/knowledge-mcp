@@ -23,10 +23,22 @@ func warmLoop(fake *fakeCorpusScanner, root string) *PropagationLoop {
 	return (&PropagationLoop{}).WithCorpusScanner(fake).WithCorpusPersistence(root)
 }
 
-// corpusPayloadOffset is where the framed record's payload begins, so a test can
-// flip a byte INSIDE it and hit the checksum rather than the header.
-func corpusPayloadOffset() int {
-	return corpusFrameFixedHead + len(strings.Join(corpusNodeTypes, ",")) + 4 + corpusFrameChecksum
+// corpusSealedHeaderLen mirrors the sealed record's fixed prefix on disk —
+// magic(4) + key version(1) + nonce(12). It is restated here rather than imported
+// because the seal package keeps its layout unexported; that package's own
+// envelope-shape test is what pins the real value.
+const corpusSealedHeaderLen = 4 + 1 + 12
+
+// corpusCiphertextTamperOffset is an offset INSIDE the sealed record's ciphertext,
+// so a test can flip a byte there and have the flip rejected at load.
+//
+// WHAT THE SEAL CHANGED, since the name would otherwise still describe the old
+// shape: this used to return the offset of the inner frame's PAYLOAD, and a flip
+// there was caught by the frame's sha256 checksum. Everything past the envelope
+// header is now ciphertext, so a flip is caught by GCM authentication instead — a
+// different mechanism reaching the same rejection, under a name that now says so.
+func corpusCiphertextTamperOffset() int {
+	return corpusSealedHeaderLen
 }
 
 // TestWarmRestart_PersistedCacheDrainsOnePage is the ticket's headline claim: a
@@ -98,7 +110,7 @@ func TestWarmRestart_CorruptRecordForcesFullDrain(t *testing.T) {
 			},
 		},
 		{
-			name: "valid record with one flipped payload byte",
+			name: "valid record with one flipped ciphertext byte",
 			plant: func(t *testing.T, path string) {
 				t.Helper()
 				items := []*knowledgev1.Node{{Id: "t1", Type: "thought", UpdatedAt: 1000}}
@@ -106,8 +118,8 @@ func TestWarmRestart_CorruptRecordForcesFullDrain(t *testing.T) {
 				require.NoError(t, saveCorpusRecord(path, corpusNodeTypes, items, cursors))
 				raw, err := os.ReadFile(path) //nolint:gosec // test fixture under t.TempDir.
 				require.NoError(t, err)
-				off := corpusPayloadOffset()
-				require.Less(t, off, len(raw), "the fixture record must carry a payload to corrupt")
+				off := corpusCiphertextTamperOffset()
+				require.Less(t, off, len(raw), "the fixture record must carry ciphertext to corrupt")
 				raw[off] ^= 0xFF
 				require.NoError(t, os.WriteFile(path, raw, 0o600)) //nolint:gosec // path is CorpusCachePathFor(t.TempDir()).
 			},

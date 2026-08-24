@@ -4,6 +4,7 @@ package treesitter
 
 import (
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -66,6 +67,53 @@ type RefSite struct {
 	// imports exporting one name, are both declaration-time errors — so there
 	// is no shadowing rule to encode and no precedence to read into this set.
 	DotScopes map[string]bool
+
+	// QualifierTypes maps a qualifier NAME visible inside one declaration —
+	// a receiver, a parameter, a local variable — onto the type it was
+	// declared with, for the typed-qualifier resolution rung. It is nil for
+	// every language with no registered qualifier-type arm, and nil is the
+	// whole of the unregistered contract: the rung reads a nil map as "no
+	// candidate" and falls through unchanged.
+	//
+	// THIS FIELD IS PER-DECLARATION, WHICH EVERY OTHER FIELD ON THIS STRUCT IS
+	// NOT, AND THE DIFFERENCE IS LOAD-BEARING. Binds and DotScopes are
+	// per-FILE maps ALLOCATED by the chunker and FILLED IN PLACE by the
+	// parser's post-chunk binds pass; a by-value copy shares their map
+	// headers, which is exactly why that fill is visible through every
+	// parented copy. QualifierTypes is the opposite: it is built PER
+	// DECLARATION during chunking and never filled later, so it must be
+	// ASSIGNED onto a site no other declaration shares. refForDeclaration is
+	// what guarantees that — a declaration carrying qualifier types always
+	// gets its own site copy rather than the shared file-level pointer.
+	//
+	// Do NOT apply the allocate-then-fill-in-place discipline the two fields
+	// above document to this one. Allocating it per file and filling it per
+	// declaration would leak every declaration's locals into every other
+	// declaration in the same file, which is precisely the aliasing defect
+	// the per-declaration copy exists to prevent.
+	QualifierTypes map[string]QualType
+}
+
+// QualType is the type one qualifier name was declared with, as the chunker
+// read it out of the declaration's own syntax.
+//
+// It carries the type AS WRITTEN rather than a resolved target: the chunker
+// has no declaration index, so binding the text to a declaration is the
+// parser's job on the resolution ladder. Everything here is what syntax alone
+// can establish.
+type QualType struct {
+	// Text is the type or callee expression AS WRITTEN, with pointer stars,
+	// parens and type arguments stripped: "T" or "pkg.T".
+	Text string
+
+	// FromCall reports that Text names a function or method whose declared
+	// RESULT type is the qualifier's type, rather than naming the type
+	// directly. The parser needs the extra hop to reach the type.
+	FromCall bool
+
+	// ResultIndex is the 0-based position in that callee's result list, and is
+	// 0 for the single-result case. It is read only when FromCall is true.
+	ResultIndex int
 }
 
 // ScopeKind is the resolution unit a language uses: the granularity at which
@@ -80,6 +128,13 @@ const (
 	// ScopeDeclaredNamespace — a declaration is visible to every file
 	// declaring the same namespace, wherever those files live.
 	ScopeDeclaredNamespace
+	// ScopeModule — a declaration is visible to every file in the same BUILD
+	// MODULE, which the source tree's layout convention identifies rather than
+	// any clause in the file. APPENDED, NEVER INSERTED: ScopeFile must stay the
+	// iota ZERO VALUE, because the closed table below is written out explicitly
+	// precisely so a missing entry fails loudly instead of taking the zero
+	// value silently.
+	ScopeModule
 )
 
 // scopeKinds is a CLOSED table: an entry is required for every language in the
@@ -120,6 +175,13 @@ var scopeKinds = map[Language]ScopeKind{
 	LangKotlin: ScopeDeclaredNamespace,
 	LangScala:  ScopeDeclaredNamespace,
 
+	// SWIFT IS MODULE-SCOPED, and it is the one language here whose unit no
+	// clause in the file declares: two files of one module see each other with
+	// no import at all, so the unit has to come from the source tree's layout.
+	// THIS ENTRY AND ScopeID's ScopeModule ARM ARE ONE CHANGE AND MUST NOT BE
+	// SEPARATED, for the reason the declared-namespace note above gives.
+	LangSwift: ScopeModule,
+
 	LangTypeScript: ScopeFile,
 	LangTSX:        ScopeFile,
 	LangPython:     ScopeFile,
@@ -128,7 +190,6 @@ var scopeKinds = map[Language]ScopeKind{
 	LangCPP:        ScopeFile,
 	LangJavaScript: ScopeFile,
 	LangRuby:       ScopeFile,
-	LangSwift:      ScopeFile,
 	LangElixir:     ScopeFile,
 	LangLua:        ScopeFile,
 	LangBash:       ScopeFile,
@@ -166,9 +227,68 @@ func ScopeID(filePath string, lang Language, declaredNS string) string {
 			return "ns:" + declaredNS
 		}
 		return "dir:" + filepath.Dir(filePath)
+	case ScopeModule:
+		if mod := moduleScopeFor(filePath, lang); mod != "" {
+			return mod
+		}
+		// A PATH OUTSIDE THE LAYOUT CONVENTION KEEPS TODAY'S EXACT ANSWER. The
+		// narrow unit is the safe one, so a tree the derivation cannot read is
+		// left file-scoped rather than guessed at.
+		return "file:" + filePath
 	default:
 		return "file:" + filePath
 	}
+}
+
+// moduleScopeFor dispatches one language's module derivation, or PANICS.
+//
+// THE PANIC IS THE POINT. A language given ScopeModule with no derivation arm
+// is a programming error, and silently taking the file-scope fallback is
+// exactly the "takes the default silently instead of failing loudly" failure
+// the closed table above exists to prevent. It cannot fire in steady state:
+// the table and this switch are edited together.
+func moduleScopeFor(filePath string, lang Language) string {
+	switch lang {
+	case LangSwift:
+		return swiftModuleScope(filePath)
+	default:
+		panic("treesitter: moduleScopeFor(" + string(lang) + "): the language is module-scoped but declares no module derivation")
+	}
+}
+
+// swiftModuleScope derives a swift file's module from the package layout
+// convention: a module's sources live under `Sources/<Module>/`, a test
+// target's under `Tests/<Module>/`. It returns "" for any path that does not
+// fit, which is the caller's signal to fall back to file scope.
+//
+// Three properties, each chosen against a specific failure:
+//
+//   - THE KEY IS THE FULL PATH PREFIX, NEVER THE BARE MODULE NAME. A tree with
+//     `pkgA/Sources/Utils/` and `pkgB/Sources/Utils/` holds two DIFFERENT
+//     modules that merely share a target name; keying on the name alone would
+//     merge them and mis-bind across package boundaries.
+//   - THE LAST `Sources`/`Tests` SEGMENT WINS, so a package nested inside
+//     another package's tree resolves to the inner one.
+//   - `Tests/<Name>/` IS ITS OWN MODULE: a test target is a separate module and
+//     its declarations are genuinely not visible to the library target.
+//
+// THE HONEST RESIDUE: a package manifest may give a target a CUSTOM path, and
+// an IDE-defined project names its modules in a project file with no layout
+// convention at all. Those trees fall back to file scope — no change, no harm —
+// except where a custom path puts two real targets under one directory, which
+// over-merges them. That case is DECIDABLE by reading the manifest, which the
+// collector does not do today: an incompleteness with a known fix, not a limit.
+func swiftModuleScope(filePath string) string {
+	segments := strings.Split(filePath, "/")
+	// The last segment is the file name, so a module directory must appear
+	// before it with at least one segment in between.
+	for i := len(segments) - 3; i >= 0; i-- {
+		if segments[i] != "Sources" && segments[i] != "Tests" {
+			continue
+		}
+		return "mod:" + strings.Join(segments[:i+2], "/")
+	}
+	return ""
 }
 
 // Bind is what one import establishes for one name.

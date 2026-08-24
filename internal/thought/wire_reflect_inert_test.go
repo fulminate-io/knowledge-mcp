@@ -121,7 +121,7 @@ func (r *passRecorder) Execute(_ context.Context, req *knowledgev1.ExecuteReques
 		return &knowledgev1.ExecuteResponse{}, nil
 	}
 	if q.GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_EDGES {
-		return &knowledgev1.ExecuteResponse{Edges: r.edges()}, nil
+		return &knowledgev1.ExecuteResponse{Edges: bandNarrow(r.edges(), q)}, nil
 	}
 	if len(q.GetIds()) > 0 {
 		return &knowledgev1.ExecuteResponse{Nodes: r.byIDs(q.GetIds())}, nil

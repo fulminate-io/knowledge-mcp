@@ -45,7 +45,7 @@ const (
 func straddleFixture(t *testing.T, ctx context.Context, graphName string) (*Manager, kgtypes.GraphType) {
 	t.Helper()
 	_, gc := newSegmentHarness(t)
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 	gt := kgtypes.GraphCode
 
 	seed := prefixIDs(hnswVecDocs(straddleSeedN), "straddle-seed-")
@@ -159,7 +159,7 @@ func TestTickDerivesTheTrueCorpusCount(t *testing.T) {
 	const n = searchengine.DefaultMinSegmentDocs // derives exactly ONE partition
 
 	_, gc := newSegmentHarness(t)
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 	gt := kgtypes.GraphCode
 
 	require.NoError(t, mgr.AddAndMarkDirty(ctx, gt, name, prefixIDs(hnswVecDocs(n), "truecount-")))
@@ -227,7 +227,7 @@ func TestClosureRebuildSetStaysBounded(t *testing.T) {
 	const seedN = 5000 // derives 8 partitions; +100 stays at 8, so the count is STABLE
 
 	_, gc := newSegmentHarness(t)
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 	gt := kgtypes.GraphCode
 
 	seed := prefixIDs(hnswVecDocs(seedN), "closure-seed-")
@@ -308,7 +308,7 @@ func TestPartialRebuildSetAcrossACountChangeLosesNothing(t *testing.T) {
 	)
 
 	_, gc := newSegmentHarness(t)
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 	gt := kgtypes.GraphCode
 
 	seed := prefixIDs(hnswVecDocs(seedN), "partial-seed-")

@@ -6,8 +6,8 @@
 // tarball) get the same agent + skill catalog the source-built devs
 // have.
 //
-// CLI mode, not MCP mode: legitimate to write to stdout. The MCP-
-// stdio-discipline rule from lifecycle.go does not apply here.
+// CLI subcommand: legitimate to write to stdout. The stdout-discipline
+// rule from lifecycle.go does not apply here.
 
 package bootstrap
 

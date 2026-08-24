@@ -62,7 +62,7 @@ func (f *tensionFake) Execute(_ context.Context, req *knowledgev1.ExecuteRequest
 			}
 		}
 		if wantCharged {
-			return &knowledgev1.ExecuteResponse{Edges: f.chargeEdges}, nil
+			return &knowledgev1.ExecuteResponse{Edges: bandNarrow(f.chargeEdges, q)}, nil
 		}
 		// Honor the requested edge-type set exactly as the real
 		// fetchEdgesForNodeSet does: it writes the tensionEdgeTypes strings into
@@ -73,7 +73,7 @@ func (f *tensionFake) Execute(_ context.Context, req *knowledgev1.ExecuteRequest
 		// omits it. An empty requested set (no Selection) is a passthrough,
 		// preserving the cases that read with no edge-type filter.
 		if len(requested) == 0 {
-			return &knowledgev1.ExecuteResponse{Edges: f.tensionEdges}, nil
+			return &knowledgev1.ExecuteResponse{Edges: bandNarrow(f.tensionEdges, q)}, nil
 		}
 		filtered := make([]*knowledgev1.Edge, 0, len(f.tensionEdges))
 		for _, e := range f.tensionEdges {
@@ -81,7 +81,7 @@ func (f *tensionFake) Execute(_ context.Context, req *knowledgev1.ExecuteRequest
 				filtered = append(filtered, e)
 			}
 		}
-		return &knowledgev1.ExecuteResponse{Edges: filtered}, nil
+		return &knowledgev1.ExecuteResponse{Edges: bandNarrow(filtered, q)}, nil
 	}
 
 	if q.GetById() != "" {

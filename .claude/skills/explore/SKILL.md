@@ -1,6 +1,6 @@
 ---
 name: explore
-description: Build live causal context about a repo. Authors non-trivial thoughts that answer WHY systems exist and behave the way they do, weaving evidence across code, cloud, practice, and knowledge graphs. Distinct from /research (which describes WHAT) and /improve (which surfaces what's wrong) — /explore answers why.
+description: Build live causal context about a repo. Authors non-trivial thoughts that answer WHY systems exist and behave the way they do, weaving evidence across code, cloud, practice, and knowledge graphs. Distinct from /research (which describes WHAT) — /explore answers why.
 argument-hint: <optional subsystem name or "<why-question>"; omit for a whole-repo sweep>
 ---
 

@@ -100,33 +100,56 @@ func TestContainerNameSources(t *testing.T) {
 }
 
 // TestClassLikeTypesContainers pins the five namespace-style container kinds
-// admitted alongside the class-like ones, and the kinds that must stay out.
+// admitted alongside the class-like ones, the kinds that must stay out of every
+// row, and the `module` spelling's per-language split.
 func TestClassLikeTypesContainers(t *testing.T) {
-	// Admitted: each was measured as a true named ancestor of the declarations
-	// its language's TopLevel query chunks.
-	for _, kind := range []string{
-		"mod_item",              // Rust module
-		"impl_item",             // Rust impl — named through containerName's type: source
-		"namespace_definition",  // C++, and PHP's braced form
-		"namespace_declaration", // C#, block form
-		"module_binding",        // OCaml
+	// Admitted, each under the language that owns the kind: measured as a true
+	// named ancestor of the declarations that language's TopLevel query chunks.
+	for _, tc := range []struct {
+		lang Language
+		kind string
+	}{
+		{LangRust, "mod_item"},
+		{LangRust, "impl_item"}, // named through containerName's type: source
+		{LangCPP, "namespace_definition"},
+		{LangPHP, "namespace_definition"}, // braced form
+		{LangCSharp, "namespace_declaration"},
+		{LangOCaml, "module_binding"},
 	} {
-		assert.True(t, classLikeTypes[kind], "classLikeTypes must hold %q", kind)
+		assert.True(t, classLikeByLang[tc.lang][tc.kind],
+			"classLikeByLang[%q] must hold %q", tc.lang, tc.kind)
 	}
 
-	// Excluded: Go's containers, whose absence is what makes Go unchanged by
-	// construction rather than by measurement.
-	for _, kind := range []string{"type_declaration", "type_spec", "struct_type", "interface_type"} {
-		assert.False(t, classLikeTypes[kind], "classLikeTypes must not hold Go's %q", kind)
+	// THE `module` SPELLING IS THE REASON THE TABLE HAS A LANGUAGE DIMENSION.
+	// Five grammars declare the kind; only Ruby's names a container of the
+	// members below it. A TypeScript or TSX `module X {}` block is a namespace
+	// and its functions belong to the file, so those two rows must NOT hold it
+	// — and Ruby's must, which is what keeps the two negatives from being
+	// satisfied by an admission deleted outright.
+	assert.False(t, classLikeByLang[LangTypeScript]["module"],
+		"a typescript module block must not be a class-like container")
+	assert.False(t, classLikeByLang[LangTSX]["module"],
+		"a tsx module block must not be a class-like container")
+	assert.True(t, classLikeByLang[LangRuby]["module"],
+		"known positive: ruby's module is still admitted")
+
+	for _, lang := range RegisteredLanguages() {
+		// Excluded: Go's containers, whose absence is what makes Go unchanged
+		// by construction rather than by measurement.
+		for _, kind := range []string{"type_declaration", "type_spec", "struct_type", "interface_type"} {
+			assert.False(t, classLikeByLang[lang][kind],
+				"classLikeByLang[%q] must not hold Go's %q", lang, kind)
+		}
+
+		// Excluded: Elixir's container and member are both the call kind, so no
+		// kind-based rule can tell defmodule from def.
+		assert.False(t, classLikeByLang[lang]["call"],
+			"Elixir's call kind must stay out of classLikeByLang[%q]", lang)
+
+		// Excluded: C#'s file-scoped namespace is a SIBLING of the declarations
+		// it names, so no upward walk reaches it; it is resolved from the
+		// file's own declaration instead.
+		assert.False(t, classLikeByLang[lang]["file_scoped_namespace_declaration"],
+			"a file-scoped namespace is not an ancestor of the types it names")
 	}
-
-	// Excluded: Elixir's container and member are both the call kind, so no
-	// kind-based rule can tell defmodule from def.
-	assert.False(t, classLikeTypes["call"], "Elixir's call kind must stay out of classLikeTypes")
-
-	// Excluded: C#'s file-scoped namespace is a SIBLING of the declarations it
-	// names, so no upward walk reaches it; it is resolved from the file's own
-	// declaration instead.
-	assert.False(t, classLikeTypes["file_scoped_namespace_declaration"],
-		"a file-scoped namespace is not an ancestor of the types it names")
 }

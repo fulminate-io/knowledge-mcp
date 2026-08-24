@@ -120,6 +120,18 @@ func (s *errorSegmentSource) verifiesCompletenessServerSide() bool { return fals
 
 // blobToProto maps an engine SegmentBlob to the wire carrier. Used by the
 // manager's ship path.
+//
+// LIFETIME CONTRACT, and it is load-bearing rather than a note: the proto
+// ALIASES b.Bytes — no copy — and on a resident segment those bytes are a
+// MEMORY MAPPING owned by the engine entry the blob pins. The proto cannot pin
+// anything itself; it is generated code and has no field for it.
+//
+// So the CALLER must keep the SegmentBlob reachable for as long as the proto is
+// live, which means at least through marshaling. Every production call site
+// does this the same way today — it builds the proto slice and a parallel
+// map of the blobs in one loop and passes both onward — and that is a property
+// of those call sites, not of this function. Drop the blob while holding the
+// proto and its Bytes become a read of unmapped memory.
 func blobToProto(b searchengine.SegmentBlob) *knowledgev1.SegmentBlobProto {
 	return &knowledgev1.SegmentBlobProto{
 		Id:         b.ID,

@@ -59,7 +59,13 @@ func handleAdjacencyClient(ctx context.Context, deps ClientDeps, params kgtools.
 		return errorResult("adjacency: graph client unavailable")
 	}
 
-	nodeIDs, adj, err := clientthought.FetchAdjacency(ctx, gc, a.Scope, a.ThoughtIDs, corpusSourceFromDeps(deps))
+	// NewReadMemo wraps the resident source in a per-CALL read memo, the same
+	// unit-of-work vehicle the loop uses per pass (precedent: thought_cluster_context.go).
+	// Without it this handler is not a *passReads, so the unified pivot-edge read
+	// memoizes nothing and the session-membership expansion issues a SECOND wire read
+	// over the same pivot. With it, one read serves both.
+	nodeIDs, adj, err := clientthought.FetchAdjacency(ctx, gc, a.Scope, a.ThoughtIDs,
+		clientthought.NewReadMemo(corpusSourceFromDeps(deps)))
 	if err != nil {
 		return errorResult(err.Error())
 	}

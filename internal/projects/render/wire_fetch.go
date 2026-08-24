@@ -165,20 +165,21 @@ func IterEdgesIn(
 	// uses to notice it was enforced. One without the other yields a drain that
 	// never detects truncation, or one that splits on a threshold nobody applies.
 	rawEdges, err := paging.DrainPivotEdges([]string{nodeID}, paging.EdgePivotPageSize, engine.CorrelationsEdgeScanCap,
-		func(idPage []string) ([]knowledgev1.Edge, error) {
+		func(idPage []string, fromIDGte, fromIDLt string) ([]knowledgev1.Edge, bool, error) {
 			resp, rerr := ex.Execute(ctx, &knowledgev1.ExecuteRequest{
 				Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
 					Ids:               idPage,
 					ReturnMode:        knowledgev1.ReturnMode_RETURN_MODE_EDGES,
 					IncludeTombstones: true,
 					Limit:             int32(engine.CorrelationsEdgeScanCap),
+					EdgeFromBand:      paging.EdgeFromBandOrNil(fromIDGte, fromIDLt),
 				}},
 				Target: graphTarget(graphType, graphName),
 			})
 			if rerr != nil {
-				return nil, fmt.Errorf("iter edges %q: %w", nodeID, rerr)
+				return nil, false, fmt.Errorf("iter edges %q: %w", nodeID, rerr)
 			}
-			return decodeCarrierEdges(resp), nil
+			return decodeCarrierEdges(resp), resp.GetTruncated(), nil
 		})
 	if err != nil {
 		return nil, err
@@ -249,7 +250,7 @@ func FetchDependsOnEdges(ctx context.Context, gc GraphCaller, nodeIDs []string) 
 	// uses to notice it was enforced. One without the other yields a drain that
 	// never detects truncation, or one that splits on a threshold nobody applies.
 	edges, err := paging.DrainPivotEdges(nodeIDs, paging.EdgePivotPageSize, engine.CorrelationsEdgeScanCap,
-		func(idPage []string) ([]knowledgev1.Edge, error) {
+		func(idPage []string, fromIDGte, fromIDLt string) ([]knowledgev1.Edge, bool, error) {
 			resp, rerr := ex.Execute(ctx, &knowledgev1.ExecuteRequest{
 				Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
 					Ids:               idPage,
@@ -258,12 +259,13 @@ func FetchDependsOnEdges(ctx context.Context, gc GraphCaller, nodeIDs []string) 
 					IncludeTombstones: true,
 					Limit:             int32(engine.CorrelationsEdgeScanCap),
 					Selection:         &knowledgev1.Selection{EdgeTypes: []string{string(kgtypes.EdgeDependsOn)}},
+					EdgeFromBand:      paging.EdgeFromBandOrNil(fromIDGte, fromIDLt),
 				}},
 			})
 			if rerr != nil {
-				return nil, fmt.Errorf("fetch depends-on edges: %w", rerr)
+				return nil, false, fmt.Errorf("fetch depends-on edges: %w", rerr)
 			}
-			return decodeCarrierEdges(resp), nil
+			return decodeCarrierEdges(resp), resp.GetTruncated(), nil
 		})
 	if err != nil {
 		return nil, err

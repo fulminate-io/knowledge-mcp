@@ -158,9 +158,9 @@ func (leafProvenanceFake) Execute(_ context.Context, req *knowledgev1.ExecuteReq
 	if q == nil || q.GetReturnMode() != knowledgev1.ReturnMode_RETURN_MODE_EDGES {
 		return &knowledgev1.ExecuteResponse{}, nil
 	}
-	return &knowledgev1.ExecuteResponse{Edges: []*knowledgev1.Edge{
+	return &knowledgev1.ExecuteResponse{Edges: bandNarrow([]*knowledgev1.Edge{
 		{Type: "relates-to", FromId: "leaf", ToId: "m1"},
-	}}, nil
+	}, q)}, nil
 }
 
 // TestResolveMemberVectors_VectorlessIsNotAnError pins the ok=false contract the

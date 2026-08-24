@@ -4,7 +4,7 @@
 // matching knowledge-server release asset from the public
 // knowledge-mcp GitHub releases, verifies SHA256 against the
 // checksums.txt manifest, extracts the binary, and atomically
-// replaces the sibling knowledge-server next to the running stdio
+// replaces the sibling knowledge-server next to the running knowledge
 // binary (or a caller-supplied --dest).
 //
 // CLI mode, not MCP mode: writes status lines to stdout, errors to
@@ -65,7 +65,7 @@ type installFlags struct {
 // VisitAll's the FlagSet to render the flag table. Mirrors registerConfigFlags
 // / registerLifecycleFlags.
 func registerInstallFlags(fs *flag.FlagSet, f *installFlags) {
-	fs.StringVar(&f.dest, "dest", "", "Destination directory for knowledge-server (default: sibling of running stdio binary)")
+	fs.StringVar(&f.dest, "dest", "", "Destination directory for knowledge-server (default: sibling of the running knowledge binary)")
 	fs.BoolVar(&f.check, "check", false, "Compare installed server version against latest release without writing")
 	fs.BoolVar(&f.allowDowngrade, "allow-downgrade", false, "Permit installing a release OLDER than the currently-installed version (default: refuse)")
 }
@@ -328,7 +328,7 @@ func assetName(goos, goarch, binBase string) string {
 	return fmt.Sprintf("%s-%s-%s%s", binBase, goos, goarch, archiveExt(goos))
 }
 
-// resolveReleaseTag maps the running stdio binary's version to a
+// resolveReleaseTag maps the running knowledge binary's version to a
 // release-tag selector. The "dev" sentinel (set when the binary is
 // built without `-ldflags "-X main.version=..."`) resolves against
 // the GitHub "latest" release endpoint; any other version pins to
@@ -395,7 +395,7 @@ func verifyChecksum(archiveBytes []byte, expectedHex, asset string) error {
 // resolveInstallDest returns the destination DIRECTORY into which
 // knowledge-server will be installed. When the user passed --dest,
 // return the tilde-expanded form unchanged. When --dest is empty,
-// derive the directory from the running stdio binary so the new
+// derive the directory from the running knowledge binary so the new
 // server lands next to it (the canonical install layout).
 //
 // EvalSymlinks resolves Homebrew-style symlinks so the install

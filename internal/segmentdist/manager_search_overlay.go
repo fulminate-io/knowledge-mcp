@@ -67,6 +67,17 @@ func (m *Manager) SearchOverlay(
 		overlayHNSW, overlayBM25 = nil, nil
 	}
 
+	// TRIGGER SITE for the residency budget, the overlay twin of Manager.Search's.
+	// It runs after wg.Wait and the error arms, so BOTH searchPoolArms calls have
+	// returned and released their read locks. The exclude set names BOTH graphs this
+	// search served: a set built from one of them would leave the other evictable
+	// while its goroutine may still hold a read lock, and enforceResidencyBudget
+	// evicts under a write lock that Go's RWMutex will not grant reentrantly.
+	m.enforceResidencyBudget([]graphKey{
+		{graphType: gt, graphName: base},
+		{graphType: gt, graphName: overlay},
+	})
+
 	hnsw := mergePoolHits(overlayHNSW, baseHNSW, k)
 	bm25 := mergePoolHits(overlayBM25, baseBM25, k)
 

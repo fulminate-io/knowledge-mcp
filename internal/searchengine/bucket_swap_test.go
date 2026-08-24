@@ -7,13 +7,14 @@ import (
 
 // bucketTestEngine builds a mock-format engine that seals one segment per Add and
 // never background-merges, so a test owns the segment layout outright.
-func bucketTestEngine(onMerge OnMergeFunc) *SegmentedIndex[mockQuery, mockStats] {
-	return New[mockQuery, mockStats](mockFormat{}, Options{
+func bucketTestEngine(t testing.TB, onMerge OnMergeFunc) *SegmentedIndex[mockQuery, mockStats] {
+	t.Helper()
+	return closeOnCleanup(t, New[mockQuery, mockStats](mockFormat{}, Options{
 		MinSegmentDocs:     1,
 		DeletesPctAllowed:  MergeDisabledDeadRatio,
 		SegmentCountTarget: MergeDisabledCountTarget,
 		OnMerge:            onMerge,
-	})
+	}))
 }
 
 // constituentsBucketCount is the partition width the lookup test assigns ids with.
@@ -47,7 +48,7 @@ func idForBucket(t *testing.T, bucket int, taken map[string]bool) string {
 func TestReplaceBucketFiresReclaimHook(t *testing.T) {
 	t.Run("fires once with the superseded ids and the merged blob", func(t *testing.T) {
 		var fired []MergeResult
-		e := bucketTestEngine(func(res MergeResult) { fired = append(fired, res) })
+		e := bucketTestEngine(t, func(res MergeResult) { fired = append(fired, res) })
 		defer e.Close()
 
 		if err := e.Add([]Document{doc("a", "alpha"), doc("b", "alpha beta")}); err != nil {
@@ -95,7 +96,7 @@ func TestReplaceBucketFiresReclaimHook(t *testing.T) {
 	})
 
 	t.Run("a nil hook is a silent no-op", func(t *testing.T) {
-		e := bucketTestEngine(nil)
+		e := bucketTestEngine(t, nil)
 		defer e.Close()
 
 		if err := e.Add([]Document{doc("a", "alpha")}); err != nil {
@@ -125,7 +126,7 @@ func TestReplaceBucketFiresReclaimHook(t *testing.T) {
 // name the segment the seal actually produced, which the caller needs to retire
 // that segment later.
 func TestAddSealAndSupersedeOrdering(t *testing.T) {
-	e := bucketTestEngine(nil)
+	e := bucketTestEngine(t, nil)
 	defer e.Close()
 
 	// A resident segment holding the stale copy, plus a bystander.
@@ -211,7 +212,7 @@ func TestBucketConstituentsFindsResidentBucket(t *testing.T) {
 	splitB := idForBucket(t, 1, taken)
 	lone := idForBucket(t, 3, taken)
 
-	e := bucketTestEngine(nil)
+	e := bucketTestEngine(t, nil)
 	defer e.Close()
 
 	// One Add per segment: splitA and its bucket companion land with lone, splitB

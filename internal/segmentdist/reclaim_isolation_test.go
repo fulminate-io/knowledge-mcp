@@ -45,7 +45,7 @@ func TestReclaimMultiGraphIsolation(t *testing.T) {
 	ctx := context.Background()
 	base := t.TempDir()
 	_, gc := newSegmentHarness(t)
-	mgr := NewManager(loginStateStub{loggedIn: true}, base, 0, withSegmentSource(gc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, base, 0, withSegmentSource(gc)))
 
 	// Half a threshold keeps each graph inside a SINGLE partition through its tick
 	// (the tick counts the incoming window alongside the resident set), so each of

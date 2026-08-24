@@ -119,8 +119,8 @@ func (c *loadBoundSource) seedMockSegments(t *testing.T, n, payloadBytes int) ui
 func newLoadBoundManager(t *testing.T, src *loadBoundSource) *distManager[mockQuery, mockStats] {
 	t.Helper()
 	target := &knowledgev1.GraphSelector{Graph: "code", Repo: "peakbound"}
-	cache := newDiskSegmentCache(t.TempDir(), 0)
-	return newDistManager(newMockEngine(), src, cache, target, "")
+	cache := newDiskSegmentCache(t.TempDir(), 0, adviceRandom)
+	return newDistManager(newMockEngine(t), src, cache, target, "")
 }
 
 // TestLoadNeverExceedsFetchIDCap drives a real load() of M misses (M >>

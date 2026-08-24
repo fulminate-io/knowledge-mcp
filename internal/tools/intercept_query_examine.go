@@ -112,18 +112,19 @@ func composeInspectData(ctx context.Context, exec engine.ExecuteFn, id string) (
 	// without the other yields a drain that never detects truncation, or one
 	// that splits on a threshold nobody applies.
 	rawEdges, err := paging.DrainPivotEdges([]string{id}, paging.EdgePivotPageSize, engine.CorrelationsEdgeScanCap,
-		func(idPage []string) ([]knowledgev1.Edge, error) {
+		func(idPage []string, fromIDGte, fromIDLt string) ([]knowledgev1.Edge, bool, error) {
 			edgesResp, rerr := exec(ctx, &knowledgev1.ExecuteRequest{
 				Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
-					Ids:        idPage,
-					ReturnMode: knowledgev1.ReturnMode_RETURN_MODE_EDGES,
-					Limit:      int32(engine.CorrelationsEdgeScanCap),
+					Ids:          idPage,
+					ReturnMode:   knowledgev1.ReturnMode_RETURN_MODE_EDGES,
+					Limit:        int32(engine.CorrelationsEdgeScanCap),
+					EdgeFromBand: paging.EdgeFromBandOrNil(fromIDGte, fromIDLt),
 				}},
 			})
 			if rerr != nil {
-				return nil, rerr
+				return nil, false, rerr
 			}
-			return examineDecodeEdges(edgesResp), nil
+			return examineDecodeEdges(edgesResp), edgesResp.GetTruncated(), nil
 		})
 	if err != nil {
 		return engine.InspectData{}, false, err

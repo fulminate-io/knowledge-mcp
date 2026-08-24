@@ -148,7 +148,7 @@ func TestImportCaptureKeepsFrameworkStrings(t *testing.T) {
 		"import pytest\nfrom pytest import fixture\ndef test_x():\n    pass\n")
 
 	require.NotEmpty(t, importEdgeTargets(edges), "python must still emit IMPORTS edges")
-	assert.Contains(t, ctx.Imports, "pytest",
+	assert.Contains(t, importSpecifiers(ctx.Imports), "pytest",
 		"the bare module path is what `s == \"pytest\"` framework rules match")
 	assert.Contains(t, ctx.Frameworks, FrameworkPyPyTest)
 }

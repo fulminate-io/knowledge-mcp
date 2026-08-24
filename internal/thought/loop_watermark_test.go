@@ -4,7 +4,6 @@ package thought
 
 import (
 	"context"
-	"slices"
 	"sync"
 	"testing"
 
@@ -32,6 +31,9 @@ type watermarkLoopFake struct {
 	sessionMems []string
 	// singleton resource nodes (watermark + gen), by id.
 	singletons map[string]*knowledgev1.Node
+	// unionSeed, when set, is the seeded edge set served through
+	// unionEdgesForRequest instead of the session membership derived below.
+	unionSeed []*knowledgev1.Edge
 
 	// per-tick capture of cluster_id writeback member rows.
 	clusterWriteRows []int
@@ -51,6 +53,22 @@ func newWatermarkLoopFake() *watermarkLoopFake {
 		singletons:  map[string]*knowledgev1.Node{},
 	}
 	return f
+}
+
+// seedEdges is the fake's whole edge corpus: unionSeed when a test sets it, otherwise
+// the session membership derived from sessionMems. The helper does the type filtering,
+// so the kg-contains gate this replaced is no longer expressed as a dispatch.
+func (f *watermarkLoopFake) seedEdges() []*knowledgev1.Edge {
+	if len(f.unionSeed) > 0 {
+		return f.unionSeed
+	}
+	edges := make([]*knowledgev1.Edge, 0, len(f.sessionMems))
+	for _, m := range f.sessionMems {
+		edges = append(edges, &knowledgev1.Edge{
+			Type: string(kgtypes.EdgeKGContains), FromId: f.session, ToId: m,
+		})
+	}
+	return edges
 }
 
 func (f *watermarkLoopFake) Execute(_ context.Context, req *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error) {
@@ -97,21 +115,20 @@ func (f *watermarkLoopFake) Execute(_ context.Context, req *knowledgev1.ExecuteR
 		return &knowledgev1.ExecuteResponse{}, nil
 	}
 
-	// edges reads: adjacency-edge set (no kg_contains in our corpus) + kg_contains
-	// session membership.
+	// edge reads, served as the UNION of the requested types. The pass issues ONE
+	// unified read whose type set INCLUDES kg-contains, so the narrow kg-contains read
+	// this arm used to key on no longer exists. Routing through the shared helper is
+	// what keeps the fake honest if its fixture ever grows a second edge type: the
+	// previous shape served only kg-contains and was correct purely by accident.
 	if q.GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_EDGES {
-		// Only the EdgeKGContains-filtered read returns our session edges; the
-		// adjacency-edge read (Next/RelatesTo/...) and charges read return nothing.
-		if sel := q.GetSelection(); sel != nil && slices.Contains(sel.GetEdgeTypes(), string(kgtypes.EdgeKGContains)) {
-			var edges []*knowledgev1.Edge
-			for _, m := range f.sessionMems {
-				edges = append(edges, &knowledgev1.Edge{
-					Type: string(kgtypes.EdgeKGContains), FromId: f.session, ToId: m,
-				})
-			}
-			return &knowledgev1.ExecuteResponse{Edges: edges}, nil
-		}
-		return &knowledgev1.ExecuteResponse{}, nil
+		// ONE PATH. The seed is unionSeed when a test sets it, otherwise the derived
+		// session membership, and either way it is served through the shared helper.
+		//
+		// The previous shape gated on slices.Contains(kg-contains) and returned an empty
+		// response otherwise — the under-serving form, and the branch every real test in
+		// this file takes. Keeping it while the property test exercised only the
+		// unionSeed branch would have left the guard pointed at a path nothing else uses.
+		return &knowledgev1.ExecuteResponse{Edges: bandNarrow(unionEdgesForRequest(f.seedEdges(), q), q)}, nil
 	}
 
 	// ids[] hydrate (cluster member nodes / nodeByID).
@@ -138,8 +155,21 @@ func (f *watermarkLoopFake) Execute(_ context.Context, req *knowledgev1.ExecuteR
 
 // cloneNode returns a shallow copy with a copied metadata map so a reader cannot
 // mutate the fake's stored state.
+//
+// CreatedAt is carried deliberately, not incidentally: newestChargeTime
+// (blindspots.go) reads it off charge nodes and reports ok=false when every charge
+// has a zero CreatedAt, which silently disables both the stale-confidence and the
+// cited-code-changed facets. Dropping it here loses the stamp on the CACHED side
+// only, so the two sides of an equivalence comparison would diverge for a reason
+// that has nothing to do with what the comparison is testing.
 func cloneNode(n *knowledgev1.Node) *knowledgev1.Node {
-	cp := &knowledgev1.Node{Id: n.Id, Type: n.Type, SymbolName: n.SymbolName, UpdatedAt: n.UpdatedAt}
+	cp := &knowledgev1.Node{
+		Id:         n.Id,
+		Type:       n.Type,
+		SymbolName: n.SymbolName,
+		UpdatedAt:  n.UpdatedAt,
+		CreatedAt:  n.CreatedAt,
+	}
 	for k, v := range n.Metadata {
 		kgtypes.SetValue(cp, k, v)
 	}

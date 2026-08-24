@@ -83,7 +83,7 @@ func TestPostCollectTail_RoutesThroughGraphCaller(t *testing.T) {
 	// but does no work — the enumeration + hook invocation ride the caller.
 	var hookMu sync.Mutex
 	var hookFired int
-	postpopulate.Register(tailType, func(_ context.Context, _ postpopulate.GraphCaller, _ string) error {
+	postpopulate.Register(tailType, postpopulate.BreadthFamilyBroad, func(_ context.Context, _ postpopulate.GraphCaller, _ string) error {
 		hookMu.Lock()
 		hookFired++
 		hookMu.Unlock()
@@ -116,8 +116,9 @@ func TestPostCollectTail_RoutesThroughGraphCaller(t *testing.T) {
 
 	// Drive the linker tail (test type is in the linker-trigger set).
 	runPostCollectLinker(ctx, deps, tailType)
-	// Drive the postpopulate tail.
-	runPostCollectPostPopulate(ctx, deps, tailType)
+	// Drive the postpopulate tail. Its error is not this test's subject (routing
+	// is), and the stub hook here succeeds, so the return is discarded explicitly.
+	_ = runPostCollectPostPopulate(ctx, deps, tailType, "")
 
 	hookMu.Lock()
 	fired := hookFired

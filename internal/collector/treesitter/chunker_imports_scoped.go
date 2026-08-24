@@ -22,7 +22,7 @@ func init() {
 // ImportBindings is for; ctx.Imports still takes exactly one entry, because
 // each of its entries becomes an IMPORTS edge.
 func parseRustImport(node *sitter.Node, src []byte, ctx *ChunkContext) {
-	ctx.Imports = append(ctx.Imports, node.Content(src))
+	ctx.Imports = append(ctx.Imports, ImportSite{Specifier: node.Content(src)})
 
 	for i := range int(node.NamedChildCount()) {
 		child := node.NamedChild(i)
@@ -131,7 +131,7 @@ func appendRustAliasBinding(clause *sitter.Node, src []byte, scopePrefix string,
 // The qualified_name holds the namespace prefix and the imported name; the
 // optional namespace_aliasing_clause renames it locally.
 func parsePHPImport(node *sitter.Node, src []byte, ctx *ChunkContext) {
-	ctx.Imports = append(ctx.Imports, node.Content(src))
+	ctx.Imports = append(ctx.Imports, ImportSite{Specifier: node.Content(src)})
 
 	for _, clause := range namedChildrenOfType(node, "namespace_use_clause") {
 		quals := namedChildrenOfType(clause, "qualified_name")

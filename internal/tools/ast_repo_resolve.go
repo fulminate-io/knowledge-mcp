@@ -30,9 +30,9 @@ type rootDirSourcer interface{ RootDirSet() bool }
 //
 // Base is effectiveCwd(ctx, deps): the per-session workspace cwd carried on ctx
 // (HTTP transport) when present, else deps.RootDir() (the process --root, the
-// stdio default). The session cwd rides in on the chain ctx that InterceptAst
-// now threads through, so an HTTP ast call walks the caller's session tree while
-// a stdio call walks --root.
+// no-session-cwd default). The session cwd rides in on the chain ctx that
+// InterceptAst now threads through, so an ast call carrying a session cwd walks
+// the caller's session tree while one without walks --root.
 //
 // Resolution:
 //   - empty base → typed "--root is empty" error (unchanged contract).

@@ -93,7 +93,7 @@ function f() { return 1; }
 
 	for _, ch := range result.Chunks {
 		assert.Nil(t, ch.Context.Frameworks, "Frameworks must be nil when includeContext is false")
-		assert.Nil(t, ch.Context.Imports, "Imports must be nil when includeContext is false")
+		assert.Nil(t, importSpecifiers(ch.Context.Imports), "Imports must be nil when includeContext is false")
 	}
 }
 

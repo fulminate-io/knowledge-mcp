@@ -9,12 +9,13 @@ import (
 
 // newTestEngine builds an engine over the mock format with merge effectively
 // disabled (huge thresholds) so correctness tests are deterministic.
-func newTestEngine(minSeg int) *SegmentedIndex[mockQuery, mockStats] {
-	return New[mockQuery, mockStats](mockFormat{}, Options{
+func newTestEngine(t testing.TB, minSeg int) *SegmentedIndex[mockQuery, mockStats] {
+	t.Helper()
+	return closeOnCleanup(t, New[mockQuery, mockStats](mockFormat{}, Options{
 		MinSegmentDocs:     minSeg,
 		DeletesPctAllowed:  2.0, // never triggers
 		SegmentCountTarget: 1 << 30,
-	})
+	}))
 }
 
 func doc(id, content string) Document {
@@ -31,7 +32,7 @@ func searchIDs(hits []Hit) []ExternalID {
 }
 
 func TestNewEngineEmpty(t *testing.T) {
-	e := newTestEngine(1)
+	e := newTestEngine(t, 1)
 	defer e.Close()
 	if got := e.Search(mockQuery{term: "anything"}, 5); got != nil {
 		t.Fatalf("empty engine Search = %v, want nil", got)
@@ -53,7 +54,7 @@ func TestOptionsDefaults(t *testing.T) {
 }
 
 func TestAddCoalescing(t *testing.T) {
-	e := newTestEngine(3)
+	e := newTestEngine(t, 3)
 	defer e.Close()
 
 	// Sub-threshold: nothing sealed, nothing searchable.
@@ -84,7 +85,7 @@ func TestAddCoalescing(t *testing.T) {
 }
 
 func TestDeleteRouting(t *testing.T) {
-	e := newTestEngine(1)
+	e := newTestEngine(t, 1)
 	defer e.Close()
 	for _, id := range []string{"a", "b", "c"} {
 		if err := e.Add([]Document{doc(id, "x")}); err != nil {
@@ -108,7 +109,7 @@ func TestDeleteRouting(t *testing.T) {
 }
 
 func TestParallelSearchCorrectness(t *testing.T) {
-	e := newTestEngine(1) // one segment per Add → many segments
+	e := newTestEngine(t, 1) // one segment per Add → many segments
 	defer e.Close()
 
 	var all []Document
@@ -193,7 +194,7 @@ func TestMergeTopK(t *testing.T) {
 }
 
 func TestExportImportRoundTrip(t *testing.T) {
-	src := newTestEngine(2)
+	src := newTestEngine(t, 2)
 	defer src.Close()
 	for _, id := range []string{"a", "b", "c", "d"} {
 		if err := src.Add([]Document{doc(id, "x")}); err != nil {
@@ -206,7 +207,7 @@ func TestExportImportRoundTrip(t *testing.T) {
 	}
 
 	// Import into a fresh engine, tombstoning "b".
-	dst := newTestEngine(2)
+	dst := newTestEngine(t, 2)
 	defer dst.Close()
 	if err := dst.Import(blobs, []ExternalID{"b"}); err != nil {
 		t.Fatal(err)
@@ -224,7 +225,7 @@ func TestExportImportRoundTrip(t *testing.T) {
 // docIDs, so a double-resident segment would otherwise duplicate the hit. A
 // genuinely-distinct blob still appends (Export +1).
 func TestImportIsIdempotentBySegmentID(t *testing.T) {
-	src := newTestEngine(2)
+	src := newTestEngine(t, 2)
 	defer src.Close()
 	for _, id := range []string{"a", "b"} {
 		if err := src.Add([]Document{doc(id, "x")}); err != nil {
@@ -236,7 +237,7 @@ func TestImportIsIdempotentBySegmentID(t *testing.T) {
 		t.Fatalf("source Export = %d blobs, want 1", len(blobB))
 	}
 
-	dst := newTestEngine(2)
+	dst := newTestEngine(t, 2)
 	defer dst.Close()
 	if err := dst.Import(blobB, nil); err != nil {
 		t.Fatal(err)
@@ -261,7 +262,7 @@ func TestImportIsIdempotentBySegmentID(t *testing.T) {
 	}
 
 	// A genuinely-distinct new blob still appends (Export +1).
-	src2 := newTestEngine(2)
+	src2 := newTestEngine(t, 2)
 	defer src2.Close()
 	for _, id := range []string{"c", "d"} {
 		if err := src2.Add([]Document{doc(id, "x")}); err != nil {
@@ -283,7 +284,7 @@ func TestImportIsIdempotentBySegmentID(t *testing.T) {
 // TestResidentDocCount pins the read-side coverage accessor: 0 on a fresh engine,
 // the summed sealed-segment doc count after Add+seal, and again after Import.
 func TestResidentDocCount(t *testing.T) {
-	e := newTestEngine(2) // MinSegmentDocs=2 → seals one segment per 2 docs
+	e := newTestEngine(t, 2) // MinSegmentDocs=2 → seals one segment per 2 docs
 	defer e.Close()
 	if got := e.ResidentDocCount(); got != 0 {
 		t.Fatalf("fresh engine ResidentDocCount = %d, want 0", got)
@@ -300,9 +301,9 @@ func TestResidentDocCount(t *testing.T) {
 	}
 
 	// Import a 2-doc blob into a fresh engine → resident 2.
-	dst := newTestEngine(2)
+	dst := newTestEngine(t, 2)
 	defer dst.Close()
-	src := newTestEngine(2)
+	src := newTestEngine(t, 2)
 	defer src.Close()
 	for _, id := range []string{"e", "f"} {
 		if err := src.Add([]Document{doc(id, "x")}); err != nil {
@@ -318,7 +319,7 @@ func TestResidentDocCount(t *testing.T) {
 }
 
 func TestUnload(t *testing.T) {
-	e := newTestEngine(1)
+	e := newTestEngine(t, 1)
 	defer e.Close()
 	for _, id := range []string{"a", "b"} {
 		if err := e.Add([]Document{doc(id, "x")}); err != nil {

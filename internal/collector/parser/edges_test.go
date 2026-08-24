@@ -56,12 +56,11 @@ func TestResolveEdges_PreservesMetadata(t *testing.T) {
 			FilePath: "a/caller.go",
 			Language: treesitter.LangGo,
 			Edges: []treesitter.Edge{{
-				FromID:  "a/caller.go:Caller",
-				ToID:    "Callee",
-				Type:    treesitter.EdgeCalls,
-				Weight:  7,
-				RefByte: 42,
-				Ref:     refSiteFor("a/caller.go", "dir:a", ""),
+				FromID: "a/caller.go:Caller",
+				ToID:   "Callee",
+				Type:   treesitter.EdgeCalls,
+				Weight: 7,
+				Ref:    refSiteFor("a/caller.go", "dir:a", ""),
 			}},
 		}}
 		ix := indexOf(t, &declRec{NodeID: "a/callee.go:Callee", File: "a/callee.go", Scope: "dir:a", Name: "Callee"})
@@ -75,10 +74,13 @@ func TestResolveEdges_PreservesMetadata(t *testing.T) {
 		assert.Equal(t, "a/callee.go:Callee", e.ToId)
 		assert.Equal(t, string(kgtypes.EdgeCalls), e.Type)
 		assert.InDelta(t, 7.0, e.Weight, 1e-9, "Weight must survive construction")
-		// A bound edge carries none of the residue fields — they mean
-		// "this edge is one of several guesses", which a bound edge is not.
+		// A bound edge carries the RUNG that resolved it on Method, and none of
+		// the residue fields: Confidence and Evidence mean "this edge is one of
+		// several guesses", which a bound edge is not, while Method is an
+		// ATTRIBUTION that every bound edge can carry truthfully.
 		assert.InDelta(t, 0.0, e.Confidence, 1e-9)
-		assert.Empty(t, e.Method)
+		assert.Equal(t, string(RuleOwnScope), e.Method,
+			"a bound edge carries the rung that resolved it")
 		assert.Empty(t, e.Evidence)
 	})
 
@@ -88,12 +90,11 @@ func TestResolveEdges_PreservesMetadata(t *testing.T) {
 			FilePath: "a/caller.go",
 			Language: treesitter.LangGo,
 			Edges: []treesitter.Edge{{
-				FromID:  "a/caller.go:Caller",
-				ToID:    "Callee",
-				Type:    treesitter.EdgeCalls,
-				Weight:  3,
-				RefByte: 1042,
-				Ref:     ref,
+				FromID: "a/caller.go:Caller",
+				ToID:   "Callee",
+				Type:   treesitter.EdgeCalls,
+				Weight: 3,
+				Ref:    ref,
 			}},
 		}}
 		// TWO surviving declarations under one key — the shape the replaced
@@ -108,7 +109,7 @@ func TestResolveEdges_PreservesMetadata(t *testing.T) {
 		got := resolveEdges(results, ix, nodeIDs)
 
 		require.Len(t, got, 2, "an ambiguous reference emits one edge per candidate, never a narrowed guess")
-		wantKey := groupKey("a/caller.go", 1042, string(kgtypes.EdgeCalls), "Callee")
+		wantKey := groupKey("Callee", string(kgtypes.EdgeCalls), "a/caller.go:Caller", 0)
 		for _, e := range got {
 			assert.InDelta(t, 0.5, e.Confidence, 1e-9, "Confidence is 1/N")
 			assert.Equal(t, kgtypes.EdgeMethodAmbiguousName, e.Method)

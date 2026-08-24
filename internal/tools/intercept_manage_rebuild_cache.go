@@ -15,6 +15,7 @@ package tools
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -53,19 +54,83 @@ func handleClientRebuildCache(ctx context.Context, deps ClientDeps, a manageArgs
 		return errorResult(`manage(rebuild_cache) requires "name" — the repo whose caches to re-derive`)
 	}
 
-	if _, ierr := ix.Index(ctx, &knowledgev1.IndexRequest{
+	resp, ierr := ix.Index(ctx, &knowledgev1.IndexRequest{
 		Target:    manageGraphSelector(a.Graph, a.Name),
 		Operation: knowledgev1.IndexRequest_INDEX_OP_REBUILD_CACHE,
-	}); ierr != nil {
+	})
+	if ierr != nil {
 		return errorResult("manage(rebuild_cache): " + ierr.Error())
 	}
 	// The op is ASYNC: the server drops + re-derives the caches on a background
 	// goroutine and acknowledges immediately (no derived count is known at
-	// return). The operator confirms completion via the server logs
-	// ("rebuild_cache.complete").
+	// return). Completion is reported through TWO channels, because neither one
+	// reaches every operator: the "rebuild_cache.complete" log line for whoever
+	// can read the server's stderr, and the recorded outcome below — re-run this
+	// op to read it — for whoever cannot.
 	return textResult(fmt.Sprintf(
 		"rebuild_cache started for %s/%s — dropping + re-deriving the summary/embed caches "+
 			"from base nodes in the background (no model calls). Watch the server logs for "+
-			"\"rebuild_cache.complete\" to confirm completion.",
-		a.Graph, a.Name))
+			"\"rebuild_cache.complete\" to confirm completion, or re-run this op to read the "+
+			"recorded outcome.%s",
+		a.Graph, a.Name, renderPreviousRebuildOutcome(resp.GetResultJson())))
+}
+
+// rebuildAckPayload is the shape handleClientRebuildCache reads out of the
+// started-ack's result_json. Only "previous" is read; the other keys the server
+// marshals are ignored here.
+type rebuildAckPayload struct {
+	Previous struct {
+		Present bool `json:"present"`
+		Outcome *struct {
+			State      string `json:"state"`
+			Stage      string `json:"stage"`
+			Error      string `json:"error"`
+			Derived    int64  `json:"derived"`
+			StartedAt  string `json:"started_at"`
+			FinishedAt string `json:"finished_at"`
+		} `json:"outcome"`
+		ReadError string `json:"read_error"`
+		RawLen    int    `json:"raw_len"`
+	} `json:"previous"`
+}
+
+// renderPreviousRebuildOutcome turns the started-ack's result_json into the
+// trailing sentence describing the PREVIOUS rebuild, or "" when there is nothing
+// to add.
+//
+// FOUR STATES, KEPT DISTINCT ON PURPOSE. An EMPTY result_json is a legitimate
+// "this server sent no payload" and appends nothing, leaving the ack exactly as
+// it was. A parseable payload with no recorded previous run says so explicitly,
+// which is different from silence. A recorded outcome is named in full. And a
+// payload that does NOT parse is reported LOUDLY rather than rendered as
+// silence: a malformed marker is a real condition, and quietly showing the
+// operator nothing would reproduce the precise defect this reporting exists to
+// close. None of these fails the op — the rebuild WAS started, and saying
+// otherwise would be false.
+func renderPreviousRebuildOutcome(resultJSON []byte) string {
+	if len(resultJSON) == 0 {
+		return ""
+	}
+	var payload rebuildAckPayload
+	if err := json.Unmarshal(resultJSON, &payload); err != nil {
+		return fmt.Sprintf("\n\nWARNING: the server's rebuild acknowledgement (%d bytes) could not be parsed, "+
+			"so the previous run's outcome is unknown: %v", len(resultJSON), err)
+	}
+	p := payload.Previous
+	if p.ReadError != "" {
+		return fmt.Sprintf("\n\nWARNING: a previous rebuild outcome is recorded but could not be read "+
+			"(%d raw bytes): %s", p.RawLen, p.ReadError)
+	}
+	if !p.Present || p.Outcome == nil {
+		return "\n\nNo previous rebuild outcome is recorded for this graph."
+	}
+	o := p.Outcome
+	switch o.State {
+	case "complete":
+		return fmt.Sprintf("\n\nPrevious rebuild: complete — %d entries derived, finished %s.", o.Derived, o.FinishedAt)
+	case "failed":
+		return fmt.Sprintf("\n\nPrevious rebuild: FAILED at stage %q — %s (finished %s).", o.Stage, o.Error, o.FinishedAt)
+	default:
+		return fmt.Sprintf("\n\nPrevious rebuild: %s (started %s).", o.State, o.StartedAt)
+	}
 }

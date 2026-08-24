@@ -58,4 +58,57 @@ type CollectResult struct {
 	// under kgtypes.LayerConfigKey so ConfigFileProvider can parse it
 	// server-side without filesystem access.
 	LayerConfig string `json:"layer_config,omitempty"`
+	// WalkComplete reports that discovery AND chunking read every file they set
+	// out to read — no unreadable file, no truncated walk.
+	//
+	// IT IS ONE SIGNAL WITH TWO CONSUMERS, deliberately: it drives the client's
+	// incomplete-walk fallback AND rides the wire as FinalizeRequest.walk_complete,
+	// where it is the server's second deletion guard. Wiring them from one source
+	// is what keeps a read-failed file from being named as a deletion; the deletion
+	// set arithmetic does not do that alone.
+	//
+	// THE ZERO VALUE IS THE SAFE ONE. A collector that does not set it reports an
+	// incomplete walk, which disables the diff and the deletion phase rather than
+	// enabling them on an unverified premise.
+	WalkComplete bool `json:"walk_complete,omitempty"`
+	// DiscoveryFingerprint is a canonical digest of the discovery CONFIGURATION
+	// this result was produced under. Empty for collectors that do no discovery.
+	//
+	// IT IS A FIELD RATHER THAN A LOCAL BECAUSE NOTHING DOWNSTREAM CAN DERIVE IT.
+	// The test that keeps this from eroding the no-widening rule — apply it to any
+	// future proposal — is: CAN THE SINK COMPUTE IT FROM WHAT IT ALREADY HOLDS?
+	// The per-file contribution hash can, which is exactly why that one stays a
+	// local in the sink's frame. This cannot: the configuration is decided three
+	// packages upstream in the discovery pass, and a file scoped out of discovery
+	// leaves NO trace in the result at all. There is nothing to derive from.
+	//
+	// WHAT IT PREVENTS: a collect scoped by package prefixes emits nothing for the
+	// out-of-scope files, so those paths would be named as deletions with every
+	// guard admitting them — the walk was complete, the ratio is ordinary, and
+	// each named path really does have a live node. Comparing this value against
+	// the previous collect's is what refuses that.
+	//
+	// CLIENT-INTERNAL: this struct is never marshaled and the server module never
+	// imports this package, so the field cannot reach the proto wire unless
+	// someone writes it into a request literal by hand.
+	DiscoveryFingerprint string `json:"discovery_fingerprint,omitempty"`
+	// CollectorOutputVersion is the identity of the collector build that produced
+	// this result (parser.CollectorOutputVersion). It answers the one question no
+	// per-file diff can: whether THIS collector would emit different rows for a
+	// file whose content never changed. The emitted values outside the per-file
+	// contribution hash — node Id, Summary, Keywords, metadata — move without
+	// moving any hash, so a diff-mode collect is blind to them by construction.
+	//
+	// IT PASSES THE SAME NO-WIDENING TEST DiscoveryFingerprint DOES: the sink
+	// cannot compute it from what it holds. The sink sees rows, and the whole
+	// point is that the rows look identical either way; only the producer knows
+	// which collector made them.
+	//
+	// ZERO MEANS UNSTAMPED, NOT UNCHANGED. A producer that leaves it zero is
+	// refused loudly on the diff path rather than read as "same as last time",
+	// which would silently disable the mechanism for that collector.
+	//
+	// CLIENT-INTERNAL, exactly as above: this struct is never marshaled and the
+	// server module never imports this package.
+	CollectorOutputVersion uint32 `json:"collector_output_version,omitempty"`
 }

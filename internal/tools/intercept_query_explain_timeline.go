@@ -114,19 +114,21 @@ func composeExplain(ctx context.Context, exec engine.ExecuteFn, a queryArgs) kgt
 // detects truncation, or one that splits on a threshold nobody applies.
 func fetchNodeEdges(ctx context.Context, exec engine.ExecuteFn, target *knowledgev1.GraphSelector, nodeID string) ([]knowledgev1.Edge, error) {
 	return paging.DrainPivotEdges([]string{nodeID}, paging.EdgePivotPageSize, engine.CorrelationsEdgeScanCap,
-		func(idPage []string) ([]knowledgev1.Edge, error) {
+		func(idPage []string, fromIDGte, fromIDLt string) ([]knowledgev1.Edge, bool, error) {
 			resp, err := exec(ctx, &knowledgev1.ExecuteRequest{
 				Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
-					Ids:        idPage,
-					ReturnMode: knowledgev1.ReturnMode_RETURN_MODE_EDGES,
-					Limit:      int32(engine.CorrelationsEdgeScanCap),
+					Ids:          idPage,
+					ReturnMode:   knowledgev1.ReturnMode_RETURN_MODE_EDGES,
+					Limit:        int32(engine.CorrelationsEdgeScanCap),
+					EdgeFromBand: paging.EdgeFromBandOrNil(fromIDGte, fromIDLt),
 				}},
 				Target: target,
 			})
 			if err != nil {
-				return nil, err
+				return nil, false, err
 			}
-			return engine.DecodeEdges(resp)
+			edges, derr := engine.DecodeEdges(resp)
+			return edges, resp.GetTruncated(), derr
 		})
 }
 

@@ -60,12 +60,16 @@ func parseGoImport(node *sitter.Node, src []byte, ctx *ChunkContext) {
 	// specifier is byte-identical to what ctx.Imports carried before this arm.
 	spec := strings.Trim(path.Content(src), "\"'`")
 
-	ctx.Imports = append(ctx.Imports, spec)
-
+	// The local is read BEFORE the site is appended, because the site carries it:
+	// it is what distinguishes `import "x/y"` from `import al "x/y"` in the same
+	// file, which are two dependencies on one specifier and must stay two edges.
 	local := ""
 	if name := node.ChildByFieldName("name"); name != nil {
 		local = name.Content(src)
 	}
+
+	ctx.Imports = append(ctx.Imports, ImportSite{Specifier: spec, Local: local})
+
 	kind := ImportNamespace
 	if local == "_" {
 		kind = ImportSideEffect

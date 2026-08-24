@@ -179,7 +179,10 @@ func fetchChargesUncached(ctx context.Context, gc Caller, thoughtIDs []string, s
 		inSet[tid] = true
 	}
 
-	edges, err := fetchEdgesForNodeSet(ctx, gc, thoughtIDs, []kgtypes.EdgeType{kgtypes.EdgeChargedBy})
+	// Served from the pass's ONE unified pivot-edge read when it covers these ids;
+	// otherwise this is the same narrow charged-by read as before. The type+From
+	// filter in the loop below is what makes consuming the wider set safe.
+	edges, err := memoTypedEdges(ctx, gc, thoughtIDs, []kgtypes.EdgeType{kgtypes.EdgeChargedBy}, src)
 	if err != nil {
 		slog.Warn("thought: fetchChargesFor: bulk edges failed", "err", err)
 		return out, err
@@ -268,7 +271,7 @@ func fetchNode(ctx context.Context, gc Caller, id string) (*knowledgev1.Node, bo
 
 // FetchNode is the exported single-ID wrapper used by
 // cmd/knowledge/internal/tools/ when an intercept needs to peek at a node
-// without owning the wire helper. Mirrors FetchThoughtAdjacency above.
+// without owning the wire helper.
 func FetchNode(ctx context.Context, gc Caller, id string) (*knowledgev1.Node, bool) {
 	return fetchNode(ctx, gc, id)
 }
@@ -393,19 +396,21 @@ func fetchEdgesOneDirection(ctx context.Context, gc Caller, nodeID string, forwa
 	// uses to notice it was enforced. One without the other yields a drain that
 	// never detects truncation, or one that splits on a threshold nobody applies.
 	rawEdges, err := paging.DrainPivotEdges([]string{nodeID}, paging.EdgePivotPageSize, engine.CorrelationsEdgeScanCap,
-		func(idPage []string) ([]knowledgev1.Edge, error) {
+		func(idPage []string, fromIDGte, fromIDLt string) ([]knowledgev1.Edge, bool, error) {
 			resp, rerr := gc.Execute(ctx, &knowledgev1.ExecuteRequest{
 				Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
 					Ids:               idPage,
 					ReturnMode:        knowledgev1.ReturnMode_RETURN_MODE_EDGES,
 					IncludeTombstones: true,
 					Limit:             int32(engine.CorrelationsEdgeScanCap),
+					EdgeFromBand:      paging.EdgeFromBandOrNil(fromIDGte, fromIDLt),
 				}},
 			})
 			if rerr != nil {
-				return nil, rerr
+				return nil, false, rerr
 			}
-			return engine.DecodeEdges(resp)
+			edges, derr := engine.DecodeEdges(resp)
+			return edges, resp.GetTruncated(), derr
 		})
 	if err != nil {
 		return nil, err
@@ -438,13 +443,14 @@ func fetchEdgesForNodeSet(ctx context.Context, gc Caller, ids []string, edgeType
 	if gc == nil || len(ids) == 0 {
 		return nil, nil
 	}
-	return paging.DrainPivotEdges(ids, paging.EdgePivotPageSize, engine.CorrelationsEdgeScanCap,
-		func(idPage []string) ([]knowledgev1.Edge, error) {
+	edges, err := paging.DrainPivotEdges(ids, reflectionEdgePivotPageSize, engine.CorrelationsEdgeScanCap,
+		func(idPage []string, fromIDGte, fromIDLt string) ([]knowledgev1.Edge, bool, error) {
 			plan := &knowledgev1.QueryPlan{
 				Ids:               idPage,
 				ReturnMode:        knowledgev1.ReturnMode_RETURN_MODE_EDGES,
 				IncludeTombstones: true,
 				Limit:             int32(engine.CorrelationsEdgeScanCap),
+				EdgeFromBand:      paging.EdgeFromBandOrNil(fromIDGte, fromIDLt),
 			}
 			if len(edgeTypes) > 0 {
 				ets := make([]string, len(edgeTypes))
@@ -457,10 +463,24 @@ func fetchEdgesForNodeSet(ctx context.Context, gc Caller, ids []string, edgeType
 				Plan: &knowledgev1.ExecuteRequest_Query{Query: plan},
 			})
 			if err != nil {
-				return nil, err
+				return nil, false, err
 			}
-			return engine.DecodeEdges(resp)
+			edges, derr := engine.DecodeEdges(resp)
+			return edges, resp.GetTruncated(), derr
 		})
+	if err != nil {
+		return nil, err
+	}
+	// One line per LOGICAL bulk edge read — every RETURN_MODE_EDGES read in this
+	// package reaches the wire through here, so this is the whole per-pass census in
+	// one place. Emitted AFTER the drain, on the completed union, so a paged read
+	// counts ONCE rather than once per page. Group the lines on the (edge_types,
+	// pivots) PAIR: two reads sharing both are the same read twice.
+	slog.Debug("thought: bulk edge read",
+		"edge_types", edgeTypesLabel(edgeTypes),
+		"pivots", len(ids),
+		"edges", len(edges))
+	return edges, nil
 }
 
 // runLeidenLocal wraps the relocated topology/graph RunLeiden so callers

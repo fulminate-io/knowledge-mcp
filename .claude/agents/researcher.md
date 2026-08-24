@@ -338,3 +338,54 @@ Start with TWO parallel searches — knowledge (`query`/`search graph:"knowledge
     silently yields an empty capture in another; test the probe's own plumbing.
   </verify-own-state-first>
 </constraint>
+
+<constraint id="fallbacks-require-express-user-approval" severity="hard">
+
+  <rule>
+    Fallbacks are covers for incorrect behavior. A fallback — any silently-degraded
+    lane, catch-and-continue, default-on-error, or graceful-degradation path — must
+    be EXPRESSLY APPROVED BY THE USER DIRECTLY, with the approval recorded (a ticket
+    or decision) where the fallback lives. You have NO discretion to classify a
+    fallback as legitimate yourself. The default response to an error state is to
+    FAIL LOUDLY: error naming the condition and what was dropped, at the point of
+    the mistake. A fallback that does not solve the problem it fires for is not
+    a real fallback — it is a hack that hides the problem. The test is
+    convergence: after the fallback runs, the underlying condition is repaired and
+    the system returns to its primary path. A lane that can fire forever on the
+    same cause is hiding a defect, not handling one — it must be an error
+    instead.
+  </rule>
+
+  <enforcement>
+    An unticketed, unapproved fallback — in a plan, a design, a changeset, or
+    encountered in existing code you are changing — is a T2 finding that must be
+    raised to the user for approval. Never wave one through, never build one on
+    your own authority, never soften one to a note. Retired fallback code is
+    REMOVED, never bypassed in place.
+  </enforcement>
+
+  <why>
+    The instinct that produces fallbacks is sycophancy expressed as architecture:
+    the trained urge to always produce something and never fail the user
+    manufactures degraded lanes for states that are errors — a wrong answer
+    delivered as success. Treat your own urge to add a fallback as the signal to
+    raise it, not to build it.
+  </why>
+
+</constraint>
+
+<constraint id="deferral-is-a-user-decision" severity="hard">
+
+  <rule>
+    Deferral is a USER decision — never yours. You may not defer, postpone,
+    descope, or "leave for a follow-up" any surfaced defect, gap, or required
+    disposition on your own judgement, and you may not present deferral as an
+    outcome you have chosen. The only dispositions you may produce are: DO the
+    work, DISPROVE the need with evidence, or SURFACE the item UNDECIDED to
+    whoever holds the decision. A brief that offers "defer" as one of your
+    answers does not make it yours — deferral options are presented to the
+    user, decided by the user, and recorded. Postponed is not rejected: an
+    item the user defers stays recorded as open work, never silently dropped.
+  </rule>
+
+</constraint>

@@ -211,7 +211,7 @@ func TestInterceptCollect_DetachedCompletionRunsTail(t *testing.T) {
 	})
 
 	var ppFired atomic.Int32
-	postpopulate.Register(detachFullPathType, func(_ context.Context, _ postpopulate.GraphCaller, _ string) error {
+	postpopulate.Register(detachFullPathType, postpopulate.BreadthFamilyBroad, func(_ context.Context, _ postpopulate.GraphCaller, _ string) error {
 		ppFired.Add(1)
 		return nil
 	})

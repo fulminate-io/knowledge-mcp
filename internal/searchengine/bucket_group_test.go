@@ -104,11 +104,11 @@ func residentSnapshot(e *SegmentedIndex[mockQuery, mockStats]) map[SegmentID]int
 // every build completes, so the same read finds the original set untouched.
 func TestGroupSwapIsAtomicAcrossPartitions(t *testing.T) {
 	fmtGate := &gateFormat{blockAt: 2, entered: make(chan struct{}), release: make(chan struct{})}
-	e := New[mockQuery, mockStats](fmtGate, Options{
+	e := closeOnCleanup(t, New[mockQuery, mockStats](fmtGate, Options{
 		MinSegmentDocs:     1 << 20, // only explicit Flush seals
 		DeletesPctAllowed:  MergeDisabledDeadRatio,
 		SegmentCountTarget: MergeDisabledCountTarget,
-	})
+	}))
 	defer e.Close()
 
 	// A segment SPANNING both partitions is what makes the group a group.
@@ -158,11 +158,11 @@ func TestGroupSwapIsAtomicAcrossPartitions(t *testing.T) {
 // partition's members would be discarded with a segment nobody rebuilt them from.
 func TestGroupSwapPublishesNothingOnPartialFailure(t *testing.T) {
 	fmtGate := &gateFormat{failAt: 2}
-	e := New[mockQuery, mockStats](fmtGate, Options{
+	e := closeOnCleanup(t, New[mockQuery, mockStats](fmtGate, Options{
 		MinSegmentDocs:     1 << 20,
 		DeletesPctAllowed:  MergeDisabledDeadRatio,
 		SegmentCountTarget: MergeDisabledCountTarget,
-	})
+	}))
 	defer e.Close()
 
 	spanning := append(groupIDsFor(t, 0, 8), groupIDsFor(t, 1, 8)...)
@@ -202,12 +202,12 @@ func TestGroupSwapPublishesNothingOnPartialFailure(t *testing.T) {
 // turns that silent vacuity into a failure.
 func TestGroupReclaimSparesEveryPublishedID(t *testing.T) {
 	var fired []MergeResult
-	e := New[mockQuery, mockStats](mockFormat{}, Options{
+	e := closeOnCleanup(t, New[mockQuery, mockStats](mockFormat{}, Options{
 		MinSegmentDocs:     1 << 20,
 		DeletesPctAllowed:  MergeDisabledDeadRatio,
 		SegmentCountTarget: MergeDisabledCountTarget,
 		OnMerge:            func(res MergeResult) { fired = append(fired, res) },
-	})
+	}))
 	defer e.Close()
 
 	// Partition 0 gets TWO constituents, so its output is a genuine consolidation

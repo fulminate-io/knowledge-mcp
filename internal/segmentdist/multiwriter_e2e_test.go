@@ -10,6 +10,7 @@ import (
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
+	"github.com/fulminate-io/knowledge-mcp/internal/searchengine/formats/hnsw"
 )
 
 // multiwriter_e2e_test.go is the integration capstone: N fleet writers run a mixed
@@ -117,7 +118,7 @@ func TestMultiWriterE2ELifecycle(t *testing.T) {
 	// DEPART: writer 2 simply stops (no further publishes). Writers 0 and 1 continue —
 	// writer 2's referenced blobs must NOT be reaped by their publishes (no server
 	// departed-writer sweep runs on the client side; refcount keeps them alive).
-	departedRef := writerManifest(svc, target, mgrs[2].writerID, "hnsw")
+	departedRef := writerManifest(svc, target, mgrs[2].writerID, hnsw.New().Name())
 	require.NotEmpty(t, departedRef, "departed writer 2 left a manifest")
 	// Writers 0 and 1 publish again.
 	require.NoError(t, mgrs[0].Flush(ctx, gt, name))
@@ -134,7 +135,7 @@ func TestMultiWriterE2ELifecycle(t *testing.T) {
 	// writer 2's pinned manifest, and assert the server count equals it.
 	expected := map[string]struct{}{}
 	for _, mgr := range []*fleetMember{mgrs[0], r1, mgrs[2]} {
-		for _, id := range writerManifest(svc, target, mgr.writerID, "hnsw") {
+		for _, id := range writerManifest(svc, target, mgr.writerID, hnsw.New().Name()) {
 			expected[id] = struct{}{}
 		}
 	}

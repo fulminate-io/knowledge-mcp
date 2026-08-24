@@ -5,7 +5,7 @@
 // node-index fetch (wire RPC to the server's code graph) and returns
 // the Findings slice the intercept renders into JSON.
 //
-// The whole pipeline runs on the stdio client because packages.Load + SSA + RTA
+// The whole pipeline runs client-side (cmd/knowledge) because packages.Load + SSA + RTA
 // all need a real filesystem view of the user's repo.
 package topology
 

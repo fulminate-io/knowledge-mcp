@@ -60,7 +60,7 @@ func driveEmbedPublish(
 func newPinFixture(t *testing.T, name string) pinFixture {
 	t.Helper()
 	svc, view := newSegmentHarness(t)
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(view))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(view)))
 	gt := kgtypes.GraphCode
 	return pinFixture{svc: svc, view: view, mgr: mgr, gt: gt, name: name, target: graphSelector(gt, name)}
 }

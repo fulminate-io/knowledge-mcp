@@ -20,7 +20,7 @@ import (
 // calls — the way the C1 test stages two distinct on-server blobs.
 func buildHNSWSegment(t *testing.T, docs []searchengine.Document) []*knowledgev1.SegmentBlobProto {
 	t.Helper()
-	eng := searchengine.New[[]byte, struct{}](hnsw.New(), searchengine.Options{})
+	eng := closeOnCleanup(t, searchengine.New[[]byte, struct{}](hnsw.New(), searchengine.Options{}))
 	require.NoError(t, eng.Add(docs))
 	require.NoError(t, eng.Flush())
 	exported := eng.Export()
@@ -91,7 +91,7 @@ func TestLoadFromServer_ShortFetchDoesNotLoseSegment(t *testing.T) {
 	// consumer's injected view over the SAME server has the drop hook armed.
 	consumerView := svc.viewFor(target, "")
 	consumerView.setDrop(victim, true)
-	consumer := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(consumerView))
+	consumer := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(consumerView)))
 	dm := consumer.managerFor(kgtypes.GraphCode, "shortfetchRepo")
 	require.NoError(t, dm.loadFromServer(ctx))
 

@@ -9,7 +9,10 @@ package tools
 import (
 	"context"
 	"log/slog"
+	"sync"
+	"time"
 
+	"github.com/fulminate-io/knowledge-mcp/internal/graphsel"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
@@ -46,9 +49,18 @@ const codeSearchOverfetch = 2
 //
 // A branch search reads the base pool AND its overlay pool through the two-pool
 // arm, which ranks the pools against each other on raw engine scores before
-// fusing. A default-branch search reads the single repo pool. The two-pool arm
+// fusing — UNLESS the branch's own bucket already holds the whole corpus, which
+// shippedCompleteForUnifiedSearch decides and which collapses the read to that one
+// pool. A default-branch search reads the single repo pool. The two-pool arm
 // itself decides what a failing pool means: a base-pool failure fails the search,
 // an overlay-pool failure degrades to the base pool.
+//
+// THE COLLAPSED ARM READS THE BRANCH POOL. Once the gate is satisfied the branch's
+// bucket is the complete corpus and base is the stale one, so reading base there
+// would serve every branch query from the default branch's index — a wrong answer
+// that a test counting pools cannot see. Nothing about the surviving arms changes:
+// the union remains the gate's safe direction for an incomplete bucket, and the
+// degrade record on the missing-arm and failure paths stays exactly as written.
 func codeSearchPoolHits(
 	ctx context.Context,
 	cdeps codeSearchDeps,
@@ -63,6 +75,11 @@ func codeSearchPoolHits(
 		err  error
 	)
 	switch {
+	case overlay != base && cdeps.ovl != nil && shippedCompleteForUnifiedSearch(ctx, cdeps, base, branch):
+		// The branch's own bucket covers the branch graph's whole embedded
+		// population, so the base pool can only re-serve documents this pool
+		// already holds. One pool, and it is the branch's.
+		hits, err = cdeps.mgr.Search(ctx, kgtypes.GraphCode, overlay, query, queryVec, k)
 	case overlay != base && cdeps.ovl != nil:
 		hits, err = cdeps.ovl.SearchOverlay(ctx, kgtypes.GraphCode, base, overlay, query, queryVec, k)
 	case overlay != base:
@@ -88,6 +105,130 @@ func codeSearchPoolHits(
 		return nil
 	}
 	return hits
+}
+
+// shippedCompleteTTL bounds how long ONE (graph, branch) completeness verdict is
+// reused before both operands are read again. The gate runs once per code query on
+// the hot read path and NEITHER operand is free — the shipped count loads the L2
+// read engine on the OSS rail and reads the manifest on the cloud rail
+// (segmentdist/manager_coverage_probe.go:82-101), and the bar is a Stats RPC — so
+// an unmemoized gate would put both on every query.
+//
+// 30 SECONDS, AND THE NUMBER IS CHOSEN FROM WHAT A STALE VERDICT COSTS IN EACH
+// DIRECTION, not from a round figure. A stale NOT-COMPLETE costs one extra pool
+// read per query until it expires: the union is the shape this path has always
+// had, so the cost is the status quo. A stale COMPLETE is the one that can serve a
+// short corpus, so it is the direction the window is sized for — a bucket cannot
+// lose coverage faster than a ship or a delete lands, and 30s is under the interval
+// at which either does. Longer would widen that exposure for a saving the memo has
+// already collected; shorter would put the two reads back on the hot path.
+const shippedCompleteTTL = 30 * time.Second
+
+// shippedCompleteMemo holds one verdict per overlay-qualified graph name. The
+// VERDICT is memoized rather than the two operands: the comparison is the whole
+// product of reading them, and caching the operands separately would let a fresh
+// covered count be compared against an expired bar.
+//
+// IT IS BOUNDED IN BOTH DIMENSIONS. The TTL bounds a verdict's age; the sweep on
+// every miss bounds the map to the branches this process searched within one TTL,
+// so a machine that churns through branch names does not accumulate an entry per
+// branch forever.
+var shippedCompleteMemo = struct {
+	sync.Mutex
+	at       map[string]time.Time
+	complete map[string]bool
+}{at: map[string]time.Time{}, complete: map[string]bool{}}
+
+// cachedShippedComplete returns a verdict recorded within the TTL.
+func cachedShippedComplete(overlay string, now time.Time) (bool, bool) {
+	shippedCompleteMemo.Lock()
+	defer shippedCompleteMemo.Unlock()
+	at, ok := shippedCompleteMemo.at[overlay]
+	if !ok || now.Sub(at) >= shippedCompleteTTL {
+		return false, false
+	}
+	return shippedCompleteMemo.complete[overlay], true
+}
+
+// rememberShippedComplete records a verdict and evicts every expired sibling.
+func rememberShippedComplete(overlay string, complete bool, now time.Time) {
+	shippedCompleteMemo.Lock()
+	defer shippedCompleteMemo.Unlock()
+	for name, at := range shippedCompleteMemo.at {
+		if now.Sub(at) >= shippedCompleteTTL {
+			delete(shippedCompleteMemo.at, name)
+			delete(shippedCompleteMemo.complete, name)
+		}
+	}
+	shippedCompleteMemo.at[overlay] = now
+	shippedCompleteMemo.complete[overlay] = complete
+}
+
+// shippedCompleteForUnifiedSearch reports whether a branch's OWN segment bucket
+// holds the whole corpus a branch search must serve — the one condition under
+// which reading the base pool alongside it adds nothing.
+//
+// THE TWO OPERANDS COME FROM DIFFERENT STAMPERS, AND THAT IS THE WHOLE
+// CORRECTNESS OF THE GATE.
+//
+//   - covered is the SEGMENT ENGINE's shipped HNSW doc count for the branch bucket
+//     (SegmentCoverageReader.ShippedSegmentDocCount): client-side on the OSS rail,
+//     where it is the L2 resident count, and server-side on the cloud rail, where
+//     it is summed from the shipped manifest's per-digest doc_count.
+//   - the bar is the branch GRAPH's own embedded population — GraphStats
+//     .BinaryVectorCount, the count of nodes carrying a stored binary vector,
+//     maintained by the server's node store and read through the single
+//     GraphEmbeddedCount definition.
+//
+// A bar derived from the resident pool would make this an IDENTITY. On the OSS
+// rail ShippedSegmentDocCount RETURNS the resident count, so resident >= resident
+// is true for a bucket that is half seeded, and the gate would report complete for
+// exactly the corpus it exists to refuse. The server's counter is the one authority
+// available on both rails that the segment engine does not write.
+//
+// THE COMPARISON IS NON-SHORTFALL WITH NO TOLERANCE, and the zero is earned rather
+// than assumed. The bar counts precisely the nodes that CAN appear in the HNSW
+// corpus — a node with no vector is in neither population — so the two numbers are
+// commensurable and any shortfall is a real gap. That pairing is not invented here:
+// the covered count sums only the HNSW dimension because it "mirrors the graph's
+// binary_vector_count denominator" (manager_coverage_probe.go:52-54). A tolerance
+// would be the one knob that could let a genuinely short bucket through.
+//
+// EVERY UNKNOWN READS AS NOT COMPLETE, because the two-pool union is the safe
+// direction and a wrong "complete" serves a partial corpus under a healthy banner:
+// anyUnknown (the conservative-unknown signal, true when a shipped segment predates
+// the doc_count field so the coverage is unknowable), a read error on either
+// operand, an unwired coverage seam, and a bar of zero — which a router-less caller
+// gets back from GraphEmbeddedCount, and which would otherwise make covered >= 0
+// the same always-true identity arriving by a different door.
+//
+// THE BAR IS ADDRESSED AT THE BRANCH, and that is what makes a sparse branch
+// safe without a special case. The server resolves a Branch-carrying code selector
+// through Scope, which serves a FULL branch from its own layer alone and a sparse
+// one as base plus overlay. So a full branch is measured against its own
+// population, and a sparse branch is measured against BASE's much larger one — a
+// short bucket cannot meet it, and the union stays. A half-finished seed fails the
+// same way, which is the discrimination a "was seeded" flag would have destroyed.
+func shippedCompleteForUnifiedSearch(ctx context.Context, cdeps codeSearchDeps, base, branch string) bool {
+	if cdeps.cov == nil || cdeps.gc == nil {
+		return false
+	}
+	overlay := overlayName(base, branch)
+	now := time.Now()
+	if verdict, cached := cachedShippedComplete(overlay, now); cached {
+		return verdict
+	}
+
+	covered, anyUnknown, err := cdeps.cov.ShippedSegmentDocCount(ctx, kgtypes.GraphCode, overlay)
+	complete := err == nil && !anyUnknown
+	if complete {
+		target := graphsel.GraphSelectorFor(kgtypes.GraphCode, base, false)
+		target.Branch = branch
+		embedded, barErr := graphEmbeddedCountFor(ctx, cdeps.gc, target)
+		complete = barErr == nil && embedded > 0 && covered >= embedded
+	}
+	rememberShippedComplete(overlay, complete, now)
+	return complete
 }
 
 // multiRepoBranch resolves ONE repo's branch for the cross-repo fan-out. Each

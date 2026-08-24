@@ -13,16 +13,16 @@ import (
 	clientthought "github.com/fulminate-io/knowledge-mcp/internal/thought"
 )
 
-// personalityFixtureProfile builds a profile whose Scalars span two clusters (c1,
+// personalityFixtureProfile builds a profile whose rows span two clusters (c1,
 // c2) so ReflectPersonality emits a stubborn/gullible pair row, with ClusterLabels
 // seeded to known sentinel text. The sentinel is what the ServesCache test looks for
 // in the rendered output (it could only be there if the handler sourced clusters
 // from the provider, not from a gc re-detect).
 func personalityFixtureProfile() *clientthought.PersonalityProfile {
 	return &clientthought.PersonalityProfile{
-		Scalars: map[string]map[string]float64{
-			"c1": {"c2": 0.5}, // stubborn (c1 resists c2)
-			"c2": {"c1": 1.7}, // gullible (c2 open to c1)
+		RowDefault: map[string]float64{
+			"c1": 0.5, // stubborn (c1 resists c2)
+			"c2": 1.7, // gullible (c2 open to c1)
 		},
 		ClusterLabels: map[string]string{
 			"c1": "SENTINEL-cluster-one",

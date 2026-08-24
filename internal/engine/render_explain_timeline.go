@@ -46,9 +46,17 @@ func RenderExplainEdges(label string, edges []knowledgev1.Edge, nameByID map[str
 		if e.Confidence > 0 {
 			fmt.Fprintf(&sb, "- Score: %.2f\n", e.Confidence)
 		}
+		// Edge.Method POPULATIONS ARE KEYED BY EDGE TYPE.
+		//
 		// A group member's method and group key are already stated by its group
 		// block (as the block's semantics), so a second per-edge copy is redundant
 		// and the raw key invites parsing an identifier this plan renders opaquely.
+		// THAT SUPPRESSION IS ABOUT GROUP MEMBERS AND NOT ABOUT THE FIELD: Method
+		// holds several populations keyed by the edge type carrying them, with
+		// kgtypes (edge_types.go) as the vocabulary source, so any value outside
+		// the two group constants prints here as an ordinary method — a bound
+		// reference edge's resolution rung today, and whatever population a
+		// further edge type gains, with no edit to this line.
 		// Every other edge keeps both fields verbatim — a cloud or linkage edge's
 		// Evidence is a genuine human-readable citation.
 		//

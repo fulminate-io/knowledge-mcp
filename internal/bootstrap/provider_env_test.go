@@ -46,6 +46,11 @@ var providerKeyEnv = []string{
 // than set-empty: absent is the state a clean CI machine has, and no resolver
 // in config or bootstrap distinguishes the two (all of them read os.Getenv).
 func TestMain(m *testing.M) {
+	// FIRST, and before any flag parsing: this binary re-executes itself as the
+	// parent and child of a real spawnServer call, and those processes are
+	// invoked with the server's own argv, which this binary's flag set would
+	// reject. The helper returns immediately in a normal run.
+	maybeRunSpawnSurvivalHelper()
 	for _, k := range providerKeyEnv {
 		if err := os.Unsetenv(k); err != nil {
 			panic("clearing " + k + " for the test suite: " + err.Error())

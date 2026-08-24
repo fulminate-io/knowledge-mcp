@@ -11,6 +11,8 @@ import (
 	"time"
 
 	"connectrpc.com/connect"
+
+	"github.com/fulminate-io/knowledge-mcp/internal/llm"
 )
 
 // RetryBackoff is the exponential-backoff schedule consumed by both
@@ -45,6 +47,14 @@ var RetryBackoff = []time.Duration{
 // NotFound, ResourceExhausted, etc.), context.Canceled,
 // context.DeadlineExceeded — those should surface immediately to the
 // caller.
+//
+// THAT STAYS TRUE OF THIS PREDICATE, and deliberately so, even though a
+// ResourceExhausted CARRYING a Retry-After is now retried elsewhere: see
+// IsBackpressureShedError for the header-qualified case. Widening THIS predicate
+// to cover it would nest an interceptor-level retry under uploadWithRetry's own —
+// multiplicative attempts on every shed — and would break segmentdist's
+// byte-ceiling halving, which is documented as safe precisely because this
+// predicate does not retry ResourceExhausted.
 func IsRetryableTransportError(err error) bool {
 	if err == nil {
 		return false
@@ -89,6 +99,69 @@ func IsRetryableTransportError(err error) bool {
 		}
 	}
 	return false
+}
+
+// ShedRetries is how many EXTRA attempts a SHED upload buys, on top of the first.
+//
+// A shed is the cheapest possible failure to retry — the server refused before
+// doing any work and told us when to come back — so this budget is larger than
+// the ambiguous one, which pays a full re-upload per attempt against a fault that
+// may be permanent.
+//
+// IT IS UNRELATED TO THE SERVER'S ADMISSION WIDTH. This governs how many times ONE
+// upload re-sends; the server's floor governs how many finalizes hold the write
+// lock at once. Since that floor is enforced by finalize-specific semaphores, a
+// shed does not compete with any other RPC for a shared counter. Do not "align"
+// these numbers with the server's.
+const ShedRetries = 3
+
+// ShedJitterFraction is the jitter divisor: a shed sleeps the server's stated
+// delay d plus a random value in [0, d/ShedJitterFraction).
+//
+// THE JITTER IS DESYNCHRONISATION, NOT FUZZ. Every client shed in the same burst
+// is handed the SAME Retry-After, so an unjittered sleep re-synchronizes them into
+// a herd that wakes together, lands together and is shed together. Spreading the
+// wake-ups is what lets a saturated server drain.
+const ShedJitterFraction = 2
+
+// IsBackpressureShedError reports whether err is a DELIBERATE SERVER SHED, and
+// returns the delay the server asked us to wait.
+//
+// IT IS A THIRD CLASS, NOT A WIDENING OF EITHER PREDICATE ABOVE, because a shed is
+// neither of the things those describe. It is not a transport blip: the server
+// NAMED the condition. It is not ambiguous about whether the work landed: it
+// did not, and the server said so before starting.
+//
+// BOTH CONDITIONS ARE REQUIRED — CodeResourceExhausted AND a positive Retry-After.
+// The code alone is not single-meaning in this repo, so the header is what makes
+// the predicate precise. Retry-After is set only by the DELIBERATE SHED PATHS —
+// the backpressure interceptor and the finalize-admission mapping — so its
+// presence on a ResourceExhausted means the server shed this request. That is a
+// property of those paths, and it survives a third shed path being added.
+//
+// The delay is parsed with llm.ParseRetryAfter rather than a local parser, so the
+// header's two wire forms (delta-seconds and HTTP-date) are handled in one place.
+func IsBackpressureShedError(err error) (time.Duration, bool) {
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return 0, false
+	}
+	var ce *connect.Error
+	if !errors.As(err, &ce) || ce.Code() != connect.CodeResourceExhausted {
+		return 0, false
+	}
+	h := ce.Meta()
+	// The header's PRESENCE is the second half of the predicate, checked here so
+	// the condition is explicit at the site rather than implied by the parser's
+	// zero return. Parsing itself stays with llm.ParseRetryAfter — one place that
+	// knows the header's two wire forms.
+	if h.Get("Retry-After") == "" {
+		return 0, false
+	}
+	d := llm.ParseRetryAfter(h)
+	if d <= 0 {
+		return 0, false
+	}
+	return d, true
 }
 
 // AmbiguousUploadRetries is how many EXTRA attempts an ambiguous upload error

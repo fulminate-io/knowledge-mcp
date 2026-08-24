@@ -122,18 +122,29 @@ func (f *backstopCorpusFake) Execute(_ context.Context, req *knowledgev1.Execute
 	}
 
 	if q.GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_EDGES {
+		// UNION, not first-match: the wire returns every edge matching ANY requested
+		// type (an empty set means every type). This fixture holds only relates-to
+		// edges, so it serves them whenever relates-to is requested and contributes
+		// nothing for kg-contains / charged-by. Bailing out as soon as the request
+		// MENTIONED either of those was adequate only while each caller asked for a
+		// single type; the unified pivot read asks for seven at once, and under the
+		// old form this fake returned ZERO edges — every backstop test here then ran
+		// propagation over an EMPTY graph while still passing, because none of their
+		// assertions reach the discarded content.
+		want := map[string]bool{}
 		if sel := q.GetSelection(); sel != nil {
 			for _, et := range sel.GetEdgeTypes() {
-				if et == string(kgtypes.EdgeKGContains) || et == string(kgtypes.EdgeChargedBy) {
-					return &knowledgev1.ExecuteResponse{}, nil
-				}
+				want[et] = true
 			}
+		}
+		if len(want) > 0 && !want[string(kgtypes.EdgeRelatesTo)] {
+			return &knowledgev1.ExecuteResponse{}, nil
 		}
 		var out []*knowledgev1.Edge
 		for _, e := range f.edges {
 			out = append(out, &knowledgev1.Edge{Type: string(kgtypes.EdgeRelatesTo), FromId: e[0], ToId: e[1]})
 		}
-		return &knowledgev1.ExecuteResponse{Edges: out}, nil
+		return &knowledgev1.ExecuteResponse{Edges: bandNarrow(out, q)}, nil
 	}
 
 	if len(q.GetIds()) > 0 {

@@ -126,6 +126,37 @@ func TestInterceptManage_DropGraph_CodeRoutesRepo(t *testing.T) {
 	assert.Empty(t, tgt.GetName(), "code must not set Name")
 }
 
+// TestInterceptManage_DropGraph_BranchKeyTargetsRepo is a CHARACTERIZATION GUARD —
+// green before and after — pinning that a drop naming a composed branch graph key
+// addresses the BRANCH GRAPH and not its base.
+//
+// It exists because the coverage table now enumerates branch graphs, so the Graphs
+// page offers a delete control on a branch row for the first time. The routing that
+// makes that delete correct was previously exercised by nothing.
+//
+// THE EMPTY-BRANCH LEG IS THE ONE THAT MATTERS. Asserting only Repo passes against a
+// selector that ALSO set Branch — which the server Scopes into a base+overlay
+// composite, changing which graph the drop identity derives from. The failure mode
+// this pins is a destructive one: an operator asks to delete a branch and loses main.
+func TestInterceptManage_DropGraph_BranchKeyTargetsRepo(t *testing.T) {
+	fc := &fakeGraphCaller{mutateAffected: 1}
+	handled, res := dropGraphCall(t, fc,
+		`{"operation":"drop_graph","graph":"code","name":"agent@launch-fixes"}`)
+	require.True(t, handled)
+	require.False(t, res.IsError, "drop_graph: %s", toolResultText(res))
+
+	require.Len(t, fc.execRequests, 1, "exactly one Execute RPC")
+	tgt := fc.execRequests[0].GetTarget()
+	assert.Equal(t, "code", tgt.GetGraph())
+	assert.Equal(t, "agent@launch-fixes", tgt.GetRepo(),
+		"the composed branch key rides Repo verbatim — that is what makes the server resolve the overlay")
+	assert.Empty(t, tgt.GetBranch(),
+		"Branch must stay EMPTY: a Repo+Branch selector Scopes the base+overlay composite instead")
+
+	assert.Contains(t, toolResultText(res), "Dropped graph code/agent@launch-fixes",
+		"the ack names the branch graph the operator deleted, not the bare repo")
+}
+
 // TestInterceptManage_DropGraph_EmptyGraphRejected asserts an empty graph is a
 // validation error with NO Execute fired.
 func TestInterceptManage_DropGraph_EmptyGraphRejected(t *testing.T) {

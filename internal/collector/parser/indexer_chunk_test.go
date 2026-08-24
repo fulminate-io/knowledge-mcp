@@ -28,9 +28,12 @@ func Goodbye() string {
 `)
 
 	files := []string{filepath.Join("pkg", "hello.go")}
-	results, err := parser.ChunkFiles(context.Background(), dir, files)
+	results, rep, err := parser.ChunkFiles(context.Background(), dir, files)
 	if err != nil {
 		t.Fatalf("ChunkFiles: %v", err)
+	}
+	if rep.Dropped() != 0 {
+		t.Fatalf("clean walk dropped files: %s", rep.Describe())
 	}
 	if len(results) != 1 {
 		t.Fatalf("expected 1 result, got %d", len(results))
@@ -125,9 +128,12 @@ func C() string { return "c" }
 `)
 
 	files := []string{"a.go", "b.go", "c.go"}
-	results, err := parser.ChunkFilesParallel(context.Background(), dir, files)
+	results, rep, err := parser.ChunkFilesParallel(context.Background(), dir, files)
 	if err != nil {
 		t.Fatalf("ChunkFilesParallel: %v", err)
+	}
+	if rep.Dropped() != 0 {
+		t.Fatalf("clean walk dropped files: %s", rep.Describe())
 	}
 	if len(results) != 3 {
 		t.Fatalf("expected 3 results, got %d", len(results))
@@ -145,6 +151,60 @@ func C() string { return "c" }
 			t.Errorf("expected chunk %q not found", expected)
 		}
 	}
+}
+
+// TestChunkReport_CountsEveryLoss pins the report's counting. Each subtest is a
+// KNOWN POSITIVE for a different loss path, which is what makes the clean-walk
+// zero above readable: without one, a counter that is never incremented and a
+// genuinely clean walk are the same observation.
+func TestChunkReport_CountsEveryLoss(t *testing.T) {
+	t.Run("unreadable_file_counts_and_is_named", func(t *testing.T) {
+		dir := t.TempDir()
+		writeTestFile(t, filepath.Join(dir, "present.go"), "package p\n\nfunc P() {}\n")
+
+		// "absent.go" is handed to chunking but never written, so os.ReadFile fails
+		// ENOENT at the real read site rather than through a simulated error.
+		_, rep, err := parser.ChunkFiles(context.Background(), dir, []string{"present.go", "absent.go"})
+		if err != nil {
+			t.Fatalf("ChunkFiles: %v", err)
+		}
+		if got := rep.Dropped(); got != 1 {
+			t.Fatalf("expected exactly 1 dropped file, got %d (%s)", got, rep.Describe())
+		}
+		if got := rep.DroppedByReason[parser.ChunkReasonReadError]; got != 1 {
+			t.Errorf("expected 1 %s, got %d", parser.ChunkReasonReadError, got)
+		}
+		if desc := rep.Describe(); !strings.Contains(desc, "absent.go") {
+			t.Errorf("the description must NAME the dropped file; got %q", desc)
+		}
+	})
+
+	t.Run("cancellation_counts_the_whole_remainder", func(t *testing.T) {
+		dir := t.TempDir()
+		files := make([]string, 0, 6)
+		for _, name := range []string{"a.go", "b.go", "c.go", "d.go", "e.go", "f.go"} {
+			writeTestFile(t, filepath.Join(dir, name), "package p\n")
+			files = append(files, name)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+
+		_, rep, err := parser.ChunkFiles(ctx, dir, files)
+		if err == nil {
+			t.Fatal("a cancelled chunk pass must return the context error")
+		}
+		// THE COUNT IS A FILE COUNT, NOT AN EVENT COUNT. One cancellation abandoned
+		// six files, and a report reading 1 would look small enough to ignore —
+		// which is worse than no report at all, because that number is the
+		// operator's whole diagnosis under the fail-the-collect contract.
+		if got := rep.DroppedByReason[parser.ChunkReasonCanceled]; got != len(files) {
+			t.Fatalf("expected all %d abandoned files counted, got %d (%s)",
+				len(files), got, rep.Describe())
+		}
+		if got := rep.Dropped(); got != len(files) {
+			t.Fatalf("expected Dropped()==%d, got %d", len(files), got)
+		}
+	})
 }
 
 func writeTestFile(t *testing.T, path, content string) {

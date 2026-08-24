@@ -4,7 +4,7 @@ package embed
 
 import "context"
 
-// Embedder interface declarations for the stdio client's embedding backends.
+// Embedder interface declarations for the knowledge client's embedding backends.
 // These co-locate with their single concrete implementation (voyageEmbedder +
 // NewVoyageBinaryEmbedder in voyage.go). The OSS knowledge-server binary links
 // no embedding code at all (by design — the server is a generic graph toolbox

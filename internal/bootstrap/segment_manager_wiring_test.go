@@ -68,7 +68,7 @@ func TestEnsureSegmentManagerWiresOffline(t *testing.T) {
 	// Drive the exact production construction path (wireRuntimesBackground calls
 	// this same method, not an inline copy). A temp dir stands in for the
 	// --graph-storage data root the production caller threads through (f.GraphStorage).
-	c.ensureSegmentManager(t.TempDir())
+	c.ensureSegmentManager(t.TempDir(), 0)
 
 	require.NotNil(t, c.SegmentManager(),
 		"offline wiring (router only, no pipeline/embedder) leaves a non-nil read Manager")

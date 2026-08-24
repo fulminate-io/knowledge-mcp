@@ -52,6 +52,11 @@ func (c *K8sCollector) Collect(ctx context.Context, id string, opts collector.Co
 		GraphName: bundle.contextName,
 		Nodes:     nodes,
 		Edges:     edges,
+		// The enumeration was complete only if no subcollector failed. A partial
+		// enumeration must never assert a complete walk: walk_complete is what arms
+		// the server's whole-remainder deletion basis, so a resource this run failed
+		// to READ would be named as deleted. The Warn above stays the operator signal.
+		WalkComplete: subErr == nil,
 	}
 
 	// Emit AKS+EKS cluster linkage proxy + RUNS_IN_CLUSTER edges

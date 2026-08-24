@@ -25,6 +25,10 @@ const manifestCompletenessReadDeadline = 2 * time.Second
 // interface mentioning neither can hold both.
 type completenessArm interface {
 	load(context.Context) error
+	// loadIfResident is load's DECLINING twin — see coverageArm
+	// (manager_reconcile_arms.go). load stays declared beside it so a signature
+	// drift on either is still a build failure at the assertions below.
+	loadIfResident(context.Context) (bool, error)
 	armFormat() string
 	armL2Authoritative() bool
 	armCachedIDs() []searchengine.SegmentID
@@ -145,10 +149,21 @@ func (m *Manager) convergeArmToManifest(
 	// Warm the engine from L2 first (idempotent; zero network on the L2-first
 	// primary path) so the resident set below reflects what the cache already holds
 	// rather than an empty engine that would make every manifest id look missing.
-	if err := arm.load(ctx); err != nil {
+	//
+	// AN EVICTED POOL IS DECLINED HERE, before the local-signal gate, AND SKIPPING
+	// COSTS NO CONVERGENCE. The gate compares cache.Keys() against the persisted
+	// fingerprint — both L2-DISK facts, which eviction does not touch — so the
+	// shortfall this pass repairs is a property of the disk cache, unchanged by the
+	// pool leaving RAM and re-detected identically on the first tick after the pool
+	// is next materialized.
+	skipped, err := arm.loadIfResident(ctx)
+	if err != nil {
 		slog.Warn("segmentdist: completeness reconcile could not load the arm (skipping this tick)",
 			"graph_type", gt, "name", name, "format", format, "err", err)
 		return err
+	}
+	if skipped {
+		return nil
 	}
 
 	// ---- THE LOCAL-SIGNAL GATE. Two local reads; no network above this line. ----

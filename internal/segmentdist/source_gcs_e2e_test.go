@@ -9,6 +9,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/searchengine/formats/hnsw"
 )
 
 // TestGCSCloudPathE2E is the full cloud round-trip against a fake agent control
@@ -33,7 +34,7 @@ func TestGCSCloudPathE2E(t *testing.T) {
 	docs, targetID, targetVec, uniqueTerm := searchCorpus(7)
 
 	// --- Producer: ship both formats as full GCS objects + publish manifests. ---
-	producer := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, transport)
+	producer := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, transport))
 	require.NoError(t, producer.AddAndMarkDirty(ctx, gt, name, docs))       // HNSW
 	require.NoError(t, producer.AddAndMarkDirtyFields(ctx, gt, name, docs)) // BM25
 	require.NoError(t, producer.Flush(ctx, gt, name))                       // seal any sub-threshold tail
@@ -45,7 +46,7 @@ func TestGCSCloudPathE2E(t *testing.T) {
 	require.Positive(t, backend.publishCalls, "the producer published HEAD-verified manifests")
 
 	// The published HNSW manifest carries real doc_counts (not 0).
-	hnswSrc := newGCSSegmentSource(backend, string(gt), name, "hnsw")
+	hnswSrc := newGCSSegmentSource(backend, string(gt), name, hnsw.New().Name())
 	hnswDigests, found, err := hnswSrc.readManifest(ctx)
 	require.NoError(t, err)
 	require.True(t, found, "the HNSW manifest was published")
@@ -56,7 +57,7 @@ func TestGCSCloudPathE2E(t *testing.T) {
 	require.Equal(t, searchCorpusN, hnswDocs, "the HNSW manifest carries the real summed doc_count")
 
 	// --- Consumer: a fresh cold-L2 Manager loads from the manifests and searches. ---
-	consumer := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, transport)
+	consumer := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, transport))
 	fused, err := consumer.Search(ctx, gt, name, uniqueTerm, targetVec, 10)
 	require.NoError(t, err)
 	require.NotEmpty(t, fused, "the consumer loaded the corpus from GCS and search returns hits")
@@ -67,14 +68,14 @@ func TestGCSCloudPathE2E(t *testing.T) {
 	require.Positive(t, backend.fetchBatchCalls, "the consumer fetched blobs via fetch-batch")
 
 	// The coverage read over the consumer returns the manifest doc counts.
-	snap, err := consumer.ShippedManifestSnapshot(ctx, gt, name, "hnsw")
+	snap, err := consumer.ShippedManifestSnapshot(ctx, gt, name, hnsw.New().Name())
 	require.NoError(t, err)
-	covered, anyUnknown := consumer.ShippedDocCountFromSnapshot(snap, "hnsw")
+	covered, anyUnknown := consumer.ShippedDocCountFromSnapshot(snap, hnsw.New().Name())
 	require.Equal(t, searchCorpusN, covered, "ShippedManifestSnapshot returns the manifest HNSW doc count")
 	require.False(t, anyUnknown)
 
 	// --- 409: a manifest publish referencing an un-shipped blob is rejected. ---
-	_, err = hnswSrc.PublishManifest("hnsw", []segmentDigest{{ID: "never-shipped-hash", DocCount: 5}})
+	_, err = hnswSrc.PublishManifest(hnsw.New().Name(), []segmentDigest{{ID: "never-shipped-hash", DocCount: 5}})
 	var incomplete *manifestIncompleteError
 	require.ErrorAs(t, err, &incomplete, "a missing-blob publish is rejected with a typed incomplete error")
 	require.Contains(t, incomplete.Missing, "never-shipped-hash")

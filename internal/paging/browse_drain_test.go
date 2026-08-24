@@ -114,16 +114,30 @@ type pivotEdgeServer struct {
 	pages    [][]string
 }
 
-func (s *pivotEdgeServer) fetch(pivots []string) ([]knowledgev1.Edge, error) {
+// fetch HONORS THE BAND, through the package's own inBand helper and exactly as
+// bandServer.fetch does — it is not a band-ignoring stub. That matters most for
+// a_single_pivot_that_saturates_is_an_error below: against a band-ignoring fake the
+// drain's out-of-band guard fires first, the error still contains the pivot id, and
+// that sub-test would pass GREEN while asserting something entirely different from
+// what it claims. Honoring the band is what keeps its pass meaningful.
+//
+// The truncated return is a literal false because this fake never truncates — it
+// answers every page in full. The saturation signal it exercises is the drain's own
+// len >= edgeCap test. The truncated-flag path has its own fake and its own sub-test
+// in band_drain_test.go.
+func (s *pivotEdgeServer) fetch(pivots []string, fromIDGte, fromIDLt string) ([]knowledgev1.Edge, bool, error) {
 	s.pages = append(s.pages, append([]string(nil), pivots...))
 	out := make([]knowledgev1.Edge, 0, len(pivots))
 	for _, p := range pivots {
 		for i := range s.incident[p] {
 			e := &s.incident[p][i]
+			if !inBand(e.FromId, fromIDGte, fromIDLt) {
+				continue
+			}
 			out = append(out, knowledgev1.Edge{FromId: e.FromId, ToId: e.ToId, Type: e.Type})
 		}
 	}
-	return out, nil
+	return out, false, nil
 }
 
 func edgeKeys(edges []knowledgev1.Edge) []string {
@@ -141,9 +155,9 @@ func edgeKeys(edges []knowledgev1.Edge) []string {
 func TestDrainPivotEdges(t *testing.T) {
 	t.Run("empty_ids_issues_no_fetch", func(t *testing.T) {
 		calls := 0
-		got, err := DrainPivotEdges(nil, 10, 100, func([]string) ([]knowledgev1.Edge, error) {
+		got, err := DrainPivotEdges(nil, 10, 100, func([]string, string, string) ([]knowledgev1.Edge, bool, error) {
 			calls++
-			return nil, nil
+			return nil, false, nil
 		})
 		require.NoError(t, err)
 		assert.Empty(t, got, "an empty pivot set has no edges")
@@ -211,10 +225,20 @@ func TestDrainPivotEdges(t *testing.T) {
 			"the halved reads union back into the COMPLETE set, not a sample")
 	})
 
+	// THE NAME IS PINNED BY TWO LANDED VERIFICATION GATES and cannot change, even
+	// though the band-split escape makes it a partial misnomer — the pivot is now
+	// band-split FIRST and only then errors. One gate greps for this sub-test's own
+	// `--- PASS:` line BY NAME; the other greps for the parent
+	// `--- PASS: TestDrainPivotEdges ` line, which fails if ANY sub-test here does.
+	// Renaming it, or letting it fail, turns both red against correct work. The two
+	// gate ids are recorded on this step's completion note rather than inline, which
+	// is where graph node ids belong.
 	t.Run("a_single_pivot_that_saturates_is_an_error", func(t *testing.T) {
 		const edgeCap = 3
-		// One pivot alone at the cap: no further split exists, so a short union
-		// would be a silent lie and the drain must say so instead.
+		// One pivot whose edges are ALL OUTGOING — every from_id is the pivot itself,
+		// which is the shape no from_id band can divide. The escape runs, every band
+		// containing "hot" holds no interior id to split on, and the drain errors
+		// rather than handing back a short union.
 		srv := &pivotEdgeServer{incident: map[string][]knowledgev1.Edge{
 			"hot": {
 				{FromId: "hot", ToId: "a", Type: "rel"},
@@ -226,5 +250,13 @@ func TestDrainPivotEdges(t *testing.T) {
 		require.Error(t, err, "a saturated single pivot cannot be served completely")
 		assert.Contains(t, err.Error(), "hot", "the error names the pivot the caller must deal with")
 		assert.Nil(t, got, "no partial union is handed back alongside the error")
+		// WHICH error it is, asserted rather than assumed. Both failure modes name
+		// the pivot, so "contains hot" alone cannot tell them apart — and the wrong
+		// one passing here is precisely the vacuous green this fixture's
+		// band-honoring fake exists to prevent.
+		assert.Contains(t, err.Error(), "no interior id to split on",
+			"this must be the UNSPLITTABLE error — banding was tried and could not divide the set")
+		assert.NotContains(t, err.Error(), "outside the requested range",
+			"it must NOT be the out-of-band guard, which would mean the fake ignored the band")
 	})
 }

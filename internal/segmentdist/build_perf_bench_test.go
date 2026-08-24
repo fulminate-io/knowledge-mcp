@@ -126,6 +126,11 @@ func BenchmarkDeterministicMarkDirtyAndReEmit(b *testing.B) {
 					}(i, docs)
 				}
 				wg.Wait()
+				// Closed per ITERATION, not registered as a cleanup: a cleanup would
+				// hold every iteration's engines open for the whole b.N run, and the
+				// merger goroutines they keep alive are exactly what this benchmark
+				// must not be measuring against a growing background.
+				mgr.Close()
 				if firstErr != nil {
 					b.Fatalf("mark-dirty + re-emit: %v", firstErr)
 				}
@@ -179,6 +184,8 @@ func BenchmarkDeterministicMarkDirtyAndReEmitFields(b *testing.B) {
 					}(i, docs)
 				}
 				wg.Wait()
+				// Per-iteration close, for the reason the vector benchmark above states.
+				mgr.Close()
 				if firstErr != nil {
 					b.Fatalf("mark-dirty + re-emit fields: %v", firstErr)
 				}

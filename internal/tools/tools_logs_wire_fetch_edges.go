@@ -79,19 +79,21 @@ func fetchAllLogEdges(
 		edgeStrs[i] = string(t)
 	}
 	return paging.DrainPivotEdges(ids, paging.EdgePivotPageSize, engine.CorrelationsEdgeScanCap,
-		func(idPage []string) ([]knowledgev1.Edge, error) {
+		func(idPage []string, fromIDGte, fromIDLt string) ([]knowledgev1.Edge, bool, error) {
 			edgesResp, rerr := ex.Execute(ctx, &knowledgev1.ExecuteRequest{
 				Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
-					Ids:        idPage,
-					Selection:  &knowledgev1.Selection{EdgeTypes: edgeStrs},
-					ReturnMode: knowledgev1.ReturnMode_RETURN_MODE_EDGES,
-					Limit:      int32(engine.CorrelationsEdgeScanCap),
+					Ids:          idPage,
+					Selection:    &knowledgev1.Selection{EdgeTypes: edgeStrs},
+					ReturnMode:   knowledgev1.ReturnMode_RETURN_MODE_EDGES,
+					Limit:        int32(engine.CorrelationsEdgeScanCap),
+					EdgeFromBand: paging.EdgeFromBandOrNil(fromIDGte, fromIDLt),
 				}},
 				Target: target,
 			})
 			if rerr != nil {
-				return nil, fmt.Errorf("graph-wide edge read: %w", rerr)
+				return nil, false, fmt.Errorf("graph-wide edge read: %w", rerr)
 			}
-			return engine.DecodeEdges(edgesResp)
+			edges, derr := engine.DecodeEdges(edgesResp)
+			return edges, edgesResp.GetTruncated(), derr
 		})
 }

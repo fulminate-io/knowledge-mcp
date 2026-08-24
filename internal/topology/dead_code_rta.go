@@ -7,7 +7,7 @@
 // Relocated client-side from pkg/topology/. The server
 // is filesystem-blind; the RTA pipeline (packages.Load, SSA build,
 // callgraph) requires reading every .go file under the repo root, so
-// it now runs entirely inside the cmd/knowledge stdio client.
+// it now runs entirely inside the cmd/knowledge client binary.
 //
 // Mirrors the canonical cmd/deadcode pipeline (golang.org/x/tools v0.43.0
 // cmd/deadcode/deadcode.go lines 117-313):
@@ -31,6 +31,7 @@ import (
 	"go/ast"
 	"go/token"
 	"go/types"
+	"os"
 
 	"golang.org/x/tools/go/callgraph/rta"
 	"golang.org/x/tools/go/packages"
@@ -57,6 +58,14 @@ type deadFunc struct {
 //
 // The bool argument controls whether test packages participate in the
 // analysis. The canonical default is true.
+//
+// THIS ANALYZER IS THE ONLY THING IN THE REPOSITORY THAT NEEDS A GO TOOLCHAIN
+// ON THE MACHINE. packages.Load shells out to the go command, so a host without
+// one cannot run dead-code analysis — and that is the whole of the exposure.
+// Nothing on the collect path reads a toolchain: code collection is a pure
+// function of repo bytes, identical with or without a Go installation. Keep it
+// that way; a toolchain dependency introduced anywhere else would make a
+// collected graph depend on which machine collected it.
 func runRTA(ctx context.Context, repoRoot string, tests bool) ([]deadFunc, *ssa.Program, string, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, nil, "", fmt.Errorf("topology/dead_code: %w", err)
@@ -67,6 +76,14 @@ func runRTA(ctx context.Context, repoRoot string, tests bool) ([]deadFunc, *ssa.
 		Tests:   tests,
 		Dir:     repoRoot,
 		Context: ctx,
+		// go/packages defaults a nil Env to the process environment and will
+		// otherwise honor an external driver — including one found merely by
+		// looking up gopackagesdriver on PATH — which would silently change
+		// what this analyzer loads and make its answer depend on the machine
+		// rather than on the repository. Pin the driver off, and build Env by
+		// appending to os.Environ() rather than replacing it, so the rest of
+		// the environment the loader needs is preserved.
+		Env: append(os.Environ(), "GOPACKAGESDRIVER=off"),
 	}
 	initial, err := packages.Load(cfg, "./...")
 	if err != nil {

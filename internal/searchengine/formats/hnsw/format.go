@@ -4,12 +4,23 @@ package hnsw
 
 import (
 	"fmt"
+	"slices"
+	"strings"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
 
-// formatName tags every shipped HNSW SegmentBlob for routing.
-const formatName = "hnsw"
+// formatName tags every shipped HNSW SegmentBlob for routing, and it CARRIES THE
+// LAYOUT VERSION deliberately.
+//
+// The distribution layer filters every list, seed, backstop and prune path on
+// exact format-name equality, so a version-carrying name makes the old and new
+// layouts two disjoint families: a client on one never sees the other's metas.
+// Without that, two clients of the same account at different versions each
+// reject and rebuild the other's segments, forever — each one's rebuild is the
+// other's next rejection. Sharing one name is what makes that loop possible, and
+// this is what breaks it.
+const formatName = "hnswv3"
 
 // Format is the binary-HNSW SegmentFormat for the segmented engine. It is generic
 // over [[]byte, struct{}]: the query is a raw binary vector and there are no
@@ -38,7 +49,7 @@ var (
 // internals). Never mutated after construction — the engine's liveDocs bitset
 // carries deletions; the graph itself stays all-members.
 type hnswSegment struct {
-	graph *binaryGraph
+	graph *mappedGraph
 }
 
 // Name identifies the format for SegmentBlob.Format routing.
@@ -60,6 +71,26 @@ func (Format) Build(docs []searchengine.Document) (searchengine.Segment[[]byte, 
 		items = append(items, binaryBuildItem{id: d.ID, vec: d.Vector})
 	}
 	graph := buildBinaryHNSWSerialDeterministic(items, defaultVecBytes, defaultM, defaultEfConstruction)
+	return publishGraph(graph)
+}
+
+// publishGraph is the ONE seal-and-open path: it encodes a freshly built graph
+// to v3 bytes and reopens them as the mapped payload the engine will hold.
+//
+// EVERY PRODUCER GOES THROUGH IT — Build and Merge both — so no path can publish
+// a heap-resident graph and quietly reintroduce the per-node Go structure this
+// format exists to remove. The round trip is not waste: the bytes are the
+// segment's canonical form (its id is their sha256), so building them here is
+// work Encode would otherwise do later anyway.
+func publishGraph(h *binaryGraph) (searchengine.Segment[[]byte, struct{}], error) {
+	blob, err := encodeGraphV3(h)
+	if err != nil {
+		return nil, fmt.Errorf("hnsw publish: %w", err)
+	}
+	graph, err := openGraphV3(blob)
+	if err != nil {
+		return nil, fmt.Errorf("hnsw publish: reopening freshly written bytes: %w", err)
+	}
 	graph.setEfSearch(defaultEfSearch)
 	return &hnswSegment{graph: graph}, nil
 }
@@ -115,8 +146,7 @@ func (Format) Merge(segs []searchengine.Segment[[]byte, struct{}], accept []func
 		})
 	}
 	merged := buildBinaryHNSWSerialDeterministic(dedupeItemsByID(items), defaultVecBytes, defaultM, defaultEfConstruction)
-	merged.setEfSearch(defaultEfSearch)
-	return &hnswSegment{graph: merged}, nil
+	return publishGraph(merged)
 }
 
 // dedupeItemsByID collapses the collected merge items to ONE per external id,
@@ -167,19 +197,35 @@ func (Format) AggregateStats([]searchengine.Segment[[]byte, struct{}]) struct{} 
 // Search runs the HNSW query and maps each graph hit to a searchengine.Hit. The
 // accept liveDocs filter is threaded straight into the graph's over-fetch-then-
 // filter loop: a dead id is skipped from RESULTS, the graph is never mutated.
+//
+// THE ID IS COPIED HERE. graphHit.externalID is a VIEW over the segment mapping,
+// and a Hit outlives the search call — the engine merges hits across segments
+// and hands them to a caller who may hold them past an eviction. Handing back a
+// view would be a use-after-unmap that reads plausible garbage rather than
+// crashing, which is the silent-degradation failure this whole format change is
+// written to avoid.
 func (s *hnswSegment) Search(q []byte, _ struct{}, k int, accept func(searchengine.ExternalID) bool) []searchengine.Hit {
 	graphHits := s.graph.search(q, k, accept)
 	hits := make([]searchengine.Hit, 0, len(graphHits))
 	for _, gh := range graphHits {
-		hits = append(hits, searchengine.Hit{ID: gh.externalID, Score: gh.score})
+		hits = append(hits, searchengine.Hit{ID: strings.Clone(gh.externalID), Score: gh.score})
 	}
 	return hits
 }
 
 // IDs lists every ExternalID the segment indexes (live or dead), in a stable
 // internal-ID order. The engine builds its externalID→segment route map from this.
+//
+// EVERY ID IS COPIED. The engine holds this route map for the life of the
+// entry — longer than any single mapping is guaranteed to live — so a view
+// would pin, or outlive, the bytes it was read from.
 func (s *hnswSegment) IDs() []searchengine.ExternalID {
-	return s.graph.ids()
+	views := s.graph.ids()
+	out := make([]searchengine.ExternalID, len(views))
+	for i, v := range views {
+		out[i] = strings.Clone(v)
+	}
+	return out
 }
 
 // VectorByID returns the stored binary vector for an external id, or (nil,false)
@@ -189,12 +235,42 @@ func (s *hnswSegment) IDs() []searchengine.ExternalID {
 // satisfied by bm25Segment, which has no vectors; the engine's SegmentedIndex
 // reaches this concrete method via a runtime type-assert, so bm25 segments cleanly
 // resolve (nil,false) instead of being forced to implement an unsatisfiable accessor.
+//
+// THE VECTOR IS COPIED. nodeVector returns a sub-slice of the segment mapping,
+// and this value is handed to a caller who uses it as a QUERY against other
+// segments — outliving this segment's residency entirely.
 func (s *hnswSegment) VectorByID(externalID string) ([]byte, bool) {
-	return s.graph.vectorByID(externalID)
+	vec, ok := s.graph.vectorByID(externalID)
+	if !ok {
+		return nil, false
+	}
+	return slices.Clone(vec), true
 }
 
-// Encode serializes the segment to a v2 blob (topology + inline vectors) for
-// shipping/persistence.
-func (s *hnswSegment) Encode() ([]byte, error) {
-	return s.graph.encode(), nil
-}
+// Encode returns the segment's own bytes. The blob IS the encoded form, so this
+// is an identity rather than a re-serialization, and the segment id (sha256 of
+// the bytes) is trivially stable across a decode/encode round trip.
+func (s *hnswSegment) Encode() ([]byte, error) { return s.graph.blob, nil }
+
+// hnswSegmentHeapBytes models the Go heap one sealed HNSW segment holds: the
+// hnswSegment struct and the graph handle it points at. Written as a small
+// fixed estimate because, once the graph is read in place, the topology and
+// vector bytes live in the segment mapping — page cache, not Go heap — and the
+// segment keeps no per-node Go structure of its own.
+//
+// KNOWN LOW, AND THE ERROR OVER-ADMITS: measured against a real corpus this
+// estimate under-charges per-segment heap (~145.6 B observed vs 64 modeled,
+// ~0.68% of a 1 GiB budget at 50k segments), so the admission meter lets in
+// slightly MORE than the budget intends — not the conservative direction. If
+// this constant is ever re-pinned, pin it to a measured-or-higher value;
+// re-pinning changes admission behaviour and needs its own gate.
+const hnswSegmentHeapBytes int64 = 64
+
+// HeapBytes models the Go heap this sealed segment holds — see
+// searchengine.Segment.HeapBytes, which documents that the number is an
+// estimate rather than a measurement.
+//
+// The graph's bytes are deliberately excluded: they are the segment mapping,
+// which is page cache rather than Go heap, so charging them to a heap budget
+// would meter memory the garbage collector never sees.
+func (s *hnswSegment) HeapBytes() int64 { return hnswSegmentHeapBytes }

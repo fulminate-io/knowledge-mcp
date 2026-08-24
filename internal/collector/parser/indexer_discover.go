@@ -5,6 +5,7 @@ package parser
 import (
 	"bufio"
 	"context"
+	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -130,6 +131,9 @@ var skipDirs = map[string]bool{
 	"build": true, "dist": true, "out": true,
 	".idea": true, ".vscode": true, ".vs": true,
 	".terraform": true, ".cache": true, "tmp": true,
+	// Agent-tool state (worktrees, config) — gitignored by convention, so the
+	// git path never sees it; the walk must prune it to match.
+	".claude": true,
 	// Third-party vendored code (different names across ecosystems).
 	"deps": true, "thirdparty": true, "third_party": true, "third-party": true,
 	// Generated code output directories.
@@ -186,6 +190,38 @@ func discoverWithWalk(repoDir string, opts DiscoveryOptions, rep *DiscoveryRepor
 	return files, err
 }
 
+// generatedCodeMarker is the Go convention line for generated files
+// (golang.org/s/generatedcode): "// Code generated <by tool> DO NOT EDIT.",
+// required to appear before the package clause. Matched as a prefix/suffix
+// pair rather than a regexp — the convention's variable middle is free text.
+const (
+	generatedCodeMarkerPrefix = "// Code generated "
+	generatedCodeMarkerSuffix = " DO NOT EDIT."
+)
+
+// hasGeneratedCodeHeader reports whether the file's head — up to the package
+// clause, capped at 4KB — carries the generated-code marker. An unreadable
+// candidate reports FALSE: a file we cannot read should fail loudly at parse
+// time, not vanish silently under a "generated" label.
+func hasGeneratedCodeHeader(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(io.LimitReader(f, 4096))
+	for sc.Scan() {
+		line := sc.Text()
+		if strings.HasPrefix(line, generatedCodeMarkerPrefix) && strings.HasSuffix(line, generatedCodeMarkerSuffix) {
+			return true
+		}
+		if strings.HasPrefix(line, "package ") {
+			return false
+		}
+	}
+	return false
+}
+
 // relOrPath renders a walked absolute path repo-relative for reporting, falling
 // back to the absolute path when it cannot be relativized.
 func relOrPath(repoDir, path string) string {
@@ -221,8 +257,18 @@ func isIndexable(repoDir, rel string) (bool, string) {
 		return false, RuleDTS
 	}
 
-	// Skip generated Go files.
-	if strings.HasSuffix(name, ".pb.go") || strings.HasSuffix(name, "_generated.go") || strings.HasSuffix(name, "_gen.go") {
+	// Skip generated Go files. .pb.go is suffix-sufficient — the protoc
+	// convention is universal. The _gen.go/_generated.go suffixes are only a
+	// NAMING HINT: hand-written files legitimately carry them (this repo alone
+	// had four, all invisible to the graph until 2026-08-18), so those two
+	// exclude ONLY when the file itself declares generation via the Go
+	// convention marker (golang.org/s/generatedcode). The head read costs one
+	// small open per suffix-matched candidate, never per walked file.
+	if strings.HasSuffix(name, ".pb.go") {
+		return false, RuleGeneratedGo
+	}
+	if (strings.HasSuffix(name, "_generated.go") || strings.HasSuffix(name, "_gen.go")) &&
+		hasGeneratedCodeHeader(filepath.Join(repoDir, rel)) {
 		return false, RuleGeneratedGo
 	}
 

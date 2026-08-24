@@ -1,0 +1,56 @@
+# Pre/post resource measurement for the precise SSA/VTA call-graph pass teardown.
+# Line grammar is declared once, in the plan's Phase 1 vocabulary block; this file
+# is the ONLY home for these numbers.
+#
+# INSTRUMENT (identical on both sides, built once per capture, so compilation never
+# enters a number):
+#   cd cmd/knowledge && CGO_ENABLED=1 go test -c -o /tmp/f94.test ./internal/collector/codesync/
+# RUN (per corpus, per repetition):
+#   CALLS_CENSUS_REPO=<corpus> /usr/bin/time -l /tmp/f94.test \
+#     -test.run=^TestCallsLanguageCensus_EdgeProbe$ -test.v -test.count=1
+# wall_s/user_s are time(1)'s real/user columns, peak_rss_bytes its 'maximum
+# resident set size' (bytes on darwin); gogo_pairs and method_callers are read from
+# the same run's own POSTPAIRS / POSTMETHODCALLERS lines. Medians of the reps.
+#
+# CORPORA. agent is the working checkout at the recorded tip. knowledge is a FROZEN
+# copy of the repository taken once at its pre-deletion state and reused byte-for-byte
+# by both the pre and the post capture, because this teardown deletes files that are
+# themselves part of the corpus: censusing the live tree on both sides would fold the
+# deleted files' own go->go pairs into the pair delta and read as closure recovery
+# that never happened. The freeze is `git archive HEAD | tar -x` into a fresh
+# `git init`, which keeps discovery on its `git ls-files` path rather than the
+# filesystem-walk fallback that prunes testdata/, bin/ and vendor/.
+#
+# host_quiet=no is an honest disclosure, not a failed run: no build or test workload
+# competed, but the host carried a persistent virtual machine at roughly half a core
+# plus ordinary desktop load throughout. Both sides of the comparison are taken under
+# the same disclosure so the delta compares like with like. Observed rep spread on the
+# pre capture was 10.03-11.44s (knowledge) and 12.78-13.49s (agent).
+#
+# PASSCOST is PRE-ONLY by construction: its instrument, TestGoCallGraphEdgeDump_Probe,
+# is deleted by this changeset, which is precisely why the capture happens first.
+#   CALLGRAPH_DUMP_REPO=<corpus> CALLGRAPH_DUMP_OUT=<path> CGO_ENABLED=1 \
+#     go test ./internal/collector/codesync/ -run '^TestGoCallGraphEdgeDump_Probe$' \
+#     -count=1 -v -timeout 1800s
+#
+# THE TWO PAIR DELTAS HAVE OPPOSITE SIGNS AND BOTH ARE CORRECT. On the knowledge
+# corpus the removed pass was net edge-DESTRUCTIVE, so dropping it recovers pairs
+# (+8015, landing on exactly the pre-merge count the same corpus produced). On the
+# agent corpus it was mildly net-additive, so dropping it costs pairs (-489) and
+# method callers (9543 -> 8098). The cost side is the accepted residue of the
+# decision this measurement exists to evidence, not a regression discovered here;
+# it is recorded rather than averaged away, which is why the DELTA rows are per
+# corpus and signed.
+CONDITIONS corpus=knowledge phase=pre tip=46fe9b0d1f0a723c58a38b1c2b7f7a74682d0530 host_quiet=no gocache=warm reps=3
+CONDITIONS corpus=agent phase=pre tip=12e7bf7675ae9419968502b84d1b746d2703fd01 host_quiet=no gocache=warm reps=3
+BASELINE corpus=knowledge phase=pre wall_s_median=10.31 user_s_median=43.43 peak_rss_bytes_median=10191470592 gogo_pairs=55958 method_callers=8316
+BASELINE corpus=agent phase=pre wall_s_median=13.18 user_s_median=48.30 peak_rss_bytes_median=6256541696 gogo_pairs=37502 method_callers=9543
+PASSCOST corpus=knowledge callers=18364 edges=63056 covered_files=4032 package_errors=0 pass_alloc_gb=16.15 pass_wall_s=9.3
+PASSCOST corpus=agent callers=14257 edges=48659 covered_files=3150 package_errors=0 pass_alloc_gb=18.82 pass_wall_s=10.9
+CONDITIONS corpus=knowledge phase=post tip=46fe9b0d1f0a723c58a38b1c2b7f7a74682d0530 host_quiet=no gocache=warm reps=3
+CONDITIONS corpus=agent phase=post tip=12e7bf7675ae9419968502b84d1b746d2703fd01 host_quiet=no gocache=warm reps=3
+BASELINE corpus=knowledge phase=post wall_s_median=1.47 user_s_median=9.33 peak_rss_bytes_median=698564608 gogo_pairs=63973 method_callers=10460
+BASELINE corpus=agent phase=post wall_s_median=1.76 user_s_median=10.11 peak_rss_bytes_median=622968832 gogo_pairs=37013 method_callers=8098
+DELTA corpus=knowledge wall_s_pct=-85.74 peak_rss_pct=-93.15 gogo_pairs_delta=8015
+DELTA corpus=agent wall_s_pct=-86.65 peak_rss_pct=-90.04 gogo_pairs_delta=-489
+INTERVENING none

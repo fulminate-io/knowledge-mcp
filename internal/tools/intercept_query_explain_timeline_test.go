@@ -40,7 +40,7 @@ func (f *etFake) exec(_ context.Context, req *knowledgev1.ExecuteRequest) (*know
 	switch {
 	case q.GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_EDGES:
 		f.edgeFetches++
-		return &knowledgev1.ExecuteResponse{Edges: f.edges}, nil
+		return &knowledgev1.ExecuteResponse{Edges: bandNarrow(f.edges, q)}, nil
 	case len(q.GetIds()) > 0:
 		resp := enginetest.ResponseWithNodes(nodePtrs(f.idNodes)...)
 		return resp, nil

@@ -10,6 +10,7 @@ import (
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
+	"github.com/fulminate-io/knowledge-mcp/internal/searchengine/formats/hnsw"
 )
 
 // TestStageRebuildPartitionStagesWithoutShipping is THE CATCHER for the staging entry
@@ -33,7 +34,7 @@ func TestStageRebuildPartitionStagesWithoutShipping(t *testing.T) {
 
 	t.Run("neither serving engine is touched, and nothing ships", func(t *testing.T) {
 		_, cc := newSegmentHarness(t)
-		mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(cc))
+		mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(cc)))
 		gt, name := kgtypes.GraphCode, "staging-untouched"
 
 		require.NoError(t, mgr.StageRebuildPartition(ctx, gt, name, hnswVecDocs(n), vecContentDocs(n)))
@@ -48,7 +49,7 @@ func TestStageRebuildPartitionStagesWithoutShipping(t *testing.T) {
 
 	t.Run("one call carries both formats' share", func(t *testing.T) {
 		_, cc := newSegmentHarness(t)
-		mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(cc))
+		mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(cc)))
 		gt, name := kgtypes.GraphCode, "staging-both-formats"
 
 		require.NoError(t, mgr.StageRebuildPartition(ctx, gt, name, hnswVecDocs(n), vecContentDocs(n)))
@@ -64,7 +65,7 @@ func TestStageRebuildPartitionStagesWithoutShipping(t *testing.T) {
 
 	t.Run("successive partitions stay separate", func(t *testing.T) {
 		_, cc := newSegmentHarness(t)
-		mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(cc))
+		mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(cc)))
 		gt, name := kgtypes.GraphCode, "staging-successive"
 
 		// Two sub-threshold groups staged in turn: two staged partitions, which the
@@ -130,7 +131,7 @@ func TestManagerReplaceBucketPublishesCompleteManifest(t *testing.T) {
 	const buckets = 8
 
 	svc, gc := newSegmentHarness(t)
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 	gt, name := kgtypes.GraphCode, "complete-manifest"
 	target := graphSelector(gt, name)
 
@@ -139,7 +140,7 @@ func TestManagerReplaceBucketPublishesCompleteManifest(t *testing.T) {
 
 	dm := mgr.managerFor(gt, name)
 	require.Len(t, dm.engine.Export(), buckets, "the seed lands one segment per bucket")
-	require.Len(t, writerManifest(svc, target, "", "hnsw"), buckets, "the seed publishes all 8")
+	require.Len(t, writerManifest(svc, target, "", hnsw.New().Name()), buckets, "the seed publishes all 8")
 
 	// Re-emit just TWO partitions, with fresh content for those docs.
 	touched := docsInDistinctBuckets(t, docs, buckets, 2)
@@ -149,7 +150,7 @@ func TestManagerReplaceBucketPublishesCompleteManifest(t *testing.T) {
 	require.Equal(t, int64(1), gc.publishCalls.Load()-beforePublishes,
 		"a re-emit publishes exactly ONCE, not once per partition — and a zero here would mean the coverage gate skipped the publish entirely")
 	require.Len(t, dm.engine.Export(), buckets, "the corpus still holds all 8 partitions after a 2-partition re-emit")
-	require.Len(t, writerManifest(svc, target, "", "hnsw"), buckets,
+	require.Len(t, writerManifest(svc, target, "", hnsw.New().Name()), buckets,
 		"the manifest still names all 8 — the untouched partitions stayed referenced")
 }
 
@@ -165,7 +166,7 @@ func TestManagerReplaceBucketShipsOncePerCall(t *testing.T) {
 	const buckets = 4
 
 	_, gc := newSegmentHarness(t)
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 	gt, name := kgtypes.GraphCode, "ships-once"
 
 	docs := bucketFixtureDocs(t, corpus, buckets)
@@ -255,7 +256,7 @@ func TestEmbedDrainCoalescesMergesOntoReconcileTick(t *testing.T) {
 	require.Equal(t, buckets, searchengine.BucketCountFor(corpus), "layout count")
 
 	_, gc := newSegmentHarness(t)
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 	gt, name := kgtypes.GraphCode, "coalesce-tick"
 
 	docs := bucketFixtureDocs(t, corpus, buckets)
@@ -355,7 +356,7 @@ func TestReEmitRetriesSkippedPublish(t *testing.T) {
 
 	ctx := context.Background()
 	_, gc := newSegmentHarness(t)
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 	gt, name := kgtypes.GraphCode, "skip-retry"
 
 	// FIXTURE CONSTANTS. Every expectation below is stated from these rather than

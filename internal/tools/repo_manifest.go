@@ -25,7 +25,6 @@
 package tools
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -159,58 +158,32 @@ func pruneVanishedLocked(entries map[string]string, keep string) []string {
 	return dropped
 }
 
+// repoManifestLabel prefixes every error the manifest's read/write path emits. It is a
+// constant rather than an inline literal because the shared writer below takes it as an
+// argument, and the messages are user-visible: they must stay byte-identical to what they
+// were when this file held its own writer.
+const repoManifestLabel = "repo manifest"
+
 // readLocked loads and decodes the manifest map. A missing file is NOT an error
 // — it returns an empty map so first-write callers and absent-name lookups both
 // see the empty case. Callers hold m.mu.
+//
+// The primitive lives in local_json_map.go, shared with the sync watermark store, so the
+// two machine-local map files cannot drift in missing-file or decode behaviour.
 func (m *repoManifest) readLocked() (map[string]string, error) {
-	data, err := os.ReadFile(m.path)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return map[string]string{}, nil
-		}
-		return nil, err
-	}
-	if len(data) == 0 {
-		return map[string]string{}, nil
-	}
-	entries := map[string]string{}
-	if err := json.Unmarshal(data, &entries); err != nil {
-		return nil, err
-	}
-	return entries, nil
+	return readLocalJSONMap(m.path)
 }
 
 // writeAtomicLocked serializes entries and writes them via temp-file +
 // os.Rename in the manifest's own directory, so a reader never observes a
 // half-written file. It ensures the ~/.knowledge dir exists first. Callers hold
 // m.mu.
+//
+// The primitive lives in local_json_map.go, shared with the sync watermark store; the
+// temp pattern and the error label keep this caller's on-disk and user-visible behaviour
+// exactly what it was before the lift.
 func (m *repoManifest) writeAtomicLocked(entries map[string]string) error {
-	dir := filepath.Dir(m.path)
-	if err := os.MkdirAll(dir, 0o750); err != nil {
-		return fmt.Errorf("repo manifest: mkdir %q: %w", dir, err)
-	}
-	data, err := json.MarshalIndent(entries, "", "  ")
-	if err != nil {
-		return fmt.Errorf("repo manifest: marshal: %w", err)
-	}
-	tmp, err := os.CreateTemp(dir, "repos-*.json.tmp")
-	if err != nil {
-		return fmt.Errorf("repo manifest: create temp: %w", err)
-	}
-	tmpName := tmp.Name()
-	// Best-effort cleanup if we bail before the rename consumes the temp file.
-	defer func() { _ = os.Remove(tmpName) }()
-	if _, err := tmp.Write(data); err != nil {
-		_ = tmp.Close()
-		return fmt.Errorf("repo manifest: write temp: %w", err)
-	}
-	if err := tmp.Close(); err != nil {
-		return fmt.Errorf("repo manifest: close temp: %w", err)
-	}
-	if err := os.Rename(tmpName, m.path); err != nil {
-		return fmt.Errorf("repo manifest: rename temp into place: %w", err)
-	}
-	return nil
+	return writeLocalJSONMapAtomic(m.path, "repos-*.json.tmp", repoManifestLabel, entries)
 }
 
 // lookupRepoDir is the package-level convenience over the default manifest the

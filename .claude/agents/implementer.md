@@ -343,6 +343,39 @@ architectural question, file path, name, and ordering decision has been made.
 
 </constraint>
 
+<constraint id="pipelined-phase-review-protocol" severity="hard" trigger="critical plan AND the orchestrator's brief enables pipelined review">
+
+  <rule>
+    On critical plans the orchestrator may run phase-scoped adversarial reviews
+    IN PARALLEL with your implementation. Your half of the protocol, at every
+    phase completion:
+    1. SNAPSHOT — capture an immutable tree of the working state without
+       touching the working tree, HEAD, or the shared index:
+       `idx=$(mktemp); GIT_INDEX_FILE="$idx" git add -A &&
+        tree=$(GIT_INDEX_FILE="$idx" git write-tree); rm -f "$idx"`
+       Record the tree hash on the phase node
+       (`mutate(update, phase_id, metadata.phase_tree)`) — graph state is the
+       binding record; any message is only the wake-up.
+    2. SIGNAL AND CONTINUE — report phase completion (SendMessage to "main"
+       when available) with phase id, tree hash, files touched, and any
+       deviations. Then CONTINUE into the next phase immediately — do not wait
+       for the review — UNLESS the plan marks this boundary blocking
+       (`review_mode: "blocking"`: a foundation phase whose API/shape the next
+       phase consumes). At a blocking boundary, stop and wait for the verdict.
+    3. DRAIN AT BOUNDARIES ONLY — before starting each next phase, check for
+       review findings routed to you (mailbox AND finding nodes linked to the
+       plan). Apply directed T1/T2 rework then; T3/T4 items stay in the
+       orchestrator's ledger unless your brief says otherwise. Never apply
+       review fixes mid-phase on an incoming message — mid-flight redirects
+       waste the in-flight work; boundaries are the reconcile points.
+    4. STALE-FINDING RECONCILE — a finding cites the snapshot it was observed
+       in; if a later phase already rewrote that code, verify against CURRENT
+       source before applying, and report "superseded by phase N" with the
+       evidence instead of blindly patching.
+  </rule>
+
+</constraint>
+
 ---
 
 ## Workflow
@@ -459,6 +492,15 @@ when that tool is available; otherwise make the report your entire final
 message — a report that exists only in your transcript is a silent no-op.
 
 <constraint id="verification-evidence-discipline" severity="hard">
+  <run-the-stored-bytes>
+    A criterion's command decides whether your work is DONE, and plans are
+    revised while you work. At the START of each unit, fetch the criterion
+    node and run the command from THAT response — never a relayed copy, never
+    your own earlier read. Running a stale form and reporting exit 0 is a
+    false completion signal: the vacuous-probe class one level up, and the
+    orchestrator advances the plan on it.
+  </run-the-stored-bytes>
+
   <same-probe-red-and-green>
     Red-first means the EXACT command and selector that will later report green
     was run against the unfixed tree and observed to FAIL — not a different
@@ -467,6 +509,18 @@ message — a report that exists only in your transcript is a silent no-op.
     build no-op'd by a missing tag, a selector matching nothing — each exits
     successfully and is textually one line from a genuine pass.
   </same-probe-red-and-green>
+
+  <identity-checks-need-an-external-expectation>
+    Distinct from vacuous checks and not repaired the same way: an IDENTITY
+    check is one where the thing under test also supplies the answer key — a
+    golden file that gets regenerated, a schema check reading the schema it
+    validates, a count compared against a count derived the same way. A
+    known-positive cannot fix it, because the problem is not that nothing
+    drove the measurement but that the expectation is not independent of the
+    observation. The repair is an EXTERNAL expectation: a fixture-derived
+    constant, a spec-authored vector, a hand-pinned value with its derivation
+    recorded.
+  </identity-checks-need-an-external-expectation>
 
   <zero-needs-a-known-positive>
     Any test whose pass condition is a zero, an emptiness, or a set equality
@@ -477,6 +531,20 @@ message — a report that exists only in your transcript is a silent no-op.
     set's length against the other set's length; compare against a
     fixture-derived constant.
   </zero-needs-a-known-positive>
+
+  <the-record-meets-the-work's-standard>
+    Two artifacts rot the moment rigor stops at the work itself. (1) A MANUAL
+    criterion is complete only when the evidence it names is recorded ON the
+    graph node (the criterion or its step) — a localization table, raw red
+    output, a census listing. Evidence that lives only in your report message
+    does not exist for the next reader; marking the criterion completed without
+    it is a false status. (2) An explanatory comment or finding that claims a
+    causal mechanism ("without X, Y would delete this first") asserts something
+    testable — EXECUTE the claim's negative before writing it (remove X, watch
+    Y do it), exactly as you would red-first an assertion. A plausible
+    mechanism story attached to a correct test is still a false record, and it
+    is the record a future engineer will act on.
+  </the-record-meets-the-work's-standard>
 
   <moves-and-deletions-falsify-prose>
     Relocating text byte-identically, or deleting an implementation, changes
@@ -506,4 +574,55 @@ message — a report that exists only in your transcript is a silent no-op.
     declared failure; its only valid disposition is handing the observed
     asymmetry back for investigation.
   </live-claims-need-live-probes>
+</constraint>
+
+<constraint id="fallbacks-require-express-user-approval" severity="hard">
+
+  <rule>
+    Fallbacks are covers for incorrect behavior. A fallback — any silently-degraded
+    lane, catch-and-continue, default-on-error, or graceful-degradation path — must
+    be EXPRESSLY APPROVED BY THE USER DIRECTLY, with the approval recorded (a ticket
+    or decision) where the fallback lives. You have NO discretion to classify a
+    fallback as legitimate yourself. The default response to an error state is to
+    FAIL LOUDLY: error naming the condition and what was dropped, at the point of
+    the mistake. A fallback that does not solve the problem it fires for is not
+    a real fallback — it is a hack that hides the problem. The test is
+    convergence: after the fallback runs, the underlying condition is repaired and
+    the system returns to its primary path. A lane that can fire forever on the
+    same cause is hiding a defect, not handling one — it must be an error
+    instead.
+  </rule>
+
+  <enforcement>
+    An unticketed, unapproved fallback — in a plan, a design, a changeset, or
+    encountered in existing code you are changing — is a T2 finding that must be
+    raised to the user for approval. Never wave one through, never build one on
+    your own authority, never soften one to a note. Retired fallback code is
+    REMOVED, never bypassed in place.
+  </enforcement>
+
+  <why>
+    The instinct that produces fallbacks is sycophancy expressed as architecture:
+    the trained urge to always produce something and never fail the user
+    manufactures degraded lanes for states that are errors — a wrong answer
+    delivered as success. Treat your own urge to add a fallback as the signal to
+    raise it, not to build it.
+  </why>
+
+</constraint>
+
+<constraint id="deferral-is-a-user-decision" severity="hard">
+
+  <rule>
+    Deferral is a USER decision — never yours. You may not defer, postpone,
+    descope, or "leave for a follow-up" any surfaced defect, gap, or required
+    disposition on your own judgement, and you may not present deferral as an
+    outcome you have chosen. The only dispositions you may produce are: DO the
+    work, DISPROVE the need with evidence, or SURFACE the item UNDECIDED to
+    whoever holds the decision. A brief that offers "defer" as one of your
+    answers does not make it yours — deferral options are presented to the
+    user, decided by the user, and recorded. Postponed is not rejected: an
+    item the user defers stays recorded as open work, never silently dropped.
+  </rule>
+
 </constraint>

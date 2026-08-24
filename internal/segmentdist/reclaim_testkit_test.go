@@ -54,10 +54,10 @@ func buildHNSWReclaimManagerOn(
 	t.Helper()
 	target := graphSelector(gt, name)
 	bindViewTarget(src, target)
-	ic := newInstrumentedCache(newDiskSegmentCache(cacheDir, 0))
+	ic := newInstrumentedCache(newDiskSegmentCache(cacheDir, 0, adviceRandom))
 
 	var dm *distManager[[]byte, struct{}]
-	engine := searchengine.New[[]byte, struct{}](hnsw.New(), reclaimEngineOpts(&dm, countTarget))
+	engine := closeOnCleanup(t, searchengine.New[[]byte, struct{}](hnsw.New(), reclaimEngineOpts(&dm, countTarget)))
 	dm = newDistManager(engine, src, ic, target, hnsw.New().Name())
 	return dm, ic
 }
@@ -77,10 +77,10 @@ func buildBM25ReclaimManagerOn(
 	t.Helper()
 	target := graphSelector(gt, name)
 	bindViewTarget(src, target)
-	ic := newInstrumentedCache(newDiskSegmentCache(cacheDir, 0))
+	ic := newInstrumentedCache(newDiskSegmentCache(cacheDir, 0, adviceRandom))
 
 	var dm *distManager[bm25.Query, *bm25.CorpusStats]
-	engine := searchengine.New[bm25.Query, *bm25.CorpusStats](bm25.New(), reclaimEngineOpts(&dm, countTarget))
+	engine := closeOnCleanup(t, searchengine.New[bm25.Query, *bm25.CorpusStats](bm25.New(), reclaimEngineOpts(&dm, countTarget)))
 	dm = newDistManager(engine, src, ic, target, bm25.New().Name())
 	return dm, ic
 }

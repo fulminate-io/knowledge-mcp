@@ -26,7 +26,7 @@ func TestOSSZeroSegmentServiceRPC(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	mgr := NewManager(loginStateStub{loggedIn: false}, t.TempDir(), 0)
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: false}, t.TempDir(), 0))
 	require.True(t, mgr.IsL2Authoritative(kgtypes.GraphCode, "ossE2E"), "not-logged-in caller -> OSS-local source")
 	require.IsType(t, (*localSegmentSource)(nil), mgr.managerFor(kgtypes.GraphCode, "ossE2E").source,
 		"the OSS lifecycle runs on the local source (no network leg exists)")

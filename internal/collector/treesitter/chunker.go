@@ -6,7 +6,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
-	"path/filepath"
+	"strconv"
 
 	sitter "github.com/smacker/go-tree-sitter"
 )
@@ -142,7 +142,10 @@ func (c *Chunker) ChunkFile(ctx context.Context, filePath string, src []byte) (*
 	}
 
 	fileCtx := c.extractFileContext(tree.RootNode(), src, filePath, lang, cqs)
-	fileCtx.Frameworks = DetectFrameworks(lang, fileCtx.Imports)
+	// Framework detection matches on SPECIFIERS alone — it asks which modules the
+	// file depends on, a question no local name or site ordinal bears on — so the
+	// sites are projected down to the same strings it always received.
+	fileCtx.Frameworks = DetectFrameworks(lang, importSpecifiers(fileCtx.Imports))
 	if extend, ok := frameworkExtenders[lang]; ok {
 		fileCtx.Frameworks = extend(tree.RootNode(), src, filePath, fileCtx.Frameworks)
 	}
@@ -192,120 +195,6 @@ func (c *Chunker) ChunkFile(ctx context.Context, filePath string, src []byte) (*
 	c.walkTestBlocks(testBlocks, src, filePath, lang, cqs, fileCtx, ref, result)
 
 	return result, nil
-}
-
-// cppHeaderFallback re-parses an erroring C header under the cpp grammar and
-// returns the alternate tree when it comes back clean, or nil when the C tree
-// stands. A `.h` may legitimately be either language and extMap routes every
-// one of them to C, so the extension is a guess that the parse confirms. The
-// second parse is paid solely by a header whose C parse already produced an
-// error tree — where today's chunks are garbage anyway; a clean C header pays
-// one HasError read on an already-built tree. The caller owns closing the tree
-// this returns, and a rejected alternate is closed here.
-func (c *Chunker) cppHeaderFallback(
-	ctx context.Context, filePath string, src []byte, lang Language, tree *sitter.Tree,
-) *sitter.Tree {
-	if lang != LangC || filepath.Ext(filePath) != ".h" || !tree.RootNode().HasError() {
-		return nil
-	}
-	alt, err := c.parser.Parse(ctx, src, LangCPP)
-	if err != nil {
-		return nil
-	}
-	if alt.RootNode().HasError() {
-		alt.Close()
-		return nil
-	}
-	return alt
-}
-
-// pendingDecl is a declaration collected by walkTopLevel's first pass, held
-// until colliding names have been counted so the suffix can be applied before
-// the chunk and its edges are built from the same name.
-type pendingDecl struct {
-	declNode   *sitter.Node
-	chunkType  string
-	name       string
-	parentName string
-}
-
-// collectTopLevelDecls runs the TopLevel query and returns every declaration it
-// matched, alongside the byte ranges they cover so the caller can find orphans.
-// Nothing is emitted here: names are not final until colliding ones have been
-// counted across the whole file.
-func collectTopLevelDecls(
-	root *sitter.Node,
-	src []byte,
-	lang Language,
-	cqs *compiledQuerySet,
-) (pending []pendingDecl, coveredRanges []byteRange) {
-	qc := sitter.NewQueryCursor()
-	defer qc.Close()
-	qc.Exec(cqs.topLevel, root)
-
-	for {
-		m, ok := qc.NextMatch()
-		if !ok {
-			break
-		}
-		m = filterPredicates(cqs.topLevel, m, src)
-
-		declNode, name := extractDeclAndName(m, cqs, src)
-		if declNode == nil {
-			continue
-		}
-
-		// Skip declarations whose parent is an export_statement — the
-		// export_statement pattern will capture them with the full content
-		// including the export keyword.
-		if p := declNode.Parent(); p != nil && p.Type() == "export_statement" {
-			continue
-		}
-
-		coveredRanges = append(coveredRanges, byteRange{
-			start: declNode.StartByte(),
-			end:   declNode.EndByte(),
-		})
-
-		chunkType := resolveChunkType(declNode)
-
-		// Extract name from lexical_declaration (const/let/var).
-		if name == "" && chunkType == "lexical_declaration" {
-			name = extractLexicalName(declNode, src)
-		}
-
-		// Per-language name recovery for declarations whose TopLevel query binds
-		// no @name. It runs on the PARSED NODE rather than by tightening the
-		// query, because a query pattern that names a field also FILTERS on it:
-		// requiring pattern:(value_name) on OCaml's value_definition deletes
-		// `let () = ...` and `let%test "x" = ...` outright, and requiring
-		// name:(namespace_name) on PHP's namespace_definition deletes the
-		// unnamed global `namespace { ... }`. Resolving here leaves the chunk set
-		// byte-identical and adds only the Name.
-		//
-		// The empty-name guard is the whole safety argument: a resolver can only
-		// fill a name that is empty today, so no declaration that already has one
-		// can change its node ID. The placement is load-bearing too — the name
-		// must be final before the pending entry below, because pass 2 counts
-		// collisions on (parentName, name) and a name filled later would be
-		// excluded from that count and emit an unsuffixed duplicate ID.
-		if name == "" {
-			if resolve, ok := declNameResolvers[lang]; ok {
-				name = resolve(declNode, src, chunkType)
-			}
-		}
-
-		// One parent for both emitters: the chunk's ParentName and the edge
-		// endpoints must be the same string, or parser/populate's symbolMap
-		// key and the edge IDs disagree and the edges fail resolution.
-		pending = append(pending, pendingDecl{
-			declNode:   declNode,
-			chunkType:  chunkType,
-			name:       name,
-			parentName: declParentName(declNode, src, lang, chunkType),
-		})
-	}
-	return pending, coveredRanges
 }
 
 // walkTopLevel iterates top-level AST nodes, emitting chunks and edges.
@@ -400,12 +289,52 @@ func (c *Chunker) walkTopLevel(
 			names.typeRefAlias, cqs, slots, ref, testOrigin, result)
 	}
 
-	// Collect import edges.
+	// Collect import edges — ONE PER SITE, each carrying a per-site group key, and
+	// deliberately NOT deduplicated. The ruling this loop used to wait on is in:
+	// per-site edges, "because this also is a major code smell finding that
+	// customers would want to search for".
+	//
+	// WHAT THE KEY FIXES. Two import constructs naming ONE target used to produce
+	// two edges byte-identical in all seven hashed fields, because this loop set
+	// only FromID, ToID and Type. The duplication is REAL AT THE SOURCE, not a
+	// parser artifact: cmd/knowledge/internal/tools/tools_logs_traverse_test.go
+	// imports one path plainly and again under an alias, and
+	// scripts/criterion_hygiene_gates.py carries two from-imports of one module.
+	// The per-file contribution hash folds one hash per emitted edge, while the
+	// edges identity is UNIQUE over (from_id, to_id, type, COALESCE(evidence,'')),
+	// so only one row could land — the client's aggregate covered a row the server
+	// could not store, the file's hash could never agree, and the file re-uploaded
+	// on every collect, forever. Stamping evidence makes the two sites two rows,
+	// which is what lets both the storage and the hash agree that there are two.
+	//
+	// THE KEY IS POSITION-INDEPENDENT, sharing one scheme with the reference group
+	// key and spelling the ORDINAL LAST: `import:<local>:<n>`. A line- or
+	// offset-derived key would trade this defect for a worse one — every edit above
+	// an import block would re-key every import below it, minting an orphan per
+	// site — measured on a live graph for the reference key, which carried the same
+	// defect. <local> is empty where the language has no import arm to know
+	// it, yielding a doubled colon (`import::0`) that must NOT be collapsed: the
+	// ordinal has to stay recoverable as the final colon-separated field.
+	//
+	// EXPECTED CHURN, so it is not read later as a regression: every import edge in
+	// every language gains evidence, so every file with imports re-lands ONCE. That
+	// is delivered by the contribution-hash scheme bump rather than by drift, and
+	// the two residual files quiesce afterwards.
+	importOrdinals := make(map[ImportSite]int)
 	for _, imp := range fileCtx.Imports {
+		// The ordinal is scoped to the FULL discriminator — specifier AND local —
+		// never to the specifier alone. Under specifier-only scoping, SWAPPING two
+		// import lines of one module renumbers both and mints two orphans, which is
+		// the very defect class this format exists to avoid. Scoped to the whole
+		// site, a swap is a no-op and the ordinal separates only sites that are
+		// identical in every recorded respect: the Python case.
+		n := importOrdinals[imp]
+		importOrdinals[imp] = n + 1
 		result.Edges = append(result.Edges, Edge{
-			FromID: filePath,
-			ToID:   imp,
-			Type:   EdgeImports,
+			FromID:   filePath,
+			ToID:     imp.Specifier,
+			Type:     EdgeImports,
+			Evidence: "import:" + imp.Local + ":" + strconv.Itoa(n),
 		})
 	}
 
@@ -429,21 +358,36 @@ func extractDeclAndName(m *sitter.QueryMatch, cqs *compiledQuerySet, src []byte)
 	return declNode, name
 }
 
+// unwrapExportedDecl returns the declaration an export_statement wraps, or the
+// node itself when it wraps none and for every other kind.
+//
+// IT IS SHARED RATHER THAN PRIVATE TO THE CHUNK-TYPE PATH because the NODE, not
+// only its type string, is what the per-language arms descend. The TopLevel
+// query's export arm binds @decl to the export_statement, so for
+// `export class E implements I` the node handed to qualifierTypesFor and
+// typeFactsFor is the export_statement — and any descent written against
+// class_declaration finds nothing there. Most real TypeScript classes are
+// exported, so an arm that skipped this unwrap would be silently inert on the
+// majority of its own corpus while every fixture written against an unexported
+// declaration still passed.
+func unwrapExportedDecl(node *sitter.Node) *sitter.Node {
+	if node == nil || node.Type() != "export_statement" {
+		return node
+	}
+	for i := range int(node.NamedChildCount()) {
+		inner := node.NamedChild(i)
+		innerType := inner.Type()
+		if innerType != "comment" && innerType != "decorator" {
+			return inner
+		}
+	}
+	return node
+}
+
 // resolveChunkType returns the effective chunk type for a declaration node.
 // For export_statement, it unwraps to the inner declaration type.
 func resolveChunkType(declNode *sitter.Node) string {
-	chunkType := declNode.Type()
-	if chunkType != "export_statement" {
-		return chunkType
-	}
-	for i := range int(declNode.NamedChildCount()) {
-		inner := declNode.NamedChild(i)
-		innerType := inner.Type()
-		if innerType != "comment" && innerType != "decorator" {
-			return innerType
-		}
-	}
-	return chunkType
+	return unwrapExportedDecl(declNode).Type()
 }
 
 // emitDeclarationChunk adds the chunk to result.Chunks.
@@ -473,11 +417,17 @@ func (c *Chunker) emitDeclarationChunk(
 	if c.config.includeContext {
 		chunk.Context = fileCtx
 	}
-	if lang == LangGo && chunkType == "method_declaration" {
-		chunk.Context.Signature = extractGoSignature(declNode, src)
-	}
-	if lang == LangGo && chunkType == "function_declaration" {
-		chunk.Context.Signature = extractGoSignature(declNode, src)
+	// Go declarations that HAVE a signature render one, and an interface's method
+	// spec is one of them. extractGoSignature needs no new case for it: a spec has
+	// no `body` field, and the no-body branch returns the whole node — which for a
+	// spec is exactly its signature text. Without `method_elem` here every one of
+	// these nodes rendered a BLANK signature in symbol listings while every
+	// sibling declaration kind rendered one.
+	if lang == LangGo {
+		switch chunkType {
+		case "function_declaration", "method_declaration", "method_elem":
+			chunk.Context.Signature = extractGoSignature(declNode, src)
+		}
 	}
 	// Bucket A test classification dispatch — per-language predicate decides
 	// (IsTest, TestKind) on the declaration. Languages without a registered
@@ -487,5 +437,10 @@ func (c *Chunker) emitDeclarationChunk(
 		chunk.IsTest = isTest
 		chunk.TestKind = kind
 	}
+	// Type-facts dispatch — the per-language arm records the declaration's
+	// declared result types and struct field types for the typed-qualifier
+	// resolution rung. A language with no registered arm leaves the chunk's
+	// zero value, which is a nil pointer and no allocation.
+	chunk.TypeFacts = typeFactsFor(lang, declNode, chunkType, src)
 	result.Chunks = append(result.Chunks, chunk)
 }

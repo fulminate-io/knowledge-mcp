@@ -172,11 +172,11 @@ func (c *client) drainOnShutdown() {
 		drainCancel()
 	}
 	// Flag-gated drain in the fixed order (segment backlog, pipeline, dream Runner,
-	// PropagationLoop, then the always-constructed collect runtime). The readiness
-	// flag guarantees the handle was published before we read it; the nil-check is
-	// belt-and-suspenders. Each Stop is bounded to daemonStopDeadline (3s) — see
-	// the unified shutdown-budget comment on that const and the Makefile
-	// daemon-stop drain loop.
+	// PropagationLoop, the always-constructed collect runtime, then the segment
+	// engines). The readiness flag guarantees the handle was published before we
+	// read it; the nil-check is belt-and-suspenders. Each Stop is bounded to
+	// daemonStopDeadline (3s) — see the unified shutdown-budget comment on that
+	// const and the Makefile daemon-stop drain loop.
 	if c.PipelineReady() && c.pipeline != nil {
 		stopCtx, stopCancel := context.WithTimeout(context.Background(), daemonStopDeadline)
 		defer stopCancel()
@@ -203,6 +203,20 @@ func (c *client) drainOnShutdown() {
 	// collect at the next RPC boundary) then bounded-drains the run goroutine.
 	if c.collectRuntime != nil {
 		c.collectRuntime.Stop(daemonStopDeadline)
+	}
+	// The segment engines close LAST, after every producer above has stopped: each
+	// per-graph engine runs a merger goroutine that only Close stops, and closing
+	// it while the backlog drain or the pipeline could still publish into that
+	// engine would retire the background worker out from under live work. Same
+	// readiness gate as the backlog drain — markPipelineReady is the atomic Store
+	// that publishes c.segmentMgr, so it is the only barrier under which this
+	// field may be read. It carries no deadline because it waits for nothing: it
+	// takes the manager's mutex, which is only ever held across a map
+	// check-and-store, and it does not wait for the mergers to observe the close.
+	// So it adds nothing to the SIGTERM budget the deadlines above are reconciled
+	// against.
+	if c.PipelineReady() && c.segmentMgr != nil {
+		c.segmentMgr.Close()
 	}
 }
 
@@ -314,7 +328,7 @@ func (c *client) wireRuntimesBackground(ctx context.Context, f Config) {
 	// The L2 cache roots under f.GraphStorage (<graph-storage>/segments) — the same
 	// tilde-expanded data root the client spawns the local server with — so client
 	// L2 and server store co-locate instead of leaking to a HOME-fixed path.
-	c.ensureSegmentManager(f.GraphStorage)
+	c.ensureSegmentManager(f.GraphStorage, f.SegmentResidencyBudgetBytes)
 
 	// Wire the client-side LLM pipeline (Phase 6). Builds summarizer +
 	// embedder + worker pools, runs the initial graph-list registration,
@@ -395,6 +409,10 @@ func runServe(args []string) error {
 	setupLogging(&cfg, &logLevelVar)
 	applyMemoryLimit()
 	cfg.GraphStorage = expandTilde(cfg.GraphStorage)
+
+	// AFTER setupLogging, so the "pprof profiling enabled" line (or the bind
+	// warning) lands on the configured sink rather than a default handler.
+	applyPprof(&cfg)
 
 	c, cleanup, err := buildClient(cfg)
 	if err != nil {

@@ -67,7 +67,7 @@ func TestSegmentPublishEmitsShipSkipCounts(t *testing.T) {
 		view := svc.viewFor(target, "")
 		view.listFromManifest = true
 		view.verifies = true
-		return NewManager(loginStateStub{loggedIn: true}, base, 0, withSegmentSource(view))
+		return closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, base, 0, withSegmentSource(view)))
 	}
 
 	// Prior state: the server already holds 12 of the 16 buckets, so the rebuild

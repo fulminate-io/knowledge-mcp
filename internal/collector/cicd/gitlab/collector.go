@@ -59,6 +59,11 @@ func (c *GitLabCollector) Collect(
 		GraphName: "gitlab-" + id,
 		Nodes:     nodes,
 		Edges:     edges,
+		// The enumeration was complete only if no subcollector failed. A partial
+		// enumeration must never assert a complete walk: walk_complete is what arms
+		// the server's whole-remainder deletion basis, so a resource this run failed
+		// to READ would be named as deleted. The Warn above stays the operator signal.
+		WalkComplete: err == nil,
 		// OIDC federation runs as a PostPopulate hook (register_postpopulate.go),
 		// fired after upload so it reads cloud graphs over the wire — not as a
 		// collect-time subcollector reading the (nil) client store engine.

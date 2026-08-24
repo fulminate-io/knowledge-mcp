@@ -4,6 +4,7 @@ package segmentdist
 
 import (
 	"context"
+	"sync"
 	"testing"
 
 	"github.com/stretchr/testify/require"
@@ -12,16 +13,46 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
 
-// recordingSource is a segmentSource that records the digests passed to
-// PublishManifest and returns a caller-configured List (so the publish coverage
-// gate's subset check passes). It is used to assert publishResident threads the
-// real per-digest DocCount to the wire.
+// recordingSource is a segmentSource that records what was asked of it and
+// returns a caller-configured List (so the publish coverage gate's subset check
+// passes). It backs two kinds of assertion: that publishResident threads the real
+// per-digest DocCount to the wire, and that the branch seed ships under the right
+// graph key and refuses to publish an incomplete ship.
 type recordingSource struct {
 	listMetas          []searchengine.SegmentMeta
 	published          []segmentDigest
 	publishCalls       int
 	verifiesServerSide bool
 	publishErr         error // when set, PublishManifest returns it
+
+	// dropOnShip names an id Ship must NOT confirm. It models the upload's own
+	// fail-safe behaviour — a blob that failed is OMITTED from the returned metas
+	// rather than reported as shipped — which is the input the seed's
+	// completeness guard exists to decide on.
+	dropOnShip searchengine.SegmentID
+
+	// mu guards the recording fields below, which the seed path writes from its
+	// own call and the test reads afterwards.
+	mu          sync.Mutex
+	boundTarget *knowledgev1.GraphSelector
+	shipTargets []string
+	shippedIDs  []searchengine.SegmentID
+}
+
+// bindTarget records which graph this source was last bound to. The factory
+// re-binds an injected source per graph, so this is what lets a test assert an
+// upload landed under the BRANCH key rather than base's.
+func (s *recordingSource) bindTarget(t *knowledgev1.GraphSelector) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.boundTarget = t
+}
+
+// shipRecord returns the targets Ship was bound to and the ids it confirmed.
+func (s *recordingSource) shipRecord() ([]string, []searchengine.SegmentID) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]string(nil), s.shipTargets...), append([]searchengine.SegmentID(nil), s.shippedIDs...)
 }
 
 func (s *recordingSource) List(_ context.Context, _ uint64) ([]searchengine.SegmentMeta, error) {
@@ -32,13 +63,30 @@ func (s *recordingSource) Fetch(_ context.Context, _ []searchengine.SegmentID) (
 	return nil, nil
 }
 
-func (s *recordingSource) Ship(_ context.Context, _ []*knowledgev1.SegmentBlobProto) ([]*knowledgev1.SegmentMetaProto, error) {
-	return nil, nil
+func (s *recordingSource) Ship(
+	_ context.Context, blobs []*knowledgev1.SegmentBlobProto,
+) ([]*knowledgev1.SegmentMetaProto, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.shipTargets = append(s.shipTargets, s.boundTarget.String())
+	out := make([]*knowledgev1.SegmentMetaProto, 0, len(blobs))
+	for _, b := range blobs {
+		if b.GetId() == s.dropOnShip {
+			continue
+		}
+		s.shippedIDs = append(s.shippedIDs, b.GetId())
+		out = append(out, &knowledgev1.SegmentMetaProto{
+			Id: b.GetId(), Format: b.GetFormat(), DocCount: b.GetDocCount(),
+		})
+	}
+	return out, nil
 }
 
 func (s *recordingSource) Prune(_ []searchengine.SegmentID) (int, error) { return 0, nil }
 
 func (s *recordingSource) PublishManifest(_ string, digests []segmentDigest) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.publishCalls++
 	s.published = append([]segmentDigest(nil), digests...)
 	return 0, s.publishErr
@@ -79,8 +127,8 @@ func TestPublishResidentThreadsDocCount(t *testing.T) {
 			{ID: "seg-b", Format: "hnsw", DocCount: 9},
 		},
 	}
-	cache := newDiskSegmentCache(t.TempDir(), 0)
-	dm := newDistManager[mockQuery, mockStats](newMockEngine(), rec, cache, target, "hnsw")
+	cache := newDiskSegmentCache(t.TempDir(), 0, adviceRandom)
+	dm := newDistManager[mockQuery, mockStats](newMockEngine(t), rec, cache, target, "hnsw")
 
 	dropped, err := dm.publishResident(ctx, all, dm.locallyShipped)
 	require.NoError(t, err)
@@ -102,7 +150,7 @@ func TestPublishResidentThreadsDocCount(t *testing.T) {
 func TestVerifiesCompletenessServerSide(t *testing.T) {
 	t.Parallel()
 
-	cache := newDiskSegmentCache(t.TempDir(), 0)
+	cache := newDiskSegmentCache(t.TempDir(), 0, adviceRandom)
 
 	gcs := newGCSSegmentSource(&fakeSegmentBackend{}, "code", "repo", "hnsw")
 	require.True(t, gcs.verifiesCompletenessServerSide(), "gcs source verifies via the agent HEAD-verify")
@@ -128,7 +176,7 @@ func TestPublishGateSourceAware(t *testing.T) {
 
 	// rpc-like: verifiesServerSide=false, empty List → live NOT subset → SKIP (no publish).
 	rpcLike := &recordingSource{verifiesServerSide: false} // listMetas nil == empty List(0)
-	rpcDM := newDistManager[mockQuery, mockStats](newMockEngine(), rpcLike, newDiskSegmentCache(t.TempDir(), 0), target, "hnsw")
+	rpcDM := newDistManager[mockQuery, mockStats](newMockEngine(t), rpcLike, newDiskSegmentCache(t.TempDir(), 0, adviceRandom), target, "hnsw")
 	dropped, err := rpcDM.publishResident(ctx, all, rpcDM.locallyShipped)
 	require.NoError(t, err)
 	require.Nil(t, dropped)
@@ -136,7 +184,7 @@ func TestPublishGateSourceAware(t *testing.T) {
 
 	// gcs-like: verifiesServerSide=true → subset check skipped → FIRST publish writes.
 	gcsLike := &recordingSource{verifiesServerSide: true}
-	gcsDM := newDistManager[mockQuery, mockStats](newMockEngine(), gcsLike, newDiskSegmentCache(t.TempDir(), 0), target, "hnsw")
+	gcsDM := newDistManager[mockQuery, mockStats](newMockEngine(t), gcsLike, newDiskSegmentCache(t.TempDir(), 0, adviceRandom), target, "hnsw")
 	_, err = gcsDM.publishResident(ctx, all, gcsDM.locallyShipped)
 	require.NoError(t, err)
 	require.Equal(t, 1, gcsLike.publishCalls, "gcs-like source publishes the first (empty-prior) manifest — not skipped")
@@ -170,7 +218,7 @@ func TestPublishResidentSkipsOnIncomplete(t *testing.T) {
 		verifiesServerSide: true,
 		publishErr:         &manifestIncompleteError{Missing: []string{"seg-a"}},
 	}
-	dm := newDistManager[mockQuery, mockStats](newMockEngine(), src, newDiskSegmentCache(t.TempDir(), 0), target, "hnsw")
+	dm := newDistManager[mockQuery, mockStats](newMockEngine(t), src, newDiskSegmentCache(t.TempDir(), 0, adviceRandom), target, "hnsw")
 	dropped, err := dm.publishResident(ctx, all, dm.locallyShipped)
 	require.NoError(t, err, "an incomplete-publish 409 is a logged SKIP, not a hard error")
 	require.Nil(t, dropped, "a skipped publish reconciles nothing")
@@ -198,7 +246,7 @@ func TestPublishResidentUnstampsMissingOn409(t *testing.T) {
 		verifiesServerSide: true,
 		publishErr:         &manifestIncompleteError{Missing: []string{"seg-a"}},
 	}
-	dm := newDistManager[mockQuery, mockStats](newMockEngine(), src, newDiskSegmentCache(t.TempDir(), 0), target, "hnsw")
+	dm := newDistManager[mockQuery, mockStats](newMockEngine(t), src, newDiskSegmentCache(t.TempDir(), 0, adviceRandom), target, "hnsw")
 
 	// Pre-409 bookkeeping: both blobs are stamped as shipped (the ship RPC returned, so
 	// the client believes the server holds them) in BOTH views.

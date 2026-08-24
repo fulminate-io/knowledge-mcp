@@ -36,6 +36,14 @@ func (s *vecSegment) IDs() []ExternalID {
 
 func (s *vecSegment) Encode() ([]byte, error) { return json.Marshal(s.rows) }
 
+// HeapBytes claims a per-row constant, deliberately non-zero, so the payload
+// term of the residency model is drivable from a fixture rather than silently
+// zero. Shares mockSegmentHeapBytesPerRow with the package's other double so
+// the two cannot drift.
+func (s *vecSegment) HeapBytes() int64 {
+	return int64(len(s.rows)) * mockSegmentHeapBytesPerRow
+}
+
 // VectorByID is the by-id stored-vector accessor SegmentedIndex.VectorByID reaches
 // via runtime type-assert. Returns (nil,false) for an id this segment does not hold.
 func (s *vecSegment) VectorByID(externalID string) ([]byte, bool) {
@@ -95,11 +103,11 @@ func vecDoc(id string, vec []byte) Document { return Document{ID: id, Vector: ve
 // (nil,false). Fails-when-absent: a single-segment-only lookup misses the
 // non-first id.
 func TestVectorByIDRoutesToOwningSegment(t *testing.T) {
-	e := New[mockQuery, mockStats](vecFormat{}, Options{
+	e := closeOnCleanup(t, New[mockQuery, mockStats](vecFormat{}, Options{
 		MinSegmentDocs:     1,
 		DeletesPctAllowed:  2.0,
 		SegmentCountTarget: 1 << 30,
-	})
+	}))
 	defer e.Close()
 
 	want := map[string][]byte{
@@ -136,11 +144,11 @@ func TestVectorByIDRoutesToOwningSegment(t *testing.T) {
 // routed to a real segment. Fails-when-absent: a missing type-assert guard panics
 // on the no-VectorByID payload.
 func TestVectorByIDGenericSafetyOnPayloadWithoutAccessor(t *testing.T) {
-	e := New[mockQuery, mockStats](mockFormat{}, Options{
+	e := closeOnCleanup(t, New[mockQuery, mockStats](mockFormat{}, Options{
 		MinSegmentDocs:     1,
 		DeletesPctAllowed:  2.0,
 		SegmentCountTarget: 1 << 30,
-	})
+	}))
 	defer e.Close()
 
 	if err := e.Add([]Document{doc("a", "content")}); err != nil {

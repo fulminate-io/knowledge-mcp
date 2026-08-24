@@ -90,9 +90,11 @@ func TestReflectPersonality_TopicLabel(t *testing.T) {
 	clusters := []ThoughtCluster{{ID: "c1", Label: "member-A"}, {ID: "c2", Label: "member-B"}}
 	profile := &PersonalityProfile{
 		ClusterLabels: map[string]string{"c1": "member-A", "c2": "member-B"},
-		Scalars: map[string]map[string]float64{
-			"c1": {"c2": 0.3},
-		},
+		// RowDefault is also the profile's cluster-ID SET, which is what Scalar reads
+		// to decide whether a COLUMN exists. So c2 needs a row of its own even though
+		// this test only asserts on the c1→c2 pair: without a c2 key that column does
+		// not exist and the render finds no pair at all.
+		RowDefault: map[string]float64{"c1": 0.3, "c2": 1.0},
 	}
 
 	ApplyTopicLabels(context.Background(), gc, clusters, profile)

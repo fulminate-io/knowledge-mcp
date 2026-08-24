@@ -12,6 +12,7 @@ import (
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/paging"
 )
 
 // pass_reads_count_test.go pins the per-pass read COUNTS by equality, and pins the
@@ -20,163 +21,127 @@ import (
 // it, so the fixture stays the real reflect surface and the numbers below describe a
 // real pass rather than a stub.
 
-// corpusNodesSlice returns thoughts + charges + sessions — exactly the three types
-// corpusNodeTypes covers (loop_corpus.go) — so cacheFromNodes yields a cache with the
-// same TYPE COVERAGE the production delta drain gives. Seeding thoughts alone leaves
-// ChargeSnapshot warm-but-empty (it reports cold only for a WHOLLY empty cache),
-// which silently disables the tension path these counts are meant to observe AND
-// pushes the charge and session hydrates onto their residual wire reads.
-func (f *reflectEquivFake) corpusNodesSlice() []*knowledgev1.Node {
-	out := f.thoughtNodesSlice()
-	for _, c := range f.charges {
-		out = append(out, cloneNode(c))
-	}
-	for _, s := range f.sessions {
-		out = append(out, cloneNode(s))
-	}
-	return out
+// TestPassReads_RecorderCountsUnclassifiedReads is the KNOWN-POSITIVE CONTROL for the
+// default bucket. The zero this counter reports in the pass gates is only meaningful
+// if the counter can go non-zero at all — and before the default arm existed it could
+// not, so a read over an unclassified type set was invisible to every equality leg.
+func TestPassReads_RecorderCountsUnclassifiedReads(t *testing.T) {
+	ctx := context.Background()
+	base := newReflectEquivFake(defaultEquivSpec())
+	gc := &countingWireFake{reflectEquivFake: base}
+
+	require.Equal(t, 0, gc.otherReads(), "no unclassified read has happened yet")
+
+	// A type set no bucket classifies. EdgeSupports and EdgeInformedBy are both
+	// outside unifiedPivotEdgeTypes and outside every narrow bucket.
+	_, err := fetchEdgesForNodeSet(ctx, gc, base.thoughtIDs,
+		[]kgtypes.EdgeType{kgtypes.EdgeSupports, kgtypes.EdgeInformedBy})
+	require.NoError(t, err)
+
+	assert.Equal(t, 1, gc.otherReads(),
+		"an unclassified edge read must land in the default bucket — otherwise it is "+
+			"invisible to every equality leg that asserts a zero")
 }
 
-// countingWireFake classifies every request BEFORE delegating to the embedded
-// reflectEquivFake, so each read the pass issues lands in exactly one counter. The
-// counters are deliberately narrow: an unrecognized read (the EdgeEvidencedBy walk,
-// the tension edge read, the topic-doc browse, the by-id watermark reads) is counted
-// nowhere rather than smeared into a neighboring bucket.
-//
-// extra serves ids the fixture does not hold — the non-corpus stand-in the residual
-// gate hydrates.
-type countingWireFake struct {
+// TestPassReads_RecorderSeesRelatesToReads is the KNOWN-POSITIVE CONTROL for the
+// relates-to counter: two un-memoized cited-code resolutions over the same fixture
+// must record TWO reads. Without it a later zero on this counter would be
+// indistinguishable from a counter that never fires at all.
+func TestPassReads_RecorderSeesRelatesToReads(t *testing.T) {
+	ctx := context.Background()
+	base := newReflectEquivFake(defaultEquivSpec())
+	gc := &countingWireFake{reflectEquivFake: base}
+
+	// THE nil SOURCE IS THE POINT, and it must stay nil. This is the control that
+	// proves the counter can observe relates-to reads at all, so it has to be the
+	// UN-MEMOIZED path: handed the per-pass memo instead, the second call would be
+	// served from the unified pivot read, the counter would read 1, and the failure
+	// would look like a broken recorder rather than a disarmed control.
+	ResolveCitedCodeNodes(ctx, gc, base.thoughtIDs, nil)
+	ResolveCitedCodeNodes(ctx, gc, base.thoughtIDs, nil)
+
+	assert.Equal(t, 2, gc.relatesToReads(),
+		"two un-memoized cited-code resolutions are two relates-to wire reads")
+}
+
+// edgeTypeRecorder records the requested edge-type filter of every
+// RETURN_MODE_EDGES request that reaches the wire, so a test can assert on WHETHER A
+// WIRE CALL HAPPENED rather than on what came back. That distinction is the whole
+// point for memoTypedEdges: a memo serving its full 7-type set also returns a
+// non-empty slice, so a non-empty return proves nothing about which path ran.
+// It also records the PIVOT COUNT of each such request (pivotCounts), which is what
+// lets a test assert the page SEQUENCE a drain produced rather than just how many
+// calls it made — a drain splitting the same ids into the wrong-sized pages issues
+// the same number of calls for some inputs.
+type edgeTypeRecorder struct {
 	*reflectEquivFake
-	extra map[string]*knowledgev1.Node
 
-	mu                    sync.Mutex
-	adjacencyEdgeReads    int
-	kgContainsEdgeReads   int
-	chargedByThoughtReads int
-	chargedByChargeReads  int
-	corpusNodeHydrates    int
-	chargeTypeBrowses     int
-	hydrateIDs            [][]string
+	mu          sync.Mutex
+	edgeCalls   [][]string
+	pivotCounts []int
 }
 
-func (f *countingWireFake) Execute(ctx context.Context, req *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error) {
-	if q := req.GetQuery(); q != nil {
-		f.classify(q)
+func (f *edgeTypeRecorder) Execute(ctx context.Context, req *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error) {
+	if q := req.GetQuery(); q != nil && q.GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_EDGES {
+		f.mu.Lock()
+		f.edgeCalls = append(f.edgeCalls, append([]string(nil), q.GetSelection().GetEdgeTypes()...))
+		f.pivotCounts = append(f.pivotCounts, len(q.GetIds()))
+		f.mu.Unlock()
 	}
-	resp, err := f.reflectEquivFake.Execute(ctx, req)
-	if err != nil {
-		return resp, err
-	}
-	q := req.GetQuery()
-	if q == nil || q.GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_EDGES {
-		return resp, nil
-	}
-	for _, id := range q.GetIds() {
-		if n, ok := f.extra[id]; ok {
-			resp.Nodes = append(resp.Nodes, n)
-		}
-	}
-	return resp, nil
+	return f.reflectEquivFake.Execute(ctx, req)
 }
 
-// classify buckets one query plan. Edge reads are keyed by the requested edge-type
-// set; the EdgeChargedBy read is split by PIVOT — thought ids (the per-thought charge
-// map) versus charge ids (the tension universe's own read, wire_tensions.go) — so the
-// two are never mistaken for duplicates of each other.
-func (f *countingWireFake) classify(q *knowledgev1.QueryPlan) {
+func (f *edgeTypeRecorder) takeEdgeCalls() [][]string {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	ids := q.GetIds()
-	if q.GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_EDGES {
-		switch types := q.GetSelection().GetEdgeTypes(); {
-		case sameEdgeSet(types, adjacencyEdgeTypes):
-			f.adjacencyEdgeReads++
-		case sameEdgeSet(types, []kgtypes.EdgeType{kgtypes.EdgeKGContains}):
-			f.kgContainsEdgeReads++
-		case sameEdgeSet(types, []kgtypes.EdgeType{kgtypes.EdgeChargedBy}):
-			if f.allOfType(ids, kgtypes.NodeCharge) {
-				f.chargedByChargeReads++
-			} else {
-				f.chargedByThoughtReads++
-			}
-		}
-		return
-	}
-	if len(ids) == 0 {
-		if kgtypes.NodeType(q.GetSelection().GetNodeType()) == kgtypes.NodeCharge {
-			f.chargeTypeBrowses++
-		}
-		return
-	}
-	f.hydrateIDs = append(f.hydrateIDs, append([]string(nil), ids...))
-	if f.allCorpusTyped(ids) {
-		f.corpusNodeHydrates++
-	}
+	calls := f.edgeCalls
+	f.edgeCalls = nil
+	return calls
 }
 
-// allOfType reports whether every id names a node of the given corpus type in the
-// fixture. An empty id list is false so it can never select a branch vacuously.
-func (f *countingWireFake) allOfType(ids []string, want kgtypes.NodeType) bool {
-	if len(ids) == 0 {
-		return false
-	}
-	for _, id := range ids {
-		if f.typeOfID(id) != want {
-			return false
-		}
-	}
-	return true
-}
-
-// allCorpusTyped reports whether every id names a thought, charge or session — the
-// three types the resident cache covers.
-func (f *countingWireFake) allCorpusTyped(ids []string) bool {
-	if len(ids) == 0 {
-		return false
-	}
-	for _, id := range ids {
-		switch f.typeOfID(id) {
-		case kgtypes.NodeThought, kgtypes.NodeCharge, kgtypes.NodeThoughtSession:
-		default:
-			return false
-		}
-	}
-	return true
-}
-
-func (f *countingWireFake) typeOfID(id string) kgtypes.NodeType {
-	if n := f.reflectEquivFake.nodeByID(id); n != nil {
-		return kgtypes.NodeType(n.GetType())
-	}
-	if n, ok := f.extra[id]; ok {
-		return kgtypes.NodeType(n.GetType())
-	}
-	return ""
-}
-
-// sameEdgeSet compares a request's edge-type strings against an expected set,
-// order-independently.
-func sameEdgeSet(got []string, want []kgtypes.EdgeType) bool {
-	if len(got) != len(want) {
-		return false
-	}
-	wantSet := make(map[string]bool, len(want))
-	for _, et := range want {
-		wantSet[string(et)] = true
-	}
-	for _, g := range got {
-		if !wantSet[g] {
-			return false
-		}
-	}
-	return true
-}
-
-func (f *countingWireFake) counts() (adjacency, kgContains, chargedByThought, chargedByCharge, hydrates, chargeBrowses int) {
+func (f *edgeTypeRecorder) takePivotCounts() []int {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return f.adjacencyEdgeReads, f.kgContainsEdgeReads, f.chargedByThoughtReads,
-		f.chargedByChargeReads, f.corpusNodeHydrates, f.chargeTypeBrowses
+	counts := f.pivotCounts
+	f.pivotCounts = nil
+	return counts
+}
+
+// TestMemoTypedEdges_FallsThroughOnUncarriedType proves the type-superset check
+// ACTS rather than merely existing. Every consumer this ticket wires asks only for
+// types the unified read carries, so a missing superset check would pass every other
+// gate in the package while serving a FUTURE caller a silently short answer — the
+// unified read holds no EdgeSupports edge, so a memo that answered the request would
+// report zero of them and look like a clean empty result.
+//
+// The CARRIED leg is the known-positive control: without it, "a wire call happened"
+// would be equally true of a memo that never serves anything at all.
+func TestMemoTypedEdges_FallsThroughOnUncarriedType(t *testing.T) {
+	ctx := context.Background()
+	base := newReflectEquivFake(defaultEquivSpec())
+	gc := &edgeTypeRecorder{reflectEquivFake: base}
+	pr := newPassReads(equivLoop(gc, cacheFromNodes(base.corpusNodesSlice())))
+
+	// Populate the unified memo so a served request is genuinely possible.
+	_, err := memoPivotEdges(ctx, gc, base.thoughtIDs, pr)
+	require.NoError(t, err)
+	require.Len(t, gc.takeEdgeCalls(), paging.EdgeBandCount,
+		"the unified read is ONE logical read, issued as exactly EdgeBandCount banded wire calls")
+
+	// CARRIED type → served from the memo, NO wire call.
+	_, err = memoTypedEdges(ctx, gc, base.thoughtIDs, []kgtypes.EdgeType{kgtypes.EdgeKGContains}, pr)
+	require.NoError(t, err)
+	assert.Empty(t, gc.takeEdgeCalls(),
+		"a type the unified read CARRIES is served from the memo — no wire call")
+
+	// UNCARRIED type → falls through to the narrow read.
+	_, err = memoTypedEdges(ctx, gc, base.thoughtIDs, []kgtypes.EdgeType{kgtypes.EdgeSupports}, pr)
+	require.NoError(t, err)
+	calls := gc.takeEdgeCalls()
+	require.Len(t, calls, 1,
+		"a type OUTSIDE unifiedPivotEdgeTypes must reach the wire, not be served short from the memo")
+	assert.Equal(t, []string{string(kgtypes.EdgeSupports)}, calls[0],
+		"the fall-through issues the exact narrow read it replaces")
 }
 
 // TestPassReads_ResidualHydrateCoversUncachedIDs is the T2-1 gate on the residual
@@ -235,6 +200,26 @@ func TestPassReads_ResidualHydrateCoversUncachedIDs(t *testing.T) {
 // call site. The only legitimate reason to change a number is a read this ticket
 // deliberately does not memoize, and such a change must name that call site here.
 //
+// THE THREE ONES BECAME ZEROS, AND HERE IS THE CALL SITE THAT MOVED THEM, named as
+// the rule above requires. The adjacency read (wire_adjacency.go), the
+// session-membership read (deriveSessionSiblings via memoKGContainsEdges) and the
+// thought-pivot charge read (fetchChargesUncached) pivoted on the IDENTICAL thought
+// id set and differed only by edge-type filter. They are now served from ONE unified
+// read over unifiedPivotEdgeTypes (memoPivotEdges), so they no longer exist as
+// separate wire calls. unifiedPivotEdgeReads is where that ONE LOGICAL read is
+// counted; the three zeros are the evidence the collapse landed, NOT a relaxation.
+// The equality form is deliberately intact — an inequality here would stop catching
+// a consumer that quietly re-acquired its own read.
+//
+// THE COUNTERS COUNT EXECUTE ROUND-TRIPS, NOT LOGICAL READS, and since the unified
+// read became a BANDED sweep one logical read is exactly paging.EdgeBandCount
+// Executes. That equality is a property of the shipped code rather than of this
+// fixture's size: EdgeBandBoundaries always returns n-1 boundaries (duplicating when
+// the id list is shorter rather than emitting fewer) and the drain walks every band
+// including empty ones. Asserting the CONSTANT rather than a literal is deliberate —
+// a literal here and a changed constant in the package drift apart silently. Exact
+// equality also doubles as a guard that no band saturated and split.
+//
 // FIXTURE SCOPE: this corpus's charge parents are all thoughts, so hydrates==0 is a
 // claim about THIS fixture. In production a finding/research charge parent is
 // hydrated by the residual leg, by design — which the residual gate above pins.
@@ -252,18 +237,79 @@ func TestPassReads_OneReadPerKindPerPass(t *testing.T) {
 
 	adjacency, kgContains, chargedByThought, chargedByCharge, hydrates, chargeBrowses := gc.counts()
 
-	assert.Equal(t, 1, adjacency, "ONE full-corpus adjacency edge read per pass")
-	assert.Equal(t, 1, kgContains, "ONE session-membership EdgeKGContains read per pass")
-	assert.Equal(t, 1, chargedByThought, "ONE thought-pivot charge map per pass")
+	assert.Equal(t, paging.EdgeBandCount, gc.unifiedReads(),
+		"ONE unified full-corpus edge sweep per pass, measurable as exactly EdgeBandCount banded Executes and no more")
+	assert.Equal(t, 0, adjacency, "the separate adjacency edge read is GONE — folded into the unified read")
+	assert.Equal(t, 0, kgContains, "the separate EdgeKGContains read is GONE — folded into the unified read")
+	assert.Equal(t, 0, chargedByThought, "the separate thought-pivot charge read is GONE — folded into the unified read")
+	assert.Equal(t, 0, gc.relatesToReads(), "the separate cited-code relates-to read is GONE — folded into the unified read")
+	assert.Equal(t, 0, gc.otherReads(),
+		"ZERO edge reads over an unclassified type set — the default bucket is what keeps "+
+			"the zeros above from being satisfied by a read no counter can see")
 	assert.Equal(t, 0, hydrates, "ZERO corpus-node hydrates on a warm pass — every one is resident")
 	assert.Equal(t, 0, chargeBrowses, "ZERO charge type-browses — ChargeSnapshot is forwarded through the memo")
 
 	// KNOWN-POSITIVE CONTROL for the recorder itself: the tension universe's own
 	// charge-pivot read is a DIFFERENT read that still happens, so the zeros above
 	// are zeros the recorder could have seen non-zero.
-	assert.Equal(t, 1, chargedByCharge,
-		"the tension universe's charge-pivot read still runs — proves the recorder observes "+
-			"EdgeChargedBy reads at all, so the counts above are not vacuous")
+	assert.Equal(t, paging.EdgeBandCount, chargedByCharge,
+		"the tension universe's own charge read still runs — banded now, and the recorder tells it "+
+			"from the per-thought one by the BAND rather than the pivot type. Proves the recorder "+
+			"observes EdgeChargedBy reads at all, so the counts above are not vacuous")
+}
+
+// TestPassReads_OnePivotEdgeReadPerPass IS THE COLLAPSE GATE: a real pass issues ONE
+// unified pivot-edge read, ZERO of the four narrow reads it replaced, and STILL
+// resolves cited code.
+//
+// THE FIVE ZEROS ARE ONLY MEANINGFUL BECAUSE OF THE TWO LEGS AROUND THEM. Five zeros
+// on their own are equally satisfied by a pass that stopped doing the work — which is
+// exactly what must not ship. So:
+//   - chargedByCharge==1 is the KNOWN-POSITIVE CONTROL: the tension universe's
+//     charge-pivot read is a DIFFERENT pivot, outside this collapse, and still runs.
+//     It proves the recorder observes edge reads at all, so the zeros are zeros it
+//     could have seen non-zero.
+//   - the cited-code assertion is the WORK-STILL-HAPPENED leg: the pass must still
+//     resolve the seeded thought's code node, so citedCodeRelatesToReads==0 means
+//     "served from the unified read" rather than "no longer looked".
+//
+// TestPassReads_RecorderSeesRelatesToReads is the third leg, proving that particular
+// counter can be non-zero at all.
+func TestPassReads_OnePivotEdgeReadPerPass(t *testing.T) {
+	base := newReflectEquivFake(defaultEquivSpec())
+	for _, c := range base.charges {
+		c.CreatedAt = citedCodeChargeNanos // so facetCodeChanged can fire (see the seed).
+	}
+	gc := &countingWireFake{
+		reflectEquivFake: base,
+		citedCode:        newCitedCodeSeed(citedCodeThoughtID),
+	}
+	loop := equivLoop(gc, cacheFromNodes(base.corpusNodesSlice()))
+
+	_, err := loop.runPass(context.Background(), false)
+	require.NoError(t, err)
+
+	adjacency, kgContains, chargedByThought, chargedByCharge, _, _ := gc.counts()
+
+	assert.Equal(t, paging.EdgeBandCount, gc.unifiedReads(),
+		"ONE unified full-corpus edge sweep for the whole pass, issued as exactly EdgeBandCount banded Executes")
+	assert.Equal(t, 0, adjacency, "no separate adjacency read")
+	assert.Equal(t, 0, kgContains, "no separate session-membership read")
+	assert.Equal(t, 0, chargedByThought, "no separate thought-pivot charge read")
+	assert.Equal(t, 0, gc.relatesToReads(), "no separate cited-code relates-to read")
+	assert.Equal(t, 0, gc.otherReads(),
+		"no edge read over an unclassified type set — closes the gap where a read with a "+
+			"type set no bucket matches would leave every zero above green")
+
+	assert.Equal(t, paging.EdgeBandCount, chargedByCharge,
+		"the tension universe's own charge read still runs — a DIFFERENT read, outside this "+
+			"collapse, so the five zeros above are not vacuous")
+
+	// WORK STILL HAPPENED: the cited code is still resolved, from the unified read.
+	cited := buildCitedCodeUpdatedAt(context.Background(), gc, base.thoughtIDs, newPassReads(loop))
+	assert.Equal(t, citedCodeUpdatedAtNanos, cited[citedCodeThoughtID],
+		"cited code is STILL resolved — the zero above means served-from-the-memo, "+
+			"not stopped-looking")
 }
 
 // TestPassReads_NoMemoRereadsControl is the known-positive control for the RECORDER:
@@ -277,14 +323,20 @@ func TestPassReads_NoMemoRereadsControl(t *testing.T) {
 	gc := &countingWireFake{reflectEquivFake: base}
 	loop := equivLoop(gc, cacheFromNodes(base.corpusNodesSlice()))
 
+	// The counter READ HERE IS unifiedReads(), not the adjacency bucket: scope="all"
+	// now issues the 7-type unified read, which classify buckets as unified. The
+	// adjacency bucket counts the old 5-type shape and is legitimately 0 throughout,
+	// so watching it would make this control silently compare 0 against 0.
+	//
 	// NO MEMO: the loop as src, so each call composes its own adjacency.
 	_, _, err := fetchAdjacency(ctx, gc, "all", nil, loop)
 	require.NoError(t, err)
 	_, _, err = fetchAdjacency(ctx, gc, "all", nil, loop)
 	require.NoError(t, err)
 
-	unmemoized, _, _, _, _, _ := gc.counts()
-	require.Equal(t, 2, unmemoized, "two un-memoized adjacency calls are two wire reads")
+	unmemoized := gc.unifiedReads()
+	require.Equal(t, 2*paging.EdgeBandCount, unmemoized,
+		"two un-memoized adjacency calls are two banded sweeps, EdgeBandCount Executes each")
 
 	// WITH THE MEMO: two calls, ONE further read.
 	pr := newPassReads(loop)
@@ -293,7 +345,8 @@ func TestPassReads_NoMemoRereadsControl(t *testing.T) {
 	_, _, err = fetchAdjacency(ctx, gc, "all", nil, pr)
 	require.NoError(t, err)
 
-	memoized, _, _, _, _, _ := gc.counts()
-	assert.Equal(t, unmemoized+1, memoized,
-		"two memoized adjacency calls add exactly ONE wire read")
+	memoized := gc.unifiedReads()
+	assert.Equal(t, unmemoized+paging.EdgeBandCount, memoized,
+		"two memoized adjacency calls add exactly ONE logical read — EdgeBandCount Executes, not one; "+
+			"the +EdgeBandCount reads as relative but is a LOGICAL-read count expressed in Execute units")
 }

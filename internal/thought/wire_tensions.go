@@ -45,6 +45,13 @@ var tensionEdgeTypes = []kgtypes.EdgeType{
 	kgtypes.EdgeSynthesizedFrom,
 }
 
+// tensionChargeEdgeTypes is the tension universe's own charge-pivot read filter. It
+// is DECLARED HERE, beside the read that uses it, rather than beside the per-pass
+// inventory that cites it — the inventory cites type-set vars from three files, which
+// is the package's existing shape (unifiedPivotEdgeTypes lives with the memo and is
+// consumed from wire_adjacency.go).
+var tensionChargeEdgeTypes = []kgtypes.EdgeType{kgtypes.EdgeChargedBy}
+
 // isMachineTensionMethod reports whether an edge Method tag is one of the four
 // MACHINE relates-to writer provenances — i.e. a programmatically densified or
 // linked edge, never a human reasoning assertion. It references the EXISTING
@@ -94,7 +101,10 @@ var tensionClaimTypes = map[kgtypes.NodeType]bool{
 // Three reads on the cold path, ONE on the warm path:
 //  1. the charge set — resident from the corpus cache when the source is warm
 //     (ZERO wire calls), else a single type=charge drain;
-//  2. a bulk EdgeChargedBy read over the charge ids (parent=From, charge=To);
+//  2. a BANDED match-all EdgeChargedBy read (parent=From, charge=To). The charge
+//     ids derive the band boundaries rather than being sent as pivots, so the
+//     result is a SUPERSET; the `chargeByID[e.ToId] == nil` test below is what
+//     narrows it back, and a criterion pins that test;
 //  3. ONE hydrate of the charge parents, narrowed to tensionClaimTypes — served
 //     through memoCorpusNodes, so parents the resident cache already holds cost
 //     nothing and only the RESIDUAL reaches the wire. That residual leg is
@@ -127,7 +137,7 @@ func fetchTensionUniverseNodes(ctx context.Context, gc Caller, src CorpusSource)
 		chargeIDs = append(chargeIDs, c.GetId())
 	}
 
-	edges, err := fetchEdgesForNodeSet(ctx, gc, chargeIDs, []kgtypes.EdgeType{kgtypes.EdgeChargedBy})
+	edges, err := fetchAllEdgesBanded(ctx, gc, chargeIDs, tensionChargeEdgeTypes)
 	if err != nil {
 		return nil, nil, err
 	}

@@ -68,9 +68,20 @@ func TestUploadSink_NotLoggedIn_RoutesLocal(t *testing.T) {
 		GraphType: kgtypes.GraphCode,
 		GraphName: "free-path-repo",
 		Nodes:     []*knowledgev1.Node{{Id: "n1", Type: "func", Summary: "n1"}},
+		// Stamped as a real code collect is: an empty fingerprint aborts.
+		DiscoveryFingerprint:   "fingerprint-freepath-fixture",
+		CollectorOutputVersion: testCollectorOutputVersion,
 	}
 
-	require.NoError(t, sink.WriteResult(context.Background(), "", result),
+	// STAMP THE OPERATION THE WAY THE SHIPPED ENTRY POINT DOES — tools/collect.go
+	// wraps the base context once at the tool boundary. This test routes through
+	// the Router, whose operation interceptor rejects a covered RPC issued with no
+	// operation in a TEST build, and CollectManifest is covered. Until the manifest
+	// fetch became an abort that rejection was absorbed by the handshake_error
+	// degrade, so the harness gap was invisible: the collect "succeeded" while
+	// measuring the degraded lane.
+	ctx := graphclient.WithOperation(context.Background(), graphclient.OpCollect)
+	require.NoError(t, sink.WriteResult(ctx, "", result),
 		"not-logged-in WriteResult must succeed against the local server (free path)")
 	assert.Equal(t, int32(1), localFinalize.Load(),
 		"not-logged-in collect must route to the local backend (the picker selects local when IsLoggedIn=false)")

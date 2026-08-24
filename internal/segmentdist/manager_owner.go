@@ -30,6 +30,19 @@ type Manager struct {
 	caller   loginState
 	cacheDir string
 	maxBytes int64
+	// residencyBudgetBytes is the ceiling, in RESIDENT HEAP BYTES, that every
+	// constructed pool's imported segments may occupy together. Crossing it evicts
+	// the coldest pools until the total is back under (manager_residency.go).
+	// ZERO DISABLES EVICTION ENTIRELY and is the default, so a Manager built without
+	// WithResidencyBudget behaves exactly as it did before the budget existed.
+	// Written once at construction and only read afterwards, like boundAccountID.
+	//
+	// IT IS A DIFFERENT QUANTITY FROM maxBytes ABOVE and the two are never
+	// interchangeable: maxBytes bounds .seg FILES ON DISK (the L2 cache cap),
+	// residencyBudgetBytes bounds DECODED SEGMENTS IN RAM. Evicting under this
+	// budget deliberately leaves the disk files alone — that is exactly what makes
+	// the reload free of network.
+	residencyBudgetBytes int64
 	// boundAccountID is the Fulminate account selected when this Manager was
 	// constructed — the account its cacheDir and its per-graph sources belong
 	// to. Every serving entry point compares it against the live selection and
@@ -39,13 +52,15 @@ type Manager struct {
 
 	mu sync.Mutex
 	// managers holds the HNSW engine per graph (vectors). bm25Managers holds the
-	// BM25 engine per graph (field-bearing text). Both guarded by mu.
-	managers     map[graphKey]*distManager[[]byte, struct{}]
-	bm25Managers map[graphKey]*distManager[bm25.Query, *bm25.CorpusStats]
+	// BM25 engine per graph (field-bearing text). Both guarded by mu, and both
+	// hold a constructionGate rather than the engine directly, so a caller that
+	// races a branch seed waits for it instead of observing a half-filled engine.
+	managers     map[graphKey]*constructionGate[[]byte, struct{}]
+	bm25Managers map[graphKey]*constructionGate[bm25.Query, *bm25.CorpusStats]
 	// ONE ENGINE PER FORMAT, and the pair above is the whole set. A third map used to
 	// hold a DETERMINISTIC HNSW engine the rebuild wrote, plus a fourth holding the
 	// outgoing layer it had to pin while that engine was dropped — because both HNSW
-	// engines keyed ONE (graphKey, writerID, "hnsw") manifest, so an embed publish
+	// engines keyed ONE (graphKey, writerID, HNSW) manifest, so an embed publish
 	// landing mid-rebuild could name a manifest omitting the layer still serving the
 	// graph and reap the live corpus. A reset now builds aside and swaps at the serving
 	// engine, so the engine goes on serving the old layer right up to the CAS and there
@@ -265,6 +280,15 @@ func WithGraphAdmitter(admit func(gt kgtypes.GraphType, name string)) ManagerOpt
 	return func(m *Manager) { m.admitGraph = admit }
 }
 
+// WithResidencyBudget sets the ceiling, in RESIDENT HEAP BYTES, that the segment
+// pools of every constructed graph may occupy together before the coldest of them
+// are evicted from memory (manager_residency.go). Without this option — or with a
+// budget of zero or less — eviction is DISABLED and residency is unbounded, which
+// is the behaviour every caller had before the budget existed.
+func WithResidencyBudget(bytes int64) ManagerOption {
+	return func(m *Manager) { m.residencyBudgetBytes = bytes }
+}
+
 // withSegmentSource is the TEST-ONLY option that pins the segmentSource every
 // lazily-constructed distManager uses, bypassing the newSegmentSource capability
 // gate. The surviving in-package machinery tests inject a fakeSegmentSource through
@@ -303,8 +327,8 @@ func NewManager(caller loginState, cacheDir string, maxBytes int64, opts ...Mana
 		maxBytes: maxBytes,
 		// Sampled ONCE here, alongside the cacheDir it belongs to.
 		boundAccountID: accountSelectionID(context.Background()),
-		managers:       make(map[graphKey]*distManager[[]byte, struct{}]),
-		bm25Managers:   make(map[graphKey]*distManager[bm25.Query, *bm25.CorpusStats]),
+		managers:       make(map[graphKey]*constructionGate[[]byte, struct{}]),
+		bm25Managers:   make(map[graphKey]*constructionGate[bm25.Query, *bm25.CorpusStats]),
 		dirty:          make(map[graphKey]*graphDirtyState),
 		tombstoned:     make(map[graphKey][]searchengine.ExternalID),
 		tombstoneSeq:   make(map[graphKey]map[searchengine.ExternalID]uint64),

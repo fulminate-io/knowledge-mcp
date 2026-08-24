@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 
 // Package foundation holds the store-free shared core of the topology
-// analyzer suite that runs on the stdio client: the Finding / Severity
+// analyzer suite that runs on the client (cmd/knowledge): the Finding / Severity
 // result value-objects, the Request contract + Analyzer interface + the
 // analyzer registry, the ranking/percentile helpers, and the wire-backed
 // graph builder (NewGonumGraph) + read-helpers every analyzer family reuses.

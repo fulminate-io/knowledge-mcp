@@ -23,7 +23,7 @@ type existingEdgesFake struct {
 func (f *existingEdgesFake) Execute(_ context.Context, req *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error) {
 	q := req.GetQuery()
 	if q != nil && q.GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_EDGES {
-		return &knowledgev1.ExecuteResponse{Edges: f.edges}, nil
+		return &knowledgev1.ExecuteResponse{Edges: bandNarrow(f.edges, q)}, nil
 	}
 	return &knowledgev1.ExecuteResponse{}, nil
 }

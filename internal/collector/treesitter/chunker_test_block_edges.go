@@ -25,6 +25,10 @@ import (
 func (c *Chunker) emitTestBlockCallEdges(
 	site *testBlockSite,
 	src []byte,
+	// lang is not decoration: TEST_CALLS are a ninth of a large corpus's call
+	// edges and every callee rule applies to them, so a wrong language here
+	// silently exempts that ninth from the whole ruleset.
+	lang Language,
 	fileCtx ChunkContext,
 	symbolName string,
 	cqs *compiledQuerySet,
@@ -35,7 +39,7 @@ func (c *Chunker) emitTestBlockCallEdges(
 	if !site.leaf || symbolName == "" {
 		return
 	}
-	edges := c.extractCallEdges(site.declNode, src, fileCtx.PackageName, symbolName, cqs)
+	edges := c.extractCallEdges(site.declNode, src, lang, fileCtx.PackageName, symbolName, cqs)
 	if len(edges) == 0 {
 		return
 	}
@@ -43,7 +47,7 @@ func (c *Chunker) emitTestBlockCallEdges(
 		edges[i].Type = EdgeTestCalls
 	}
 	declRef := refForParent(ref, site.captures.ParentName)
-	result.Edges = append(result.Edges, attachRefSite(edges, declRef, site.declNode, slot)...)
+	result.Edges = append(result.Edges, attachRefSite(edges, declRef, slot)...)
 }
 
 // markLeafTestBlocks sets leaf on every site that STRICTLY contains no other

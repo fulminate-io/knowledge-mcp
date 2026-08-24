@@ -31,13 +31,14 @@ func (c *captureOnMerge) snapshot() []MergeResult {
 
 // callbackMergeEngine mirrors mergeEngine (one doc per segment, low triggers) but
 // installs the supplied OnMerge so the callback path runs.
-func callbackMergeEngine(onMerge OnMergeFunc, deletesPct float64, countTarget int) *SegmentedIndex[mockQuery, mockStats] {
-	return New[mockQuery, mockStats](mockFormat{}, Options{
+func callbackMergeEngine(t testing.TB, onMerge OnMergeFunc, deletesPct float64, countTarget int) *SegmentedIndex[mockQuery, mockStats] {
+	t.Helper()
+	return closeOnCleanup(t, New[mockQuery, mockStats](mockFormat{}, Options{
 		MinSegmentDocs:     1,
 		DeletesPctAllowed:  deletesPct,
 		SegmentCountTarget: countTarget,
 		OnMerge:            onMerge,
-	})
+	}))
 }
 
 // TestOnMergeFiresOncePerMerge asserts that a dead-ratio-triggered merge invokes
@@ -45,7 +46,7 @@ func callbackMergeEngine(onMerge OnMergeFunc, deletesPct float64, countTarget in
 // Merged.ID present in the post-merge Export() set.
 func TestOnMergeFiresOncePerMerge(t *testing.T) {
 	recorder := &captureOnMerge{}
-	e := callbackMergeEngine(recorder.fn(), 0.33, 1<<30)
+	e := callbackMergeEngine(t, recorder.fn(), 0.33, 1<<30)
 	defer e.Close()
 
 	// One segment of 4 docs; record its id before the merge so we can assert it is
@@ -103,7 +104,7 @@ func TestOnMergeFiresOncePerMerge(t *testing.T) {
 // (which consolidates EVERY entry) reports all the superseded ids in Removed.
 func TestOnMergeCountTargetRemovesAllConstituents(t *testing.T) {
 	recorder := &captureOnMerge{}
-	e := callbackMergeEngine(recorder.fn(), 2.0, 4) // dead-ratio never fires; count target = 4
+	e := callbackMergeEngine(t, recorder.fn(), 2.0, 4) // dead-ratio never fires; count target = 4
 	defer e.Close()
 
 	for _, id := range []string{"d0", "d1", "d2", "d3", "d4"} {
@@ -146,7 +147,7 @@ func TestOnMergeCountTargetRemovesAllConstituents(t *testing.T) {
 func TestOnMergeNotFiredWithoutTargets(t *testing.T) {
 	recorder := &captureOnMerge{}
 	// Dead ratio never trips (2.0) and count target is huge: nothing is eligible.
-	e := callbackMergeEngine(recorder.fn(), 2.0, 1<<30)
+	e := callbackMergeEngine(t, recorder.fn(), 2.0, 1<<30)
 	defer e.Close()
 
 	if err := e.Add([]Document{doc("a", "x"), doc("b", "x")}); err != nil {
@@ -168,12 +169,12 @@ func TestOnMergeNotFiredWithoutTargets(t *testing.T) {
 // OnMerge (the default for every existing caller) performs a real merge with zero
 // callback invocations and no panic.
 func TestNilOnMergeRunsMergeWithoutPanic(t *testing.T) {
-	e := New[mockQuery, mockStats](mockFormat{}, Options{
+	e := closeOnCleanup(t, New[mockQuery, mockStats](mockFormat{}, Options{
 		MinSegmentDocs:     1,
 		DeletesPctAllowed:  0.33,
 		SegmentCountTarget: 1 << 30,
 		// OnMerge deliberately unset (nil).
-	})
+	}))
 	defer e.Close()
 
 	if err := e.Add([]Document{

@@ -3,6 +3,8 @@
 package thought
 
 import (
+	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -12,6 +14,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
+	"github.com/fulminate-io/knowledge-mcp/internal/filecrypt"
 )
 
 // corpusRecordFixture builds the node set + cursors every test in this file frames.
@@ -195,6 +198,130 @@ func TestCorpusRecord_SaveLoadOnDisk(t *testing.T) {
 	require.NoError(t, err)
 	require.True(t, ok)
 	assert.Len(t, got.GetItems(), 1, "the rewrite replaced the record wholesale")
+}
+
+// corpusPlaintextSentinel is 95 printable characters, planted in a node field that
+// reaches the serialized frame. The length is chosen so a literal `strings -n 60`
+// sweep over the on-disk record would report it — which is what makes the assertion
+// below no weaker than the shell probe an operator would run by hand.
+const corpusPlaintextSentinel = "SENTINEL-a-recognizable-run-of-printable-characters-that-any-strings-sweep-would-surface-000000"
+
+// TestCorpusRecord_OnDiskIsCiphertext is the confidentiality claim expressed in Go
+// so it runs in CI rather than only under an operator's shell.
+//
+// Leg (a) asserts an ABSENCE, so leg (b) supplies the known-positive control in the
+// SAME run: the identical sentinel IS a substring of the unsealed frame. Without
+// that control a fixture which never carried the sentinel — or a field the
+// marshaller drops — would satisfy leg (a) exactly as well as a working seal.
+// Leg (c) then proves the file is still readable by its owner, so "unreadable" is
+// not how (a) was achieved.
+func TestCorpusRecord_OnDiskIsCiphertext(t *testing.T) {
+	root := t.TempDir()
+	path := CorpusCachePathFor(root)
+
+	items, cursors := corpusRecordFixture()
+	items[0].SymbolName = corpusPlaintextSentinel
+
+	// (b) KNOWN-POSITIVE CONTROL: the sentinel survives into the unsealed frame.
+	unsealed, err := encodeCorpusRecord(corpusNodeTypes, items, cursors)
+	require.NoError(t, err)
+	require.True(t, bytes.Contains(unsealed, []byte(corpusPlaintextSentinel)),
+		"control: the sentinel must reach the serialized frame, or the absence check below proves nothing")
+
+	// (a) The record committed to disk is an envelope carrying no readable trace.
+	require.NoError(t, saveCorpusRecord(path, corpusNodeTypes, items, cursors))
+	onDisk, rerr := os.ReadFile(path) //nolint:gosec // path is CorpusCachePathFor(t.TempDir()).
+	require.NoError(t, rerr)
+	require.GreaterOrEqual(t, len(onDisk), 4)
+	assert.Equal(t, []byte("KCE1"), onDisk[:4], "the record on disk carries the sealed envelope magic")
+	assert.NotContains(t, string(onDisk), corpusCacheMagic,
+		"the inner frame magic must not be readable on disk either")
+	assert.False(t, bytes.Contains(onDisk, []byte(corpusPlaintextSentinel)),
+		"the on-disk record contains readable node content")
+
+	// (c) Still readable by its owner.
+	got, ok, lerr := loadCorpusRecord(path, corpusNodeTypes)
+	require.NoError(t, lerr)
+	require.True(t, ok)
+	require.Len(t, got.GetItems(), len(items))
+	assert.Equal(t, corpusPlaintextSentinel, got.GetItems()[0].GetSymbolName(),
+		"the sealed record round-trips to the same content it was built from")
+}
+
+// TestCorpusRecord_LegacyPlaintextDroppedAndRebuilt covers the migration posture:
+// a record written before this cache was encrypted is DROPPED and rebuilt, never
+// converted.
+//
+// The legacy fixture goes through encodeCorpusRecord rather than a hand-written
+// byte string, because only the real encoder reproduces the exact pre-change
+// on-disk shape — a look-alike would test the assertion rather than the format.
+//
+// The FILE-GONE leg is the load-bearing one. It drives the LOOP, not the codec,
+// and it is what fails if the removal at rejection were missing; the error-text
+// leg alone passes with 53 MB of readable plaintext still sitting on disk.
+func TestCorpusRecord_LegacyPlaintextDroppedAndRebuilt(t *testing.T) {
+	dir := t.TempDir()
+	path := CorpusCachePathFor(dir)
+
+	plantLegacy := func(t *testing.T) {
+		t.Helper()
+		items, cursors := corpusRecordFixture()
+		legacy, err := encodeCorpusRecord(corpusNodeTypes, items, cursors)
+		require.NoError(t, err)
+		require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o750))
+		require.NoError(t, os.WriteFile(path, legacy, 0o600)) //nolint:gosec // path is CorpusCachePathFor(t.TempDir()).
+	}
+
+	// The codec half: a legacy record is diagnosed as legacy, not as damage.
+	plantLegacy(t)
+	got, ok, err := loadCorpusRecord(path, corpusNodeTypes)
+	require.Error(t, err, "a legacy plaintext record must be refused")
+	assert.Nil(t, got)
+	assert.False(t, ok)
+	require.ErrorIs(t, err, filecrypt.ErrLegacyPlaintext)
+	assert.Contains(t, err.Error(), "legacy plaintext record",
+		"the operator-facing message must name the condition")
+
+	// The loop half: the rejected file is GONE afterwards, and the loop cold-drains.
+	require.FileExists(t, path, "control: the planted legacy record exists before the loop runs")
+	rows := []corpusRow{{"t1", 1000, false}, {"t2", 2000, false}, {"t3", 3000, false}}
+	fake := &fakeCorpusScanner{rows: rows, freshH: 10_000_000}
+	p := warmLoop(fake, dir)
+	p.refreshCorpusCache(context.Background())
+
+	require.NotEmpty(t, fake.cursorsSeen)
+	assert.Equal(t, int64(0), fake.cursorsSeen[0],
+		"a rejected legacy record must leave the cache empty, so the drain starts from a ZERO cursor")
+
+	// Rebuilt, not converted: what is on disk now is a sealed record, not the frame
+	// that was planted.
+	rebuilt, rerr := os.ReadFile(path) //nolint:gosec // path is CorpusCachePathFor(t.TempDir()).
+	require.NoError(t, rerr)
+	require.GreaterOrEqual(t, len(rebuilt), 4)
+	assert.Equal(t, []byte("KCE1"), rebuilt[:4], "the record was rebuilt sealed")
+}
+
+// TestCorpusRecord_LegacyRecordRemovedAtRejection isolates the removal itself, with
+// the drain disabled so nothing can rewrite the file behind the assertion. Without
+// this the file-gone check above could be satisfied by the rebuild alone.
+func TestCorpusRecord_LegacyRecordRemovedAtRejection(t *testing.T) {
+	dir := t.TempDir()
+	path := CorpusCachePathFor(dir)
+
+	items, cursors := corpusRecordFixture()
+	legacy, err := encodeCorpusRecord(corpusNodeTypes, items, cursors)
+	require.NoError(t, err)
+	require.NoError(t, os.MkdirAll(filepath.Dir(path), 0o750))
+	require.NoError(t, os.WriteFile(path, legacy, 0o600)) //nolint:gosec // path is CorpusCachePathFor(t.TempDir()).
+	require.FileExists(t, path, "control: the planted record exists before the load")
+
+	p := (&PropagationLoop{}).WithCorpusPersistence(dir)
+	p.corpus = newCorpusCache()
+	adopted := p.warmLoadCorpusOnce()
+
+	assert.False(t, adopted, "a legacy record must not be adopted")
+	assert.NoFileExists(t, path,
+		"the rejected record must be removed at rejection, not left on disk until some later persist")
 }
 
 func TestCorpusCachePath_UnderDataRootNotSegments(t *testing.T) {

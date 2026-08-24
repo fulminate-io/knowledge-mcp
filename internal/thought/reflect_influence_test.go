@@ -67,31 +67,34 @@ func (c *influenceCorpus) Execute(_ context.Context, req *knowledgev1.ExecuteReq
 		return &knowledgev1.ExecuteResponse{}, nil
 	}
 	if q.GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_EDGES {
-		var wantCharged, wantContains bool
+		// UNION, not first-match: the wire returns every edge matching ANY requested
+		// type (an empty set means every type). Branching to a single bucket was
+		// adequate only while each caller requested one type at a time; the unified
+		// pivot read requests seven at once, and a first-match fake would answer it
+		// with the charge edges alone and starve the adjacency. kg-contains
+		// contributes nothing here (no sessions → no sibling expansion).
+		want := map[string]bool{}
 		if sel := q.GetSelection(); sel != nil {
 			for _, et := range sel.GetEdgeTypes() {
-				switch et {
-				case string(kgtypes.EdgeChargedBy):
-					wantCharged = true
-				case string(kgtypes.EdgeKGContains):
-					wantContains = true
-				}
+				want[et] = true
 			}
 		}
-		if wantCharged {
-			var ce []*knowledgev1.Edge
+		keep := func(t string) bool { return len(want) == 0 || want[t] }
+
+		var out []*knowledgev1.Edge
+		if keep(string(kgtypes.EdgeChargedBy)) {
 			for _, tid := range c.order {
 				for _, chID := range c.chargeOf[tid] {
-					ce = append(ce, &knowledgev1.Edge{Type: string(kgtypes.EdgeChargedBy), FromId: tid, ToId: chID})
+					out = append(out, &knowledgev1.Edge{Type: string(kgtypes.EdgeChargedBy), FromId: tid, ToId: chID})
 				}
 			}
-			return &knowledgev1.ExecuteResponse{Edges: ce}, nil
 		}
-		if wantContains {
-			return &knowledgev1.ExecuteResponse{}, nil // no sessions → no sibling expansion
+		for _, e := range c.adjEdges {
+			if keep(e.Type) {
+				out = append(out, e)
+			}
 		}
-		// adjacency read (the 5 thought-cluster edge types).
-		return &knowledgev1.ExecuteResponse{Edges: c.adjEdges}, nil
+		return &knowledgev1.ExecuteResponse{Edges: bandNarrow(out, q)}, nil
 	}
 	if q.GetById() != "" {
 		return &knowledgev1.ExecuteResponse{}, nil

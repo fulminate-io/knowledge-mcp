@@ -3,6 +3,7 @@
 package parser
 
 import (
+	"strings"
 	"testing"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
@@ -372,5 +373,96 @@ func TestChunkResultsToPopulate_PromotesIsTest(t *testing.T) {
 	}
 	if rn.TestKind != "" {
 		t.Errorf("RegularFunc.TestKind = %q; want empty", rn.TestKind)
+	}
+}
+
+// TestChunkResultsToPopulate_DeterministicFields proves the deterministic
+// Summary/Keywords routing at the level the collector actually emits nodes at,
+// rather than at the composer's own boundary.
+//
+// The keep-LLM and container cases are the FENCE that keeps the ticket's
+// out-of-scope list enforced by a test rather than by prose. NodeFile and
+// NodePackage matter most: their embed text is the Summary ALONE, so any
+// leakage of a collector-supplied summary onto a container would degrade its
+// vector one-for-one.
+//
+// Every expectation is looked up BY NODE ID and asserted individually — a
+// whole-result count of "n nodes carry a summary" is satisfied by the wrong n
+// nodes carrying it.
+func TestChunkResultsToPopulate_DeterministicFields(t *testing.T) {
+	chunk := func(ct, name, parent, file, content string, exported bool, start int) treesitter.Chunk {
+		lang := treesitter.LangGo
+		if file == "x.ts" {
+			lang = treesitter.LangTypeScript
+		}
+		return treesitter.Chunk{
+			Content: content, FilePath: file, Language: lang, ChunkType: ct,
+			Name: name, ParentName: parent, Exported: exported,
+			StartLine: start, EndLine: start, StartByte: start * 100,
+			Context: treesitter.ChunkContext{PackageName: "pkg"},
+		}
+	}
+	big := "export const authFixture = { " + strings.Repeat("field: value, ", 20) + "};"
+
+	results := []*treesitter.Result{
+		{FilePath: "a.go", Language: treesitter.LangGo, Chunks: []treesitter.Chunk{
+			chunk("const_declaration", "maxRetries", "", "a.go", "const maxRetries = 5", false, 1),
+			chunk("function_declaration", "Foo", "", "a.go", "func Foo() {}", true, 2),
+			chunk("method_declaration", "Do", "Client", "a.go", "func (c *Client) Do() {}", true, 3),
+			chunk("type_declaration", "Config", "", "a.go", "type Config struct{}", true, 4),
+		}},
+		{FilePath: "x.ts", Language: treesitter.LangTypeScript, Chunks: []treesitter.Chunk{
+			chunk("test_block", "renders", "home", "x.ts", "it('renders', () => {})", false, 1),
+			chunk("lexical_declaration", "apiBase", "", "x.ts", "export const apiBase = '/api'", true, 2),
+			chunk("lexical_declaration", "rows", "", "x.ts", "const rows = query(sql)", false, 3),
+			chunk("export_statement", "", "", "x.ts", big, false, 4),
+		}},
+	}
+	pop := chunkResultsToPopulate("myrepo", &treesitter.RepoContext{}, results)
+
+	cases := []struct {
+		label  string
+		nodeID string
+		want   bool // true = both fields filled, false = both empty
+	}{
+		{"A const_declaration under the cap", "a.go:maxRetries", true},
+		{"B test_block", "x.ts:home.renders", true},
+		{"C function_declaration", "a.go:Foo", false},
+		{"D method_declaration", "a.go:Client.Do", false},
+		{"E type_declaration", "a.go:Config", false},
+		{"F NodeFile container", "a.go", false},
+		{"G NodeLanguage hub", "lang:myrepo:go", false},
+		{"H lexical_declaration exported", "x.ts:apiBase", false},
+		{"H lexical_declaration not exported", "x.ts:rows", true},
+		// THE UNNAMED CHUNK'S ID IS DERIVED, NEVER SPELLED. It used to be written
+		// out as "x.ts:L4-4", which pinned this fixture to the position-derived id
+		// format the content-derived scheme replaced; the case is about the FIELDS, so
+		// asking ChunkNodeID for the id keeps it about that and immune to the id
+		// scheme.
+		{"I allowlisted chunk over the cap", ChunkNodeID(results[1].Chunks[3]), false},
+	}
+	for _, tc := range cases {
+		n := nodeByID(pop.Nodes, tc.nodeID)
+		if n == nil {
+			t.Fatalf("%s: node %q missing from the result", tc.label, tc.nodeID)
+		}
+		if tc.want {
+			if n.Summary == "" {
+				t.Errorf("%s: Summary is empty, want deterministic", tc.label)
+			}
+			// THE CATCHER: a Summary-only node still fails the server's
+			// `n.Keywords == ""` gate, re-enters the summary gap set, and
+			// delivers zero saving while looking correct everywhere else.
+			if n.Keywords == "" {
+				t.Errorf("%s: Keywords is empty, want deterministic", tc.label)
+			}
+			continue
+		}
+		if n.Summary != "" {
+			t.Errorf("%s: Summary = %q, want empty", tc.label, n.Summary)
+		}
+		if n.Keywords != "" {
+			t.Errorf("%s: Keywords = %q, want empty", tc.label, n.Keywords)
+		}
 	}
 }

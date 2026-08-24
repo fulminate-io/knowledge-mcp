@@ -66,6 +66,10 @@ type fakeRepairDeps struct {
 	// show zero scans while paying two RPCs per graph per pass, which is most of the
 	// load the demotion exists to remove.
 	embeddedReads map[segmentGraphRef]int
+	// evicted marks graphs whose segment pool the residency budget has unloaded. Its
+	// zero value is NOT evicted, which is what every landed case assumes: an empty map
+	// leaves the residency gate open and the arm reachable exactly as before.
+	evicted map[segmentGraphRef]bool
 }
 
 func newFakeRepairDeps() *fakeRepairDeps {
@@ -78,6 +82,7 @@ func newFakeRepairDeps() *fakeRepairDeps {
 		repairState:        map[segmentGraphRef]segmentdist.RepairState{},
 		horizonReads:       map[segmentGraphRef]int{},
 		mergeWatermark:     map[segmentGraphRef]int64{},
+		evicted:            map[segmentGraphRef]bool{},
 	}
 }
 
@@ -106,6 +111,8 @@ func (f *fakeRepairDeps) Repair(_ context.Context, g segmentGraphRef) (tools.Rep
 	}
 	return f.outcome, nil
 }
+
+func (f *fakeRepairDeps) Evicted(g segmentGraphRef) bool { return f.evicted[g] }
 
 func (f *fakeRepairDeps) BreakerAllows(segmentGraphRef) bool { return f.allow }
 

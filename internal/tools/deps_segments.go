@@ -152,6 +152,15 @@ type SegmentShipper interface {
 	// past ids the record never learned would mean those ids are never scanned
 	// again, and the window they describe would silently reopen.
 	SaveRebuildState(gt kgtypes.GraphType, name string, watermarkNanos int64, tombstoned []searchengine.ExternalID) error
+	// LoadMergeWatermark reads the OTHER client-side consumer's durable position:
+	// the delta-merge horizon. It is here so the retention floor can be taken
+	// across BOTH consumers of the erase feed before any scan reports a position
+	// to the server — see retentionFloorFor.
+	//
+	// CLIENT-INTERNAL, NOT WIRE. This widens a Go interface the client owns; the
+	// request field the floor is written into already exists on the wire and is
+	// unchanged.
+	LoadMergeWatermark(gt kgtypes.GraphType, name string) (int64, error)
 	// SetGraphTombstones hands the live set to the segment engines, so every Import
 	// seeds those ids dead and a blob shipped BEFORE a delete cannot resurrect the
 	// removed node. The driver is the producer: it is what reads the delete feed.
@@ -294,6 +303,16 @@ type SegmentCoverageReader interface {
 	// collector documents itself as keeping cheap; ok=false is rendered as the honest
 	// "not verified this process" answer rather than as a degradation.
 	RepairVerification(gt kgtypes.GraphType, name string) (RepairVerification, bool)
+	// LoadRebuildState / LoadMergeWatermark expose THIS CLIENT'S OWN consumer
+	// positions so the status row can render how long since each last advanced.
+	//
+	// THEY ANSWER THE HALF THE SERVER CANNOT. The server's backlog counters say how
+	// much is piling up; only the client knows whether ITS consumers are still
+	// moving — and a consumer that stops arriving is exactly the case the
+	// arrival-driven stall alarm structurally cannot report. Both are local reads,
+	// no RPC and no proto, which keeps the column's local-read contract intact.
+	LoadRebuildState(gt kgtypes.GraphType, name string) (watermarkNanos int64, tombstoned []searchengine.ExternalID, err error)
+	LoadMergeWatermark(gt kgtypes.GraphType, name string) (int64, error)
 }
 
 // RepairVerification is the coverage column's view of the backstop's per-graph

@@ -55,7 +55,7 @@ func (c *backfillFakeCaller) Execute(_ context.Context, req *knowledgev1.Execute
 	}
 	if q.GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_EDGES {
 		c.edgeReads++
-		return &knowledgev1.ExecuteResponse{Edges: c.edges}, nil
+		return &knowledgev1.ExecuteResponse{Edges: bandNarrow(c.edges, q)}, nil
 	}
 	switch q.GetSelection().GetNodeType() {
 	case string(kgtypes.NodeThought):

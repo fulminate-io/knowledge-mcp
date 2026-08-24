@@ -306,7 +306,7 @@ func (f *fakeGraphCaller) Execute(_ context.Context, req *knowledgev1.ExecuteReq
 	// which renders identically to the pre-fix bug.
 	if id == "" && len(q.GetIds()) > 0 {
 		if q.GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_EDGES {
-			return f.execBulkEdges(q.GetIds())
+			return f.execBulkEdges(q)
 		}
 		if q.GetReturnMode() != knowledgev1.ReturnMode_RETURN_MODE_TRAVERSAL &&
 			q.GetReturnMode() != knowledgev1.ReturnMode_RETURN_MODE_GRAPH_NAMES {
@@ -317,7 +317,7 @@ func (f *fakeGraphCaller) Execute(_ context.Context, req *knowledgev1.ExecuteReq
 		// Serve seeded incident edges (render.IterEdges) when configured — the
 		// typed edges carrier render.decodeCarrierEdges decodes (with full metadata).
 		if edges, ok := f.edgesByID[id]; ok && len(edges) > 0 {
-			return &knowledgev1.ExecuteResponse{Edges: edges}, nil
+			return &knowledgev1.ExecuteResponse{Edges: bandNarrow(edges, q)}, nil
 		}
 		return &knowledgev1.ExecuteResponse{}, nil
 	}
@@ -405,12 +405,14 @@ func (f *fakeGraphCaller) Stats(_ context.Context, req *knowledgev1.StatsRequest
 // the seeded incident edges over every requested id. Reuses edgesByID — the
 // plural read is the same seed viewed through a different selector. Edge-TYPE
 // filtering stays client-side, which is where the charge readout already does it.
-func (f *fakeGraphCaller) execBulkEdges(ids []string) (*knowledgev1.ExecuteResponse, error) {
+// It takes the whole plan rather than just the ids because the answer must also
+// honor the plan's from_id band.
+func (f *fakeGraphCaller) execBulkEdges(q *knowledgev1.QueryPlan) (*knowledgev1.ExecuteResponse, error) {
 	var union []*knowledgev1.Edge
-	for _, id := range ids {
+	for _, id := range q.GetIds() {
 		union = append(union, f.edgesByID[id]...)
 	}
-	return &knowledgev1.ExecuteResponse{Edges: union}, nil
+	return &knowledgev1.ExecuteResponse{Edges: bandNarrow(union, q)}, nil
 }
 
 // execBulkHydrate answers a PLURAL-Ids default-mode read by decoding each

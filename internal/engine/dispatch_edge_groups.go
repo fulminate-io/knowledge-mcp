@@ -69,8 +69,8 @@ func EnrichCandidateGroups(
 	// STEP B — ONE bounded pivot-edge read over the distinct sources.
 	sort.Strings(incompleteSources) // deterministic request shape
 	siblings, err := paging.DrainPivotEdges(incompleteSources, paging.EdgePivotPageSize, CorrelationsEdgeScanCap,
-		func(idPage []string) ([]knowledgev1.Edge, error) {
-			return pivotEdgePage(ctx, exec, idPage, false, target)
+		func(idPage []string, fromIDGte, fromIDLt string) ([]knowledgev1.Edge, bool, error) {
+			return pivotEdgePage(ctx, exec, idPage, paging.EdgeFromBandOrNil(fromIDGte, fromIDLt), false, target)
 		})
 	if err != nil {
 		return groups, nil, err

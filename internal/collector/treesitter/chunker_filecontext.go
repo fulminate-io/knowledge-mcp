@@ -66,7 +66,7 @@ func (c *Chunker) extractFileContext(root *sitter.Node, src []byte, filePath str
 				importPath := cap.Node.Content(src)
 				// Strip quotes from Go import paths.
 				importPath = strings.Trim(importPath, "\"'`")
-				ctx.Imports = append(ctx.Imports, importPath)
+				ctx.Imports = append(ctx.Imports, ImportSite{Specifier: importPath})
 			}
 		}
 	}

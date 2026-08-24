@@ -51,10 +51,10 @@ func (scopeProvenanceFake) Execute(_ context.Context, req *knowledgev1.ExecuteRe
 	if q == nil || q.GetReturnMode() != knowledgev1.ReturnMode_RETURN_MODE_EDGES {
 		return &knowledgev1.ExecuteResponse{}, nil
 	}
-	return &knowledgev1.ExecuteResponse{Edges: []*knowledgev1.Edge{
+	return &knowledgev1.ExecuteResponse{Edges: bandNarrow([]*knowledgev1.Edge{
 		{Type: "relates-to", FromId: "leafA", ToId: "m1"},
 		{Type: "relates-to", FromId: "leafB", ToId: "n1"},
-	}}, nil
+	}, q)}, nil
 }
 
 // TestLeafAttachment_NoCandidates_ZeroScans is the incrementality gate: a warm pass

@@ -21,6 +21,17 @@ import (
 // writers — porting the generic family covers the logs structural shape too,
 // but this composer drives only the non-logs path (logs is owned by
 // InterceptLogsQuery earlier in the chain).
+//
+// Edge.Method POPULATIONS ARE KEYED BY EDGE TYPE.
+//
+// The correlations table has a method column, and these renderers are
+// graph-neutral — correlations run on non-logs graphs too — so a code-graph edge
+// reaches this column. Method holds several populations keyed by the edge type
+// carrying them, with kgtypes (edge_types.go) as the vocabulary source, so the
+// column shows whichever population the row's edge carries: a group kind is
+// suppressed below because the group block states it, and every other value —
+// a bound reference edge's resolution rung today, whatever a further edge type
+// gains later — renders as the ordinary method with no edit here.
 
 // The correlations bounds. CorrelationsEdgeScanCap bounds the WORK (edges the
 // composer asks the server for); the row caps bound the OUTPUT (rows rendered).

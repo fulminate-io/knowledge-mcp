@@ -16,6 +16,28 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine/formats/hnsw"
 )
 
+// constructionGate is one graph+format's construction record: the engine, plus a
+// channel closed once the seed that fills it has finished.
+//
+// IT EXISTS BECAUSE PUBLISHING AND BEING READY ARE DIFFERENT MOMENTS. A
+// constructor must store its engine into the memo BEFORE running the seed, or
+// every other graph's construction blocks behind this one's corpus copy; but a
+// caller that finds that entry and searches drives load(), which latches its
+// resident set ONCE and would latch on a partially copied engine. The branch then
+// serves a partial corpus for the life of the process, with no error anywhere —
+// and nothing can detect it after the fact, because a latch on an incomplete set
+// looks exactly like a latch on a complete one.
+//
+// The gate makes the entry PUBLISHED-BUT-NOT-YET-READY expressible: waiters take
+// the same instance every other caller gets, and what they wait for is the seed.
+// A completed entry's channel is already closed, so the wait on it is immediate
+// and the steady state is the same map hit it always was — which is why one
+// branch serves both the completed and the in-flight case.
+type constructionGate[Q any, S any] struct {
+	dm   *distManager[Q, S]
+	done chan struct{}
+}
+
 // managerFor lazily constructs (check-construct-store under the mutex) the
 // per-graph distManager: a SegmentedIndex over the HNSW format, a segment source
 // selected by the login gate (GCS when logged in, L2-local otherwise) for the
@@ -39,21 +61,40 @@ import (
 // merge across the boundaries it maintains. format.Merge is untouched — only the
 // automatic trigger is off — and OnMerge stays wired, so a merge this package
 // drives still reclaims the superseded constituents from the L2 cache.
+//
+// THE BRANCH SEED RUNS AFTER THE LOCK IS RELEASED, and that placement is chosen
+// rather than incidental. Construction holds m.mu, which serializes EVERY graph's
+// construction; holding it across a bounded-parallel file copy — and, on the cloud
+// rail, across the upload that follows — would put every other graph's first
+// search behind this one's corpus copy. So the lock covers the map
+// check-and-store only, and the seed runs on the released path just before the
+// return. It is reached only for a branch-qualified name, and only once per
+// process per graph because it sits after the memo check.
 func (m *Manager) managerFor(gt kgtypes.GraphType, name string) *distManager[[]byte, struct{}] {
 	hnswFormat := hnsw.New()
 	k := graphKey{graphType: gt, graphName: name}
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	if dm, ok := m.managers[k]; ok {
-		return dm
+	if gate, ok := m.managers[k]; ok {
+		// RELEASE THE LOCK BEFORE WAITING. Waiting under m.mu would put every other
+		// graph's construction behind this one's corpus copy — the exact coupling the
+		// off-the-lock seed placement exists to avoid. A completed gate is already
+		// closed, so this is an immediate return for the ordinary memo hit.
+		m.mu.Unlock()
+		<-gate.done
+		return gate.dm
 	}
 
 	target := graphSelector(gt, name)
 	// Build the cache FIRST so the login gate can hand the OSS-local source its L2
 	// backing (the localSegmentSource is L2-only). newSegmentSource picks
 	// gcs-vs-local by the caller's live login state.
-	cache := newDiskSegmentCache(graphCacheDirFor(m.cacheDir, gt, name, hnswFormat.Name()), m.maxBytes)
+	cache := newDiskSegmentCache(graphCacheDirFor(m.cacheDir, gt, name, hnswFormat.Name()), m.maxBytes, hnswReadAdvice)
 	source := m.newSegmentSource(cache, gt, name, target, hnswFormat.Name())
+	// One-time reclamation of the tree the version-carrying format name retired,
+	// mirroring bm25ManagerFor. It runs AFTER the cache is constructed and BEFORE
+	// the engine: the docker segment-integrity arm relies on that ordering. The
+	// marker is HNSW's own, so this reclaim and BM25's cannot suppress each other.
+	removeRetiredTree(m.cacheDir, retiredHNSWTree, hnswFormat.Name(), retiredHNSWMarker)
 
 	// var-before-assign: the OnMerge closure back-references the distManager that is
 	// constructed AFTER the engine. Safe because OnMerge cannot fire before the
@@ -80,7 +121,7 @@ func (m *Manager) managerFor(gt kgtypes.GraphType, name string) *distManager[[]b
 	// Record every LANDED manifest swap's fingerprint so the off-hot-path
 	// completeness reconcile can gate its source read on a local comparison. BOTH
 	// HNSW maps route through here, so the embed and the deterministic engine both
-	// record — correctly, since they publish the SAME (graph, "hnsw") manifest and
+	// record — correctly, since they publish the SAME (graph, HNSW) manifest and
 	// whichever swapped last is the current one.
 	dm.onManifestPublished = func(ids []searchengine.SegmentID) {
 		if err := m.saveManifestFingerprint(gt, name, hnswFormat.Name(), fingerprintOf(ids)); err != nil {
@@ -91,7 +132,22 @@ func (m *Manager) managerFor(gt kgtypes.GraphType, name string) *distManager[[]b
 	// Seed every import from the owner's live tombstone set, read at import time
 	// rather than captured, so ids learned after this engine was built still apply.
 	dm.tombstoneSeed = func() []searchengine.ExternalID { return m.graphTombstones(gt, name) }
-	m.managers[k] = dm
+	gate := &constructionGate[[]byte, struct{}]{dm: dm, done: make(chan struct{})}
+	m.managers[k] = gate
+	m.mu.Unlock()
+	// THE CLOSE IS DEFERRED, AND THAT IS THE WHOLE SAFETY ARGUMENT. A gate left
+	// open by a seed that errors or panics strands every waiter forever, which
+	// turns a partial corpus into a hung daemon — strictly worse than the defect
+	// this gate fixes. A failed seed must still publish a usable manager, which is
+	// what seedBranchAtConstruction is already built for: it logs at Error and
+	// returns, and the branch rebuilds from the server instead.
+	defer close(gate.done)
+
+	// SeedBranchBucketFromBase, off the lock: a new branch starts from base's
+	// published partitions instead of streaming its whole corpus back down. THIS
+	// engine's own cache is the copy destination, so what the seed writes is what
+	// this engine reads.
+	m.seedBranchAtConstruction(gt, name, hnswFormat.Name(), cache)
 	return dm
 }
 
@@ -102,19 +158,34 @@ func (m *Manager) managerFor(gt kgtypes.GraphType, name string) *distManager[[]b
 // HNSW and BM25 blobs never collide on the content-hash filename space. Mirrors
 // managerFor; the only differences are the format type parameters and the format
 // tag on the cache dir.
+//
+// It seeds its OWN format's bucket after the lock, on the same reasoning
+// managerFor records: the two formats carry separate manifests over the same
+// nodes, so a seed wired into only one leaves the other rebuilding from scratch
+// and a completeness gate reading one format full and the other empty.
 func (m *Manager) bm25ManagerFor(gt kgtypes.GraphType, name string) *distManager[bm25.Query, *bm25.CorpusStats] {
 	k := graphKey{graphType: gt, graphName: name}
 	m.mu.Lock()
-	defer m.mu.Unlock()
-	if dm, ok := m.bm25Managers[k]; ok {
-		return dm
+	if gate, ok := m.bm25Managers[k]; ok {
+		// Same release-then-wait as managerFor, and for the same reason: a wait held
+		// under m.mu would serialize every graph's construction behind this seed. The
+		// two maps are independent, so a branch has a gate in each and each closes
+		// when ITS OWN format's seed finishes.
+		m.mu.Unlock()
+		<-gate.done
+		return gate.dm
 	}
 
 	target := graphSelector(gt, name)
 	// Build the cache FIRST so the capability gate can hand the OSS-local source its
 	// L2 backing (mirrors hnswManagerFor).
-	cache := newDiskSegmentCache(graphCacheDirFor(m.cacheDir, gt, name, bm25.New().Name()), m.maxBytes)
+	cache := newDiskSegmentCache(graphCacheDirFor(m.cacheDir, gt, name, bm25.New().Name()), m.maxBytes, bm25ReadAdvice)
 	source := m.newSegmentSource(cache, gt, name, target, bm25.New().Name())
+	// One-time reclamation of the tree the version-carrying format name retired.
+	// Guarded by a marker so it runs once and never re-scans, and it declines
+	// until the replacement directory exists. The marker is BM25's own, so this
+	// reclaim and HNSW's cannot suppress each other.
+	removeRetiredTree(m.cacheDir, retiredBM25Tree, bm25.New().Name(), retiredTreeMarker)
 
 	// var-before-assign OnMerge: the BM25 engine is embed-only (no deterministic
 	// variant), so it always auto-reclaims superseded constituents from its live L2
@@ -145,8 +216,114 @@ func (m *Manager) bm25ManagerFor(gt kgtypes.GraphType, name string) *distManager
 	// the same nodes and carries its own manifest, so a pre-delete BM25 blob
 	// resurrects a removed node exactly as a vector blob would.
 	dm.tombstoneSeed = func() []searchengine.ExternalID { return m.graphTombstones(gt, name) }
-	m.bm25Managers[k] = dm
+	gate := &constructionGate[bm25.Query, *bm25.CorpusStats]{dm: dm, done: make(chan struct{})}
+	m.bm25Managers[k] = gate
+	m.mu.Unlock()
+	// Deferred for the reason managerFor states: a seed that errors or panics must
+	// still release its waiters, or a partial corpus becomes a hung daemon.
+	defer close(gate.done)
+
+	// SeedBranchBucketFromBase, off the lock, for THIS format's bucket — and with
+	// THIS format's own cache. The L2 cache is rooted per-format precisely so HNSW
+	// and BM25 blobs cannot collide on the content-hash filename space, so passing
+	// the other format's instance would point the copy at the wrong directory.
+	m.seedBranchAtConstruction(gt, name, bm25.New().Name(), cache)
 	return dm
+}
+
+// Close releases the background worker every per-graph engine this Manager owns.
+//
+// IT IS THE OTHER HALF OF THE TWO CONSTRUCTORS ABOVE. Each of them calls
+// searchengine.New, and New starts a merger goroutine that no other event ever
+// stops: the engines are memoized per (graph type, graph name) and this package
+// removes an entry from neither map, so without this method every engine the
+// process ever constructed keeps a mergeTickInterval ticker alive until the
+// process dies. Eviction is deliberately NOT that half — evictResident unloads a
+// pool's segments but keeps the engine, because an evicted pool re-materializes
+// on its next consumer touch and Close is one-way (stopOnce), so closing there
+// would leave the revived pool with no merger.
+//
+// It is idempotent and it does NOT wait on the construction gates. A gate still
+// running its seed has an engine already stored, so closing that engine is the
+// same operation as closing a settled one; waiting instead would put shutdown
+// behind a corpus copy, which is the coupling the off-the-lock seed placement
+// exists to avoid. A closed Manager is not meant to be reused — the maps are
+// left as they are so a post-Close read still reports what this process built.
+func (m *Manager) Close() {
+	m.mu.Lock()
+	hnswEngines := make([]*searchengine.SegmentedIndex[[]byte, struct{}], 0, len(m.managers))
+	for _, gate := range m.managers {
+		hnswEngines = append(hnswEngines, gate.dm.engine)
+	}
+	bm25Engines := make([]*searchengine.SegmentedIndex[bm25.Query, *bm25.CorpusStats], 0, len(m.bm25Managers))
+	for _, gate := range m.bm25Managers {
+		bm25Engines = append(bm25Engines, gate.dm.engine)
+	}
+	m.mu.Unlock()
+
+	// Off the lock: Close takes no lock of this package's, but holding m.mu across
+	// it would serialize shutdown against any construction still in flight.
+	for _, e := range hnswEngines {
+		e.Close()
+	}
+	for _, e := range bm25Engines {
+		e.Close()
+	}
+	slog.Info("segmentdist: closed the per-graph segment engines",
+		"hnsw_engines", len(hnswEngines), "bm25_engines", len(bm25Engines))
+}
+
+// baseNameOfBranch splits a branch-qualified graph name into the base name it
+// derives from. It returns ok=false for a name that is not branch-qualified.
+//
+// The base name is DERIVED from the branch name rather than threaded in as a
+// second parameter, because the constructors are keyed by one graph name and a
+// second parameter would let a caller pair a branch with the wrong base.
+func baseNameOfBranch(name string) (string, bool) {
+	base, _, ok := strings.Cut(name, "@")
+	if !ok || base == "" {
+		return "", false
+	}
+	return base, true
+}
+
+// seedBranchAtConstruction runs the branch seed for one freshly-constructed
+// per-graph engine. Both constructors call it with their own format.
+//
+// A FAILED SEED IS LOGGED, NOT FATAL, and the reason is what the seed IS: a cost
+// optimization over a correctness path that stays intact. When it does not run,
+// the rebuild axis refills the branch from the server exactly as it does today —
+// the branch is correct, just more expensive to populate. Failing engine
+// construction instead would take search down for that graph over a file copy.
+// It is logged at ERROR rather than WARN because the accepted cost of this
+// ticket was bought with this copy, and a copy that silently stopped happening
+// would look like the feature working.
+// THE CACHE IS THE CALLER'S, and each constructor passes its OWN format-scoped
+// instance. It is the copy destination and the ship's read source, which is what
+// makes a seed visible to the engine that triggered it rather than only after a
+// restart: a diskSegmentCache indexes its directory once at construction, so a
+// copy landing in any other instance leaves this engine's view empty.
+func (m *Manager) seedBranchAtConstruction(gt kgtypes.GraphType, name, format string, cache *diskSegmentCache) {
+	base, ok := baseNameOfBranch(name)
+	if !ok {
+		return
+	}
+	ctx := context.Background()
+	seeded, err := m.SeedBranchBucketFromBase(ctx, gt, base, name, format, cache)
+	if err != nil {
+		slog.Error("segmentdist: branch segment seed failed — this branch will rebuild its segments from the "+
+			"server instead of reusing base's, which is correct but costs a full corpus stream",
+			"graph_type", gt, "base", base, "branch", name, "format", format, "err", err)
+		return
+	}
+	// The copy alone is the whole seed on the OSS rail. On the cloud rail the
+	// bytes must also exist under the BRANCH's own object key before anything can
+	// publish them, which is what this second half does.
+	if err := m.seedShipAndPublish(ctx, gt, name, format, seeded, cache); err != nil {
+		slog.Error("segmentdist: seeded branch partitions could not be shipped and published — the branch keeps "+
+			"reading through the two-pool union and rebuilds from the server",
+			"graph_type", gt, "base", base, "branch", name, "format", format, "err", err)
+	}
 }
 
 // graphCacheDirFor roots one graph's per-format L2 cache under

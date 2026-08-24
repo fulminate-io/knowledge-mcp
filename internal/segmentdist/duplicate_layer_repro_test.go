@@ -115,6 +115,12 @@ var twoLayerBlobs = sync.OnceValue(func() []searchengine.SegmentBlob {
 
 		src := newSharedServerFake().viewFor(&knowledgev1.GraphSelector{}, "")
 		mgr := NewManager(loginStateStub{loggedIn: true}, dir, 0, withSegmentSource(src))
+		// Closed here rather than registered with a test, because this builder runs
+		// under a package-level sync.OnceValue and has no test to attach to. Close
+		// retires the engines' background mergers ONLY — the returned distManager's
+		// engine is still Imported from and Exported below, and neither reads the
+		// stop channel Close closes.
+		defer mgr.Close()
 		if err := mgr.ReplaceBucket(ctx, gt, dupLayerName, nil, dupLayerDocs(dupLayerCorpus, salt)); err != nil {
 			panic(err)
 		}
@@ -150,7 +156,7 @@ func twoLayerFixture(t *testing.T) (*Manager, *distManager[[]byte, struct{}], []
 	require.Equal(t, 8, searchengine.BucketCountFor(dupLayerCorpus), "layout count")
 
 	_, gc := newSegmentHarness(t)
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 	dm := mgr.managerFor(gt, dupLayerName)
 	require.NoError(t, dm.engine.Import(twoLayerBlobs(), nil))
 

@@ -13,6 +13,7 @@ import (
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
+	"github.com/fulminate-io/knowledge-mcp/internal/searchengine/formats/hnsw"
 )
 
 // TestRestartShipDoesNotPruneFullCorpus is the load-bearing restart proof. It
@@ -43,7 +44,7 @@ func TestRestartShipDoesNotPruneFullCorpus(t *testing.T) {
 	// batch of MinSegmentDocs (searchCorpusN) vectors is force-sealed, and the tick
 	// re-emits the accumulated corpus into partitions and ships them.
 	const corpusSegs = 3
-	p1 := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	p1 := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 	for b := range corpusSegs {
 		batch := hnswVecDocs(searchCorpusN)
 		for i := range batch {
@@ -59,7 +60,7 @@ func TestRestartShipDoesNotPruneFullCorpus(t *testing.T) {
 	// distManager has locallyShipped EMPTY; ensureShippedSeeded seeds shippedIDs
 	// from the full server List(0) on the first ship.
 	cc2 := gc.server.viewFor(&knowledgev1.GraphSelector{}, "")
-	p2 := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(cc2))
+	p2 := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(cc2)))
 
 	// A SINGLE write plus its tick, BEFORE any Search/VectorByID load().
 	tail := hnswVecDocs(searchCorpusN)
@@ -109,7 +110,7 @@ func TestRebuildReplacesDegeneratePoolPrunesOld(t *testing.T) {
 	// Process 1: ship a degenerate old corpus via the embed HNSW path. One sealed
 	// segment of MinSegmentDocs vectors is the "old pool" the rebuild will replace.
 	oldDocs := hnswVecDocs(searchCorpusN)
-	p1 := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	p1 := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 	require.NoError(t, p1.AddAndMarkDirty(ctx, kgtypes.GraphCode, "rebuildRepo", oldDocs))
 	require.NoError(t, p1.ReEmitDirtyBuckets(ctx, kgtypes.GraphCode, "rebuildRepo"))
 	oldIDs := shippedHNSWIDs(svc)
@@ -118,7 +119,7 @@ func TestRebuildReplacesDegeneratePoolPrunesOld(t *testing.T) {
 	// Process 2: RESTART. Fresh Manager runs the DETERMINISTIC rebuild of the SAME
 	// graph with a DIFFERENT corpus, producing byte-different deterministic ids.
 	rebuildDocs := hnswVecDocs(searchCorpusN + 32)
-	p2 := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	p2 := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 	require.NoError(t, p2.StageRebuildPartition(ctx, kgtypes.GraphCode, "rebuildRepo", rebuildDocs, nil))
 	res, err := p2.FinalizeRebuild(ctx, kgtypes.GraphCode, "rebuildRepo")
 	require.NoError(t, err)
@@ -147,10 +148,10 @@ func TestLegitimateMergePruneStillWorks(t *testing.T) {
 
 	// MinSegmentDocs=1 → each Add seals one segment; SegmentCountTarget=4 → the
 	// background merger consolidates once more than 4 accumulate.
-	eng := searchengine.New[mockQuery, mockStats](mockFormat{}, searchengine.Options{
+	eng := closeOnCleanup(t, searchengine.New[mockQuery, mockStats](mockFormat{}, searchengine.Options{
 		MinSegmentDocs:     1,
 		SegmentCountTarget: 4,
-	})
+	}))
 	defer eng.Close()
 	mgr, cc := buildManager(eng, gc, target, t.TempDir())
 
@@ -207,7 +208,7 @@ func TestPostLoadCorpusMergeLeakIsBoundedThenRebuildPrunes(t *testing.T) {
 
 	// Process 1 ships a multi-segment corpus.
 	const corpusN = 6
-	p1Eng := searchengine.New[mockQuery, mockStats](mockFormat{}, searchengine.Options{MinSegmentDocs: 1})
+	p1Eng := closeOnCleanup(t, searchengine.New[mockQuery, mockStats](mockFormat{}, searchengine.Options{MinSegmentDocs: 1}))
 	defer p1Eng.Close()
 	p1Mgr, _ := buildManager(p1Eng, gc, target, t.TempDir())
 	for i := range corpusN {
@@ -222,10 +223,10 @@ func TestPostLoadCorpusMergeLeakIsBoundedThenRebuildPrunes(t *testing.T) {
 	// Process 2 (restart): fresh engine that MERGES on load. SegmentCountTarget=2
 	// so loading the >2 corpus segments triggers the in-process merger to
 	// consolidate corpus ids the fresh process never shipped (not in locallyShipped).
-	p2Eng := searchengine.New[mockQuery, mockStats](mockFormat{}, searchengine.Options{
+	p2Eng := closeOnCleanup(t, searchengine.New[mockQuery, mockStats](mockFormat{}, searchengine.Options{
 		MinSegmentDocs:     1,
 		SegmentCountTarget: 2,
-	})
+	}))
 	defer p2Eng.Close()
 	p2Mgr, cc2 := buildManager(p2Eng, gc, target, t.TempDir())
 
@@ -292,7 +293,7 @@ func TestRestartLoadImportsFullCorpusAfterShip(t *testing.T) {
 	// batch of searchCorpusN (== MinSegmentDocs) vectors is force-sealed, and the
 	// tick re-emits the accumulated corpus into partitions and ships them.
 	const corpusSegs = 3
-	p1 := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	p1 := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 	for b := range corpusSegs {
 		batch := hnswVecDocs(searchCorpusN)
 		for i := range batch {
@@ -309,7 +310,7 @@ func TestRestartLoadImportsFullCorpusAfterShip(t *testing.T) {
 	// shippedGen to the server-stamped gen N, leaving importedGen at 0 (the cursor
 	// split: ship does NOT poison the load floor). Half a threshold keeps T inside a
 	// SINGLE partition so the double-import check below counts one tail, not several.
-	p2 := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	p2 := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 	tail := hnswVecDocs(searchCorpusN / 2)
 	for i := range tail {
 		tail[i].ID = fmt.Sprintf("tail-%s", tail[i].ID)
@@ -375,7 +376,7 @@ func shippedHNSWIDs(svc *sharedServerFake) map[string]struct{} {
 	ids := map[string]struct{}{}
 	for _, blobs := range svc.byKey {
 		for _, b := range blobs {
-			if b.GetFormat() == "hnsw" {
+			if b.GetFormat() == hnsw.New().Name() {
 				ids[b.GetId()] = struct{}{}
 			}
 		}

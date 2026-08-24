@@ -13,7 +13,7 @@ func ManageToolDef() kgtools.MCPTool {
 		Name: "manage",
 		Description: "Unified server and graph lifecycle management tool. " +
 			"status: show graph stats plus a per-graph durable LLM-coverage table (total / summarized / embedded / summary-fail / embed-fail per sync-eligible graph); the pipeline runtime counters in the same output are process-lifetime (reset on restart / clear_llm_failures), NOT durable coverage. " +
-			"pprof_start / pprof_stop: bracket a CPU profile of the knowledge stdio client (where collectors run). pprof_start lazily brings up the loopback pprof endpoint (127.0.0.1:15021); pprof_stop returns a URL to fetch the profile (go tool pprof http://127.0.0.1:15021/debug/pprof/capture). Both are handled client-side by the stdio binary. " +
+			"pprof_start / pprof_stop: bracket a CPU profile of the knowledge client (where collectors run). pprof_start lazily brings up the loopback pprof endpoint (127.0.0.1:15021); pprof_stop returns a URL to fetch the profile (go tool pprof http://127.0.0.1:15021/debug/pprof/capture). Both are handled client-side by the knowledge binary. " +
 			"delete_branch: remove a branch overlay index. list_branches: list indexed branch overlays. " +
 			"link: run cross-graph linking (image, Helm, Dockerfile signals) to create code-to-cloud edges. " +
 			"configure_log_backend: create-or-update a log_backend node (name, provider, url, auth_type, credential, kube_context). " +

@@ -1,0 +1,90 @@
+head_baseline_commit=615a4c64601dd19e22fea582f8a18628db3eb6bc
+baseline_arm_off_allocs=4013
+baseline_arm_on_allocs=7201
+baseline_ratio=1.7944
+baseline_arm_off_ns=8462464
+baseline_arm_on_ns=8506231
+baseline_walk_allocs=2041
+digest_knowledge_baseline=419c8197fac575aa5dd17e72662302c98a1c0b5c349910d5bf90a06a1dc0204f
+digest_agent_baseline=af43d71cbfbcaab5f2682f8e0a3cc453847a56662ddca0f6444c37d29df0466d
+digest_knowledge_lines=131300
+digest_agent_lines=108058
+candidate_c1_allocs=5447
+candidate_c1_walk_allocs=287
+candidate_c2_allocs=5447
+candidate_c3_allocs=7201
+candidate_c4_allocs=5445
+winner=c1+c4
+ratchet_multiple=1.41
+
+# Go qualifier-type / type-facts arm allocation measurement record.
+# darwin/arm64, Apple M4 Max, 16 procs, go1.26.4.
+# Every number below was re-derived by running the instrument on this machine;
+# none is copied from the plan.
+#
+# WHICH BASE EACH CANDIDATE KEY RECORDS. The plan fixed only C4's ("record
+# candidate_c4_allocs as the on-top-of-C1 figure"). c1, c2 and c3 record the
+# candidate measured ALONE against the HEAD arm shape, so the selection rule -
+# "a candidate is KEPT when it reduces BenchmarkChunkFile/arm_on allocs/op
+# below baseline_arm_on_allocs" - reads each candidate's OWN reduction. C3 is
+# the key that makes the distinction matter: measured on top of C1 it reads
+# 5447, which is C1's reduction and not C3's, and would have kept a candidate
+# that reduces nothing.
+#
+# FOUR-CANDIDATE COMPARISON. allocs/op and ns/op on both instruments.
+#
+#   candidate      arm_on      arm_on ns     walk        walk ns    identity
+#                  allocs/op   (mean)        allocs/op   (mean)     (both corpora)
+#   -------------  ----------  ------------  ----------  ---------  -------------
+#   baseline       7201        8506231       2041        277853     (is the baseline)
+#   C1 alone       5447        8468091       287         253214     MATCH
+#   C2 alone       5447        8695892       287         285893     ties C1 exactly
+#   C3 alone       7201        8371734       2041        273804     MATCH
+#   C4 on C1       5445        8666462       285         255349     MATCH
+#   C1+C4 (kept)   5445        8666462       285         255349     MATCH
+#
+# READ THE ns/op COLUMN WITH CARE AND DO NOT RANK CANDIDATES BY IT. Each figure
+# is the mean of that candidate's own run batch (n=1 for the baseline, n=2 for
+# C2 and C3, n=3 for C1 and C4), and the batches were taken minutes apart on a
+# machine doing other work: the SAME kept tree measured 8425512 in one batch and
+# 8666462 in another, a 2.9% spread that is larger than most of the differences
+# between rows. The ALLOCATION columns are the trustworthy ones - they were
+# IDENTICAL on every repeat of every candidate, to the allocation - which is
+# exactly why the budget this ticket ratchets is a ratio of allocations and not
+# of time, and why the ns/op ceiling is left at its untouched 1.25x.
+#
+# SELECTION, applied mechanically to the numbers above.
+#   C1 KEPT  - 5447 < 7201, digests match. The whole reduction is the per-node
+#              cgo C-string conversion the walk paid for Node.Type().
+#   C2 NEVER KEPT by the rule, and the measurement says why rather than the
+#              reasoning: it ties C1 exactly on both instruments (5447 / 287)
+#              because Type() allocates INSIDE the binding
+#              (bindings.go:455, C.GoString(C.ts_node_type)), so there is
+#              nothing left to intern; the only key obtainable is Symbol()
+#              (bindings.go:450, a scalar), and holding Symbol() the string is
+#              not needed at all. It is C1 plus a map hash. It is rejected on
+#              the rule (a redundant second spelling of one mechanism), not on
+#              the ns/op column, which is too noisy between batches to rank on.
+#   C3 NOT KEPT - 7201, which is the baseline exactly. Zero allocation
+#              reduction. A visit census over 3,364 Go files measured why: of
+#              2,406,853 named-node visits under full recursion, a conservative
+#              denylist of kinds that provably cannot contain a func_literal,
+#              var_declaration, const_declaration or short_var_declaration
+#              skips 5,095 nodes - 0.21%. The denylisted kinds are already
+#              leaves. Identity was MATCH on both corpora, so C3 is safe; it is
+#              simply worth nothing.
+#   C4 KEPT  - 5445 < 7201, digests match. Two allocations, from the 2 of 13
+#              declarations in the benchmark input that bind nothing.
+#
+# WINNER = c1+c4. Ratio 5445/4013 = 1.3568, down from 1.7944.
+#
+# RATCHET DERIVATION, by the plan's rule: the measured arm_on/arm_off allocs
+# ratio from a fresh BenchmarkChunkFile run on the final tree, rounded UP to two
+# decimal places, plus 0.05 absolute headroom. 1.3568 -> 1.36 -> 1.41.
+# arm_off reads 4013 on most runs and 4014 on some; both ratios (1.35684 and
+# 1.35650) round up to 1.36, so the jitter does not reach the multiple. This
+# value is declared HERE ONCE and read from here by the standing chunk-time and
+# allocation budget gate, which no longer carries its own copy of the number.
+# That gate FAILS LOUDLY when this file or this key is absent - it has no skip
+# branch, because a standing ceiling that passes on a tree without the artifact
+# is a ceiling measuring nothing.

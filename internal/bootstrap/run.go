@@ -4,17 +4,17 @@ package bootstrap
 
 import (
 	"fmt"
+	"io"
 	"log/slog"
 	"math"
 	"os"
 	"runtime/debug"
 )
 
-// defaultClientMemLimit is the soft heap ceiling (GOMEMLIMIT) the stdio
+// defaultClientMemLimit is the soft heap ceiling (GOMEMLIMIT) the knowledge
 // client imposes on itself when nothing else has set one. A collect
-// spikes the heap — the chunker holds every file's results until upload,
-// and the precise Go call-graph build loads a whole module + dependency
-// closure (ASTs + type info + SSA) live at once — and with the default
+// spikes the heap — the chunker holds every file's parse results live
+// until upload — and with the default
 // GOGC the runtime lets the heap run to 2× live before collecting, then
 // (on macOS) the freed pages linger in RSS. A 4 GiB soft limit makes GC
 // press earlier so the footprint stays bounded. It's a *soft* limit: if
@@ -35,17 +35,27 @@ func applyMemoryLimit() {
 	slog.Info("soft memory limit applied", "bytes", defaultClientMemLimit, "override_env", "GOMEMLIMIT")
 }
 
-// setupLogging configures slog to write to stderr (always) plus an
-// optional log file. Factored out of Run to keep Run readable.
+// setupLogging points slog at stderr, and ADDITIONALLY at the --log-file path
+// when that flag is set. Both sinks receive every line: the writer is tee'd,
+// never replaced.
+//
+// THIS DOC ONCE CLAIMED "stderr (always) plus an optional log file" WHILE THE
+// CODE REPLACED THE WRITER — the claim is now true because the code makes it
+// true, not because the words were left alone. The file is the durable record;
+// stderr is the stream a process supervisor redirects and a container runtime
+// captures, so it is the only channel an operator has while this process runs
+// inside one. Removing either sink reproduces the sink-nobody-reads defect.
 func setupLogging(cfg *Config, lvl *slog.LevelVar) {
-	logWriter := os.Stderr
+	logWriter := io.Writer(os.Stderr)
 	if cfg.LogFile != "" {
 		logPath := expandTilde(cfg.LogFile)
 		logF, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
 		if err != nil {
+			// Reported, and stderr alone stands. Tee'ing stderr with itself here
+			// would duplicate every line.
 			fmt.Fprintf(os.Stderr, "failed to open log file %s: %v\n", logPath, err)
 		} else {
-			logWriter = logF
+			logWriter = io.MultiWriter(os.Stderr, logF)
 		}
 	}
 	slog.SetDefault(slog.New(slog.NewTextHandler(logWriter, &slog.HandlerOptions{Level: lvl})))

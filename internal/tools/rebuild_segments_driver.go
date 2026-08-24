@@ -163,7 +163,20 @@ func RebuildSegments(
 		}
 	}
 
-	items, tombstoned, servedHorizon, err := scanRebuildSegments(ctx, scanner, gt, name, watermark)
+	// THE VALUE SENT IS THE FLOOR ACROSS THE CONSUMERS THAT HOLD A POSITION, not
+	// this drain's own watermark. The server raises its retention watermark from
+	// whatever a scan carries, so reporting this consumer's position alone would
+	// raise it past an erasure the delta-merge consumer has not read, and the reap
+	// behind it would destroy that erasure permanently.
+	//
+	// ONE FIELD CARRIES BOTH MEANINGS, so the floor is also this scan's lower
+	// bound. That is why a peer with NO position is excluded rather than treated as
+	// zero: including it would drag this read down to the whole corpus. Where the
+	// floor does sit below this drain's own watermark, the drain re-reads rows it
+	// has already published — idempotent, and the direction that costs work rather
+	// than losing a deletion.
+	items, tombstoned, servedHorizon, err := scanRebuildSegments(
+		ctx, scanner, gt, name, retentionFloorFor(shipper, gt, name, watermark))
 	if err != nil {
 		return RebuildOutcome{}, fmt.Errorf("scan failed: %w", err)
 	}

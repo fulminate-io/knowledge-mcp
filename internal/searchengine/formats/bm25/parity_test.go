@@ -179,12 +179,12 @@ func TestNegativeControlPerSegmentIDFDiverges(t *testing.T) {
 	baseSeg, baseStats := buildOne(t, docs)
 
 	// Fan-out segments built the same way the engine seals them.
-	var segs []*bm25Segment
+	var segs []*mappedSegment
 	for i := 0; i < corpus; i += perSeg {
 		end := min(i+perSeg, corpus)
 		s, err := Format{}.Build(docs[i:end])
 		require.NoError(t, err)
-		segs = append(segs, s.(*bm25Segment))
+		segs = append(segs, s.(*mappedSegment))
 	}
 	require.GreaterOrEqual(t, len(segs), 8)
 

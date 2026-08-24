@@ -49,7 +49,7 @@ func TestRebuiltDeltaCorpusExactAcrossCountChange(t *testing.T) {
 		deltaSeedN, seedCount, deltaCorpusN, corpusCount)
 
 	_, view := newSegmentHarness(t)
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(view))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(view)))
 	gt, name := kgtypes.GraphCode, "delta-straddle"
 
 	// Seed BOTH serving engines: the delta finalize publishes per format, and its
@@ -108,7 +108,7 @@ func TestResetThenDeltaThenDrainKeepsCardinality(t *testing.T) {
 		"the fixture must hold the partition count STABLE across the drain, or a changed cardinality would be legitimate realignment rather than a defect")
 
 	svc, view := newSegmentHarness(t)
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(view))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(view)))
 	gt, name := kgtypes.GraphCode, "reset-delta-drain"
 	target := graphSelector(gt, name)
 

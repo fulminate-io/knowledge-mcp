@@ -22,7 +22,7 @@ func TestPerGraphMergeAndRepairState(t *testing.T) {
 
 	t.Run("saved values survive a reload", func(t *testing.T) {
 		dir := t.TempDir()
-		mgr := NewManager(loginStateStub{}, dir, 0)
+		mgr := closeOnCleanup(t, NewManager(loginStateStub{}, dir, 0))
 
 		require.NoError(t, mgr.SaveMergeWatermark(kgtypes.GraphCode, "repo", horizon))
 		require.NoError(t, mgr.SaveRepairState(kgtypes.GraphCode, "repo", converged))
@@ -30,7 +30,7 @@ func TestPerGraphMergeAndRepairState(t *testing.T) {
 		// A SECOND Manager over the same cache root is the daemon restart: these
 		// records exist precisely so a restart does not re-earn work the previous
 		// process paid for, so they must read what the first wrote.
-		restarted := NewManager(loginStateStub{}, dir, 0)
+		restarted := closeOnCleanup(t, NewManager(loginStateStub{}, dir, 0))
 
 		gotHorizon, err := restarted.LoadMergeWatermark(kgtypes.GraphCode, "repo")
 		require.NoError(t, err)
@@ -46,7 +46,7 @@ func TestPerGraphMergeAndRepairState(t *testing.T) {
 		unsettled := RepairState{Residue: 3, Converged: false, Scanned: false, VerifiedAtNanos: horizon + 1}
 		require.NoError(t, restarted.SaveRepairState(kgtypes.GraphCode, "repo", unsettled))
 
-		reread := NewManager(loginStateStub{}, dir, 0)
+		reread := closeOnCleanup(t, NewManager(loginStateStub{}, dir, 0))
 		gotState, err = reread.LoadRepairState(kgtypes.GraphCode, "repo")
 		require.NoError(t, err)
 		require.Equal(t, unsettled, gotState)
@@ -56,7 +56,7 @@ func TestPerGraphMergeAndRepairState(t *testing.T) {
 
 	t.Run("records are per graph", func(t *testing.T) {
 		dir := t.TempDir()
-		mgr := NewManager(loginStateStub{}, dir, 0)
+		mgr := closeOnCleanup(t, NewManager(loginStateStub{}, dir, 0))
 
 		require.NoError(t, mgr.SaveMergeWatermark(kgtypes.GraphCode, "alpha", horizon))
 		require.NoError(t, mgr.SaveRepairState(kgtypes.GraphCode, "alpha", converged))
@@ -71,7 +71,7 @@ func TestPerGraphMergeAndRepairState(t *testing.T) {
 	})
 
 	t.Run("absent records read as zero with a nil error", func(t *testing.T) {
-		mgr := NewManager(loginStateStub{}, t.TempDir(), 0)
+		mgr := closeOnCleanup(t, NewManager(loginStateStub{}, t.TempDir(), 0))
 
 		// This is the contract every caller's degradation depends on: no record means
 		// no horizon (pull nothing) and no verification (eligible for one scan),
@@ -88,7 +88,7 @@ func TestPerGraphMergeAndRepairState(t *testing.T) {
 	t.Run("inert without a cache dir", func(t *testing.T) {
 		// The bootstrap tests build cacheless Managers; a Save that errored or a Load
 		// that failed there would break them, so both must degrade silently.
-		mgr := NewManager(loginStateStub{}, "", 0)
+		mgr := closeOnCleanup(t, NewManager(loginStateStub{}, "", 0))
 
 		require.NoError(t, mgr.SaveMergeWatermark(kgtypes.GraphCode, "repo", horizon))
 		require.NoError(t, mgr.SaveRepairState(kgtypes.GraphCode, "repo", converged))
@@ -120,7 +120,7 @@ func TestDropGraphCacheRemovesMergeAndRepairRecords(t *testing.T) {
 	siblingState := RepairState{Residue: 11, Converged: true, Scanned: true, VerifiedAtNanos: siblingHorizon}
 
 	dir := t.TempDir()
-	mgr := NewManager(loginStateStub{}, dir, 0)
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{}, dir, 0))
 
 	require.NoError(t, mgr.SaveMergeWatermark(kgtypes.GraphCode, "repo", droppedHorizon))
 	require.NoError(t, mgr.SaveRepairState(kgtypes.GraphCode, "repo",
@@ -134,7 +134,7 @@ func TestDropGraphCacheRemovesMergeAndRepairRecords(t *testing.T) {
 		"the records live under the reserved rebuildstate format dir, so that dir must be among the swept formats")
 
 	// A fresh Manager, so the answers come off disk rather than out of the hot map.
-	after := NewManager(loginStateStub{}, dir, 0)
+	after := closeOnCleanup(t, NewManager(loginStateStub{}, dir, 0))
 
 	gotHorizon, err := after.LoadMergeWatermark(kgtypes.GraphCode, "repo")
 	require.NoError(t, err)

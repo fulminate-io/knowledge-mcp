@@ -61,7 +61,7 @@ func TestShipAndPublishReuploadsAbsentBlobAndConverges(t *testing.T) {
 	// AND the publish HEAD-verifies, 409ing on any referenced blob the store lacks.
 	gc.verifies = true
 	gc.verifyPublishCompleteness = true
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 	gt, name := kgtypes.GraphCode, "reupload-converge"
 
 	// Seed a published corpus. Every seeded blob lands in the store and is stamped
@@ -117,7 +117,7 @@ func TestPublishIncompleteEscalatesToLoudWarnWhenPersistent(t *testing.T) {
 	warns := installCapturingSlog(t)
 
 	_, gc := newSegmentHarness(t)
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 	gt, name := kgtypes.GraphCode, "persistIncomplete"
 	dm := mgr.managerFor(gt, name)
 

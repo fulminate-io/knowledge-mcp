@@ -77,7 +77,8 @@ func cIncludeBinds(_ *RepoContext, byPath map[string]*Result, self *Result) Bind
 	}
 	dir := path.Dir(self.FilePath)
 	binds := map[string]Bind{}
-	for _, inc := range self.Chunks[0].Context.Imports {
+	for _, site := range self.Chunks[0].Context.Imports {
+		inc := site.Specifier
 		if inc == "" || strings.HasPrefix(inc, "<") {
 			continue
 		}

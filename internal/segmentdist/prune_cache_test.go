@@ -14,6 +14,7 @@ import (
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
+	"github.com/fulminate-io/knowledge-mcp/internal/searchengine/formats/bm25"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine/formats/hnsw"
 )
 
@@ -51,7 +52,7 @@ func TestPruneCacheForceLoad(t *testing.T) {
 
 	_, gc := newSegmentHarness(t)
 	ctx := context.Background()
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 
 	// 512 keeps the graph inside a SINGLE partition through the tick (the tick counts
 	// the incoming window alongside the resident set), so the unload/force-load
@@ -93,7 +94,7 @@ func TestPruneCacheCoversTheRebuiltLayer(t *testing.T) {
 
 	_, gc := newSegmentHarness(t)
 	ctx := context.Background()
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 
 	// Stage one partition, then the single finalize that builds, ships and swaps it in.
 	// BOTH formats are staged: Swapped is the AND of the two legs, so staging only the
@@ -149,7 +150,7 @@ func TestPruneCacheSubset(t *testing.T) {
 
 	_, gc := newSegmentHarness(t)
 	ctx := context.Background()
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 	seedShipped(t, ctx, mgr, kgtypes.GraphCode, "subsetRepo", hnswVecDocs(1024))
 	dm := mgr.managerFor(kgtypes.GraphCode, "subsetRepo")
 
@@ -174,7 +175,7 @@ func TestPruneCacheDriverDryRun(t *testing.T) {
 
 	_, gc := newSegmentHarness(t)
 	ctx := context.Background()
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 	seedShipped(t, ctx, mgr, kgtypes.GraphCode, "dryRepo", hnswVecDocs(1024))
 
 	hnswDir := graphCacheDirFor(mgr.cacheDir, kgtypes.GraphCode, "dryRepo", hnsw.New().Name())
@@ -203,14 +204,14 @@ func TestPruneCacheDriverExecute(t *testing.T) {
 	svc, gc := newSegmentHarness(t)
 	_ = svc
 	ctx := context.Background()
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 
 	// Ship a real HNSW + BM25 corpus (warms each format's L2 cache with real .seg files).
 	seedShipped(t, ctx, mgr, kgtypes.GraphCode, "execRepo", hnswVecDocs(1024))
 	seedShippedFields(t, ctx, mgr, kgtypes.GraphCode, "execRepo", bm25FieldDocs(1024))
 
 	hnswDir := graphCacheDirFor(mgr.cacheDir, kgtypes.GraphCode, "execRepo", hnsw.New().Name())
-	bm25Dir := graphCacheDirFor(mgr.cacheDir, kgtypes.GraphCode, "execRepo", "bm25")
+	bm25Dir := graphCacheDirFor(mgr.cacheDir, kgtypes.GraphCode, "execRepo", bm25.New().Name())
 
 	// Capture the live .seg files (must survive). Plant an orphan in EACH format dir
 	// AFTER construction+ship (post-scanExisting → not in the in-memory index).
@@ -244,7 +245,7 @@ func TestPruneCacheDriverExecute(t *testing.T) {
 	hPool := poolReport(rep, hnsw.New().Name())
 	require.NotNil(t, hPool)
 	require.Equal(t, []searchengine.SegmentID{"orphan-hnsw"}, hPool.Orphans)
-	bPool := poolReport(rep, "bm25")
+	bPool := poolReport(rep, bm25.New().Name())
 	require.NotNil(t, bPool)
 	require.Equal(t, []searchengine.SegmentID{"orphan-bm25"}, bPool.Orphans)
 }
@@ -257,7 +258,7 @@ func TestPruneCacheUnloadedButLiveSurvives(t *testing.T) {
 
 	_, gc := newSegmentHarness(t)
 	ctx := context.Background()
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 	// 512 keeps the graph inside a SINGLE partition through the tick, so exactly one
 	// .seg lands on disk to unload and then rescue.
 	require.NoError(t, mgr.AddAndMarkDirty(ctx, kgtypes.GraphCode, "unloadRepo", hnswVecDocs(512)))
@@ -302,7 +303,7 @@ func TestPruneCacheList0Abort(t *testing.T) {
 
 	_, gc := newSegmentHarness(t)
 	ctx := context.Background()
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 	seedShipped(t, ctx, mgr, kgtypes.GraphCode, "abortRepo", hnswVecDocs(1024))
 
 	hnswDir := graphCacheDirFor(mgr.cacheDir, kgtypes.GraphCode, "abortRepo", hnsw.New().Name())
@@ -336,7 +337,7 @@ func TestPruneCacheNoOpEmptyGraph(t *testing.T) {
 
 	_, gc := newSegmentHarness(t)
 	ctx := context.Background()
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 
 	rep, err := mgr.PruneCache(ctx, []PruneCacheTarget{{GraphType: kgtypes.GraphCode, Name: "emptyRepo"}}, true)
 	require.NoError(t, err)
@@ -356,7 +357,7 @@ func TestPruneCacheLiveSearchAfterPrune(t *testing.T) {
 
 	_, gc := newSegmentHarness(t)
 	ctx := context.Background()
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 
 	docs := hnswVecDocs(1024)
 	seedShipped(t, ctx, mgr, kgtypes.GraphCode, "searchRepo", docs)
@@ -402,7 +403,7 @@ func liveSegPaths(t *testing.T, dir string) []string {
 // embed engine's own segment and Import would dedup it away, leaving no phantom.
 func newForeignSealedBlob(t *testing.T) searchengine.SegmentBlob {
 	t.Helper()
-	eng := searchengine.New[[]byte, struct{}](hnsw.New(), searchengine.Options{})
+	eng := closeOnCleanup(t, searchengine.New[[]byte, struct{}](hnsw.New(), searchengine.Options{}))
 	require.NoError(t, eng.Add(foreignVecDocs(1024)))
 	require.NoError(t, eng.Flush())
 	exported := eng.Export()

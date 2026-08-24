@@ -10,5 +10,5 @@ import (
 // Runs when anything imports cmd/knowledge/internal/collector/codesync
 // (client-side only; server does not pull codesync).
 func init() {
-	postpopulate.Register("code", codePostPopulate)
+	postpopulate.Register("code", postpopulate.BreadthScoped, codePostPopulate)
 }

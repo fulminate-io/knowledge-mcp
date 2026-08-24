@@ -13,42 +13,86 @@ import (
 	"github.com/stretchr/testify/require"
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
-	"github.com/fulminate-io/knowledge-mcp/internal/collector"
-	"github.com/fulminate-io/knowledge-mcp/internal/embed"
-	"github.com/fulminate-io/knowledge-mcp/internal/hivemonitor"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
 
 // coverageFake is a statsRPC that (a) records every StatsRequest it receives so
 // the test can assert IncludeCoverage was set (the T2 gate trigger), (b) serves
 // per-graph GraphStats keyed by the resolved instance label, and (c) serves a
-// RETURN_MODE_GRAPH_NAMES enumeration that returns a named "code" repo AND a named
-// "practice" language (a NON-code embeddable builtin), and an
-// EMPTY name for knowledge (mirroring the real drop of empty names) — proving the
-// knowledge row is rendered via the explicit empty-name selector, not enumeration,
-// and a non-code embeddable graph now renders a real segment-coverage cell.
+// RETURN_MODE_GRAPH_NAMES enumeration — both the per-type BASE enumeration and the
+// per-base OVERLAY enumeration a non-empty overlay_of asks for.
+//
+// The BASE enumeration defaults to a named "code" repo AND a named "practice"
+// language (a NON-code embeddable builtin), and an EMPTY name for knowledge
+// (mirroring the real drop of empty names) — proving the knowledge row is rendered
+// via the explicit empty-name selector, not enumeration, and a non-code embeddable
+// graph renders a real segment-coverage cell. Both enumerations are programmable
+// per type / per base, so a fixture can seed several code bases carrying DIFFERENT
+// backend key forms in a single pass.
 type coverageFake struct {
 	mu         sync.Mutex // Stats is called concurrently by the coverage fan-out
 	reqs       []*knowledgev1.StatsRequest
 	statsByKey map[string]*knowledgev1.GraphStats
+	// baseNamesByType programs the per-type BASE list. A type that is absent, or
+	// whose entry is nil, falls back to the defaults in baseNamesFor — which is what
+	// keeps every fixture that programs only statsByKey serving what it always did.
+	baseNamesByType map[string][]string
+	// overlayKeysByBase programs the OVERLAY keys of one base, IN THE BACKEND FORM
+	// the fixture is exercising: cloud reports the full "base@overlay" key, OSS
+	// reports the bare overlay name. A base with no entry has no overlays.
+	overlayKeysByBase map[string][]string
+	// execReqs records every ExecuteRequest the walk issued, so a test can assert
+	// WHICH graph each enumeration asked about rather than only what came back.
+	execReqs []*knowledgev1.ExecuteRequest
 }
 
 func (f *coverageFake) Execute(_ context.Context, req *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error) {
+	// The request log and both programmable maps are touched under the mutex: the
+	// coverage walk enumerates types and overlays concurrently.
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.execReqs = append(f.execReqs, req)
 	q := req.GetQuery()
 	if q == nil || q.GetReturnMode() != knowledgev1.ReturnMode_RETURN_MODE_GRAPH_NAMES {
 		return &knowledgev1.ExecuteResponse{}, nil
 	}
-	// The code graph reports a named repo and the practice graph a named language (a
-	// NON-code embeddable builtin renderLLMCoverage now enumerates); everything else
-	// (incl the default knowledge graph) enumerates empty — which listGraphNamesOfType
-	// drops.
-	switch req.GetTarget().GetGraph() {
-	case "code":
-		return &knowledgev1.ExecuteResponse{GraphNames: []*knowledgev1.GraphInfo{{Name: "myrepo"}}}, nil
-	case "practice":
-		return &knowledgev1.ExecuteResponse{GraphNames: []*knowledgev1.GraphInfo{{Name: "go"}}}, nil
+	if base := q.GetOverlayOf(); base != "" {
+		return f.graphNames(f.overlayKeysByBase[base]), nil
 	}
-	return &knowledgev1.ExecuteResponse{}, nil
+	return f.graphNames(f.baseNamesFor(req.GetTarget().GetGraph())), nil
+}
+
+// baseNamesFor resolves the BASE list for one graph type: the programmed entry
+// when the fixture seeded one, otherwise the historical literals — a named repo
+// for code, a named language for practice, nothing for every other type (incl the
+// default knowledge graph, whose empty name listGraphNamesOfType drops).
+//
+// An entry present but NIL falls back too, so only a fixture that explicitly seeds
+// a non-nil empty slice claims a type has no graphs.
+func (f *coverageFake) baseNamesFor(graphType string) []string {
+	if names, ok := f.baseNamesByType[graphType]; ok && names != nil {
+		return names
+	}
+	switch graphType {
+	case "code":
+		return []string{"myrepo"}
+	case "practice":
+		return []string{"go"}
+	}
+	return nil
+}
+
+// graphNames projects a name list into the GraphInfo carrier, dropping empty names
+// as the real enumeration does.
+func (f *coverageFake) graphNames(names []string) *knowledgev1.ExecuteResponse {
+	var infos []*knowledgev1.GraphInfo
+	for _, n := range names {
+		if n != "" {
+			infos = append(infos, &knowledgev1.GraphInfo{Name: n})
+		}
+	}
+	return &knowledgev1.ExecuteResponse{GraphNames: infos}
 }
 
 func (f *coverageFake) Stats(_ context.Context, req *knowledgev1.StatsRequest) (*knowledgev1.StatsResponse, error) {
@@ -72,6 +116,67 @@ func (f *coverageFake) Stats(_ context.Context, req *knowledgev1.StatsRequest) (
 	return &knowledgev1.StatsResponse{GraphStats: st}, nil
 }
 
+// enumerateGraphNames drives coverageFake.Execute the way listGraphNamesOfType and
+// listOverlayKeysOfBase do — a RETURN_MODE_GRAPH_NAMES plan against one graph type,
+// with overlayOf empty for the base enumeration — and returns the served names.
+func enumerateGraphNames(t *testing.T, f *coverageFake, graphType, overlayOf string) []string {
+	t.Helper()
+	resp, err := f.Execute(context.Background(), &knowledgev1.ExecuteRequest{
+		Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
+			ReturnMode: knowledgev1.ReturnMode_RETURN_MODE_GRAPH_NAMES,
+			OverlayOf:  overlayOf,
+		}},
+		Target: &knowledgev1.GraphSelector{Graph: graphType},
+	})
+	require.NoError(t, err)
+	names := make([]string, 0, len(resp.GetGraphNames()))
+	for _, gi := range resp.GetGraphNames() {
+		names = append(names, gi.GetName())
+	}
+	return names
+}
+
+// TestCoverageFake_OverlayKeyForms is the fake's own selftest, and it exists so a
+// fixture that silently ignored either programmable map could not make the coverage
+// enumeration tests vacuously green.
+//
+// The fourth leg is the one that protects code this test does not itself call: every
+// pre-existing fixture in this package programs statsByKey ONLY, so a defaulting rule
+// that returned nothing for an unprogrammed type would silently empty out their
+// enumerations. Leg 4 pins the defaults those fixtures depend on.
+func TestCoverageFake_OverlayKeyForms(t *testing.T) {
+	f := &coverageFake{
+		baseNamesByType: map[string][]string{"code": {"agent", "knowledge", "myrepo"}},
+		overlayKeysByBase: map[string][]string{
+			// The CLOUD form: the full composed catalog key.
+			"agent": {"agent@launch-fixes"},
+			// The OSS form: the bare overlay name, base prefix already stripped.
+			"knowledge": {"fix-a"},
+		},
+	}
+
+	t.Run("programmed_overlays_in_the_programmed_form", func(t *testing.T) {
+		assert.Equal(t, []string{"agent@launch-fixes"}, enumerateGraphNames(t, f, "code", "agent"))
+		assert.Equal(t, []string{"fix-a"}, enumerateGraphNames(t, f, "code", "knowledge"))
+	})
+
+	t.Run("base_without_overlays_serves_none", func(t *testing.T) {
+		assert.Empty(t, enumerateGraphNames(t, f, "code", "myrepo"))
+	})
+
+	t.Run("empty_overlay_of_serves_the_base_list", func(t *testing.T) {
+		assert.Equal(t, []string{"agent", "knowledge", "myrepo"}, enumerateGraphNames(t, f, "code", ""))
+	})
+
+	t.Run("unprogrammed_base_list_keeps_the_historical_literals", func(t *testing.T) {
+		bare := &coverageFake{}
+		assert.Equal(t, []string{"myrepo"}, enumerateGraphNames(t, bare, "code", ""))
+		assert.Equal(t, []string{"go"}, enumerateGraphNames(t, bare, "practice", ""))
+		assert.Empty(t, enumerateGraphNames(t, bare, "knowledge", ""),
+			"the default knowledge graph still enumerates no name, so its row comes from the explicit selector")
+	})
+}
+
 // coverageSegReader is a SegmentCoverageReader stub: it serves a per-graph covered
 // doc count AND live resident doc count keyed by (graphType, name), so the
 // renderer's segment-coverage column reads real numbers — shipped covered and live
@@ -79,6 +184,11 @@ func (f *coverageFake) Stats(_ context.Context, req *knowledgev1.StatsRequest) (
 type coverageSegReader struct {
 	coveredByKey  map[string]int
 	residentByKey map[string]int
+	// rebuildPosByKey / mergePosByKey are this client's two consumer positions,
+	// keyed the same way. An ABSENT key is a consumer that has never recorded a
+	// position, which the row must render as "never" rather than as an age.
+	rebuildPosByKey map[string]int64
+	mergePosByKey   map[string]int64
 	// liveByKey is the DISTINCT live-searchable count, programmable independently
 	// of residentByKey so a test can make the summed and live readings differ —
 	// which is the only way to prove which one the column renders.
@@ -135,47 +245,18 @@ func (r *coverageSegReader) LiveResidentDocCount(gt kgtypes.GraphType, name stri
 	return r.residentByKey[key]
 }
 
-// coverageDeps is the minimal ClientDeps whose GraphCaller is the coverageFake and
-// whose SegmentCoverage seam is an optional coverageSegReader stub (nil when the
-// test does not exercise the segment column).
-type coverageDeps struct {
-	gc     GraphCaller
-	segCov SegmentCoverageReader
+// LoadRebuildState / LoadMergeWatermark serve this client's two consumer
+// positions. An UNSET key reports zero, which is the "never recorded a position"
+// case the row must render as "never" rather than as an age.
+func (r *coverageSegReader) LoadRebuildState(
+	gt kgtypes.GraphType, name string,
+) (int64, []searchengine.ExternalID, error) {
+	return r.rebuildPosByKey[r.segKey(gt, name)], nil, nil
 }
 
-func (d *coverageDeps) LocalLiveness() LocalLiveness                 { return nil }
-func (d *coverageDeps) Sink() collector.Sink                         { return nil }
-func (d *coverageDeps) RootDir() string                              { return "" }
-func (d *coverageDeps) UsageAnalyzer() UsageAnalyzerAPI              { return nil }
-func (d *coverageDeps) WorkerRuntime() WorkerRuntimeAPI              { return nil }
-func (d *coverageDeps) WorkerReady() bool                            { return true }
-func (d *coverageDeps) PropReady() bool                              { return true }
-func (d *coverageDeps) PipelineReady() bool                          { return true }
-func (d *coverageDeps) ClaimRegistry() *hivemonitor.Registry         { return nil }
-func (d *coverageDeps) BanSet() *hivemonitor.BanSet                  { return nil }
-func (d *coverageDeps) WorkerCRUD() WorkerCRUDAPI                    { return nil }
-func (d *coverageDeps) GraphTypeCRUD() GraphTypeCRUDAPI              { return nil }
-func (d *coverageDeps) Embedder() embed.BinaryEmbedder               { return nil }
-func (d *coverageDeps) BackendResolver() BackendResolver             { return nil }
-func (d *coverageDeps) GraphCaller() GraphCaller                     { return d.gc }
-func (d *coverageDeps) LocalGraphCaller() GraphCaller                { return d.gc }
-func (d *coverageDeps) SegmentManager() SegmentSearcher              { return nil }
-func (d *coverageDeps) SegmentVectorResolver() SegmentVectorResolver { return nil }
-func (d *coverageDeps) SegmentShipper() SegmentShipper               { return nil }
-func (d *coverageDeps) SegmentPruner() SegmentPruner                 { return nil }
-
-func (d *coverageDeps) SegmentCacheDropper() SegmentCacheDropper { return nil }
-func (d *coverageDeps) SegmentDeleter() SegmentDeleter           { return nil }
-func (d *coverageDeps) SegmentCoverage() SegmentCoverageReader   { return d.segCov }
-func (d *coverageDeps) PipelineScanner() PipelineScanner         { return nil }
-
-func (d *coverageDeps) ClearHealLatch(kgtypes.GraphType, string) {}
-func (d *coverageDeps) ReflectionForcer() ReflectionForcer       { return nil }
-func (d *coverageDeps) SimilarityForcer() SimilarityForcer       { return nil }
-
-func (d *coverageDeps) BlindSpotProvider() BlindSpotProvider { return nil }
-func (d *coverageDeps) ClusterProvider() ClusterProvider     { return nil }
-func (d *coverageDeps) TensionsProvider() TensionsProvider   { return nil }
+func (r *coverageSegReader) LoadMergeWatermark(gt kgtypes.GraphType, name string) (int64, error) {
+	return r.mergePosByKey[r.segKey(gt, name)], nil
+}
 
 // TestSegCoverageDisposition pins every arm of the coverage-band classifier in
 // branch order, plus the two boundary cases that close the band and the catcher
@@ -232,6 +313,26 @@ func TestSegCoverageDisposition(t *testing.T) {
 		// In the band: at or above half, below converged. This is the state the
 		// repair arm services.
 		assert.Equal(t, DispositionGapRepairing, segCoverageDisposition(row(100, 99, 99, true)))
+	})
+
+	t.Run("evicted_pool_reads_evicted", func(t *testing.T) {
+		// The residency budget dropped this pool from RAM, so LiveResident is 0 by
+		// construction — the SAME numbers self_healing above is built from. Without
+		// the evicted arm this row would render "self-healing", whose legend promises
+		// the reader it resolves within one reconcile interval; nothing will touch
+		// this graph until a user searches it.
+		r := row(100, 20, 20, true)
+		r.Evicted = true
+		assert.Equal(t, DispositionEvicted, segCoverageDisposition(r))
+	})
+
+	t.Run("evicted_false_same_numbers_reads_self_healing", func(t *testing.T) {
+		// THE PAIR, and the reason the case above is a measurement: identical numbers
+		// with the flag cleared must still reach the ratio arm. Without it an arm
+		// hard-wired to return evicted would be green.
+		r := row(100, 20, 20, true)
+		r.Evicted = false
+		assert.Equal(t, DispositionSelfHealing, segCoverageDisposition(r))
 	})
 
 	t.Run("floor_boundary_exact", func(t *testing.T) {

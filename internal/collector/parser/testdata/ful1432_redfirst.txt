@@ -1,0 +1,36 @@
+=== RUN   TestSwiftProtocolExtensionConformance
+=== RUN   TestSwiftProtocolExtensionConformance/pairs_through_the_extension
+2026/08/20 18:57:17 INFO collector: dot-scope census dot_scopes_filled=0
+2026/08/20 18:57:17 INFO collector: interface satisfaction interfaces_decided=0 pairs=0 edges=0 generic_undecided=0 extembed_pairs=0
+2026/08/20 18:57:17 INFO collector: declared conformance supertypes=1 type_pairs=0 member_pairs=0 edges=0 unresolvable=0 non_contract=0 ambiguous_supertype=1 ambiguous_member=0
+2026/08/20 18:57:17 INFO collector: slot binds binds=0 edges=0 unresolved_type=0 unknown_slot=0 unresolved_target=0 ambiguous_target=0 declined_initializers=0
+2026/08/20 18:57:17 INFO collector: reference resolution bound=1 external=0 ambiguous_groups=3 ambiguous_edges=6 dynamic_groups=0 dynamic_edges=0 dynamic_unbound=0 max_dynamic_group_size=0 dot_scope_binds=0 dot_scope_groups=0 typed_qualifier_binds=0 typed_qualifier_groups=0
+    implements_declared_swift_proto_ext_test.go:72: 
+        	Error Trace:	/Users/jonathan/code/knowledge/.claude/worktrees/impl-1432/cmd/knowledge/internal/collector/parser/implements_declared_swift_proto_ext_test.go:72
+        	Error:      	"[]" should have 1 item(s), but has 0
+        	Test:       	TestSwiftProtocolExtensionConformance/pairs_through_the_extension
+        	Messages:   	the protocol conforms exactly one class, got []
+=== RUN   TestSwiftProtocolExtensionConformance/no_double_pair
+2026/08/20 18:57:18 INFO collector: dot-scope census dot_scopes_filled=0
+2026/08/20 18:57:18 INFO collector: interface satisfaction interfaces_decided=0 pairs=0 edges=0 generic_undecided=0 extembed_pairs=0
+2026/08/20 18:57:18 INFO collector: declared conformance supertypes=1 type_pairs=0 member_pairs=0 edges=0 unresolvable=0 non_contract=0 ambiguous_supertype=1 ambiguous_member=0
+2026/08/20 18:57:18 INFO collector: slot binds binds=0 edges=0 unresolved_type=0 unknown_slot=0 unresolved_target=0 ambiguous_target=0 declined_initializers=0
+2026/08/20 18:57:18 INFO collector: reference resolution bound=1 external=0 ambiguous_groups=3 ambiguous_edges=6 dynamic_groups=0 dynamic_edges=0 dynamic_unbound=0 max_dynamic_group_size=0 dot_scope_binds=0 dot_scope_groups=0 typed_qualifier_binds=0 typed_qualifier_groups=0
+    implements_declared_swift_proto_ext_test.go:95: 
+        	Error Trace:	/Users/jonathan/code/knowledge/.claude/worktrees/impl-1432/cmd/knowledge/internal/collector/parser/implements_declared_swift_proto_ext_test.go:95
+        	Error:      	"[]" should have 1 item(s), but has 0
+        	Test:       	TestSwiftProtocolExtensionConformance/no_double_pair
+        	Messages:   	exactly one member relationship lands on the conformer's method, got []
+=== RUN   TestSwiftProtocolExtensionConformance/control_without_extension
+2026/08/20 18:57:18 INFO collector: dot-scope census dot_scopes_filled=0
+2026/08/20 18:57:18 INFO collector: interface satisfaction interfaces_decided=0 pairs=0 edges=0 generic_undecided=0 extembed_pairs=0
+2026/08/20 18:57:18 INFO collector: declared conformance supertypes=1 type_pairs=1 member_pairs=1 edges=2 unresolvable=0 non_contract=0 ambiguous_supertype=0 ambiguous_member=0
+2026/08/20 18:57:18 INFO collector: slot binds binds=0 edges=0 unresolved_type=0 unknown_slot=0 unresolved_target=0 ambiguous_target=0 declined_initializers=0
+2026/08/20 18:57:18 INFO collector: reference resolution bound=3 external=0 ambiguous_groups=0 ambiguous_edges=0 dynamic_groups=0 dynamic_edges=0 dynamic_unbound=0 max_dynamic_group_size=0 dot_scope_binds=0 dot_scope_groups=0 typed_qualifier_binds=0 typed_qualifier_groups=0
+--- FAIL: TestSwiftProtocolExtensionConformance (0.30s)
+    --- FAIL: TestSwiftProtocolExtensionConformance/pairs_through_the_extension (0.11s)
+    --- FAIL: TestSwiftProtocolExtensionConformance/no_double_pair (0.09s)
+    --- PASS: TestSwiftProtocolExtensionConformance/control_without_extension (0.09s)
+FAIL
+FAIL	github.com/fulminate-io/knowledge/cmd/knowledge/internal/collector/parser	0.823s
+FAIL

@@ -22,7 +22,7 @@ var queryModesNeedingEmbedding = map[string]struct{}{
 	"hybrid": {},
 }
 
-// InterceptQuery is the cmd/knowledge stdio client's "query" interceptor.
+// InterceptQuery is the cmd/knowledge client's "query" interceptor.
 // Mirrors InterceptSearch's Phase-4.5 client-side embedding behavior: when
 // deps.Embedder() is non-nil AND the query mode is in
 // queryModesNeedingEmbedding AND the args carry a non-empty text query AND

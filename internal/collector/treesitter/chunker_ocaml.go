@@ -87,7 +87,7 @@ func classifyTestBlockOCaml(
 // The name always lives one level down: module_definition, value_definition and
 // type_definition expose NO fields of their own — the binding child does. That
 // is the same grammar fact that makes module_binding, not module_definition,
-// the container kind in classLikeTypes.
+// the container kind in classLikeByLang's OCaml row.
 //
 // The kind checks are what keep the two negatives unnamed while KEEPING their
 // chunks: `let () = ...` binds a unit pattern rather than a value_name, and

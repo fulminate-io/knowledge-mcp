@@ -2,8 +2,6 @@
 
 package hnsw
 
-import "sort"
-
 // Default binary HNSW parameters. Mirror the server's binary_factory.go defaults
 // so the client-built graph matches the server's tuning.
 const (
@@ -20,71 +18,40 @@ type graphHit struct {
 	score      float64
 }
 
-// search runs the HNSW query: descend the upper layers greedily to an entry
-// point, then beam-search layer 0 at efSearch (>= k). The accept predicate gates
-// results — an id for which accept returns false is skipped from the RESULTS
-// (the graph is never mutated). A nil accept admits every id. Returns up to k
-// hits sorted nearest-first, with the Hamming distance mapped to a 0..1
-// similarity (1 - dist/totalBits).
-//
-// This replaces the server's BinaryIndex.Search deletedIDs skip with the engine's
-// liveDocs accept filter: same over-fetch-then-filter shape, but the liveness
-// decision lives in the engine, not in graph-mutating state.
-func (h *binaryGraph) search(query []byte, k int, accept func(externalID string) bool) []graphHit {
-	if len(h.nodes) == 0 || k <= 0 {
+// neighborsAt returns node id's neighbor run at the given layer, or nil when
+// layer exceeds that node's own maxLevel. Together with nodeCount this is the
+// whole topology seam the shared traversal needs — see traverse.go.
+func (h *binaryGraph) neighborsAt(id uint32, layer int) []uint32 {
+	node := &h.nodes[id]
+	if layer >= len(node.neighbors) {
 		return nil
 	}
-
-	efSearch := max(h.efSearch, k)
-
-	ep := h.entryPoint
-	for l := h.maxLevel; l > 0; l-- {
-		ep = h.greedyClosest(query, ep, l)
-	}
-
-	results := h.searchLayer(query, []uint32{ep}, efSearch, 0)
-
-	items := make([]heapItem, results.Len())
-	copy(items, *results)
-	sort.Slice(items, func(i, j int) bool {
-		return items[i].dist < items[j].dist
-	})
-
-	totalBits := float64(h.vecBytes * 8)
-	out := make([]graphHit, 0, min(k, len(items)))
-	for _, item := range items {
-		if len(out) >= k {
-			break
-		}
-		extID := h.nodes[item.id].externalID
-		if accept != nil && !accept(extID) {
-			continue
-		}
-		out = append(out, graphHit{
-			externalID: extID,
-			score:      1.0 - float64(item.dist)/totalBits,
-		})
-	}
-	return out
+	return node.neighbors[layer]
 }
 
-// ids returns every externalID the graph indexes, in internal-ID order (stable).
-func (h *binaryGraph) ids() []string {
-	out := make([]string, len(h.nodes))
-	for i := range h.nodes {
-		out[i] = h.nodes[i].externalID
-	}
-	return out
-}
-
-// rangeVectors yields every (externalID, vector) pair in internal-ID order. The
-// yielded slice aliases the graph's flat vector array — callers that retain it
-// (e.g. Merge re-inserting into a fresh graph, which copies on Insert) must not
-// mutate it. Package-internal accessor for the format's Lucene-style Merge.
-func (h *binaryGraph) rangeVectors(yield func(externalID string, vec []byte)) {
-	for i := range h.nodes {
-		yield(h.nodes[i].externalID, h.nodeVector(uint32(i)))
-	}
+// search runs the HNSW query. It is a ONE-LINE DELEGATION to traverse.go's
+// searchTopK, which both graph forms share: duplicating the descent, the beam
+// and the score formula onto the mapped reader is exactly the drift this split
+// exists to prevent.
+//
+// This replaces the server's BinaryIndex.Search deletedIDs skip with the
+// engine's liveDocs accept filter: same over-fetch-then-filter shape, but the
+// liveness decision lives in the engine, not in graph-mutating state.
+//
+// THE accept PARAMETER IS UNIFORM HERE AND MUST STAY. After the publish flip
+// every PRODUCTION search runs on mappedGraph, so this method survives only as
+// the BASELINE the bit-identity and recall proofs compare against — and those
+// tests pass nil because they compare unfiltered rankings. Specialising this
+// signature would make the two forms' search asymmetric at exactly the seam the
+// shared traversal exists to keep identical, and would silently weaken the
+// comparison the baseline is for. Same disposition, and same reasoning, as the
+// align mirror: a linter observation about local uniformity, against a shape
+// the design deliberately keeps symmetric.
+//
+//nolint:unparam // see above: the baseline must keep mappedGraph.search's shape
+func (h *binaryGraph) search(query []byte, k int, accept func(externalID string) bool) []graphHit {
+	return searchTopK(&h.vectorBlock, h, h.maxLevel, h.entryPoint, query, h.efSearch, k, accept,
+		func(id uint32) string { return h.nodes[id].externalID })
 }
 
 // nodeCount returns the number of indexed nodes.

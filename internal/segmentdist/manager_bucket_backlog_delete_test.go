@@ -73,7 +73,7 @@ func TestDrainCannotResurrectDeletedNode(t *testing.T) {
 
 	dir := t.TempDir()
 	_, gc := newSegmentHarness(t)
-	mgr := NewManager(loginStateStub{loggedIn: true}, dir, 0, withSegmentSource(gc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, dir, 0, withSegmentSource(gc)))
 
 	docs := bothFormatDocs(deleteFixtureN, "resurrect-")
 	require.NoError(t, mgr.AddAndMarkDirty(ctx, gt, name, docs))
@@ -128,7 +128,7 @@ func TestDrainSkipsTombstonedBacklogDoc(t *testing.T) {
 
 	dir := t.TempDir()
 	_, gc := newSegmentHarness(t)
-	mgr := NewManager(loginStateStub{loggedIn: true}, dir, 0, withSegmentSource(gc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, dir, 0, withSegmentSource(gc)))
 
 	docs := bothFormatDocs(deleteFixtureN, "tombdrain-")
 	require.NoError(t, mgr.AddAndMarkDirty(ctx, gt, name, docs))
@@ -195,7 +195,7 @@ func TestClearKeepsWritesDuringTick(t *testing.T) {
 	const name = "clearDuringTick"
 	gt := kgtypes.GraphCode
 
-	mgr := NewManager(loginStateStub{}, t.TempDir(), 0)
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{}, t.TempDir(), 0))
 
 	early := bothFormatDocs(4, "tick-")
 	mgr.recordDirty(gt, name, false, early, []searchengine.SegmentID{"tail-early"}, mgr.nextWriteSeq())
@@ -236,7 +236,7 @@ func TestClearKeepsRequeuedSameIDDuringTick(t *testing.T) {
 	gt := kgtypes.GraphCode
 
 	t.Run("recreated_write_survives_the_tick", func(t *testing.T) {
-		mgr := NewManager(loginStateStub{}, t.TempDir(), 0)
+		mgr := closeOnCleanup(t, NewManager(loginStateStub{}, t.TempDir(), 0))
 
 		early := bothFormatDocs(4, "tick-")
 		mgr.recordDirty(gt, name, false, early, []searchengine.SegmentID{"tail-early"}, mgr.nextWriteSeq())
@@ -262,7 +262,7 @@ func TestClearKeepsRequeuedSameIDDuringTick(t *testing.T) {
 	t.Run("unpurged_snapshot_entry_is_still_consumed", func(t *testing.T) {
 		// THE CONTROL that keeps the fix from being "stop consuming": with no purge and
 		// no late write, everything the snapshot named must go.
-		mgr := NewManager(loginStateStub{}, t.TempDir(), 0)
+		mgr := closeOnCleanup(t, NewManager(loginStateStub{}, t.TempDir(), 0))
 
 		docs := bothFormatDocs(4, "consume-")
 		mgr.recordDirty(gt, name, false, docs, []searchengine.SegmentID{"tail-only"}, mgr.nextWriteSeq())

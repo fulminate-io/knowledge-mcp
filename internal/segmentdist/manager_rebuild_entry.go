@@ -20,6 +20,7 @@ import (
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
+	"github.com/fulminate-io/knowledge-mcp/internal/searchengine/formats/bm25"
 )
 
 // Flush force-seals the sub-threshold coalescing tail of BOTH the HNSW and the
@@ -54,7 +55,7 @@ func (m *Manager) Flush(ctx context.Context, gt kgtypes.GraphType, name string) 
 	}
 	// REGISTRY MODEL: embed force-seal of the sub-threshold tail, then
 	// publish the resident live set as the manifest (unioned with the deterministic
-	// engine's resident ids for the shared "hnsw" manifest) — restart-safe. The
+	// engine's resident ids for the shared HNSW manifest) — restart-safe. The
 	// ship/publish is gated AFTER the force-seal: a genuinely-sealed tail still
 	// ships, but a no-progress re-Flush (empty tail, nothing unshipped, no pending
 	// retry) is skipped.
@@ -63,7 +64,7 @@ func (m *Manager) Flush(ctx context.Context, gt kgtypes.GraphType, name string) 
 		// retry bit is pending (nothing genuinely unshipped) is the self-sustaining
 		// publish-retry re-arm — logging the cause per Flush makes that cycle visible.
 		slog.Debug("segmentdist: Flush ship/publish gate open",
-			"graph_type", gt, "name", name, "format", "hnsw", "unshipped", unshipped, "publish_retry_pending", pending)
+			"graph_type", gt, "name", name, "format", hnsw.format, "unshipped", unshipped, "publish_retry_pending", pending)
 		if _, err := hnsw.shipAndPublish(ctx, hnsw.locallyShipped); err != nil {
 			return err
 		}
@@ -75,7 +76,7 @@ func (m *Manager) Flush(ctx context.Context, gt kgtypes.GraphType, name string) 
 	// Same gate for the BM25 leg, after its own force-seal.
 	if unshipped, pending := bm.hasUnshippedExport(), bm.publishRetryPending(); unshipped || pending {
 		slog.Debug("segmentdist: Flush ship/publish gate open",
-			"graph_type", gt, "name", name, "format", "bm25", "unshipped", unshipped, "publish_retry_pending", pending)
+			"graph_type", gt, "name", name, "format", bm25.New().Name(), "unshipped", unshipped, "publish_retry_pending", pending)
 		if _, err := bm.shipAndPublish(ctx, bm.locallyShipped); err != nil {
 			return err
 		}

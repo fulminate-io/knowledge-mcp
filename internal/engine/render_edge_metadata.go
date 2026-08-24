@@ -11,19 +11,25 @@ import (
 
 // render_edge_metadata.go holds the three client-side emitters for per-edge
 // metadata on the traverse surfaces, split out of render_misc.go to keep that
-// file under the repo's file-length cap. The server-side twins these mirror live
-// in package tools and cannot be imported here.
+// file under the repo's file-length cap. Edge-metadata rendering is owned here;
+// there is no server-side twin to keep in step with.
 //
-// All three apply the group-suppression rule: a multi-candidate group member's
-// Method and raw group key are withheld because its group block already carries
-// both. See IsCandidateEdge for why the rule keys on Method alone.
+// Edge.Method POPULATIONS ARE KEYED BY EDGE TYPE.
+//
+// Two of the three emitters withhold Method for a multi-candidate GROUP MEMBER,
+// because its group block already states it. That suppression is about group
+// members specifically and says nothing about what Method means generally: the
+// field holds several populations keyed by the edge type carrying them, kgtypes
+// (edge_types.go) is the vocabulary source, and every value outside the two
+// group constants renders here as an ordinary method. So this surface prints a
+// bound reference edge's resolution rung, and will print whatever population a
+// further edge type gains, with no edit to this file. See IsCandidateEdge for
+// why the suppression keys on an equality against the group constants rather
+// than on Method being non-empty.
 
 // writeEdgeMetadataSection renders the per-edge metadata block client-side,
-// mirroring the server-side writeEdgeMetadataSection (tools_traverse_edge_metadata.go:170)
-// — the server render funcs live in package tools and cannot be imported here,
-// so this is the minimal client-side render reading the []knowledgev1.Edge
-// fields. A no-op when there are no edges (the carrier was empty /
-// include_edge_metadata was unset).
+// reading the []knowledgev1.Edge fields directly. A no-op when there are no
+// edges (the carrier was empty / include_edge_metadata was unset).
 func writeEdgeMetadataSection(sb *strings.Builder, edges []knowledgev1.Edge, direction string) {
 	if len(edges) == 0 {
 		return
@@ -43,8 +49,7 @@ func writeEdgeMetadataSection(sb *strings.Builder, edges []knowledgev1.Edge, dir
 }
 
 // edgeMetadataAnnotation builds a compact "confidence=0.92 · method=manual ·
-// weight=0.9 · evidence=..." annotation from the non-empty edge fields,
-// mirroring the server edgeMetadataAnnotation (tools_traverse_edge_metadata.go:34).
+// weight=0.9 · evidence=..." annotation from the non-empty edge fields.
 //
 // For a MULTI-CANDIDATE GROUP MEMBER the method and the raw group key are both
 // suppressed: the group block already states the method as its semantics, and
@@ -75,9 +80,12 @@ func edgeMetadataAnnotation(e *knowledgev1.Edge) string {
 	return strings.Join(parts, " · ")
 }
 
-// edgeMetadataJSON renders the edge-metadata rows for the JSON traversal output,
-// mirroring the server edgeMetadataMap (tools_traverse_edge_metadata.go:197):
+// edgeMetadataJSON renders the edge-metadata rows for the JSON traversal output:
 // one row per edge with from/to/edge_type plus the populated metadata fields.
+//
+// IT APPLIES NO GROUP GUARD, and that omission is deliberate rather than an
+// oversight: a JSON consumer is joining rows rather than reading prose, so it is
+// served by the raw fields including a group member's own method and key.
 func edgeMetadataJSON(edges []knowledgev1.Edge) []map[string]any {
 	rows := make([]map[string]any, 0, len(edges))
 	for i := range edges {

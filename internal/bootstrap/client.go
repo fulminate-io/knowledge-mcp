@@ -38,7 +38,7 @@ type toolSchema struct {
 	InputSchema json.RawMessage
 }
 
-// client is the MCP stdio client state. Fields are all client-side only —
+// client is the `knowledge` client state. Fields are all client-side only —
 // no graph store, no tool handler, no propagation loop (those live in the
 // server binary).
 type client struct {

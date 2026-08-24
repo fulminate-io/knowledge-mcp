@@ -34,7 +34,7 @@ type citedSourceFake struct {
 func (f *citedSourceFake) Execute(_ context.Context, req *knowledgev1.ExecuteRequest) (*knowledgev1.ExecuteResponse, error) {
 	q := req.GetQuery()
 	if q.GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_EDGES {
-		return &knowledgev1.ExecuteResponse{Edges: f.edges}, nil
+		return &knowledgev1.ExecuteResponse{Edges: bandNarrow(f.edges, q)}, nil
 	}
 	if req.GetTarget().GetGraph() == string(kgtypes.GraphCode) {
 		return enginetest.ResponseWithNodes(f.codeNodes...), nil

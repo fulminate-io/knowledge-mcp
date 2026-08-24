@@ -94,7 +94,7 @@ func selectAuthSources(f Config) (auth.Store, auth.TokenSource, bool) {
 	return authStore, tokenSource, false
 }
 
-// constructClient builds a stdio client that proxies to the graph server.
+// constructClient builds the client state that proxies to the graph server.
 // It does NOT open any .bin file and does NOT register key fragments —
 // the server binary owns graph storage. The sink is a RemoteUploadSink
 // over the IngestService client so local collection streams chunks to the

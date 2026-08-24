@@ -35,6 +35,30 @@ type langProfile struct {
 	// zero value meant SKIP would have disabled R5 for every existing row the
 	// moment it was added, with no edit to any of them.
 	SkipSiblingRung bool
+
+	// SkipDynamicRung is true when the dynamic rung would do this language more
+	// harm than good: R3's candidate set is every declaration of the name in
+	// the reference's own scope regardless of parent, which is an open set
+	// asserting "one of these, or something static analysis cannot reach".
+	//
+	// FALSE MEANS THE DYNAMIC RUNG APPLIES, which is what every language did
+	// before this field existed. The polarity follows SkipSiblingRung's rule
+	// verbatim and for the same reason: the zero value is today's behavior, so
+	// a row that omits the field is unchanged and the languages nobody derived
+	// cannot be moved by inattention.
+	//
+	// ONLY C SETS IT, AND ON A MEASURED NUMBER RATHER THAN A PREFERENCE. C's
+	// dispatch is written through function-pointer struct fields, and the
+	// dominant shape names the field the same way the enclosing function is
+	// named — measured on curl 8.9.1, three colliding names in one file, each
+	// a `static int domore_getsock(...)` whose own body dispatches
+	// `conn->handler->domore_getsock(...)`. The local function is the CALLER
+	// and provably not the referent, so an R3 group there would assert a false
+	// SELF-CALL. That is the class R2X's own comment calls entirely false
+	// rather than merely incomplete. The cost of the knob is separately
+	// measured at zero: C reached this rung through no path at all before its
+	// separators landed in the same change, so it removes no existing edge.
+	SkipDynamicRung bool
 }
 
 // langProfiles is an OVERRIDE table, not a closed enumeration: a language with
@@ -109,14 +133,23 @@ var langProfiles = map[treesitter.Language]langProfile{
 	treesitter.LangPHP:  {Separators: []string{"::", "->", "\\"}, ImportsBeatLocals: true},
 	treesitter.LangLua:  {Separators: []string{".", ":"}, ImportsBeatLocals: true},
 
-	// EXPLICITLY EMPTY, meaning never split. Neither language has a qualified
-	// call form, and both write dots inside ordinary bare names — a bash
-	// command name such as `./deploy.sh` — which the defaulting dot-split would
-	// tear into a bogus qualifier and name. An empty set also decides which
-	// rungs these two can ever reach: resolveRef enters resolveQualified only
-	// when the qualifier is non-empty, so c and bash resolve exclusively
-	// through the unqualified rungs.
-	treesitter.LangC:    {Separators: []string{}, ImportsBeatLocals: true},
+	// C DISPATCHES THROUGH FUNCTION-POINTER STRUCT FIELDS, written `h->flush(c)`
+	// and `ops.flush(c)`, so it does have a qualified call form and its
+	// separators are the arrow and the dot, longest first. This row was an
+	// EXPLICITLY EMPTY set until the dispatch capture landed, and the comment
+	// that stood here said c and bash "resolve exclusively through the
+	// unqualified rungs" — true of bash still, and false of c now.
+	//
+	// THE DYNAMIC RUNG IS OFF FOR C, and the whole derivation is on the
+	// SkipDynamicRung field doc rather than repeated here.
+	treesitter.LangC: {Separators: []string{"->", "."}, ImportsBeatLocals: true, SkipDynamicRung: true},
+
+	// EXPLICITLY EMPTY, meaning never split. Bash has no qualified call form,
+	// and it writes dots inside ordinary bare names — a command name such as
+	// `./deploy.sh` — which the defaulting dot-split would tear into a bogus
+	// qualifier and name. An empty set also decides which rungs it can ever
+	// reach: resolveRef enters resolveQualified only when the qualifier is
+	// non-empty, so bash resolves exclusively through the unqualified rungs.
 	treesitter.LangBash: {Separators: []string{}, ImportsBeatLocals: true},
 }
 

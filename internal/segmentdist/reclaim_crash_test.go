@@ -21,9 +21,9 @@ func realMergeBlobs(t *testing.T) (constituents []searchengine.SegmentBlob, merg
 	docs := vecContentDocs(2)
 
 	// Two single-doc segments → two constituents.
-	src := searchengine.New[[]byte, struct{}](hnsw.New(), searchengine.Options{
+	src := closeOnCleanup(t, searchengine.New[[]byte, struct{}](hnsw.New(), searchengine.Options{
 		MinSegmentDocs: 1, DeletesPctAllowed: 2.0, SegmentCountTarget: 1 << 30,
-	})
+	}))
 	defer src.Close()
 	for _, d := range docs {
 		require.NoError(t, src.Add([]searchengine.Document{d}))
@@ -32,9 +32,9 @@ func realMergeBlobs(t *testing.T) (constituents []searchengine.SegmentBlob, merg
 	require.Len(t, constituents, 2, "two single-doc constituents")
 
 	// One 2-doc segment → the merged blob (distinct content hash from either).
-	m := searchengine.New[[]byte, struct{}](hnsw.New(), searchengine.Options{
+	m := closeOnCleanup(t, searchengine.New[[]byte, struct{}](hnsw.New(), searchengine.Options{
 		MinSegmentDocs: 2, DeletesPctAllowed: 2.0, SegmentCountTarget: 1 << 30,
-	})
+	}))
 	defer m.Close()
 	require.NoError(t, m.Add(docs))
 	mergedBlobs := m.Export()
@@ -49,10 +49,10 @@ func realMergeBlobs(t *testing.T) (constituents []searchengine.SegmentBlob, merg
 // crash.
 func reloadCorpusFromDir(t *testing.T, dir string, want []searchengine.Document) map[searchengine.ExternalID]struct{} {
 	t.Helper()
-	fresh := newDiskSegmentCache(dir, 0)
-	eng := searchengine.New[[]byte, struct{}](hnsw.New(), searchengine.Options{
+	fresh := newDiskSegmentCache(dir, 0, adviceRandom)
+	eng := closeOnCleanup(t, searchengine.New[[]byte, struct{}](hnsw.New(), searchengine.Options{
 		MinSegmentDocs: 1, DeletesPctAllowed: 2.0, SegmentCountTarget: 1 << 30,
-	})
+	}))
 	defer eng.Close()
 
 	// Re-import every .seg file currently on disk via the fresh cache.
@@ -92,7 +92,7 @@ func newReclaimDMOverCache(t *testing.T, cache segmentL2Cache) *distManager[mock
 	t.Helper()
 	target := graphSelector(kgtypes.GraphCode, "crash")
 	src := newSharedServerFake().viewFor(target, "")
-	return newDistManager[mockQuery, mockStats](newMockEngine(), src, cache, target, "")
+	return newDistManager[mockQuery, mockStats](newMockEngine(t), src, cache, target, "")
 }
 
 // TestReclaimCrashSafety proves the Put-before-Remove crash ordering across the
@@ -116,7 +116,7 @@ func TestReclaimCrashSafety(t *testing.T) {
 	// constituents reclaimed; reload yields the full corpus (from the merged blob).
 	t.Run("clean_order_and_reclaim", func(t *testing.T) {
 		dir := t.TempDir()
-		real := newDiskSegmentCache(dir, 0)
+		real := newDiskSegmentCache(dir, 0, adviceRandom)
 		seedConstituents(real)
 		ic := newInstrumentedCache(real)
 		dm := newReclaimDMOverCache(t, ic)
@@ -143,7 +143,7 @@ func TestReclaimCrashSafety(t *testing.T) {
 	// yet deleted). Reload sees the union (superset) → full corpus.
 	t.Run("crash_between_put_and_remove", func(t *testing.T) {
 		dir := t.TempDir()
-		real := newDiskSegmentCache(dir, 0)
+		real := newDiskSegmentCache(dir, 0, adviceRandom)
 		seedConstituents(real)
 		ic := newInstrumentedCache(real)
 		ic.blockRemove = true // Put lands; Removes are no-ops (crash before disk delete)
@@ -162,7 +162,7 @@ func TestReclaimCrashSafety(t *testing.T) {
 	// untouched → reload reconstructs the full corpus from them.
 	t.Run("crash_before_put", func(t *testing.T) {
 		dir := t.TempDir()
-		real := newDiskSegmentCache(dir, 0)
+		real := newDiskSegmentCache(dir, 0, adviceRandom)
 		seedConstituents(real)
 		ic := newInstrumentedCache(real)
 		ic.blockPut = true    // merged Put is a no-op

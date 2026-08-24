@@ -121,6 +121,13 @@ func resolveDeclNameGroovy(declNode *sitter.Node, src []byte, chunkType string) 
 		return fieldNamed(declNode, src, "name", "identifier")
 	case "function_definition":
 		return fieldNamed(declNode, src, "function", "identifier")
+	case "function_declaration":
+		// An interface's abstract member binds the SAME `function:` field a
+		// concrete method does. Without this case the member chunk would exist
+		// carrying Name "", and a chunk with no name leaves its reference edges
+		// inert — so the member would be present in the graph and reachable by
+		// nothing.
+		return fieldNamed(declNode, src, "function", "identifier")
 	}
 	return ""
 }

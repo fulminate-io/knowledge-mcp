@@ -25,7 +25,10 @@ type fakeRebuildScanner struct {
 	calls      int
 	cursors    []string
 	graphTypes []string // the GraphType requested on each PipelineScan
-	pageIter   int
+	// afters records after_stamped_at_nanos per call — the field the server reads
+	// as the client's reported retention position.
+	afters   []int64
+	pageIter int
 }
 
 func (f *fakeRebuildScanner) PipelineScan(_ context.Context, req *knowledgev1.PipelineScanRequest) (*knowledgev1.PipelineScanResponse, error) {
@@ -34,6 +37,7 @@ func (f *fakeRebuildScanner) PipelineScan(_ context.Context, req *knowledgev1.Pi
 	f.calls++
 	f.cursors = append(f.cursors, req.GetAfterId())
 	f.graphTypes = append(f.graphTypes, req.GetGraphType())
+	f.afters = append(f.afters, req.GetAfterStampedAtNanos())
 	if f.pageIter >= len(f.pages) {
 		return &knowledgev1.PipelineScanResponse{Items: nil}, nil
 	}
@@ -70,6 +74,19 @@ type fakeRebuildState struct {
 	// noted records every NoteDeletedIDs call, so a test can prove a caller stamped
 	// the ids ITS OWN window reported rather than the merged set.
 	noted [][]searchengine.ExternalID
+
+	// mergeWatermark is the OTHER consumer's durable position, which the retention
+	// floor is taken against. Its zero value means that consumer has confirmed
+	// nothing, which correctly holds the reported floor at zero.
+	mergeWatermark    int64
+	mergeWatermarkErr error
+}
+
+// LoadMergeWatermark reports the delta-merge consumer's durable position.
+func (s *fakeRebuildState) LoadMergeWatermark(kgtypes.GraphType, string) (int64, error) {
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	return s.mergeWatermark, s.mergeWatermarkErr
 }
 
 func (s *fakeRebuildState) LoadRebuildState(kgtypes.GraphType, string) (int64, []searchengine.ExternalID, error) {

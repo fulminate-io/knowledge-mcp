@@ -59,7 +59,7 @@ func TestHNSWResetRoutesThroughReplaceLayer(t *testing.T) {
 		corpusA, bucketsA, corpusB, bucketsB)
 
 	svc, view := newSegmentHarness(t)
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(view))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(view)))
 	gt, name := kgtypes.GraphCode, "hnsw-replace-route"
 	target := graphSelector(gt, name)
 
@@ -152,7 +152,7 @@ func TestFinalizeReportsPerFormatRetirement(t *testing.T) {
 	const corpus = 1025
 
 	svc, view := newSegmentHarness(t)
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(view))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(view)))
 	gt, name := kgtypes.GraphCode, "per-format-retire"
 	target := graphSelector(gt, name)
 
@@ -230,7 +230,7 @@ func TestInvalidateLocalEvictsFromTheServingCache(t *testing.T) {
 
 	ctx := context.Background()
 	_, view := newSegmentHarness(t)
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(view))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(view)))
 	gt, name := kgtypes.GraphCode, "invalidate-serving"
 
 	// Seed a published corpus through the embed path: its blobs land in the SERVING

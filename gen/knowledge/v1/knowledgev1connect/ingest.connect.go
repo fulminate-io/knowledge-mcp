@@ -43,6 +43,9 @@ const (
 	// IngestServiceFinalizeStatusProcedure is the fully-qualified name of the IngestService's
 	// FinalizeStatus RPC.
 	IngestServiceFinalizeStatusProcedure = "/knowledge.v1.IngestService/FinalizeStatus"
+	// IngestServiceCollectManifestProcedure is the fully-qualified name of the IngestService's
+	// CollectManifest RPC.
+	IngestServiceCollectManifestProcedure = "/knowledge.v1.IngestService/CollectManifest"
 	// IngestServiceFetchCloudSubgraphProcedure is the fully-qualified name of the IngestService's
 	// FetchCloudSubgraph RPC.
 	IngestServiceFetchCloudSubgraphProcedure = "/knowledge.v1.IngestService/FetchCloudSubgraph"
@@ -55,6 +58,7 @@ type IngestServiceClient interface {
 	// FinalizeStatus reports whether a Finalize's detached tail has finished.
 	// Poll it with the finalize_id from FinalizeResponse.
 	FinalizeStatus(context.Context, *connect.Request[v1.FinalizeStatusRequest]) (*connect.Response[v1.FinalizeStatusResponse], error)
+	CollectManifest(context.Context, *connect.Request[v1.CollectManifestRequest]) (*connect.Response[v1.CollectManifestResponse], error)
 	FetchCloudSubgraph(context.Context, *connect.Request[v1.FetchCloudSubgraphRequest]) (*connect.Response[v1.FetchCloudSubgraphResponse], error)
 }
 
@@ -87,6 +91,12 @@ func NewIngestServiceClient(httpClient connect.HTTPClient, baseURL string, opts 
 			connect.WithSchema(ingestServiceMethods.ByName("FinalizeStatus")),
 			connect.WithClientOptions(opts...),
 		),
+		collectManifest: connect.NewClient[v1.CollectManifestRequest, v1.CollectManifestResponse](
+			httpClient,
+			baseURL+IngestServiceCollectManifestProcedure,
+			connect.WithSchema(ingestServiceMethods.ByName("CollectManifest")),
+			connect.WithClientOptions(opts...),
+		),
 		fetchCloudSubgraph: connect.NewClient[v1.FetchCloudSubgraphRequest, v1.FetchCloudSubgraphResponse](
 			httpClient,
 			baseURL+IngestServiceFetchCloudSubgraphProcedure,
@@ -101,6 +111,7 @@ type ingestServiceClient struct {
 	collectChunk       *connect.Client[v1.CollectChunkRequest, v1.CollectChunkResponse]
 	finalize           *connect.Client[v1.FinalizeRequest, v1.FinalizeResponse]
 	finalizeStatus     *connect.Client[v1.FinalizeStatusRequest, v1.FinalizeStatusResponse]
+	collectManifest    *connect.Client[v1.CollectManifestRequest, v1.CollectManifestResponse]
 	fetchCloudSubgraph *connect.Client[v1.FetchCloudSubgraphRequest, v1.FetchCloudSubgraphResponse]
 }
 
@@ -119,6 +130,11 @@ func (c *ingestServiceClient) FinalizeStatus(ctx context.Context, req *connect.R
 	return c.finalizeStatus.CallUnary(ctx, req)
 }
 
+// CollectManifest calls knowledge.v1.IngestService.CollectManifest.
+func (c *ingestServiceClient) CollectManifest(ctx context.Context, req *connect.Request[v1.CollectManifestRequest]) (*connect.Response[v1.CollectManifestResponse], error) {
+	return c.collectManifest.CallUnary(ctx, req)
+}
+
 // FetchCloudSubgraph calls knowledge.v1.IngestService.FetchCloudSubgraph.
 func (c *ingestServiceClient) FetchCloudSubgraph(ctx context.Context, req *connect.Request[v1.FetchCloudSubgraphRequest]) (*connect.Response[v1.FetchCloudSubgraphResponse], error) {
 	return c.fetchCloudSubgraph.CallUnary(ctx, req)
@@ -131,6 +147,7 @@ type IngestServiceHandler interface {
 	// FinalizeStatus reports whether a Finalize's detached tail has finished.
 	// Poll it with the finalize_id from FinalizeResponse.
 	FinalizeStatus(context.Context, *connect.Request[v1.FinalizeStatusRequest]) (*connect.Response[v1.FinalizeStatusResponse], error)
+	CollectManifest(context.Context, *connect.Request[v1.CollectManifestRequest]) (*connect.Response[v1.CollectManifestResponse], error)
 	FetchCloudSubgraph(context.Context, *connect.Request[v1.FetchCloudSubgraphRequest]) (*connect.Response[v1.FetchCloudSubgraphResponse], error)
 }
 
@@ -159,6 +176,12 @@ func NewIngestServiceHandler(svc IngestServiceHandler, opts ...connect.HandlerOp
 		connect.WithSchema(ingestServiceMethods.ByName("FinalizeStatus")),
 		connect.WithHandlerOptions(opts...),
 	)
+	ingestServiceCollectManifestHandler := connect.NewUnaryHandler(
+		IngestServiceCollectManifestProcedure,
+		svc.CollectManifest,
+		connect.WithSchema(ingestServiceMethods.ByName("CollectManifest")),
+		connect.WithHandlerOptions(opts...),
+	)
 	ingestServiceFetchCloudSubgraphHandler := connect.NewUnaryHandler(
 		IngestServiceFetchCloudSubgraphProcedure,
 		svc.FetchCloudSubgraph,
@@ -173,6 +196,8 @@ func NewIngestServiceHandler(svc IngestServiceHandler, opts ...connect.HandlerOp
 			ingestServiceFinalizeHandler.ServeHTTP(w, r)
 		case IngestServiceFinalizeStatusProcedure:
 			ingestServiceFinalizeStatusHandler.ServeHTTP(w, r)
+		case IngestServiceCollectManifestProcedure:
+			ingestServiceCollectManifestHandler.ServeHTTP(w, r)
 		case IngestServiceFetchCloudSubgraphProcedure:
 			ingestServiceFetchCloudSubgraphHandler.ServeHTTP(w, r)
 		default:
@@ -194,6 +219,10 @@ func (UnimplementedIngestServiceHandler) Finalize(context.Context, *connect.Requ
 
 func (UnimplementedIngestServiceHandler) FinalizeStatus(context.Context, *connect.Request[v1.FinalizeStatusRequest]) (*connect.Response[v1.FinalizeStatusResponse], error) {
 	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("knowledge.v1.IngestService.FinalizeStatus is not implemented"))
+}
+
+func (UnimplementedIngestServiceHandler) CollectManifest(context.Context, *connect.Request[v1.CollectManifestRequest]) (*connect.Response[v1.CollectManifestResponse], error) {
+	return nil, connect.NewError(connect.CodeUnimplemented, errors.New("knowledge.v1.IngestService.CollectManifest is not implemented"))
 }
 
 func (UnimplementedIngestServiceHandler) FetchCloudSubgraph(context.Context, *connect.Request[v1.FetchCloudSubgraphRequest]) (*connect.Response[v1.FetchCloudSubgraphResponse], error) {

@@ -182,7 +182,7 @@ func TestReconcileFetchesManifestEntriesMissingFromL2(t *testing.T) {
 		view := svc.viewFor(target, "")
 		view.listFromManifest = true
 		view.verifies = true
-		return NewManager(loginStateStub{loggedIn: true}, base, 0, withSegmentSource(view)), view
+		return closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, base, 0, withSegmentSource(view))), view
 	}
 
 	// ---- STAGE A: the PRIOR corpus — a rebuild that emitted only 12 of 16 buckets.
@@ -190,19 +190,29 @@ func TestReconcileFetchesManifestEntriesMissingFromL2(t *testing.T) {
 	if _, _, swapped := driveRebuild(t, mgrA, name, groups, buckets[:priorBuckets]); !swapped {
 		t.Fatal("stage A: the prior rebuild did not land a manifest swap")
 	}
+	hnswBeforeQuarantine := l2Files(t, base, hnsw.New().Name())
 	t.Logf("STAGE A (prior state): manifestRefs=%d | L2 hnsw=%d bm25=%d",
-		len(svc.manifestMetas(target, "")), l2Files(t, base, "hnsw"), l2Files(t, base, "bm25"))
+		len(svc.manifestMetas(target, "")), hnswBeforeQuarantine, l2Files(t, base, bm25.New().Name()))
 
 	// ---- STAGE B: the operator quarantines the L2 blob pools. Server untouched.
+	// KNOWN-POSITIVE FIRST: the want-zero below is only meaningful if the same
+	// measurement reads NON-zero before the quarantine. A count taken against a
+	// directory that does not exist also returns 0, so without this the assertion
+	// would pass identically whether the quarantine worked or the format name had
+	// drifted out from under l2Files.
+	if hnswBeforeQuarantine == 0 {
+		t.Fatalf("stage A: L2 hnsw=0 before the quarantine — the want-zero at stage B "+
+			"would pass vacuously; l2Files is looking at the wrong tree (format %q)", hnsw.New().Name())
+	}
 	quarantineL2(t, base, name)
-	if got := l2Files(t, base, "hnsw"); got != 0 {
+	if got := l2Files(t, base, hnsw.New().Name()); got != 0 {
 		t.Fatalf("stage B: L2 hnsw=%d, want 0 after the quarantine", got)
 	}
 
 	// ---- STAGE C: the FULL rebuild. Ships only the buckets the server lacks.
 	mgrC, _ := newMgr()
 	builtC, supC, swappedC := driveRebuild(t, mgrC, name, groups, buckets)
-	hnswL2, bm25L2 := l2Files(t, base, "hnsw"), l2Files(t, base, "bm25")
+	hnswL2, bm25L2 := l2Files(t, base, hnsw.New().Name()), l2Files(t, base, bm25.New().Name())
 	t.Logf("STAGE C (full rebuild): built=%d swapped=%v superseded=%d | manifest=%d per format | L2 hnsw=%d bm25=%d",
 		builtC, swappedC, len(supC), len(svc.manifestMetas(target, ""))/2, hnswL2, bm25L2)
 
@@ -352,7 +362,7 @@ func TestDegradedSourceStillServesL2WithWarning(t *testing.T) {
 		view := svc.viewFor(target, "")
 		view.listFromManifest = true
 		view.verifies = true
-		return NewManager(loginStateStub{loggedIn: true}, base, 0, withSegmentSource(view)), view
+		return closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, base, 0, withSegmentSource(view))), view
 	}
 
 	// Prior state + quarantine + full rebuild: the same partial-cache shape as the

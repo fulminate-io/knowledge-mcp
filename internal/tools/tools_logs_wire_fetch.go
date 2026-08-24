@@ -4,7 +4,7 @@
 //
 // Client architecture: the persistent log graph lives on the
 // server. Client handlers can't reach for store.Store() anymore — the
-// production stdio binary has no local DB initialized. Instead they
+// production client binary has no local DB initialized. Instead they
 // bulk-fetch the templates / streams / chunks they need via the
 // GraphCaller surface (deps.go), then assemble a *logState (the plain
 // pre-fetched value type) and run formatters against that.

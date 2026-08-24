@@ -76,30 +76,34 @@ func (c *propagationCorpus) Execute(_ context.Context, req *knowledgev1.ExecuteR
 		return &knowledgev1.ExecuteResponse{}, nil
 	}
 	if q.GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_EDGES {
-		var wantCharged, wantContains bool
+		// UNION, not first-match. A RETURN_MODE_EDGES query carries a SET of edge
+		// types and the wire returns every edge matching ANY of them; an empty set
+		// means every type. Branching to a single bucket was adequate only while
+		// each caller requested exactly one type, and the unified pivot read
+		// requests seven at once — a first-match fake would answer that with the
+		// charge edges alone and starve the adjacency.
+		want := map[string]bool{}
 		if sel := q.GetSelection(); sel != nil {
 			for _, et := range sel.GetEdgeTypes() {
-				switch et {
-				case string(kgtypes.EdgeChargedBy):
-					wantCharged = true
-				case string(kgtypes.EdgeKGContains):
-					wantContains = true
-				}
+				want[et] = true
 			}
 		}
-		if wantCharged {
-			var ce []*knowledgev1.Edge
+		keep := func(t string) bool { return len(want) == 0 || want[t] }
+
+		var out []*knowledgev1.Edge
+		if keep(string(kgtypes.EdgeChargedBy)) {
 			for _, tid := range c.order {
 				for _, chID := range c.chargeOf[tid] {
-					ce = append(ce, &knowledgev1.Edge{Type: string(kgtypes.EdgeChargedBy), FromId: tid, ToId: chID})
+					out = append(out, &knowledgev1.Edge{Type: string(kgtypes.EdgeChargedBy), FromId: tid, ToId: chID})
 				}
 			}
-			return &knowledgev1.ExecuteResponse{Edges: ce}, nil
 		}
-		if wantContains {
-			return &knowledgev1.ExecuteResponse{}, nil
+		for _, e := range c.adjEdges {
+			if keep(e.Type) {
+				out = append(out, e)
+			}
 		}
-		return &knowledgev1.ExecuteResponse{Edges: c.adjEdges}, nil
+		return &knowledgev1.ExecuteResponse{Edges: bandNarrow(out, q)}, nil
 	}
 	if q.GetById() != "" {
 		return &knowledgev1.ExecuteResponse{}, nil

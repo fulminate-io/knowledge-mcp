@@ -175,7 +175,10 @@ func chunkFixture(t *testing.T, files []fixtureFile) []*treesitter.Result {
 // indexResults builds a declIndex from chunker results through the SAME
 // production path chunkResultsToPopulate uses: DeduplicateChunks first (it
 // rewrites chunk.Name and so changes ChunkNodeID), comment chunks skipped
-// because populate never creates a node for one, then indexDeclaration.
+// because populate never creates a node for one, then indexDeclaration, then
+// the completed-index signature-key pass — which production runs at the same
+// point, immediately before the derivation that reads SigKey. Omitting it here
+// would leave every SigKey empty and make every key assertion vacuous.
 func indexResults(t *testing.T, results []*treesitter.Result) *declIndex {
 	t.Helper()
 	DeduplicateChunks(results)
@@ -193,5 +196,6 @@ func indexResults(t *testing.T, results []*treesitter.Result) *declIndex {
 			indexDeclaration(ix, r, chunk, ChunkNodeID(chunk))
 		}
 	}
+	ix.resolveSigKeys()
 	return ix
 }

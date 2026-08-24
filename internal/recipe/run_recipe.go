@@ -34,7 +34,9 @@ import (
 //  1. ParseSourceManifest(opts.SourceManifest) → sourceSlug, recipeName.
 //  2. loadRecipeByName → the recipe node; parseWithCache → the AST.
 //  3. read source_graph_type / target_graph_type / target_name from the recipe
-//     node metadata → TargetSpec; validate expectedSourceType.
+//     node metadata → TargetSpec; validate expectedSourceType; refuse a
+//     collector-owned target_graph_type, and separately refuse the recipe store
+//     itself (see the two target fences below).
 //  4. loadSourceView over (source_graph_type, sourceGraphName).
 //  5. if opts.Force: forceDeleteBySource over the target BEFORE interpreting.
 //  6. Interpret → in-memory Result.
@@ -78,6 +80,32 @@ func RunRecipe(
 		return nil, fmt.Errorf(
 			"recipe %q: collect type %q does not match the recipe's source_graph_type %q",
 			recipeName, expectedSourceType, sourceGTStr,
+		)
+	}
+	// Target fence, the mirror of the external-collector fence in
+	// RunExternal (externalcollector/collector.go:64): refuse a target graph type
+	// a COLLECTOR owns. writeResult ships the recipe's emission set through the
+	// same Sink a collect run uses, so a recipe declaring target_graph_type "code"
+	// would produce a full-replace collect against a real code graph whose epoch
+	// sweep removes everything the recipe did not emit. Placed BEFORE both
+	// destructive channels — the force path's hard DELETE as well as the write.
+	if kgtypes.IsCollectorOwnedGraphType(targetGTStr) {
+		return nil, fmt.Errorf(
+			"recipe %q: target_graph_type %q is collector-owned — refusing to run a recipe against a collector graph (its epoch sweep would remove everything the recipe did not emit)",
+			recipeName, targetGTStr,
+		)
+	}
+	// Self-destruction fence, SEPARATE from the collector-owned one above and
+	// carrying its own reason. The transformers graph is the recipe store — it
+	// holds every recipe node, including the one this call is executing. Nothing
+	// COLLECTS it (recipes are authored in by mutate), so it is deliberately not
+	// part of IsCollectorOwnedGraphType: folding it in would make that predicate's
+	// name false. But writeResult against it is still a full-replace collect, and
+	// its epoch sweep would delete the recipes themselves.
+	if targetGTStr == string(kgtypes.GraphTransformers) {
+		return nil, fmt.Errorf(
+			"recipe %q: target_graph_type %q is the recipe store — refusing to run a recipe against it (a full-replace collect would delete the recipes themselves, including the one running)",
+			recipeName, targetGTStr,
 		)
 	}
 	target := TargetSpec{GraphType: kgtypes.GraphType(targetGTStr), Name: targetName}

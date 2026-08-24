@@ -13,6 +13,11 @@ func cppQueries() *QuerySet {
 			(namespace_definition name: (namespace_identifier) @name) @decl
 			(template_declaration) @decl
 			(enum_specifier name: (type_identifier) @name) @decl
+			(translation_unit (declaration declarator: (init_declarator declarator: (identifier) @name)) @decl)
+			(declaration_list (declaration declarator: (init_declarator declarator: (identifier) @name)) @decl)
+			(field_declaration_list (field_declaration declarator: (field_identifier) @name) @decl)
+			(field_declaration declarator: (function_declarator declarator: (field_identifier) @name)) @decl
+			(function_definition declarator: (function_declarator declarator: (qualified_identifier) @name)) @decl
 		]`,
 		// The qualified_identifier arm is what makes `ns::g(3)` emit a callee at
 		// all. The field_expression node spans the arrow form too, so `ptr->m2`

@@ -27,7 +27,11 @@ package parser
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"log/slog"
+	"sort"
+	"strconv"
 	"strings"
 )
 
@@ -250,4 +254,51 @@ func DiscoverFilesReporting(ctx context.Context, repoDir string, opts DiscoveryO
 		return files, rep, err
 	}
 	return files, rep, nil
+}
+
+// DiscoveryFingerprint is a canonical digest of the discovery CONFIGURATION a
+// collect ran under: which discovery path actually executed (git vs filesystem
+// walk, and whether exclusions were lifted), plus the caller's package-prefix
+// scoping and lift choice.
+//
+// WHY IT EXISTS. A scoped or differently-configured collect emits nothing for the
+// files it did not visit, and a scoped-out file leaves NO trace in the result —
+// so downstream there is nothing to derive the configuration from. Without this
+// value a collect scoped by package prefixes would name every out-of-scope path
+// as deleted, and every deletion guard would admit it: the walk was complete
+// (nothing was unreadable), the ratio is ordinary for a subtree, and each named
+// path really does have a live collector-owned node. This is the one place a
+// legitimate user action could otherwise destroy data.
+//
+// DETERMINISM IS THE WHOLE PROPERTY. It digests only VALUES the caller chose and
+// the path that ran — never a timestamp, never an absolute path, never a map in
+// iteration order. Prefixes are sorted before digesting. A fingerprint that
+// varied run-to-run would differ on every collect, trip the discovery-change
+// trigger every time, and leave the incremental diff PERMANENTLY disarmed for
+// every repository — a quiet death with every gate still green, which is why the
+// determinism has a dedicated test rather than only a comment.
+func DiscoveryFingerprint(discoveryPath string, opts DiscoveryOptions) string {
+	prefixes := append([]string(nil), opts.PackagePrefixes...)
+	sort.Strings(prefixes)
+	var b strings.Builder
+	b.WriteString("path=")
+	b.WriteString(discoveryPath)
+	b.WriteString("\nlift=")
+	b.WriteString(strconv.FormatBool(opts.LiftExclusions))
+	// LENGTH-PREFIXED, NOT DELIMITER-JOINED. Any join is ambiguous: a single
+	// prefix that happens to contain the delimiter digests identically to the two
+	// prefixes it looks like, so two different configurations would compare equal
+	// and a scoping change between them would go undetected. Writing the count and
+	// then each prefix's byte length makes the encoding injective regardless of
+	// what a path contains.
+	b.WriteString("\nprefixes=")
+	b.WriteString(strconv.Itoa(len(prefixes)))
+	for _, p := range prefixes {
+		b.WriteString(":")
+		b.WriteString(strconv.Itoa(len(p)))
+		b.WriteString(":")
+		b.WriteString(p)
+	}
+	sum := sha256.Sum256([]byte(b.String()))
+	return hex.EncodeToString(sum[:])
 }

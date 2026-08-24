@@ -69,7 +69,7 @@ func TestPropagationVectorDeps_LazySegmentManager(t *testing.T) {
 		_, _, err := resident.VectorByID(ctx, "any-node")
 		require.Error(t, err, "precondition: unavailable before wiring")
 
-		c.ensureSegmentManager(t.TempDir())
+		c.ensureSegmentManager(t.TempDir(), 0)
 		c.markPipelineReady()
 		require.NotNil(t, c.segmentMgr, "the production wiring path assigned the manager")
 
@@ -110,7 +110,7 @@ func TestPropagationVectorDeps_LazySegmentManager(t *testing.T) {
 		// the handle, THEN publish it.
 		go func() {
 			defer wg.Done()
-			c.ensureSegmentManager(t.TempDir())
+			c.ensureSegmentManager(t.TempDir(), 0)
 			c.markPipelineReady()
 		}()
 		wg.Wait()

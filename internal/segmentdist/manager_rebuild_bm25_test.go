@@ -51,7 +51,7 @@ func TestBM25ResetRetiresPriorLayer(t *testing.T) {
 		"the fixture must cross a bucket-count boundary")
 
 	svc, view := newSegmentHarness(t)
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(view))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(view)))
 	gt, name := kgtypes.GraphCode, "bm25-reset"
 	target := graphSelector(gt, name)
 
@@ -107,7 +107,7 @@ func TestReplaceLayerShipsBeforeSwapping(t *testing.T) {
 	const corpus = 1025
 
 	svc, view := newSegmentHarness(t)
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(view))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(view)))
 	gt, name := kgtypes.GraphCode, "bm25-ship-order"
 	target := graphSelector(gt, name)
 

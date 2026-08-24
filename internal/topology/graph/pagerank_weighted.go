@@ -17,8 +17,8 @@ import (
 // consumer to opt in to the new signal.
 //
 // How the weight gets there: an edge's Weight carries a relative strength
-// signal — for code CALLS edges that's the per-callsite count from
-// tree-sitter, preserved through the Go RTA merge. The graph serializer
+// signal — for code CALLS edges that's the per-callsite count the
+// tree-sitter chunker emits. The graph serializer
 // round-trip keeps the weight intact across save/load. The wire-backed
 // gonum builder materializes those weights via SetWeightedEdge with a
 // 0 → 1.0 fallback for any edge that was never weighted (legacy graphs,

@@ -20,7 +20,7 @@ func TestLocalSegmentSource_ZeroNetworkOverL2(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	cache := newDiskSegmentCache(t.TempDir(), 0)
+	cache := newDiskSegmentCache(t.TempDir(), 0, adviceRandom)
 	src := newLocalSegmentSource(cache, "hnsw")
 
 	// Seed two content-addressed blobs into L2.

@@ -127,7 +127,7 @@ func goRows(results []*treesitter.Result, ix *declIndex) *goRow {
 					files = append(files, c.File)
 				}
 				row.ambiguousListing = append(row.ambiguousListing,
-					groupKey(e.Ref.File, e.RefByte, string(e.Type), e.ToID)+"|"+
+					groupKey(e.ToID, string(e.Type), e.FromID, 0)+"|"+
 						strings.Join(files, ","))
 			},
 		},

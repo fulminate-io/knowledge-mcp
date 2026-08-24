@@ -57,7 +57,9 @@ func (s slotIndex) containerSlot(node *sitter.Node, ownSlot int) int {
 // assertions that pin containment endpoint names stay meaningful.
 //
 // The three reference shapes keep their captured ToID and gain the reference
-// site, the emitting declaration's byte offset, and their own FromChunk slot.
+// site and their own FromChunk slot. They carry NO byte offset: the ambiguity
+// group key they feed is position-independent, and a position kept here for no
+// reader is what lets a position-derived identity come back.
 //
 // testOrigin marks a declaration the caller found lexically INSIDE a test
 // block, and it changes exactly one thing: the type its CALL edges carry. Type
@@ -104,7 +106,7 @@ func (c *Chunker) emitDeclarationEdges(
 	}
 
 	ownSlot := slots.declSlot(declNode)
-	declRef := refForParent(ref, parentName)
+	declRef := refForDeclaration(ref, parentName, qualifierTypesFor(lang, declNode, src))
 
 	// File → declaration CONTAINS. FromID is the file path, which is already a
 	// graph node ID, and ToID is the qualified name as before; ToChunk makes
@@ -143,7 +145,7 @@ func (c *Chunker) emitDeclarationEdges(
 	}
 
 	if name != "" {
-		refEdges := c.extractCallEdges(declNode, src, fileCtx.PackageName, symbolName, cqs)
+		refEdges := c.extractCallEdges(declNode, src, lang, fileCtx.PackageName, symbolName, cqs)
 		if testOrigin {
 			for i := range refEdges {
 				refEdges[i].Type = EdgeTestCalls
@@ -151,12 +153,18 @@ func (c *Chunker) emitDeclarationEdges(
 		}
 		refEdges = append(refEdges,
 			aliasTypeRefTargets(c.extractTypeRefEdges(declNode, src, fileCtx.PackageName, symbolName, cqs), typeRefAlias)...)
-		result.Edges = append(result.Edges, attachRefSite(refEdges, declRef, declNode, ownSlot)...)
+		result.Edges = append(result.Edges, attachRefSite(refEdges, declRef, ownSlot)...)
 	}
 
-	// For Go struct types: extract EMBEDS edges.
+	// For Go type declarations: extract EMBEDS edges. BOTH BODY KINDS, through
+	// goAllEmbeds — a struct's embedded fields and an interface's embedded
+	// elements alike. The combined extractor is the SINGLE definition of what an
+	// embed is; the type-facts carrier reads the same one, and an inline
+	// concatenation at either site is how two spellings of one rule drift apart.
+	// An embed's target is the spelling AS WRITTEN, so one naming nothing in-repo
+	// resolves to nothing later and lands no edge.
 	if lang == LangGo && chunkType == "type_declaration" {
-		embeds := extractGoEmbeds(declNode, src)
+		embeds := goAllEmbeds(declNode, src)
 		embedEdges := make([]Edge, 0, len(embeds))
 		for _, embedded := range embeds {
 			embedEdges = append(embedEdges, Edge{
@@ -165,7 +173,7 @@ func (c *Chunker) emitDeclarationEdges(
 				Type:   EdgeEmbeds,
 			})
 		}
-		result.Edges = append(result.Edges, attachRefSite(embedEdges, declRef, declNode, ownSlot)...)
+		result.Edges = append(result.Edges, attachRefSite(embedEdges, declRef, ownSlot)...)
 	}
 }
 
@@ -188,22 +196,47 @@ func refForParent(fileRef *RefSite, parentName string) *RefSite {
 	return &derived
 }
 
+// refForDeclaration returns the reference site a declaration's edges carry when
+// that declaration may also carry qualifier types.
+//
+// It is refForParent plus one thing: a declaration with a non-nil qualifier-type
+// map ALWAYS gets its own site copy, even when it has no container and would
+// otherwise share the file-level pointer. That is forced by the field's
+// per-declaration nature, documented on RefSite.QualifierTypes — assigning a
+// per-declaration map onto the shared file-level site would publish one
+// declaration's locals to every other declaration in the file.
+//
+// The nil branch delegates to refForParent verbatim, which is what keeps every
+// language with no registered arm byte-identical rather than merely equivalent:
+// with a nil map the site a declaration carries is the exact pointer it carried
+// before this rung existed, allocation included.
+func refForDeclaration(fileRef *RefSite, parentName string, qt map[string]QualType) *RefSite {
+	if qt == nil {
+		return refForParent(fileRef, parentName)
+	}
+	derived := *fileRef
+	derived.Parent = parentName
+	derived.QualifierTypes = qt
+	return &derived
+}
+
 // attachRefSite stamps the reference carrier onto every edge in a batch: the
 // per-file *RefSite pointer (the SAME pointer for every reference edge in the
-// file — one pointer word per edge, never a copy), the emitting declaration's
-// StartByte, and that declaration's own chunk slot.
+// file — one pointer word per edge, never a copy) and the emitting
+// declaration's own chunk slot.
 //
-// RefByte must be read here, at emission, while the node is in hand: it cannot
-// be recovered downstream, because parser/populate.go sorts each result's
-// chunks by StartByte before resolution runs and the emission-order slot
-// arrangement is gone by then. FromChunk makes a reference edge's own endpoint
-// exact by construction, so resolution never has to re-parse the qualified
-// string to find out which declaration emitted it.
-func attachRefSite(edges []Edge, ref *RefSite, declNode *sitter.Node, ownSlot int) []Edge {
-	refByte := int(declNode.StartByte())
+// NO BYTE OFFSET IS STAMPED. This used to also record the emitting
+// declaration's StartByte for the ambiguity group key, and it had to be read
+// here because parser/populate.go sorts each result's chunks by StartByte
+// before resolution and the emission-order arrangement is gone by then. The key
+// is position-independent now (parser.groupKey), so the offset has no reader —
+// and a position field kept "in case" is what invites a position-derived
+// identity back. FromChunk still makes a reference edge's own endpoint exact by
+// construction, so resolution never has to re-parse the qualified string to
+// find out which declaration emitted it.
+func attachRefSite(edges []Edge, ref *RefSite, ownSlot int) []Edge {
 	for i := range edges {
 		edges[i].Ref = ref
-		edges[i].RefByte = refByte
 		edges[i].FromChunk = ownSlot
 	}
 	return edges

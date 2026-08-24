@@ -45,7 +45,7 @@ func TestCoverageGateStillRefusesDegenerateAfterGroupSwap(t *testing.T) {
 
 	// Ship a real multi-segment corpus so the coverage denominator is armed.
 	svc, gc := newSegmentHarness(t)
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 	const corpusSegs = 3
 	for b := range corpusSegs {
 		batch := hnswVecDocs(searchCorpusN)
@@ -79,7 +79,7 @@ func TestCoverageGateStillRefusesDegenerateAfterGroupSwap(t *testing.T) {
 		// documents — the exact shape a degenerate live set has: non-empty, a genuine
 		// subset of what the server holds, and far below the coverage ratio. This is
 		// the state the discard left the client in during the incident.
-		fresh := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+		fresh := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 		require.NoError(t, fresh.AddAndMarkDirty(ctx, gt, name, hnswVecDocs(4)))
 		freshDM := fresh.managerFor(gt, name)
 
@@ -124,7 +124,7 @@ func TestSwapTimeGateRefusesADegenerateBuiltLayer(t *testing.T) {
 	// arm can actually fire. Without this the tiny-graph disarm makes every verdict a
 	// pass and the refusal leg is vacuous.
 	svc, gc := newSegmentHarness(t)
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 	const corpusSegs = 3
 	for b := range corpusSegs {
 		batch := hnswVecDocs(searchCorpusN)

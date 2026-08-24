@@ -74,7 +74,7 @@ func TestFUL1334CorpusVerification(t *testing.T) {
 		for _, lang := range jsmodule.ArmedLanguages() {
 			treesitter.UnregisterBindsResolver(lang)
 		}
-		// THE FLAG NOW COVERS THREE TICKETS' ARMS AND ITS NAME NO LONGER SAYS
+		// THE FLAG NOW COVERS FOUR TICKETS' ARMS AND ITS NAME NO LONGER SAYS
 		// SO: the baseline is the ALL-ARMS-OFF picture. Leaving any family
 		// registered would make its rows identical in both artifacts, so a
 		// `<family>_dynamic_groups < baseline` gate would compare a number
@@ -82,8 +82,27 @@ func TestFUL1334CorpusVerification(t *testing.T) {
 		// of them a landed gate's file name.
 		treesitter.UnregisterBindsResolver(treesitter.LangGo)
 		treesitter.UnregisterLanguageBindsResolvers()
+		// The Go qualifier-type arm, for the identical reason: leaving it
+		// registered would let the typed-qualifier rung bind in the BASELINE
+		// column too, so the baseline would again be compared against itself.
+		//
+		// BOTH R2T ARMS COME OFF, and the second one is belt-and-braces rather
+		// than strictly required TODAY. Censused at the time of writing:
+		// declRec.ResultTypes has exactly one reader, inside
+		// resolveTypedQualifier, and that reader is reachable only AFTER a
+		// successful ref.QualifierTypes lookup — whose nil check is the rung's
+		// first branch. So unregistering the qualifier-type arm alone already
+		// disarms the rung completely, and the type-facts arm is inert without
+		// it. That guarantee is CONTINGENT on every future reader of TypeFacts
+		// sitting downstream of the same gate, which is not a property anything
+		// enforces, so the second line makes the baseline unconditional instead
+		// of conditional on a code shape. It also matches BenchmarkChunkFile's
+		// arm_off side, which takes both arms off for the same reason.
+		treesitter.UnregisterQualifierTypes(treesitter.LangGo)
+		treesitter.UnregisterTypeFacts(treesitter.LangGo)
 		artifact = corpusArmOffArtifact
-		t.Logf("%s set: ECMAScript and Go arms unregistered; writing the BASELINE column to %s",
+		t.Logf("%s set: ECMAScript, Go binds, Go qualifier-type and Go type-facts arms "+
+			"unregistered; writing the BASELINE column to %s",
 			corpusArmOffEnv, artifact)
 	}
 
@@ -92,7 +111,7 @@ func TestFUL1334CorpusVerification(t *testing.T) {
 	require.NoError(t, err)
 	require.NotEmpty(t, files, "control: discovery found no files under %s", root)
 
-	results, err := ChunkFilesParallel(ctx, root, files)
+	results, _, err := ChunkFilesParallel(ctx, root, files)
 	require.NoError(t, err)
 	require.NotEmpty(t, results, "control: chunking produced no results")
 

@@ -37,6 +37,11 @@ import (
 // makes a signature drift on either a build failure at the assertions below.
 type coverageArm interface {
 	load(context.Context) error
+	// loadIfResident is load's DECLINING twin, for the background arms: an evicted
+	// pool is skipped rather than re-materialized. load stays declared beside it —
+	// the consumer arms still reach it, and dropping it would remove the drift
+	// tripwire the assertions below exist for.
+	loadIfResident(context.Context) (bool, error)
 	recoverIfDegenerate(context.Context) error
 	recoverIfDegenerateWithShipped(context.Context, int, bool) error
 	residentDocCount() int
@@ -58,7 +63,7 @@ var (
 // seam. engine is a generic FIELD, so the interface cannot reach it directly.
 func (m *distManager[Q, S]) residentDocCount() int { return m.engine.ResidentDocCount() }
 
-// armFormat exposes this engine's segment format name ("hnsw", "bm25") through the
+// armFormat exposes this engine's segment format name (each format supplies its own) through the
 // coverageArm seam, for per-arm verdict attribution and the per-arm debug record.
 // format is a plain FIELD, hence the wrapper.
 func (m *distManager[Q, S]) armFormat() string { return m.format }
@@ -73,6 +78,26 @@ func (m *distManager[Q, S]) armFormat() string { return m.format }
 // gate. An arm whose post-load resident already clears the floor is healthy without
 // reading a denominator, so it reports Shipped 0 / Disarm false — that is a
 // short-circuit artifact, not a measurement of an empty corpus.
+//
+// Evicted follows exactly the same reasoning one step earlier: the residency budget
+// unloaded this pool to reclaim memory, the background probe declines to resurrect
+// it, and so every count below is a short-circuit artifact of a pool NOBODY LOADED
+// rather than a measurement — ResidentAfterLoad/ResidentAfterRecover 0, Shipped 0,
+// Disarm false, Degenerate false, Err nil.
+//
+// CONSUMER WARNING, and it is the reason Evicted is a field rather than an inference:
+// {Evicted:true, Degenerate:false, Err:nil} is INDISTINGUISHABLE FROM
+// MEASURED-AND-HEALTHY to any consumer that does not read Evicted. Every consumer of
+// this type must branch on it. The four that exist:
+//   - client_segment_reconcile_graph.go's rebuild decision — declines on
+//     Degenerate=false, so it is already correct, and ReconcileResidentDegenerate's
+//     doc now says so explicitly rather than leaving it an accident of the OR;
+//   - propagation_vector_deps.go HNSWCoverageTrustworthy — must NOT report the arm
+//     trustworthy, or the propagation loop materializes the pool hourly;
+//   - client_segment_bm25_gate.go hnswArmProbe — must take its documented
+//     could-not-be-read path; an evicted arm was not read;
+//   - client_segment_bm25_gate.go healNeedsRebuildBM25 — must decline WITHOUT
+//     clearing the no-progress bound, which an unbranched !Degenerate would clear.
 type ArmVerdict struct {
 	Format               string
 	ResidentAfterLoad    int
@@ -80,6 +105,7 @@ type ArmVerdict struct {
 	Shipped              int
 	Disarm               bool
 	Degenerate           bool
+	Evicted              bool
 	Err                  error
 }
 
@@ -173,6 +199,7 @@ func armCoverageVerdict(
 			"floor", residentBackstopFloor,
 			"disarm", v.Disarm,
 			"degenerate", v.Degenerate,
+			"evicted", v.Evicted,
 			// ANNOUNCE THE SEMANTICS ON THE LINE ITSELF. Every resident count above is
 			// a sum of DISTINCT member ids per segment. It did not always mean that: a
 			// segment carrying the same id more than once used to contribute one per
@@ -186,8 +213,20 @@ func armCoverageVerdict(
 
 	// 1. Cache-first load: the L2-first primary path imports the warm L2 resident set
 	// server-independently, so an arm whose lazy load would heal is not flagged.
-	if err := arm.load(ctx); err != nil {
+	//
+	// AN EVICTED POOL IS DECLINED HERE, BEFORE THE ENTRY FLOOR GATE, and the order is
+	// load-bearing. An evicted pool reads a resident doc count of 0, which is below
+	// residentBackstopFloor, so letting it fall through would read the shipped
+	// denominator and then call recoverIfDegenerateWithShipped — which resets the load
+	// floor and re-imports the FULL corpus from the server. Every eviction would be
+	// undone on the next reconcile tick, at full network cost.
+	skipped, err := arm.loadIfResident(ctx)
+	if err != nil {
 		v.Err = err
+		return v
+	}
+	if skipped {
+		v.Evicted = true
 		return v
 	}
 	v.ResidentAfterLoad = arm.residentDocCount()

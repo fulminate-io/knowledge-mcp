@@ -31,9 +31,9 @@ package web
 //   (2) Codesync write path entries
 //       (codesync/sync.go:70,144; codesync/collector.go:73;
 //        codesync/register_postpopulate.go:18). These set GraphCode on
-//        write requests and register the code-graph PostPopulate hook +
-//        EqualFunc. The materializer never enters the codesync write
-//        flow. Verdict: SAFE.
+//        write requests and register the code-graph PostPopulate hook.
+//        The materializer never enters the codesync write flow.
+//        Verdict: SAFE.
 //
 //   (3) Generic graph-keyed dispatch in domains/store
 //       (proxy.go, registry_saver.go, search_index_bm25.go). These case

@@ -80,6 +80,28 @@ func resolveRepoFixtureRef(
 	file string, target string,
 ) (*declIndex, *treesitter.Edge) {
 	t.Helper()
+	return resolveRepoFixtureRefInModule(t, files, file, target, "")
+}
+
+// resolveRepoFixtureRefInModule is resolveRepoFixtureRef's body with the
+// RepoContext's MODULE PATH supplied, for an arm that maps import paths onto
+// repository directories rather than reading a relative specifier.
+//
+// IT IS A SIBLING RATHER THAN A WIDENED SIGNATURE because resolveRepoFixtureRef
+// already has seven call sites, none of which has a module path to give: an
+// added parameter would be an empty string repeated seven times to serve two
+// cases. The ECMAScript rows keep calling the unchanged name.
+//
+// THE MODULE PATH IS WHAT THE GO ARM NEEDS TO RESOLVE AT ALL. With it absent
+// the Go resolver returns its zero result and a cross-package reference falls
+// through to the dynamic or not-declared rungs — a fixture failure that reads
+// exactly like an arm failure. populateFixture supplies the same value for the
+// same reason (populate_resolve_test.go).
+func resolveRepoFixtureRefInModule(
+	t *testing.T, files []fixtureFile,
+	file, target, modulePath string,
+) (*declIndex, *treesitter.Edge) {
+	t.Helper()
 	root := t.TempDir()
 	discovered := make([]string, 0, len(files))
 	for _, f := range files {
@@ -88,7 +110,7 @@ func resolveRepoFixtureRef(
 	}
 
 	results := chunkFixture(t, files)
-	fillBinds(&treesitter.RepoContext{Root: root, Files: discovered}, results)
+	fillBinds(&treesitter.RepoContext{Root: root, Files: discovered, ModulePath: modulePath}, results)
 	ix := indexResults(t, results)
 	return ix, refEdgeIn(t, results, file, treesitter.EdgeCalls, target)
 }

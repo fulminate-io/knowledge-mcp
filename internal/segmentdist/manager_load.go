@@ -5,6 +5,7 @@ package segmentdist
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
@@ -17,6 +18,17 @@ import (
 // source; L3 (cloud __segments) is hit only for a cold cache / background
 // reconcile. Startup is independent of the cloud BY DESIGN.
 //
+//   - EVICTED (taken FIRST, before the guard): the residency budget unloaded this
+//     pool to reclaim memory (manager_residency.go). Re-materialize it STRICTLY —
+//     reload(evictedIDs, tolerateMisses=false) over the exact set evictResident
+//     unloaded and PROVED L2-resident before unloading it. Strict is the whole
+//     point: the tolerant mode logs-and-swallows a failed Fetch and imports only
+//     the available L2 hits, which for an evict/reload cycle is a SILENT SHORT HIT
+//     LIST — an evicted pool must be indistinguishable to a searcher from a
+//     never-loaded one, so a re-materialization that cannot complete ERRORS. It
+//     reloads evictedIDs rather than cache.Keys() for the same reason: the gate
+//     verified that set, and re-deriving from the cache would import whatever
+//     happens to be on disk instead.
 //   - GUARD: l2Loaded short-circuits a repeated load() to a bare return nil — the
 //     resident set is already imported this process (the "Load is idempotent"
 //     contract manager_search.go relies on).
@@ -37,6 +49,21 @@ import (
 //     rebuilds from the local embedded node graph. loadFromServer is UNREACHABLE on
 //     this path (decouple #3).
 func (m *distManager[Q, S]) load(ctx context.Context) error {
+	// EVICTED: strict re-materialization of the exact unloaded set, ahead of the
+	// l2Loaded guard (evictResident cleared that guard, so this branch is what the
+	// pool's next consumer touch reaches).
+	if m.evicted.Load() {
+		m.resMu.Lock()
+		ids := make([]searchengine.SegmentID, len(m.evictedIDs))
+		copy(ids, m.evictedIDs)
+		m.resMu.Unlock()
+		if err := m.reload(ctx, ids, false); err != nil {
+			return err
+		}
+		m.markMaterialized()
+		m.l2Loaded.Store(true)
+		return nil
+	}
 	if m.l2Loaded.Load() {
 		return nil
 	}
@@ -45,6 +72,7 @@ func (m *distManager[Q, S]) load(ctx context.Context) error {
 	// (no Keys) it returns the sentinel errL2CacheCold, signaling the fallback.
 	if err := m.loadResidentFromL2(ctx); err == nil {
 		m.l2Loaded.Store(true)
+		m.markMaterialized()
 		return nil
 	} else if err != errL2CacheCold {
 		return err
@@ -54,6 +82,7 @@ func (m *distManager[Q, S]) load(ctx context.Context) error {
 	// rebuilds from the local embedded nodes (Phase 3 collapse step).
 	if m.l2Authoritative {
 		m.l2Loaded.Store(true)
+		m.markMaterialized()
 		return nil
 	}
 	// FALLBACK (cloud path): cold L2 — pull the corpus from the server, then set the guard.
@@ -61,6 +90,7 @@ func (m *distManager[Q, S]) load(ctx context.Context) error {
 		return err
 	}
 	m.l2Loaded.Store(true)
+	m.markMaterialized()
 	return nil
 }
 
@@ -270,16 +300,35 @@ func (m *distManager[Q, S]) loadResidentFromL2(ctx context.Context) error {
 //     serving the partial, content-hash-self-verifying superset rather than
 //     aborting because one constituent was evicted (a Remove racing the Keys()
 //     snapshot, see loadResidentFromL2's TRADE-OFF) AND the server is down.
+//
+// mappedCacheHit is one L2 hit resolved as a mapping: the bytes plus the closure
+// that frees them. The release travels with the blob into the engine, which
+// hands it to a cleanup keyed on the resulting entry's reachability — reload
+// itself must never call it, because the bytes outlive this function.
+type mappedCacheHit struct {
+	bytes   []byte
+	release func()
+}
+
 func (m *distManager[Q, S]) reload(ctx context.Context, ids []searchengine.SegmentID, tolerateMisses bool) error {
 	if len(ids) == 0 {
 		return nil
 	}
 	blobs := make([]searchengine.SegmentBlob, 0, len(ids))
 	var missIDs []searchengine.SegmentID
-	cached := make(map[searchengine.SegmentID][]byte, len(ids))
+	cached := make(map[searchengine.SegmentID]mappedCacheHit, len(ids))
 	for _, id := range ids {
-		if b, ok := m.cache.Get(id); ok {
-			cached[id] = b
+		data, release, ok, err := m.cache.GetMapped(id)
+		if err != nil {
+			// FAIL LOUD. The id is cached but unmappable, and the alternative —
+			// treating it as a miss and re-reading the bytes onto the heap — is
+			// a silently degraded lane that would hide a broken mapping seam on
+			// exactly the platform CI never runs, while quietly reinstating the
+			// memory profile this seam exists to remove.
+			return fmt.Errorf("segmentdist: reload %s: %w", id, err)
+		}
+		if ok {
+			cached[id] = mappedCacheHit{bytes: data, release: release}
 			continue
 		}
 		missIDs = append(missIDs, id)
@@ -300,17 +349,29 @@ func (m *distManager[Q, S]) reload(ctx context.Context, ids []searchengine.Segme
 				"missed", len(missIDs), "available", len(cached), "err", err)
 		default:
 			for _, b := range fetched {
-				cached[b.ID] = b.Bytes
+				// Cache first, then MAP what was cached, so the heap copy the
+				// network handed us dies at the end of this call instead of
+				// becoming the resident payload.
 				m.cache.Put(b.ID, b.Bytes)
+				data, release, ok, err := m.cache.GetMapped(b.ID)
+				if err != nil {
+					return fmt.Errorf("segmentdist: reload fetched %s: %w", b.ID, err)
+				}
+				if !ok {
+					return fmt.Errorf(
+						"segmentdist: reload fetched %s: the L2 cache did not retain it, so it cannot be mapped; "+
+							"importing the network copy instead would make the segment heap-resident", b.ID)
+				}
+				cached[b.ID] = mappedCacheHit{bytes: data, release: release}
 			}
 		}
 	}
 	for _, id := range ids {
-		b, ok := cached[id]
+		hit, ok := cached[id]
 		if !ok {
 			continue
 		}
-		blobs = append(blobs, searchengine.SegmentBlob{ID: id, Bytes: b})
+		blobs = append(blobs, searchengine.SegmentBlob{ID: id, Bytes: hit.bytes, Release: hit.release})
 	}
 	// Same seed as loadFromServer: a reload re-imports stored blobs, and one of them
 	// may predate a delete.
@@ -329,7 +390,7 @@ func (m *distManager[Q, S]) recordResident(blobs []searchengine.SegmentBlob) {
 	defer m.resMu.Unlock()
 	for _, b := range blobs {
 		prev := m.resident[b.ID]
-		seg := residentSeg{bytes: len(b.Bytes), format: b.Format, generation: b.Generation}
+		seg := residentSeg{mappedBytes: len(b.Bytes), format: b.Format, generation: b.Generation}
 		if seg.format == "" {
 			seg.format = prev.format
 		}

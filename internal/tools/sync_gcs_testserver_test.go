@@ -60,9 +60,21 @@ type fakeSyncBackend struct {
 	// agent-exported graph); set per test.
 	pullPlaintext []byte
 
+	// pullUnchanged makes /v1/sync/pull answer the unchanged short-circuit: no object
+	// is produced or stored, and the response carries no download_url or DEK.
+	pullUnchanged bool
+	// pullWatermark is the token /v1/sync/pull returns on either path; set per test.
+	pullWatermark string
+	// lastPullWatermark records the watermark the CLIENT sent on the latest pull —
+	// the only way to prove the stored token actually reached the wire.
+	lastPullWatermark string
+
 	presignCalls int
 	confirmCalls int
 	pullCalls    int
+	// gcsGets counts GET hits on the object routes, so a test can assert the
+	// unchanged path performed no download at all.
+	gcsGets int
 	// confirmedPlaintext is the decrypted bytes the LATEST confirm recovered
 	// (proves the push ciphertext round-trips through the agent's unwrap+open).
 	confirmedPlaintext []byte
@@ -128,10 +140,25 @@ func (b *fakeSyncBackend) handleConfirm(w http.ResponseWriter, r *http.Request) 
 }
 
 func (b *fakeSyncBackend) handlePull(w http.ResponseWriter, r *http.Request) {
+	var req syncPullRequest
+	reqBody, _ := io.ReadAll(r.Body)
+	_ = json.Unmarshal(reqBody, &req)
+
 	b.mu.Lock()
 	b.pullCalls++
+	b.lastPullWatermark = req.Watermark
 	plaintext := b.pullPlaintext
+	unchanged := b.pullUnchanged
+	watermark := b.pullWatermark
 	b.mu.Unlock()
+
+	// The unchanged short-circuit: no object is minted, sealed or stored, so the
+	// response carries no download_url and no DEK. A client that tried to download
+	// anyway would fail loudly rather than silently fetching stale bytes.
+	if unchanged {
+		writeTestJSON(w, syncPullResponse{Unchanged: true, Watermark: watermark})
+		return
+	}
 
 	// Produce a pull object exactly as the agent does: mint the path FIRST, then
 	// per-request DEK + nonce, GCM seal with the pull-direction AAD bound to the
@@ -154,6 +181,7 @@ func (b *fakeSyncBackend) handlePull(w http.ResponseWriter, r *http.Request) {
 		DEK:         base64.StdEncoding.EncodeToString(dek),
 		ObjectPath:  objectPath,
 		Expiry:      "2099-01-01T00:00:00Z",
+		Watermark:   watermark,
 	}
 	writeTestJSON(w, resp)
 }
@@ -178,6 +206,7 @@ func (b *fakeSyncBackend) handleGCS(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusOK)
 	case http.MethodGet:
 		b.mu.Lock()
+		b.gcsGets++
 		body, ok := b.objects[objID]
 		b.mu.Unlock()
 		if !ok {

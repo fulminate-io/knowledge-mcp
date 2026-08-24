@@ -29,13 +29,14 @@ func (b *buildFailFormat) Build(docs []Document) (Segment[mockQuery, mockStats],
 
 // layerEngine builds a mock engine over a caller-supplied format, mirroring
 // bucketTestEngine's options so segment layout stays the test's to own.
-func layerEngine(f SegmentFormat[mockQuery, mockStats], onMerge OnMergeFunc) *SegmentedIndex[mockQuery, mockStats] {
-	return New[mockQuery, mockStats](f, Options{
+func layerEngine(t testing.TB, f SegmentFormat[mockQuery, mockStats], onMerge OnMergeFunc) *SegmentedIndex[mockQuery, mockStats] {
+	t.Helper()
+	return closeOnCleanup(t, New[mockQuery, mockStats](f, Options{
 		MinSegmentDocs:     1,
 		DeletesPctAllowed:  MergeDisabledDeadRatio,
 		SegmentCountTarget: MergeDisabledCountTarget,
 		OnMerge:            onMerge,
-	})
+	}))
 }
 
 // sealOne adds docs and force-seals them into their own segment, returning its id.
@@ -83,7 +84,7 @@ func TestReplaceLayerSwapsWholeLayerFromScratch(t *testing.T) {
 	// duplicates documents cannot define its own expectation.
 	const priorDocs, newDocs = 6, 4
 
-	e := layerEngine(mockFormat{}, nil)
+	e := layerEngine(t, mockFormat{}, nil)
 	defer e.Close()
 
 	taken := map[string]bool{}
@@ -147,7 +148,7 @@ func TestReplaceLayerBuildErrorLeavesOldLayerServing(t *testing.T) {
 	// Fail the SECOND build so the first partition succeeds first: a failure on call
 	// one could pass by never having built anything at all.
 	format := &buildFailFormat{failAt: 2}
-	e := layerEngine(format, nil)
+	e := layerEngine(t, format, nil)
 	defer e.Close()
 
 	taken := map[string]bool{}
@@ -201,7 +202,7 @@ func TestReplaceLayerSparesAnAliasedRepublishedID(t *testing.T) {
 	const corpus = 4
 
 	var fired []MergeResult
-	e := layerEngine(mockFormat{}, func(res MergeResult) { fired = append(fired, res) })
+	e := layerEngine(t, mockFormat{}, func(res MergeResult) { fired = append(fired, res) })
 	defer e.Close()
 
 	taken := map[string]bool{}
@@ -262,7 +263,7 @@ func TestReplaceLayerSparesAnAliasedRepublishedID(t *testing.T) {
 func TestReplaceLayerPreservesAConcurrentlyAddedSegment(t *testing.T) {
 	const priorDocs, concurrentDocs, newDocs = 5, 3, 4
 
-	e := layerEngine(mockFormat{}, nil)
+	e := layerEngine(t, mockFormat{}, nil)
 	defer e.Close()
 
 	taken := map[string]bool{}
@@ -336,9 +337,9 @@ func TestReplaceLayerPreservesAConcurrentlyAddedSegment(t *testing.T) {
 // another replaces a corpus with an unrelated one, and publishing an empty layer
 // replaces a corpus with nothing.
 func TestReplaceLayerRefusesAForeignOrEmptyHandle(t *testing.T) {
-	one := layerEngine(mockFormat{}, nil)
+	one := layerEngine(t, mockFormat{}, nil)
 	defer one.Close()
-	two := layerEngine(mockFormat{}, nil)
+	two := layerEngine(t, mockFormat{}, nil)
 	defer two.Close()
 
 	taken := map[string]bool{}

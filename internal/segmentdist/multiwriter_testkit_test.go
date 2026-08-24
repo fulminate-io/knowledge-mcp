@@ -10,6 +10,7 @@ import (
 
 	knowledgev1 "github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1"
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/searchengine/formats/hnsw"
 )
 
 // multiwriter_testkit_test.go is the SHARED fan-out kit for the client-side
@@ -43,7 +44,7 @@ func newMultiWriterFleet(t *testing.T, k int) ([]*fleetMember, *sharedServerFake
 	for n := range members {
 		wid := fleetWriterID(n)
 		view := svc.viewFor(&knowledgev1.GraphSelector{}, wid)
-		mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(view))
+		mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(view)))
 		members[n] = &fleetMember{Manager: mgr, writerID: wid, view: view}
 	}
 	return members, svc
@@ -58,7 +59,7 @@ func restartFleetMember(t *testing.T, svc *sharedServerFake, n int, cacheDir str
 	t.Helper()
 	wid := fleetWriterID(n)
 	view := svc.viewFor(&knowledgev1.GraphSelector{}, wid)
-	mgr := NewManager(loginStateStub{loggedIn: true}, cacheDir, 0, withSegmentSource(view))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, cacheDir, 0, withSegmentSource(view)))
 	return &fleetMember{Manager: mgr, writerID: wid, view: view}
 }
 
@@ -164,8 +165,8 @@ func TestMultiWriterFleetSmoke(t *testing.T) {
 	require.True(t, serverHasBlob(svc, target, sharedID), "the shared blob is present on the server")
 
 	// The window helpers see each writer's manifest carry the shared id.
-	require.Contains(t, writerManifest(svc, target, members[0].writerID, "hnsw"), sharedID,
+	require.Contains(t, writerManifest(svc, target, members[0].writerID, hnsw.New().Name()), sharedID,
 		"writer0's manifest references the shared id")
-	require.Contains(t, writerManifest(svc, target, members[1].writerID, "hnsw"), sharedID,
+	require.Contains(t, writerManifest(svc, target, members[1].writerID, hnsw.New().Name()), sharedID,
 		"writer1's manifest references the shared id")
 }

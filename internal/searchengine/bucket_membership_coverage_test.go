@@ -16,7 +16,7 @@ import "testing"
 // deliberately omits.
 func TestLiveMembersOutsideCountsUncoveredOnly(t *testing.T) {
 	t.Run("known-positive: an uncovered live member is reported", func(t *testing.T) {
-		e := bucketTestEngine(nil)
+		e := bucketTestEngine(t, nil)
 		defer e.Close()
 
 		taken := map[string]bool{}
@@ -37,7 +37,7 @@ func TestLiveMembersOutsideCountsUncoveredOnly(t *testing.T) {
 	})
 
 	t.Run("fully covered segments are omitted", func(t *testing.T) {
-		e := bucketTestEngine(nil)
+		e := bucketTestEngine(t, nil)
 		defer e.Close()
 
 		taken := map[string]bool{}
@@ -58,7 +58,7 @@ func TestLiveMembersOutsideCountsUncoveredOnly(t *testing.T) {
 	})
 
 	t.Run("dead members do not count", func(t *testing.T) {
-		e := bucketTestEngine(nil)
+		e := bucketTestEngine(t, nil)
 		defer e.Close()
 
 		taken := map[string]bool{}
@@ -82,7 +82,7 @@ func TestLiveMembersOutsideCountsUncoveredOnly(t *testing.T) {
 	})
 
 	t.Run("an unresolvable id contributes no cell", func(t *testing.T) {
-		e := bucketTestEngine(nil)
+		e := bucketTestEngine(t, nil)
 		defer e.Close()
 
 		taken := map[string]bool{}

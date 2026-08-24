@@ -71,6 +71,26 @@ type CoverageRow struct {
 	// shape above is pinned, and this is an input to SegDisposition rather than a
 	// value of its own.
 	RepairVerified bool `json:"-"`
+	// RetainedErasures / NewestErasureAgeNanos are the SERVER's view of the
+	// deletion backlog: how many journal rows still await a consumer, and how old
+	// the newest is. Zero-and-zero means no backlog; UNKNOWN has its own signal —
+	// a negative age (see erasureAgeUnknown), and then the count is not meaningful.
+	// They carry json:"-" for the reason RepairVerified does: the ten-key wire
+	// shape above is PINNED by its own tests, and these are rendered cells rather
+	// than values of that contract. Widening a pinned shape is a separate decision
+	// from adding a column to the table.
+	RetainedErasures      int   `json:"-"`
+	NewestErasureAgeNanos int64 `json:"-"`
+	// RebuildPosAgeNanos / MergePosAgeNanos are THIS CLIENT's view: how long since
+	// each of its two erase-feed consumers last advanced. They answer the question
+	// the server cannot — whether a consumer has stopped arriving at all, which is
+	// precisely what an arrival-driven stall alarm can never report.
+	//
+	// ZERO MEANS NEVER STARTED, not "just advanced". A consumer with no recorded
+	// position has not run, and rendering an age measured from the epoch would say
+	// the opposite of the truth.
+	RebuildPosAgeNanos int64 `json:"-"`
+	MergePosAgeNanos   int64 `json:"-"`
 	// StalledSinceNanos is 0 when this graph's coverage can still recover on its own,
 	// and otherwise the wall-clock nanos at which it stopped being able to: the
 	// earlier of the heal breaker's latch and the publish coverage gate's suppression.
@@ -80,10 +100,14 @@ type CoverageRow struct {
 	// no direct interaction has admitted is serviced by no background arm, which is
 	// the intended steady state rather than a fault.
 	//
-	// BOTH carry `json:"-"` for the RepairVerified reason above: they are inputs to
-	// SegDisposition, and the ten-key wire shape is pinned.
+	// Evicted reports that this client's residency budget has dropped the graph's
+	// segment pool from memory — see DispositionEvicted (manage_status_coverage_evicted.go).
+	//
+	// ALL THREE carry `json:"-"` for the RepairVerified reason above: they are inputs
+	// to SegDisposition, and the ten-key wire shape is pinned.
 	StalledSinceNanos int64 `json:"-"`
 	InWorkingSet      bool  `json:"-"`
+	Evicted           bool  `json:"-"`
 }
 
 // repairVerifiedFrom is the three-clause formula behind CoverageRow.RepairVerified.
@@ -172,6 +196,8 @@ func segCoverageDisposition(r CoverageRow) string {
 		// No arm services a graph outside the working set, so no band describing what
 		// an arm is doing about it can be true.
 		return DispositionUnmanaged
+	case r.Evicted:
+		return DispositionEvicted
 	case r.LiveResident > r.Embedded:
 		// Live exceeds embedded: the hard-delete residue class, a different gate's
 		// territory than this column's under-coverage band.
@@ -220,7 +246,7 @@ func renderLLMCoverage(ctx context.Context, deps ClientDeps) string {
 	// auto-summaries — so it is most meaningful as a coverage signal for code
 	// graphs, where Summary is populated only by the summarizer.
 	sb.WriteString("_summarized = node has a non-empty Summary, which INCLUDES deterministic auto-summaries for structured nodes (decisions, findings, thoughts, etc.) — most meaningful as an LLM-coverage signal for code graphs, where Summary is populated only by the summarizer._\n\n")
-	sb.WriteString("_the segment-coverage cell names INDEPENDENT counts and none of them bounds another, so they are labeled rather than joined with \"of\": `shipped N` sums the shipped manifest's doc counts (superseded generations included), `live M` is the distinct live-searchable count, and the embedded count has its own column. The bracketed term is that graph's coverage BAND, derived from the LIVE count, NOT the shipped one, and it names which arm owns the row: `self-healing` resolves within one reconcile interval, `gap-repairing` is the band the repair arm services, `cache-aged` is that same band on a graph the coverage backstop has not verified within its interval, `stuck` is a graph this client maintains whose heal breaker has latched or whose publish coverage gate has suspended its republish — no arm is servicing it, and the age is how long that has been true IN THIS PROCESS (a restart clears it), and `unmanaged` is a graph this client has never searched, collected into or written to, so no background arm maintains it at all — the intended state for a graph you are not working on rather than a fault._\n\n")
+	sb.WriteString("_the segment-coverage cell names INDEPENDENT counts and none of them bounds another, so they are labeled rather than joined with \"of\": `shipped N` sums the shipped manifest's doc counts (superseded generations included), `live M` is the distinct live-searchable count, and the embedded count has its own column. The bracketed term is that graph's coverage BAND, derived from the LIVE count, NOT the shipped one, and it names which arm owns the row: `self-healing` resolves within one reconcile interval, `gap-repairing` is the band the repair arm services, `cache-aged` is that same band on a graph the coverage backstop has not verified within its interval, `stuck` is a graph this client maintains whose heal breaker has latched or whose publish coverage gate has suspended its republish — no arm is servicing it, and the age is how long that has been true IN THIS PROCESS (a restart clears it), `unmanaged` is a graph this client has never searched, collected into or written to, so no background arm maintains it at all — the intended state for a graph you are not working on rather than a fault, and `evicted` is a graph whose segment pool this client's residency budget dropped from RAM to stay inside its byte ceiling — the segments are intact on local disk and the next search reloads them, so it is a memory-management state that needs NO operator action._\n\n")
 	// The segment cell reads "shipped N · live M [band]". Shipped sums doc_counts
 	// across the shipped manifest, in which superseded and hard-deleted generations
 	// survive; live is the DISTINCT LIVE-SEARCHABLE doc count. Neither bounds the
@@ -259,8 +285,8 @@ func renderLLMCoverage(ctx context.Context, deps ClientDeps) string {
 	//   - "unmanaged" is a graph outside the working set. Nothing services it because
 	//     nothing is supposed to, so it gets its own band rather than borrowing one
 	//     that would report a fault.
-	sb.WriteString("| graph | total | summarized | embedded | segment coverage | summary-fail | embed-fail |\n")
-	sb.WriteString("| --- | --- | --- | --- | --- | --- | --- |\n")
+	sb.WriteString("| graph | total | summarized | embedded | segment coverage | summary-fail | embed-fail | erasure backlog |\n")
+	sb.WriteString("| --- | --- | --- | --- | --- | --- | --- | --- |\n")
 	for _, r := range rows {
 		sb.WriteString(formatCoverageRow(r))
 		sb.WriteString("\n")
@@ -316,13 +342,29 @@ const (
 // the empty-name GraphSelector{Graph:""}, mirroring renderLLMCoverage's
 // knowledge-row handling.
 func GraphEmbeddedCount(ctx context.Context, gc GraphCaller, gt kgtypes.GraphType, name string) (int, error) {
-	sc, ok := gc.(statsRPC)
-	if !ok {
-		return 0, nil
-	}
 	target := graphsel.GraphSelectorFor(gt, name, false)
 	if gt == kgtypes.GraphKnowledge && name == "" {
 		target = &knowledgev1.GraphSelector{Graph: ""}
+	}
+	return graphEmbeddedCountFor(ctx, gc, target)
+}
+
+// graphEmbeddedCountFor is the SELECTOR-ADDRESSED form of GraphEmbeddedCount,
+// carrying the one number both share. It exists for the caller whose graph cannot
+// be named by (gt, name) alone: a code BRANCH, which the server resolves from Repo
+// AND Branch together (resolveCode → Scope), so a composed "repo@branch" in the
+// repo field addresses a graph that does not exist rather than the branch.
+//
+// THE SPLIT IS ADDITIVE, and that is what keeps the single definition intact.
+// GraphEmbeddedCount above still builds its own (gt, name) selector and delegates
+// here, so every consumer — the coverage-ratio auto-heal, the manage(status)
+// column, and the unified-search completeness gate — reads the SAME field off the
+// SAME one RPC. A second helper that issued its own Stats call with its own field
+// choice is exactly the fork the single-definition rule forbids.
+func graphEmbeddedCountFor(ctx context.Context, gc GraphCaller, target *knowledgev1.GraphSelector) (int, error) {
+	sc, ok := gc.(statsRPC)
+	if !ok {
+		return 0, nil
 	}
 	resp, err := sc.Stats(ctx, &knowledgev1.StatsRequest{
 		Target:          target,
@@ -355,6 +397,9 @@ func segCoveredFor(ctx context.Context, deps ClientDeps, gt kgtypes.GraphType, n
 	if sr == nil {
 		return 0, 0, false
 	}
+	if poolEvictedFor(deps, gt, name) {
+		return segCoveredForEvicted()
+	}
 	c, _, err := sr.ShippedSegmentDocCount(ctx, gt, name)
 	if err != nil {
 		return 0, 0, false
@@ -368,21 +413,27 @@ func segCoveredFor(ctx context.Context, deps ClientDeps, gt kgtypes.GraphType, n
 // definition; do not fork it) and the segment-coverage cell's denominator.
 func newCoverageRow(
 	label string, st *knowledgev1.GraphStats, segCovered, liveResident int,
-	hasSeg, repairVerified, inWorkingSet bool, stalledSinceNanos int64,
+	hasSeg, repairVerified, inWorkingSet, evicted bool, stalledSinceNanos int64,
+	rebuildPosAgeNanos, mergePosAgeNanos int64,
 ) CoverageRow {
 	row := CoverageRow{
-		Graph:             label,
-		Total:             int(st.GetNonProxyNodeCount()),
-		Summarized:        int(st.GetSummarizedCount()),
-		Embedded:          int(st.GetBinaryVectorCount()),
-		SegCovered:        segCovered,
-		LiveResident:      liveResident,
-		HasSegments:       hasSeg,
-		SummaryFail:       int(st.GetSummaryFailureCount()),
-		EmbedFail:         int(st.GetEmbedFailureCount()),
-		RepairVerified:    repairVerified,
-		InWorkingSet:      inWorkingSet,
-		StalledSinceNanos: stalledSinceNanos,
+		Graph:                 label,
+		RetainedErasures:      int(st.GetRetainedErasureCount()),
+		NewestErasureAgeNanos: st.GetNewestErasureAgeNanos(),
+		RebuildPosAgeNanos:    rebuildPosAgeNanos,
+		MergePosAgeNanos:      mergePosAgeNanos,
+		Total:                 int(st.GetNonProxyNodeCount()),
+		Summarized:            int(st.GetSummarizedCount()),
+		Embedded:              int(st.GetBinaryVectorCount()),
+		SegCovered:            segCovered,
+		LiveResident:          liveResident,
+		HasSegments:           hasSeg,
+		SummaryFail:           int(st.GetSummaryFailureCount()),
+		EmbedFail:             int(st.GetEmbedFailureCount()),
+		RepairVerified:        repairVerified,
+		InWorkingSet:          inWorkingSet,
+		Evicted:               evicted,
+		StalledSinceNanos:     stalledSinceNanos,
 	}
 	// Assemble first, then classify, so the disposition reads exactly the values
 	// that render.
@@ -425,29 +476,21 @@ func newCoverageRow(
 // whole story.
 func formatCoverageRow(r CoverageRow) string {
 	if r.Total == 0 {
-		return fmt.Sprintf("| %s | (empty graph) | | | | | |", r.Graph)
+		return fmt.Sprintf("| %s | (empty graph) | | | | | | |", r.Graph)
 	}
 	segCell := "—"
 	if r.HasSegments {
 		segCell = fmt.Sprintf("shipped %d · live %d [%s]",
 			r.SegCovered, r.LiveResident, coverageBandTerm(r))
 	}
-	return fmt.Sprintf("| %s | %d | %d of %d | %d of %d | %s | %d | %d |",
+	return fmt.Sprintf("| %s | %d | %d of %d | %d of %d | %s | %d | %d | %s |",
 		r.Graph, r.Total,
 		r.Summarized, r.Total,
 		r.Embedded, r.Total,
 		segCell,
-		r.SummaryFail, r.EmbedFail)
+		r.SummaryFail, r.EmbedFail,
+		erasureBacklogCell(r))
 }
 
-// coverageBandTerm renders the bracketed band term: the bare disposition for every
-// band, plus a stall age for the stuck one. The age is rounded to the minute — the
-// question it answers is "has this been true for a while", which minutes settle and
-// seconds only clutter.
-func coverageBandTerm(r CoverageRow) string {
-	if r.SegDisposition != DispositionStuck || r.StalledSinceNanos == 0 {
-		return r.SegDisposition
-	}
-	return fmt.Sprintf("%s %s", r.SegDisposition,
-		time.Since(time.Unix(0, r.StalledSinceNanos)).Round(time.Minute))
-}
+// coverageBandTerm lives in manage_status_coverage_evicted.go, beside the band
+// vocabulary's newest member — this file is against its 500-line cap.

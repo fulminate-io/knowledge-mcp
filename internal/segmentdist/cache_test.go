@@ -18,7 +18,7 @@ func TestDiskSegmentCachePutGet(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	c := newDiskSegmentCache(dir, 0) // unbounded
+	c := newDiskSegmentCache(dir, 0, adviceRandom) // unbounded
 
 	c.Put("abc", []byte("hello"))
 	got, ok := c.Get("abc")
@@ -29,7 +29,7 @@ func TestDiskSegmentCachePutGet(t *testing.T) {
 	require.False(t, ok)
 
 	// Fresh cache over the SAME dir recovers the prior id from disk.
-	c2 := newDiskSegmentCache(dir, 0)
+	c2 := newDiskSegmentCache(dir, 0, adviceRandom)
 	got2, ok := c2.Get("abc")
 	require.True(t, ok)
 	require.Equal(t, []byte("hello"), got2)
@@ -42,7 +42,7 @@ func TestDiskSegmentCacheLRUEviction(t *testing.T) {
 
 	dir := t.TempDir()
 	// Cap at 20 bytes; each blob is 10 bytes → at most 2 resident.
-	c := newDiskSegmentCache(dir, 20)
+	c := newDiskSegmentCache(dir, 20, adviceRandom)
 
 	c.Put("a", make([]byte, 10))
 	c.Put("b", make([]byte, 10))
@@ -72,7 +72,7 @@ func TestDiskSegmentCacheRemove(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	c := newDiskSegmentCache(dir, 0) // unbounded — LRU never fires, so Remove is the only eviction
+	c := newDiskSegmentCache(dir, 0, adviceRandom) // unbounded — LRU never fires, so Remove is the only eviction
 
 	c.Put("seg1", []byte("vector-blob"))
 	_, ok := c.Get("seg1")
@@ -99,14 +99,14 @@ func TestDiskSegmentCacheKeys(t *testing.T) {
 	t.Parallel()
 
 	dir := t.TempDir()
-	seed := newDiskSegmentCache(dir, 0)
+	seed := newDiskSegmentCache(dir, 0, adviceRandom)
 	seed.Put("seg-a", []byte("blob-a"))
 	seed.Put("seg-b", []byte("blob-b"))
 	seed.Put("seg-c", []byte("blob-c"))
 
 	// A fresh cache over the SAME dir recovers membership via scanExisting; Keys()
 	// returns exactly those three ids (order-independent set equality).
-	c := newDiskSegmentCache(dir, 0)
+	c := newDiskSegmentCache(dir, 0, adviceRandom)
 	require.ElementsMatch(t, []searchengine.SegmentID{"seg-a", "seg-b", "seg-c"}, c.Keys())
 
 	// A Removed id drops from Keys().
@@ -118,6 +118,6 @@ func TestDiskSegmentCacheKeys(t *testing.T) {
 	require.ElementsMatch(t, []searchengine.SegmentID{"seg-a", "seg-c", "seg-d"}, c.Keys())
 
 	// An empty cache enumerates to an empty (non-nil) slice.
-	empty := newDiskSegmentCache(t.TempDir(), 0)
+	empty := newDiskSegmentCache(t.TempDir(), 0, adviceRandom)
 	require.Empty(t, empty.Keys())
 }

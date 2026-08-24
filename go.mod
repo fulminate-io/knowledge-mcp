@@ -234,7 +234,6 @@ require (
 	golang.org/x/exp v0.0.0-20260112195511-716be5621a96 // indirect
 	golang.org/x/image v0.43.0 // indirect
 	golang.org/x/mod v0.36.0 // indirect
-	golang.org/x/sys v0.45.0 // indirect
 	golang.org/x/term v0.43.0 // indirect
 	golang.org/x/text v0.38.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
@@ -255,5 +254,7 @@ require (
 	github.com/gorilla/websocket v1.5.4-0.20250319132907-e064f32e3674
 	github.com/parquet-go/parquet-go v0.30.1
 	github.com/pmezard/go-difflib v1.0.1-0.20181226105442-5d4384ee4fb2
+	go.uber.org/goleak v1.3.0
+	golang.org/x/sys v0.45.0
 )
 

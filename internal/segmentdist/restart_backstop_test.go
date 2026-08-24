@@ -19,11 +19,16 @@ import (
 // distinct sealed segments and the server holds n single-doc blobs. The corpus must
 // stay un-merged so a degenerate manager's recovery imports a real multi-segment
 // corpus, not one consolidated blob.
-func noMergeEngine() *searchengine.SegmentedIndex[mockQuery, mockStats] {
-	return searchengine.New[mockQuery, mockStats](mockFormat{}, searchengine.Options{
+//
+// It takes t for the same reason newMockEngine does: the engine it mints starts a
+// merger goroutine that only Close stops, and registering that at the mint point
+// is what keeps the lifetime out of each caller's hands.
+func noMergeEngine(t testing.TB) *searchengine.SegmentedIndex[mockQuery, mockStats] {
+	t.Helper()
+	return closeOnCleanup(t, searchengine.New[mockQuery, mockStats](mockFormat{}, searchengine.Options{
 		MinSegmentDocs:     1,
 		SegmentCountTarget: 1 << 30,
-	})
+	}))
 }
 
 // shipCorpus seals + ships n single-doc mock segments to the server under target
@@ -33,7 +38,7 @@ func noMergeEngine() *searchengine.SegmentedIndex[mockQuery, mockStats] {
 func shipCorpus(t *testing.T, gc *fakeSegmentSource, target *knowledgev1.GraphSelector, n int) {
 	t.Helper()
 	ctx := context.Background()
-	eng := noMergeEngine()
+	eng := noMergeEngine(t)
 	defer eng.Close()
 	for i := range n {
 		require.NoError(t, eng.Add([]searchengine.Document{
@@ -60,7 +65,7 @@ func degenerateManager(
 ) (*distManager[mockQuery, mockStats], *fakeSegmentSource) {
 	t.Helper()
 	ctx := context.Background()
-	eng := noMergeEngine()
+	eng := noMergeEngine(t)
 	t.Cleanup(eng.Close)
 	dm, cc := buildManager(eng, gc, target, t.TempDir())
 	for i := range tailN {
@@ -123,7 +128,7 @@ func TestBackstopHealthyEngineNoReload(t *testing.T) {
 	shipCorpus(t, gc, target, corpusN)
 
 	// A fresh manager that loads the corpus normally → resident == corpusN (healthy).
-	eng := newMockEngine()
+	eng := newMockEngine(t)
 	defer eng.Close()
 	dm, cc := buildManager(eng, gc, target, t.TempDir())
 	require.NoError(t, dm.load(ctx))

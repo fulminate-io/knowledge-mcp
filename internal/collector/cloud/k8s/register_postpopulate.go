@@ -6,5 +6,5 @@ import "github.com/fulminate-io/knowledge-mcp/internal/postpopulate"
 
 // init registers the "k8s" PostPopulate hook.
 func init() {
-	postpopulate.Register("k8s", postPopulate)
+	postpopulate.Register("k8s", postpopulate.BreadthFamilyBroad, postPopulate)
 }

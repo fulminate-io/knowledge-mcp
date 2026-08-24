@@ -141,7 +141,7 @@ func seedPriorLayer(
 	ctx := context.Background()
 
 	view := svc.viewFor(graphSelector(gt, name), swapWriterID)
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(view))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(view)))
 	hnswDocs, bm25Docs := swapDocs(n, gen)
 
 	hnswDM := mgr.managerFor(gt, name)
@@ -262,7 +262,7 @@ func residentAfterReload(
 
 	view := svc.viewFor(graphSelector(gt, name), swapWriterID)
 	manifestScopedCloudView(view)
-	reader := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(view))
+	reader := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(view)))
 
 	hnswDM := reader.managerFor(gt, name)
 	require.NoError(t, hnswDM.load(ctx))
@@ -329,7 +329,7 @@ func TestRebuildReplacesPriorLayerAndAdvancesWatermark(t *testing.T) {
 	// --- the rebuild -------------------------------------------------------------
 	view := svc.viewFor(target, swapWriterID)
 	manifestScopedCloudView(view)
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(view))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(view)))
 	scanner := newSwapScanner(swapCorpusN)
 
 	out, err := tools.RebuildSegments(ctx, scanner, toolsShipperAdapter{mgr}, gt, name, false)
@@ -408,7 +408,7 @@ func TestRebuildReplacesPriorLayerAndAdvancesWatermark(t *testing.T) {
 
 		ctlView := ctlSvc.viewFor(ctlTarget, swapWriterID)
 		manifestScopedCloudView(ctlView)
-		ctlMgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(ctlView))
+		ctlMgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(ctlView)))
 
 		ctlOut, err := tools.RebuildSegments(
 			context.Background(), newSwapScanner(swapCorpusN), toolsShipperAdapter{ctlMgr}, gt, ctlName, false)

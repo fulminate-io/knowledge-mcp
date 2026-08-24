@@ -180,7 +180,7 @@ func repairEdgesFetchContainsEdges(
 		return nil, nil
 	}
 	return paging.DrainPivotEdges(fileIDs, paging.EdgePivotPageSize, engine.CorrelationsEdgeScanCap,
-		func(idPage []string) ([]knowledgev1.Edge, error) {
+		func(idPage []string, fromIDGte, fromIDLt string) ([]knowledgev1.Edge, bool, error) {
 			resp, err := gc.Execute(ctx, &knowledgev1.ExecuteRequest{
 				Plan: &knowledgev1.ExecuteRequest_Query{Query: &knowledgev1.QueryPlan{
 					Ids:               idPage,
@@ -188,16 +188,17 @@ func repairEdgesFetchContainsEdges(
 					ReturnMode:        knowledgev1.ReturnMode_RETURN_MODE_EDGES,
 					IncludeTombstones: true,
 					Limit:             int32(engine.CorrelationsEdgeScanCap),
+					EdgeFromBand:      paging.EdgeFromBandOrNil(fromIDGte, fromIDLt),
 				}},
 				Target: target,
 			})
 			if err != nil {
-				return nil, fmt.Errorf("execute bulk edges: %w", err)
+				return nil, false, fmt.Errorf("execute bulk edges: %w", err)
 			}
 			page, derr := engine.DecodeEdges(resp)
 			if derr != nil {
-				return nil, fmt.Errorf("decode bulk edges: %w", derr)
+				return nil, false, fmt.Errorf("decode bulk edges: %w", derr)
 			}
-			return page, nil
+			return page, resp.GetTruncated(), nil
 		})
 }

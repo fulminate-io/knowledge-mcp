@@ -51,10 +51,10 @@ func TestGoImportBindings(t *testing.T) {
 		"example.com/dotted",
 		"example.com/blank",
 		"example.com/solo",
-	}, ctx.Imports)
+	}, importSpecifiers(ctx.Imports))
 	for _, unwanted := range []string{"al", ".", "_", "solo"} {
-		assert.NotContains(t, ctx.Imports, unwanted,
-			"a local binding name is not a dependency and must never reach ctx.Imports")
+		assert.NotContains(t, importSpecifiers(ctx.Imports), unwanted,
+			"a local binding name is not a dependency and must never reach importSpecifiers(ctx.Imports)")
 	}
 }
 

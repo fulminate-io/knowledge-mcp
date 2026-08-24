@@ -61,7 +61,7 @@ func docIDsOf(docs []Document) []ExternalID {
 func TestReEmitDoesNotUnloadWhatItPublished(t *testing.T) {
 	const corpus = 4 // FIXTURE CONSTANT — never read back from the engine.
 
-	e := bucketTestEngine(nil)
+	e := bucketTestEngine(t, nil)
 	defer e.Close()
 
 	taken := map[string]bool{}
@@ -113,7 +113,7 @@ func retiringIDs(tails, published []SegmentID) []SegmentID {
 func TestReclaimHookNeverReportsItsOwnMergedID(t *testing.T) {
 	t.Run("control: a genuine consolidation reports its inputs", func(t *testing.T) {
 		var fired []MergeResult
-		e := bucketTestEngine(func(res MergeResult) { fired = append(fired, res) })
+		e := bucketTestEngine(t, func(res MergeResult) { fired = append(fired, res) })
 		defer e.Close()
 
 		taken := map[string]bool{}
@@ -145,7 +145,7 @@ func TestReclaimHookNeverReportsItsOwnMergedID(t *testing.T) {
 
 	t.Run("catcher: consolidating one segment never reclaims the live id", func(t *testing.T) {
 		var fired []MergeResult
-		e := bucketTestEngine(func(res MergeResult) { fired = append(fired, res) })
+		e := bucketTestEngine(t, func(res MergeResult) { fired = append(fired, res) })
 		defer e.Close()
 
 		taken := map[string]bool{}

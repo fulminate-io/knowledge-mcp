@@ -3,6 +3,7 @@
 package segmentdist
 
 import (
+	"errors"
 	"sync"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
@@ -10,7 +11,7 @@ import (
 
 // cacheOp is one recorded operation against the instrumented cache, in call order.
 type cacheOp struct {
-	kind string // "put" | "remove" | "get"
+	kind string // "put" | "remove" | "get" | "getmapped"
 	id   searchengine.SegmentID
 }
 
@@ -51,7 +52,16 @@ type instrumentedCache struct {
 	// the id is present in the returned snapshot but is a cache MISS by the time
 	// reload()'s Get reaches it. Cleared after firing once.
 	removeAfterKeys searchengine.SegmentID
+
+	// failMapping, when true, makes GetMapped report a MAPPING FAILURE for an id
+	// that is genuinely cached. It models a broken platform mapping arm — the
+	// state in which a silent fall back to the heap read would hide the breakage
+	// on exactly the platform CI never runs.
+	failMapping bool
 }
+
+// errInjectedMappingFailure is the failure failMapping injects.
+var errInjectedMappingFailure = errors.New("injected mapping failure")
 
 func newInstrumentedCache(inner *diskSegmentCache) *instrumentedCache {
 	return &instrumentedCache{inner: inner}
@@ -62,6 +72,20 @@ func (c *instrumentedCache) Get(id searchengine.SegmentID) ([]byte, bool) {
 	c.ops = append(c.ops, cacheOp{kind: "get", id: id})
 	c.mu.Unlock()
 	return c.inner.Get(id)
+}
+
+// GetMapped mirrors Get through the instrumentation, and additionally lets a
+// test force the MAPPING to fail while the id is genuinely cached — the one
+// condition the reload path must surface rather than answer as a miss.
+func (c *instrumentedCache) GetMapped(id searchengine.SegmentID) ([]byte, func(), bool, error) {
+	c.mu.Lock()
+	c.ops = append(c.ops, cacheOp{kind: "getmapped", id: id})
+	fail := c.failMapping
+	c.mu.Unlock()
+	if fail {
+		return nil, nil, false, errInjectedMappingFailure
+	}
+	return c.inner.GetMapped(id)
 }
 
 func (c *instrumentedCache) Put(id searchengine.SegmentID, b []byte) {
@@ -111,6 +135,13 @@ func (c *instrumentedCache) Keys() []searchengine.SegmentID {
 		c.inner.Remove(raced)
 	}
 	return snap
+}
+
+// sizeOf forwards to the inner cache's recency-neutral index probe. It records NO
+// op: the residency gate calls it once per resident id, and logging that would
+// swamp the ordering assertions the op log exists for.
+func (c *instrumentedCache) sizeOf(id searchengine.SegmentID) (int64, bool) {
+	return c.inner.sizeOf(id)
 }
 
 // opLog returns a copy of the recorded operations in call order.

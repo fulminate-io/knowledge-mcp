@@ -28,8 +28,23 @@ const (
 	overlaySharedTerm = "yyppwwsharedmarker"
 	overlayFiller     = "shared corpus filler body common token"
 
-	overlayBaseGraph    = "repo"
-	overlayBranchGraph  = "repo@branch"
+	overlayBaseGraph = "repo"
+	// THE OVERLAY POOL IS DELIBERATELY NOT SEEDED FROM THE FUSED BASE, and its
+	// name is what arranges that: the branch seed derives its source from the
+	// branch name alone, so an overlay named after a graph that publishes nothing
+	// starts as the changeset-only corpus this fixture's whole calibration
+	// assumes. Naming it "repo@branch" would have the seed copy base's entire
+	// published corpus into the overlay bucket before the changeset docs are
+	// added, and the two pools would stop being the two pools these assertions
+	// are about — the overlay's rare-term idf would no longer collapse, and a
+	// base-only id would appear in the overlay pool's own hit list.
+	//
+	// It also models the RIGHT production state for this path. The two-pool union
+	// is what a PARTIAL branch reads; a branch the seed brought full is marked and
+	// read at a single layer instead, so it never reaches this merge at all.
+	// SearchOverlay takes its base and overlay as explicit parameters, so the
+	// fusion under test is unchanged by the name.
+	overlayBranchGraph  = "changeset@branch"
 	overlayTargetID     = "n7"
 	overlaySharedID     = "n500"
 	overlayBranchDocN   = 16
@@ -131,7 +146,7 @@ func TestSearchOverlayRanksByComparableScores(t *testing.T) {
 
 	ctx := context.Background()
 	_, gc := newSegmentHarness(t)
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 
 	seedShippedFields(t, ctx, mgr, kgtypes.GraphCode, overlayBaseGraph, overlayBaseDocs())
 	seedShippedFields(t, ctx, mgr, kgtypes.GraphCode, overlayBranchGraph, overlayBranchDocs())
@@ -187,7 +202,7 @@ func TestSearchOverlayAdmitsBaseAndOverlay(t *testing.T) {
 		return append([]string(nil), admitted...)
 	}
 
-	mgr := NewManager(loginStateStub{loggedIn: false}, t.TempDir(), 0, WithGraphAdmitter(record))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: false}, t.TempDir(), 0, WithGraphAdmitter(record)))
 
 	// Cold manager, no shipped segments: the result is empty rather than an error,
 	// and the admissions happen before any load.
@@ -209,7 +224,7 @@ func TestSearchOverlayFallsBackWhenOverlayPoolEmpty(t *testing.T) {
 
 	ctx := context.Background()
 	_, gc := newSegmentHarness(t)
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 
 	seedShippedFields(t, ctx, mgr, kgtypes.GraphCode, overlayBaseGraph, overlayBaseDocs())
 
@@ -239,7 +254,7 @@ func TestSearchOverlayFusesHNSWArmAcrossPools(t *testing.T) {
 
 	ctx := context.Background()
 	_, gc := newSegmentHarness(t)
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 
 	// BASE: the standard fixture — BM25-strong for the rare term.
 	baseDocs := overlayBaseDocs()
@@ -302,7 +317,7 @@ func TestSearchOverlayPoolErrors(t *testing.T) {
 		ctx := context.Background()
 		_, gc := newSegmentHarness(t)
 		fail := &failAfterWarmSource{inner: gc}
-		mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(fail))
+		mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(fail)))
 
 		// Warm the OVERLAY pool only; the base pool stays cold.
 		seedShippedFields(t, ctx, mgr, kgtypes.GraphCode, overlayBranchGraph, overlayBranchDocs())
@@ -324,7 +339,7 @@ func TestSearchOverlayPoolErrors(t *testing.T) {
 		ctx := context.Background()
 		_, gc := newSegmentHarness(t)
 		fail := &failAfterWarmSource{inner: gc}
-		mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(fail))
+		mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(fail)))
 
 		// Warm the BASE pool only; the overlay pool stays cold.
 		seedShippedFields(t, ctx, mgr, kgtypes.GraphCode, overlayBaseGraph, overlayBaseDocs())
@@ -352,7 +367,7 @@ func TestSearchOverlayAbsentTokenYieldsNoOverlayDomination(t *testing.T) {
 
 	ctx := context.Background()
 	_, gc := newSegmentHarness(t)
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 
 	baseDocs := overlayBaseDocs()
 	branchDocs := overlayBranchDocs()

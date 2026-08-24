@@ -33,6 +33,17 @@ import (
 // look healthy" rather than a spurious rebuild. An error surfaces here only when
 // EVERY arm failed. Each arm's own error is preserved in its ArmVerdict.Err.
 //
+// EVICTION ISOLATION, and it is riding on the OR below rather than on a branch of
+// its own — say so here so a future reader who inverts the OR sees what depends on
+// it. An arm whose segment pool the residency budget unloaded reports
+// {Evicted:true, Degenerate:false}, exactly like the unmeasurable arm above, so it
+// contributes false and can never drive a rebuild through this wrapper. That is the
+// correct disposition: an evicted pool re-materializes on its next consumer search,
+// and rebuilding it from the server instead would undo the eviction at the highest
+// possible cost. A caller that needs to DISTINGUISH evicted from healthy — rather
+// than merely decline both — must read ArmVerdict.Evicted off the per-format probe;
+// this wrapper deliberately collapses the two.
+//
 // PER-ARM FLOW (see armCoverageVerdict for the authoritative sequence): cache-first
 // load, entry floor gate, one shipped-count read, cheap server re-import, then the
 // verdict with the floor RE-APPLIED before the ratio. Each arm emits one slog.Debug

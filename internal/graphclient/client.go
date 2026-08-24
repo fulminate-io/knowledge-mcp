@@ -18,7 +18,7 @@ import (
 	"github.com/fulminate-io/knowledge-mcp/gen/knowledge/v1/knowledgev1connect"
 )
 
-// DefaultPort is the canonical TCP port the stdio client connects to
+// DefaultPort is the canonical TCP port the knowledge client connects to
 // and the OSS knowledge-server listens on. Duplicated in
 // cmd/knowledge-server/internal/server/server.go — keep both in sync.
 const DefaultPort = 15022

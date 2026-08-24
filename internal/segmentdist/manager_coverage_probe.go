@@ -16,6 +16,7 @@ package segmentdist
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
@@ -143,11 +144,20 @@ func (m *Manager) IsL2Authoritative(gt kgtypes.GraphType, name string) bool {
 // build). Its caller asks about every graph in the account, so constructing on a read
 // would build engines for graphs this client does not maintain. A graph with no
 // constructed engine has never published and so has never been suppressed: 0.
+//
+// AND IT DOES NOT WAIT ON THE CONSTRUCTION GATE, which is a deliberate exemption
+// rather than a missed site. It calls only coverageSuppressedSince(), a plain
+// accessor — it never calls load(), so it cannot latch anything on a half-seeded
+// engine. Its answer is identical either way: an engine still being seeded has
+// never published, so it has never been suppressed, which is the same 0 this doc
+// already documents for a graph with no engine at all. Waiting would put an
+// account-wide read behind some other graph's corpus copy, which is precisely the
+// coupling the off-the-lock seed placement exists to avoid.
 func (m *Manager) CoverageSuppressedSince(gt kgtypes.GraphType, name string) int64 {
 	k := graphKey{graphType: gt, graphName: name}
 	m.mu.Lock()
-	hnswDM, hasHNSW := m.managers[k]
-	bm25DM, hasBM25 := m.bm25Managers[k]
+	hnswGate, hasHNSW := m.managers[k]
+	bm25Gate, hasBM25 := m.bm25Managers[k]
 	m.mu.Unlock()
 
 	earliest := int64(0)
@@ -157,10 +167,10 @@ func (m *Manager) CoverageSuppressedSince(gt kgtypes.GraphType, name string) int
 		}
 	}
 	if hasHNSW {
-		consider(hnswDM.coverageSuppressedSince())
+		consider(hnswGate.dm.coverageSuppressedSince())
 	}
 	if hasBM25 {
-		consider(bm25DM.coverageSuppressedSince())
+		consider(bm25Gate.dm.coverageSuppressedSince())
 	}
 	return earliest
 }
@@ -170,8 +180,18 @@ func (m *Manager) CoverageSuppressedSince(gt kgtypes.GraphType, name string) int
 // degeneracy collapse compares against the embedded-node denominator. It is the
 // load-first variant of ResidentDocCount (the raw accessor does NOT load), needed
 // because the heal path must import the warm L2 set before reading the count.
+//
+// IT TAKES THE RESIDENCY READ LOCK ACROSS load()+READ, the same three lines
+// VectorByID uses (manager_search.go), and for the same reason: the load and the
+// count are SEPARATE STATEMENTS, so a concurrent evictResident landing between them
+// empties the pool the load just materialized and the count reads ZERO. That zero is
+// not a harmless one-off here — it is the numerator of the degeneracy collapse, so a
+// read that lands in the window reports a graph with a full L2 pool as having no
+// resident corpus at all.
 func (m *Manager) LoadResidentDocCount(ctx context.Context, gt kgtypes.GraphType, name string) (int, error) {
 	dm := m.managerFor(gt, name)
+	dm.residencyMu.RLock()
+	defer dm.residencyMu.RUnlock()
 	if err := dm.load(ctx); err != nil {
 		return 0, err
 	}
@@ -200,10 +220,22 @@ func (m *Manager) LiveResidentDocCount(gt kgtypes.GraphType, name string) int {
 //
 // The first call per (graph, format) per process can pay a List+Fetch on a cold
 // cloud L2; every later call is amortized to zero by the loaded flag.
+//
+// AN EVICTED POOL READS 0 AND IS NOT RESURRECTED. This is a BACKGROUND decider's
+// probe, and the residency budget's whole point is that a background pass must not
+// reload a pool it unloaded. The zero it returns therefore does NOT mean "this graph
+// has no live documents" — it means nobody looked. A caller that must not conclude
+// "uncovered" from a zero has to consult Manager.PoolEvicted FIRST and decline;
+// healNeedsRebuildLocal (bootstrap client_segment_heal_need.go) is the caller that
+// does.
 func (m *Manager) LoadLiveResidentDocCount(ctx context.Context, gt kgtypes.GraphType, name string) (int, error) {
 	dm := m.managerFor(gt, name)
-	if err := dm.load(ctx); err != nil {
+	skipped, err := dm.loadIfResident(ctx)
+	if err != nil {
 		return 0, err
+	}
+	if skipped {
+		return 0, nil
 	}
 	return dm.engine.LiveResidentCount(), nil
 }
@@ -218,16 +250,33 @@ func (m *Manager) LoadLiveResidentDocCount(ctx context.Context, gt kgtypes.Graph
 // The two formats are reported INDEPENDENTLY because they genuinely diverge — a
 // document can be resident in one and absent from the other — and a caller shipping
 // only the union would either miss a repair or re-ship a format that was fine.
+//
+// AN EVICTED POOL MAKES THIS AN ERROR, and the error IS the truthful output. Membership
+// is not determinable for a pool this background probe declined to reload. The two
+// alternatives are both fabrications: an empty missing-set asserts "nothing is missing"
+// about a pool nobody looked at, and the full id set would make the repair re-ship the
+// entire corpus — exactly what this method's own doc warns against above. Its caller
+// (tools segment_repair) already turns a probe error into an aborted pass that ships
+// nothing, and the repair decider declines an evicted graph before it reaches here, so
+// in production this error is a backstop that does not fire.
 func (m *Manager) UncoveredMembers(
 	ctx context.Context, gt kgtypes.GraphType, name string, ids []searchengine.ExternalID,
 ) (missingHNSW, missingBM25 []searchengine.ExternalID, err error) {
 	hdm := m.managerFor(gt, name)
-	if err := hdm.load(ctx); err != nil {
+	hnswSkipped, err := hdm.loadIfResident(ctx)
+	if err != nil {
 		return nil, nil, err
 	}
 	bdm := m.bm25ManagerFor(gt, name)
-	if err := bdm.load(ctx); err != nil {
+	bm25Skipped, err := bdm.loadIfResident(ctx)
+	if err != nil {
 		return nil, nil, err
+	}
+	if hnswSkipped || bm25Skipped {
+		return nil, nil, fmt.Errorf(
+			"segmentdist: membership is not determinable for %s/%s — its segment pool is evicted "+
+				"(hnsw_evicted=%t bm25_evicted=%t); it re-materializes on the next consumer search",
+			gt, name, hnswSkipped, bm25Skipped)
 	}
 	return hdm.engine.UncoveredFrom(ids), bdm.engine.UncoveredFrom(ids), nil
 }

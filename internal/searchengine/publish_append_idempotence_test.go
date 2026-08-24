@@ -30,7 +30,7 @@ func TestPublishAppendIsIdempotentBySegmentID(t *testing.T) {
 	// MinSegmentDocs above the group size so Add never self-seals — every segment is
 	// produced by the explicit Flush, which is the primitive a caller laying out one
 	// segment per group drives directly.
-	e := newTestEngine(1 << 20)
+	e := newTestEngine(t, 1<<20)
 	defer e.Close()
 
 	groups := make([][]Document, buckets)

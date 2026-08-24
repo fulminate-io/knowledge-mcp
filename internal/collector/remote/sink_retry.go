@@ -10,6 +10,8 @@ package remote
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"math/rand/v2"
 	"time"
 
 	"connectrpc.com/connect"
@@ -42,6 +44,7 @@ func uploadWithRetry[T any](ctx context.Context, name string, send func() (T, er
 	var zero T
 	maxAttempts := len(graphclient.RetryBackoff) + 1
 	ambiguousUsed := 0
+	shedUsed := 0
 	var attemptErr error
 	for attempt := range maxAttempts {
 		if ctx.Err() != nil {
@@ -51,19 +54,36 @@ func uploadWithRetry[T any](ctx context.Context, name string, send func() (T, er
 		if err == nil {
 			return resp, nil
 		}
+		// delay is the schedule's by default; only the shed arm overrides it,
+		// because only a shed comes with a delay the SERVER chose.
+		delay := graphclient.RetryBackoff[min(attempt, len(graphclient.RetryBackoff)-1)]
 		switch {
 		case graphclient.IsRetryableTransportError(err):
 		case graphclient.IsAmbiguousUploadError(err) && ambiguousUsed < graphclient.AmbiguousUploadRetries:
 			ambiguousUsed++
 		default:
-			return zero, err
+			// THE SHED ARM. A shed is the cheapest failure to retry — the server
+			// refused before doing any work and said when to come back — so it
+			// honors the server's stated delay rather than the local schedule.
+			//
+			// THE JITTER IS DESYNCHRONISATION. Every client shed in one burst gets
+			// the SAME Retry-After, so an unjittered sleep re-forms them into a herd
+			// that wakes together and is shed again.
+			d, shed := graphclient.IsBackpressureShedError(err)
+			if !shed || shedUsed >= graphclient.ShedRetries {
+				return zero, err
+			}
+			shedUsed++
+			delay = d + time.Duration(rand.Int64N(int64(d/graphclient.ShedJitterFraction)+1))
+			slog.Info("upload shed by server, backing off",
+				"rpc", name, "attempt", attempt+1, "delay", delay)
 		}
 		attemptErr = err
 		if attempt == len(graphclient.RetryBackoff) {
 			break
 		}
 		select {
-		case <-time.After(graphclient.RetryBackoff[attempt]):
+		case <-time.After(delay):
 		case <-ctx.Done():
 			return zero, ctx.Err()
 		}
@@ -75,8 +95,9 @@ func uploadWithRetry[T any](ctx context.Context, name string, send func() (T, er
 // budgets. Content-idempotent for both nodes and edges: re-sending the same
 // chunk under the same epoch re-lands nodes identically through the
 // carry-forward upsert + epoch GC, and re-lands edges at most once because the
-// server's collect edge-landing path filters duplicate (From,Type,To) tuples
-// against the batch and the resident graph bundles. That is enforced
+// server's collect edge-landing path filters duplicates on the FOUR-PART edge
+// identity (From, To, Type, Evidence) against the batch and the resident graph
+// bundles. That is enforced
 // server-side rather than assumed here — the node upsert and the presence-row
 // INSERT ... ON CONFLICT DO NOTHING live in apply_txn_collect.go, the edge
 // ON CONFLICT ... DO UPDATE in apply_txn_sql.go, and the OSS flavor dedups in

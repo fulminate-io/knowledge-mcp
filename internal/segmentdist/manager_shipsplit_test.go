@@ -46,7 +46,7 @@ func TestShipNewPartitionsOversizedDiff(t *testing.T) {
 	target := &knowledgev1.GraphSelector{Graph: "code", Repo: "shipsplit"}
 	ctx := context.Background()
 
-	mgr, cc := buildManager(newMockEngine(), gc, target, t.TempDir())
+	mgr, cc := buildManager(newMockEngine(t), gc, target, t.TempDir())
 
 	// 70 blobs, each ~1 MiB → ~70 MiB total, well over the 64 MiB partition target
 	// so the diff must partition into multiple Ship RPCs in the ~64 MiB range.

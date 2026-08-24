@@ -9,6 +9,32 @@ const (
 	EdgeContains EdgeType = "CONTAINS"
 	EdgeUsesType EdgeType = "USES_TYPE"
 
+	// EdgeImplements records that a concrete type satisfies an interface,
+	// derived syntactically from the declaration index rather than from a type
+	// checker. It is emitted at TWO LEVELS: interface type declaration → concrete
+	// type declaration, and interface method spec → the method satisfying it.
+	//
+	// DIRECTION IS FROM THE INTERFACE OUTWARD, which is what makes the two-hop
+	// model work: a caller standing on a call's target — the interface method —
+	// reaches the implementers with one outbound traversal, instead of the call
+	// itself fanning out across every type declaring a method of that name.
+	//
+	// IT HAS TWO DERIVATIONS, and Edge.Method is what tells them apart. Go
+	// METHOD-SET MATCHING infers satisfaction the language leaves implicit, by
+	// comparing resolved signatures, and stamps EdgeMethodMethodSet. DECLARED
+	// CONFORMANCE reads a supertype clause the source WROTE — an implements, an
+	// extends, a mixin, a behaviour, a trait — and stamps
+	// EdgeMethodDeclaredConformance followed by that clause's kind. Both levels
+	// and the direction above are identical for either derivation; only the
+	// question each answers differs, so a consumer that cares reads the prefix
+	// rather than the edge type.
+	//
+	// EdgeType is a defined string type and the vocabulary is open, so this
+	// constant needs no proto change; TEST_CALLS is the in-tree precedent. The
+	// producer mirrors it as treesitter.EdgeImplements, and the two are pinned in
+	// lockstep by TestImplementsVocabularyLockstep.
+	EdgeImplements EdgeType = "IMPLEMENTS"
+
 	// EdgeTestCalls is a CALLS edge whose SOURCE is test code: the body of a
 	// test_block chunk, or a declaration lexically inside one. It is a distinct
 	// type rather than a flag on EdgeCalls so that every existing CALLS
@@ -80,22 +106,126 @@ const (
 	EdgeMetaValue EdgeType = "meta_value" // node → value-node (metadata key on Edge.Method)
 
 	// EdgeMethodAmbiguousName and EdgeMethodDynamic are Edge.Method VALUES, not
-	// edge types: the collector's reference resolution stamps one of them on
-	// every member of a multi-bind edge group, and every member of one group
-	// also shares a key in Edge.Evidence.
+	// edge types. Every member of one group also shares a key in Edge.Evidence.
 	//
-	// THE TWO KINDS ARE NOT INTERCHANGEABLE. An "ambiguous-name" group is
-	// CLOSED — the reference means exactly one of these candidates, and a
-	// consumer that later learns which may collapse the group to it. A
-	// "dynamic" group is OPEN — the reference dispatches to one of these
-	// candidates OR to something no static enumeration can reach, so a
-	// consumer must never read it as closed and must never collapse it.
+	// Edge.Method POPULATIONS ARE KEYED BY EDGE TYPE.
+	//
+	// The field is not one vocabulary with a fixed number of meanings; it is a
+	// per-edge-type slot, and which population a value belongs to is decided by
+	// the edge that carries it. THE RULE IS SCOPED TO THE CODE COLLECTOR'S OWN
+	// EDGES — Edge.Method carries unrelated values elsewhere in this same file,
+	// where EdgeMetaValue puts a promoted metadata KEY on it — so nothing below
+	// is a claim about every edge in every graph.
+	//
+	// The populations the code collector emits today:
+	//
+	//  1. GROUP KIND — one of the two constants declared here, on every member
+	//     of a multi-candidate group. Emitted for reference edges (CALLS,
+	//     TEST_CALLS, USES_TYPE, EMBEDS) AND for the ambiguous Go-receiver
+	//     containment case, so it is NOT exclusive to reference edges: a CONTAINS
+	//     edge whose receiver type resolved to several candidates carries a group
+	//     kind too.
+	//  2. RESOLVING RUNG — the name of the resolution rule that bound the
+	//     reference, on a BOUND reference edge, so a surprising edge is
+	//     attributable at read time. The vocabulary is the collector's own RefRule
+	//     constant set in cmd/knowledge/internal/collector/parser/resolve_walk.go,
+	//     which is the single authority for it; the values are deliberately NOT
+	//     restated here, because a copy of a vocabulary is a copy that goes stale.
+	//     Bound edges only: a single-candidate containment arm emits no Method.
+	//  3. METHOD-SET CARDINALITY — on an IMPLEMENTS edge, the EdgeMethodMethodSet
+	//     prefix followed by the interface's expanded method-set size. A DERIVED
+	//     edge rather than a resolved reference: it never enters the resolution
+	//     walk, so it carries neither a group kind nor a rung.
+	//  4. DECLARED CLAUSE KIND — on an IMPLEMENTS edge derived from a supertype
+	//     clause the source WROTE, the EdgeMethodDeclaredConformance prefix
+	//     followed by that clause's kind. Also a DERIVED edge, and never a
+	//     cardinality: the clause states the relationship outright, so no method
+	//     set was measured and publishing a number would be a false statement in
+	//     the one field consumers weight on.
+	//
+	// THE SET IS OPEN, AND ADDING TO IT NEEDS NO EDIT HERE beyond a new member.
+	// Do not restate a total: a count of populations is exactly the sentence a new
+	// one falsifies, in every file that repeats it.
+	//
+	// THE TWO GROUP KINDS ARE NOT INTERCHANGEABLE. An EdgeMethodAmbiguousName
+	// group is CLOSED — the reference means exactly one of these candidates, and
+	// a consumer that later learns which may collapse the group to it. An
+	// EdgeMethodDynamic group is OPEN — the reference dispatches to one of these
+	// candidates OR to something no static enumeration can reach, so a consumer
+	// must never read it as closed and must never collapse it.
+	//
+	// EMPTY METHOD ON A BOUND EDGE.
+	//
+	// On a graph collected since bound-edge attribution landed, EVERY bound edge
+	// carries its rung: the server's edge-meta comparison is Method-aware, so a
+	// resident edge whose incoming twin differs only in Method is rewritten
+	// rather than skipped. An empty Method on a bound edge there is a REAL
+	// SIGNAL — that edge is unattributed — and not an artifact of when it was
+	// first written. A graph NOT collected since is the one exception: it still
+	// holds pre-stamp bound edges, and on that graph alone an empty Method is
+	// ambiguous. One collect ends that state; it is transitional and never a
+	// property of the field.
 	//
 	// They live here rather than in the collector because Edge.Method is a
 	// persisted wire field: a reader deciding whether a group may be collapsed
 	// needs the vocabulary without importing the producer.
 	EdgeMethodAmbiguousName = "ambiguous-name" // CLOSED group: exactly one of the members is the referent
 	EdgeMethodDynamic       = "dynamic"        // OPEN group: one of the members, or something beyond static reach
+
+	// EdgeMethodMethodSet is the PREFIX of the Edge.Method value an IMPLEMENTS
+	// edge carries: the prefix followed by the decimal cardinality of the
+	// interface's expanded method set, e.g. "method-set:3".
+	//
+	// IT IS THE SURFACE A CONSUMER READS TO WEIGHT A ONE-METHOD EDGE AS
+	// LOW-INFORMATION. A single-method interface is legitimately satisfied by a
+	// great many types — that is correct Go, not a defect to suppress — so the
+	// cardinality is published rather than used to filter.
+	//
+	// THE CARDINALITY IS NOT CARRIED ON Weight, DELIBERATELY. The weighted
+	// topology analyzers normalize a zero weight to the 1.0 baseline, so putting
+	// the size on Weight would INVERT the intent: the low-information
+	// single-method edges would enter weighted centrality at exactly an ordinary
+	// edge's strength, while a large interface's edge took many times an ordinary
+	// edge's random-walker mass. No weighted analyzer reads Method, which is why
+	// it is the right home — the same reason the two group-kind values above live
+	// here rather than in the collector.
+	EdgeMethodMethodSet = "method-set:" // IMPLEMENTS: prefix + expanded method-set cardinality
+
+	// EdgeMethodDeclaredConformance is the PREFIX of the Edge.Method value an
+	// IMPLEMENTS edge derived from a DECLARED supertype clause carries: the
+	// prefix followed by the kind of clause the source wrote, e.g.
+	// "declared-conformance:mixin".
+	//
+	// IT CARRIES A CLAUSE KIND RATHER THAN A CARDINALITY, and the distinction is
+	// the point. The method-set derivation INFERS satisfaction the language
+	// leaves implicit, so the size of the set it matched is the honest measure
+	// of how much the edge says. A declared clause states the relationship
+	// outright, so there is no measured set — the informative fact is WHICH
+	// clause was written, which is what lets a consumer tell a module include
+	// from an implements clause without knowing the producing language.
+	//
+	// THE MEMBER-LEVEL EDGE CARRIES THE SAME VALUE AS ITS TYPE-LEVEL PARENT,
+	// byte-for-byte, mirroring the method-set derivation's own contract: one
+	// value is computed per pair and stamped on the type-level edge and on every
+	// member edge under it.
+	EdgeMethodDeclaredConformance = "declared-conformance:" // IMPLEMENTS: prefix + the declared clause kind
+
+	// EdgeMethodSlotBind is the PREFIX of the Edge.Method value an IMPLEMENTS
+	// edge derived from a C COMPOSITE-LITERAL SLOT carries: the prefix followed
+	// by the capture shape that produced it, either "slot-bind:designated" or
+	// "slot-bind:positional".
+	//
+	// IT IS C'S CONFORMANCE, WRITTEN THE ONLY WAY C CAN WRITE ONE. The language
+	// declares no supertype and has no clause to read; what it has is a struct
+	// of function pointers filled by a literal, and that field-to-function pair
+	// states the same relationship a declared conformance states outright.
+	//
+	// THE SUFFIX IS THE SHAPE RATHER THAN THE SLOT NAME. A reader judging how
+	// much the edge says needs to know whether the source named the field
+	// outright or whether the field was derived from the declaration's field
+	// ORDER — the second is exact but rests on one more inference — and the
+	// slot name is already recoverable from the edge's own endpoint.
+	EdgeMethodSlotBind = "slot-bind:" // IMPLEMENTS: prefix + the capture shape
 
 	// Hive work-queue edge types (cloud-only feature). NEW edges — NOT reuse of
 	// EdgeKGContains: EdgeKGContains="contains" is parent→child (plan→phase),

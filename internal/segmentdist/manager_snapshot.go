@@ -39,11 +39,25 @@ import (
 // cache root and the source MUST be scoped to the SAME format — the L2 cache is
 // rooted per-format (graphCacheDirFor), so mixing them would point one format's
 // source at another format's cache directory.
+//
+// THIS INSTANCE IS READ-ONLY AND MUST STAY THAT WAY. It is a second cache over a
+// directory the graph's own engine owns, and a diskSegmentCache indexes its
+// directory once at construction — so this view is accurate only as of this
+// call. That is fine for a List: staleness can only make the snapshot report
+// FEWER partitions. It would NOT be fine for a write, because each instance
+// keeps its own LRU byte accounting, and a Put or Remove through this one would
+// make its eviction decisions diverge from the owning engine's and delete files
+// out from under it. A future change needing a write here needs the engine's
+// instance instead.
 func (m *Manager) ShippedManifestSnapshot(
 	ctx context.Context, gt kgtypes.GraphType, name string, format string,
 ) ([]searchengine.SegmentMeta, error) {
 	target := graphSelector(gt, name)
-	cache := newDiskSegmentCache(graphCacheDirFor(m.cacheDir, gt, name, format), m.maxBytes)
+	advice, err := adviceForFormat(format)
+	if err != nil {
+		return nil, err
+	}
+	cache := newDiskSegmentCache(graphCacheDirFor(m.cacheDir, gt, name, format), m.maxBytes, advice)
 	source := m.newSegmentSource(cache, gt, name, target, format)
 	return source.List(ctx, 0)
 }

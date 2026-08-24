@@ -21,7 +21,7 @@ func TestNewSegmentSource_CapabilityGate(t *testing.T) {
 	t.Parallel()
 
 	t.Run("not-logged-in caller selects the OSS-local source", func(t *testing.T) {
-		mgr := NewManager(loginStateStub{loggedIn: false}, t.TempDir(), 0)
+		mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: false}, t.TempDir(), 0))
 		hnsw := mgr.managerFor(kgtypes.GraphCode, "repo")
 		require.IsType(t, (*localSegmentSource)(nil), hnsw.source,
 			"a not-logged-in caller gets the L2-only localSegmentSource for the HNSW engine")
@@ -31,7 +31,7 @@ func TestNewSegmentSource_CapabilityGate(t *testing.T) {
 	})
 
 	t.Run("logged-in caller with no transport yields the fail-loud sentinel", func(t *testing.T) {
-		mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0)
+		mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0))
 		hnsw := mgr.managerFor(kgtypes.GraphCode, "repo")
 		require.IsType(t, (*errorSegmentSource)(nil), hnsw.source,
 			"a logged-in caller with no segment transport gets the fail-loud errorSegmentSource sentinel")
@@ -49,8 +49,8 @@ func TestNewSegmentSource_LoggedInWithTransportSelectsGCS(t *testing.T) {
 		return auth.NewSyncTransport("http://unused", auth.StaticTokenSource{AccessToken: "t"}), nil
 	}
 
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0,
-		WithSegmentTransport(builder))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0,
+		WithSegmentTransport(builder)))
 	hnsw := mgr.managerFor(kgtypes.GraphCode, "repo")
 	require.IsType(t, (*gcsSegmentSource)(nil), hnsw.source,
 		"a logged-in caller with a transport builder gets the GCS source for the HNSW engine")
@@ -61,8 +61,8 @@ func TestNewSegmentSource_LoggedInWithTransportSelectsGCS(t *testing.T) {
 	// A logged-in caller whose builder FAILS yields the fail-loud sentinel (there is
 	// no server SegmentService fallback anymore).
 	failBuilder := func() (SegmentControlTransport, error) { return nil, context.DeadlineExceeded }
-	mgrFail := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0,
-		WithSegmentTransport(failBuilder))
+	mgrFail := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0,
+		WithSegmentTransport(failBuilder)))
 	require.IsType(t, (*errorSegmentSource)(nil), mgrFail.managerFor(kgtypes.GraphCode, "repo").source,
 		"a logged-in caller whose transport build fails gets the fail-loud errorSegmentSource sentinel")
 }
@@ -74,13 +74,13 @@ func TestNewDistManager_L2AuthoritativeFlag(t *testing.T) {
 	t.Parallel()
 
 	target := &knowledgev1.GraphSelector{Graph: "code", Repo: "l2auth"}
-	cache := newDiskSegmentCache(t.TempDir(), 0)
+	cache := newDiskSegmentCache(t.TempDir(), 0, adviceRandom)
 
-	local := newDistManager(newMockEngine(), newLocalSegmentSource(cache, ""), cache, target, "")
+	local := newDistManager(newMockEngine(t), newLocalSegmentSource(cache, ""), cache, target, "")
 	require.True(t, local.l2Authoritative, "a *localSegmentSource source ⟺ l2Authoritative")
 
 	// A non-local source (here the in-memory server-model fake) → l2Authoritative false.
 	nonLocal := newSharedServerFake().viewFor(target, "")
-	remote := newDistManager(newMockEngine(), nonLocal, cache, target, "")
+	remote := newDistManager(newMockEngine(t), nonLocal, cache, target, "")
 	require.False(t, remote.l2Authoritative, "a non-local (server-backed) source → l2Authoritative false")
 }

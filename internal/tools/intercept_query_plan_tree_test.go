@@ -167,7 +167,7 @@ func (g *parityCaller) Execute(_ context.Context, req *knowledgev1.ExecuteReques
 				})
 			}
 		}
-		return &knowledgev1.ExecuteResponse{Edges: out}, nil
+		return &knowledgev1.ExecuteResponse{Edges: bandNarrow(out, q)}, nil
 	}
 	if n, ok := g.f.nodes[q.GetById()]; ok {
 		resp := enginetest.ResponseWithNodes([]*knowledgev1.Node{n}...)

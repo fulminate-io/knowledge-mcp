@@ -36,7 +36,7 @@ func (f *examineFake) exec(_ context.Context, req *knowledgev1.ExecuteRequest) (
 		if !planPivotsInclude(q, f.subjectID) {
 			return &knowledgev1.ExecuteResponse{}, nil
 		}
-		return edgesResp([]*knowledgev1.Edge{
+		return edgesResp(q, []*knowledgev1.Edge{
 			{FromId: f.subjectID, ToId: "A", Type: "relates-to"},
 			{FromId: "B", ToId: f.subjectID, Type: "informed-by"},
 		})
@@ -84,8 +84,9 @@ func nodesResp(nodes []knowledgev1.Node) (*knowledgev1.ExecuteResponse, error) {
 	return enginetest.ResponseWithNodes(ptrs...), nil
 }
 
-func edgesResp(edges []*knowledgev1.Edge) (*knowledgev1.ExecuteResponse, error) {
-	return &knowledgev1.ExecuteResponse{Edges: edges}, nil
+// edgesResp takes the plan so the answer honors its from_id band.
+func edgesResp(q *knowledgev1.QueryPlan, edges []*knowledgev1.Edge) (*knowledgev1.ExecuteResponse, error) {
+	return &knowledgev1.ExecuteResponse{Edges: bandNarrow(edges, q)}, nil
 }
 
 func traversalResp(results []engine.TraversalResult) (*knowledgev1.ExecuteResponse, error) {

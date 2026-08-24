@@ -44,7 +44,7 @@ func (c *chargeFakeCaller) Execute(_ context.Context, req *knowledgev1.ExecuteRe
 				})
 			}
 		}
-		return &knowledgev1.ExecuteResponse{Edges: edges}, nil
+		return &knowledgev1.ExecuteResponse{Edges: bandNarrow(edges, q)}, nil
 	}
 	// Node hydrate: ids[] → charge nodes.
 	var nodes []*knowledgev1.Node
@@ -92,7 +92,9 @@ func TestPersonalityScalars_RerinforcerSemantics(t *testing.T) {
 		require.NoError(t, err)
 		// A→B: both charges confirmed (cA1's subsequent cA2 is same polarity;
 		// cA2 no-subsequent fallback) → accuracy 1.0 → scalar 1.8, != 1.000.
-		assert.NotEqual(t, 1.0, profile.Scalars["A"]["B"],
+		sAB, ok := profile.Scalar("A", "B")
+		require.True(t, ok, "the A→B pair must be present in the profile")
+		assert.NotEqual(t, 1.0, sAB,
 			"non-evidenced charges must shift A's scalar off the 1.000 default via the charged-by leg")
 	})
 
@@ -127,8 +129,10 @@ func TestPersonalityScalars_RerinforcerSemantics(t *testing.T) {
 		with, err := ComputePersonalityScalars(ctx, fc, clusters, map[string][]string{"c3": {"tB1"}}, nil)
 		require.NoError(t, err)
 
-		sWithout := without.Scalars["A"]["B"]
-		sWith := with.Scalars["A"]["B"]
+		sWithout, okWithout := without.Scalar("A", "B")
+		require.True(t, okWithout, "the A→B pair must be present in the un-evidenced profile")
+		sWith, okWith := with.Scalar("A", "B")
+		require.True(t, okWith, "the A→B pair must be present in the evidenced profile")
 		assert.Greater(t, sWith, sWithout,
 			"a net-confirming evidence-backed charge must raise the pair scalar")
 		// MODEST: the delta must be far smaller than the full scalar range (1.6).
@@ -159,7 +163,11 @@ func TestPersonalityScalars_RerinforcerSemantics(t *testing.T) {
 		// c3's evidence targets a B thought → A→B is boosted, A→C is not.
 		profile, err := ComputePersonalityScalars(ctx, fc, clusters, map[string][]string{"c3": {"tB1"}}, nil)
 		require.NoError(t, err)
-		assert.NotEqual(t, profile.Scalars["A"]["B"], profile.Scalars["A"]["C"],
+		sAB, okAB := profile.Scalar("A", "B")
+		require.True(t, okAB, "the A→B pair must be present in the profile")
+		sAC, okAC := profile.Scalar("A", "C")
+		require.True(t, okAC, "the A→C pair must be present in the profile")
+		assert.NotEqual(t, sAB, sAC,
 			"thought-targeted evidence to B must sharpen A→B relative to the un-attributed A→C")
 	})
 
@@ -173,7 +181,11 @@ func TestPersonalityScalars_RerinforcerSemantics(t *testing.T) {
 		fc := &chargeFakeCaller{} // no charges at all.
 		profile, err := ComputePersonalityScalars(ctx, fc, clusters, nil, nil)
 		require.NoError(t, err)
-		assert.InDelta(t, 1.0, profile.Scalars["A"]["B"], 1e-9)
-		assert.InDelta(t, 1.0, profile.Scalars["B"]["A"], 1e-9)
+		sAB, okAB := profile.Scalar("A", "B")
+		require.True(t, okAB, "the A→B pair must be present in the profile")
+		sBA, okBA := profile.Scalar("B", "A")
+		require.True(t, okBA, "the B→A pair must be present in the profile")
+		assert.InDelta(t, 1.0, sAB, 1e-9)
+		assert.InDelta(t, 1.0, sBA, 1e-9)
 	})
 }

@@ -24,7 +24,7 @@ func TestPruneCache_OSSLocalLiveSet(t *testing.T) {
 
 	ctx := context.Background()
 	base := t.TempDir()
-	mgr := NewManager(loginStateStub{loggedIn: false}, base, 0)
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: false}, base, 0))
 	require.IsType(t, (*localSegmentSource)(nil), mgr.managerFor(kgtypes.GraphCode, "pruneRepo").source,
 		"the OSS prune runs on the local source (no network leg exists)")
 

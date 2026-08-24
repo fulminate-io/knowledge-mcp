@@ -22,7 +22,7 @@ func TestSearchNudgesMergeWithCoolOff(t *testing.T) {
 
 	ctx := context.Background()
 	_, gc := newSegmentHarness(t)
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 
 	const (
 		alpha = "alpha"

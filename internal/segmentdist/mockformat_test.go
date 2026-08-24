@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"sort"
 	"strings"
+	"testing"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/searchengine"
 )
@@ -102,11 +103,32 @@ func (m *mockSegment) IDs() []searchengine.ExternalID {
 
 func (m *mockSegment) Encode() ([]byte, error) { return json.Marshal(m.rows) }
 
+// mockSegmentHeapBytesPerRow is the per-row heap this double claims. Round and
+// deliberately non-zero so a residency test can drive the payload term to a
+// KNOWN value: a double reporting zero would leave a missing payload term and a
+// correctly-zero one indistinguishable.
+const mockSegmentHeapBytesPerRow int64 = 1000
+
+func (m *mockSegment) HeapBytes() int64 {
+	return int64(len(m.rows)) * mockSegmentHeapBytesPerRow
+}
+
 // newMockEngine builds a SegmentedIndex over the mock format with MinSegmentDocs=1
 // so every Add seals immediately (one segment per Add batch) — convenient for
 // driving discrete segments in tests.
-func newMockEngine() *searchengine.SegmentedIndex[mockQuery, mockStats] {
-	return searchengine.New[mockQuery, mockStats](mockFormat{}, searchengine.Options{MinSegmentDocs: 1})
+//
+// IT TAKES t IN ORDER TO CLOSE THE ENGINE, and that is the whole reason for the
+// parameter. Every SegmentedIndex spawns a merger goroutine at construction that
+// nothing but Close stops, so an engine minted here and dropped leaks a ticker
+// for the rest of the test binary. Registering the Close at the MINT POINT is
+// what makes the lifetime a property of the helper rather than a rule each
+// caller has to remember: a test cannot obtain an engine from here without also
+// obtaining its cleanup.
+func newMockEngine(t testing.TB) *searchengine.SegmentedIndex[mockQuery, mockStats] {
+	t.Helper()
+	e := searchengine.New[mockQuery, mockStats](mockFormat{}, searchengine.Options{MinSegmentDocs: 1})
+	t.Cleanup(e.Close)
+	return e
 }
 
 // doc builds a content document.

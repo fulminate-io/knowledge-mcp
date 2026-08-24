@@ -38,7 +38,7 @@ deletions, recovering a corrupted cache, or wiring up a log backend.
 | `configure_log_backend` | `name`, `provider`, `url`, `auth_type` | Register a log backend (`credential` as needed; optional for `auth_type: "kubeconfig"`). |
 | `list_log_backends` / `list_logs` | — | List configured backends / collected log graphs. |
 | `discard_logs` | — | Drop one log graph (`name`) or all (omit `name`). |
-| `pprof_start` / `pprof_stop` | — | Bracket a CPU profile of the stdio client; `pprof_stop` returns a fetch URL. |
+| `pprof_start` / `pprof_stop` | — | Bracket a CPU profile of the knowledge client (where collectors run); `pprof_stop` returns a fetch URL. |
 | `set_metadata_overrides` | `graph`, `name` | Pin metadata keys to the scalar map (`force_scalar`) or value-node edges (`force_edge`); at least one non-empty. |
 | `promote_metadata` | `graph`, `name` | Refresh cardinality stats and flip each key's representation per the hysteresis bands (`dry_run` reports without writing). |
 

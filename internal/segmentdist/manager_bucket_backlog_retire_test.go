@@ -47,7 +47,7 @@ func TestDrainKeepsTailMembersOutsideItsDocs(t *testing.T) {
 
 	ctx := context.Background()
 	_, gc := newSegmentHarness(t)
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 
 	const (
 		gt   = kgtypes.GraphCode
@@ -96,7 +96,7 @@ func TestDrainRetainsOnlyUncoveredTails(t *testing.T) {
 
 	ctx := context.Background()
 	_, gc := newSegmentHarness(t)
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 
 	const (
 		gt        = kgtypes.GraphCode
@@ -176,7 +176,7 @@ func TestDrainRebuildingNothingKeepsLiveTailMembers(t *testing.T) {
 
 	ctx := context.Background()
 	_, gc := newSegmentHarness(t)
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 
 	const (
 		gt   = kgtypes.GraphCode
@@ -219,7 +219,7 @@ func TestRetainedTailIsAbsorbedByTheNextDrain(t *testing.T) {
 
 	ctx := context.Background()
 	_, gc := newSegmentHarness(t)
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 
 	const (
 		gt   = kgtypes.GraphCode
@@ -290,7 +290,7 @@ func TestDrainConsumesEntriesItFilteredOutOfTheBuild(t *testing.T) {
 
 	ctx := context.Background()
 	_, gc := newSegmentHarness(t)
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 
 	const (
 		gt   = kgtypes.GraphCode

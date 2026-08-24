@@ -37,7 +37,7 @@ func TestPreDeleteBlobDoesNotResurrectDeletedNode(t *testing.T) {
 
 	dir := t.TempDir()
 	_, gc := newSegmentHarness(t)
-	producer := NewManager(loginStateStub{loggedIn: true}, dir, 0, withSegmentSource(gc))
+	producer := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, dir, 0, withSegmentSource(gc)))
 
 	docs := prefixIDs(hnswVecDocs(corpusN), "resurrect-")
 	require.NoError(t, producer.AddAndMarkDirty(ctx, gt, name, docs))
@@ -49,7 +49,7 @@ func TestPreDeleteBlobDoesNotResurrectDeletedNode(t *testing.T) {
 
 	// A cold consumer that has learned the delete. Its load must not bring the
 	// victim back, even though the only blob it can import still holds it.
-	consumer := NewManager(loginStateStub{loggedIn: true}, dir, 0, withSegmentSource(gc))
+	consumer := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, dir, 0, withSegmentSource(gc)))
 	consumer.SetGraphTombstones(gt, name, []searchengine.ExternalID{victim.ID})
 
 	dm := consumer.managerFor(gt, name)
@@ -108,13 +108,13 @@ func TestTombstoneSeedIsReadPerImport(t *testing.T) {
 
 	dir := t.TempDir()
 	_, gc := newSegmentHarness(t)
-	producer := NewManager(loginStateStub{loggedIn: true}, dir, 0, withSegmentSource(gc))
+	producer := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, dir, 0, withSegmentSource(gc)))
 
 	docs := prefixIDs(hnswVecDocs(corpusN), "seedafter-")
 	require.NoError(t, producer.AddAndMarkDirty(ctx, gt, name, docs))
 	require.NoError(t, producer.ReEmitDirtyBuckets(ctx, gt, name))
 
-	consumer := NewManager(loginStateStub{loggedIn: true}, dir, 0, withSegmentSource(gc))
+	consumer := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, dir, 0, withSegmentSource(gc)))
 	// Force the engine into existence BEFORE the delete is known.
 	dm := consumer.managerFor(gt, name)
 

@@ -228,7 +228,7 @@ func restartSequence(targetVersion string, outcome serviceOutcome) error {
 		return fmt.Errorf("knowledge setup: daemon (port %d) reports version %q but expected %q — a stale daemon may have survived the restart", graphclient.DefaultMCPHTTPPort, got, targetVersion)
 	}
 
-	fmt.Fprintln(os.Stdout, "knowledge setup: restarted — stdio MCP clients reconnect on their next session")
+	fmt.Fprintln(os.Stdout, "knowledge setup: restarted — MCP clients reconnect to the daemon's endpoint on their next session")
 	return nil
 }
 
@@ -307,14 +307,13 @@ func spawnDaemonProcess(graphStorage string) error {
 	if err != nil {
 		return fmt.Errorf("resolve client path for daemon: %w", err)
 	}
+	// The DAEMON opens this path itself, via the --log-file below, and tees it
+	// with its inherited stderr. This process no longer opens it: holding a
+	// write handle it never writes to would create the file as a side effect and
+	// say nothing about whether the daemon could actually use it.
 	logPath := filepath.Join(expandTilde(graphStorage), "knowledge-daemon.log")
-	logF, err := os.OpenFile(logPath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600) //nolint:gosec // logPath derived from ~/.knowledge
-	if err != nil {
-		return fmt.Errorf("open daemon log %s: %w", logPath, err)
-	}
 	devNull, err := os.OpenFile(os.DevNull, os.O_RDONLY, 0)
 	if err != nil {
-		_ = logF.Close()
 		return fmt.Errorf("open devnull: %w", err)
 	}
 
@@ -326,12 +325,21 @@ func spawnDaemonProcess(graphStorage string) error {
 	}
 	cmd := daemonExecCommand(exe, argv...)
 	cmd.Stdin = devNull
-	cmd.Stdout = logF
-	cmd.Stderr = logF
+	// BOTH STREAMS ARE THIS PROCESS'S OWN STDERR, and both must stay *os.File —
+	// the same constraint spawnServer documents. exec.Cmd passes a raw fd only
+	// for an *os.File; any other io.Writer becomes a pipe drained by a
+	// parent-lifetime goroutine, which a daemon spawned to outlive us cannot
+	// survive. The daemon tees its own --log-file (already in the argv above)
+	// with this inherited stderr, so the durable record is kept there.
+	//
+	// STDERR, NEVER STDOUT: this process writes user-facing CLI output to stdout
+	// — the restart notice printed above is one of its lines — and a daemon's log
+	// lines interleaved into it would corrupt what the operator reads.
+	cmd.Stdout = os.Stderr
+	cmd.Stderr = os.Stderr
 	// NO SysProcAttr — bare fork+exec, per lifecycle.go's no-Setsid caveat.
 
 	if err := cmd.Start(); err != nil {
-		_ = logF.Close()
 		_ = devNull.Close()
 		return fmt.Errorf("start daemon %s: %w", exe, err)
 	}

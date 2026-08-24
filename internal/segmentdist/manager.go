@@ -37,6 +37,11 @@ const maxFetchSegmentIDs = 256
 // segmentdist need would be the wrong boundary.
 type segmentL2Cache interface {
 	Get(id searchengine.SegmentID) ([]byte, bool)
+	// GetMapped is the resident read path's variant: it returns the blob as a
+	// memory mapping plus its release closure, so the bytes live in the OS page
+	// cache instead of the Go heap. A non-nil error means the id IS cached but
+	// could not be mapped, which callers surface rather than treat as a miss.
+	GetMapped(id searchengine.SegmentID) (data []byte, release func(), ok bool, err error)
 	Put(id searchengine.SegmentID, b []byte)
 	Remove(id searchengine.SegmentID)
 	// Keys enumerates the L2-resident segment ids server-independently so load()
@@ -44,6 +49,13 @@ type segmentL2Cache interface {
 	// unavailable (slow/down server). It reads only the in-memory index — no disk
 	// re-read, no network.
 	Keys() []searchengine.SegmentID
+	// sizeOf reports one id's stored byte size and whether it is L2-resident at
+	// all. It is the eviction re-materializability gate's probe (evictResident,
+	// manager_residency.go): Get would read the whole file back off disk and
+	// MoveToFront the LRU, so gating on Get would turn a memory reclaim into a
+	// disk-read storm AND perturb the very recency ordering the budget sorts on.
+	// sizeOf reads the in-memory index only and is recency-neutral.
+	sizeOf(id searchengine.SegmentID) (int64, bool)
 }
 
 // distManager ties one graph's searchengine.SegmentedIndex to its segmentSource
@@ -60,7 +72,7 @@ type distManager[Q, S any] struct {
 	cache  segmentL2Cache
 	target *knowledgev1.GraphSelector
 
-	// format is this engine's segment format name (e.g. "hnsw", "bm25"). Each
+	// format is this engine's segment format name, as the format itself reports it. Each
 	// segment source is scoped to one (graph, format) — the cloud source reads a
 	// per-(graph, format) agent manifest and the local L2 cache is rooted per-format
 	// (graphCacheDirFor) — so a source's List/Fetch returns only THIS engine's
@@ -213,6 +225,61 @@ type distManager[Q, S any] struct {
 	resMu    sync.Mutex
 	resident map[searchengine.SegmentID]residentSeg
 
+	// evictedIDs is the EXACT id set the last evictResident unloaded, recorded so
+	// the re-materialization is a STRICT reload of that set (manager_residency.go,
+	// load()'s evicted branch) rather than a tolerant re-derive from cache.Keys(),
+	// which would silently serve a SHORT hit list. Guarded by resMu, beside
+	// resident.
+	//
+	// It has EXACTLY TWO writers, with different jobs, and neither does the
+	// other's: markMaterialized DROPS it (the pool is resident again, latch
+	// cleared), and reclaimMerged REWRITES it while the latch is still SET (drop
+	// res.Removed, add res.Merged.ID) so a merge completing after eviction cannot
+	// make the strict reload hard-error on data that is perfectly intact. A third
+	// writer is a defect.
+	evictedIDs []searchengine.SegmentID
+
+	// remapPending holds the segments whose mapping republication has not yet
+	// succeeded, keyed by segment id and guarded by resMu — the SAME lock that
+	// already guards resident and evictedIDs, because this set has the same
+	// lifecycle as those and a separate lock would create an ordering question
+	// resMu's existing discipline (residencyMu before resMu, per evictResident)
+	// already answers.
+	//
+	// A pending entry is a DEGRADED-BUT-CORRECT state, not a lost one: the
+	// previous heap-backed payload is still published and still serves the same
+	// results. Only the memory property is missing, which is precisely why the
+	// condition used to be logged and forgotten — the damage is invisible at
+	// every gate. Recording it is what makes the repair convergent instead.
+	remapPending map[searchengine.SegmentID]remapAttempt
+
+	// lastSearchNanos is the last CONSUMER-SEARCH touch stamp (time.Now().UnixNano),
+	// written by noteSearchTouch and read by lastSearchTouch. It defines hot/cold for
+	// the residency budget, and it is stamped by the SEARCH path only: the reconcile,
+	// coverage-probe and rebuild arms run against the whole working set hourly, so
+	// counting them as touches would keep every pool permanently hot and defeat
+	// eviction entirely. A never-searched pool reads 0 and is therefore the coldest.
+	lastSearchNanos atomic.Int64
+
+	// evicted latches true while this pool's segments have been unloaded to reclaim
+	// memory and have not yet been re-materialized. It is what makes an evicted pool
+	// DISTINGUISHABLE to a background arm (which must decline rather than resurrect
+	// it) while staying INDISTINGUISHABLE to a searcher (whose load() transparently
+	// re-materializes it). markMaterialized is the SINGLE owner of its clear.
+	// Modeled on l2Loaded/recovering: a lock-free atomic.Bool.
+	evicted atomic.Bool
+
+	// residencyMu serializes eviction against the consumer load-and-search span.
+	// engine.Unload's CAS swap is tear-safe on its own (searchengine/segmentset.go
+	// declares segmentSet an immutable snapshot, and Search does one set.Load for
+	// the whole call), but a CONSUMER calls load() and engine.Search as two separate
+	// statements — an eviction landing between them leaves Search reading an empty
+	// snapshot, which is a silent miss no property of the CAS prevents. Consumers
+	// hold RLock across the whole load+Search span; evictResident holds Lock for its
+	// whole body. sync.RWMutex is NOT reentrant, so nothing called while an RLock is
+	// held may take Lock — see markMaterialized.
+	residencyMu sync.RWMutex
+
 	// recovering single-flights the read-side degeneracy backstop (recoverIfDegenerate
 	// in manager_backstop.go): the FIRST search to find a degenerate engine CASes it
 	// true, resets the load floor, and re-imports the corpus; concurrent searches see
@@ -256,9 +323,13 @@ type distManager[Q, S any] struct {
 // residentSeg records one imported segment's size + format + generation so unload
 // accounting and reload re-import are exact.
 type residentSeg struct {
-	bytes      int
-	format     string
-	generation uint64
+	// mappedBytes is the ENCODED blob length of this segment. It is metered and
+	// reported, never compared against the residency budget: for a mapped
+	// segment these bytes are page cache rather than Go heap, so the budget
+	// reads the engine's modeled heap instead (see residentBytes).
+	mappedBytes int
+	format      string
+	generation  uint64
 }
 
 // newDistManager wires a manager for one graph. format is the engine's segment
@@ -288,6 +359,7 @@ func newDistManager[Q, S any](
 		shippedIDs:      make(map[searchengine.SegmentID]struct{}),
 		locallyShipped:  make(map[searchengine.SegmentID]struct{}),
 		resident:        make(map[searchengine.SegmentID]residentSeg),
+		remapPending:    make(map[searchengine.SegmentID]remapAttempt),
 	}
 }
 

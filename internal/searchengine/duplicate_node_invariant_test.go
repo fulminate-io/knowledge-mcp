@@ -24,11 +24,11 @@ func TestNewEntryRejectsDuplicateGraphNodes(t *testing.T) {
 	// of vacuity.
 	t.Run("a merge over constituents sharing ids is refused", func(t *testing.T) {
 		const corpus = 32
-		e := New[mockQuery, mockStats](mockFormat{}, Options{
+		e := closeOnCleanup(t, New[mockQuery, mockStats](mockFormat{}, Options{
 			MinSegmentDocs:     corpus * 4,
 			DeletesPctAllowed:  MergeDisabledDeadRatio,
 			SegmentCountTarget: MergeDisabledCountTarget,
-		})
+		}))
 		defer e.Close()
 
 		ids, _ := ledgerIDs(corpus)
@@ -69,11 +69,11 @@ func TestNewEntryRejectsDuplicateGraphNodes(t *testing.T) {
 	// Without this arm the gate would be satisfied by a build path that simply
 	// rejected everything.
 	t.Run("a seal over a batch repeating an id succeeds with one member", func(t *testing.T) {
-		e := New[mockQuery, mockStats](mockFormat{}, Options{
+		e := closeOnCleanup(t, New[mockQuery, mockStats](mockFormat{}, Options{
 			MinSegmentDocs:     1024,
 			DeletesPctAllowed:  MergeDisabledDeadRatio,
 			SegmentCountTarget: MergeDisabledCountTarget,
-		})
+		}))
 		defer e.Close()
 
 		// "dup" appears TWICE in one batch, with different content — the shape a tail id

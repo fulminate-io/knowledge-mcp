@@ -204,6 +204,9 @@ func (e *SegmentedIndex[Q, S]) fireMergeHook(entry *segmentEntry[Q, S], removed 
 			Generation: entry.meta.Generation,
 			DocCount:   entry.meta.DocCount,
 			Bytes:      bytes,
+			// See doMerge: the entry is reachable for the hook's duration only
+			// incidentally, so the blob pins it explicitly.
+			keepAlive: entry,
 		},
 	})
 }

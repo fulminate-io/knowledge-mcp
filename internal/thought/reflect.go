@@ -20,9 +20,17 @@ type ClusterPairScalar struct {
 	Scalar   float64
 }
 
-// PersonalityReport summarizes the agent's personality profile.
+// PersonalityReport carries the RENDERED rows only — the top-personalityTopK
+// stubborn and the top-personalityTopK gullible cluster pairs, plus the cluster
+// population those rows were selected from. It deliberately does NOT carry the
+// underlying profile.
+//
+// That omission is the contract rather than an oversight, and re-adding the
+// profile as an obvious convenience is the specific mistake to avoid: this
+// struct is serialized wholesale by the personality query's JSON arm, so
+// carrying the profile put a per-cluster row set on the wire in order to render
+// ten lines. ClusterCount is what discloses the population the rows came from.
 type PersonalityReport struct {
-	Profile      PersonalityProfile
 	TopStubborn  []ClusterPairScalar
 	TopGullible  []ClusterPairScalar
 	ClusterCount int
@@ -47,33 +55,104 @@ func ReflectPersonality(clusters []ThoughtCluster, profile *PersonalityProfile, 
 	if profile == nil {
 		return report
 	}
-	report.Profile = *profile
-
-	var pairs []ClusterPairScalar
-	for cA, m := range profile.Scalars {
-		if clusterFilter != "" && cA != clusterFilter {
-			continue
-		}
-		for cB, scalar := range m {
-			pairs = append(pairs, ClusterPairScalar{
-				ClusterA: cA, ClusterB: cB,
-				LabelA: profile.ClusterLabels[cA],
-				LabelB: profile.ClusterLabels[cB],
-				Scalar: scalar,
-			})
-		}
-	}
-	// Sort by scalar with a deterministic (ClusterA, ClusterB) tie-break: the pairs
-	// are gathered in Go map-iteration order, so without a stable secondary key the
-	// top-5 selection over tied scalars (e.g. an uncharged corpus where every pair
-	// is 1.0) would be nondeterministic across runs.
+	pairs := personalityPairCandidates(profile, clusterFilter)
+	// Sort by scalar with a deterministic (ClusterA, ClusterB) tie-break. Ties are
+	// the common case, not the corner one — every column carrying a row's default
+	// shares that row's scalar, and an uncharged corpus is 1.0 everywhere — and
+	// sort.Slice is not stable, so without the secondary key the
+	// top-personalityTopK selection over tied scalars would not be reproducible.
+	// The tie-break is also what makes the bounded candidate set EXACT: it turns
+	// the comparator into a total order over (Scalar, ClusterA, ClusterB), so
+	// selecting over a subset that contains the dense selection returns the
+	// identical rows.
 	sort.Slice(pairs, func(i, j int) bool { return lessPairAsc(pairs[i], pairs[j]) })
-	limit := min(len(pairs), 5)
+	limit := min(len(pairs), personalityTopK)
 	report.TopStubborn = append([]ClusterPairScalar(nil), pairs[:limit]...)
 	sort.Slice(pairs, func(i, j int) bool { return lessPairDesc(pairs[i], pairs[j]) })
-	limit = min(len(pairs), 5)
+	limit = min(len(pairs), personalityTopK)
 	report.TopGullible = append([]ClusterPairScalar(nil), pairs[:limit]...)
 	return report
+}
+
+// personalityTopK is how many rows each end of the personality report carries.
+const personalityTopK = 5
+
+// personalityPairCandidates gathers the cluster pairs the report may select
+// from. It is a BOUNDED subset of the full pair space — every deviating column
+// of each row, plus that row's personalityTopK lexicographically smallest
+// default columns — and selecting over it returns EXACTLY what a full dense scan
+// would have selected. That is a proof, not an approximation, and a reader who
+// cannot reconstruct it will "improve" the selection into a wrong one:
+//
+// Both comparators order by scalar first, then by (ClusterA, ClusterB)
+// ascending. Within one row every column carrying the row default has the
+// identical scalar, so those entries order purely by column ID. At most
+// personalityTopK entries of any row can reach either end of a
+// top-personalityTopK selection, so any of them drawn from the default group
+// must be among that row's personalityTopK lexicographically smallest default
+// columns. Emitting those plus every deviating column therefore yields a
+// candidate set that CONTAINS the dense selection; since the comparator is a
+// total order and the candidates are a subset of the dense entries, selecting
+// over the candidates gives the identical result.
+//
+// Three details that look optional and are not. The column set is derived from
+// profile.RowDefault rather than from any caller-supplied cluster slice, because
+// a caller may pass one that disagrees with the profile. The deviating columns
+// are sorted before emission so the candidate order is deterministic even before
+// the sort. And the sampled counter advances only when Scalar returned ok, so a
+// self column or an unknown column never consumes a sampling slot.
+func personalityPairCandidates(profile *PersonalityProfile, clusterFilter string) []ClusterPairScalar {
+	columns := make([]string, 0, len(profile.RowDefault))
+	for id := range profile.RowDefault {
+		columns = append(columns, id)
+	}
+	sort.Strings(columns)
+
+	pairs := make([]ClusterPairScalar, 0, len(columns)*personalityTopK)
+	for _, clusterA := range columns {
+		if clusterFilter != "" && clusterA != clusterFilter {
+			continue
+		}
+		deviations := profile.Deviations[clusterA]
+		deviatingColumns := make([]string, 0, len(deviations))
+		for clusterB := range deviations {
+			deviatingColumns = append(deviatingColumns, clusterB)
+		}
+		sort.Strings(deviatingColumns)
+		for _, clusterB := range deviatingColumns {
+			if scalar, ok := profile.Scalar(clusterA, clusterB); ok {
+				pairs = append(pairs, personalityPair(profile, clusterA, clusterB, scalar))
+			}
+		}
+		sampled := 0
+		for _, clusterB := range columns {
+			if sampled == personalityTopK {
+				break
+			}
+			if _, isDeviation := deviations[clusterB]; isDeviation {
+				continue
+			}
+			scalar, ok := profile.Scalar(clusterA, clusterB)
+			if !ok {
+				continue
+			}
+			pairs = append(pairs, personalityPair(profile, clusterA, clusterB, scalar))
+			sampled++
+		}
+	}
+	return pairs
+}
+
+// personalityPair builds one report row, resolving both cluster labels off the
+// profile.
+func personalityPair(profile *PersonalityProfile, clusterA, clusterB string, scalar float64) ClusterPairScalar {
+	return ClusterPairScalar{
+		ClusterA: clusterA,
+		ClusterB: clusterB,
+		LabelA:   profile.ClusterLabels[clusterA],
+		LabelB:   profile.ClusterLabels[clusterB],
+		Scalar:   scalar,
+	}
 }
 
 // lessPairAsc / lessPairDesc order cluster-pair scalars ascending / descending

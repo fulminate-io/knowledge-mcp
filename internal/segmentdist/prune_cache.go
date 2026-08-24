@@ -122,6 +122,15 @@ type PruneCacheReport struct {
 // orphan pruner (listOnDiskSegIDs + prunePoolReport os.Remove) compare on-disk .seg
 // against the L2/resident set with NO server round-trip — decouple #4. A cold L2
 // (errL2CacheCold) is not an error here: the live set is simply empty.
+//
+// IT CLEARS THE EVICTED LATCH (markMaterialized), and that is not optional. Both
+// branches above re-import the pool WITHOUT going through load() — the one place
+// that otherwise clears the latch — so a residency-evicted pool would come out of
+// this force fully resident yet still latched evicted: manage(status) would render
+// it in the evicted band, every background decider would decline it forever, its
+// bytes would be missing from the residency budget's accounting, and it could never
+// be evicted again. A census over load() call sites structurally cannot see this
+// site, which is why it is named here.
 func (m *distManager[Q, S]) forceCompleteLiveSet(ctx context.Context) ([]searchengine.SegmentID, error) {
 	if m.l2Authoritative {
 		if err := m.loadResidentFromL2(ctx); err != nil && err != errL2CacheCold {
@@ -133,6 +142,7 @@ func (m *distManager[Q, S]) forceCompleteLiveSet(ctx context.Context) ([]searche
 			return nil, err
 		}
 	}
+	m.markMaterialized()
 	exported := m.engine.Export()
 	ids := make([]searchengine.SegmentID, 0, len(exported))
 	for _, b := range exported {
@@ -141,7 +151,7 @@ func (m *distManager[Q, S]) forceCompleteLiveSet(ctx context.Context) ([]searche
 	return ids, nil
 }
 
-// completeHNSWLiveSet is the COMPLETE live set for a graph's "hnsw" L2 cache root: the
+// completeHNSWLiveSet is the COMPLETE live set for a graph's HNSW L2 cache root: the
 // one HNSW engine's force-loaded Export ids.
 //
 // IT USED TO BE A UNION, and the union is gone because the second engine is. The rebuild
@@ -170,7 +180,7 @@ func (m *Manager) completeHNSWLiveSet(ctx context.Context, gt kgtypes.GraphType,
 	return live, nil
 }
 
-// completeBM25LiveSet is the COMPLETE live set for a graph's "bm25" L2 cache root:
+// completeBM25LiveSet is the COMPLETE live set for a graph's BM25 L2 cache root:
 // the single BM25 engine's force-loaded Export ids. BM25 has NO determinism variant
 // (the rebuild path's deterministic split is HNSW-only — manager_owner.go), so there
 // is exactly one engine per graph for this root and NO union.
@@ -278,14 +288,14 @@ func (m *distManager[Q, S]) liveSetSubsetOfList0(ctx context.Context, live map[s
 func (m *Manager) PruneCache(ctx context.Context, graphs []PruneCacheTarget, execute bool) (PruneCacheReport, error) {
 	var report PruneCacheReport
 	for _, g := range graphs {
-		// HNSW pool — embed ∪ deterministic live set, shared "hnsw" L2 root.
+		// HNSW pool — embed ∪ deterministic live set, shared HNSW L2 root.
 		hnswLive, err := m.completeHNSWLiveSet(ctx, g.GraphType, g.Name)
 		if err != nil {
 			return PruneCacheReport{}, err
 		}
 		// Re-fetch the memoized embed distManager (check-construct-store returns the
 		// SAME instance) for the per-format subset-check; the det engine shares the
-		// embed engine's "hnsw" format + target, so either engine's keepFormat/source
+		// embed engine's HNSW format + target, so either engine's keepFormat/source
 		// is equivalent — use the embed manager's.
 		//
 		// NOTE (T3): unlike publishCoverageOK, PruneCache does NOT skip this subset
@@ -302,7 +312,7 @@ func (m *Manager) PruneCache(ctx context.Context, graphs []PruneCacheTarget, exe
 			return PruneCacheReport{}, err
 		}
 
-		// BM25 pool — single engine, its own "bm25" L2 root, no union.
+		// BM25 pool — single engine, its own L2 root under the BM25 format name, no union.
 		bm25Live, err := m.completeBM25LiveSet(ctx, g.GraphType, g.Name)
 		if err != nil {
 			return PruneCacheReport{}, err
@@ -331,7 +341,7 @@ func (m *Manager) PruneCache(ctx context.Context, graphs []PruneCacheTarget, exe
 // an orphan that appeared after construction (or simply was never resident) is absent
 // from that index, so cache.Remove would silently no-op and leave the .seg on disk.
 // An orphan is by definition not in the live set and not resident, so a direct unlink
-// is the obviously-safe and complete op, and it handles the SHARED "hnsw" root
+// is the obviously-safe and complete op, and it handles the SHARED HNSW root
 // uniformly (one .seg file per id, one os.Remove unlinks it for both engines).
 func (m *Manager) prunePoolReport(
 	report *PruneCacheReport,

@@ -57,12 +57,12 @@ func TestReconcileResidentDegenerate_ColdHeals(t *testing.T) {
 
 	// Ship a real HNSW corpus (1024 docs == one sealed segment) via a producer
 	// Manager pointed at the same server.
-	producer := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	producer := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 	seedShipped(t, ctx, producer, kgtypes.GraphCode, "coldRepo", hnswVecDocs(1024))
 	require.GreaterOrEqual(t, serverHNSWDocCount(t, gc, target), residentBackstopFloor)
 
 	// A FRESH consumer Manager starts cold (resident 0). The probe load()s first.
-	consumer := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	consumer := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 	require.Equal(t, 0, consumer.ResidentDocCount(kgtypes.GraphCode, "coldRepo"),
 		"the cold consumer has not loaded yet")
 
@@ -90,7 +90,7 @@ func TestReconcileResidentDegenerate_Incident(t *testing.T) {
 	// the empty Fetch means a load imports nothing.
 	shipHNSWMetas(t, gc, target, 64, 64)
 
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 	degenerate, err := mgr.ReconcileResidentDegenerate(ctx, kgtypes.GraphCode, "incidentRepo")
 	require.NoError(t, err)
 	require.True(t, degenerate,
@@ -119,7 +119,7 @@ func TestReconcileResidentDegenerate_PartialL2HealsViaServerReimport(t *testing.
 
 	// Server holds a real, Fetch-able full HNSW corpus (>> floor) shipped by a
 	// producer Manager pointed at the same server.
-	producer := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	producer := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 	require.NoError(t, producer.AddAndMarkDirty(ctx, kgtypes.GraphCode, "partialHealRepo", hnswVecDocs(1024)))
 	require.NoError(t, producer.ReEmitDirtyBuckets(ctx, kgtypes.GraphCode, "partialHealRepo"))
 
@@ -127,7 +127,7 @@ func TestReconcileResidentDegenerate_PartialL2HealsViaServerReimport(t *testing.
 	// force the partial-L2-already-loaded state: import a sub-floor segment, latch
 	// l2Loaded=true, and bump importedGen so a plain load() would short-circuit and
 	// re-import nothing.
-	consumer := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	consumer := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 	dm := consumer.managerFor(kgtypes.GraphCode, "partialHealRepo")
 
 	partial := buildHNSWSegment(t, vecContentDocsSeed(10, 5000)) // one 10-doc segment (< floor 64)
@@ -164,7 +164,7 @@ func TestReconcileResidentDegenerate_Disarms(t *testing.T) {
 		// A shipped HNSW meta with DocCount==0 (old pre-doc_count blob) → denominator
 		// untrustworthy → disarm.
 		shipHNSWMetas(t, gc, target, 0)
-		mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+		mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 		degenerate, err := mgr.ReconcileResidentDegenerate(ctx, kgtypes.GraphCode, "unknownRepo")
 		require.NoError(t, err)
 		require.False(t, degenerate, "a pre-doc_count blob disarms the ratio (conservative-unknown)")
@@ -175,7 +175,7 @@ func TestReconcileResidentDegenerate_Disarms(t *testing.T) {
 		target := &knowledgev1.GraphSelector{Graph: "code", Repo: "tinyRepo"}
 		// Shipped corpus of 4 docs (< floor 64) → too small for the ratio → disarm.
 		shipHNSWMetas(t, gc, target, 4)
-		mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+		mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 		degenerate, err := mgr.ReconcileResidentDegenerate(ctx, kgtypes.GraphCode, "tinyRepo")
 		require.NoError(t, err)
 		require.False(t, degenerate, "a sub-floor shipped corpus disarms the ratio (tiny-graph no-flap)")

@@ -37,9 +37,23 @@ const (
 	// three dependent plans cite the later rungs by number.
 	RuleExternalQualifier RefRule = "external-qualifier"
 	RuleDynamicScope      RefRule = "dynamic-scope"
-	RuleUnqualifiedImport RefRule = "unqualified-import"
-	RuleSiblingMember     RefRule = "sibling-member"
-	RuleOwnScope          RefRule = "own-scope"
+	// RuleDynamicRungSkipped records that the language's profile turns the
+	// dynamic rung OFF, so no candidate set was enumerated at all.
+	//
+	// IT IS A NEW CONSTANT RATHER THAN A REUSE, decided against this file's own
+	// reuse precedent. resolveQualifiedPath reuses RuleExternalQualifier and
+	// says why — the fact recorded is identical. Here it is not identical to
+	// either terminal: RuleExternalQualifier asserts the qualifier's target
+	// contributes nothing to the index, which this rung never established, and
+	// RuleNotDeclared asserts no declaration of the name exists, which is
+	// routinely FALSE here because the member's own node usually does exist.
+	// The truthful record is a LABELED ABSENCE — this language does not run
+	// the rung — which is the only honest option when the alternative is a
+	// confident statement the code cannot support.
+	RuleDynamicRungSkipped RefRule = "dynamic-rung-skipped"
+	RuleUnqualifiedImport  RefRule = "unqualified-import"
+	RuleSiblingMember      RefRule = "sibling-member"
+	RuleOwnScope           RefRule = "own-scope"
 	// RuleDotScope attributes an unqualified reference that a DOT SCOPE
 	// supplied — a scope folded into the file's namespace wholesale rather
 	// than a name bound one at a time. It is an ATTRIBUTION and never a
@@ -60,7 +74,25 @@ const (
 	// `com.acme.foo.Bar` written out in full, which carries no import statement
 	// for any arm to have bound.
 	RuleQualifiedPath RefRule = "qualified-path"
-	RuleNotDeclared   RefRule = "not-declared"
+	// RuleTypedQualifier attributes a reference whose QUALIFIER IS A VALUE —
+	// a receiver, a parameter, a local — rather than a package or a declared
+	// parent. The chunker recorded that value's DECLARED TYPE per declaration,
+	// and this rung looks up TYPE.name in the index.
+	//
+	// IT IS BIND-ONLY: the rung either positively binds a candidate set or
+	// declines, and a decline falls through to R3 with today's behavior
+	// unchanged. It never SUPPRESSES a candidate set it dislikes, so a
+	// reference this rung cannot answer is indistinguishable from one written
+	// before the rung existed.
+	//
+	// TWO ENTRY ROUTES REPORT THIS ONE CONSTANT: the direct route, where the
+	// qualifier itself is the typed value, and the ONE-STRUCT-FIELD HOP, where
+	// a dotted qualifier `a.b` resolves through a's type to the declared type
+	// of its field b. Both establish the SAME fact — the qualifier's declared
+	// type — so they share a constant rather than splitting one concept in two,
+	// on the precedent resolveQualifiedPath records at resolve_walk.go:278.
+	RuleTypedQualifier RefRule = "typed-qualifier"
+	RuleNotDeclared    RefRule = "not-declared"
 )
 
 // refResolution is one reference's outcome.
@@ -68,12 +100,26 @@ type refResolution struct {
 	Status     RefStatus
 	Rule       RefRule
 	Candidates []*declRec
+
+	// Route is which entry route of the TYPED-QUALIFIER rung produced this
+	// resolution, and is qualRouteNone for every other rung. See qualRoute for
+	// why the rule alone cannot carry it.
+	Route qualRoute
 }
 
-// The two Edge.Method values a multi-bind group is tagged with are NOT declared
-// here. kgtypes.EdgeMethodAmbiguousName and kgtypes.EdgeMethodDynamic are the
-// single authority, because Method is a persisted wire field a reader must be
+// Edge.Method POPULATIONS ARE KEYED BY EDGE TYPE.
+//
+// The two values a multi-bind GROUP is tagged with are NOT declared here.
+// kgtypes.EdgeMethodAmbiguousName and kgtypes.EdgeMethodDynamic are the single
+// authority for those, because Method is a persisted wire field a reader must be
 // able to interpret without importing this producer.
+//
+// THE RefRule CONSTANTS ABOVE ARE THE AUTHORITY FOR THE OTHER POPULATION THIS
+// PACKAGE EMITS: a BOUND reference edge carries the rung that resolved it, and
+// its value is the constant's own string. They stay here rather than moving to
+// kgtypes because they are the resolution ladder's own vocabulary — the ladder
+// reads them on every rung — and kgtypes points at this file for them instead of
+// copying them, so there is one spelling of each rather than two.
 
 // COLLAPSING A GROUP — DOCUMENTED, NOT BUILT. Nothing in this package collapses
 // a group; this describes what a future consumer would have to do, and the one
@@ -163,9 +209,14 @@ func resolveRef(ix *declIndex, ref *treesitter.RefSite, target string) refResolu
 // separate policy: the ladder's order is unchanged and every rung still filters
 // the index by the language's own scoping.
 //
-// R2P sits between R2 and R2X and is lettered rather than numbered for the same
-// reason R2X is: three dependent plans cite the later rungs by number, so a
-// renumbering would invalidate their text.
+// R2T, R2P and R2X are LETTERED rather than numbered: dependent plans cite the
+// later rungs by number, so a renumbering would invalidate their text. The
+// order between R2 and R3 is R2T, then R2P, then R2X.
+//
+// R2T IS BIND-ONLY. It either positively binds or declines, and a decline
+// leaves the rest of the ladder byte-identical to what it produced before the
+// rung existed — it never suppresses a candidate set the later rungs would
+// otherwise have produced.
 func resolveQualified(
 	ix *declIndex, ref *treesitter.RefSite, qualifier, name string, narrow func([]*declRec) []*declRec,
 ) refResolution {
@@ -180,6 +231,25 @@ func resolveQualified(
 	// Go receiver type, a class whose member is accessed.
 	if c := narrow(ix.lookup(declKey{Scope: ref.Scope, Parent: baseDeclName(qualifier), Name: name})); len(c) > 0 {
 		return classify(RuleQualifiedParent, c)
+	}
+	// R2T — the qualifier is a VALUE whose DECLARED TYPE the chunker recorded
+	// per declaration: a receiver, a parameter, a local variable. R2 above asked
+	// whether the qualifier IS a declared parent; this rung asks what TYPE the
+	// qualifier HAS, and then looks that type's member up.
+	//
+	// THE !bound GUARD IS THE LADDER'S ORDER, NOT AN OPTIMISATION, and it is the
+	// same statement R2P makes directly below with the same reasoning: a
+	// qualifier that IS bound has already been answered by R1, and re-deriving a
+	// type for it would second-guess the arm that resolved it. It also
+	// reproduces the simulation's own precedence — which tests the file's
+	// imports for a single-identifier qualifier BEFORE consulting the local type
+	// environment — and it agrees with Go's profile row ImportsBeatLocals: true.
+	// A dotted qualifier is never a Binds key, so the field hop reaches this
+	// rung through this same guard.
+	if !bound {
+		if res, ok := resolveTypedQualifier(ix, ref, qualifier, name, narrow); ok {
+			return res
+		}
 	}
 	// R2P — the qualifier is a PACKAGE PATH rather than a name anything bound.
 	// A fully-qualified `com.acme.foo.Bar` needs no import statement at all, so
@@ -227,6 +297,13 @@ func resolveQualified(
 	// qualifier to retry the bare name — that last-dotted-segment retry is the
 	// heuristic this work exists to delete, and it is what let a reference
 	// escape its own scope entirely.
+	//
+	// A LANGUAGE MAY TURN THIS RUNG OFF. The full reasoning is on
+	// langProfile.SkipDynamicRung; the guard is here because this is the one
+	// place the rung runs.
+	if profileFor(ref.Lang).SkipDynamicRung {
+		return refResolution{Status: RefExternal, Rule: RuleDynamicRungSkipped}
+	}
 	c := narrow(ix.lookupScopeName(scopeNameKey{Scope: ref.Scope, Name: name}))
 	return refResolution{Status: RefDynamic, Rule: RuleDynamicScope, Candidates: c}
 }
@@ -362,18 +439,58 @@ func classify(rule RefRule, candidates []*declRec) refResolution {
 // edge group. Every member edge of a group carries this same string in the
 // existing Evidence field — no shape change anywhere in the pipeline.
 //
-// The EDGE TYPE is a component because one declaration routinely emits two
-// different-typed edges to the same verbatim target: `type S struct { Foo }`
-// emits USES_TYPE and EMBEDS to "Foo".
+// IT IS POSITION-INDEPENDENT, AND THAT IS THE POINT. The key formerly embedded
+// the emitting declaration's byte offset, so inserting a line anywhere above a
+// reference re-stamped it — and because evidence is part of the four-part edge
+// identity, a re-stamped key is a NEW ROW while the pre-edit row stays resident.
+// That was measured against a live
+// graph: the same (from, to, type) USES_TYPE edge held twice, at offsets :2982:
+// and :3037:, with the client emitting only the later one. Nothing here may be
+// derived from a byte offset, a line or a column.
 //
-// The TARGET is VERBATIM, never its last dotted segment — extractCallEdges
-// dedupes callees by captured text within one declaration, so (declaration
-// offset, edge type, captured text) is unique per emitted edge.
+// THE DISCRIMINATOR IS WHAT THE SITE IS ABOUT:
 //
-// The BYTE is the emitting DECLARATION's StartByte, not the reference token's:
-// extractCallEdges aggregates every call site of one callee into a single
-// weighted edge, so no per-token offset exists. The declaration's offset is the
-// finest that does, and it is byte-stable across collects of an unchanged file.
-func groupKey(file string, refByte int, edgeType string, target string) string {
-	return file + ":" + strconv.Itoa(refByte) + ":" + edgeType + ":" + target
+//   - The EDGE TYPE, because one declaration routinely emits two different-typed
+//     edges to the same verbatim target: `type S struct { Foo }` emits USES_TYPE
+//     and EMBEDS to "Foo".
+//   - The TARGET, VERBATIM and never its last dotted segment.
+//   - The ENCLOSING DECLARATION's node id, which does the real work the byte
+//     offset used to do. extractCallEdges aggregates every call site of one
+//     callee into a SINGLE weighted edge and dedupes by captured text within a
+//     declaration, so the offset never separated call sites within a declaration
+//     — it separated DECLARATIONS, and the declaration's id names that directly
+//     and survives edits to its own body. Empty on the ambiguous-receiver arm,
+//     which has no single enclosing declaration and keys on the contained method
+//     instead (see resolveGoReceiverContainment).
+//
+// THE ORDINAL IS ALWAYS THE LAST COLON-SEPARATED FIELD, so any consumer recovers
+// it by splitting on the final colon without knowing which surface produced the
+// key — the imports surface spells its own keys `import:<local>:<n>` under the
+// same rule. It is the 0-based ordinal among sites IN ONE FILE whose FULL
+// discriminator is identical, and it covers the one case the discriminator
+// cannot: two sites that are identical in every recorded respect. It NEVER
+// separates the several candidates of a single site, which share one key by
+// construction — that shared key is the grouping mechanism itself.
+func groupKey(target, edgeType, enclosing string, ordinal int) string {
+	key := target + ":" + edgeType
+	if enclosing != "" {
+		key += ":" + enclosing
+	}
+	return key + ":" + strconv.Itoa(ordinal)
+}
+
+// groupOrdinals hands out the within-file ordinal for a group key's
+// discriminator. It is reset per FILE, because the ordinal is defined over sites
+// in one file — a counter shared across files would make one file's identities
+// depend on how many files were walked before it.
+type groupOrdinals map[string]int
+
+// next returns the 0-based ordinal for this discriminator and records that it
+// has been used, so the second identical site in a file takes 1 and the first
+// keeps 0. Two real sites therefore stay two rows: the ordinal keeps them
+// distinct and never collapses them.
+func (o groupOrdinals) next(discriminator string) int {
+	n := o[discriminator]
+	o[discriminator] = n + 1
+	return n
 }

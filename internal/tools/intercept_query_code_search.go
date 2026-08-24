@@ -192,6 +192,10 @@ func composeCodeSearch(ctx context.Context, deps ClientDeps, exec engine.Execute
 		if ov, ok := cdeps.mgr.(SegmentOverlaySearcher); ok {
 			cdeps.ovl = ov
 		}
+		// The completeness gate rides the SAME concrete Manager through the coverage
+		// seam manage(status) already reads, so the pool shape and the coverage column
+		// can never disagree about how much of a branch is shipped.
+		cdeps.cov = deps.SegmentCoverage()
 	}
 	// Permanent-degrade guard (bind-first startup): loud-error before any per-repo/per-query
 	// goroutine dereferences a nil Manager (a goroutine nil-deref crashes the
@@ -227,6 +231,10 @@ type codeSearchDeps struct {
 	// offers one. It is nil on the direct-cdeps unit-test path; production branch
 	// searches are gated on it being present in composeCodeSearch.
 	ovl SegmentOverlaySearcher
+	// cov is the shipped-coverage read the single-pool collapse gates on. It is nil
+	// on the direct-cdeps unit-test path and whenever the pipeline was not wired, and
+	// a nil reads as NOT complete — the two-pool union, which is the safe direction.
+	cov SegmentCoverageReader
 	gc  GraphCaller
 	// degrade records search legs that failed, so the render can say so instead of
 	// presenting a short result set as a healthy one. Allocated once per search

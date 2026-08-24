@@ -32,7 +32,7 @@ func (f *equivLeafFake) Execute(_ context.Context, req *knowledgev1.ExecuteReque
 	if q == nil || q.GetReturnMode() != knowledgev1.ReturnMode_RETURN_MODE_EDGES {
 		return &knowledgev1.ExecuteResponse{}, nil
 	}
-	return &knowledgev1.ExecuteResponse{Edges: f.edges}, nil
+	return &knowledgev1.ExecuteResponse{Edges: bandNarrow(f.edges, q)}, nil
 }
 
 // equivLeafCorpus seeds the five cases the equivalence claim has to survive:

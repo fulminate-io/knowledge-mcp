@@ -22,7 +22,7 @@ func (c *countingEdgeCaller) Execute(_ context.Context, req *knowledgev1.Execute
 	q := req.GetQuery()
 	if q != nil && q.GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_EDGES {
 		c.edgeReads.Add(1)
-		return &knowledgev1.ExecuteResponse{Edges: c.edges}, nil
+		return &knowledgev1.ExecuteResponse{Edges: bandNarrow(c.edges, q)}, nil
 	}
 	return &knowledgev1.ExecuteResponse{}, nil
 }

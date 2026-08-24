@@ -166,7 +166,7 @@ func TestBindsResolverArms(t *testing.T) {
 			FilePath: "src/main.c",
 			Language: LangC,
 			Chunks: []Chunk{{Context: ChunkContext{
-				Imports: []string{"../inc/a.h", "<stdio.h>", "missing.h"},
+				Imports: importSitesOf("../inc/a.h", "<stdio.h>", "missing.h"),
 			}}},
 		}
 
@@ -183,7 +183,7 @@ func TestBindsResolverArms(t *testing.T) {
 		self := &Result{
 			FilePath: "src/main.cpp",
 			Language: LangCPP,
-			Chunks:   []Chunk{{Context: ChunkContext{Imports: []string{"../inc/a.hpp"}}}},
+			Chunks:   []Chunk{{Context: ChunkContext{Imports: importSitesOf("../inc/a.hpp")}}},
 		}
 
 		got := BindsFor(rc, map[string]*Result{"inc/a.hpp": header}, self)

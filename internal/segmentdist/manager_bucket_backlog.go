@@ -39,7 +39,17 @@ import (
 // DURABLE — shipped, published, and therefore visible to another process or after
 // a restart — at the next reconcile tick, bounded by segmentReconcileInterval, or
 // sooner if the backlog crosses pendingReEmitByteCap.
-func (m *Manager) AddAndMarkDirty(_ context.Context, gt kgtypes.GraphType, name string, docs []searchengine.Document) error {
+// A WRITE RE-MATERIALIZES AN EVICTED POOL BEFORE SEALING INTO IT. Sealing a
+// handful of documents into an emptied engine would leave the pool far below the
+// coverage ratio, so the drain's publishResident would skip the manifest swap and
+// markCoverageSkip would accumulate a suppression streak — which manage(status)
+// renders as the STUCK band. A written-to evicted pool would reach a stuck state by
+// a path nothing else in this ticket looks for.
+//
+// This is the SECOND of two belts and they close different windows: the budget pass
+// skips a graph with a non-empty write backlog, which stops an eviction landing
+// while writes are queued; this stops the damage from writes arriving AFTER one.
+func (m *Manager) AddAndMarkDirty(ctx context.Context, gt kgtypes.GraphType, name string, docs []searchengine.Document) error {
 	if len(docs) == 0 {
 		return nil
 	}
@@ -50,6 +60,13 @@ func (m *Manager) AddAndMarkDirty(_ context.Context, gt kgtypes.GraphType, name 
 	// compare as later than the delete — resurrecting it.
 	seq := m.nextWriteSeq()
 	dm := m.managerFor(gt, name)
+	if dm.isEvicted() {
+		if err := dm.load(ctx); err != nil {
+			return err
+		}
+		slog.Info("segmentdist: a write re-materialized an evicted pool before sealing",
+			"graph_type", gt, "name", name, "format", dm.armFormat(), "docs", len(docs))
+	}
 	sealed, err := dm.engine.AddSealAndSupersede(docs)
 	if err != nil {
 		return err
@@ -69,14 +86,23 @@ func (m *Manager) AddAndMarkDirty(_ context.Context, gt kgtypes.GraphType, name 
 }
 
 // AddAndMarkDirtyFields is the field-engine counterpart of AddAndMarkDirty, with
-// the same no-merge, no-ship contract and the same visibility window.
-func (m *Manager) AddAndMarkDirtyFields(_ context.Context, gt kgtypes.GraphType, name string, docs []searchengine.Document) error {
+// the same no-merge, no-ship contract, the same visibility window, and the same
+// re-materialization of an evicted pool before the seal — over the BM25 pool, which
+// is this entry point's own and is the larger of the two.
+func (m *Manager) AddAndMarkDirtyFields(ctx context.Context, gt kgtypes.GraphType, name string, docs []searchengine.Document) error {
 	if len(docs) == 0 {
 		return nil
 	}
 	// Before the seal, for the reason AddAndMarkDirty states.
 	seq := m.nextWriteSeq()
 	dm := m.bm25ManagerFor(gt, name)
+	if dm.isEvicted() {
+		if err := dm.load(ctx); err != nil {
+			return err
+		}
+		slog.Info("segmentdist: a write re-materialized an evicted pool before sealing",
+			"graph_type", gt, "name", name, "format", dm.armFormat(), "docs", len(docs))
+	}
 	sealed, err := dm.engine.AddSealAndSupersede(docs)
 	if err != nil {
 		return err

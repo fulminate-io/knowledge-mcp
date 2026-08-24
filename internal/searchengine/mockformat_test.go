@@ -118,3 +118,13 @@ func (m *mockSegment) IDs() []ExternalID {
 func (m *mockSegment) Encode() ([]byte, error) {
 	return json.Marshal(m.rows)
 }
+
+// mockSegmentHeapBytesPerRow is the per-row heap this double claims. It is a
+// round, deliberately non-zero constant so a test can drive the payload term of
+// the residency model to a KNOWN value and assert on it — a double returning
+// zero would make the payload term indistinguishable from a missing one.
+const mockSegmentHeapBytesPerRow int64 = 1000
+
+func (m *mockSegment) HeapBytes() int64 {
+	return int64(len(m.rows)) * mockSegmentHeapBytesPerRow
+}

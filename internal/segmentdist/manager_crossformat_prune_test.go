@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/fulminate-io/knowledge-mcp/internal/kgtypes"
+	"github.com/fulminate-io/knowledge-mcp/internal/searchengine/formats/hnsw"
 )
 
 // TestDeterministicShipKeepsBothFormatsResolvable models the REAL post-rebuild
@@ -36,20 +37,20 @@ func TestDeterministicShipKeepsBothFormatsResolvable(t *testing.T) {
 
 	// Ship via the RESET rebuild path: stage the partition carrying BOTH formats, then
 	// the single serial FinalizeRebuild — exactly what RebuildSegments drives.
-	shipper := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	shipper := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 	require.NoError(t, shipper.StageRebuildPartition(ctx, kgtypes.GraphKnowledge, "kg", docs, docs))
 	_, err := shipper.FinalizeRebuild(ctx, kgtypes.GraphKnowledge, "kg")
 	require.NoError(t, err)
 
 	// BOTH formats must survive on the server — the BM25 ship must NOT prune the
 	// HNSW segment (and vice versa).
-	hnsw, bm25 := countShippedByFormat(svc)
-	require.Positive(t, hnsw, "the HNSW segment must survive the BM25 ship's reconcilePrune")
-	require.Positive(t, bm25, "the BM25 segment must survive too")
+	hnswCount, bm25Count := countShippedByFormat(svc)
+	require.Positive(t, hnswCount, "the HNSW segment must survive the BM25 ship's reconcilePrune")
+	require.Positive(t, bm25Count, "the BM25 segment must survive too")
 
 	// A FRESH read manager resolves the target's STORED vector by id — the exact
 	// read mode:'similar' performs. This is the user-visible failure under the bug.
-	fresh := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	fresh := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 	vec, ok, err := fresh.VectorByID(ctx, kgtypes.GraphKnowledge, "kg", targetID)
 	require.NoError(t, err)
 	require.True(t, ok, "VectorByID must resolve the deterministic-shipped vector after a both-formats rebuild ship")
@@ -68,15 +69,15 @@ func TestEmbedShipKeepsBothFormatsResolvable(t *testing.T) {
 
 	docs, targetID, targetVec, _ := searchCorpus(7)
 
-	mgr := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	mgr := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 	seedShipped(t, ctx, mgr, kgtypes.GraphKnowledge, "kg", docs)
 	seedShippedFields(t, ctx, mgr, kgtypes.GraphKnowledge, "kg", docs)
 
-	hnsw, bm25 := countShippedByFormat(svc)
-	require.Positive(t, hnsw, "embed HNSW segment must survive the BM25 ship's reconcilePrune")
-	require.Positive(t, bm25, "embed BM25 segment must survive")
+	hnswCount, bm25Count := countShippedByFormat(svc)
+	require.Positive(t, hnswCount, "embed HNSW segment must survive the BM25 ship's reconcilePrune")
+	require.Positive(t, bm25Count, "embed BM25 segment must survive")
 
-	fresh := NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	fresh := closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 	vec, ok, err := fresh.VectorByID(ctx, kgtypes.GraphKnowledge, "kg", targetID)
 	require.NoError(t, err)
 	require.True(t, ok, "VectorByID resolves the embed-shipped vector when both formats coexist on one graph key")
@@ -85,17 +86,17 @@ func TestEmbedShipKeepsBothFormatsResolvable(t *testing.T) {
 
 // countShippedByFormat tallies the fake server's stored blobs by Format across
 // every graph key.
-func countShippedByFormat(svc *sharedServerFake) (hnsw, bm25 int) {
+func countShippedByFormat(svc *sharedServerFake) (hnswCount, bm25Count int) {
 	svc.mu.Lock()
 	defer svc.mu.Unlock()
 	for _, blobs := range svc.byKey {
 		for _, b := range blobs {
-			if b.GetFormat() == "hnsw" {
-				hnsw++
+			if b.GetFormat() == hnsw.New().Name() {
+				hnswCount++
 			} else {
-				bm25++
+				bm25Count++
 			}
 		}
 	}
-	return hnsw, bm25
+	return hnswCount, bm25Count
 }

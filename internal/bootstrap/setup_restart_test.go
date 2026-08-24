@@ -160,7 +160,7 @@ func TestRestart_BareSpawnsDaemon(t *testing.T) {
 	if !strings.HasPrefix(joined, "serve --http-port 15023") {
 		t.Fatalf("daemon argv = %q; want to start with `serve --http-port 15023`", joined)
 	}
-	if !strings.Contains(out, "reconnect on their next session") {
+	if !strings.Contains(out, "reconnect to the daemon's endpoint on their next session") {
 		t.Fatalf("expected editor-reconnect note; got %q", out)
 	}
 }
@@ -314,7 +314,7 @@ func TestRestart_HealthCheck(t *testing.T) {
 				t.Fatalf("restartSequence: %v", err)
 			}
 		})
-		if !strings.Contains(out, "reconnect on their next session") {
+		if !strings.Contains(out, "reconnect to the daemon's endpoint on their next session") {
 			t.Fatalf("expected editor-reconnect note; got %q", out)
 		}
 	})

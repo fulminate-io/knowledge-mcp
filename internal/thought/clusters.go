@@ -59,11 +59,16 @@ type ThoughtCluster struct {
 // scanner; this helper has no scanner and returns Leiden's partition as-is.
 //
 // gamma controls boundary sharpness; higher = smaller tighter clusters.
-func DetectThoughtClusters(ctx context.Context, gc Caller, gamma float64) ([]ThoughtCluster, error) {
+//
+// src is the per-pass read memo; nil is the standalone/on-demand path and reads
+// exactly as before. When a caller passes a real memo, BOTH internal consumers share
+// it — the adjacency composition and the cluster-object build — so a handler that
+// already holds one stops paying for reads it has already made.
+func DetectThoughtClusters(ctx context.Context, gc Caller, gamma float64, src CorpusSource) ([]ThoughtCluster, error) {
 	if gamma <= 0 {
 		gamma = 0.5
 	}
-	nodeIDs, adj, err := fetchAdjacency(ctx, gc, "all", nil, nil) // standalone helper: no resident cache, always drain.
+	nodeIDs, adj, err := fetchAdjacency(ctx, gc, "all", nil, src) // src nil = standalone drain; a memo collapses the read.
 	if err != nil {
 		return nil, fmt.Errorf("thought: detect clusters: %w", err)
 	}
@@ -71,7 +76,7 @@ func DetectThoughtClusters(ctx context.Context, gc Caller, gamma float64) ([]Tho
 		return nil, nil
 	}
 	clusterOf := runLeidenLocal(nodeIDs, adj, gamma)
-	return groupAndBuildClusters(ctx, gc, nodeIDs, clusterOf, nil), nil
+	return groupAndBuildClusters(ctx, gc, nodeIDs, clusterOf, src), nil
 }
 
 // DetectAllClusters detects communities over EVERY node type (except

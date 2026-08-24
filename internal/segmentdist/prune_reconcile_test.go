@@ -38,10 +38,10 @@ func TestReconcileOnShipPrunesMergedAway(t *testing.T) {
 
 	// MinSegmentDocs=1 → each Add seals one segment; SegmentCountTarget=4 → once
 	// more than 4 accumulate the background merger consolidates them all down.
-	prodEng := searchengine.New[mockQuery, mockStats](mockFormat{}, searchengine.Options{
+	prodEng := closeOnCleanup(t, searchengine.New[mockQuery, mockStats](mockFormat{}, searchengine.Options{
 		MinSegmentDocs:     1,
 		SegmentCountTarget: 4,
-	})
+	}))
 	defer prodEng.Close()
 
 	mgr, cc := buildManager(prodEng, gc, target, t.TempDir())

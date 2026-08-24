@@ -14,7 +14,7 @@ import "testing"
 func TestResidentMembershipMatchesSearchability(t *testing.T) {
 	newSealed := func(t *testing.T, ids ...string) *SegmentedIndex[mockQuery, mockStats] {
 		t.Helper()
-		e := newTestEngine(1)
+		e := newTestEngine(t, 1)
 		t.Cleanup(func() { e.Close() })
 		docs := make([]Document, 0, len(ids))
 		for _, id := range ids {

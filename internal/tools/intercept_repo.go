@@ -13,10 +13,10 @@ import (
 
 // effectiveCwd is the cwd repo resolution uses: the per-session workspace cwd
 // carried on ctx (HTTP transport, set by the daemon from peer-cwd resolution)
-// when present, else the process-global --root (deps.RootDir(), the stdio
-// default). This is what lets two concurrent HTTP sessions from different
-// repos each resolve their own code graph: the stdio path carries no workspace
-// cwd, so it falls back to --root exactly as before.
+// when present, else the process-global --root (deps.RootDir(), the
+// no-session-cwd default). This is what lets two concurrent HTTP sessions from
+// different repos each resolve their own code graph: a call carrying no
+// workspace cwd falls back to --root exactly as before.
 func effectiveCwd(ctx context.Context, deps ClientDeps) string {
 	if cwd := session.WorkspaceCwdFromContext(ctx); cwd != "" {
 		return cwd
@@ -69,7 +69,7 @@ var manageCodeGraphOps = map[string]bool{
 // name (via deps.RepoResolver) and shells out to coderun helpers for
 // branch / git state. The cwd is the per-session workspace cwd carried on
 // ctx (HTTP transport, from peer-cwd resolution) when present, else the
-// process --root (deps.RootDir(), the stdio default) — see effectiveCwd.
+// process --root (deps.RootDir(), the no-session-cwd default) — see effectiveCwd.
 // When the cwd doesn't match a loaded code graph
 // AND the caller did not pass repo: explicitly, the call short-circuits
 // with a typed error WITHOUT issuing the wire RPC.

@@ -120,10 +120,10 @@ func TestResolveRef_NoDotScopesIsUnchanged(t *testing.T) {
 	results := []*treesitter.Result{{
 		FilePath: "svc/c.go", Language: treesitter.LangGo,
 		Edges: []treesitter.Edge{
-			refEdge("svc/c.go:Caller", "Free", 10, topLevel),
-			refEdge("svc/t.java:Thing.Other", "Do", 15, inThingJava),
-			refEdge("svc/t.go:Thing.Other", "Do", 20, inThing),
-			refEdge("svc/c.go:Caller", "Missing", 30, topLevel),
+			refEdge("svc/c.go:Caller", "Free", topLevel),
+			refEdge("svc/t.java:Thing.Other", "Do", inThingJava),
+			refEdge("svc/t.go:Thing.Other", "Do", inThing),
+			refEdge("svc/c.go:Caller", "Missing", topLevel),
 		},
 	}}
 	nodeIDs := map[string]bool{
@@ -159,14 +159,13 @@ func dotSiteFor(file, scope string, dotScopes ...string) *treesitter.RefSite {
 
 // refEdge builds one CALLS edge from a caller declaration to a verbatim target,
 // carrying the given site — the carrier the chunker would have emitted.
-func refEdge(from, target string, refByte int, ref *treesitter.RefSite) treesitter.Edge {
+func refEdge(from, target string, ref *treesitter.RefSite) treesitter.Edge {
 	return treesitter.Edge{
-		FromID:  from,
-		ToID:    target,
-		Type:    treesitter.EdgeCalls,
-		Weight:  1,
-		RefByte: refByte,
-		Ref:     ref,
+		FromID: from,
+		ToID:   target,
+		Type:   treesitter.EdgeCalls,
+		Weight: 1,
+		Ref:    ref,
 	}
 }
 
@@ -199,18 +198,19 @@ func TestResolveRef_DotScopes(t *testing.T) {
 		assert.Equal(t, "lib/lib.go:Foo", got.Candidates[0].NodeID,
 			"a dot import binds the reference into the DOTTED scope, not the caller's own")
 
-		// The emitted edge is a plain bound edge: one edge, none of the
-		// residue fields, because a bound reference is not one of several
-		// guesses.
+		// The emitted edge is a plain bound edge: one edge, carrying the RUNG
+		// that resolved it on Method and none of the residue fields, because a
+		// bound reference is not one of several guesses.
 		results := []*treesitter.Result{{
 			FilePath: "app/main.go", Language: treesitter.LangGo,
-			Edges: []treesitter.Edge{refEdge("app/main.go:Run", "Foo", 10, ref)},
+			Edges: []treesitter.Edge{refEdge("app/main.go:Run", "Foo", ref)},
 		}}
 		nodeIDs := map[string]bool{"app/main.go:Run": true, "lib/lib.go:Foo": true, "app/own.go:Local": true}
 		edges := resolveEdges(results, ix, nodeIDs)
 		require.Len(t, edges, 1, "an exact cross-scope bind emits exactly one edge")
 		assert.Equal(t, "lib/lib.go:Foo", edges[0].ToId)
-		assert.Empty(t, edges[0].Method, "a bound edge carries no group metadata")
+		assert.Equal(t, string(RuleDotScope), edges[0].Method,
+			"a bound edge carries the rung that resolved it")
 
 		// KNOWN-POSITIVE CONTROL: the same site resolves a name its OWN scope
 		// declares, so the index and the site are live and the bind above is
@@ -249,7 +249,7 @@ func TestResolveRef_DotScopes(t *testing.T) {
 
 		results := []*treesitter.Result{{
 			FilePath: "app/main.go", Language: treesitter.LangGo,
-			Edges: []treesitter.Edge{refEdge("app/main.go:Run", "Foo", 1042, ref)},
+			Edges: []treesitter.Edge{refEdge("app/main.go:Run", "Foo", ref)},
 		}}
 		nodeIDs := map[string]bool{
 			"app/main.go:Run": true, "app/own.go:Foo": true,
@@ -258,7 +258,7 @@ func TestResolveRef_DotScopes(t *testing.T) {
 		edges := resolveEdges(results, ix, nodeIDs)
 
 		require.Len(t, edges, 2, "an ambiguous reference emits one edge per candidate")
-		wantKey := groupKey("app/main.go", 1042, string(kgtypes.EdgeCalls), "Foo")
+		wantKey := groupKey("Foo", string(kgtypes.EdgeCalls), "app/main.go:Run", 0)
 		for _, e := range edges {
 			assert.InDelta(t, 0.5, e.Confidence, 1e-9, "Confidence is 1/N and NEITHER member is preferred")
 			assert.Equal(t, kgtypes.EdgeMethodAmbiguousName, e.Method, "the group is CLOSED")
@@ -305,9 +305,9 @@ func TestResolveRef_DotScopes(t *testing.T) {
 		results := []*treesitter.Result{{
 			FilePath: "app/main.go", Language: treesitter.LangGo,
 			Edges: []treesitter.Edge{
-				refEdge("app/main.go:Run", "Foo", 2048, ref),
-				refEdge("app/main.go:Run", "Bar", 4096, ref),
-				refEdge("app/main.go:Run", "Local", 8192, ref),
+				refEdge("app/main.go:Run", "Foo", ref),
+				refEdge("app/main.go:Run", "Bar", ref),
+				refEdge("app/main.go:Run", "Local", ref),
 			},
 		}}
 		nodeIDs := map[string]bool{
@@ -318,7 +318,7 @@ func TestResolveRef_DotScopes(t *testing.T) {
 
 		// Two group members for Foo, one bound edge for Bar, one for Local.
 		require.Len(t, edges, 4)
-		wantKey := groupKey("app/main.go", 2048, string(kgtypes.EdgeCalls), "Foo")
+		wantKey := groupKey("Foo", string(kgtypes.EdgeCalls), "app/main.go:Run", 0)
 		for _, e := range edges[:2] {
 			assert.InDelta(t, 0.5, e.Confidence, 1e-9)
 			assert.Equal(t, kgtypes.EdgeMethodAmbiguousName, e.Method)

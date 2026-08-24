@@ -1,0 +1,13 @@
+PRE-TEARDOWN ENV-STRIPPED RUN
+# run B under env -i PATH=/usr/bin:/bin against main tip 3e017aa3, BEFORE any deletion.
+# The toolchain was still resolved by absolute-path probing, so the precise pass ran:
+2026/08/19 18:02:09 INFO collector: dot-scope census dot_scopes_filled=0
+2026/08/19 18:02:09 INFO collector: interface satisfaction interfaces_decided=182 pairs=3531 edges=10417 generic_undecided=2 extembed_pairs=0
+2026/08/19 18:02:09 INFO collector: reference resolution bound=88589 external=83239 ambiguous_groups=97 ambiguous_edges=195 dynamic_groups=5586 dynamic_edges=12201 dynamic_unbound=29546 max_dynamic_group_size=64 dot_scope_binds=0 dot_scope_groups=0 typed_qualifier_binds=13793 typed_qualifier_groups=0
+PREPAIRS bash->bash=199 go->go=64535 python->python=112
+2026/08/19 18:02:09 INFO ensureGoOnPath: prepended the Go toolchain directory to PATH dir=/opt/homebrew/bin
+2026/08/19 18:02:18 INFO BuildGoCallGraph modules=4 callers=18343 covered_files=4026 package_errors=0
+2026/08/19 18:02:18 INFO precise call graph: replaced tree-sitter CALLS edges removed=54400 kept_non_go=311 kept_uncovered_go=10135 added=45829 rta_callers=18343 modules=4 covered_files=4026 decl_key_collisions=0 package_errors=0 go_toolchain_missing=false
+POSTPAIRS bash->bash=199 go->go=55964 python->python=112
+POSTMETHODCALLERS 8310
+PASS

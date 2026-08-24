@@ -17,7 +17,7 @@ import (
 func newReBucketManager(t *testing.T) *Manager {
 	t.Helper()
 	_, gc := newSegmentHarness(t)
-	return NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc))
+	return closeOnCleanup(t, NewManager(loginStateStub{loggedIn: true}, t.TempDir(), 0, withSegmentSource(gc)))
 }
 
 // TestReBucketTriggerFiresOnlyWhenADoublingBehind pins the rule at both of its

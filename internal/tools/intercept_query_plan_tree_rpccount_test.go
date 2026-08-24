@@ -70,7 +70,7 @@ func (c *countingPlanTreeCaller) Execute(_ context.Context, req *knowledgev1.Exe
 				})
 			}
 		}
-		return &knowledgev1.ExecuteResponse{Edges: out}, nil
+		return &knowledgev1.ExecuteResponse{Edges: bandNarrow(out, q)}, nil
 	default:
 		// ById node fetch (root).
 		if n, ok := c.nodes[q.GetById()]; ok {

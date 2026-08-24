@@ -31,7 +31,7 @@ import (
 //
 // THE MANIFEST IS THIS ENGINE'S RESIDENT SET, FULL STOP. It used to be a UNION with a
 // sibling engine's digests, because the HNSW rebuild wrote a second engine while both
-// keyed one "hnsw" manifest — so an embed publish that named only its own set reaped the
+// keyed one HNSW manifest — so an embed publish that named only its own set reaped the
 // blobs the rebuild was still responsible for. There is one engine per format now, so
 // there is no sibling to reference and no union to get wrong.
 //

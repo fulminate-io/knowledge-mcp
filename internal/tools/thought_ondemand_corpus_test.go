@@ -39,8 +39,13 @@ type chargeHydrateRecorder struct {
 	events []string
 	// chargeNode is the WIRE payload served for a by-id hydrate of ch1.
 	chargeNode *knowledgev1.Node
-	// chargedByEdges is the bulk edge read's payload.
+	// chargedByEdges is the DEFAULT seeded edge corpus, served through
+	// unionEdgesForRequest when unionSeed is unset.
 	chargedByEdges []*knowledgev1.Edge
+	// unionSeed, when set, is the seeded edge set served through
+	// unionEdgesForRequest. chargedByEdges remains for the tests that drive the
+	// charged-by read on its own.
+	unionSeed []*knowledgev1.Edge
 }
 
 func (r *chargeHydrateRecorder) record(s string) {
@@ -61,6 +66,15 @@ func (r *chargeHydrateRecorder) chargedByCount() int {
 	return r.chargedByThoughtReads
 }
 
+// seedEdges is the fake's whole edge corpus: unionSeed when a test sets it, otherwise
+// the historical charged-by payload.
+func (r *chargeHydrateRecorder) seedEdges() []*knowledgev1.Edge {
+	if len(r.unionSeed) > 0 {
+		return r.unionSeed
+	}
+	return r.chargedByEdges
+}
+
 func (r *chargeHydrateRecorder) Execute(
 	_ context.Context, req *knowledgev1.ExecuteRequest,
 ) (*knowledgev1.ExecuteResponse, error) {
@@ -71,16 +85,20 @@ func (r *chargeHydrateRecorder) Execute(
 	}
 	if q.GetReturnMode() == knowledgev1.ReturnMode_RETURN_MODE_EDGES {
 		types := q.GetSelection().GetEdgeTypes()
+		// CLASSIFICATION IS UNCHANGED — the counters and their split are what three
+		// tests in this file assert, and they keep bucketing exactly as before. Only the
+		// PAYLOAD is converted: the non-charged-by arm used to return an EMPTY response,
+		// which starves any multi-type request, so both arms now serve the union.
 		if len(types) == 1 && types[0] == string(kgtypes.EdgeChargedBy) {
 			r.mu.Lock()
 			r.chargedByThoughtReads++
 			r.mu.Unlock()
-			return &knowledgev1.ExecuteResponse{Edges: r.chargedByEdges}, nil
+			return &knowledgev1.ExecuteResponse{Edges: bandNarrow(unionEdgesForRequest(r.seedEdges(), q), q)}, nil
 		}
 		r.mu.Lock()
 		r.otherEdgeReads++
 		r.mu.Unlock()
-		return &knowledgev1.ExecuteResponse{}, nil
+		return &knowledgev1.ExecuteResponse{Edges: bandNarrow(unionEdgesForRequest(r.seedEdges(), q), q)}, nil
 	}
 	if ids := q.GetIds(); len(ids) > 0 {
 		r.record("hydrate:" + strings.Join(ids, ","))

@@ -11,7 +11,7 @@
 // That compiler-enforced boundary is stronger than the prior pkg/ link
 // discipline (which relied on the server merely declining to import it).
 //
-// The sole consumer is the LLM-key-holding stdio client, cmd/knowledge: it
+// The sole consumer is the LLM-key-holding client, cmd/knowledge: it
 // embeds content during the client-side index pipeline and embeds the query
 // text at search time, then ships the vectors over the wire. No server binary
 // embeds — they store and search the client-supplied vectors only.
@@ -54,7 +54,7 @@ func newVoyageEmbedder(apiKey string) *voyageEmbedder {
 	}
 }
 
-// NewVoyageBinaryEmbedder is the exported constructor for the stdio client's
+// NewVoyageBinaryEmbedder is the exported constructor for the client's
 // llmproviders.BuildEmbedder and harnesses that need a real Voyage binary
 // embedder outside the BootstrapConfig path — e.g. the rankeval regen tool
 // that pre-computes query embeddings to commit alongside labels. Returns
