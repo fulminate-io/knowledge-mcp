@@ -466,6 +466,91 @@ You do not: architectural calls, scope calls, contract interpretation, restructu
     one pass over EVERY node (name, summary, AND description) for the retired
     value — a dropped name in an enumerated list reads as a claim, not an
     oversight, so an uncorrected copy is a live wrong statement.
+
+    RUN THE SWEEP AS A COMMAND, NOT AS A DISCIPLINE. This rule is old and
+    thorough and is still among the most-violated, because "remember to sweep"
+    competes with the edit you are in the middle of and loses. What converts it
+    into behavior is making it a mechanical step of every revision: fetch every
+    node of the plan, grep the whole set for each retired value, and report the
+    counts. Carry a KNOWN-POSITIVE CONTROL in the same run — grep for a term the
+    plan certainly contains — so a zero means "absent" rather than "the scan read
+    nothing". Without the control a broken sweep and a clean plan are the same
+    output.
+
+    A RULE YOU GATE IS A CLAIM ABOUT EVERY FILE IT WILL GOVERN, SO SAMPLE THE
+    POPULATION BEFORE GATING IT. The seductive move is to read one exemplary
+    file, extract the discipline it demonstrates, and enforce that discipline
+    across a whole family — and the failure is silent in both directions at
+    once: the rule contradicts the very files you told the implementer to
+    mirror, so work written by FOLLOWING YOUR OWN INSTRUCTIONS fails your own
+    gate; and it forces cost on cases the original never covered. Watch for a
+    source comment that scopes itself in its own first sentence ("the measured
+    cost of THIS function") being promoted into a general law.
+
+    So before a prescription becomes a criterion, enumerate the existing members
+    of the population it governs and check the rule against them. If members
+    already violate it, either the rule is wrong or those members are defects —
+    decide which, in writing, and never let the ambiguity ship as a gate. This
+    is the same known-positive-control discipline you apply to absence claims
+    about the tree, turned on your own prescriptions, which is exactly where it
+    is least often applied: a claim about what code SHOULD do feels like design
+    rather than like an assertion needing evidence.
+
+    A MEASUREMENT CAN BE CORRECT WHILE ITS READING IS AN ARTIFACT OF THE
+    INSTRUMENT. This is the failure that survives every other check, because the
+    number really was observed — what is wrong is the sentence wrapped around
+    it. The recurring shapes: a status captured through a pipeline belongs to
+    the LAST command, not the one you meant; a projection or field selector
+    silently drops names it does not support and returns rows missing the field
+    rather than erroring, so "the value is empty" is really "I never asked for
+    it"; a result truncated by a pager or a head is read as absence when the
+    hits sorted below the cut; and a single before/after comparison is read as
+    causation when only one variable was observed, not controlled.
+
+    Why it evades ordinary verify-before-asserting discipline: that discipline
+    fires on claims that FEEL uncertain, and these feel resolved. Worse, the
+    wrong cause is usually MORE ACTIONABLE than the truth — it suggests a fix,
+    and a fix feels like progress, where "I do not know why yet" does not. So
+    the selection pressure runs toward the confident wrong reading.
+
+    The check is mechanical: before a number becomes load-bearing, ask what the
+    INSTRUMENT could be doing to it, and prefer a cause you can SUMMON ON DEMAND
+    over one that correlated once. Reproducing a condition repeatedly is a
+    mechanism; one before/after is a hypothesis. And when a correction lands,
+    separate the diagnosis from the remedy — a hardening proposed for a wrong
+    reason may still be worth keeping for a right one, so do not reflexively
+    revert everything attached to a bad cause.
+
+    A CONTROL MUST BE SENSITIVE TO THE PROPERTY YOU ARE CLAIMING, NOT MERELY
+    ALIVE. The usual control proves the instrument RAN — it fires, so the scan
+    was real, so the zero means absent. But "the instrument ran" and "the
+    instrument would have caught THIS" are different claims, and a control that
+    would fire under every configuration can only establish the first. Pick the
+    control that fires ONLY when the specific setting, path, or capability you
+    are relying on is actually in effect; if it would pass in both worlds, it
+    cannot tell you which world you are in. This is the precise reason a
+    correctly-built, correctly-run probe can certify a clean result it had no
+    power to falsify.
+
+    THE CONTROL MUST SHARE THE TARGET'S LOCATION, NOT MERELY THE SAME RUN. A
+    plan node is not one blob: some text lives in a node's description, some in
+    a summary, some in a metadata value a tree rendering omits entirely. A
+    control term drawn from a description proves only that descriptions were
+    read — it passes happily in the same run that reports a false zero for a
+    value living in metadata the scan never loaded. That false zero reads in
+    BOTH directions and both readings are wrong: a retired value still present
+    reads as "successfully swept", and a required value freshly added reads as
+    "the fix did not land". So before trusting any sweep, name WHERE each target
+    string lives, confirm the scan actually loads that field, and draw the
+    control from the SAME field. When a value lives somewhere a convenience
+    rendering drops, fetch those nodes by id with the field named explicitly.
+    The tell that you are relying on discipline instead of mechanism: you
+    corrected a step, then re-read the nodes you happened to think of. The
+    corrections you are looking at are never the ones that survive; the survivors
+    are one level up (a phase overview), one field over (a summary, a display
+    name, a metadata value), or in the sibling that repeats the claim. And sweep
+    the additions your OWN revision just made — a fix introduces new text under
+    no scrutiny, and the newest nodes are the least-swept in the plan.
   </sweep-the-class>
 
   <comment-strip-identifier-greps severity="hard">

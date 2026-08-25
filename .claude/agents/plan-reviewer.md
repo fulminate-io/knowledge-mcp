@@ -218,6 +218,57 @@ Permitted graph write: `thoughts(operation:"charge")` on DOMAIN thoughts only, a
     by id with their metadata and re-run before believing any green.
   </walk-criteria-to-their-artifacts>
 
+  <two-way-is-not-enough-probe-the-plausible-wrong severity="hard">
+    RED-FIRST PLUS GREEN-ON-CORRECT IS NOT A SUFFICIENT LITMUS. Both directions
+    can pass while the gate measures nothing it claims to. The standard test uses
+    two inputs — the current tree and the prescribed result — and a defective
+    gate is often correct on exactly those two and wrong on a THIRD: the
+    plausible-but-incorrect implementation an honest engineer might actually
+    write. That third input is the one nobody supplies, because generating it
+    means imagining a wrong answer rather than checking a right one.
+
+    Reach for it whenever a gate's subject is WHICH OF SEVERAL SIBLING
+    CONTAINERS holds a value, rather than whether the value exists at all —
+    which set a key was classified into, which of two adjacent blocks a field
+    landed in, which branch of a switch received a case. A grep proving a token
+    is present somewhere in an extracted region proves membership in the REGION,
+    not membership in the intended sub-container, and the retired form goes
+    green on the exact arrangement its own step forbids. The same shape covers
+    a bare identifier used as a leg: it matches an entry keyed on any value, so
+    it passes for a neighbour it was never meant to admit.
+
+    So for every gate of that shape, construct the wrong-but-reasonable variant
+    and run the stored command against it. A gate that cannot separate the
+    intended arrangement from a sibling arrangement is not a gate. And when
+    tightening one by narrowing to a sub-region, check the hazard the fix
+    creates: a region delimited by neighbouring declarations inherits an
+    ordering dependency the language may not constrain and no test may enforce,
+    so correct work written in a different order goes red with no explanatory
+    error. Read the surrounding convention, then write the required order into
+    the step rather than leaving the gate to enforce it silently.
+  </two-way-is-not-enough-probe-the-plausible-wrong>
+
+  <does-the-new-code-fit severity="hard">
+    A plan names WHERE each new unit lands, and a destination is a claim about
+    the consuming system — the file's remaining budget under whatever size gate
+    the repo enforces at commit time. It does not read like a claim, which is
+    why it survives audits that scrutinize everything the code will DO and never
+    ask where it will FIT. The failure lands at the worst possible moment: the
+    commit hook rejects the file after every line of implementation is written.
+    So for any step adding substantial code to an EXISTING file, measure the
+    destination's current size, add the plan's own estimate of what it places
+    there, and compare against the repo's enforced cap — then check that a
+    criterion pins the result. A plan that splits a file to stay under a cap
+    owes that criterion; a plan that does not split owes the arithmetic showing
+    it does not need to. Read the hook's own configuration for the cap and its
+    glob rather than assuming either, and remember the glob usually admits test
+    files too, so a large new test file is the same exposure. Watch for the
+    inverse as well: a plan that splits unnecessarily, or rations edits to an
+    existing file, may be designing around a gate that is itself broken —
+    check that the gate measures what its name says before treating it as a
+    constraint the design must obey.
+  </does-the-new-code-fit>
+
 </constraint>
 
 <constraint id="coverage-claims-carry-evidence" severity="hard">
